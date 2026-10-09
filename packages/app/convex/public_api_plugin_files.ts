@@ -39,7 +39,16 @@ import {
 	plugins_data_db_prepare_file_access_binding,
 } from "./plugins_data.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { files_ROOT_ID, files_get_utf8_byte_size, files_MAX_TEXT_CONTENT_BYTES } from "../server/files.ts";
+import {
+	files_ROOT_ID,
+	files_db_get_visible_node_by_path,
+	files_get_utf8_byte_size,
+	files_MAX_TEXT_CONTENT_BYTES,
+} from "../server/files.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_slot,
+} from "../server/files-saved-placement.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -64,16 +73,7 @@ async function db_get_active_node_at_path(
 		path: string;
 	},
 ) {
-	return await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("path", args.path)
-				.eq("archiveOperationId", null),
-		)
-		.first();
+	return await files_db_get_visible_node_by_path(ctx, args);
 }
 
 /**
@@ -131,7 +131,8 @@ async function db_prepare_plugin_access(
 	// lock's writer is checked too. A nested restricted folder keeps its own rule and scope, so it needs no check.
 	// A kept rule checks only the manage permission: a writer who left must not block a readers change.
 	if (!args.node || writePolicy !== undefined || (binding && binding.readScopeId !== null)) {
-		const parentNode = args.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.parentId);
+		const parentNode =
+			args.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.parentId);
 		const managed = await files_nodes_db_require_write_policy_management(ctx, {
 			organizationId: args.installation.organizationId,
 			workspaceId: args.installation.workspaceId,
@@ -233,17 +234,7 @@ export const ensure_plugin_folder = internalMutation({
 
 		// Stop at the first missing segment; the remaining folders are created after access checks.
 		for (const [index, name] of segments.entries()) {
-			const existing = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("parentId", currentParent)
-						.eq("name", name)
-						.eq("archiveOperationId", null),
-				)
-				.first();
+			const existing = await files_saved_placement_db_get_slot(ctx.db, { ...args, parentId: currentParent, name });
 			if (!existing) {
 				firstMissingIndex = index;
 				break;
@@ -407,7 +398,7 @@ export const ensure_plugin_folder = internalMutation({
 			created = true;
 
 			if (preparedAccess?.binding) {
-				const node = await ctx.db.get("files_nodes", nodeId);
+				const node = await files_saved_placement_db_get_node(ctx.db, nodeId);
 				if (!node) {
 					throw should_never_happen("ensured plugin folder is missing right after create", { nodeId });
 				}

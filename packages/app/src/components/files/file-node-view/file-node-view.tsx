@@ -83,7 +83,9 @@ import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useFilesSortedChildren } from "@/hooks/files-search-hooks.ts";
+import { useFilesSortedChildren, files_merge_sorted_streams } from "@/hooks/files-search-hooks.ts";
+import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
+import { useFilesPendingUpdates } from "@/hooks/files-pending-list-hooks.ts";
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -126,8 +128,9 @@ import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { Link } from "@tanstack/react-router";
-import { useConvex, usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import { useConvex, usePaginatedQuery as useConvexPaginatedQuery, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
+import { compareValues } from "convex/values";
 import {
 	Archive,
 	ArrowDownWideNarrow,
@@ -1806,11 +1809,37 @@ const FileNodeViewPrivateFolder = memo(function FileNodeViewPrivateFolder(props:
 }) {
 	const { folderId, onNavigateTarget } = props;
 	const { membershipId } = AppTenantProvider.useContext();
-	const children = usePaginatedQuery(
+	const view = useFilesSavedView(membershipId);
+	const normal = useConvexPaginatedQuery(
 		app_convex_api.files_visible.list_private_folder_children,
-		{ membershipId, folderId },
+		view.normal ? { membershipId, folderId, savedStream: view.normal } : "skip",
 		{ initialNumItems: FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE },
 	);
+	const cohort = useConvexPaginatedQuery(
+		app_convex_api.files_visible.list_private_folder_children,
+		view.cohort ? { membershipId, folderId, savedStream: view.cohort } : "skip",
+		{ initialNumItems: FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE },
+	);
+	const streams = view.normal ? [normal, ...(view.cohort ? [cohort] : [])] : [];
+	const merge = files_merge_sorted_streams({
+		streams: streams.map((stream) => ({ rows: stream.results, isDone: stream.status === "Exhausted" })),
+		compare: (a, b) =>
+			compareValues([a.name, a.placeCreationTime, a.placeId], [b.name, b.placeCreationTime, b.placeId]),
+		key: (entry) => `${entry.target.kind}:${entry.target.id}`,
+	});
+	const children = {
+		results: merge.rows,
+		status:
+			view.loading || streams.some((stream) => stream.status === "LoadingFirstPage")
+				? "LoadingFirstPage"
+				: streams.some((stream) => stream.status === "LoadingMore")
+					? "LoadingMore"
+					: merge.blockingRank === null
+						? "Exhausted"
+						: "CanLoadMore",
+		loadMore: (numItems: number) =>
+			merge.blockingRank === null ? undefined : streams[merge.blockingRank]!.loadMore(numItems),
+	};
 
 	return children.status === "LoadingFirstPage" ? (
 		<p role="status">Loading folder…</p>
@@ -3005,6 +3034,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const convex = useConvex();
+	const { move } = FilesClipboardProvider.useContext();
 
 	// The table waits for the folder's saved sort, so it never loads by name first and then sorts again.
 	const folderSort = useQuery(app_convex_api.files_folder_sorts.get_folder_sort, {
@@ -3112,7 +3142,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const [showAllItems, setShowAllItems] = useState(false);
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
-	const [pendingActionNodeIds, setPendingActionNodeIds] = useState(() => new Set<string>());
 
 	// The hook already sorts folders first, in the folder's sort. Pages that load later add rows at the end.
 	const childItems = sortedChildren.rows ?? [];
@@ -3329,38 +3358,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				return;
 			}
 
-			setPendingActionNodeIds((current) => new Set([...current, ...movedFileNodeIds]));
-			convex
-				.mutation(app_convex_api.files_nodes.move_nodes, {
-					membershipId,
-					itemIds: movedFileNodeIds,
-					targetParentId: args.targetParentId,
-				})
-				.then((result) => {
-					if (result._nay) {
-						console.error("[FileNodeViewFolder.handleMoveFileNodesToParent] Failed to move nodes", {
-							result,
-							fileNodeIds: movedFileNodeIds,
-							targetParentId: args.targetParentId,
-						});
-					}
-				})
-				.catch((error) => {
-					console.error("[FileNodeViewFolder.handleMoveFileNodesToParent] Error moving nodes", {
-						error,
-						fileNodeIds: movedFileNodeIds,
-						targetParentId: args.targetParentId,
-					});
-				})
-				.finally(() => {
-					setPendingActionNodeIds((current) => {
-						const next = new Set(current);
-						for (const fileNodeId of movedFileNodeIds) {
-							next.delete(fileNodeId);
-						}
-						return next;
-					});
-				});
+			move(movedFileNodeIds, args.targetParentId);
 		},
 	);
 
@@ -3402,7 +3400,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					hasDrafts={hasDrafts === true}
 					organizationName={organizationName}
 					workspaceName={workspaceName}
-					pendingActionNodeIds={pendingActionNodeIds}
 					protectedDescendantIds={protectedDescendantIds}
 					canPasteIntoFolder={folderCanReceiveChildren}
 					canMoveFileNodeToParent={handleCanMoveFileNodeToParent}
@@ -3953,7 +3950,6 @@ type FileNodeViewFolderExplorerRow_Props = {
 	canPasteIntoFolder: boolean;
 	organizationName: string;
 	workspaceName: string;
-	isPendingAction: boolean;
 	canMoveFileNodeToParent: (args: {
 		fileNodeId: app_convex_Id<"files_nodes">;
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
@@ -3979,7 +3975,6 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		canPasteIntoFolder,
 		organizationName,
 		workspaceName,
-		isPendingAction,
 		canMoveFileNodeToParent,
 		onArchiveNode,
 		onMoveFileNodesToParent,
@@ -4009,7 +4004,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 	const isCut = clipboard?.mode === "cut" && clipboard.sourceIds.includes(child._id);
 	FilesClipboardProvider.useHotkeys({
 		target: rowRef,
-		enabled: !isPendingAction,
+		enabled: true,
 		getSourceIds: (_event, mode) => (mode === "cut" && !capabilities.canRelocateOrRename ? [] : [child._id]),
 		getTargetParentId: () =>
 			child.kind === "folder"
@@ -4039,7 +4034,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 
 		const cleanupFns: Array<() => void> = [];
 
-		if (capabilities.canRelocateOrRename && !isPendingAction) {
+		if (capabilities.canRelocateOrRename) {
 			cleanupFns.push(
 				draggable({
 					element,
@@ -4061,7 +4056,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 			);
 		}
 
-		if (capabilities.canReceiveChildren && child.kind === "folder" && !isPendingAction) {
+		if (capabilities.canReceiveChildren && child.kind === "folder") {
 			cleanupFns.push(
 				dropTargetForElements({
 					element,
@@ -4123,7 +4118,6 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		capabilities.canRelocateOrRename,
 		child._id,
 		child.kind,
-		isPendingAction,
 		onMoveFileNodesToParent,
 	]);
 
@@ -4202,7 +4196,6 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 							className={"FileNodeViewFolderExplorer-more-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 							variant="ghost-highlightable"
 							tooltip="More actions"
-							disabled={isPendingAction}
 							aria-label={`More actions for ${visibleName}`}
 						>
 							<MyIconButtonIcon>
@@ -4218,15 +4211,15 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 								<MyMenuPopoverContent>
 									<FilesClipboardMenuItems
 										sourceIds={[child._id]}
-										canCut={capabilities.canRelocateOrRename && !isPendingAction}
-										canCopy={!isPendingAction}
+										canCut={capabilities.canRelocateOrRename}
+										canCopy
 										targetParentId={child.kind === "folder" ? child._id : null}
 										targetName={child.kind === "folder" ? child.name : null}
-										canPaste={capabilities.canReceiveChildren && !isPendingAction}
+										canPaste={capabilities.canReceiveChildren}
 									/>
 									<MyMenuItem
 										variant="destructive"
-										disabled={!capabilities.canArchiveOrRestore || isPendingAction}
+										disabled={!capabilities.canArchiveOrRestore}
 										hideOnClick
 										onClick={handleArchiveClick}
 									>
@@ -4442,7 +4435,9 @@ function get_folder_filter_label(filter: files_table_Filter | null, namePrefix: 
 				? String(filter.value)
 				: "";
 	const label = `${files_folder_table_query_field_text(filter.field)} ${filter.op.replace("_", " ")}${value ? ` ${value}` : ""}`;
-	return namePrefix === null ? label : `${files_folder_table_query_field_text("name")} starts with ${namePrefix} and ${label}`;
+	return namePrefix === null
+		? label
+		: `${files_folder_table_query_field_text("name")} starts with ${namePrefix} and ${label}`;
 }
 // #endregion folder explorer filter
 
@@ -4647,7 +4642,6 @@ type FileNodeViewFolderExplorer_Props = {
 	hasDrafts: boolean;
 	organizationName: string;
 	workspaceName: string;
-	pendingActionNodeIds: ReadonlySet<string>;
 	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	canPasteIntoFolder: boolean;
 	canMoveFileNodeToParent: (args: {
@@ -4704,7 +4698,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		hasDrafts,
 		organizationName,
 		workspaceName,
-		pendingActionNodeIds,
 		protectedDescendantIds,
 		canPasteIntoFolder,
 		canMoveFileNodeToParent,
@@ -4727,11 +4720,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const displayedSort = rowsSort ?? sort;
 	const isApplyingSort = rowsSort === null || JSON.stringify(sort) !== JSON.stringify(rowsSort);
 	const sortState = isFilterFailed ? "failed" : isApplyingSort ? "applying" : "ready";
-	const filterState = isFilterFailed
-		? "failed"
-		: isShowingHeldRows || (isSortBusy && hasFilter)
-			? "applying"
-			: "ready";
+	const filterState = isFilterFailed ? "failed" : isShowingHeldRows || (isSortBusy && hasFilter) ? "applying" : "ready";
 	const emptyMessage =
 		visibleChildItems.length > 0 || filterState === "failed" || filterState === "applying"
 			? null
@@ -4913,7 +4902,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			{isShowingHeldRows &&
 				(JSON.stringify(rowsFilter) !== JSON.stringify(filter) || rowsNamePrefix !== namePrefix) && (
 					<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
-						Showing: {get_folder_filter_label(rowsFilter, rowsNamePrefix)}. Sort: {get_folder_sort_label(displayedSort)}.
+						Showing: {get_folder_filter_label(rowsFilter, rowsNamePrefix)}. Sort: {get_folder_sort_label(displayedSort)}
+						.
 					</p>
 				)}
 			{filterState === "applying" && hasFilter && (
@@ -5078,7 +5068,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 									canPasteIntoFolder={canPasteIntoFolder}
 									organizationName={organizationName}
 									workspaceName={workspaceName}
-									isPendingAction={pendingActionNodeIds.has(child._id)}
 									canMoveFileNodeToParent={canMoveFileNodeToParent}
 									onArchiveNode={onArchiveNode}
 									onMoveFileNodesToParent={onMoveFileNodesToParent}
@@ -5687,11 +5676,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		results: allPendingUpdatesResult,
 		status: pendingListStatus,
 		loadMore: loadMorePendingUpdates,
-	} = usePaginatedQuery(
-		app_convex_api.files_pending_updates.list_files_pending_updates,
-		{ membershipId, listKey: "all" },
-		{ initialNumItems: 20 },
-	);
+	} = useFilesPendingUpdates({ membershipId, listKey: "all" });
 	const savedEditorPendingUpdate = useQuery(
 		app_convex_api.files_pending_updates.get_file_pending_update,
 		activeEditorTarget?.kind === "saved" ? { membershipId, target: activeEditorTarget } : "skip",
@@ -6355,7 +6340,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 									{(presenceProps) => renderContent({ presenceProps, toolbarPortalHost, viewSelectPortalHost })}
 								</FileEditorPresenceSupplier>
 							) : toolbarPortalHost && viewSelectPortalHost ? (
-								renderContent({ presenceProps: { presenceStore: null, onlineUsers: [] }, toolbarPortalHost, viewSelectPortalHost })
+								renderContent({
+									presenceProps: { presenceStore: null, onlineUsers: [] },
+									toolbarPortalHost,
+									viewSelectPortalHost,
+								})
 							) : null}
 						</MyPanel>
 						<MyPanelResizeHandle

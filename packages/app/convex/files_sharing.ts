@@ -44,6 +44,8 @@ import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	access_control_FILE_SHARE_LEVEL_KEYS,
@@ -1302,7 +1304,7 @@ export const set_node_share_link = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const node = await ctx.db.get("files_nodes", args.nodeId);
+		const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		const liveScope =
 			node && node.organizationId === membership.organizationId && node.workspaceId === membership.workspaceId
 				? await files_share_links_db_resolve_live_scope(ctx, { node })
@@ -1337,6 +1339,8 @@ export const set_node_share_link = mutation({
 			}
 			return Result({ _yay: null });
 		}
+		const available = await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: node._id } });
+		if (available._nay) return available;
 
 		// Turning it on twice keeps the first token, so a double click does not break a copied link.
 		if (link) {

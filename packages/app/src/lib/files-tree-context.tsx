@@ -6,6 +6,8 @@ import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/a
 import { files_ROOT_ID } from "@/lib/files.ts";
 import { files_merge_sorted_streams } from "@/hooks/files-search-hooks.ts";
 import { files_sort_text_key } from "../../shared/files-sort.ts";
+import type { files_SavedStream } from "../../shared/files.ts";
+import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 
 type FilesTreeRow = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children>["page"][number];
 
@@ -65,8 +67,7 @@ function next_results(
 }
 
 /**
- * The args of the streams of one kind of one folder. The sidebar's rename optimistic update must
- * match these args exactly, so both build them here.
+ * The args of the saved streams of one kind of one folder.
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function files_tree_stream_args(args: {
@@ -74,10 +75,11 @@ export function files_tree_stream_args(args: {
 	folderId: FilesTreeFolderId;
 	kind: app_convex_Doc<"files_nodes">["kind"];
 	archived: boolean;
+	savedStream?: files_SavedStream;
 }) {
-	const { membershipId, folderId, kind, archived } = args;
+	const { membershipId, folderId, kind, archived, savedStream } = args;
 	return {
-		children: (restricted: boolean) => ({ membershipId, parentId: folderId, kind, archived, restricted }),
+		children: (restricted: boolean) => ({ membershipId, parentId: folderId, kind, archived, restricted, ...(savedStream ? { savedStream } : {}) }),
 		// The tree reads the share copies in the folder table's name order.
 		shared: (principalIndex: 0 | 1 | 2) => ({
 			membershipId,
@@ -89,6 +91,7 @@ export function files_tree_stream_args(args: {
 			filter: null,
 			namePrefix: null,
 			segment: "value" as const,
+			...(savedStream ? { savedStream } : {}),
 		}),
 	};
 }
@@ -163,20 +166,21 @@ type FilesTreeFolderPager_Props = {
  * empty, done page to the readers it is not for. Once the role is known, those streams are not read.
  * With `enabled` false, no stream is read.
  */
-function useFilesTreeKindStreams(
-	args: Parameters<typeof files_tree_stream_args>[0] & {
+function useFilesTreeKindSource(
+	args: Omit<Parameters<typeof files_tree_stream_args>[0], "savedStream"> & {
 		isOwner: FilesTreeFolderPager_Props["isOwner"];
 		pageSize: number;
 		enabled: boolean;
+		savedStream: files_SavedStream | null;
 	},
 ) {
 	const { isOwner, pageSize, enabled } = args;
-	const streamArgs = files_tree_stream_args(args);
+	const streamArgs = files_tree_stream_args({ ...args, savedStream: args.savedStream ?? undefined });
 	const options = { initialNumItems: pageSize };
-	const openArgs = enabled ? streamArgs.children(false) : ("skip" as const);
-	const twinArgs = !enabled || isOwner === false ? ("skip" as const) : streamArgs.children(true);
+	const openArgs = enabled && args.savedStream ? streamArgs.children(false) : ("skip" as const);
+	const twinArgs = !enabled || !args.savedStream || isOwner === false ? ("skip" as const) : streamArgs.children(true);
 	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
-		!enabled || isOwner === true ? ("skip" as const) : streamArgs.shared(principalIndex);
+		!enabled || !args.savedStream || isOwner === true ? ("skip" as const) : streamArgs.shared(principalIndex);
 	const open = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children, openArgs, options);
 	const twin = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children, twinArgs, options);
 	const shared0 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(0), options);
@@ -184,6 +188,20 @@ function useFilesTreeKindStreams(
 	const shared2 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(2), options);
 	// A skipped stream reports `LoadingFirstPage` forever, so leave it out.
 	return [open, ...(isOwner === false ? [] : [twin]), ...(isOwner === true ? [] : [shared0, shared1, shared2])];
+}
+
+function useFilesTreeKindStreams(
+	args: Parameters<typeof files_tree_stream_args>[0] & {
+		isOwner: FilesTreeFolderPager_Props["isOwner"];
+		pageSize: number;
+		enabled: boolean;
+	},
+) {
+	const view = useFilesSavedView(args.membershipId, args.enabled);
+	const normal = useFilesTreeKindSource({ ...args, savedStream: view.normal });
+	const cohort = useFilesTreeKindSource({ ...args, savedStream: view.cohort });
+	if (!view.loading && !view.normal) return [];
+	return [...normal, ...(view.cohort ? cohort : [])];
 }
 
 /**
@@ -230,14 +248,22 @@ function useFilesTreeSharedRootStreams(args: {
 	enabled: boolean;
 }) {
 	const { membershipId, archived, enabled } = args;
+	const view = useFilesSavedView(membershipId, enabled);
 	const options = { initialNumItems: FILES_TREE_SHARED_ROOTS_PAGE_SIZE };
-	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
-		enabled ? { membershipId, archived, principalIndex } : ("skip" as const);
-	return [
-		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0), options),
-		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1), options),
-		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2), options),
+	const sharedArgs = (principalIndex: 0 | 1 | 2, savedStream: files_SavedStream | null) =>
+		enabled && savedStream ? { membershipId, archived, principalIndex, savedStream } : ("skip" as const);
+	const normal = [
+		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0, view.normal), options),
+		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1, view.normal), options),
+		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2, view.normal), options),
 	];
+	const cohort = [
+		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0, view.cohort), options),
+		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1, view.cohort), options),
+		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2, view.cohort), options),
+	];
+	if (!view.loading && !view.normal) return [];
+	return [...normal, ...(view.cohort ? cohort : [])];
 }
 
 type FilesTreeSharedRootsPager_Props = {

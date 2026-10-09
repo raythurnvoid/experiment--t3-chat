@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { getFunctionName, type FunctionReference } from "convex/server";
+import type { FunctionReference } from "convex/server";
 
 import { FilesSidebar } from "./files-sidebar.tsx";
 import { FilesClipboardProvider } from "./files-clipboard.tsx";
@@ -16,8 +16,8 @@ import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, type files_VisibleTreeNode 
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { files_tree_stream_args } from "@/lib/files-tree-context.tsx";
 import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
+import type { FilesMoveIntake } from "@/lib/files-move-intake.ts";
 
 const {
 	treeState,
@@ -29,6 +29,7 @@ const {
 	preloadSnapshot,
 	cancelSnapshotPreload,
 	queryCalls,
+	intakeState,
 } = vi.hoisted(() => ({
 	// `sharedRoots` holds the rows of the "Shared with you" group, `sharedRootsStatus` its pager status.
 	// `sharedListeners` re-render the group after a change.
@@ -64,6 +65,7 @@ const {
 	cancelSnapshotPreload: vi.fn(),
 	// Every query a component read, by function name and args, so a test can see which node a dialog reads.
 	queryCalls: [] as Array<[string, unknown]>,
+	intakeState: { sourceIds: [] as app_convex_Id<"files_nodes">[] },
 }));
 
 function set_links(links: unknown) {
@@ -85,6 +87,21 @@ function link(nodeId: string) {
 	return { nodeId, createdBy: "user", createdAt: 1 };
 }
 
+vi.mock("@/components/app-auth.tsx", () => ({
+	AppAuthProvider: { useAuthenticated: () => ({ userId: "user" }) },
+}));
+
+vi.mock("@/lib/files-move-intake.ts", () => ({
+	files_move_intake_load: async () => null,
+	files_move_intake_save: async (args: { sourceIds: app_convex_Id<"files_nodes">[] }) => {
+		intakeState.sourceIds = args.sourceIds;
+	},
+	files_move_intake_read_page: async (args: { request: FilesMoveIntake; offset: number }) =>
+		intakeState.sourceIds.slice(args.offset, args.offset + 100),
+	files_move_intake_update: async () => {},
+	files_move_intake_delete: async () => {},
+}));
+
 vi.mock("convex/react", async (importOriginal) => {
 	const original = await importOriginal<typeof import("convex/react")>();
 	const { getFunctionName } = await import("convex/server");
@@ -104,7 +121,12 @@ vi.mock("convex/react", async (importOriginal) => {
 	};
 	return {
 		...original,
-		useConvex: () => ({ query: creationPolicy, mutation: createNode, action: createNode }),
+		useConvex: () => ({
+			query: async (query: FunctionReference<"query">, args: unknown) =>
+				getFunctionName(query) === "files_transfer:get_move_intake" ? null : creationPolicy(query, args),
+			mutation: createNode,
+			action: createNode,
+		}),
 		useQuery: (query: FunctionReference<"query">, args: unknown) => {
 			const links = useSyncExternalStore(subscribeLinks, () => linkState.links);
 			if (args === "skip") return undefined;
@@ -116,6 +138,8 @@ vi.mock("convex/react", async (importOriginal) => {
 			)
 				return undefined;
 			if (getFunctionName(query) === "files_transfer:get") return null;
+			if (getFunctionName(query) === "files_nodes:get_workspace_move_view")
+				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];
 		},
@@ -478,8 +502,8 @@ describe("FilesSidebar", () => {
 		expect(await view.findByText("No files yet.")).toBeTruthy();
 	});
 
-	test("the rename optimistic update reaches the restricted twin, the share streams and the Shared with you group", async () => {
-		createNode.mockReturnValue(new Promise(() => {}));
+	test("rename keeps the old name and opens the accepted Move", async () => {
+		createNode.mockResolvedValue({ _yay: { runId: "rename-run", activityId: "rename-activity" } });
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
 		await view.findByRole("treeitem", { name: "bravo" });
@@ -489,62 +513,18 @@ describe("FilesSidebar", () => {
 		fireEvent.change(input, { target: { value: "renamed" } });
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 		await waitFor(() =>
-			expect(createNode).toHaveBeenCalledWith(
-				app_convex_api.files_nodes.rename_node,
-				expect.anything(),
-				expect.anything(),
-			),
+			expect(createNode).toHaveBeenCalledWith(app_convex_api.files_nodes.rename_node, {
+				membershipId: "membership",
+				requestId: expect.any(String),
+				nodeId: "bravo",
+				path: "renamed",
+			}),
 		);
-
-		// One cached page per stream that can hold the row, under the exact args the tree reads.
-		const bravo = treeState.nodes[1]!;
-		const page = { page: [bravo], isDone: true, continueCursor: "" };
-		const paginationOpts = { numItems: 200, cursor: null };
-		const streamArgs = files_tree_stream_args({
-			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
-			folderId: "root",
-			kind: "folder",
-			archived: false,
-		});
-		const cached = [
-			[app_convex_api.files_nodes.list_tree_children, { ...streamArgs.children(true), paginationOpts }],
-			...([0, 1, 2] as const).flatMap((principalIndex) => [
-				[
-					app_convex_api.files_nodes.list_tree_children_shared,
-					{ ...streamArgs.shared(principalIndex), paginationOpts },
-				],
-				[
-					app_convex_api.files_nodes.list_tree_shared_roots,
-					{ membershipId: "membership", archived: false, principalIndex, paginationOpts },
-				],
-			]),
-		] as Array<[FunctionReference<"query">, Record<string, unknown>]>;
-		const written: Array<[string, string]> = [];
-		const localStore = {
-			getAllQueries: (query: FunctionReference<"query">) =>
-				cached
-					.filter(([cachedQuery]) => getFunctionName(cachedQuery) === getFunctionName(query))
-					.map(([, args]) => ({ args, value: page })),
-			setQuery: (query: FunctionReference<"query">, args: Record<string, unknown>, value: typeof page) =>
-				written.push([
-					`${getFunctionName(query)}:${String(args.principalIndex ?? args.restricted)}`,
-					value.page[0]!.name,
-				]),
-			getQuery: () => undefined,
-		};
-		const options = createNode.mock.calls[0]![2] as { optimisticUpdate: (store: typeof localStore) => void };
-		options.optimisticUpdate(localStore);
-
-		expect(written.sort()).toEqual(
-			[
-				"files_nodes:list_tree_children:true",
-				...[0, 1, 2].flatMap((index) => [
-					`files_nodes:list_tree_children_shared:${index}`,
-					`files_nodes:list_tree_shared_roots:${index}`,
-				]),
-			]
-				.map((key): [string, string] => [key, "renamed"])
-				.sort(),
+		expect(createNode.mock.calls[0]).toHaveLength(2);
+		expect(view.getByRole("treeitem", { name: "bravo" })).toBeTruthy();
+		expect(view.queryByRole("treeitem", { name: "renamed" })).toBeNull();
+		await waitFor(() =>
+			expect(queryCalls).toContainEqual(["files_transfer:get", { membershipId: "membership", runId: "rename-run" }]),
 		);
 	});
 
@@ -578,6 +558,7 @@ describe("FilesSidebar", () => {
 		act(() => row.focus());
 		fireEvent.keyDown(row, { key: "F10", shiftKey: true });
 		fireEvent.click(await view.findByRole("menuitem", { name: "Paste" }));
+		await waitFor(() => expect(createNode).toHaveBeenCalled());
 		expect(createNode.mock.calls[0]![1]).toMatchObject({
 			kind: "copy",
 			sourceIds: ["bravo"],
@@ -699,6 +680,7 @@ describe("FilesSidebar", () => {
 		await waitFor(() => expect(delta.hasAttribute("data-focused")).toBe(true));
 		fireEvent.keyDown(delta, { key: "v", code: "KeyV", ctrlKey: true });
 		fireEvent.keyUp(delta, { key: "v", code: "KeyV", ctrlKey: true });
+		await waitFor(() => expect(createNode).toHaveBeenCalled());
 		expect(createNode.mock.calls[0]![1]).toMatchObject({
 			kind: "copy",
 			sourceIds: ["alpha", "bravo"],
@@ -749,6 +731,7 @@ describe("FilesSidebar", () => {
 		await waitFor(() => expect(delta.hasAttribute("data-focused")).toBe(true));
 		fireEvent.keyDown(delta, { key: "v", code: "KeyV", ctrlKey: true });
 		fireEvent.keyUp(delta, { key: "v", code: "KeyV", ctrlKey: true });
+		await waitFor(() => expect(createNode).toHaveBeenCalled());
 		expect(createNode.mock.calls[0]![1]).toMatchObject({
 			kind: mode === "Cut" ? "move" : "copy",
 			sourceIds: ["alpha"],
@@ -775,6 +758,7 @@ describe("FilesSidebar", () => {
 		tree.focus();
 		fireEvent.keyDown(tree, { key: "v", code: "KeyV", ctrlKey: true });
 		fireEvent.keyUp(tree, { key: "v", code: "KeyV", ctrlKey: true });
+		await waitFor(() => expect(createNode).toHaveBeenCalled());
 		expect(createNode.mock.calls[0]![1]).toMatchObject({ sourceIds: ["bravo"], targetParentId: files_ROOT_ID });
 		// A one-source paste opens no dialog. The paste would open it right after the start call.
 		await act(async () => {
@@ -825,6 +809,7 @@ describe("FilesSidebar", () => {
 		tree.focus();
 		fireEvent.keyDown(tree, { key: "v", code: "KeyV", ctrlKey: true });
 		fireEvent.keyUp(tree, { key: "v", code: "KeyV", ctrlKey: true });
+		await waitFor(() => expect(createNode).toHaveBeenCalled());
 		expect(createNode.mock.calls[0]![1]).toMatchObject({
 			sourceIds: ["bravo", "charlie", "delta"],
 			targetParentId: files_ROOT_ID,

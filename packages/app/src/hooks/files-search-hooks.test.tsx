@@ -9,6 +9,7 @@ import {
 	type files_sort_Sort,
 } from "../../shared/files-sort.ts";
 import type { files_table_Filter } from "../../shared/files-table.ts";
+import type { files_SavedStream } from "../../shared/files.ts";
 import { useFilesSearchSaved, useFilesSortedChildren } from "./files-search-hooks.ts";
 
 type SortedPage = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sorted>;
@@ -28,6 +29,8 @@ type SavedRow = FunctionReturnType<typeof app_convex_api.files_nodes.search_save
 const { paginatedArgsSeen, sorted, saved } = vi.hoisted(() => ({
 	paginatedArgsSeen: [] as SortedArgs[],
 	sorted: {
+		view: { cohortId: null, view: null, generation: 0, searchGeneration: 0 } as
+			FunctionReturnType<typeof app_convex_api.files_nodes.get_workspace_move_view> | undefined,
 		rows: new Map<string, SortedRow[]>(),
 		hasShared: false as HasShared | Error | undefined,
 		loadingFields: new Set<string>(),
@@ -51,6 +54,7 @@ const { paginatedArgsSeen, sorted, saved } = vi.hoisted(() => ({
 // The args of a `list_tree_children_sorted` stream (`restricted`) or of a `list_tree_children_shared`
 // stream (`principalIndex`).
 type SortedArgs = {
+	savedStream?: files_SavedStream;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	parentId: app_convex_Id<"files_nodes"> | "root";
 	kind: "file" | "folder";
@@ -73,6 +77,7 @@ const sorted_key = (args: SortedArgs) =>
 		args.sort,
 		args.filter,
 		args.namePrefix,
+		args.savedStream ?? { kind: "normal", generation: 0 },
 	]);
 const sorted_fixture_key = (args: {
 	kind: "folder" | "file";
@@ -84,6 +89,7 @@ const sorted_fixture_key = (args: {
 	folderId?: typeof FOLDER_ID;
 	filter?: files_table_Filter | null;
 	namePrefix?: string | null;
+	savedStream?: files_SavedStream;
 }) => {
 	const {
 		direction,
@@ -95,6 +101,7 @@ const sorted_fixture_key = (args: {
 		folderId = FOLDER_ID,
 		filter = null,
 		namePrefix = null,
+		savedStream,
 	} = args;
 
 	return sorted_key({
@@ -106,6 +113,7 @@ const sorted_fixture_key = (args: {
 		sort: [{ field, direction }],
 		filter,
 		namePrefix,
+		savedStream,
 	});
 };
 const notify_sorted = () => {
@@ -122,6 +130,10 @@ vi.mock("convex/react", async (importOriginal) => {
 	};
 	return {
 		...(await importOriginal<typeof import("convex/react")>()),
+		useQuery: () => {
+			useSyncExternalStore(subscribe, () => sorted.revision);
+			return sorted.view;
+		},
 		useQueries: (queries: Record<string, { query: FunctionReference<"query">; args: Record<string, unknown> }>) => {
 			const revision = useSyncExternalStore(subscribe, () => sorted.revision);
 			return useMemo(
@@ -150,7 +162,8 @@ vi.mock("convex/react", async (importOriginal) => {
 				const savedArgs = args as unknown as SavedArgs;
 				saved.argsSeen.push(savedArgs);
 				return {
-					...(saved.answers.get(JSON.stringify(savedArgs.clause)) ?? { results: [], status: "Exhausted" }),
+					...(saved.answers.get(JSON.stringify([savedArgs.clause, savedArgs.savedStream])) ??
+						saved.answers.get(JSON.stringify(savedArgs.clause)) ?? { results: [], status: "Exhausted" }),
 					loadMore: () => {},
 				};
 			}
@@ -232,6 +245,7 @@ const file_names = (count: number, prefix = "file") =>
 
 beforeEach(() => {
 	paginatedArgsSeen.length = 0;
+	sorted.view = { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 	sorted.rows.clear();
 	sorted.hasShared = false;
 	sorted.loadingFields.clear();
@@ -281,6 +295,26 @@ describe("useFilesSortedChildren", () => {
 				},
 			},
 		);
+
+	test("merges the selected saved view and restarts it at publication", () => {
+		const cohortId = "cohort_1" as app_convex_Id<"files_move_cohorts">;
+		sorted.view = { cohortId, view: "before", generation: 1, searchGeneration: 1 };
+		const normal: files_SavedStream = { kind: "normal", generation: 1 };
+		const before: files_SavedStream = { kind: "cohort", cohortId, view: "before", generation: 1 };
+		const after: files_SavedStream = { kind: "cohort", cohortId, view: "after", generation: 2 };
+		const fixture = { kind: "file", segment: "value", field: "name", direction: "asc" } as const;
+		sorted.rows.set(sorted_fixture_key({ ...fixture, savedStream: normal }), [saved_row({ kind: "file", name: "b.md" })]);
+		sorted.rows.set(sorted_fixture_key({ ...fixture, savedStream: before }), [saved_row({ kind: "file", name: "a.md" })]);
+		sorted.rows.set(sorted_fixture_key({ ...fixture, savedStream: after }), [saved_row({ kind: "file", name: "c.md" })]);
+		sorted.rows.set(sorted_fixture_key({ ...fixture, savedStream: { kind: "normal", generation: 2 } }), [saved_row({ kind: "file", name: "b.md" })]);
+		const { result } = render_sorted(NAME_ASC);
+		expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md"]);
+		act(() => {
+			sorted.view = { cohortId, view: "after", generation: 2, searchGeneration: 2 };
+			notify_sorted();
+		});
+		expect(result.current.rows?.map((row) => row.name)).toEqual(["b.md", "c.md"]);
+	});
 
 	test("puts folders first and holds a shared row until the loaded rows reach it", () => {
 		sorted.rows.set(sorted_fixture_key({ kind: "folder", segment: "value", field: "name", direction: "asc" }), [
@@ -799,6 +833,40 @@ describe("useFilesSearchSaved", () => {
 	const saved_match = (path: string, extra: Record<string, unknown> = {}) =>
 		({ kind: "file", nodeId: `node_${path}`, path, ...extra }) as SavedRow;
 
+	test("keeps selected saved matches and restarts search at publication", () => {
+		const cohortId = "cohort_search" as app_convex_Id<"files_move_cohorts">;
+		sorted.view = { cohortId, view: "before", generation: 1, searchGeneration: 4 };
+		const clause = { kind: "name", text: "plan" };
+		saved.answers.set(JSON.stringify([clause, { kind: "normal", generation: 1 }]), {
+			results: [saved_match("/normal-plan.md")], status: "Exhausted",
+		});
+		saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view: "before", generation: 1 }]), {
+			results: [saved_match("/old-plan.md")], status: "Exhausted",
+		});
+		const { result } = render_search("plan", false);
+		expect(result.current.names.rows.map((row) => row.path),
+			"selected saved matches remain visible during a linked move").toEqual(["/normal-plan.md", "/old-plan.md"]);
+		saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view: "after", generation: 2 }]), {
+			results: [saved_match("/new-plan.md")], status: "Exhausted",
+		});
+		act(() => {
+			sorted.view = { cohortId, view: "after", generation: 2, searchGeneration: 5 };
+			notify_sorted();
+		});
+		expect(result.current.names.rows.map((row) => row.path)).toEqual(["/new-plan.md"]);
+		expect(saved.argsSeen.at(-1)).toMatchObject({ searchGeneration: 5,
+			savedStream: { kind: "cohort", view: "after", generation: 2 } });
+	});
+
+	test("waits for the saved view and ends a refused search", () => {
+		sorted.view = undefined;
+		const { result } = render_search("plan");
+		expect(result.current.names.status).toBe("loading");
+		expect(saved.argsSeen).toEqual([]);
+		act(() => { sorted.view = null; notify_sorted(); });
+		expect(result.current.names).toMatchObject({ rows: [], status: "done" });
+	});
+
 	test("plain text asks for names and contents in two lists", () => {
 		saved.answers.set(JSON.stringify({ kind: "name", text: "readme" }), {
 			results: [saved_match("/a/readme.md")],
@@ -839,7 +907,8 @@ describe("useFilesSearchSaved", () => {
 		const { result } = render_search("file.path:/docs plan");
 
 		expect(saved.argsSeen).toEqual([
-			{ membershipId: MEMBERSHIP_ID, clause: { kind: "name", text: "plan" }, folderPath: "/docs" },
+			{ membershipId: MEMBERSHIP_ID, clause: { kind: "name", text: "plan" }, folderPath: "/docs",
+				savedStream: { kind: "normal", generation: 0 }, searchGeneration: 0 },
 		]);
 		expect(result.current.contents).toBe("folder");
 		expect(result.current.names).toMatchObject({ rows: [], status: "done", problem: "Folder not found" });
@@ -850,7 +919,8 @@ describe("useFilesSearchSaved", () => {
 	test("a path or id asks for that node with no folder", () => {
 		const { result } = render_search("file.path:/docs /Notes/a.md");
 
-		expect(saved.argsSeen).toEqual([{ membershipId: MEMBERSHIP_ID, clause: { kind: "path", path: "/Notes/a.md" } }]);
+		expect(saved.argsSeen).toEqual([{ membershipId: MEMBERSHIP_ID, clause: { kind: "path", path: "/Notes/a.md" },
+			savedStream: { kind: "normal", generation: 0 }, searchGeneration: 0 }]);
 		expect(result.current.isExact).toBe(true);
 		expect(result.current.contents).toBeNull();
 	});

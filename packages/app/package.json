@@ -21,6 +21,7 @@
 		"bench:utf8-byte-size:edge": "vitest bench shared/files-utf8-byte-size.edge.bench.ts --project convex --run",
 		"test": "vitest",
 		"test:once": "vitest run --testTimeout 30000 --hookTimeout 30000 --teardownTimeout 30000",
+		"test:files:full-size": "vitest run --project convex convex/files_pending_update_runs_copy.test.ts convex/files_pending_update_plans.test.ts -t \"(?:saves 1,000 Copy outputs beside one ordinary edit|plans 10,001 unrelated saved Move proposals as 10,001 units)$\" --no-file-parallelism",
 		"test:debug": "vitest --inspect-brk --no-file-parallelism",
 		"test:coverage": "vitest run --coverage --coverage.reporter=text"
 	},

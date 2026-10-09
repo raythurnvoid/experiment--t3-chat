@@ -294,10 +294,11 @@ same `target`, `pendingUpdateId`, and `reviewedRevision`. Verified 2026-09-23.
 
 ### Folder Jobs: Move, Archive, Restore, Restrict, Copy Queue
 
-A move, archive, restore, restrict, or copy of a big folder runs as a `files_subtree_ops` job (see
-the `files-explorer-tree` skill). Use a folder with more than 75 items, so the job needs more than
-one step. In `qa-browser/home` the catalog folders `copy-2` (104 items), `copy-3` (208 items), and
-`copy-4` (416 items) are big enough. Verified 2026-09-27.
+Move and Copy use Transfer runs. Move uses paged cohorts. Copy uses Transfer discovery and
+workers, with a subtree-op waiter for overlapping jobs. Archive,
+Restore and Restrict have their own job paths. See the `files-explorer-tree` skill. Use a folder
+with more than 75 items, so it needs several steps. Existing QA folders include `copy-2` (104
+items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog before using them.
 
 - Drive the action from the tree row menus: Cut or Copy on one row, then `Paste` on the target row.
   For root Paste, focus the Files tree container and press Control+V. A one-source paste
@@ -309,14 +310,15 @@ one step. In `qa-browser/home` the catalog folders `copy-2` (104 items), `copy-3
 - Sample Activities from page context while the job runs. Import
   `/src/lib/app-convex-client.ts` and poll `activities.list_page` with `section: "active"`. Read
   `source.kind`, `title`, `status`, `feedVisible`, and `controls.canStop`. A cut paste shows the
-  transfer run card first, then the `files_subtree_op` card "Move files" with no Stop. A restrict
+  single Transfer Activity with progress and Stop. Its cohort work has no second card. A restrict
   shows no card at all: its Activity has `feedVisible: false`, so the active list stays empty. Read it
   with `convex data activities --limit 3` instead.
 - For archive and restore, `files_nodes.archive_nodes` and `unarchive_nodes` take `{ membershipId,
   nodeIds }` from the same page context. The ids of archived roots stay the same. Archive only. Never delete catalog folders.
 - A copy that overlaps a running job waits. `convex data files_subtree_ops` shows it `queued` with
   `blockedByOpId` set. When the blocker ends, it becomes `running` and its card shows Stop.
-- Read the job state with `convex data files_subtree_ops`, `files_subtree_op_walks` (the step
+- For Move and Copy, use `files_transfer.get` and `list_items`. For repair, Archive, Restore and
+  Restrict work, read `files_subtree_ops`, `files_subtree_op_walks` (the step
   number), and `files_subtree_op_nodes` (the folder queue). All three are empty when no job runs. Read
   each step's result with `convex data _scheduled_functions --limit 60` and look for
   `files_subtree_ops.js:advance`. A failed step shows `state.kind: "failed"` with the error.
@@ -329,28 +331,13 @@ one step. In `qa-browser/home` the catalog folders `copy-2` (104 items), `copy-3
 - Check stored scope the same way, with a plain member as `visibilityUserId` (`qa.perm.viewer`).
   The owner sees everything, so an owner readback proves nothing. After a restrict of a folder the
   member cannot open, the member must see 0 items under it. After unrestrict, all of them again.
-- Move checks while a job runs (verified 2026-09-27): sign `qa.perm.owner` and `qa.perm.viewer` into
-  two headless Chromes. In the member tab, start a page-context loop first. It reads one node with
-  `files_nodes.get_file_node_for_membership` every 30–50 ms and calls `files_nodes.move_nodes` as soon
-  as that read shows the owner's action. Then run the owner action. Use `move_nodes`, not
-  `files_transfer.start`. A transfer checks in a later step, which can run after the job ends and
-  so prove nothing.
-  - Stale stored scope: the loop reads `copy-4` and waits until the read returns null (the owner
-    restricted it). The owner restricts `copy-4`. The member then moves a child that the job writes
-    late, such as `/copy-4/seed/f49`, to the root. The walk goes into the first folder of a page first,
-    so `seed` (after `copy-3` by name) and its last file come last. It must be refused with `Permission denied`: a member with no
-    grant fails the write check on the new scope first. The `You need Can manage on the shared folder
-    to move this out of it.` message needs a member who can write in the new scope. Read the child
-    again after the refusal. If the member can still read it and its `restrictedScopeNodeId` is null,
-    the job had not yet written the new scope to it, so the live scope made the refusal. As a positive
-    control, after unrestrict the same member moves the child out and back, and both moves succeed.
-  - Stale stored path: the owner restricts `/copy-4/copy-3/copy-2/copy-1/seed` and waits for its
-    job to end. The loop reads the folder `/copy-4/copy-3`. The owner moves `copy-4` into `copy-3`.
-    As soon as the read's `treePath` starts with `/copy-3/`, the member moves that folder (now
-    `/copy-3/copy-4/copy-3`) into `/copy-2`. It must be refused with `Permission denied`. In the owner
-    tab, time when the restricted `seed` folder's `treePath` changes. It must change after the refusal.
-  - Undo each step as the owner: move items back, then unrestrict. A step can take over 5 s under
-    shared load, so read the state before you retry a call that timed out.
+- Move access while another job runs: start and seal a public Transfer request. Check its
+  accepted wait, then change the actor's access before the next root starts. Read `get` and
+  `list_items` until the run ends. The next worker must check fresh access. Completed roots stay
+  moved; a denied root keeps its old placement. Check every path and the error. Use a separate
+  positive run after access is restored. The old synchronous Move race recipe is retired.
+  A request accepted before a job ends does not prove when its worker checked access. Record
+  the blocker and worker states too. Read the run before retrying a timed-out input call.
 - Owner search while an archive job runs (verified 2026-09-27 with a search door since removed):
   move the catalog file `/two-roots-qa-0921.txt` (text `TEAM_QA_0921`) to
   `/copy-4/copy-3/copy-2/copy-1/seed/f49/`, archive `copy-4`, and poll
@@ -1798,8 +1785,8 @@ The run is asynchronous. Poll `files_pending_update_runs.get({membershipId, runI
 `start` takes at most 100 items; append the rest with `append_items({membershipId, runId, offset,
 items})` before sealing.
 
-`apply_file_pending_archive` and `apply_file_pending_move` are plain mutations with no content
-branch, so those two can still be called directly.
+`apply_file_pending_archive` remains a plain mutation. Pending Move uses the reviewed, paged
+Accept run above. There is no direct pending Move apply mutation.
 
 ### Reading And Restoring A Collaboration-Off File's Text
 

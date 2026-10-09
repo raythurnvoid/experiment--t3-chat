@@ -16,7 +16,13 @@ import {
 	files_pending_nodes_db_publish,
 } from "./files_pending_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_save_file_pending_update,
+	test_finish_pending_update_run,
+	test_convex,
+	test_rename_node,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -25,6 +31,14 @@ beforeEach(() => {
 afterEach(() => {
 	vi.useRealTimers();
 });
+
+async function cleanup_review_history(t: ReturnType<typeof test_convex>) {
+	// Public Save keeps its source aliases until the seven-day review history is drained.
+	for (let pass = 0; pass < 5000; pass++) {
+		if ((await t.mutation(internal.activities.cleanup_history, {})).done) return;
+	}
+	throw new Error("Review history cleanup did not finish");
+}
 
 async function create_folder(
 	ctx: MutationCtx,
@@ -319,7 +333,7 @@ describe("cleanup_published_nodes", () => {
 		const privateId = created._yay.target.id;
 		const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!));
 		if (!proposal) throw new Error("Expected the folder proposal");
-		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(asUser, {
 			membershipId: db.membershipId,
 			target: proposal.target,
 			pendingUpdateId: proposal._id,
@@ -334,6 +348,7 @@ describe("cleanup_published_nodes", () => {
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", privateId))).toMatchObject({ state: "published" });
 		expect(await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(1);
 		vi.setSystemTime(Date.now() + 1);
+		await cleanup_review_history(t);
 		await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", privateId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
@@ -409,7 +424,7 @@ describe("cleanup_published_nodes", () => {
 				),
 			).toEqual({ _yay: null });
 			expect(await t.run((ctx) => files_media_dependencies_db_seal(ctx, pin))).toEqual({ _yay: null });
-			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+			const saved = await test_save_file_pending_update(asUser, {
 				membershipId: db.membershipId,
 				target,
 				pendingUpdateId: proposal._id,
@@ -423,6 +438,7 @@ describe("cleanup_published_nodes", () => {
 			expect(receiptBefore).toHaveLength(1);
 			if (state === "cleanup") await t.run((ctx) => files_media_dependencies_db_retire(ctx, { ...pin, owner }));
 			vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60 * 1000);
+			await cleanup_review_history(t);
 			await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
 			expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", target.id))).toMatchObject({ state: "published" });
 			expect(await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual(
@@ -465,7 +481,7 @@ describe("cleanup_published_nodes", () => {
 			} else unusedId = created._yay.target.id;
 			const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!));
 			if (!proposal) throw new Error("Expected the folder proposal");
-			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+			const saved = await test_save_file_pending_update(asUser, {
 				membershipId: db.membershipId,
 				target: proposal.target,
 				pendingUpdateId: proposal._id,
@@ -476,6 +492,7 @@ describe("cleanup_published_nodes", () => {
 		if (!unusedId) throw new Error("Expected the unused private identity");
 		const unusedPrivateId = unusedId;
 		vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60 * 1000);
+		await cleanup_review_history(t);
 		const savedBefore = await t.run((ctx) => ctx.db.query("files_nodes").collect());
 		await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", unusedPrivateId))).not.toBeNull();
@@ -493,7 +510,7 @@ describe("cleanup_published_nodes", () => {
 		const receipts = await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
 		expect(new Set(receipts.map((receipt) => receipt.privateNodeId))).toEqual(new Set(retainedIds));
 		expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(savedBefore);
-	});
+	}, 120_000);
 
 	test("keeps a child's parent link, then removes the unused receipt without touching the saved folder", async () => {
 		const t = test_convex();
@@ -512,7 +529,7 @@ describe("cleanup_published_nodes", () => {
 		const child = proposals.find((proposal) => proposal._id === created._yay.pendingUpdateId)!;
 		if (parent.target.kind !== "private") throw new Error("Expected a private parent");
 		const parentId = parent.target.id;
-		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(asUser, {
 			membershipId: db.membershipId,
 			target: parent.target,
 			pendingUpdateId: parent._id,
@@ -524,6 +541,7 @@ describe("cleanup_published_nodes", () => {
 		await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", parentId))).toMatchObject({ state: "published" });
 		vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60 * 1000);
+		await cleanup_review_history(t);
 		await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", parentId))).toMatchObject({ state: "published" });
 		expect(
@@ -597,7 +615,7 @@ describe("cleanup_published_nodes", () => {
 		});
 		const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!));
 		if (!proposal) throw new Error("Expected the folder proposal");
-		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(asUser, {
 			membershipId: db.membershipId,
 			target: proposal.target,
 			pendingUpdateId: proposal._id,
@@ -607,6 +625,7 @@ describe("cleanup_published_nodes", () => {
 		const savedId = saved._yay.target.id;
 		const savedBefore = await t.run((ctx) => ctx.db.get("files_nodes", savedId));
 		vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60 * 1000);
+		await cleanup_review_history(t);
 		await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", privateId))).toMatchObject({ state: "published" });
 		expect(
@@ -645,7 +664,7 @@ describe("cleanup_published_nodes", () => {
 });
 
 describe("files_pending_nodes_db_publish", () => {
-	test.each(["unchanged", "policy", "ancestor_path", "acl", "owner"] as const)(
+	test.each(["unchanged", "policy", "ancestor_path", "acl", "owner", "whole_folder", "whole_folder_move"] as const)(
 		"copied parent lock: %s",
 		async (change) => {
 			const t = test_convex({ transactionLimits: true });
@@ -682,6 +701,15 @@ describe("files_pending_nodes_db_publish", () => {
 			expect(
 				(await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/source/child" }))._nay,
 			).toBeUndefined();
+			if (change === "whole_folder" || change === "whole_folder_move")
+				expect(
+					(
+						await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+							...scope,
+							path: "/source/child/grandchild",
+						})
+					)._nay,
+				).toBeUndefined();
 			expect(
 				await asOwner.mutation(api.files_nodes.set_node_write_policy, {
 					membershipId: owner.membershipId,
@@ -732,7 +760,97 @@ describe("files_pending_nodes_db_publish", () => {
 			const proposals = await t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 			const parentProposal = proposals.find((proposal) => proposal.target.id === parent._id)!;
 			const childProposal = proposals.find((proposal) => proposal.target.id === child._id)!;
-			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+			if (change === "whole_folder" || change === "whole_folder_move") {
+				const grandchild = nodes.find((node) => node.name === "grandchild")!;
+				const proposal = proposals.find((proposal) => proposal.target.id === grandchild._id)!;
+				if (change === "whole_folder_move") {
+					expect(
+						(
+							await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+								...scope,
+								target: { kind: "saved", id: destination._yay.nodeId },
+								destParent: { kind: "root" },
+								destName: "moved-destination",
+							})
+						)._nay,
+					).toBeUndefined();
+					const move = await t.run((ctx) =>
+						ctx.db
+							.query("files_pending_updates")
+							.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", destination._yay.nodeId))
+							.unique(),
+					);
+					if (!move) throw new Error("Expected the destination Move proposal");
+					const selected = [parentProposal, childProposal, proposal, move];
+					const started = await asUser.mutation(api.files_pending_update_runs.start, {
+						membershipId: db.membershipId,
+						requestId: "copied-parent-with-ancestor-move",
+						kind: "accept",
+						expectedItemCount: selected.length,
+						items: selected.map((item) => ({
+							pendingUpdateId: item._id,
+							reviewedRevision: item.revision,
+							selectedContentStateId: null,
+						})),
+					});
+					if (started._nay) throw new Error(started._nay.message);
+					expect(
+						await asUser.mutation(api.files_pending_update_runs.seal, {
+							membershipId: db.membershipId,
+							runId: started._yay.runId,
+						}),
+					).toEqual({ _yay: null });
+					await test_finish_pending_update_run(asUser, started._yay.runId);
+					const result = await asUser.query(api.files_pending_update_runs.get, {
+						membershipId: db.membershipId,
+						runId: started._yay.runId,
+					});
+					expect(result?.run.unitCount, "the selected ancestor Move joins all copied folders in one review unit").toBe(
+						1,
+					);
+					const units = await t.run((ctx) =>
+						ctx.db
+							.query("files_pending_update_run_units")
+							.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
+							.collect(),
+					);
+					expect(units).toHaveLength(1);
+					expect(units[0]?.cohortId).not.toBeNull();
+					expect(
+						result?.activity.status,
+						"one cohort saves the copied locked parent and children with their ancestor Move",
+					).toBe("succeeded");
+				} else {
+					const saved = await test_save_file_pending_update(asUser, {
+						membershipId: db.membershipId,
+						target: proposal.target,
+						pendingUpdateId: proposal._id,
+						reviewedRevision: proposal.revision,
+					});
+					expect(
+						saved._nay,
+						"one native Save publishes the copied locked parent and both private descendants",
+					).toBeUndefined();
+				}
+				await t.run(async (ctx) => {
+					for (const [privateNode, path] of [
+						[parent, "/destination/source"],
+						[child, "/destination/source/child"],
+						[grandchild, "/destination/source/child/grandchild"],
+					] as const) {
+						const receipt = await ctx.db
+							.query("files_pending_node_publish_receipts")
+							.withIndex("by_privateNode", (q) => q.eq("privateNodeId", privateNode._id))
+							.unique();
+						expect(await ctx.db.get("files_pending_nodes", privateNode._id)).toMatchObject({ state: "published" });
+						expect(await ctx.db.get("files_nodes", receipt!.savedNodeId)).toMatchObject({
+							path: change === "whole_folder_move" ? path.replace("/destination/", "/moved-destination/") : path,
+						});
+					}
+				});
+				return;
+			}
+			const saved = await test_save_file_pending_update(asUser, {
 				membershipId: db.membershipId,
 				target: parentProposal.target,
 				pendingUpdateId: parentProposal._id,
@@ -775,12 +893,12 @@ describe("files_pending_nodes_db_publish", () => {
 				).toEqual({ _yay: null });
 			if (change === "ancestor_path")
 				expect(
-					await asOwner.mutation(api.files_nodes.rename_node, {
+					await test_rename_node(t, asOwner, {
 						membershipId: owner.membershipId,
 						nodeId: destination._yay.nodeId,
 						path: "moved",
 					}),
-				).toEqual({ _yay: null });
+				).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 			if (change === "acl")
 				expect(
 					(
@@ -796,7 +914,7 @@ describe("files_pending_nodes_db_publish", () => {
 				proposal: await ctx.db.get("files_pending_updates", childProposal._id),
 				nodes: await ctx.db.query("files_nodes").collect(),
 			}));
-			const savedChild = await caller.action(api.files_pending_updates.save_file_pending_update, {
+			const savedChild = await test_save_file_pending_update(caller, {
 				membershipId,
 				target: childProposal.target,
 				pendingUpdateId: childProposal._id,

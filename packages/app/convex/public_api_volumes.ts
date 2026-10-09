@@ -25,6 +25,8 @@ import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_get_utf8_byte_size, files_ROOT_ID } from "../server/files.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
@@ -154,7 +156,7 @@ async function db_authorize_run(
 	)
 		return failure({ status: 403, message: "Permission denied", errorCode: "permission_denied" });
 	if (pluginRun.fileNodeId !== undefined) {
-		const source = await ctx.db.get("files_nodes", pluginRun.fileNodeId);
+		const source = await files_saved_placement_db_get_node(ctx.db, pluginRun.fileNodeId);
 		if (
 			!source ||
 			source.organizationId !== organization._id ||
@@ -240,6 +242,7 @@ function db_get_node(args: { ctx: QueryCtx | MutationCtx; volume: Doc<"plugins_v
 			q
 				.eq("organizationId", volume.organizationId)
 				.eq("workspaceId", volume._id)
+				.eq("moveCohortId", undefined)
 				.eq("path", path)
 				.eq("archiveOperationId", null),
 		)
@@ -779,8 +782,14 @@ async function db_delete_exact_file(ctx: MutationCtx, node: Doc<"files_nodes">) 
 			.unique(),
 	]);
 	const deletes = [
-		...text.map((row) => () => ctx.db.delete("files_text_chunks", row._id)),
-		...plain.map((row) => () => ctx.db.delete("files_plain_text_chunks", row._id)),
+		...text.map((row) => () => {
+			files_move_reservations_db_note_source(ctx.db, { table: "files_text_chunks", id: row._id, old: row });
+			return ctx.db.delete("files_text_chunks", row._id);
+		}),
+		...plain.map((row) => () => {
+			files_move_reservations_db_note_source(ctx.db, { table: "files_plain_text_chunks", id: row._id, old: row });
+			return ctx.db.delete("files_plain_text_chunks", row._id);
+		}),
 		...metadata.map((row) => () => ctx.db.delete("files_metadata_docs", row._id)),
 	];
 	for (let start = 0; start < deletes.length; start += 100)

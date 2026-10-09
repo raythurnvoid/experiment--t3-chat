@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
 
 beforeEach(() => {
@@ -143,7 +143,7 @@ async function proposal(f: Awaited<ReturnType<typeof fixture>>, target: files_Pe
 }
 
 async function save(f: Awaited<ReturnType<typeof fixture>>, pending: Doc<"files_pending_updates">) {
-	const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+	const saved = await test_save_file_pending_update(f.asUser, {
 		membershipId: f.destination.membershipId,
 		target: pending.target,
 		pendingUpdateId: pending._id,
@@ -166,7 +166,7 @@ describe("cross-workspace Copy privacy", () => {
 		const pending = await proposal(f, items[0]!.outputTarget!);
 		expect(pending.target.kind).toBe("private");
 		expect(
-			await f.asOwner.action(api.files_pending_updates.save_file_pending_update, {
+			await test_save_file_pending_update(f.asOwner, {
 				membershipId: f.owner.membershipId,
 				target: pending.target,
 				pendingUpdateId: pending._id,

@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { usePaginatedQuery, useQueries, type UsePaginatedQueryResult } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { useFn } from "./utils-hooks.ts";
+import { useFilesSavedView } from "./files-saved-view-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { detect_search_query_mode, search_free_text, search_path_filter } from "@/lib/files-search.ts";
-import { files_TEXT_SEARCH_MAX_RESULTS } from "../../shared/files.ts";
+import { files_TEXT_SEARCH_MAX_RESULTS, type files_SavedStream } from "../../shared/files.ts";
 import {
 	files_search_query_folder_path,
 	files_search_query_parse,
@@ -48,7 +49,7 @@ export type FilesSearchSavedList = {
  * Merge the pages of one or two queries into one list. `isTextSearch` is set for a names or contents
  * list, which the search index caps.
  */
-function merge_search_lists(results: Array<UsePaginatedQueryResult<FilesSearchSavedResult>>, isTextSearch: boolean) {
+function merge_search_lists(results: Array<UsePaginatedQueryResult<FilesSearchSavedResult>>, isTextSearch: boolean, loading = false) {
 	const rows: FilesSearchSavedRow[] = [];
 	const seenNodeIds = new Set<string>();
 	let problem: string | null = null;
@@ -63,7 +64,7 @@ function merge_search_lists(results: Array<UsePaginatedQueryResult<FilesSearchSa
 		}
 	}
 
-	const status = results.some((result) => result.status === "LoadingFirstPage")
+	const status = loading || results.some((result) => result.status === "LoadingFirstPage")
 		? "loading"
 		: results.some((result) => result.status !== "Exhausted")
 			? "more"
@@ -145,9 +146,20 @@ export function useFilesSearchSaved(args: {
 		first = { membershipId, clause: { kind: "path", path: folderPath } };
 	}
 
+	const savedView = useFilesSavedView(membershipId, first !== null || second !== null);
+	const source_args = (query: SearchArgs | null, savedStream: files_SavedStream | null) =>
+		query === null || savedStream === null || (query.clause.kind === "path" && savedStream.kind === "cohort")
+			? ("skip" as const)
+			: { ...query, savedStream, searchGeneration: savedView.searchGeneration! };
 	const options = { initialNumItems: FILES_SEARCH_SAVED_PAGE_SIZE };
-	const firstResult = usePaginatedQuery(app_convex_api.files_nodes.search_saved, first ?? "skip", options);
-	const secondResult = usePaginatedQuery(app_convex_api.files_nodes.search_saved, second ?? "skip", options);
+	const firstResult = usePaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(first, savedView.normal), options);
+	const secondResult = usePaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(second, savedView.normal), options);
+	const firstCohort = usePaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(first, savedView.cohort), options);
+	const secondCohort = usePaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(second, savedView.cohort), options);
+	const firstResults = first === null || savedView.normal === null ? [] : [firstResult,
+		...(savedView.cohort === null || first.clause.kind === "path" ? [] : [firstCohort])];
+	const secondResults = second === null || savedView.normal === null ? [] : [secondResult,
+		...(savedView.cohort === null ? [] : [secondCohort])];
 
 	return {
 		mode:
@@ -167,14 +179,15 @@ export function useFilesSearchSaved(args: {
 		 */
 		isFolderDate,
 		names: merge_search_lists(
-			first === null ? [] : [firstResult, ...(second === null || isText ? [] : [secondResult])],
+			[...firstResults, ...(isText ? [] : secondResults)],
 			isText,
+			savedView.loading,
 		),
 		contents:
 			isText && withContents
 				? hasFolder
 					? ("folder" as const)
-					: merge_search_lists(second === null ? [] : [secondResult], true)
+						: merge_search_lists(secondResults, true, savedView.loading)
 				: null,
 	};
 }
@@ -292,12 +305,14 @@ type useFilesSortedChildren_Props = {
  * one stream per principal (empty for the owner). A metadata sort or filter has no shared rows
  * (`metadataKey`).
  */
-function useFilesSortedChildrenSegment(
+function useFilesSortedChildrenSource(
 	props: useFilesSortedChildren_Props & {
 		kind: app_convex_Doc<"files_nodes">["kind"];
 		segment: FilesSortedChildrenRow["segment"];
 		active: boolean;
 		metadataKey: string | null;
+		savedStream: files_SavedStream | null;
+		viewLoading: boolean;
 	},
 ): FilesSortedChildrenStream[] {
 	const { membershipId, folderId, sort, filter, namePrefix, kind, segment, active, isOwner } = props;
@@ -306,13 +321,13 @@ function useFilesSortedChildrenSegment(
 	const skipsTwin = isOwner === false;
 	const skipsShares = props.metadataKey !== null || isOwner === true;
 	const sortedArgs = (restricted: boolean) =>
-		!active || sort === null || (restricted && skipsTwin)
+		!active || sort === null || props.savedStream === null || (restricted && skipsTwin)
 			? ("skip" as const)
-			: { membershipId, parentId: folderId, kind, sort, filter, namePrefix, restricted, segment };
+			: { membershipId, parentId: folderId, kind, sort, filter, namePrefix, restricted, segment, savedStream: props.savedStream };
 	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
-		!active || sort === null || skipsShares
+		!active || sort === null || props.savedStream === null || skipsShares
 			? ("skip" as const)
-			: { membershipId, parentId: folderId, kind, archived: false, principalIndex, sort, filter, namePrefix, segment };
+			: { membershipId, parentId: folderId, kind, archived: false, principalIndex, sort, filter, namePrefix, segment, savedStream: props.savedStream };
 	const options = { initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE };
 
 	const open = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_sorted, sortedArgs(false), options);
@@ -343,6 +358,8 @@ function useFilesSortedChildrenSegment(
 				? "done"
 				: !active
 					? "inactive"
+					: props.savedStream === null && !props.viewLoading
+						? "done"
 					: result.status === "Exhausted"
 						? "done"
 						: result.status === "CanLoadMore"
@@ -350,6 +367,20 @@ function useFilesSortedChildrenSegment(
 							: "loading",
 		loadMore: () => result.loadMore(FILES_SORTED_CHILDREN_PAGE_SIZE),
 	}));
+}
+
+function useFilesSortedChildrenSegment(
+	props: useFilesSortedChildren_Props & {
+		kind: app_convex_Doc<"files_nodes">["kind"];
+		segment: FilesSortedChildrenRow["segment"];
+		active: boolean;
+		metadataKey: string | null;
+		savedView: ReturnType<typeof useFilesSavedView>;
+	},
+) {
+	const normal = useFilesSortedChildrenSource({ ...props, savedStream: props.savedView.normal, viewLoading: props.savedView.loading });
+	const cohort = useFilesSortedChildrenSource({ ...props, savedStream: props.savedView.cohort, viewLoading: false });
+	return [...normal, ...cohort];
 }
 
 /**
@@ -367,6 +398,7 @@ function useFilesSortedChildrenSegment(
  */
 export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const { membershipId, folderId, sort, filter, namePrefix } = props;
+	const savedView = useFilesSavedView(membershipId, sort !== null);
 	const field = sort?.[0]?.field ?? null;
 	const metadataKey = files_table_metadata_field({ sort: sort?.[0] ?? null, filter });
 	// No folder has a file.extension. A file.size sort keeps folders in the value segment, by name. A
@@ -374,7 +406,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const hasFolderMissing = filter === null && field === "extension";
 	const hasFileMissing = filter === null && (field === "extension" || field === "size");
 
-	const sortScope = JSON.stringify([membershipId, folderId, sort, filter, namePrefix]);
+	const sortScope = JSON.stringify([membershipId, folderId, sort, filter, namePrefix, savedView.normal, savedView.cohort]);
 	const [retrying, setRetrying] = useState(false);
 	const [startedMissing, setStartedMissing] = useState({ sortScope, folder: false, file: false });
 	const started = startedMissing.sortScope === sortScope ? startedMissing : { sortScope, folder: false, file: false };
@@ -386,6 +418,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	// folder needs one round trip.
 	const folderValue = useFilesSortedChildrenSegment({
 		...props,
+		savedView,
 		kind: "folder",
 		segment: "value",
 		active: sort !== null,
@@ -393,6 +426,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	});
 	const fileValue = useFilesSortedChildrenSegment({
 		...props,
+		savedView,
 		kind: "file",
 		segment: "value",
 		active: sort !== null,
@@ -400,6 +434,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	});
 	const folderMissing = useFilesSortedChildrenSegment({
 		...props,
+		savedView,
 		kind: "folder",
 		segment: "missing",
 		active: hasFolderMissing && started.folder,
@@ -407,6 +442,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	});
 	const fileMissing = useFilesSortedChildrenSegment({
 		...props,
+		savedView,
 		kind: "file",
 		segment: "missing",
 		active: hasFileMissing && started.file,

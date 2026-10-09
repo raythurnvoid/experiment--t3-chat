@@ -27,6 +27,7 @@ import {
 } from "./plugins_external_files_access.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { server_path_parent_of } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
@@ -161,7 +162,7 @@ export const ensure_writer = internalMutation({
 				.query("plugins_external_file_bindings")
 				.withIndex("by_writer", (q) => q.eq("writerId", existing._id))
 				.first();
-			const root = await ctx.db.get("files_nodes", existing.rootNodeId);
+			const root = await files_saved_placement_db_get_node(ctx.db, existing.rootNodeId);
 			if (
 				existing.installationId !== installation._id ||
 				existing.path !== args.path ||
@@ -194,7 +195,7 @@ export const ensure_writer = internalMutation({
 				return Result({ _nay: { name: "stale_write", message: "The output root is already used" } });
 			}
 		} else {
-			const root = await ctx.db.get("files_nodes", args.rootNodeId);
+			const root = await files_saved_placement_db_get_node(ctx.db, args.rootNodeId);
 			if (
 				!root ||
 				root.kind !== "folder" ||
@@ -296,7 +297,7 @@ export const ensure_writer = internalMutation({
 				restrictedScopeNodeId: nodeId,
 				shareLinkCleanup: null,
 			});
-			const scopeRoot = (await ctx.db.get("files_nodes", nodeId))!;
+			const scopeRoot = (await files_saved_placement_db_get_node(ctx.db, nodeId))!;
 			await files_subtree_ops_db_start_rebuild(ctx, {
 				kind: "scope",
 				organizationId: installation.organizationId,
@@ -388,8 +389,8 @@ export const inspect = internalQuery({
 		)
 			return Result({ _nay: { message: "Permission denied" } });
 		const [root, folder, binding] = await Promise.all([
-			ctx.db.get("files_nodes", writer.rootNodeId),
-			ctx.db.get("files_nodes", writer.folderNodeId),
+			files_saved_placement_db_get_node(ctx.db, writer.rootNodeId),
+			files_saved_placement_db_get_node(ctx.db, writer.folderNodeId),
 			ctx.db
 				.query("plugins_external_file_bindings")
 				.withIndex("by_writer", (q) => q.eq("writerId", writer._id))
@@ -489,8 +490,8 @@ export const change_scope = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 
 		const [root, folder, binding] = await Promise.all([
-			ctx.db.get("files_nodes", writer.rootNodeId),
-			ctx.db.get("files_nodes", writer.folderNodeId),
+			files_saved_placement_db_get_node(ctx.db, writer.rootNodeId),
+			files_saved_placement_db_get_node(ctx.db, writer.folderNodeId),
 			ctx.db
 				.query("plugins_external_file_bindings")
 				.withIndex("by_writer", (q) => q.eq("writerId", writer._id))

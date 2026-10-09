@@ -1,6 +1,8 @@
 import "./setup-env.test.ts";
 import { afterEach, vi } from "vitest";
 import { convexTest, type TestConvexRoot } from "convex-test";
+import type { FunctionArgs } from "convex/server";
+import { Result } from "common/errors-as-values-utils.ts";
 import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
 import { make } from "../src/lib/utils.ts";
@@ -11,6 +13,7 @@ import {
 	files_pending_overlay_db_wrap,
 	files_pending_overlay_list,
 } from "../server/files-pending-overlay.ts";
+import { files_move_reservations_db_wrap } from "../server/files-move-reservations.ts";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import polar_test from "@convex-dev/polar/test";
 import presence_test from "@convex-dev/presence/test";
@@ -22,11 +25,17 @@ import {
 	organizations_db_create_workspace,
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
+import { files_pending_updates_action_prepare_content } from "./files_pending_updates.ts";
+import { files_pending_media_action_validate } from "./files_pending_media.ts";
+import { files_TRANSFER_SELECTION_PAGE_SIZE, type files_PendingTarget } from "../shared/files.ts";
+import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
+import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
+import { activities_db_require_by_source_id } from "./activities_db.ts";
 
 // #region helpers
 
@@ -124,11 +133,275 @@ export function test_convex(
  */
 export async function test_run_with_flush<T>(t: TestConvexRoot<DataModel>, fn: (ctx: MutationCtx) => Promise<T>) {
 	return await t.run(async (ctx) => {
-		const wrapped = { ...ctx, ...files_pending_overlay_db_wrap(ctx) };
+		const guarded = { ...ctx, ...files_move_reservations_db_wrap(ctx) };
+		const wrapped = { ...guarded, ...files_pending_overlay_db_wrap(guarded) };
 		const result = await fn(wrapped);
 		await files_pending_overlay_db_flush(wrapped);
 		return result;
 	});
+}
+
+/**
+ * Return the real worker result after public paged Move intake.
+ */
+export async function test_move_nodes(
+	t: ReturnType<typeof test_convex>,
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		itemIds: Id<"files_nodes">[];
+		targetParentId: Doc<"files_nodes">["parentId"];
+		replaceNodeId?: Id<"files_nodes">;
+	},
+) {
+	const hadFakeTimers = vi.isFakeTimers();
+	if (!hadFakeTimers) vi.useFakeTimers();
+	try {
+		const started = await asUser.mutation(api.files_transfer.start, {
+			membershipId: args.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "move",
+			expectedSourceCount: args.itemIds.length,
+			sourceIds: args.itemIds.slice(0, files_TRANSFER_SELECTION_PAGE_SIZE),
+			targetParentId: args.targetParentId,
+		});
+		if (started._nay) return Result({ _nay: started._nay });
+		const { runId, activityId } = started._yay;
+		for (let offset = files_TRANSFER_SELECTION_PAGE_SIZE; offset < args.itemIds.length; offset += files_TRANSFER_SELECTION_PAGE_SIZE) {
+			const appended = await asUser.mutation(api.files_transfer.append_sources, {
+				membershipId: args.membershipId, runId, offset, sourceIds: args.itemIds.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
+			});
+			if (appended._nay) return Result({ _nay: appended._nay });
+		}
+		const sealed = await asUser.mutation(api.files_transfer.seal, { membershipId: args.membershipId, runId });
+		if (sealed._nay) return Result({ _nay: sealed._nay });
+		await test_finish_transfer_run(asUser, runId);
+		if (args.replaceNodeId) {
+			const view = await asUser.query(api.files_transfer.get, { membershipId: args.membershipId, runId });
+			const items = await asUser.query(api.files_transfer.list_items, {
+				membershipId: args.membershipId, runId, state: "conflict", paginationOpts: { numItems: 1, cursor: null },
+			});
+			const conflict = items?.page[0];
+			if (!view || conflict?.conflict?.target.kind !== "saved" || conflict.conflict.target.id !== args.replaceNodeId)
+				throw new Error("Expected the reviewed replacement conflict");
+			const resolved = await asUser.mutation(api.files_transfer.resolve_conflicts, {
+				membershipId: args.membershipId, runId, revision: view.revision,
+				choices: [{ itemId: conflict.itemId, choice: "replace", reviewedTarget: conflict.conflict.target, reviewedVersion: conflict.conflict.version }],
+				applyToRemaining: { file: null, folder: null },
+			});
+			if (resolved._nay) return Result({ _nay: resolved._nay });
+			await test_finish_transfer_run(asUser, runId);
+		}
+		const activity = await t.run(ctx => ctx.db.get("activities", activityId));
+		if (activity?.status === "succeeded") return Result({ _yay: null });
+		const cohort = await t.run(ctx => ctx.db.query("files_move_cohorts")
+			.withIndex("by_origin_run", q => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).order("desc").first());
+		const conflicts = activity?.status === "awaiting_input" ? await asUser.query(api.files_transfer.list_items, {
+			membershipId: args.membershipId, runId, state: "conflict", paginationOpts: { numItems: 1, cursor: null },
+		}) : null;
+		const conflict = conflicts?.page[0];
+		const message = cohort?.errorMessage ?? activity?.errorMessage ?? conflict?.errorMessage ?? "Move needs a conflict choice";
+		// A refused test operation must not leave a paused job behind for the next assertion.
+		if (activity?.status === "awaiting_input") await asUser.mutation(api.files_transfer.stop, { membershipId: args.membershipId, runId });
+		return Result({ _nay: { name: cohort?.errorCode ?? activity?.errorCode ?? conflict?.conflictKind ?? undefined, message } });
+	} finally {
+		if (!hadFakeTimers) vi.useRealTimers();
+	}
+}
+
+/**
+ * Drive this Transfer and its repairs without running another queued user job.
+ */
+export async function test_finish_transfer_run(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	runId: Id<"files_transfer_runs">,
+) {
+	for (let pass = 0; pass < 50_000; pass++) {
+		const run = await asUser.run(ctx => ctx.db.get("files_transfer_runs", runId));
+		if (!run) throw new Error("Missing transfer run");
+		const activity = await asUser.run(ctx => activities_db_require_by_source_id(ctx, runId));
+		if (!activity || !["queued", "running", "stopping"].includes(activity.status)) return;
+		const job = await asUser.run(async ctx => (await ctx.db.query("files_pending_overlay_jobs")
+			.withIndex("by_org_ws", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).collect())
+			.find(row => !row.blockedByCohortId));
+		if (job) {
+			await asUser.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+			continue;
+		}
+		const repair = await asUser.run(async ctx => {
+			const op = await files_subtree_ops_db_find_repair(ctx, run);
+			if (!op) return null;
+			if (op.kind === "archive" || op.kind === "restore") throw new Error("Transfer waits for Archive or Restore");
+			const walk = await ctx.db.query("files_subtree_op_walks").withIndex("by_op", q => q.eq("opId", op._id)).unique();
+			if (!walk) throw new Error("Missing repair walk");
+			return { opId: op._id, step: walk.step };
+		});
+		if (repair) {
+			await asUser.mutation(internal.files_subtree_ops.advance, repair);
+			continue;
+		}
+		await asUser.mutation(internal.files_transfer.advance, { runId });
+		const cohortId = await asUser.run(async ctx => (await ctx.db.query("files_move_workspace_slots")
+			.withIndex("by_workspace", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).unique())?.cohortId);
+		if (cohortId) {
+			const cohort = await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId));
+			if (cohort?.origin.kind !== "transfer" || cohort.origin.runId !== runId) throw new Error("Transfer waits for another Move");
+			await asUser.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			if ((await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete")
+				await asUser.mutation(internal.files_transfer.settle_cohort, { cohortId });
+		}
+	}
+	throw new Error("Transfer did not finish");
+}
+
+/**
+ * Accept the exact proposal through the public Review job.
+ */
+export async function test_apply_file_pending_move(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		target: Extract<files_PendingTarget, { kind: "saved" }>;
+		pendingUpdateId: Id<"files_pending_updates">;
+		reviewedRevision: number;
+	},
+) {
+	const hadFakeTimers = vi.isFakeTimers();
+	if (!hadFakeTimers) vi.useFakeTimers();
+	try {
+		const proposal = await asUser.run(ctx => ctx.db.get("files_pending_updates", args.pendingUpdateId));
+		const started = await asUser.mutation(api.files_pending_update_runs.start, {
+			membershipId: args.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "accept",
+			expectedItemCount: 1,
+			items: [{ pendingUpdateId: args.pendingUpdateId, reviewedRevision: args.reviewedRevision, selectedContentStateId: proposal?.content?.stagedStateId ?? null }],
+		});
+		if (started._nay) return Result({ _nay: started._nay });
+		const { runId, activityId } = started._yay;
+		const sealed = await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: args.membershipId, runId });
+		if (sealed._nay) return Result({ _nay: sealed._nay });
+		await test_finish_pending_update_run(asUser, runId);
+		const activity = await asUser.run(ctx => ctx.db.get("activities", activityId));
+		if (activity?.status === "succeeded") return Result({ _yay: null });
+		const unit = await asUser.run(async ctx => (await ctx.db.query("files_pending_update_run_units")
+			.withIndex("by_run_order", q => q.eq("runId", runId)).collect()).find(row => row.errorMessage !== null));
+		return Result({ _nay: { name: unit?.errorCode ?? activity?.errorCode ?? undefined, message: unit?.errorMessage ?? activity?.errorMessage ?? "Review did not finish" } });
+	} finally {
+		if (!hadFakeTimers) vi.useRealTimers();
+	}
+}
+
+async function test_save_file_pending_update_core(
+	ctx: ActionCtx,
+	args: { membershipId: Id<"organizations_workspaces_users">; target: files_PendingTarget; pendingUpdateId: Id<"files_pending_updates">; reviewedRevision: number },
+) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
+	const prepared = await files_pending_updates_action_prepare_content(ctx, { ...args, userId: userAuth.id, reviewedPrivateParentIds: [] });
+	if (prepared._nay) return prepared;
+	if (prepared._yay.kind === "private") throw new Error("Saved-content core received a private draft");
+	try {
+		const media = await files_pending_media_action_validate(ctx, { userId: userAuth.id, pendingUpdateId: prepared._yay.pendingUpdateId, reviewedRevision: prepared._yay.reviewedRevision, operationBatchId: prepared._yay.operationBatchIds[0] });
+		if (media._nay) return media;
+		return await ctx.runMutation(internal.files_pending_updates.commit_prepared_content, { userId: userAuth.id, prepared: prepared._yay });
+	} finally {
+		await ctx.runMutation(internal.files_pending_updates.retire_prepared_content, { prepared: prepared._yay });
+	}
+}
+
+/**
+ * Drive the real durable workers without jumping to the job's expiry timer.
+ */
+export async function test_finish_pending_update_run(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	runId: Id<"files_pending_update_runs">,
+) {
+	for (let pass = 0; pass < 50_000; pass++) {
+		const run = await asUser.run(ctx => ctx.db.get("files_pending_update_runs", runId));
+		if (!run) throw new Error("Missing review run");
+		const job = await asUser.run(async ctx => (await ctx.db.query("files_pending_overlay_jobs")
+			.withIndex("by_org_ws", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).collect())
+			.find(row => !row.blockedByCohortId));
+		if (job) {
+			await asUser.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+			continue;
+		}
+		const repair = await asUser.run(async ctx => {
+			const op = await files_subtree_ops_db_find_repair(ctx, run);
+			if (!op) return null;
+			const walk = await ctx.db.query("files_subtree_op_walks").withIndex("by_op", q => q.eq("opId", op._id)).unique();
+			if (!walk) throw new Error("Missing repair walk");
+			return { opId: op._id, step: walk.step };
+		});
+		if (repair) {
+			await asUser.mutation(internal.files_subtree_ops.advance, repair);
+			continue;
+		}
+		if (run.step === "finished") return;
+		if (run.step === "uploading") await asUser.mutation(internal.files_pending_update_runs.append_single_save_input, { runId, fence: run.fence, offset: run.itemCount });
+		else if (run.step === "planning") await asUser.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
+		else {
+			await asUser.mutation(internal.files_pending_update_runs.advance, { runId });
+			const unit = await asUser.run(ctx => ctx.db.query("files_pending_update_run_units")
+				.withIndex("by_run_status_deleteLast_order", q => q.eq("runId", runId).eq("status", "preparing")).first());
+			if (unit?.cohortId) {
+				const cohort = await asUser.run(ctx => ctx.db.get("files_move_cohorts", unit.cohortId!));
+				if (!cohort) throw new Error("Missing review cohort");
+				if (cohort.phase === "complete") await asUser.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
+				else await asUser.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			}
+		}
+	}
+	throw new Error("Review did not finish");
+}
+
+/**
+ * Keep old body assertions, but send structural Save through the real public job.
+ */
+export async function test_save_file_pending_update(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	args: { membershipId: Id<"organizations_workspaces_users">; target: files_PendingTarget; pendingUpdateId: Id<"files_pending_updates">; reviewedRevision: number },
+): Promise<Awaited<ReturnType<typeof test_save_file_pending_update_core>>> {
+	if (args.target.kind === "saved") {
+		const proposal = await asUser.run(ctx => ctx.db.get("files_pending_updates", args.pendingUpdateId));
+		if (!proposal?.pendingMove) return await asUser.action(ctx => test_save_file_pending_update_core(ctx, args));
+	}
+	const hadFakeTimers = vi.isFakeTimers();
+	if (!hadFakeTimers) vi.useFakeTimers();
+	try {
+		const queued = await asUser.action(api.files_pending_updates.save_file_pending_update, args);
+		if (queued._nay) return Result({ _nay: queued._nay });
+		if (!("kind" in queued._yay)) return Result({ _yay: queued._yay });
+		const { runId, activityId } = queued._yay;
+		await test_finish_pending_update_run(asUser, runId);
+		const activity = await asUser.run(ctx => ctx.db.get("activities", activityId));
+		if (activity?.status !== "succeeded") {
+			const unit = await asUser.run(async ctx => (await ctx.db.query("files_pending_update_run_units")
+				.withIndex("by_run_order", q => q.eq("runId", runId)).collect()).find(row => row.errorMessage !== null));
+			return Result({ _nay: { name: unit?.errorCode ?? activity?.errorCode ?? undefined, message: unit?.errorMessage ?? activity?.errorMessage ?? "Single Save did not finish" } });
+		}
+		const nodeId = args.target.kind === "saved" ? args.target.id : await asUser.run(async ctx => {
+			const receipt = await ctx.db.query("files_pending_node_publish_receipts")
+				.withIndex("by_privateNode", q => q.eq("privateNodeId", args.target.id as Id<"files_pending_nodes">)).first();
+			if (!receipt) throw new Error("Missing single Save receipt");
+			return receipt.savedNodeId;
+		});
+		const node = await asUser.run(ctx => ctx.db.get("files_nodes", nodeId));
+		const sequence = node?.yjsLastSequenceId ? await asUser.run(ctx => ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId!)) : null;
+		const proposal = await asUser.run(ctx => ctx.db.get("files_pending_updates", args.pendingUpdateId));
+		return Result({ _yay: { target: { kind: "saved" as const, id: nodeId }, newSequence: sequence?.lastSequence ?? null, pendingUpdateRevision: proposal?.revision ?? null } });
+	} finally {
+		if (!hadFakeTimers) vi.useRealTimers();
+	}
 }
 
 /**
@@ -209,7 +482,7 @@ export async function test_create_saved_text_file(
 		const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
 		if (!proposal) throw new Error("Expected a proposal to save");
 		// Save new parents first, then publish exact text at sequence 0.
-		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(asUser, {
 			membershipId: args.membershipId,
 			target,
 			pendingUpdateId,
@@ -1022,3 +1295,19 @@ export const test_mocks_fill_db_with = {
 type ConvexDocUserData<T extends TableNames> = Omit<Doc<T>, "_creationTime" | "_id">;
 
 // #endregion
+
+export async function test_rename_node(
+	_t: ReturnType<typeof test_convex>,
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	args: Omit<FunctionArgs<typeof api.files_nodes.rename_node>, "requestId">,
+) {
+	const hadFakeTimers = vi.isFakeTimers();
+	if (!hadFakeTimers) vi.useFakeTimers();
+	try {
+		const result = await asUser.mutation(api.files_nodes.rename_node, { ...args, requestId: crypto.randomUUID() });
+		if (result._yay) await test_finish_transfer_run(asUser, result._yay.runId);
+		return result;
+	} finally {
+		if (!hadFakeTimers) vi.useRealTimers();
+	}
+}

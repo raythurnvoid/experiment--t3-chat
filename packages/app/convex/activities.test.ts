@@ -199,7 +199,7 @@ describe("list_page", () => {
 					status: "succeeded",
 					finishedAt: Date.now() + index + 1,
 					updatedAt: Date.now() + index + 1,
-					source: { kind: "files_transfer_run", id: finishedRunId, transferKind: run.kind },
+					source: { kind: "files_transfer_run", id: finishedRunId, transferKind: run.kind, isRename: false },
 				});
 			}
 		});
@@ -243,7 +243,7 @@ describe("list_page", () => {
 					...activityFields,
 					status: "succeeded",
 					finishedAt: Date.now() + index + 1,
-					source: { kind: "files_transfer_run", id, transferKind: run.kind },
+					source: { kind: "files_transfer_run", id, transferKind: run.kind, isRename: false },
 				});
 			}
 		});

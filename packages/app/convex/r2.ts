@@ -68,10 +68,14 @@ import {
 import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
-import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_resolve_read_target,
+} from "../server/files-saved-placement.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
+import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
@@ -310,7 +314,7 @@ export const get_data_for_create_signed_download_url = internalQuery({
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.fileNodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
@@ -411,7 +415,7 @@ export const get_data_for_public_download_url = internalQuery({
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", fileNodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, fileNodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
@@ -617,7 +621,7 @@ export const get_asset_by_file_node_id = query({
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.fileNodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
@@ -682,7 +686,7 @@ export const get_media_by_reference = query({
 		const privateId =
 			parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
 		if (!fileId && !privateId) return null;
-		const target = await files_pending_nodes_db_resolve_read_target(ctx, {
+		const target = await files_saved_placement_db_resolve_read_target(ctx.db, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			target: fileId ? { kind: "saved", id: fileId } : { kind: "private", id: privateId! },
@@ -690,7 +694,7 @@ export const get_media_by_reference = query({
 		if (!target) return null;
 
 		if (target.kind === "saved") {
-			const node = await ctx.db.get("files_nodes", target.id);
+			const node = await files_saved_placement_db_get_node(ctx.db, target.id);
 			if (
 				!node ||
 				node.organizationId !== membership.organizationId ||
@@ -1002,6 +1006,7 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		fileNodeId: v.id("files_nodes"),
 		expectedUploadAssetId: v.id("files_r2_assets"),
+		eventId: v.string(),
 		userId: v.id("users"),
 		rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		contentType: v.string(),
@@ -1029,7 +1034,11 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 			return null;
 		}
 
-		if (!fileNode || fileNode.assetId !== args.expectedUploadAssetId) {
+		const paused = fileNode?.assetId === args.expectedUploadAssetId && await files_move_reservations_db_pause_worker(ctx, {
+			worker: { kind: "upload", id: args.expectedUploadAssetId, resume: { kind: "conversion", eventId: args.eventId } },
+			check: { source: { kind: "saved", id: args.fileNodeId } },
+		});
+		if (!fileNode || fileNode.assetId !== args.expectedUploadAssetId || paused) {
 			// The action lost its node while writing R2. Delete only its unpublished output.
 			for (const assetId of [args.versionSnapshotAssetId, ...(args.yjsSnapshot ? [args.yjsSnapshot.assetId] : [])]) {
 				const asset = await ctx.db.get("files_r2_assets", assetId);
@@ -1103,6 +1112,10 @@ export const settle_upload_conversion_fallback = internalMutation({
 				q.eq("organizationId", asset.organizationId).eq("workspaceId", asset.workspaceId).eq("assetId", asset._id),
 			)
 			.first();
+		if (fileNode && await files_move_reservations_db_pause_worker(ctx, {
+			worker: { kind: "upload", id: asset._id, resume: { kind: "conversion", eventId: args.eventId } },
+			check: { source: { kind: "saved", id: fileNode._id } },
+		})) return null;
 		const now = Date.now();
 		await ctx.db.patch("files_r2_assets", asset._id, {
 			processingWorkId: null,
@@ -1126,6 +1139,23 @@ export const settle_upload_conversion_fallback = internalMutation({
 // Renamed from `finalize_uploaded_markdown_file` when the upload conversion generalized. It
 // converts every editable text upload: `.md` becomes a rich text document, and the plain-text
 // allow-list becomes `Y.Text` documents.
+export const pause_uploaded_file_conversion = internalMutation({
+	args: { assetId: v.id("files_r2_assets"), eventId: v.string() },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const asset = await ctx.db.get("files_r2_assets", args.assetId);
+		if (!asset) return false;
+		const node = await ctx.db.query("files_nodes").withIndex("by_organization_workspace_asset", (q) =>
+			q.eq("organizationId", asset.organizationId).eq("workspaceId", asset.workspaceId).eq("assetId", asset._id),
+		).first();
+		if (!node) return false;
+		return await files_move_reservations_db_pause_worker(ctx, {
+			worker: { kind: "upload", id: asset._id, resume: { kind: "conversion", eventId: args.eventId } },
+			check: { source: { kind: "saved", id: node._id } },
+		});
+	},
+});
+
 export const finalize_uploaded_text_file = internalAction({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
@@ -1135,6 +1165,9 @@ export const finalize_uploaded_text_file = internalAction({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		if (await ctx.runMutation(internal.r2.pause_uploaded_file_conversion, {
+			assetId: args.assetId, eventId: args.eventId,
+		})) return null;
 		const [asset, fileNode, serviceTarget] = (await Promise.all([
 			ctx.runQuery(internal.r2.get_asset_by_id, {
 				organizationId: args.organizationId,
@@ -1276,6 +1309,7 @@ export const finalize_uploaded_text_file = internalAction({
 
 		await ctx.runMutation(internal.r2.finalize_text_file_node_from_r2_assets, {
 			expectedUploadAssetId: asset._id,
+			eventId: args.eventId,
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
 			fileNodeId: fileNode._id,
@@ -1433,6 +1467,12 @@ export const process_uploaded_asset_event = internalMutation({
 			await ctx.db.delete("files_r2_assets", asset._id);
 			return Result({ _yay: null });
 		}
+		if (await files_move_reservations_db_pause_worker(ctx, {
+			worker: { kind: "upload", id: asset._id, resume: {
+				kind: "event", r2Key: args.r2Key, size: args.size, etag: args.etag, eventId: args.eventId,
+			} },
+			check: { source: { kind: "saved", id: fileNode._id } },
+		})) return Result({ _yay: null });
 
 		if (serviceTarget) {
 			const settled = await public_api_service_uploads_db_settle_canonicalized_asset(ctx, {
@@ -1813,7 +1853,7 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 				workspaceId: asset.workspaceId,
 				assetId: asset._id,
 			});
-			const [referencingNode, referencingYjsSnapshot, referencingSnapshot] = await Promise.all([
+			const [referencingNode, referencingYjsSnapshot, referencingSnapshot, cohortClaim] = await Promise.all([
 				ctx.db
 					.query("files_nodes")
 					.withIndex("by_organization_workspace_asset", (q) =>
@@ -1828,8 +1868,9 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					.query("files_snapshots")
 					.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
 					.first(),
+				ctx.db.query("files_move_asset_claims").withIndex("by_asset", (q) => q.eq("assetId", asset._id)).first(),
 			]);
-			if (referencingNode || referencingYjsSnapshot || referencingSnapshot) {
+			if (referencingNode || referencingYjsSnapshot || referencingSnapshot || cohortClaim) {
 				// Another doc uses this asset. If its R2 object exists, clear the old deadline. Never
 				// delete an asset that is still used.
 				if (asset.r2Key !== undefined) {

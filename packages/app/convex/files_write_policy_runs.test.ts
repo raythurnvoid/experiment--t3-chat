@@ -6,7 +6,7 @@ import { activities_is_active } from "./activities_db.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_rename_node, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 
 // Scheduled steps never run on their own under fake timers. Each test drives `advance` itself.
 // Move the clock with `vi.setSystemTime`. `vi.advanceTimersByTime` would also run the scheduled step.
@@ -552,12 +552,12 @@ describe("advance", () => {
 		const activityId = await start_as_member(f, box);
 		await step(f, activityId);
 		expect(
-			await f.asOwner.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(f.t, f.asOwner, {
 				membershipId: f.db.membershipId,
 				nodeId: box,
 				path: "moved",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 
 		expect(await step(f, activityId)).toMatchObject({
 			status: "failed",

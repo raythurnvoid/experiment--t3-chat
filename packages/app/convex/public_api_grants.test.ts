@@ -54,7 +54,7 @@ async function seed_markdown_file(args: {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
+						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", parentPath)
 						.eq("archiveOperationId", null),
 				)

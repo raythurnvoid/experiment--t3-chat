@@ -32,6 +32,7 @@ import { file_quotes_db_shape, file_quotes_db_validate } from "./file_quotes.ts"
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { files_nodes_db_require_user_writable } from "./files_nodes.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 
 // Make Convex reuse the loaded module between calls. No mutable module state is allowed here.
 export const experimental_reuseContext = true;
@@ -993,7 +994,7 @@ async function get_agent_channel(
 						path: reference.value,
 					})
 				: nodeId
-					? await ctx.db.get("files_nodes", nodeId)
+					? await files_saved_placement_db_get_node(ctx.db, nodeId)
 					: null;
 		if (node?.kind === "file")
 			channel = await ctx.db

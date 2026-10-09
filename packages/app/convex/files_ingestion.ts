@@ -487,7 +487,7 @@ export const get_text_preparation = internalQuery({
 			});
 			if (source._nay) return source;
 		}
-		if (!batch || batch.expiresAt <= Date.now()) return Result({ _nay: { message: "File preparation unavailable" } });
+		if (!batch || batch.cohortContentId !== undefined || (batch.expiresAt !== undefined && batch.expiresAt <= Date.now())) return Result({ _nay: { message: "File preparation unavailable" } });
 		return Result({ _yay: { operationBatchId: batch._id } });
 	},
 });

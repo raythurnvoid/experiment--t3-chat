@@ -1,7 +1,7 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_rename_node, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { Id } from "./_generated/dataModel";
 import type { plugins_Capability } from "../shared/plugins.ts";
@@ -1289,6 +1289,7 @@ describe("external file writes", () => {
 						q
 							.eq("organizationId", fixture.organizationId)
 							.eq("workspaceId", fixture.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("path", path)
 							.eq("archiveOperationId", null),
 					)
@@ -1826,7 +1827,7 @@ describe("ensure_writer", () => {
 		} else {
 			expect(
 				(
-					await owner.mutation(api.files_nodes.rename_node, {
+					await test_rename_node(t, owner, {
 						membershipId: fixture.membershipId,
 						nodeId: writer!.folderNodeId,
 						path: `${ROOT}/moved-team`,

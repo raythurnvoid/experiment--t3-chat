@@ -19,6 +19,7 @@ import {
 } from "../server/files.ts";
 import { files_transfer_db_fence_private_target } from "./files_transfer.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
+import { files_saved_placement_db_get_publish_receipt } from "../server/files-saved-placement.ts";
 
 // Leave room for content, permission, and review reads in the same transaction.
 const MAX_PRIVATE_ANCESTORS = 256;
@@ -106,6 +107,7 @@ export async function files_pending_nodes_db_can_save_to_copied_parent(
 		membership: Doc<"organizations_workspaces_users">;
 		node: Doc<"files_pending_nodes">;
 		savedParent: Doc<"files_nodes">;
+		cohort?: { cohortId: Id<"files_move_cohorts">; fence: number; attemptFence: number };
 	},
 ) {
 	const { membership, node, savedParent } = args;
@@ -122,10 +124,67 @@ export async function files_pending_nodes_db_can_save_to_copied_parent(
 		savedParent.archiveOperationId !== null
 	)
 		return false;
+	const cohort = args.cohort ? await ctx.db.get("files_move_cohorts", args.cohort.cohortId) : null;
+	if (
+		args.cohort &&
+		(!cohort ||
+			cohort.organizationId !== membership.organizationId ||
+			cohort.workspaceId !== membership.workspaceId ||
+			cohort.userId !== membership.userId ||
+			cohort.membershipId !== membership._id ||
+			cohort.fence !== args.cohort.fence ||
+			cohort.attemptFence !== args.cohort.attemptFence ||
+			cohort.publishedAt !== null ||
+			cohort.phase === "aborting" ||
+			cohort.phase === "complete")
+	)
+		return false;
+	// A selected copied parent has an AFTER identity before its private node is published.
+	const readAfterReceipt = async (privateParent: Doc<"files_pending_nodes">) => {
+		if (!cohort || privateParent.state !== "active") return null;
+		const selected = await ctx.db
+			.query("files_move_cohort_items")
+			.withIndex("by_cohort_target", (q) =>
+				q.eq("cohortId", cohort._id).eq("target.kind", "private").eq("target.id", privateParent._id),
+			)
+			.unique();
+		const proposal = selected?.pendingUpdateId
+			? await ctx.db.get("files_pending_updates", selected.pendingUpdateId)
+			: null;
+		if (
+			!selected ||
+			!proposal ||
+			proposal.target.kind !== "private" ||
+			proposal.target.id !== privateParent._id ||
+			proposal.organizationId !== membership.organizationId ||
+			proposal.workspaceId !== membership.workspaceId ||
+			proposal.userId !== membership.userId ||
+			proposal.revision !== selected.reviewedRevision ||
+			selected.privateVersion?.creationGeneration !== privateParent.creationGeneration ||
+			selected.privateVersion.structuralRevision !== privateParent.structuralRevision
+		)
+			return null;
+		const receipt = await files_saved_placement_db_get_publish_receipt(
+			ctx.db,
+			{ ...membership, privateNodeId: privateParent._id },
+			{ cohortId: cohort._id, view: "after" },
+		);
+		if (
+			!receipt ||
+			receipt.moveView?.cohortId !== cohort._id ||
+			receipt.moveView.view !== "after" ||
+			receipt.proposalRevision !== selected.reviewedRevision
+		)
+			return null;
+		const record = await ctx.db.get("files_move_cohort_nodes", selected.nodeRecordId);
+		return record?.cohortId === cohort._id && record.role === "allocated" && record.nodeId === receipt.savedNodeId
+			? receipt
+			: null;
+	};
 	const parent = await ctx.db.get("files_pending_nodes", node.parent.id);
 	if (
 		!parent ||
-		parent.state !== "published" ||
+		(parent.state !== "published" && !(cohort && parent.state === "active")) ||
 		parent.kind !== "folder" ||
 		parent.userId !== node.userId ||
 		parent.organizationId !== node.organizationId ||
@@ -134,28 +193,46 @@ export async function files_pending_nodes_db_can_save_to_copied_parent(
 		savedParent.publishedFromPrivateNodeId !== parent._id
 	)
 		return false;
-	const receipt = await ctx.db
-		.query("files_pending_node_publish_receipts")
-		.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parent._id))
-		.unique();
+	const receipt =
+		parent.state === "active"
+			? await readAfterReceipt(parent)
+			: await files_saved_placement_db_get_publish_receipt(ctx.db, { ...node, privateNodeId: parent._id });
 	if (
 		!receipt ||
 		receipt.userId !== node.userId ||
 		receipt.organizationId !== node.organizationId ||
 		receipt.workspaceId !== node.workspaceId ||
 		receipt.savedNodeId !== savedParent._id ||
-		receipt.creationGeneration + 1 !== parent.creationGeneration ||
+		receipt.creationGeneration + (parent.state === "published" ? 1 : 0) !== parent.creationGeneration ||
 		receipt.structuralRevision !== parent.structuralRevision ||
 		receipt.copiedWritePolicy == null ||
 		receipt.copiedPath !== savedParent.path ||
 		JSON.stringify(receipt.copiedWritePolicy) !== JSON.stringify(savedParent.writePolicy)
 	)
 		return false;
-	const originalParent = await files_pending_nodes_db_resolve_saved_parent(ctx, {
-		...node,
-		parent: parent.parent,
-	});
-	if (originalParent._nay || originalParent._yay.parentId !== savedParent.parentId) return false;
+	let originalParentId: Id<"files_nodes"> | "root";
+	if (cohort && parent.parent.kind === "private") {
+		const grandparent = await ctx.db.get("files_pending_nodes", parent.parent.id);
+		if (
+			!grandparent ||
+			grandparent.organizationId !== node.organizationId ||
+			grandparent.workspaceId !== node.workspaceId ||
+			grandparent.userId !== node.userId ||
+			grandparent.kind !== "folder"
+		)
+			return false;
+		const original =
+			grandparent.state === "active"
+				? await readAfterReceipt(grandparent)
+				: await files_saved_placement_db_get_publish_receipt(ctx.db, { ...node, privateNodeId: grandparent._id });
+		if (!original) return false;
+		originalParentId = original.savedNodeId;
+	} else {
+		const original = await files_pending_nodes_db_resolve_saved_parent(ctx, { ...node, parent: parent.parent });
+		if (original._nay) return false;
+		originalParentId = original._yay.parentId;
+	}
+	if (originalParentId !== savedParent.parentId) return false;
 	return !(
 		await access_control_db_authorize_membership(ctx, {
 			userAuth: { id: node.userId },

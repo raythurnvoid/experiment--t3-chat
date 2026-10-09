@@ -1041,7 +1041,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 						.gte("treePath", `/${first.pluginVersionId}/`)
 						.lt("treePath", path_tree_prefix_upper_bound(`/${first.pluginVersionId}/`)),
 				)
@@ -2086,7 +2086,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
+						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings/meeting-1")
 						.eq("archiveOperationId", null),
 				)
@@ -2673,7 +2673,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
+						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/media/locked-note.md")
 						.eq("archiveOperationId", null),
 				)
@@ -2720,7 +2720,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/locked-source-summary.md")
 						.eq("archiveOperationId", null),
 				)
@@ -2941,7 +2941,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
+						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("parentId", "root")
 						.eq("name", "plugin-live-image-20260702t011841z.png.description.md")
 						.eq("archiveOperationId", null),
@@ -3472,7 +3472,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/expired.png.md")
 						.eq("archiveOperationId", null),
 				)
@@ -11476,7 +11476,7 @@ describe("plugins publish artifact cleanup", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 						.gte("treePath", `/${registered.pluginVersionId}/`)
 						.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 				)
@@ -11666,7 +11666,7 @@ describe("plugins publish artifact cleanup", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 						.gte("treePath", `/${registered.pluginVersionId}/`)
 						.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 				)
@@ -12070,7 +12070,7 @@ describe("plugins list_bash_source_mounts", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 							.gte("treePath", `/${registered.pluginVersionId}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 					)
@@ -14050,7 +14050,7 @@ describe("plugins metadata file doors", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", path)
 						.eq("archiveOperationId", null),
 				)
@@ -16747,7 +16747,7 @@ describe("plugins admin hard delete", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 							.gte("treePath", `/${version._id}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${version._id}/`)),
 					)
@@ -16774,7 +16774,7 @@ describe("plugins admin hard delete", () => {
 						.withIndex("by_organization_workspace_treePath", (q) =>
 							q
 								.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 								.gte("treePath", `/${registered.pluginVersionId}/`)
 								.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 						)
@@ -16798,7 +16798,7 @@ describe("plugins admin hard delete", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 							.gte("treePath", `/${registered.pluginVersionId}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 					)
@@ -18207,7 +18207,7 @@ describe("plugins admin hard delete", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined),
 				)
 				.collect(),
 		);

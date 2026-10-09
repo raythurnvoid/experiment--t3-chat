@@ -142,8 +142,8 @@ that source in `aria-selected` before dragging. The outer treeitem is not the dr
 different mounted row, then the destination folder center. Headless keeps a drag target cache across
 canceled drags; changing the real hover tests that cache. Before release, require the exact overlay's
 `FilesSidebarTreeItemPrimaryAction-drop-zone-included`, the folder drop area, and a trusted accepted
-dragover after propagation. Native move uses `files_nodes.move_nodes`; folder descendants need their
-own final path checks.
+dragover after propagation. Native Move uses `files_transfer.start`, paged intake and `seal`.
+Wait for its Activity to finish. Folder descendants need their own final path checks.
 
 ## Edit, review, history, and upload
 

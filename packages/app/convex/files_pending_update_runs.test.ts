@@ -3,8 +3,12 @@ import { Workpool } from "@convex-dev/workpool";
 import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_move_nodes, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import {
+	files_pending_update_runs_db_delete_run_batch,
+	files_pending_update_runs_db_record_cohort_publication,
+} from "./files_pending_update_runs.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -84,17 +88,31 @@ async function start_review(args: {
 	});
 	expect(sealed).toEqual({ _yay: null });
 	if (plan)
-		for (let pass = 0; pass < 100; pass++) {
-			await f.t.action(internal.files_pending_update_runs.plan, { runId: started._yay.runId, fence: 0 });
+		for (let pass = 0; pass < 1_000; pass++) {
+			const job = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_org_ws", (q) =>
+						q.eq("organizationId", f.scope.organizationId).eq("workspaceId", f.scope.workspaceId),
+					)
+					.first(),
+			);
+			if (job)
+				await f.t.mutation(internal.files_pending_overlay.run_job, {
+					kind: job.kind,
+					key: job.key,
+					nextAttemptAt: job.nextAttemptAt,
+				});
+			else await f.t.action(internal.files_pending_update_runs.plan, { runId: started._yay.runId, fence: 0 });
 			const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", started._yay.runId));
 			if (run?.step !== "planning") break;
-			if (pass === 99) throw new Error("Review planning did not finish");
+			if (pass === 999) throw new Error("Review planning did not finish");
 		}
 	return started._yay;
 }
 
 async function finish_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_pending_update_runs">) {
-	for (let pass = 0; pass < 20; pass++) {
+	for (let pass = 0; pass < 10_000; pass++) {
 		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
 		if (!run) throw new Error("Expected the review run");
@@ -107,6 +125,15 @@ async function finish_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"
 				.first(),
 		);
 		if (!unit) continue;
+		if (unit.kind === "cohort") {
+			if (!unit.cohortId) continue;
+			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
+			if (!cohort) throw new Error("Expected the review cohort");
+			if (cohort.phase === "complete")
+				await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
+			else await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			continue;
+		}
 		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
 			runId,
 			fence: run.fence,
@@ -118,6 +145,130 @@ async function finish_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"
 }
 
 describe("review jobs", () => {
+	test("routes Accept to one durable cohort and aborts it before releasing review holds", async () => {
+		const f = await fixture();
+		const proposal = await private_folder(f, "/cohort-draft");
+		const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
+		const review = await start_review({ f, kind: "accept", proposals: [proposal] });
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId: review.runId });
+		const unit = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", review.runId))
+				.unique(),
+		);
+		if (!unit?.cohortId) throw new Error("Expected the durable review cohort");
+		expect(unit.kind, "Accept uses the cohort executor").toBe("cohort");
+		expect(enqueue).not.toHaveBeenCalled();
+		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
+			runId: review.runId,
+			fence: 0,
+			unitId: unit._id,
+			attemptFence: unit.attemptFence,
+		});
+		expect(await f.t.run((ctx) => ctx.db.query("files_move_cohorts").collect())).toHaveLength(1);
+		await f.asUser.mutation(api.activities.request_stop, {
+			membershipId: f.db.membershipId,
+			activityId: review.activityId,
+		});
+		const stopped = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
+		expect(stopped?.phase, "Stop reaches the unpublished cohort").toBe("aborting");
+		await f.t.run((ctx) => ctx.db.patch("files_move_cohorts", unit.cohortId!, { phase: "complete" }));
+		await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: unit.cohortId });
+		const activity = await f.t.run((ctx) => ctx.db.get("activities", review.activityId));
+		expect(activity?.progress).toMatchObject({ completed: 0, canceled: 1, blocked: 0 });
+	});
+
+	test("counts cohort publication once and keeps it after Stop during repair", async () => {
+		const f = await fixture();
+		const proposal = await private_folder(f, "/published-cohort");
+		const review = await start_review({ f, kind: "accept", proposals: [proposal] });
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId: review.runId });
+		const unit = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", review.runId))
+				.unique(),
+		);
+		if (!unit?.cohortId) throw new Error("Expected the durable review cohort");
+		// Exercise the publication callback before the separate repair callback.
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("files_move_cohorts", unit.cohortId!, {
+				publishedAt: Date.now(),
+				phase: "published",
+				visibleView: "after",
+			});
+			await files_pending_update_runs_db_record_cohort_publication(ctx, { cohortId: unit.cohortId! });
+			await files_pending_update_runs_db_record_cohort_publication(ctx, { cohortId: unit.cohortId! });
+		});
+		expect(
+			(await f.t.run((ctx) => ctx.db.get("activities", review.activityId)))?.progress?.completed,
+			"publication is counted before repair finishes",
+		).toBe(1);
+		expect((await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", unit._id)))?.status).toBe("preparing");
+		await f.asUser.mutation(api.activities.request_stop, {
+			membershipId: f.db.membershipId,
+			activityId: review.activityId,
+		});
+		expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!)))?.phase).toBe("published");
+		await f.t.run((ctx) => ctx.db.patch("files_move_cohorts", unit.cohortId!, { phase: "complete" }));
+		await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: unit.cohortId });
+		await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: unit.cohortId });
+		expect(
+			(await f.t.run((ctx) => ctx.db.get("activities", review.activityId)))?.progress,
+			"Stop and repair do not count publication twice",
+		).toMatchObject({ completed: 1, canceled: 0, blocked: 0 });
+		expect((await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", unit._id)))?.status).toBe("completed");
+	});
+
+	test("keeps review history until its active cohort finishes repair", async () => {
+		const f = await fixture();
+		const proposal = await private_folder(f, "/cleanup-cohort");
+		const review = await start_review({ f, kind: "accept", proposals: [proposal] });
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId: review.runId });
+		const unit = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", review.runId))
+				.unique(),
+		);
+		if (!unit?.cohortId) throw new Error("Expected the review cohort");
+		const before = await f.t.run(async (ctx) => ({
+			items: await ctx.db.query("files_pending_update_run_items").collect(),
+			plans: await ctx.db.query("files_pending_update_plans").collect(),
+			holds: await ctx.db.query("files_pending_holds").collect(),
+		}));
+		expect(await f.t.run((ctx) => files_pending_update_runs_db_delete_run_batch(ctx, { runId: review.runId }))).toEqual(
+			{ done: false, deletedCount: 0 },
+		);
+		expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!)))?.phase).toBe("aborting");
+		expect(
+			await f.t.run(async (ctx) => ({
+				items: await ctx.db.query("files_pending_update_run_items").collect(),
+				plans: await ctx.db.query("files_pending_update_plans").collect(),
+				holds: await ctx.db.query("files_pending_holds").collect(),
+			})),
+			"repair keeps the review rows and holds",
+		).toEqual(before);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", unit._id))).toEqual(unit);
+		// The cohort worker owns repair. This test starts history cleanup after its completion callback.
+		await f.t.run((ctx) => ctx.db.patch("files_move_cohorts", unit.cohortId!, { phase: "complete" }));
+		for (let pass = 0; pass < 100; pass++) {
+			const result = await f.t.run((ctx) =>
+				files_pending_update_runs_db_delete_run_batch(ctx, { runId: review.runId }),
+			);
+			if (result.done) {
+				expect(
+					await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", review.runId)),
+					"completed repair allows history cleanup",
+				).toBeNull();
+				expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_plans").collect())).toEqual([]);
+				return;
+			}
+		}
+		throw new Error("Review cleanup did not finish");
+	});
+
 	test("queues preparation in the shared two-worker pool and cancels it on Stop", async () => {
 		const base = await fixture();
 		const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
@@ -134,7 +285,7 @@ describe("review jobs", () => {
 				asUser: base.t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId }),
 			};
 			const proposal = await private_folder(f, "/draft");
-			const run = await start_review({ f, kind: "accept", proposals: [proposal] });
+			const run = await start_review({ f, kind: "discard", proposals: [proposal] });
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId: run.runId });
 			runs.push({ f, ...run });
 		}
@@ -599,11 +750,11 @@ describe("review jobs", () => {
 		const reviewVersion = await f.t.run((ctx) => ctx.db.query("files_pending_review_versions").first());
 		expect(
 			(
-				await f.asUser.mutation(api.files_nodes.move_nodes, {
-					membershipId: f.db.membershipId,
-					itemIds: [childId],
-					targetParentId: parentId,
-				})
+				await test_move_nodes(f.t, f.asUser, {
+						membershipId: f.db.membershipId,
+						itemIds: [childId],
+						targetParentId: parentId,
+					})
 			)._nay,
 		).toBeUndefined();
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_review_versions").first())).toEqual(reviewVersion);
@@ -854,10 +1005,10 @@ describe("review jobs", () => {
 		});
 	});
 
-	test.each([false, true])("late preparation keeps its retry (watchdog first: %s)", async (watchdogFirst) => {
+	test.each([false, true])("late Discard preparation keeps its retry (watchdog first: %s)", async (watchdogFirst) => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
-		const { runId } = await start_review({ f, kind: "accept", proposals: [parent] });
+		const { runId } = await start_review({ f, kind: "discard", proposals: [parent] });
 		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 		const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").unique());
 		if (!unit) throw new Error("Expected the first attempt");
@@ -873,13 +1024,15 @@ describe("review jobs", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").unique())).toMatchObject({
 			attemptCount: 2,
 		});
-		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toMatchObject([{ path: "/parent" }]);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toMatchObject([
+			{ state: "discarded" },
+		]);
 	});
 
-	test("stops after three expired preparation attempts", async () => {
+	test("stops after three expired Discard preparation attempts", async () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
-		const { runId } = await start_review({ f, kind: "accept", proposals: [parent] });
+		const { runId } = await start_review({ f, kind: "discard", proposals: [parent] });
 		for (let attempt = 1; attempt <= 3; attempt++) {
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 			const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").unique());
@@ -948,13 +1101,15 @@ describe("review jobs", () => {
 		await f.t.mutation(internal.files_pending_update_runs.recover, {});
 		expect(await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual(scheduledBefore);
 		await f.t.mutation(internal.activities.cleanup_history, { _test_disableReschedule: true });
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toEqual([]);
-		await f.t.mutation(internal.activities.cleanup_history, { _test_disableReschedule: true });
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).not.toBeNull();
-		for (let pass = 0; pass < 4; pass++)
+		for (let pass = 0; pass < 100; pass++) {
 			await f.t.mutation(internal.activities.cleanup_history, { _test_disableReschedule: true });
+			if (!(await f.t.run((ctx) => ctx.db.get("activities", activityId)))) break;
+			if (pass === 99) throw new Error("Review history cleanup did not finish");
+		}
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toEqual([]);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.get("activities", activityId))).toBeNull();
 		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(savedBefore);
@@ -1024,14 +1179,10 @@ describe("review jobs", () => {
 					_test_disableReschedule: true,
 				});
 			}
+			const holdsBefore = await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect());
 			expect(await purge()).toBe(false);
-			expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toEqual([]);
+			expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toEqual(holdsBefore);
 			expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toHaveLength(2);
-			expect(await purge()).toBe(false);
-			expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toHaveLength(1);
-			expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).toMatchObject({
-				step: "finished",
-			});
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", parent._id))).toEqual(parent);
 			await f.t.action(internal.files_pending_update_runs.prepare_unit, {
 				runId,
@@ -1041,7 +1192,14 @@ describe("review jobs", () => {
 			});
 			expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
 			let done = false;
-			for (let pass = 0; pass < 150 && !done; pass++) done = await purge();
+			for (let pass = 0; pass < 150 && !done; pass++) {
+				if (unit.cohortId) {
+					const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
+					if (cohort && cohort.phase !== "complete")
+						await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+				}
+				done = await purge();
+			}
 			expect(done).toBe(true);
 			for (const table of [
 				"files_pending_update_runs",

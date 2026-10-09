@@ -13,6 +13,7 @@ import {
 	type files_VisibleEntry,
 } from "../shared/files.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 
 /**
  * Reuse access and ancestor reads across one page of indexed results.
@@ -82,10 +83,10 @@ export async function files_search_db_create_reader(
 			// the job stamps it too, like a search without an owner overlay does.
 			let hasArchivedAncestor = false;
 			if (ownerReader && !entry && target.kind === "saved") {
-				const node = await ctx.db.get("files_nodes", target.id);
+				const node = await files_saved_placement_db_get_node(ctx.db, target.id);
 				let parentId = node?.archiveOperationId === null ? node.parentId : files_ROOT_ID;
 				while (parentId !== files_ROOT_ID) {
-					const parent = await ctx.db.get("files_nodes", parentId);
+					const parent = await files_saved_placement_db_get_node(ctx.db, parentId);
 					if (!parent) break;
 					if (parent.archiveOperationId !== null) {
 						hasArchivedAncestor = true;
@@ -97,7 +98,7 @@ export async function files_search_db_create_reader(
 
 			if (!ownerReader || hasArchivedAncestor) {
 				if (target.kind === "private") return null;
-				const node = await ctx.db.get("files_nodes", target.id);
+				const node = await files_saved_placement_db_get_node(ctx.db, target.id);
 				const readable =
 					node?.archiveOperationId === null &&
 					node.organizationId === args.organizationId &&

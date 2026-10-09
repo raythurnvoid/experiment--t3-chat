@@ -27,6 +27,8 @@ import {
 } from "../convex/files_private_storage.ts";
 import { files_media_dependencies_db_retire } from "../convex/files_media_dependencies.ts";
 import { files_db_resolve_scope } from "../convex/files_scopes.ts";
+import { files_saved_placement_db_get_node, files_saved_placement_db_get_path, files_saved_placement_db_get_sequence, files_saved_placement_db_get_view } from "./files-saved-placement.ts";
+import { files_saved_content_db_yjs_updates } from "./files-saved-content.ts";
 
 export * from "../shared/files.ts";
 
@@ -51,7 +53,7 @@ export async function files_db_get_yjs_content_and_sequence(
 		nodeId: Id<"files_nodes">;
 	},
 ) {
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
 		return null;
 	}
@@ -76,17 +78,9 @@ export async function files_db_get_yjs_content_and_sequence(
 		throw should_never_happen(errorMessage, errorData);
 	}
 
-	const [yjsSnapshotDoc, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
+	const [yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
 		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
-		ctx.db
-			.query("files_yjs_updates")
-			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-			)
-			.order("asc")
-			.collect(),
-
-		ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
+		files_saved_placement_db_get_sequence(ctx.db, fileNode),
 	]);
 
 	if (
@@ -124,6 +118,10 @@ export async function files_db_get_yjs_content_and_sequence(
 		throw should_never_happen(errorMessage, errorData);
 	}
 
+	// The update log is bounded by the per-file write gate.
+	const yjsUpdatesDocs: Doc<"files_yjs_updates">[] = [];
+	for await (const update of files_saved_content_db_yjs_updates(ctx.db, { ...args, throughSequence: yjsLastSequenceDoc.lastSequence }))
+		yjsUpdatesDocs.push(update);
 	const incrementalYjsUpdatesDocs = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
 	return {
 		file: fileNode,
@@ -318,6 +316,12 @@ export async function files_db_get_visible_node_by_path(
 
 	const { organizationId, workspaceId } = args;
 	const scope = files_db_resolve_scope(ctx, workspaceId);
+	if (!organizations_is_global_organization_id(organizationId) && scope.kind === "workspace") {
+		const view = await files_saved_placement_db_get_view(ctx.db, { organizationId, workspaceId: scope.workspaceId });
+		if (view.cohortId !== null && view.view !== null) {
+			return await files_saved_placement_db_get_path(ctx.db, args, { cohortId: view.cohortId, view: view.view });
+		}
+	}
 	// While a move op rewrites stored paths, an item inside the moved folder can still carry its old
 	// `path`. Then find the item by name from the root, like the tree does. Without a move op, one
 	// index read is enough. Global and mount scopes never have ops.
@@ -339,7 +343,7 @@ export async function files_db_get_visible_node_by_path(
 				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 					q
 						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId)
+						.eq("workspaceId", workspaceId).eq("moveCohortId", undefined)
 						.eq("parentId", parentId)
 						.eq("name", name)
 						.eq("archiveOperationId", null),
@@ -356,7 +360,7 @@ export async function files_db_get_visible_node_by_path(
 		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
 				.eq("organizationId", organizationId)
-				.eq("workspaceId", workspaceId)
+				.eq("workspaceId", workspaceId).eq("moveCohortId", undefined)
 				.eq("path", args.path)
 				.eq("archiveOperationId", null),
 		)
@@ -561,7 +565,7 @@ export async function files_db_expire_pending_update_operation_batch(
 	args: { operationBatchId: Id<"files_pending_update_operation_batches"> },
 ) {
 	const batch = await ctx.db.get("files_pending_update_operation_batches", args.operationBatchId);
-	if (!batch) {
+	if (!batch || batch.cohortContentId) {
 		return;
 	}
 
@@ -639,7 +643,8 @@ export async function files_db_consume_trusted_yjs_update_stage(
 		stage.userId !== args.userId ||
 		stage.fileNodeId !== args.nodeId ||
 		stage.kind !== args.kind ||
-		stage.expiresAt <= Date.now()
+		stage.cohortContentId !== undefined ||
+		(stage.expiresAt !== undefined && stage.expiresAt <= Date.now())
 	) {
 		return Result({ _nay: { name: "nay" as const, message: "Not found" } });
 	}

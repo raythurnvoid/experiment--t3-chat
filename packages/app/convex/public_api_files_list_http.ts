@@ -2,6 +2,7 @@ import { httpAction, type ActionCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import { z } from "zod";
+import { ConvexError } from "convex/values";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
@@ -16,6 +17,7 @@ import { server_path_normalize, server_request_json_parse_and_validate } from ".
 import type { r2_get_assets_ready_states_Result } from "./r2.ts";
 import type { public_api_validate_and_finish_scheduled_file_read_Result } from "./public_api.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { files_saved_list_page } from "../server/files-saved-list.ts";
 
 const FILES_LIST_MAX_ITEMS = 100;
 // Public clients may scan more source docs than AI tools. The internal query still owns the hard cap.
@@ -94,22 +96,44 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 
 							const lowercaseExtension = normalize_extension(body._yay.extension);
 							const numItems = Math.min(body._yay.limit ?? FILES_LIST_MAX_ITEMS, FILES_LIST_MAX_ITEMS);
-							const result = await ctx.runQuery(internal.files_nodes.list_subtree, {
-								agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
-								organizationId: principal.organizationId,
-								workspaceId: principal.workspaceId,
-								visibilityUserId: public_api_visibility_user_id(principal),
-								serviceAccountId: principal.serviceAccountId ?? undefined,
-								folderPath: requestedPath,
-								numItems,
-								cursor: body._yay.cursor ?? null,
-								kind: body._yay.kind,
-								lowercaseExtension,
-								contentTypePrefixes: body._yay.contentTypePrefixes,
-								minDepth: 1,
-								maxDepth: body._yay.recursive ? undefined : 1,
-								maximumRowsRead: body._yay.scanLimit ?? FILES_LIST_DEFAULT_SCAN_LIMIT,
-							});
+							let result: Awaited<ReturnType<typeof files_saved_list_page>>;
+							try {
+								result = await files_saved_list_page(ctx, {
+									cursorScope: JSON.stringify([
+										principal.principalKey,
+										public_api_visibility_user_id(principal),
+										principal.serviceAccountId,
+									]),
+									agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
+									organizationId: principal.organizationId,
+									workspaceId: principal.workspaceId,
+									visibilityUserId: public_api_visibility_user_id(principal),
+									serviceAccountId: principal.serviceAccountId ?? undefined,
+									folderPath: requestedPath,
+									numItems,
+									cursor: body._yay.cursor ?? null,
+									kind: body._yay.kind,
+									lowercaseExtension,
+									contentTypePrefixes: body._yay.contentTypePrefixes,
+									minDepth: 1,
+									maxDepth: body._yay.recursive ? undefined : 1,
+									maximumRowsRead: body._yay.scanLimit ?? FILES_LIST_DEFAULT_SCAN_LIMIT,
+								});
+							} catch (error) {
+								if (
+									!(error instanceof ConvexError) ||
+									!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
+								)
+									throw error;
+								return {
+									status: 400,
+									body: await fail({
+										status: 400,
+										message: "This list cursor changed. Start a new page.",
+										errorCode: "invalid_cursor",
+									}),
+								} as const;
+							}
 
 							// Keep readiness separate so finalization patches do not invalidate the node-list cache entry.
 							const pageAssetIds = result.page.flatMap((item) =>

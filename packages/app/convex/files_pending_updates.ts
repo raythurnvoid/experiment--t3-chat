@@ -29,7 +29,14 @@ import app_convex_schema, {
 	files_pending_prepared_content_validator,
 	files_pending_prepared_state_family_validator,
 	files_pending_updates_state_family_validator,
+	files_saved_stream_validator,
 } from "./schema.ts";
+import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
+import {
+	files_saved_placement_db_get_proposal,
+	files_saved_placement_db_get_view,
+} from "../server/files-saved-placement.ts";
 import { api, internal } from "./_generated/api.js";
 import {
 	db_get_file_content_materialization_db_state,
@@ -38,7 +45,6 @@ import {
 	files_nodes_db_require_user_writable,
 	files_nodes_db_get_content_version,
 	type files_nodes_get_user_file_write_access_Result,
-	files_nodes_db_apply_pending_move,
 	files_nodes_db_require_subtree_writable,
 	files_nodes_db_validate_pending_move_target_for_proposal,
 	files_nodes_db_validate_occupant_replace,
@@ -49,7 +55,6 @@ import {
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import {
 	files_nodes_db_commit_text_replacement,
-	files_nodes_content_db_publish_private_node,
 	files_nodes_content_db_finalize_pending_replacement,
 } from "./files_nodes_content.ts";
 import {
@@ -70,6 +75,8 @@ import {
 	type files_pending_media_ValidatedSave,
 } from "./files_pending_media.ts";
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
+import { files_pending_update_runs_db_start } from "./files_pending_update_runs.ts";
+import { activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
 import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
 import {
 	files_private_storage_db_reserve,
@@ -81,6 +88,11 @@ import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_e
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
+import {
+	files_move_reservations_db_enter,
+	files_move_reservations_db_find_blocker,
+} from "../server/files-move-reservations.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import {
 	access_control_db_authorize_membership,
@@ -165,6 +177,15 @@ import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
+
+export const files_pending_cohort_content_context_validator = v.object({
+	cohortId: v.id("files_move_cohorts"),
+	contentId: v.id("files_move_cohort_content"),
+	fence: v.number(),
+	attemptFence: v.number(),
+	preparationFence: v.number(),
+});
+export type files_pending_updates_CohortContentContext = Infer<typeof files_pending_cohort_content_context_validator>;
 
 function files_pending_update_encode_yjs_state_update(args: { yjsDoc: YDoc }) {
 	return files_u8_to_array_buffer(encodeStateAsUpdate(args.yjsDoc));
@@ -331,6 +352,8 @@ async function files_pending_update_action_get_latest_file_yjs_state(
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
+			expectedLastSequenceId: header.yjsLastSequenceDoc._id,
+			expectedLineageGeneration: header.yjsLastSequenceDoc.lineageGeneration,
 			afterSequence,
 			throughSequence: header.throughSequence,
 		})) as get_file_next_yjs_update_Result;
@@ -503,11 +526,15 @@ export async function files_pending_update_db_delete_chunks(
 	const [textChunks, plainTextChunks] = await Promise.all([
 		ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			)
 			.collect(),
 		ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			)
 			.collect(),
 	]);
 	await Promise.all([
@@ -527,15 +554,21 @@ export async function files_pending_update_db_update_index_revision(
 	const [textChunks, plainTextChunks, metadataDocs] = await Promise.all([
 		ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			)
 			.collect(),
 		ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			)
 			.collect(),
 		ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+			.withIndex("by_pendingUpdate_fieldPath", (q) =>
+				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			)
 			.collect(),
 	]);
 	await Promise.all([
@@ -1045,6 +1078,7 @@ async function db_get_owned_operation_batch(
 		userId: Id<"users">;
 		operationBatchId: Id<"files_pending_update_operation_batches">;
 		now: number;
+		cohortContent?: files_pending_updates_CohortContentContext;
 	},
 ) {
 	const batch = await ctx.db.get("files_pending_update_operation_batches", args.operationBatchId);
@@ -1053,10 +1087,17 @@ async function db_get_owned_operation_batch(
 		batch.organizationId !== args.organizationId ||
 		batch.workspaceId !== args.workspaceId ||
 		batch.userId !== args.userId ||
-		batch.expiresAt <= args.now
+		(batch.expiresAt !== undefined && batch.expiresAt <= args.now) ||
+		(batch.cohortContentId !== undefined && batch.cohortContentId !== args.cohortContent?.contentId)
 	) {
 		return null;
 	}
+	if (
+		batch.cohortContentId &&
+		args.cohortContent &&
+		(await files_pending_updates_db_get_cohort_content(ctx, args.cohortContent))._nay
+	)
+		return null;
 	if (
 		batch.agentSource &&
 		(await ai_chat_workspaces_db_authorize_file_scope(ctx, { ...batch, agentSource: batch.agentSource }))._nay
@@ -1118,6 +1159,7 @@ async function db_create_operation_batch(
 		userId: Id<"users">;
 		target: app_convex_Doc<"files_pending_update_operation_batches">["target"];
 		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
+		cohortContent?: files_pending_updates_CohortContentContext;
 	},
 ) {
 	if (args.agentSource) {
@@ -1125,6 +1167,38 @@ async function db_create_operation_batch(
 		if (allowed._nay) return allowed;
 	}
 	const now = Date.now();
+	if (args.cohortContent) {
+		const checked = await db_enter_cohort_content(ctx, args.cohortContent);
+		if (checked._nay) return checked;
+		const { cohort, content, proposal, item } = checked._yay;
+		if (
+			cohort.userId !== args.userId ||
+			cohort.organizationId !== args.organizationId ||
+			cohort.workspaceId !== args.workspaceId ||
+			proposal.target.kind !== args.target.kind ||
+			proposal.target.id !== args.target.id ||
+			content.phase !== "preparing"
+		)
+			return Result({ _nay: { message: "This Move preparation is no longer current." } });
+		// A candidate has one output batch. Recovery reuses it rather than scanning past attempts.
+		if (content.operationBatchId)
+			return Result({ _yay: { operationBatchId: content.operationBatchId, expiresAt: null } });
+		const operationBatchId = await ctx.db.insert("files_pending_update_operation_batches", {
+			organizationId: cohort.organizationId,
+			workspaceId: cohort.workspaceId,
+			userId: cohort.userId,
+			target: proposal.target,
+			expectedPendingUpdateId: proposal._id,
+			expectedRevision: proposal.revision,
+			expectedPrivateVersion: item.privateVersion,
+			cohortContentId: content._id,
+			publication: { kind: "review" },
+			updatedAt: now,
+			lastActivityAt: now,
+		});
+		await ctx.db.patch("files_move_cohort_content", content._id, { operationBatchId });
+		return Result({ _yay: { operationBatchId, expiresAt: null } });
+	}
 
 	const pendingUpdate = await files_db_get_pending_update(ctx, args);
 	let expectedPrivateVersion: app_convex_Doc<"files_pending_update_operation_batches">["expectedPrivateVersion"] = null;
@@ -1160,7 +1234,7 @@ async function db_create_operation_batch(
 				.eq("target.id", args.target.id),
 		)
 		.collect();
-	const activeBatches = existingBatches.filter((batch) => batch.expiresAt > now);
+	const activeBatches = existingBatches.filter((batch) => batch.expiresAt !== undefined && batch.expiresAt > now);
 	// A crashed client leaves its batch active until the TTL. This create is the same user
 	// starting over, so take over a batch that has staged nothing for the idle window; only a
 	// recently active batch still refuses.
@@ -1212,10 +1286,14 @@ async function db_stage_operation_batch_state_page(
 
 	const batchStates = await db_get_operation_batch_states(ctx, { operationBatchId: args.batch._id });
 	const phaseStates = batchStates.filter(
-		(stateDoc) => stateDoc.owner.kind === "temporary" && stateDoc.owner.phase === args.phase,
+		(stateDoc) =>
+			(stateDoc.owner.kind === "temporary" || stateDoc.owner.kind === "cohort") && stateDoc.owner.phase === args.phase,
 	);
 	const existingState =
-		phaseStates.find((stateDoc) => stateDoc.owner.kind === "temporary" && stateDoc.owner.role === args.role) ?? null;
+		phaseStates.find(
+			(stateDoc) =>
+				(stateDoc.owner.kind === "temporary" || stateDoc.owner.kind === "cohort") && stateDoc.owner.role === args.role,
+		) ?? null;
 	if (existingState?.sealed) {
 		return Result({ _nay: { message: "State is already sealed" } });
 	}
@@ -1242,13 +1320,22 @@ async function db_stage_operation_batch_state_page(
 			workspaceId: args.batch.workspaceId,
 			userId: args.batch.userId,
 			target: args.batch.target,
-			owner: {
-				kind: "temporary",
-				operationBatchId: args.batch._id,
-				phase: args.phase,
-				role: args.role,
-				expiresAt: args.batch.expiresAt,
-			},
+			owner: args.batch.cohortContentId
+				? {
+						kind: "cohort",
+						contentId: args.batch.cohortContentId,
+						cohortId: (await ctx.db.get("files_move_cohort_content", args.batch.cohortContentId))!.cohortId,
+						operationBatchId: args.batch._id,
+						phase: "output",
+						role: args.role,
+					}
+				: {
+						kind: "temporary",
+						operationBatchId: args.batch._id,
+						phase: args.phase,
+						role: args.role,
+						expiresAt: args.batch.expiresAt!,
+					},
 			sealed: false,
 			pageCount: 0,
 			totalBytes: 0,
@@ -1262,6 +1349,7 @@ async function db_stage_operation_batch_state_page(
 		resource: { kind: "state", id: stateId },
 		byteCount: (existingState?.totalBytes ?? 0) + args.bytes.byteLength,
 		publicationBatchId: args.phase === "output" && args.batch.publication ? args.batch._id : undefined,
+		cohortContentId: args.batch.cohortContentId,
 	});
 	if (reserved._nay) {
 		if (!existingState) await ctx.db.delete("files_pending_update_yjs_states", stateId);
@@ -1330,7 +1418,9 @@ async function db_seal_operation_batch_state(
 	const state =
 		batchStates.find(
 			(stateDoc) =>
-				stateDoc.owner.kind === "temporary" && stateDoc.owner.phase === args.phase && stateDoc.owner.role === args.role,
+				(stateDoc.owner.kind === "temporary" || stateDoc.owner.kind === "cohort") &&
+				stateDoc.owner.phase === args.phase &&
+				stateDoc.owner.role === args.role,
 		) ?? null;
 	if (!state) {
 		return Result({ _nay: { message: "Not found" } });
@@ -1456,6 +1546,7 @@ async function db_stage_operation_batch_text_input(
 			role: args.role,
 			text: "",
 			expiresAt: args.batch.expiresAt,
+			cohortContentId: args.batch.cohortContentId,
 		}));
 	const reserved = await files_private_storage_db_reserve(ctx, {
 		organizationId: args.batch.organizationId,
@@ -1464,6 +1555,7 @@ async function db_stage_operation_batch_text_input(
 		resource: { kind: "text_input", id: textInputId },
 		byteCount: files_get_utf8_byte_size(text),
 		publicationBatchId: args.publication ? args.batch._id : undefined,
+		cohortContentId: args.batch.cohortContentId,
 	});
 	if (reserved._nay) {
 		if (!existingTextInput) await ctx.db.delete("files_pending_update_text_inputs", textInputId);
@@ -1512,38 +1604,31 @@ export const create_file_pending_update_operation_batch = mutation({
 			if (!data._yay.canEdit) return Result({ _nay: { message: "This draft is read-only" } });
 			if (data._yay.readiness !== "ready" || data._yay.pendingUpdate.createIntent?.kind !== "text")
 				return Result({ _nay: { message: "This draft is still preparing" } });
-			return await db_create_operation_batch(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
-				target: args.target,
+		} else {
+			const authorized = await access_control_db_authorize_node(ctx, {
+				userAuth,
+				membership,
+				nodeId: args.target.id,
+				permission: "content.write",
 			});
-		}
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth,
-			membership,
-			nodeId: args.target.id,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
+			if (authorized._nay) return authorized;
+
+			// Check again in the final write.
+			const nodeWritable = await files_nodes_db_require_user_writable(ctx, {
+				node: authorized._yay.fileNode,
+				userId: userAuth.id,
+			});
+			if (nodeWritable._nay) return nodeWritable;
 		}
 
-		// Refuse before staging pending Yjs input for a read-only file. Check again in the final write.
-		const nodeWritable = await files_nodes_db_require_user_writable(ctx, {
-			node: authorized._yay.fileNode,
-			userId: userAuth.id,
-		});
-		if (nodeWritable._nay) {
-			return nodeWritable;
-		}
-
-		return await db_create_operation_batch(ctx, {
+		const created = await db_create_operation_batch(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			target: args.target,
 		});
+		// Public edit batches always expire. Only the internal cohort door has durable output.
+		return created._nay ? created : Result({ _yay: { ...created._yay, expiresAt: created._yay.expiresAt! } });
 	},
 });
 
@@ -1554,6 +1639,7 @@ export const create_file_pending_update_operation_batch = mutation({
  */
 export const create_file_pending_update_operation_batch_internal = internalMutation({
 	args: {
+		cohortContent: v.optional(files_pending_cohort_content_context_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -1563,7 +1649,7 @@ export const create_file_pending_update_operation_batch_internal = internalMutat
 	returns: v_result({
 		_yay: v.object({
 			operationBatchId: v.id("files_pending_update_operation_batches"),
-			expiresAt: v.number(),
+			expiresAt: v.union(v.number(), v.null()),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -1573,6 +1659,7 @@ export const create_file_pending_update_operation_batch_internal = internalMutat
 			userId: args.userId,
 			target: args.target,
 			agentSource: args.agentSource,
+			cohortContent: args.cohortContent,
 		});
 	},
 });
@@ -1646,6 +1733,7 @@ export const stage_file_pending_update_state_page = mutation({
 
 export const stage_file_pending_update_state_page_internal = internalMutation({
 	args: {
+		cohortContent: v.optional(files_pending_cohort_content_context_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -1657,12 +1745,17 @@ export const stage_file_pending_update_state_page_internal = internalMutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
+		if (args.cohortContent) {
+			const checked = await db_enter_cohort_content(ctx, args.cohortContent);
+			if (checked._nay) return checked;
+		}
 		const batch = await db_get_owned_operation_batch(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			operationBatchId: args.operationBatchId,
 			now: Date.now(),
+			cohortContent: args.cohortContent,
 		});
 		if (!batch) {
 			return Result({ _nay: { message: "Not found" } });
@@ -1756,6 +1849,7 @@ export const seal_file_pending_update_state = mutation({
 
 export const seal_file_pending_update_state_internal = internalMutation({
 	args: {
+		cohortContent: v.optional(files_pending_cohort_content_context_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -1775,12 +1869,17 @@ export const seal_file_pending_update_state_internal = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
+		if (args.cohortContent) {
+			const checked = await db_enter_cohort_content(ctx, args.cohortContent);
+			if (checked._nay) return checked;
+		}
 		const batch = await db_get_owned_operation_batch(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			operationBatchId: args.operationBatchId,
 			now: Date.now(),
+			cohortContent: args.cohortContent,
 		});
 		if (!batch) {
 			return Result({ _nay: { message: "Not found" } });
@@ -1899,6 +1998,7 @@ export const stage_file_pending_update_text_input_internal = internalMutation({
 
 export const stage_prepared_content_text = internalMutation({
 	args: {
+		cohortContent: v.optional(files_pending_cohort_content_context_validator),
 		userId: v.id("users"),
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		role: v.union(v.literal("staged"), v.literal("unstaged")),
@@ -1906,18 +2006,39 @@ export const stage_prepared_content_text = internalMutation({
 	},
 	returns: v_result({ _yay: v.id("files_pending_update_text_inputs") }),
 	handler: async (ctx, args) => {
+		if (args.cohortContent) {
+			const checked = await db_enter_cohort_content(ctx, args.cohortContent);
+			if (checked._nay) return checked;
+		}
 		const batch = await ctx.db.get("files_pending_update_operation_batches", args.operationBatchId);
-		if (!batch || batch.userId !== args.userId || batch.expiresAt <= Date.now())
+		if (
+			!batch ||
+			batch.userId !== args.userId ||
+			(batch.expiresAt !== undefined && batch.expiresAt <= Date.now()) ||
+			(batch.cohortContentId !== undefined && batch.cohortContentId !== args.cohortContent?.contentId)
+		)
 			return Result({ _nay: { message: "Not found" } });
 		// A Save with no new diff can still keep a sealed residual state family.
 		if (!batch.publication)
 			await ctx.db.patch("files_pending_update_operation_batches", batch._id, { publication: { kind: "review" } });
-		return await db_stage_operation_batch_text_input(ctx, {
+		const staged = await db_stage_operation_batch_text_input(ctx, {
 			batch,
 			role: args.role,
 			text: args.text,
 			publication: true,
 		});
+		if (staged._yay && args.cohortContent)
+			await ctx.db.patch(
+				"files_move_cohort_content",
+				args.cohortContent.contentId,
+				args.role === "staged"
+					? {
+							acceptedTextInputId: staged._yay,
+							acceptedTextDigest: files_pending_update_yjs_state_digest(new TextEncoder().encode(args.text)),
+						}
+					: { unstagedTextInputId: staged._yay },
+			);
+		return staged;
 	},
 });
 
@@ -2132,6 +2253,7 @@ export type get_file_pending_update_text_input_internal_Result =
  */
 export const stage_trusted_yjs_update = internalMutation({
 	args: {
+		cohortContent: v.optional(files_pending_cohort_content_context_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -2149,6 +2271,10 @@ export const stage_trusted_yjs_update = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
+		if (args.cohortContent) {
+			const checked = await db_enter_cohort_content(ctx, args.cohortContent);
+			if (checked._nay) return checked;
+		}
 		// The staged value later becomes one `files_yjs_updates` doc, so it obeys the doc caps here
 		// already: a stage that could never commit should not be storable.
 		if (args.update.byteLength === 0) {
@@ -2183,6 +2309,7 @@ export const stage_trusted_yjs_update = internalMutation({
 			.collect();
 		for (const stage of existingStages) {
 			if (stage.kind !== args.kind) continue;
+			if (stage.cohortContentId) continue;
 			await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
 			await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
 		}
@@ -2194,7 +2321,8 @@ export const stage_trusted_yjs_update = internalMutation({
 			fileNodeId: args.nodeId,
 			kind: args.kind,
 			update: new ArrayBuffer(0),
-			expiresAt: Date.now() + PENDING_OPERATION_BATCH_TTL_MS,
+			expiresAt: args.cohortContent ? undefined : Date.now() + PENDING_OPERATION_BATCH_TTL_MS,
+			cohortContentId: args.cohortContent?.contentId,
 		});
 		if (operationBatchId)
 			await ctx.db.patch("files_pending_update_operation_batches", operationBatchId, {
@@ -2207,6 +2335,7 @@ export const stage_trusted_yjs_update = internalMutation({
 			resource: { kind: "trusted_stage", id: stageId },
 			byteCount: args.update.byteLength,
 			publicationBatchId: operationBatchId,
+			cohortContentId: args.cohortContent?.contentId,
 		});
 		if (reserved._nay) {
 			await ctx.db.delete("files_yjs_trusted_update_stages", stageId);
@@ -2214,6 +2343,8 @@ export const stage_trusted_yjs_update = internalMutation({
 			return reserved;
 		}
 		await ctx.db.patch("files_yjs_trusted_update_stages", stageId, { update: args.update });
+		if (args.cohortContent)
+			await ctx.db.patch("files_move_cohort_content", args.cohortContent.contentId, { trustedStageId: stageId });
 
 		return Result({ _yay: { stageId, operationBatchId } });
 	},
@@ -2240,6 +2371,7 @@ export const retire_trusted_yjs_update_stage = internalMutation({
 		const stage = await ctx.db.get("files_yjs_trusted_update_stages", args.stageId);
 		if (
 			stage &&
+			!stage.cohortContentId &&
 			stage.organizationId === args.organizationId &&
 			stage.workspaceId === args.workspaceId &&
 			stage.userId === args.userId &&
@@ -2369,16 +2501,13 @@ export const get_data_for_pending_content_operation = internalQuery({
 				console.error(errorMessage, errorData);
 				throw should_never_happen(errorMessage, errorData);
 			}
-			const chunks = await ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", fileNode._id),
-				)
-				.collect();
+			const chunks = [];
+			for await (const chunk of files_saved_content_db_text_chunks(ctx.db, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: fileNode._id,
+			}))
+				chunks.push(chunk);
 			// An empty file stores no chunk at all, so an empty result is only real when the asset
 			// says the file has no bytes. Otherwise the chunks are missing and no proposal can be
 			// built against them.
@@ -2562,6 +2691,12 @@ export const expire_file_pending_updates = internalMutation({
 			return null;
 		}
 
+		// Expiry can wait for the workspace's saved-view repair.
+		if (await files_move_reservations_db_find_blocker(ctx.db, { wholeWorkspace: args })) {
+			await db_schedule_expiry_check({ ctx, check, checkAt: now + EXPIRY_RETRY_MS });
+			return null;
+		}
+
 		const dueDrafts = await ctx.db
 			.query("files_pending_updates")
 			.withIndex("by_organization_workspace_user_expiresAt", (q) =>
@@ -2740,7 +2875,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 		// state families still owned by it.
 		const expiredBatches = await ctx.db
 			.query("files_pending_update_operation_batches")
-			.withIndex("by_expiresAt", (q) => q.lte("expiresAt", now))
+			.withIndex("by_expiresAt", (q) => q.gte("expiresAt", 0).lte("expiresAt", now))
 			.take(PENDING_STATE_SWEEP_BATCH_SIZE);
 		for (const batch of expiredBatches) {
 			if (remainingLargeValues === 0) {
@@ -2784,7 +2919,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 				? []
 				: await ctx.db
 						.query("files_pending_update_text_inputs")
-						.withIndex("by_expiresAt", (q) => q.lte("expiresAt", now))
+						.withIndex("by_expiresAt", (q) => q.gte("expiresAt", 0).lte("expiresAt", now))
 						.take(textInputLimit);
 		remainingLargeValues -= expiredTextInputs.length;
 		for (const input of expiredTextInputs) {
@@ -2801,7 +2936,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 				? []
 				: await ctx.db
 						.query("files_yjs_trusted_update_stages")
-						.withIndex("by_expiresAt", (q) => q.lte("expiresAt", now))
+						.withIndex("by_expiresAt", (q) => q.gte("expiresAt", 0).lte("expiresAt", now))
 						.take(trustedStageLimit);
 		remainingLargeValues -= expiredTrustedStages.length;
 		for (const stage of expiredTrustedStages) {
@@ -2849,7 +2984,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
  * Settle a no-change content write: the branch texts match their base, so nothing new is
  * proposed. A doc under a move or delete proposal keeps that part; any other doc is deleted. A
  * lock refusal keeps the batch; once the file is writable the batch is always consumed.
- * `expectedUpdatedAt` guards the race where the doc changed after the action read it — a newer
+ * `expectedRevision` guards the race where the doc changed after the action read it — a newer
  * proposal must never be destroyed by a stale no-change. Null
  * means the action read no doc; a doc that appeared since then is left alone and the write
  * refuses, so its acknowledgment cannot claim that the newer content ended.
@@ -2931,7 +3066,7 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 		) {
 			return Result({ _nay: { message: "Pending update changed, retry the write" } });
 		}
-		// A member Save changes the asset without changing the proposal's timestamp.
+		// A member Save changes the asset without changing the proposal's revision.
 		if (files_pending_update_content_is_stale(pendingUpdate, file)) {
 			return Result({
 				_nay: {
@@ -3512,6 +3647,7 @@ type commit_file_pending_update_upsert_in_db_Base =
 
 export async function files_pending_updates_action_stage_private_state_family(args: {
 	ctx: ActionCtx;
+	cohortContent?: files_pending_updates_CohortContentContext;
 	organizationId: Id<"organizations">;
 	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
@@ -3540,6 +3676,7 @@ export async function files_pending_updates_action_stage_private_state_family(ar
 			const staged = (await ctx.runMutation(
 				internal.files_pending_updates.stage_file_pending_update_state_page_internal,
 				{
+					cohortContent: args.cohortContent,
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					userId: args.userId,
@@ -3555,6 +3692,7 @@ export async function files_pending_updates_action_stage_private_state_family(ar
 
 		abortSignal?.throwIfAborted();
 		const sealed = (await ctx.runMutation(internal.files_pending_updates.seal_file_pending_update_state_internal, {
+			cohortContent: args.cohortContent,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -4515,7 +4653,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			if (!membership) return Result({ _nay: { message: "Permission denied" } });
 
 			const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 4096 });
-			const source = await db_get_pending_target_view(ctx, { membership, target: args.target, reader });
+			const source = await files_pending_updates_db_get_target_view(ctx, { membership, target: args.target, reader });
 			if (!source || source.entry.kind !== "private") return Result({ _nay: { message: "Not found" } });
 			if (source.readiness !== "ready")
 				return Result({ _nay: { name: "preparing", message: "This draft is still preparing" } });
@@ -4537,7 +4675,11 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				});
 				if (allowed._nay) return allowed;
 			} else {
-				const parent = await db_get_pending_target_view(ctx, { membership, target: args.destParent, reader });
+				const parent = await files_pending_updates_db_get_target_view(ctx, {
+					membership,
+					target: args.destParent,
+					reader,
+				});
 				if (!parent || parent.entry.node.kind !== "folder")
 					return Result({ _nay: { message: "Destination folder is missing" } });
 				if (parent.readiness !== "ready")
@@ -4679,7 +4821,11 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			});
 			if (allowed._nay) return allowed;
 		} else {
-			const parent = await db_get_pending_target_view(ctx, { membership, target: args.destParent, reader });
+			const parent = await files_pending_updates_db_get_target_view(ctx, {
+				membership,
+				target: args.destParent,
+				reader,
+			});
 			if (!parent || parent.entry.node.kind !== "folder")
 				return Result({ _nay: { message: "Destination folder is missing" } });
 			if (parent.readiness !== "ready")
@@ -4875,7 +5021,7 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			if (!membership) return Result({ _nay: { message: "Permission denied" } });
 
 			const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 2048 });
-			const view = await db_get_pending_target_view(ctx, { membership, target: args.target, reader });
+			const view = await files_pending_updates_db_get_target_view(ctx, { membership, target: args.target, reader });
 			if (!view || view.entry.kind !== "private") return Result({ _nay: { message: "Not found" } });
 			if (!view.canEdit) return Result({ _nay: { message: "This draft is read-only" } });
 
@@ -5010,43 +5156,6 @@ export type upsert_file_pending_archive_in_db_Result =
 	typeof upsert_file_pending_archive_in_db extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
-
-export const apply_file_pending_move = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		target: v.object({ kind: v.literal("saved"), id: v.id("files_nodes") }),
-		pendingUpdateId: v.id("files_pending_updates"),
-		reviewedRevision: v.number(),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
-		const pendingUpdate = await files_db_get_pending_update(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			target: args.target,
-			pendingUpdateId: args.pendingUpdateId,
-		});
-		if (!pendingUpdate) return Result({ _yay: null });
-		if (pendingUpdate.revision !== args.reviewedRevision)
-			return Result({ _nay: { name: "target_changed", message: "This proposal changed. Review it again." } });
-		if (!pendingUpdate.pendingMove) return Result({ _yay: null });
-		// The common move preflight checks access, write policy, and the exact replacement.
-		const applied = await files_nodes_db_apply_pending_move(ctx, { userAuth, membership, pendingUpdate });
-		if (applied._nay) return applied;
-		await files_pending_update_db_settle_move_row(ctx, { pendingUpdate });
-		return Result({ _yay: null });
-	},
-});
 
 export const apply_file_pending_archive = mutation({
 	args: {
@@ -6911,7 +7020,7 @@ const pending_target_view_validator = v.object({
 	copyDestination: v.optional(v.object({ folderPath: v.string(), personal: v.boolean(), replacement: v.boolean() })),
 });
 
-async function db_get_pending_target_view(
+export async function files_pending_updates_db_get_target_view(
 	ctx: QueryCtx,
 	args: {
 		membership: app_convex_Doc<"organizations_workspaces_users">;
@@ -7147,7 +7256,7 @@ async function db_redact_pending_copy_source(ctx: QueryCtx, pendingUpdate: app_c
 
 async function db_get_public_pending_target_view(
 	ctx: QueryCtx,
-	view: NonNullable<Awaited<ReturnType<typeof db_get_pending_target_view>>>,
+	view: NonNullable<Awaited<ReturnType<typeof files_pending_updates_db_get_target_view>>>,
 ) {
 	const { entry } = view;
 	const pendingUpdate = entry.pendingUpdate;
@@ -7223,7 +7332,7 @@ export const get_file_pending_target = query({
 		// An old private link keeps working after Save. Null means the file is gone.
 		const readTarget = await files_pending_nodes_db_resolve_read_target(ctx, { ...scope, target });
 		if (!readTarget) return null;
-		const rawView = await db_get_pending_target_view(ctx, { membership, target: readTarget, reader });
+		const rawView = await files_pending_updates_db_get_target_view(ctx, { membership, target: readTarget, reader });
 		const view = rawView ? await db_get_public_pending_target_view(ctx, rawView) : null;
 		return view
 			? {
@@ -7296,6 +7405,7 @@ export const get_pending_move_occupant = query({
 							q
 								.eq("organizationId", scope.organizationId)
 								.eq("workspaceId", scope.workspaceId)
+								.eq("moveCohortId", undefined)
 								.eq("parentId", readable._id)
 								.eq("archiveOperationId", null)
 								.eq("isRestrictedScopeRoot", false),
@@ -7483,12 +7593,16 @@ export const list_files_pending_updates = query({
 		membershipId: v.id("organizations_workspaces_users"),
 		listKey: v.string(),
 		paginationOpts: paginationOptsValidator,
+		savedStream: v.optional(files_saved_stream_validator),
 	},
 	returns: paginationResultValidator(
 		v.object({
 			target: files_pending_target_validator,
 			pendingUpdateId: v.id("files_pending_updates"),
 			revision: v.number(),
+			updatedAt: v.number(),
+			listRowCreationTime: v.number(),
+			listRowId: v.id("files_pending_list_rows"),
 			threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
 			// Ready content to review, for the editor's review pager. Same rule as the view's `readiness`.
 			hasReadyContent: v.boolean(),
@@ -7510,6 +7624,8 @@ export const list_files_pending_updates = query({
 
 		const listKey = db_normalize_pending_list_key(ctx, args.listKey);
 		if (listKey === null) return { page: [], isDone: true, continueCursor: "" };
+		await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const tag = args.savedStream?.kind === "cohort" ? args.savedStream : undefined;
 
 		// The overlay flush keeps one list row per listed proposal and list key.
 		const result = await ctx.db
@@ -7519,6 +7635,8 @@ export const list_files_pending_updates = query({
 					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
 					.eq("userId", userAuth.id)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view)
 					.eq("listKey", listKey),
 			)
 			.order("desc")
@@ -7541,13 +7659,16 @@ export const list_files_pending_updates = query({
 
 		const rows = [];
 		for (const row of result.page) {
-			const pendingUpdate = await ctx.db.get("files_pending_updates", row.pendingUpdateId);
+			const pendingUpdate = await files_saved_placement_db_get_proposal(ctx.db, row.pendingUpdateId);
 			if (!pendingUpdate) continue;
 			const { target, preparation, createIntent, content } = pendingUpdate;
 			rows.push({
 				target,
 				pendingUpdateId: pendingUpdate._id,
 				revision: pendingUpdate.revision,
+				updatedAt: row.updatedAt,
+				listRowCreationTime: row._creationTime,
+				listRowId: row._id,
 				...(pendingUpdate.threadIds ? { threadIds: pendingUpdate.threadIds } : {}),
 				hasReadyContent:
 					content !== undefined &&
@@ -7567,8 +7688,19 @@ export const list_files_pending_updates = query({
  * is left out, because the dropdown always shows it.
  */
 export const list_files_pending_sources = query({
-	args: { membershipId: v.id("organizations_workspaces_users"), paginationOpts: paginationOptsValidator },
-	returns: paginationResultValidator(doc(app_convex_schema, "files_pending_list_keys").fields.listKey),
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		paginationOpts: paginationOptsValidator,
+		savedStream: v.optional(files_saved_stream_validator),
+	},
+	returns: paginationResultValidator(
+		v.object({
+			listKey: doc(app_convex_schema, "files_pending_list_keys").fields.listKey,
+			lastUpdatedAt: v.number(),
+			keyCreationTime: v.number(),
+			keyId: v.id("files_pending_list_keys"),
+		}),
+	),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
@@ -7577,6 +7709,8 @@ export const list_files_pending_sources = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) return { page: [], isDone: true, continueCursor: "" };
+		await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const tag = args.savedStream?.kind === "cohort" ? args.savedStream : undefined;
 
 		const result = await ctx.db
 			.query("files_pending_list_keys")
@@ -7584,11 +7718,27 @@ export const list_files_pending_sources = query({
 				q
 					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", userAuth.id),
+					.eq("userId", userAuth.id)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view),
 			)
 			.order("desc")
 			.paginate(args.paginationOpts);
-		return { ...result, page: result.page.flatMap((key) => (key.listKey === "all" ? [] : [key.listKey])) };
+		return {
+			...result,
+			page: result.page.flatMap((key) =>
+				key.listKey === "all"
+					? []
+					: [
+							{
+								listKey: key.listKey,
+								lastUpdatedAt: key.lastUpdatedAt,
+								keyCreationTime: key._creationTime,
+								keyId: key._id,
+							},
+						],
+			),
+		};
 	},
 });
 
@@ -7664,18 +7814,26 @@ async function db_get_files_pending_updates_summary(args: {
 	listKey: app_convex_Doc<"files_pending_list_rows">["listKey"];
 }) {
 	const { ctx, membership, listKey } = args;
-
-	const rows = await ctx.db
-		.query("files_pending_list_rows")
-		.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
-			q
-				.eq("organizationId", membership.organizationId)
-				.eq("workspaceId", membership.workspaceId)
-				.eq("userId", membership.userId)
-				.eq("listKey", listKey),
-		)
-		.take(501);
-	return { count: Math.min(rows.length, 500), truncated: rows.length > 500 };
+	const view = await files_saved_placement_db_get_view(ctx.db, membership);
+	const tags = [undefined, ...(view.cohortId ? [{ cohortId: view.cohortId, view: view.view! }] : [])];
+	let count = 0;
+	for (const tag of tags) {
+		const rows = await ctx.db
+			.query("files_pending_list_rows")
+			.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", membership.userId)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view)
+					.eq("listKey", listKey),
+			)
+			.take(501 - count);
+		count += rows.length;
+		if (count > 500) break;
+	}
+	return { count: Math.min(count, 500), truncated: count > 500 };
 }
 
 export const get_files_pending_updates_summary = query({
@@ -7838,6 +7996,359 @@ async function db_get_pending_save_actor(
 
 export type files_pending_updates_PreparedContent = Infer<typeof files_pending_prepared_content_validator>;
 
+const saved_prepared_content_validator = v.union(
+	files_pending_prepared_content_validator.members[0],
+	files_pending_prepared_content_validator.members[1],
+	files_pending_prepared_content_validator.members[3],
+);
+
+/**
+ * Every content page proves current authority. The reservation grants no access.
+ */
+export async function files_pending_updates_db_get_cohort_content(
+	ctx: QueryCtx | MutationCtx,
+	args: files_pending_updates_CohortContentContext,
+) {
+	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
+	const content = await ctx.db.get("files_move_cohort_content", args.contentId);
+	if (
+		!cohort ||
+		!content ||
+		content.cohortId !== cohort._id ||
+		cohort.fence !== args.fence ||
+		cohort.attemptFence !== args.attemptFence ||
+		content.preparationFence !== args.preparationFence ||
+		cohort.phase !== "staging" ||
+		cohort.visibleView !== "before"
+	)
+		return Result({ _nay: { name: "stopped", message: "This Move step is no longer current." } });
+	const membership = await organizations_db_get_membership(ctx, {
+		membershipId: cohort.membershipId,
+		userId: cohort.userId,
+	});
+	const lifetime = await organizations_membership_lifetimes_db_get(ctx, cohort);
+	if (
+		!membership ||
+		membership.organizationId !== cohort.organizationId ||
+		membership.workspaceId !== cohort.workspaceId ||
+		!lifetime?.active ||
+		lifetime.membershipId !== membership._id ||
+		lifetime.lifetime !== cohort.membershipLifetime
+	)
+		return Result({ _nay: { message: "Unauthorized" } });
+	const item = await ctx.db.get("files_move_cohort_items", content.itemId);
+	const proposal = await ctx.db.get("files_pending_updates", content.pendingUpdateId);
+	if (
+		!item ||
+		item.cohortId !== cohort._id ||
+		item.contentId !== content._id ||
+		!proposal ||
+		proposal.organizationId !== cohort.organizationId ||
+		proposal.workspaceId !== cohort.workspaceId ||
+		proposal.userId !== cohort.userId ||
+		proposal.revision !== content.reviewedRevision ||
+		item.pendingUpdateId !== proposal._id ||
+		item.reviewedRevision !== proposal.revision ||
+		item.target.kind !== proposal.target.kind ||
+		item.target.id !== proposal.target.id ||
+		item.selectedContentStateId !== content.selectedContentStateId
+	)
+		return Result({ _nay: { name: "target_changed", message: "The proposal changed after it was reviewed." } });
+	if (proposal.target.kind === "saved") {
+		const access = await access_control_db_authorize_node(ctx, {
+			membership,
+			userAuth: { id: cohort.userId },
+			nodeId: proposal.target.id,
+			permission: "content.write",
+		});
+		if (access._nay) return access;
+		const writable = await files_nodes_db_require_user_writable(ctx, {
+			node: access._yay.fileNode,
+			userId: cohort.userId,
+		});
+		if (writable._nay) return writable;
+		if (
+			!files_transfer_source_versions_equal(
+				await files_nodes_db_get_content_version(ctx, access._yay.fileNode),
+				content.beforeContentVersion,
+			)
+		)
+			return Result({ _nay: { name: "target_changed", message: "The file changed after it was reviewed." } });
+	} else {
+		const data = await db_get_private_pending_target(ctx, {
+			membership,
+			privateNodeId: proposal.target.id,
+			pendingUpdateId: proposal._id,
+		});
+		if (data._nay) return data;
+		if (
+			!data._yay.canAcceptWithParents ||
+			data._yay.readiness !== "ready" ||
+			!item.privateVersion ||
+			data._yay.node.creationGeneration !== item.privateVersion.creationGeneration ||
+			data._yay.node.structuralRevision !== item.privateVersion.structuralRevision
+		)
+			return Result({ _nay: { name: "target_changed", message: "This draft changed. Review it again." } });
+	}
+	return Result({ _yay: { cohort, content, item, proposal, membership } });
+}
+
+async function db_enter_cohort_content(ctx: MutationCtx, args: files_pending_updates_CohortContentContext) {
+	const checked = await files_pending_updates_db_get_cohort_content(ctx, args);
+	if (checked._nay) return checked;
+	const entered = await files_move_reservations_db_enter(ctx, { ...args, mode: "stage" });
+	return entered._nay ? entered : checked;
+}
+
+export const get_cohort_content_preparation = internalQuery({
+	args: files_pending_cohort_content_context_validator,
+	handler: async (ctx, args) => {
+		const checked = await files_pending_updates_db_get_cohort_content(ctx, args);
+		if (checked._nay) return checked;
+		const { cohort, content, item, proposal, membership } = checked._yay;
+		const reviewedPrivateParentIds: Id<"files_pending_nodes">[] = [];
+		if (proposal.target.kind === "private") {
+			const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...cohort, privateNodeId: proposal.target.id });
+			if (ancestry._nay) return ancestry;
+			for (const parent of ancestry._yay.ancestors) {
+				const selected = await ctx.db
+					.query("files_move_cohort_items")
+					.withIndex("by_cohort_target", (q) =>
+						q.eq("cohortId", cohort._id).eq("target.kind", "private").eq("target.id", parent._id),
+					)
+					.first();
+				if (
+					!selected ||
+					selected.privateVersion?.creationGeneration !== parent.creationGeneration ||
+					selected.privateVersion.structuralRevision !== parent.structuralRevision
+				)
+					return Result({ _nay: { message: "Review and save the parent draft first" } });
+				reviewedPrivateParentIds.push(parent._id);
+			}
+		}
+		return Result({
+			_yay: {
+				userId: cohort.userId,
+				membershipId: membership._id,
+				target: item.target,
+				pendingUpdateId: proposal._id,
+				reviewedRevision: content.reviewedRevision,
+				selectedContentStateId: content.selectedContentStateId,
+				reviewedPrivateParentIds,
+				billedUserId: cohort.billedUserId,
+				phase: content.phase,
+				preparationFence: content.preparationFence,
+			},
+		});
+	},
+});
+
+/**
+ * A new action attempt gets new CRDT bytes and keys. Old uploads keep their cleanup receipts.
+ */
+export const begin_cohort_content_preparation = internalMutation({
+	args: {
+		cohortId: v.id("files_move_cohorts"),
+		contentId: v.id("files_move_cohort_content"),
+		fence: v.number(),
+		attemptFence: v.number(),
+	},
+	handler: async (ctx, args) => {
+		const content = await ctx.db.get("files_move_cohort_content", args.contentId);
+		if (!content) return Result({ _nay: { message: "Not found" } });
+		const checked = await db_enter_cohort_content(ctx, { ...args, preparationFence: content.preparationFence });
+		if (checked._nay) return checked;
+		if (content.phase !== "preparing")
+			return Result({ _yay: { preparationFence: content.preparationFence, done: true } });
+		if (content.operationBatchId) {
+			const batch = await ctx.db.get("files_pending_update_operation_batches", content.operationBatchId);
+			if (!batch || batch.cohortContentId !== content._id)
+				throw should_never_happen("Move lost its output batch", args);
+			const states = await db_get_operation_batch_states(ctx, { operationBatchId: batch._id });
+			if (states.length) {
+				const cleanupTaskId = await ctx.db.insert("files_pending_update_state_cleanup_tasks", {
+					organizationId: batch.organizationId,
+					workspaceId: batch.workspaceId,
+					createdAt: Date.now(),
+				});
+				for (const state of states)
+					await ctx.db.patch("files_pending_update_yjs_states", state._id, {
+						owner: { kind: "retired", cleanupTaskId },
+					});
+				await ctx.scheduler.runAfter(0, internal.files_pending_updates.cleanup_expired_pending_state_rows, {});
+			}
+			// One batch has at most two text roles and three asset roles.
+			const inputs = await ctx.db
+				.query("files_pending_update_text_inputs")
+				.withIndex("by_operationBatch", (q) => q.eq("operationBatchId", batch._id))
+				.collect();
+			for (const input of inputs) {
+				await ctx.db.delete("files_pending_update_text_inputs", input._id);
+				await files_private_storage_db_release_deleted_resource(ctx, { kind: "text_input", id: input._id });
+			}
+			if (content.trustedStageId) {
+				await ctx.db.delete("files_yjs_trusted_update_stages", content.trustedStageId);
+				await files_private_storage_db_release_deleted_resource(ctx, {
+					kind: "trusted_stage",
+					id: content.trustedStageId,
+				});
+			}
+			if (batch.publication?.kind === "assets")
+				for (const id of [
+					batch.publication.contentAssetId,
+					batch.publication.yjsSnapshotAssetId,
+					batch.publication.backupAssetId,
+				]) {
+					if (!id) continue;
+					const reservation = await ctx.db
+						.query("files_private_storage_reservations")
+						.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", id))
+						.first();
+					if (
+						reservation?.cohortContentId !== content._id ||
+						reservation.publicationBatchId !== batch._id ||
+						reservation.resource.kind !== "asset"
+					)
+						continue;
+					const asset = await ctx.db.get("files_r2_assets", id);
+					await r2_enqueue_object_deletion_job(ctx, {
+						...batch,
+						r2Key: reservation.resource.r2Key,
+						reason: "failed_create",
+						putMayArriveUntil: (asset?.uploadUrlExpiresAt ?? Date.now()) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+					});
+					const claim = await ctx.db
+						.query("files_move_asset_claims")
+						.withIndex("by_asset", (q) => q.eq("assetId", id))
+						.first();
+					if (claim?.cohortId === args.cohortId) await ctx.db.delete("files_move_asset_claims", claim._id);
+					if (asset) await ctx.db.delete("files_r2_assets", asset._id);
+				}
+			await ctx.db.delete("files_pending_update_operation_batches", batch._id);
+		}
+		const preparationFence = content.preparationFence + 1;
+		await ctx.db.patch("files_move_cohort_content", content._id, {
+			preparationFence,
+			operationBatchId: null,
+			acceptedTextInputId: null,
+			unstagedTextInputId: null,
+			acceptedTextDigest: null,
+			afterAssetId: null,
+			afterYjsSnapshotAssetId: null,
+			trustedStageId: null,
+		});
+		return Result({ _yay: { preparationFence, done: false } });
+	},
+});
+
+/**
+ * Seal preparation by identity. This does not publish content or bill the actor.
+ */
+export async function files_pending_updates_db_stage_prepared_content(
+	ctx: MutationCtx,
+	args: { cohortContent: files_pending_updates_CohortContentContext; prepared: files_pending_updates_PreparedContent },
+) {
+	const checked = await db_enter_cohort_content(ctx, args.cohortContent);
+	if (checked._nay) return checked;
+	const { cohort, content, proposal } = checked._yay;
+	const prepared = args.prepared;
+	if (content.phase !== "preparing")
+		return content.prepared
+			? Result({ _yay: null })
+			: Result({ _nay: { message: "This preparation is no longer current." } });
+	if (
+		prepared.membershipId !== cohort.membershipId ||
+		prepared.pendingUpdateId !== proposal._id ||
+		prepared.reviewedRevision !== proposal.revision ||
+		prepared.billedUserId !== cohort.billedUserId ||
+		(prepared.kind === "private"
+			? prepared.privateNodeId !== proposal.target.id
+			: prepared.nodeId !== proposal.target.id)
+	)
+		return Result({ _nay: { message: "This preparation is no longer current." } });
+	for (const id of prepared.operationBatchIds) {
+		const batch = await db_get_owned_operation_batch(ctx, {
+			...cohort,
+			operationBatchId: id,
+			now: Date.now(),
+			cohortContent: args.cohortContent,
+		});
+		if (
+			!batch ||
+			batch.cohortContentId !== content._id ||
+			batch.expectedPendingUpdateId !== proposal._id ||
+			batch.expectedRevision !== proposal.revision
+		)
+			return Result({ _nay: { message: "This preparation is no longer current." } });
+		if (batch.publication?.kind === "assets")
+			for (const assetId of [
+				batch.publication.contentAssetId,
+				batch.publication.yjsSnapshotAssetId,
+				batch.publication.backupAssetId,
+			]) {
+				if (!assetId) continue;
+				const reservation = await ctx.db
+					.query("files_private_storage_reservations")
+					.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", assetId))
+					.first();
+				if (reservation?.cohortContentId !== content._id || reservation.resource.kind !== "asset") continue;
+				await ctx.db.patch("files_r2_assets", assetId, { r2Key: reservation.resource.r2Key });
+			}
+	}
+	const family =
+		prepared.kind === "private"
+			? prepared.partial?.family
+			: prepared.kind === "replacement"
+				? undefined
+				: prepared.partial;
+	if (family)
+		for (const [role, id, digest] of [
+			["base", family.baseStateId, family.baseStateDigest],
+			["staged", family.stagedStateId, family.stagedStateDigest],
+			["unstaged", family.unstagedStateId, family.unstagedStateDigest],
+		] as const) {
+			const state = await ctx.db.get("files_pending_update_yjs_states", id);
+			if (
+				!state?.sealed ||
+				state.digest !== digest ||
+				state.owner.kind !== "cohort" ||
+				state.owner.contentId !== content._id ||
+				state.owner.role !== role
+			)
+				return Result({ _nay: { message: "The prepared state is no longer available." } });
+		}
+	const node = await ctx.db.get("files_nodes", content.nodeId);
+	const snapshot = node?.yjsSnapshotId ? await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId) : null;
+	await ctx.db.patch("files_move_cohort_content", content._id, {
+		prepared,
+		partialFamily: family
+			? {
+					operationBatchId: family.operationBatchId,
+					baseStateId: family.baseStateId,
+					stagedStateId: family.stagedStateId,
+					unstagedStateId: family.unstagedStateId,
+					baseStateDigest: family.baseStateDigest,
+					stagedStateDigest: family.stagedStateDigest,
+					unstagedStateDigest: family.unstagedStateDigest,
+				}
+			: null,
+		sourceSnapshotSequence: snapshot?.sequence ?? null,
+		phase: "sources",
+		phaseCursor: null,
+		nextChunkIndex: 0,
+	});
+	return Result({ _yay: null });
+}
+
+export const stage_cohort_prepared_content = internalMutation({
+	args: {
+		cohortContent: files_pending_cohort_content_context_validator,
+		prepared: files_pending_prepared_content_validator,
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: files_pending_updates_db_stage_prepared_content,
+});
+
 /**
  * The caller owns the review fence and rolls back the whole unit on any refusal.
  */
@@ -7845,7 +8356,7 @@ export async function files_pending_updates_db_commit_prepared_content(
 	ctx: MutationCtx,
 	args: {
 		userId: Id<"users">;
-		prepared: files_pending_updates_PreparedContent;
+		prepared: Infer<typeof saved_prepared_content_validator>;
 		reviewedPendingUpdateIds?: Set<Id<"files_pending_updates">>;
 		reviewRunId?: Id<"files_pending_update_runs">;
 		validatedMedia?: files_pending_media_ValidatedSave;
@@ -7859,10 +8370,7 @@ export async function files_pending_updates_db_commit_prepared_content(
 	});
 	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 
-	const target: files_PendingTarget =
-		prepared.kind === "private"
-			? { kind: "private", id: prepared.privateNodeId }
-			: { kind: "saved", id: prepared.nodeId };
+	const target = { kind: "saved" as const, id: prepared.nodeId };
 	const scope = { organizationId: membership.organizationId, workspaceId: membership.workspaceId, userId: args.userId };
 
 	for (const operationBatchId of prepared.operationBatchIds) {
@@ -7889,7 +8397,7 @@ export async function files_pending_updates_db_commit_prepared_content(
 			input.target.kind !== target.kind ||
 			input.target.id !== target.id ||
 			input.role !== role ||
-			input.expiresAt <= Date.now() ||
+			(input.expiresAt !== undefined && input.expiresAt <= Date.now()) ||
 			!prepared.operationBatchIds.includes(input.operationBatchId) ||
 			files_get_utf8_byte_size(input.text) > files_MAX_TEXT_CONTENT_BYTES
 		)
@@ -7932,24 +8440,6 @@ export async function files_pending_updates_db_commit_prepared_content(
 			: Result({ _yay: { target, newSequence: null, pendingUpdateRevision: saved._yay.revision } });
 	}
 
-	if (prepared.kind === "private") {
-		const text = prepared.prepared ? await readText(prepared.prepared.textInputId, "staged") : null;
-		const unstagedText = prepared.partial ? await readText(prepared.partial.unstagedTextInputId, "unstaged") : null;
-		if (text?._nay) return text;
-		if (unstagedText?._nay) return unstagedText;
-		return await files_pending_updates_db_save_private({
-			ctx,
-			...prepared,
-			operationBatchId: prepared.operationBatchIds[0],
-			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-			reviewRunId: args.reviewRunId,
-			shareLinkCleanup: args.shareLinkCleanup,
-			prepared: prepared.prepared ? { ...prepared.prepared, text: text!._yay! } : undefined,
-			partial: prepared.partial ? { family: prepared.partial.family, unstagedText: unstagedText!._yay! } : undefined,
-			actor,
-		});
-	}
-
 	const text = prepared.textInputId ? await readText(prepared.textInputId, "staged") : null;
 	if (text?._nay) return text;
 	if (prepared.operationBatchIds.length !== 1) return Result({ _nay: { message: "Invalid Save preparation" } });
@@ -7976,7 +8466,7 @@ export async function files_pending_updates_db_retire_prepared_content(
 ) {
 	for (const operationBatchId of prepared.operationBatchIds) {
 		const batch = await ctx.db.get("files_pending_update_operation_batches", operationBatchId);
-		if (!batch) continue;
+		if (!batch || batch.cohortContentId) continue;
 		if (batch.publication?.kind === "assets") {
 			for (const assetId of [
 				batch.publication.contentAssetId,
@@ -8018,7 +8508,7 @@ export async function files_pending_updates_db_retire_prepared_content(
 }
 
 export const commit_prepared_content = internalMutation({
-	args: { userId: v.id("users"), prepared: files_pending_prepared_content_validator },
+	args: { userId: v.id("users"), prepared: saved_prepared_content_validator },
 	handler: async (ctx, args) => {
 		const result = await files_pending_updates_db_commit_prepared_content(ctx, {
 			...args,
@@ -8196,8 +8686,7 @@ async function files_pending_updates_db_save_yjs(args: {
 
 	const pendingUpdateContent = files_pending_update_yjs_content_of(pendingUpdate);
 	if (!pendingUpdateContent) {
-		// Move-only docs have nothing to publish; Accept goes through
-		// apply_file_pending_move instead.
+		// Move-only proposals use the durable review intake.
 		return Result({
 			_nay: {
 				message: "No content to save",
@@ -8256,7 +8745,7 @@ async function files_pending_updates_db_save_yjs(args: {
 		// Only server-staged publication text qualifies; public staging cannot replace this reservation.
 		if (
 			!input ||
-			input.expiresAt <= Date.now() ||
+			(input.expiresAt !== undefined && input.expiresAt <= Date.now()) ||
 			reservation?.publicationBatchId !== batch._id ||
 			reservation.settlement.kind !== "held"
 		)
@@ -8322,7 +8811,8 @@ async function files_pending_updates_db_save_yjs(args: {
 			stage.userId !== user._id ||
 			stage.fileNodeId !== args.nodeId ||
 			stage.kind !== "pending_accept" ||
-			stage.expiresAt <= Date.now()
+			stage.cohortContentId !== undefined ||
+			(stage.expiresAt !== undefined && stage.expiresAt <= Date.now())
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -8897,16 +9387,13 @@ async function files_pending_updates_db_save_asset(args: {
 
 	if (!args.publish && !args.partial && targetNode.textKind === "rich_text" && pendingUpdate.mediaDependencySetId) {
 		// A later full Save can consume the proposal without changing the already saved text.
-		const chunks = await ctx.db
-			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", targetNode._id),
-			)
-			.collect();
+		const chunks = [];
+		for await (const chunk of files_saved_content_db_text_chunks(ctx.db, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: targetNode._id,
+		}))
+			chunks.push(chunk);
 		const asset = await ctx.db.get("files_r2_assets", targetNode.assetId);
 		const text = chunks.length > 0 ? files_merge_contiguous_chunks(chunks) : asset?.size === 0 ? "" : null;
 		if (text === null) throw should_never_happen("Full Save has no committed text", { nodeId: targetNode._id });
@@ -9018,6 +9505,7 @@ async function files_pending_updates_db_save_asset(args: {
 async function action_save_file_pending_update_non_collaborative(
 	ctx: ActionCtx,
 	args: {
+		cohortContent?: files_pending_updates_CohortContentContext;
 		membershipId: Id<"organizations_workspaces_users">;
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
@@ -9169,6 +9657,7 @@ async function action_save_file_pending_update_non_collaborative(
 		}
 
 		const allocated = (await ctx.runMutation(internal.files_pending_updates.prepare_pending_save_assets, {
+			cohortContent: args.cohortContent,
 			membershipId: args.membershipId,
 			target: { kind: "saved", id: args.nodeId },
 			pendingUpdateId: pendingUpdate._id,
@@ -9209,6 +9698,7 @@ async function action_save_file_pending_update_non_collaborative(
 			const batchCreated = (await ctx.runMutation(
 				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 				{
+					cohortContent: args.cohortContent,
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					userId: args.userId,
@@ -9251,6 +9741,7 @@ async function action_save_file_pending_update_non_collaborative(
 				const stagedPage = (await ctx.runMutation(
 					internal.files_pending_updates.stage_file_pending_update_state_page_internal,
 					{
+						cohortContent: args.cohortContent,
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
 						userId: args.userId,
@@ -9268,6 +9759,7 @@ async function action_save_file_pending_update_non_collaborative(
 			}
 
 			const sealed = (await ctx.runMutation(internal.files_pending_updates.seal_file_pending_update_state_internal, {
+				cohortContent: args.cohortContent,
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
@@ -9300,10 +9792,11 @@ async function action_save_file_pending_update_non_collaborative(
 		partialFamily = { operationBatchId, base, staged, unstaged };
 	}
 
-	if (pendingUpdate.mediaDependencySetId && !operationBatchId) {
+	if ((args.cohortContent || pendingUpdate.mediaDependencySetId) && !operationBatchId) {
 		const batch = (await ctx.runMutation(
 			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 			{
+				cohortContent: args.cohortContent,
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
@@ -9313,9 +9806,10 @@ async function action_save_file_pending_update_non_collaborative(
 		if (batch._nay) return batch;
 		operationBatchId = batch._yay.operationBatchId;
 	}
-	if (operationBatchId && (upload || pendingUpdate.mediaDependencySetId)) {
+	if (operationBatchId && (args.cohortContent || upload || pendingUpdate.mediaDependencySetId)) {
 		try {
 			const input = await ctx.runMutation(internal.files_pending_updates.stage_prepared_content_text, {
+				cohortContent: args.cohortContent,
 				userId: args.userId,
 				operationBatchId,
 				role: "staged",
@@ -9326,6 +9820,16 @@ async function action_save_file_pending_update_non_collaborative(
 				return input;
 			}
 			textInputId = input._yay;
+			if (args.cohortContent && partial) {
+				const remainder = await ctx.runMutation(internal.files_pending_updates.stage_prepared_content_text, {
+					cohortContent: args.cohortContent,
+					userId: args.userId,
+					operationBatchId,
+					role: "unstaged",
+					text: unstagedText._yay,
+				});
+				if (remainder._nay) return remainder;
+			}
 		} catch (error) {
 			await Promise.all([retireBatch(), releaseUpload()]);
 			throw error;
@@ -9454,6 +9958,7 @@ export const create_private_pending_download_url = action({
 
 export const prepare_pending_save_assets = internalMutation({
 	args: {
+		cohortContent: v.optional(files_pending_cohort_content_context_validator),
 		membershipId: v.id("organizations_workspaces_users"),
 		target: files_pending_target_validator,
 		pendingUpdateId: v.id("files_pending_updates"),
@@ -9469,6 +9974,10 @@ export const prepare_pending_save_assets = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
+		if (args.cohortContent) {
+			const checked = await db_enter_cohort_content(ctx, args.cohortContent);
+			if (checked._nay) return checked;
+		}
 		const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
 		if (!membership?.active) return Result({ _nay: { message: "Unauthorized" } });
 
@@ -9502,10 +10011,10 @@ export const prepare_pending_save_assets = internalMutation({
 			if (
 				!pending ||
 				pending.revision !== args.expectedRevision ||
-				pending.content?.base.kind !== "asset" ||
+				(pending.content?.base.kind !== "asset" && !args.cohortContent) ||
 				!node ||
-				node.collaborationEnabled !== false ||
-				args.yjsSnapshotSize !== undefined
+				(node.collaborationEnabled !== false && !args.cohortContent) ||
+				(args.yjsSnapshotSize !== undefined && !args.cohortContent)
 			)
 				return Result({ _nay: { message: "Stale save" } });
 
@@ -9533,7 +10042,11 @@ export const prepare_pending_save_assets = internalMutation({
 			userId: membership.userId,
 		};
 
-		const created = await db_create_operation_batch(ctx, { ...scope, target: args.target });
+		const created = await db_create_operation_batch(ctx, {
+			...scope,
+			target: args.target,
+			cohortContent: args.cohortContent,
+		});
 		if (created._nay) return created;
 		const operationBatchId = created._yay.operationBatchId;
 
@@ -9565,6 +10078,11 @@ export const prepare_pending_save_assets = internalMutation({
 				...(assets[1] ? { yjsSnapshotAssetId: assets[1].assetId } : {}),
 			},
 		});
+		if (args.cohortContent)
+			await ctx.db.patch("files_move_cohort_content", args.cohortContent.contentId, {
+				afterAssetId: assets[0]!.assetId,
+				afterYjsSnapshotAssetId: assets[1]?.assetId ?? null,
+			});
 
 		for (const asset of assets) {
 			const reserved = await files_private_storage_db_reserve(ctx, {
@@ -9572,6 +10090,7 @@ export const prepare_pending_save_assets = internalMutation({
 				resource: { kind: "asset", id: asset.assetId, r2Key: asset.r2Key },
 				byteCount: asset.size,
 				publicationBatchId: operationBatchId,
+				cohortContentId: args.cohortContent?.contentId,
 			});
 			if (reserved._nay) {
 				for (const allocation of assets) {
@@ -9592,280 +10111,9 @@ type prepare_pending_save_assets_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const save_private_file_pending_update_in_db = internalMutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		privateNodeId: v.id("files_pending_nodes"),
-		pendingUpdateId: v.id("files_pending_updates"),
-		reviewedRevision: v.number(),
-		creationGeneration: v.number(),
-		structuralRevision: v.number(),
-		operationBatchId: v.optional(v.id("files_pending_update_operation_batches")),
-		prepared: v.optional(
-			v.object({
-				text: v.string(),
-				contentAssetId: v.id("files_r2_assets"),
-				yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
-			}),
-		),
-		partial: v.optional(v.object({ family: files_pending_updates_state_family_validator, unstagedText: v.string() })),
-	},
-	returns: v_result({
-		_yay: v.object({
-			target: files_pending_target_validator,
-			newSequence: v.union(v.number(), v.null()),
-			pendingUpdateRevision: v.union(v.number(), v.null()),
-		}),
-	}),
-	handler: async (ctx, args) => {
-		const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
-		if (!membership?.active) return Result({ _nay: { message: "Unauthorized" } });
-		const actor = await db_get_pending_save_actor(ctx, { membershipId: args.membershipId, userId: membership.userId });
-		if (actor._nay) return actor;
-		return await files_pending_updates_db_save_private({
-			ctx,
-			...args,
-			shareLinkCleanup: files_share_links_create_cleanup_state(),
-			actor: actor._yay,
-		});
-	},
-});
-
-async function files_pending_updates_db_save_private(args: {
-	ctx: MutationCtx;
-	membershipId: Id<"organizations_workspaces_users">;
-	privateNodeId: Id<"files_pending_nodes">;
-	pendingUpdateId: Id<"files_pending_updates">;
-	reviewedRevision: number;
-	creationGeneration: number;
-	structuralRevision: number;
-	reviewedPendingUpdateIds?: Set<Id<"files_pending_updates">>;
-	reviewRunId?: Id<"files_pending_update_runs">;
-	operationBatchId?: Id<"files_pending_update_operation_batches">;
-	prepared?: { text: string; contentAssetId: Id<"files_r2_assets">; yjsSnapshotAssetId?: Id<"files_r2_assets"> };
-	partial?: { family: Infer<typeof files_pending_prepared_state_family_validator>; unstagedText: string };
-	shareLinkCleanup: files_share_links_CleanupState;
-	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave };
-}) {
-	const { ctx, actor } = args;
-
-	const membership = await organizations_db_get_membership(ctx, {
-		membershipId: args.membershipId,
-		userId: actor.userId,
-	});
-	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
-
-	const data = await db_get_private_pending_target(ctx, {
-		membership,
-		privateNodeId: args.privateNodeId,
-		pendingUpdateId: args.pendingUpdateId,
-	});
-	if (data._nay) return data;
-	const { node, pendingUpdate } = data._yay;
-	if (
-		pendingUpdate.revision !== args.reviewedRevision ||
-		node.creationGeneration !== args.creationGeneration ||
-		node.structuralRevision !== args.structuralRevision
-	)
-		return Result({ _nay: { name: "target_changed", message: "This draft changed. Review it again." } });
-	if (!data._yay.canAccept) return Result({ _nay: { message: "This draft is read-only" } });
-	if (data._yay.readiness !== "ready") return Result({ _nay: { message: "This draft is still preparing" } });
-
-	const scope = {
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-		userId: membership.userId,
-	};
-
-	const content = pendingUpdate.content;
-	let partialBatch: app_convex_Doc<"files_pending_update_operation_batches"> | null = null;
-
-	if (pendingUpdate.createIntent?.kind === "text") {
-		if (!content || content.base.kind !== "new" || !args.prepared) return Result({ _nay: { message: "Not found" } });
-		const publicationBatch = args.operationBatchId
-			? await db_get_owned_operation_batch(ctx, {
-					...scope,
-					operationBatchId: args.operationBatchId,
-					now: Date.now(),
-				})
-			: null;
-		if (
-			!publicationBatch ||
-			publicationBatch.target.kind !== "private" ||
-			publicationBatch.target.id !== node._id ||
-			publicationBatch.publication?.kind !== "assets" ||
-			publicationBatch.publication.contentAssetId !== args.prepared.contentAssetId ||
-			publicationBatch.publication.yjsSnapshotAssetId !== args.prepared.yjsSnapshotAssetId ||
-			(args.partial && args.partial.family.operationBatchId !== publicationBatch._id)
-		)
-			return Result({ _nay: { message: "Not found" } });
-
-		const currentTarget = await db_check_operation_batch_target(ctx, publicationBatch);
-		if (currentTarget._nay) return currentTarget;
-
-		const caps = files_pending_updates_check_frontmatter_caps({
-			fileNode: { textKind: pendingUpdate.createIntent.textKind },
-			text: args.prepared.text,
-		});
-		if (caps) return caps;
-
-		if (pendingUpdate.createIntent.textKind === "rich_text" && pendingUpdate.mediaDependencySetId) {
-			const media = await files_pending_media_db_require_validation(ctx, {
-				pendingUpdate,
-				text: args.prepared.text,
-				operationBatchId: publicationBatch._id,
-				validated: actor.validatedMedia,
-				reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-				reviewRunId: args.reviewRunId,
-			});
-			if (media._nay) return media;
-		}
-
-		for (const [role, stateId] of [
-			["base", content.baseStateId],
-			["staged", content.stagedStateId],
-			["unstaged", content.unstagedStateId],
-		] as const) {
-			const state = await ctx.db.get("files_pending_update_yjs_states", stateId);
-			if (
-				!state ||
-				!state.sealed ||
-				state.owner.kind !== "active" ||
-				state.owner.pendingUpdateId !== pendingUpdate._id ||
-				state.owner.role !== role ||
-				state.target.kind !== "private" ||
-				state.target.id !== node._id
-			)
-				return Result({ _nay: { message: "Not found" } });
-
-			if (
-				args.partial &&
-				((role === "staged" &&
-					(args.partial.family.baseStateDigest !== state.digest ||
-						args.partial.family.stagedStateDigest !== state.digest)) ||
-					(role === "unstaged" && args.partial.family.unstagedStateDigest !== state.digest))
-			)
-				return Result({ _nay: { name: "target_changed", message: "This draft changed. Review it again." } });
-		}
-	} else if (args.prepared || args.partial) {
-		return Result({ _nay: { message: "Not found" } });
-	}
-
-	if (args.partial) {
-		const batch = await db_get_owned_operation_batch(ctx, {
-			...scope,
-			operationBatchId: args.partial.family.operationBatchId,
-			now: Date.now(),
-		});
-		if (!batch || batch.target.kind !== "private" || batch.target.id !== node._id)
-			return Result({ _nay: { message: "Not found" } });
-
-		const family = args.partial.family;
-		const checked = await db_validate_batch_states_for_commit(ctx, {
-			batch,
-			phase: "output",
-			baseLineageGeneration: null,
-			states: [
-				{ role: "base", stateId: family.baseStateId, digest: family.baseStateDigest },
-				{ role: "staged", stateId: family.stagedStateId, digest: family.stagedStateDigest },
-				{ role: "unstaged", stateId: family.unstagedStateId, digest: family.unstagedStateDigest },
-			],
-		});
-		if (checked._nay) return checked;
-
-		const caps = files_pending_updates_check_frontmatter_caps({
-			fileNode: {
-				textKind: pendingUpdate.createIntent!.kind === "text" ? pendingUpdate.createIntent!.textKind : "plain_text",
-			},
-			text: args.partial.unstagedText,
-		});
-		if (caps) return caps;
-		partialBatch = batch;
-	}
-
-	const published = await files_nodes_content_db_publish_private_node(ctx, {
-		membership,
-		node,
-		pendingUpdate,
-		prepared: args.prepared,
-		billedUserId: actor.billedUserId,
-		reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-		shareLinkCleanup: args.shareLinkCleanup,
-	});
-	if (published._nay) return published;
-
-	const now = Date.now();
-	if (args.partial && partialBatch) {
-		const base = published._yay.base;
-		if (!base)
-			throw should_never_happen("Private text publication has no saved base", { pendingUpdateId: pendingUpdate._id });
-
-		const family = args.partial.family;
-		await db_swap_canonical_states_and_consume_batch(ctx, {
-			...scope,
-			...family,
-			pendingUpdateId: pendingUpdate._id,
-			batch: partialBatch,
-		});
-
-		for (const stateId of [family.baseStateId, family.stagedStateId, family.unstagedStateId]) {
-			await ctx.db.patch("files_pending_update_yjs_states", stateId, {
-				target: published._yay.target,
-				lineageGeneration: base.kind === "yjs" ? base.lineageGeneration : undefined,
-			});
-		}
-
-		await files_db_patch_pending_update({
-			ctx,
-			pendingUpdateId: pendingUpdate._id,
-			value: {
-				target: published._yay.target,
-				revision: pendingUpdate.revision + 1,
-				createIntent: undefined,
-				preparation: undefined,
-				pendingMove: undefined,
-				content: {
-					base,
-					baseStateId: family.baseStateId,
-					stagedStateId: family.stagedStateId,
-					unstagedStateId: family.unstagedStateId,
-				},
-				size: files_get_utf8_byte_size(args.partial.unstagedText),
-				updatedAt: now,
-			},
-		});
-
-		const chunks = await files_pending_update_db_replace_chunks(ctx, {
-			...scope,
-			target: published._yay.target,
-			pendingUpdateId: pendingUpdate._id,
-			proposalRevision: pendingUpdate.revision + 1,
-			unstagedText: args.partial.unstagedText,
-		});
-		if (chunks._nay)
-			console.error("Failed to index remaining private text", {
-				pendingUpdateId: pendingUpdate._id,
-				error: chunks._nay,
-			});
-	} else {
-		await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId: pendingUpdate._id });
-		await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id });
-		await files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id });
-		if (args.operationBatchId)
-			await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId: args.operationBatchId });
-	}
-
-	return Result({
-		_yay: {
-			target: published._yay.target,
-			newSequence: published._yay.newSequence,
-			pendingUpdateRevision: args.partial ? pendingUpdate.revision + 1 : null,
-		},
-	});
-}
-
 async function action_save_private_file_pending_update(args: {
 	ctx: ActionCtx;
+	cohortContent?: files_pending_updates_CohortContentContext;
 	membershipId: Id<"organizations_workspaces_users">;
 	target: Extract<files_PendingTarget, { kind: "private" }>;
 	pendingUpdateId: Id<"files_pending_updates">;
@@ -9921,6 +10169,7 @@ async function action_save_private_file_pending_update(args: {
 			if (stagedText._nay || unstagedText._nay) return Result({ _nay: { message: "Failed to read this draft" } });
 
 			const allocation = (await ctx.runMutation(internal.files_pending_updates.prepare_pending_save_assets, {
+				cohortContent: args.cohortContent,
 				membershipId: args.membershipId,
 				target: { kind: "private", id: node._id },
 				pendingUpdateId: pendingUpdate._id,
@@ -9936,6 +10185,7 @@ async function action_save_private_file_pending_update(args: {
 			if (stagedText._yay !== unstagedText._yay) {
 				// Keep the staged state's CRDT IDs as the saved snapshot and the residual base.
 				const family = await files_pending_updates_action_stage_private_state_family({
+					cohortContent: args.cohortContent,
 					ctx,
 					...scope,
 					operationBatchId,
@@ -9946,6 +10196,7 @@ async function action_save_private_file_pending_update(args: {
 				if (family._nay) return Result({ _nay: { message: family._nay.message } });
 
 				const input = await ctx.runMutation(internal.files_pending_updates.stage_prepared_content_text, {
+					cohortContent: args.cohortContent,
 					userId: node.userId,
 					operationBatchId,
 					role: "unstaged",
@@ -9978,6 +10229,7 @@ async function action_save_private_file_pending_update(args: {
 				await r2_put_object(ctx, { key: uploads[index]!.r2Key, body: asset.body, contentType: asset.contentType });
 
 			const input = await ctx.runMutation(internal.files_pending_updates.stage_prepared_content_text, {
+				cohortContent: args.cohortContent,
 				userId: node.userId,
 				operationBatchId,
 				role: "staged",
@@ -10033,12 +10285,20 @@ type save_file_pending_update_Result =
 	  }
 	| { _nay: { name?: string; message: string }; _yay?: undefined };
 
+type save_file_pending_update_ActionResult =
+	| save_file_pending_update_Result
+	| {
+			_yay: { kind: "queued"; runId: Id<"files_pending_update_runs">; activityId: Id<"activities"> };
+			_nay?: undefined;
+	  };
+
 type files_pending_updates_PrepareContentResult =
 	| { _yay: files_pending_updates_PreparedContent; _nay?: undefined }
 	| { _nay: { name?: string; message: string }; _yay?: undefined };
 
 export const get_pending_content_save_scope = internalQuery({
 	args: {
+		cohortContent: v.optional(files_pending_cohort_content_context_validator),
 		userId: v.id("users"),
 		membershipId: v.id("organizations_workspaces_users"),
 		target: files_pending_target_validator,
@@ -10049,6 +10309,10 @@ export const get_pending_content_save_scope = internalQuery({
 		reviewedArchiveIds: v.optional(v.array(v.id("files_pending_updates"))),
 	},
 	handler: async (ctx, args) => {
+		if (args.cohortContent) {
+			const checked = await files_pending_updates_db_get_cohort_content(ctx, args.cohortContent);
+			if (checked._nay) return checked;
+		}
 		const membership = await organizations_db_get_membership(ctx, args);
 		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 		const pendingUpdate = await files_db_get_pending_update(ctx, { ...membership, ...args });
@@ -10071,8 +10335,23 @@ export const get_pending_content_save_scope = internalQuery({
 			userId: args.userId,
 			readLimit: 2048,
 			reviewedArchiveIds: new Set(args.reviewedArchiveIds),
+			isReviewedArchive: args.cohortContent
+				? async (proposal) => {
+						const selected = await ctx.db
+							.query("files_move_cohort_items")
+							.withIndex("by_cohort_proposal", (q) =>
+								q.eq("cohortId", args.cohortContent!.cohortId).eq("pendingUpdateId", proposal._id),
+							)
+							.unique();
+						return (
+							selected?.reviewedRevision === proposal.revision &&
+							selected.target.kind === proposal.target.kind &&
+							selected.target.id === proposal.target.id
+						);
+					}
+				: undefined,
 		});
-		const view = await db_get_pending_target_view(ctx, { membership, target: args.target, reader });
+		const view = await files_pending_updates_db_get_target_view(ctx, { membership, target: args.target, reader });
 		if (!view) return Result({ _nay: { message: "Not found" } });
 		if (view.readiness !== "ready") return Result({ _nay: { message: "This draft is still preparing" } });
 		if (args.target.kind === "private") {
@@ -10097,6 +10376,114 @@ type get_pending_content_save_scope_Result =
 		: never;
 
 /**
+ * Save structural changes and their write-bounded private parents through review.
+ */
+export const start_single_save_review = internalMutation({
+	args: {
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		target: files_pending_target_validator,
+		pendingUpdateId: v.id("files_pending_updates"),
+		reviewedRevision: v.number(),
+	},
+	returns: v_result({
+		_yay: v.union(
+			v.object({ kind: v.literal("queued"), runId: v.id("files_pending_update_runs"), activityId: v.id("activities") }),
+			v.null(),
+		),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.id !== args.userId) return Result({ _nay: { message: "Unauthenticated" } });
+		const membership = await organizations_db_get_membership(ctx, args);
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+		let requestId = `single-save:${args.membershipId}:${args.target.id}:${args.pendingUpdateId}:${args.reviewedRevision}`;
+		const existing = await ctx.db
+			.query("files_pending_update_runs")
+			.withIndex("by_user_requestId", (q) => q.eq("userId", args.userId).eq("requestId", requestId))
+			.first();
+		if (existing) {
+			const latest = existing.singleSaveLatestRunId
+				? await ctx.db.get("files_pending_update_runs", existing.singleSaveLatestRunId)
+				: existing;
+			if (!latest) throw should_never_happen("Single Save lost its latest attempt", { runId: existing._id });
+			const activity = await activities_db_require_by_source_id(ctx, latest._id);
+			if (latest.step !== "finished" || activities_is_active(activity.status) || activity.status === "succeeded") {
+				const first = await ctx.db
+					.query("files_pending_update_run_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", latest._id).eq("order", 0))
+					.first();
+				if (!first) throw should_never_happen("Single Save intake has no first reviewed item", { runId: latest._id });
+				const replay = await files_pending_update_runs_db_start(ctx, {
+					membershipId: args.membershipId,
+					requestId: latest.requestId,
+					kind: "accept",
+					expectedItemCount: latest.expectedItemCount,
+					items: [
+						{
+							pendingUpdateId: first.pendingUpdateId,
+							reviewedRevision: first.reviewedRevision,
+							selectedContentStateId: first.selectedContentStateId,
+						},
+					],
+				});
+				return replay._nay
+					? Result({ _nay: { name: replay._nay.name, message: replay._nay.message } })
+					: Result({ _yay: { kind: "queued" as const, ...replay._yay } });
+			}
+			// A new Save after refusal captures a fresh review. The base pointer keeps retries constant-size.
+			requestId = `single-save-retry:${latest._id}`;
+		}
+		const proposal = await files_db_get_pending_update(ctx, { ...membership, ...args });
+		if (!proposal) return Result({ _nay: { message: "Not found" } });
+		if (proposal.revision !== args.reviewedRevision)
+			return Result({ _nay: { name: "needs_review", message: "The proposal changed after it was reviewed" } });
+		if (args.target.kind === "saved" && !proposal.pendingMove) return Result({ _yay: null });
+		// Private creation bounds each whole chain at 256 nodes, including its leaf.
+		const reader = await files_visible_db_create_reader(ctx, { ...membership, userId: args.userId, readLimit: 2048 });
+		const view = await files_pending_updates_db_get_target_view(ctx, { membership, target: args.target, reader });
+		if (!view || view.readiness !== "ready" || !view.canAcceptWithParents)
+			return Result({
+				_nay: {
+					message:
+						view?.readiness === "preparing" ? "This draft is still preparing" : "This draft cannot be saved here",
+				},
+			});
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "save_file_pending_update", key: args.userId });
+		if (rateLimit) return Result({ _nay: { name: "rate_limited", message: rateLimit.message } });
+		const items = [
+			...view.requiredParents.map((parent) => ({
+				pendingUpdateId: parent.pendingUpdateId,
+				reviewedRevision: parent.reviewedRevision,
+				selectedContentStateId: null,
+			})),
+			{
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+				selectedContentStateId: proposal.content?.stagedStateId ?? null,
+			},
+		];
+		const started = await files_pending_update_runs_db_start(ctx, {
+			membershipId: args.membershipId,
+			requestId,
+			kind: "accept",
+			expectedItemCount: items.length,
+			items: [items[0]!],
+		});
+		if (started._nay) return Result({ _nay: { name: started._nay.name, message: started._nay.message } });
+		if (existing)
+			await ctx.db.patch("files_pending_update_runs", existing._id, { singleSaveLatestRunId: started._yay.runId });
+		await ctx.db.patch("files_pending_update_runs", started._yay.runId, { singleSaveInput: { items } });
+		await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.append_single_save_input, {
+			runId: started._yay.runId,
+			fence: 0,
+			offset: 1,
+		});
+		return Result({ _yay: { kind: "queued" as const, ...started._yay } });
+	},
+});
+
+/**
  * The explicit result type breaks the generated API's same-file inference cycle.
  */
 export const save_file_pending_update = action({
@@ -10107,22 +10494,31 @@ export const save_file_pending_update = action({
 		reviewedRevision: v.number(),
 	},
 	returns: v_result({
-		_yay: v.object({
-			target: files_pending_target_validator,
-			newSequence: v.union(v.number(), v.null()),
-			/**
-			 * Set on a file with collaboration off: the doc's revision after the save, or null when
-			 * the save deleted the doc. The diff view keeps its busy state until its doc query shows
-			 * that, because the query can deliver the save later than this result.
-			 */
-			pendingUpdateRevision: v.optional(v.union(v.number(), v.null())),
-		}),
+		_yay: v.union(
+			v.object({
+				target: files_pending_target_validator,
+				newSequence: v.union(v.number(), v.null()),
+				/**
+				 * Set on a file with collaboration off: the doc's revision after the save, or null when
+				 * the save deleted the doc. The diff view keeps its busy state until its doc query shows
+				 * that, because the query can deliver the save later than this result.
+				 */
+				pendingUpdateRevision: v.optional(v.union(v.number(), v.null())),
+			}),
+			v.object({ kind: v.literal("queued"), runId: v.id("files_pending_update_runs"), activityId: v.id("activities") }),
+		),
 	}),
-	handler: async (ctx, args): Promise<save_file_pending_update_Result> => {
+	handler: async (ctx, args): Promise<save_file_pending_update_ActionResult> => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+		const review = await ctx.runMutation(internal.files_pending_updates.start_single_save_review, {
+			...args,
+			userId: userAuth.id,
+		});
+		if (review._nay) return review;
+		if (review._yay) return review;
 		const prepared = await files_pending_updates_action_prepare_content(ctx, {
 			...args,
 			userId: userAuth.id,
@@ -10130,6 +10526,8 @@ export const save_file_pending_update = action({
 		});
 		if (prepared._nay) return prepared;
 		try {
+			if (prepared._yay.kind === "private")
+				throw should_never_happen("Saved content preparation returned a private draft", args);
 			const media = await files_pending_media_action_validate(ctx, {
 				userId: userAuth.id,
 				pendingUpdateId: prepared._yay.pendingUpdateId,
@@ -10137,10 +10535,10 @@ export const save_file_pending_update = action({
 				operationBatchId: prepared._yay.operationBatchIds[0],
 			});
 			if (media._nay) return media;
-			return (await ctx.runMutation(internal.files_pending_updates.commit_prepared_content, {
+			return await ctx.runMutation(internal.files_pending_updates.commit_prepared_content, {
 				userId: userAuth.id,
 				prepared: prepared._yay,
-			})) as save_file_pending_update_Result;
+			});
 		} finally {
 			await ctx.runMutation(internal.files_pending_updates.retire_prepared_content, { prepared: prepared._yay });
 		}
@@ -10150,6 +10548,7 @@ export const save_file_pending_update = action({
 export async function files_pending_updates_action_prepare_content(
 	ctx: ActionCtx,
 	args: {
+		cohortContent?: files_pending_updates_CohortContentContext;
 		userId: Id<"users">;
 		membershipId: Id<"organizations_workspaces_users">;
 		target: files_PendingTarget;
@@ -10171,7 +10570,9 @@ export async function files_pending_updates_action_prepare_content(
 	const { membership, selectedContentStateId } = scope._yay;
 	const billedUserId = pinnedBilledUserId ?? scope._yay.billedUserId;
 	const userAuth = { id: args.userId };
-	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "save_file_pending_update", key: args.userId });
+	const rateLimit = args.cohortContent
+		? null
+		: await rate_limiter_limit_by_key(ctx, { name: "save_file_pending_update", key: args.userId });
 	if (rateLimit) return Result({ _nay: { name: "rate_limited", message: rateLimit.message } });
 	if (args.target.kind === "private") {
 		const data = scope._yay.view;
@@ -10188,6 +10589,7 @@ export async function files_pending_updates_action_prepare_content(
 	const nodeId = args.target.id;
 	if (scope._yay.view.entry.pendingUpdate?.pendingReplacement) {
 		return await action_accept_file_pending_replacement(ctx, {
+			cohortContent: args.cohortContent,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: args.userId,
@@ -10230,6 +10632,7 @@ export async function files_pending_updates_action_prepare_content(
 	// staged text the way a member save does.
 	if (data.base.kind === "asset") {
 		const saved = await action_save_file_pending_update_non_collaborative(ctx, {
+			cohortContent: args.cohortContent,
 			membershipId: args.membershipId,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -10395,6 +10798,7 @@ export async function files_pending_updates_action_prepare_content(
 			return Result({ _nay: { message: "Update too large" } });
 		}
 		const staged = (await ctx.runMutation(internal.files_pending_updates.stage_trusted_yjs_update, {
+			cohortContent: args.cohortContent,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
@@ -10410,16 +10814,41 @@ export async function files_pending_updates_action_prepare_content(
 		publicationBatchId = staged._yay.operationBatchId;
 	}
 
-	if (rootKind === "rich_text" && pendingUpdate.mediaDependencySetId) {
+	if (args.cohortContent || (rootKind === "rich_text" && pendingUpdate.mediaDependencySetId)) {
 		const acceptedText = files_yjs_doc_get_text({ yjsDoc: liveFileYjsDocAfterSave, rootKind });
 		if (acceptedText._nay) {
 			await retireTrustedStage();
 			return Result({ _nay: { message: acceptedText._nay.message } });
 		}
+		if (args.cohortContent && trustedStageId) {
+			const snapshot = files_pending_update_encode_yjs_state_update({ yjsDoc: liveFileYjsDocAfterSave });
+			const allocation = (await ctx.runMutation(internal.files_pending_updates.prepare_pending_save_assets, {
+				cohortContent: args.cohortContent,
+				membershipId: args.membershipId,
+				target: { kind: "saved", id: nodeId },
+				pendingUpdateId: pendingUpdate._id,
+				expectedRevision: pendingUpdate.revision,
+				contentSize: files_get_utf8_byte_size(acceptedText._yay),
+				yjsSnapshotSize: snapshot.byteLength,
+			})) as prepare_pending_save_assets_Result;
+			if (allocation._nay) return allocation;
+			publicationBatchId = allocation._yay.operationBatchId;
+			await r2_put_object(ctx, {
+				key: allocation._yay.assets[0]!.r2Key,
+				body: acceptedText._yay,
+				contentType: files_editable_text_content_type_of(data.fileNode.contentType) ?? "application/octet-stream",
+			});
+			await r2_put_object(ctx, {
+				key: allocation._yay.assets[1]!.r2Key,
+				body: snapshot,
+				contentType: "application/octet-stream",
+			});
+		}
 		if (!publicationBatchId) {
 			const created = (await ctx.runMutation(
 				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 				{
+					cohortContent: args.cohortContent,
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					userId: userAuth.id,
@@ -10430,6 +10859,7 @@ export async function files_pending_updates_action_prepare_content(
 			publicationBatchId = created._yay.operationBatchId;
 		}
 		const textInput = await ctx.runMutation(internal.files_pending_updates.stage_prepared_content_text, {
+			cohortContent: args.cohortContent,
 			userId: args.userId,
 			operationBatchId: publicationBatchId,
 			role: "staged",
@@ -10476,6 +10906,7 @@ export async function files_pending_updates_action_prepare_content(
 	const batchCreated = publicationBatchId
 		? Result({ _yay: { operationBatchId: publicationBatchId } })
 		: ((await ctx.runMutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+				cohortContent: args.cohortContent,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				userId: userAuth.id,
@@ -10492,6 +10923,7 @@ export async function files_pending_updates_action_prepare_content(
 		});
 	};
 	const textInput = await ctx.runMutation(internal.files_pending_updates.stage_prepared_content_text, {
+		cohortContent: args.cohortContent,
 		userId: args.userId,
 		operationBatchId,
 		role: "unstaged",
@@ -10532,6 +10964,7 @@ export async function files_pending_updates_action_prepare_content(
 			const stagedPage = (await ctx.runMutation(
 				internal.files_pending_updates.stage_file_pending_update_state_page_internal,
 				{
+					cohortContent: args.cohortContent,
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					userId: userAuth.id,
@@ -10549,6 +10982,7 @@ export async function files_pending_updates_action_prepare_content(
 		}
 
 		const sealed = (await ctx.runMutation(internal.files_pending_updates.seal_file_pending_update_state_internal, {
+			cohortContent: args.cohortContent,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
@@ -10770,6 +11204,7 @@ type get_data_for_pending_replacement_accept_Result =
  */
 export const prepare_pending_replacement_assets = internalMutation({
 	args: {
+		cohortContent: v.optional(files_pending_cohort_content_context_validator),
 		membershipId: v.id("organizations_workspaces_users"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
@@ -10780,6 +11215,10 @@ export const prepare_pending_replacement_assets = internalMutation({
 		backupSize: v.optional(v.number()),
 	},
 	handler: async (ctx, args) => {
+		if (args.cohortContent) {
+			const checked = await db_enter_cohort_content(ctx, args.cohortContent);
+			if (checked._nay) return checked;
+		}
 		const membership = await organizations_db_get_membership(ctx, args);
 		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 
@@ -10841,7 +11280,7 @@ export const prepare_pending_replacement_assets = internalMutation({
 		if (sizes.some(({ size, cap }) => size !== undefined && (!Number.isSafeInteger(size) || size < 0 || size > cap)))
 			return Result({ _nay: { message: "Prepared content is too large" } });
 
-		const created = await db_create_operation_batch(ctx, { ...scope, target });
+		const created = await db_create_operation_batch(ctx, { ...scope, target, cohortContent: args.cohortContent });
 		if (created._nay) return created;
 		const operationBatchId = created._yay.operationBatchId;
 
@@ -10884,6 +11323,7 @@ export const prepare_pending_replacement_assets = internalMutation({
 				resource: { kind: "asset", id: asset.assetId, r2Key: asset.r2Key },
 				byteCount: asset.size,
 				publicationBatchId: operationBatchId,
+				cohortContentId: args.cohortContent?.contentId,
 			});
 			if (reserved._nay) {
 				for (const allocation of assets) {
@@ -10911,6 +11351,7 @@ type prepare_pending_replacement_assets_Result =
 async function action_accept_file_pending_replacement(
 	ctx: ActionCtx,
 	args: {
+		cohortContent?: files_pending_updates_CohortContentContext;
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
@@ -11010,6 +11451,7 @@ async function action_accept_file_pending_replacement(
 	}
 
 	const allocated = (await ctx.runMutation(internal.files_pending_updates.prepare_pending_replacement_assets, {
+		cohortContent: args.cohortContent,
 		membershipId: args.membershipId,
 		userId: args.userId,
 		nodeId: args.nodeId,
@@ -11057,6 +11499,7 @@ async function action_accept_file_pending_replacement(
 
 		if (text !== undefined) {
 			const input = await ctx.runMutation(internal.files_pending_updates.stage_prepared_content_text, {
+				cohortContent: args.cohortContent,
 				userId: args.userId,
 				operationBatchId,
 				role: "staged",
@@ -11099,6 +11542,8 @@ export const accept_file_pending_replacement = action({
 		});
 		if (prepared._nay) return prepared;
 		try {
+			if (prepared._yay.kind === "private")
+				throw should_never_happen("Saved replacement preparation returned a private draft", args);
 			const media = await files_pending_media_action_validate(ctx, {
 				userId: userAuth.id,
 				pendingUpdateId: prepared._yay.pendingUpdateId,

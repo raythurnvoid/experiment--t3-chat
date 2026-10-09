@@ -25,6 +25,7 @@ export async function files_private_storage_db_reserve(
 		resource: Doc<"files_private_storage_reservations">["resource"];
 		byteCount: number;
 		publicationBatchId?: Id<"files_pending_update_operation_batches">;
+		cohortContentId?: Id<"files_move_cohort_content">;
 	},
 ) {
 	const now = Date.now();
@@ -41,6 +42,7 @@ export async function files_private_storage_db_reserve(
 				existing.workspaceId !== args.workspaceId ||
 				existing.userId !== args.userId ||
 				existing.publicationBatchId !== args.publicationBatchId ||
+				existing.cohortContentId !== args.cohortContentId ||
 				(existing.resource.kind === "asset" &&
 					args.resource.kind === "asset" &&
 					existing.resource.r2Key !== args.resource.r2Key))) ||
@@ -65,7 +67,8 @@ export async function files_private_storage_db_reserve(
 			: null;
 		if (
 			!batch?.publication ||
-			batch.expiresAt <= now ||
+			(batch.expiresAt !== undefined && batch.expiresAt <= now) ||
+			batch.cohortContentId !== args.cohortContentId ||
 			batch.organizationId !== args.organizationId ||
 			batch.workspaceId !== args.workspaceId ||
 			batch.userId !== args.userId ||
@@ -106,7 +109,7 @@ export async function files_private_storage_db_reserve(
 		} else if (args.resource.kind === "state") {
 			const state = await ctx.db.get("files_pending_update_yjs_states", args.resource.id);
 			if (
-				state?.owner.kind !== "temporary" ||
+				(state?.owner.kind !== "temporary" && state?.owner.kind !== "cohort") ||
 				state.owner.operationBatchId !== batch._id ||
 				state.owner.phase !== "output"
 			) {
@@ -152,6 +155,54 @@ export async function files_private_storage_db_reserve(
 	if (!userQuota || (workspaceQuotaId && !workspaceQuota)) {
 		throw should_never_happen("Missing private storage quota", { userQuotaId, workspaceQuotaId });
 	}
+	if (args.cohortContentId) {
+		const content = await ctx.db.get("files_move_cohort_content", args.cohortContentId);
+		const cohort = content ? await ctx.db.get("files_move_cohorts", content.cohortId) : null;
+		if (
+			!content ||
+			!cohort ||
+			cohort.phase !== "staging" ||
+			cohort.visibleView !== "before" ||
+			cohort.organizationId !== args.organizationId ||
+			cohort.workspaceId !== args.workspaceId ||
+			cohort.userId !== args.userId
+		)
+			return Result({ _nay: { name: "stopped", message: "This Move preparation is no longer current." } });
+		// A group owns its sealed output. The one-Save allowance cannot cap a group.
+		await ctx.db.patch("files_move_cohort_content", content._id, {
+			storageBytes: content.storageBytes + additionalCount,
+			storageResourceCount: content.storageResourceCount + (existing ? 0 : 1),
+		});
+		if (args.resource.kind === "asset") {
+			const assetId = args.resource.id;
+			const claim = await ctx.db
+				.query("files_move_asset_claims")
+				.withIndex("by_asset", (q) => q.eq("assetId", assetId))
+				.first();
+			if (claim && claim.cohortId !== cohort._id)
+				throw should_never_happen("Asset belongs to another Move", { assetId: args.resource.id });
+			if (!claim) await ctx.db.insert("files_move_asset_claims", { cohortId: cohort._id, assetId: args.resource.id });
+		}
+		if (existing) {
+			await ctx.db.patch("files_private_storage_reservations", existing._id, { byteCount: args.byteCount });
+			return Result({ _yay: existing._id });
+		}
+		return Result({
+			_yay: await ctx.db.insert("files_private_storage_reservations", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				resource: args.resource,
+				byteCount: args.byteCount,
+				publicationBatchId: args.publicationBatchId,
+				cohortContentId: content._id,
+				userQuotaId,
+				workspaceQuotaId,
+				createdAt: now,
+				settlement: { kind: "held" },
+			}),
+		});
+	}
 	const fullQuota = [userQuota, workspaceQuota].find(
 		(quota) => quota && additionalCount > 0 && quota.usedCount + additionalCount > quota.maxCount,
 	);
@@ -163,7 +214,7 @@ export async function files_private_storage_db_reserve(
 		const heldPublications = await ctx.db
 			.query("files_private_storage_reservations")
 			.withIndex("by_workspaceQuota_settlement_publicationBatch", (q) =>
-				q.eq("workspaceQuotaId", workspaceQuota._id).eq("settlement.kind", "held").gt("publicationBatchId", undefined),
+				q.eq("workspaceQuotaId", workspaceQuota._id).eq("settlement.kind", "held").eq("cohortContentId", undefined).gt("publicationBatchId", undefined),
 			)
 			.take(PUBLICATION_HEADROOM_MAX_RESOURCES);
 		if (
@@ -237,6 +288,16 @@ export async function files_private_storage_db_release(
 	const count = reservation.resource.kind === "node" ? 1 : reservation.byteCount;
 	const quotaIds = [reservation.userQuotaId, ...(reservation.workspaceQuotaId ? [reservation.workspaceQuotaId] : [])];
 	await ctx.db.patch("files_private_storage_reservations", reservation._id, { settlement: args.settlement });
+	if (reservation.cohortContentId) {
+		const content = await ctx.db.get("files_move_cohort_content", reservation.cohortContentId);
+		if (!content || content.storageBytes < reservation.byteCount || content.storageResourceCount < 1)
+			throw should_never_happen("Invalid Move storage balance", { reservationId: reservation._id });
+		await ctx.db.patch("files_move_cohort_content", content._id, {
+			storageBytes: content.storageBytes - reservation.byteCount,
+			storageResourceCount: content.storageResourceCount - 1,
+		});
+		return;
+	}
 	for (const quotaId of quotaIds) {
 		const quota = await ctx.db.get("quotas", quotaId);
 		if (!quota || quota.usedCount < count) {
@@ -267,6 +328,74 @@ export async function files_private_storage_db_release(
 		}
 		await ctx.db.patch("quotas", quotaId, { usedCount: quota.usedCount - count, updatedAt: args.settlement.settledAt });
 	}
+}
+
+/**
+ * Move exact ownership after publication. The caller settles consumed old resources first.
+ */
+export async function files_private_storage_db_set_cohort_owner(
+	ctx: MutationCtx,
+	args: {
+		reservationId: Id<"files_private_storage_reservations">;
+		cohortContentId: Id<"files_move_cohort_content"> | null;
+	},
+) {
+	const reservation = await ctx.db.get("files_private_storage_reservations", args.reservationId);
+	if (!reservation || reservation.settlement.kind !== "held")
+		return Result({ _nay: { name: "target_changed", message: "This resource has already been settled." } });
+	if ((reservation.cohortContentId ?? null) === args.cohortContentId) return Result({ _yay: null });
+	if (reservation.cohortContentId && args.cohortContentId)
+		throw should_never_happen("Move resource changed owners", { reservationId: reservation._id });
+	const contentId = args.cohortContentId ?? reservation.cohortContentId!;
+	const content = await ctx.db.get("files_move_cohort_content", contentId);
+	const cohort = content ? await ctx.db.get("files_move_cohorts", content.cohortId) : null;
+	if (
+		!content ||
+		!cohort ||
+		cohort.organizationId !== reservation.organizationId ||
+		cohort.workspaceId !== reservation.workspaceId ||
+		cohort.userId !== reservation.userId
+	)
+		throw should_never_happen("Move resource scope changed", { reservationId: reservation._id });
+	const count = reservation.resource.kind === "node" ? 1 : reservation.byteCount;
+	const direction = args.cohortContentId ? -1 : 1;
+	// The switch already applied this resource's net private delta. Repair only changes ownership.
+	const alreadyAccounted = cohort.visibleView === "after" && cohort.privateAccountingApplied;
+	if (alreadyAccounted) {
+		await ctx.db.patch("files_private_storage_reservations", reservation._id, {
+			cohortContentId: args.cohortContentId ?? undefined,
+		});
+		await ctx.db.patch("files_move_cohort_content", content._id, {
+			storageBytes: content.storageBytes - direction * reservation.byteCount,
+			storageResourceCount: content.storageResourceCount - direction,
+		});
+		return Result({ _yay: null });
+	}
+	for (const quotaId of [
+		reservation.userQuotaId,
+		...(reservation.workspaceQuotaId ? [reservation.workspaceQuotaId] : []),
+	]) {
+		const quota = await ctx.db.get("quotas", quotaId);
+		if (!quota || quota.usedCount + direction * count < 0)
+			throw should_never_happen("Invalid private storage quota balance", { reservationId: reservation._id, quotaId });
+		if (direction > 0 && quota.usedCount + count > quota.maxCount)
+			return Result({ _nay: { name: "storage_full", message: quotas[quota.quotaName].disabledReason } });
+	}
+	for (const quotaId of [
+		reservation.userQuotaId,
+		...(reservation.workspaceQuotaId ? [reservation.workspaceQuotaId] : []),
+	]) {
+		const quota = (await ctx.db.get("quotas", quotaId))!;
+		await ctx.db.patch("quotas", quotaId, { usedCount: quota.usedCount + direction * count, updatedAt: Date.now() });
+	}
+	await ctx.db.patch("files_private_storage_reservations", reservation._id, {
+		cohortContentId: args.cohortContentId ?? undefined,
+	});
+	await ctx.db.patch("files_move_cohort_content", content._id, {
+		storageBytes: content.storageBytes - direction * reservation.byteCount,
+		storageResourceCount: content.storageResourceCount - direction,
+	});
+	return Result({ _yay: null });
 }
 
 /**

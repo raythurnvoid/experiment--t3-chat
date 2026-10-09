@@ -24,6 +24,15 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
 - Activity owns requester, status, progress, result kind, safe errors, and common times.
   Producer copies of tenant and user IDs exist only for immutable indexes.
 - Transfer `step` describes executor work. It is not a second lifecycle status.
+- A human Move or Rename uses one transfer Activity even for one root. Cohort preparation and
+  physical repair use that Activity. Progress counts a root once at its publication switch.
+  Stop keeps published groups and lets repair finish. Move waits for repair before the next root.
+  Private direct Save opens its queued review Activity. Accept counts every item in a linked group
+  once at the switch, before physical repair ends.
+- Rename is accepted during the requester's Copy or Move. Ready Renames run in order at the
+  next free group boundary. Copy workers drain before Rename starts. A Rename that needs a
+  conflict answer gives way. Each later step checks its saved pins and captured membership again.
+  Transfer Activities store `source.isRename` so queue reads never scan job history.
 - Human Files jobs save membership ID and lifetime. Workers require that same active lifetime.
   Account-deletion plugin events keep their service checks and can run after their actor leaves.
 - A missing Activity for an existing run is an invariant failure. Do not add a second status
@@ -176,6 +185,9 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   its own receipts. Transfer and review producers also release their proposal holds first. Dismissal docs drain first. The Activity and its producer are then deleted together.
 - Deleting history does not delete saved files or pending proposals. Asset deletion jobs retain
   exact R2 keys and late-upload deadlines independently of Activity history.
+- Transfer and review history cleanup wait for active cohort repair before releasing holds.
+  Completed cohort docs stay after their parent is gone only while delayed storage resources or
+  parked workers still need them. Their own indexed cleanup drains child docs, then the cohort.
 - User deletion drains that user's dismissal docs. Tenant purge drains all dismissal docs for each
   Activity. Follow the [data deletion spec](../data-deletion/SKILL.md).
 

@@ -138,6 +138,7 @@ describe("files_pending_overlay_window_ranges", () => {
 								.eq("organizationId", owner.organizationId)
 								.eq("workspaceId", owner.workspaceId)
 								.eq("userId", owner.userId)
+								.eq("moveView.cohortId", undefined).eq("moveView.view", undefined)
 								.eq("parentId", "root");
 							for (const [field, value] of range.eq) indexRange = indexRange.eq(field, value);
 							if (range.lower)

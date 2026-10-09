@@ -1614,7 +1614,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
-	const { startReview } = AppActivitiesProvider.useContext();
+	const { openReviewRun } = AppActivitiesProvider.useContext();
 	const nodeId = target.kind === "saved" ? target.id : null;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
@@ -1767,12 +1767,13 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 					onUpserted: (revision) => {
 						reviewedRevisionRef.current = revision;
 					},
-					startReview,
+					openReviewRun,
 				});
 				if (saved._nay) {
 					toast.error(saved._nay.message);
 					return;
 				}
+				if ("kind" in saved._yay) return;
 				baselineMarkdownRef.current = textToSave;
 				setShowReformatHint(false);
 				recomputeDirtyState(editor);

@@ -5,8 +5,8 @@ import type { FunctionArgs } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
-import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import { test_apply_file_pending_move, test_convex, test_rename_node, test_move_nodes, test_finish_pending_update_run, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_media_validation_db_advance_version, files_media_validation_db_capture_versions } from "./files_media_validation.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
@@ -47,6 +47,7 @@ async function fixture() {
 		for (const workspaceId of [null, db.workspaceId, organization.defaultWorkspaceId]) {
 			await files_media_validation_db_advance_version(ctx, { organizationId: db.organizationId, workspaceId });
 		}
+		await files_media_validation_db_capture_versions(ctx, { userId: db.userId, scopes: [scope] });
 	});
 	return { t, db, scope, asUser };
 }
@@ -215,11 +216,11 @@ describe("saved file media validation clocks", () => {
 		const before = await snapshot(f);
 		expect(
 			(
-				await f.asUser.mutation(api.files_nodes.move_nodes, {
-					membershipId: f.db.membershipId,
-					itemIds: [parent],
-					targetParentId: destination,
-				})
+				await test_move_nodes(f.t, f.asUser, {
+						membershipId: f.db.membershipId,
+						itemIds: [parent],
+						targetParentId: destination,
+					})
 			)._nay,
 		).toBeUndefined();
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", parent))).toMatchObject({
@@ -248,8 +249,8 @@ describe("saved file media validation clocks", () => {
 			const child = await folder({ f, path: "child", parentId: parent });
 			const before = await snapshot(f);
 			expect(
-				await f.asUser.mutation(api.files_nodes.rename_node, { membershipId: f.db.membershipId, nodeId: parent, path }),
-			).toEqual({ _yay: null });
+				await test_rename_node(f.t, f.asUser, { membershipId: f.db.membershipId, nodeId: parent, path }),
+			).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", parent))).toMatchObject({ path: `/${path}` });
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", child))).toMatchObject({
 				parentId: parent,
@@ -278,7 +279,7 @@ describe("saved file media validation clocks", () => {
 		const pending = await proposal(f, nodeId);
 		const before = await snapshot(f);
 		expect(
-			await f.asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			await test_apply_file_pending_move(f.asUser, {
 				membershipId: f.db.membershipId,
 				target: { kind: "saved", id: nodeId },
 				pendingUpdateId: pending._id,
@@ -322,7 +323,7 @@ describe("saved file media validation clocks", () => {
 		expect(pending.pendingMove?.replacesContentVersion).toBeDefined();
 		const before = await snapshot(f);
 		expect(
-			await f.asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			await test_apply_file_pending_move(f.asUser, {
 				membershipId: f.db.membershipId,
 				target: { kind: "saved", id: nodeId },
 				pendingUpdateId: pending._id,
@@ -377,26 +378,7 @@ describe("saved file media validation clocks", () => {
 		expect(
 			await f.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: f.db.membershipId, runId }),
 		).toEqual({ _yay: null });
-		await f.t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
-		for (let pass = 0; pass < 10; pass++) {
-			await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
-			const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-			if (!run) throw new Error("Expected the review run");
-			if (run.step === "finished") break;
-			const unit = await f.t.run((ctx) =>
-				ctx.db
-					.query("files_pending_update_run_units")
-					.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-					.first(),
-			);
-			if (!unit) throw new Error("Expected the review unit");
-			await f.t.action(internal.files_pending_update_runs.prepare_unit, {
-				runId,
-				fence: run.fence,
-				unitId: unit._id,
-				attemptFence: unit.attemptFence,
-			});
-		}
+		await test_finish_pending_update_run(f.asUser, runId);
 		const result = await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
 		expect(result?.activity.status).toBe("succeeded");
 		expect(result?.run).toMatchObject({ unitCount: 1, finishedUnitCount: 1 });
@@ -678,16 +660,16 @@ describe("saved file media validation clocks", () => {
 			case "move":
 				expect(
 					(
-						await f.asUser.mutation(api.files_nodes.move_nodes, {
-							membershipId: scope.membershipId,
-							itemIds: [nodeId],
-							targetParentId: "root",
-						})
+						await test_move_nodes(f.t, f.asUser, {
+								membershipId: scope.membershipId,
+								itemIds: [nodeId],
+								targetParentId: "root",
+							})
 					)._nay,
 				).toBeUndefined();
 				break;
 			case "rename":
-				expect(await f.asUser.mutation(api.files_nodes.rename_node, { ...scope, path: "unchanged" })).toEqual({
+				expect(await test_rename_node(f.t, f.asUser, { ...scope, path: "unchanged" })).toEqual({
 					_yay: null,
 				});
 				break;
@@ -740,7 +722,7 @@ describe("saved file media validation clocks", () => {
 			if (operation === "rename")
 				expect(
 					(
-						await f.asUser.mutation(api.files_nodes.rename_node, {
+						await test_rename_node(f.t, f.asUser, {
 							membershipId: f.db.membershipId,
 							nodeId,
 							path: "taken",
@@ -836,13 +818,13 @@ describe("saved file media validation clocks", () => {
 			const membershipId = f.db.membershipId;
 			const result =
 				operation === "move"
-					? await f.asUser.mutation(api.files_nodes.move_nodes, {
+					? await test_move_nodes(f.t, f.asUser, {
 							membershipId,
 							itemIds: [nodeId],
 							targetParentId: destination,
 						})
 					: operation === "rename"
-						? await f.asUser.mutation(api.files_nodes.rename_node, { membershipId, nodeId, path: "changed" })
+						? await test_rename_node(f.t, f.asUser, { membershipId, nodeId, path: "changed" })
 						: operation === "archive"
 							? await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [nodeId] })
 							: operation === "restore"

@@ -70,7 +70,7 @@ function abort_outcome(signal: AbortSignal) {
 }
 
 /**
- * Resolve exact input before admission. This only reads entries; it starts no work.
+ * Prepare the destination. Background jobs resolve sources after saving their input.
  */
 export async function bash_transfer_command_prepare(args: {
 	ctx: ActionCtx;
@@ -79,6 +79,7 @@ export async function bash_transfer_command_prepare(args: {
 	command: "cp" | "mv";
 	commandCtx: Pick<CommandContext, "cwd">;
 	parsed: NonNullable<ReturnType<typeof bash_parse_cp_mv_operands>["_yay"]>;
+	resolveSources?: boolean;
 }) {
 	const { dbFilesRoots, command, commandCtx, parsed, transferContext } = args;
 	const fail = (message: string) => ({ result: { stdout: "", stderr: `${command}: ${message}\n`, exitCode: 1 } });
@@ -135,7 +136,7 @@ export async function bash_transfer_command_prepare(args: {
 		return fail("all sources must be in one workspace; run a separate command for each source workspace");
 
 	const sources: files_PendingTarget[] = [];
-	for (const { source, root } of resolvedSources) {
+	for (const { source, root } of args.resolveSources === false ? [] : resolvedSources) {
 		const entry = await root.fs.getEntry(root.dbFilesPath!);
 		if (!entry?.target || entry.target.kind === "root") return fail(`source '${source.path}' is not available`);
 		if (entry.preparing) return fail(`draft '${source.path}' is still preparing`);
@@ -143,8 +144,6 @@ export async function bash_transfer_command_prepare(args: {
 		if (command === "cp" && entry.kind === "folder" && !parsed.recursive) return fail("copying a folder requires -R");
 		sources.push(entry.target);
 	}
-
-	if (command === "mv" && sources.length > 200) return fail("select at most 200 sources");
 
 	const destination = await destinationRoot.fs.getEntry(destinationPath);
 	if (destination?.preparing) return fail("the destination draft is still preparing");
@@ -162,7 +161,7 @@ export async function bash_transfer_command_prepare(args: {
 		if (!destination.target) return fail("the destination is not available");
 		targetParent = destination.target;
 	} else {
-		if (sources.length !== 1) return fail("multiple sources require a directory destination");
+		if (parsed.sources.length !== 1) return fail("multiple sources require a directory destination");
 
 		// Let the transfer check the literal path before normalizing a missing name.
 		targetName = path_name_of(destinationPath);
@@ -183,8 +182,9 @@ export async function bash_transfer_command_prepare(args: {
 		if (
 			command === "mv" &&
 			destination?.target &&
-			destination.target.kind === sources[0]!.kind &&
-			destination.target.id === sources[0]!.id
+			(args.resolveSources === false
+				? resolvedSources[0]!.root.dbFilesPath === destinationPath
+				: destination.target.kind === sources[0]!.kind && destination.target.id === sources[0]!.id)
 		)
 			return { result: { stdout: "", stderr: "", exitCode: 0 } };
 	}
@@ -198,6 +198,10 @@ export async function bash_transfer_command_prepare(args: {
 			sourceWorkspace: sourceRoot.fs === dbFilesRoots.app.fs ? ("current" as const) : ("personal" as const),
 			destinationWorkspace: destinationRoot.fs === dbFilesRoots.app.fs ? ("current" as const) : ("personal" as const),
 			sources,
+			sourceOperands: resolvedSources.map(({ source, root }) => ({
+				path: root.dbFilesPath!,
+				requiresFolder: source.requiresFolder,
+			})),
 			targetParent,
 			targetPath,
 			targetName,
@@ -264,8 +268,8 @@ export async function bash_transfer_command_run(
 			invocation: { id: transferContext.invocationId, commandNumber },
 			requestId: `${transferContext.invocationId}:${commandNumber}`,
 			kind: command === "cp" ? "copy" : "move",
-			sources: command === "cp" ? sources.slice(0, files_TRANSFER_SELECTION_PAGE_SIZE) : sources,
-			...(command === "cp" ? { expectedSourceCount: sources.length } : {}),
+			sources: sources.slice(0, files_TRANSFER_SELECTION_PAGE_SIZE),
+			expectedSourceCount: sources.length,
 			targetParent,
 			targetPath,
 			targetName,
@@ -298,27 +302,25 @@ export async function bash_transfer_command_run(
 	const scope = { membershipId: transferContext.membershipId, threadId, runId };
 
 	try {
-		if (command === "cp") {
-			// Copy cannot execute until every selected source has been accepted and sealed.
-			for (let offset = files_TRANSFER_SELECTION_PAGE_SIZE; ; offset += files_TRANSFER_SELECTION_PAGE_SIZE) {
-				if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) {
-					await stop_transfer({ ctx, scope, reason: abort_outcome(transferContext.signal).reason });
-					return aborted();
-				}
-				const intake =
-					offset < sources.length
-						? await ctx.runMutation(internal.files_transfer.append_sources_for_agent, {
-								...scope,
-								offset,
-								sources: sources.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
-							})
-						: await ctx.runMutation(internal.files_transfer.seal_for_agent, scope);
-				if (intake._nay) {
-					await stop_transfer({ ctx, scope, reason: "user" });
-					return fail(intake._nay.message);
-				}
-				if (offset >= sources.length) break;
+		// Start only after every source page has been accepted and sealed.
+		for (let offset = files_TRANSFER_SELECTION_PAGE_SIZE; ; offset += files_TRANSFER_SELECTION_PAGE_SIZE) {
+			if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) {
+				await stop_transfer({ ctx, scope, reason: abort_outcome(transferContext.signal).reason });
+				return aborted();
 			}
+			const intake =
+				offset < sources.length
+					? await ctx.runMutation(internal.files_transfer.append_sources_for_agent, {
+							...scope,
+							offset,
+							sources: sources.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
+						})
+					: await ctx.runMutation(internal.files_transfer.seal_for_agent, scope);
+			if (intake._nay) {
+				await stop_transfer({ ctx, scope, reason: "user" });
+				return fail(intake._nay.message);
+			}
+			if (offset >= sources.length) break;
 		}
 
 		for (;;) {

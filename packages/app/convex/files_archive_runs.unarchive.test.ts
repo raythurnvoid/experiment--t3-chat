@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_mocks } from "./setup.test.ts";
+import { test_finish_transfer_run, test_move_nodes, test_mocks } from "./setup.test.ts";
 import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
@@ -79,19 +79,21 @@ describe("unarchive_nodes", () => {
 		expect((await read_node(f, second.fileIds[0]!)).archiveOperationId).toBeNull();
 	});
 
-	test("discovery still finds a root renamed before its cursor", async () => {
+	test("discovery finds a stored-path change before its cursor", async () => {
 		const f = await fixture();
 		const archived = await seed_same_path(f, { name: "cursor", count: 51, archiveOperationId: crypto.randomUUID() });
 		const restored = await restore(f, [archived.fileIds[0]!]);
 		expect(restored._nay).toBeUndefined();
 		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", restored._yay!.runId)))?.phase).toBe("discover");
-		expect(
-			await f.asOwner.mutation(api.files_nodes.rename_node, {
-				membershipId: f.db.membershipId,
-				nodeId: archived.fileIds.at(-1)!,
-				path: "a.md",
+		// Cursor seam only. Public Rename waits for Restore.
+		await f.t.run((ctx) =>
+			ctx.db.patch("files_nodes", archived.fileIds.at(-1)!, {
+				name: "a.md",
+				sortName: files_sort_text_key("a.md"),
+				path: "/cursor/a.md",
+				treePath: "/cursor/a.md",
 			}),
-		).toEqual({ _yay: null });
+		);
 		expect((await read_node(f, archived.fileIds.at(-1)!)).treePath).toBe("/cursor/a.md");
 		const blockerId = await f.t.run((ctx) =>
 			files_subtree_ops_db_insert(ctx, {
@@ -120,7 +122,7 @@ describe("unarchive_nodes", () => {
 		expect(op).toMatchObject({ status: "queued", blockedByOpId: blockerId });
 	});
 
-	test("a queued restore checks a root renamed while it waited", async () => {
+	test("a queued restore checks a stored-path change while it waited", async () => {
 		const f = await fixture();
 		const archived = await seed_same_path(f, { name: "queued", count: 51, archiveOperationId: crypto.randomUUID() });
 		const blocker = (treePath: string) =>
@@ -155,13 +157,15 @@ describe("unarchive_nodes", () => {
 			status: "queued",
 			blockedByOpId: firstBlockerId,
 		});
-		expect(
-			await f.asOwner.mutation(api.files_nodes.rename_node, {
-				membershipId: f.db.membershipId,
-				nodeId: archived.fileIds[1]!,
-				path: "a.md",
+		// Cursor seam only. Public Rename waits for the scope blocker.
+		await f.t.run((ctx) =>
+			ctx.db.patch("files_nodes", archived.fileIds[1]!, {
+				name: "a.md",
+				sortName: files_sort_text_key("a.md"),
+				path: "/queued/a.md",
+				treePath: "/queued/a.md",
 			}),
-		).toEqual({ _yay: null });
+		);
 		expect((await f.t.run((ctx) => ctx.db.get("files_subtree_ops", opId)))?.treePaths).not.toContain("/queued/a.md");
 		const secondBlockerId = await blocker("/queued/a.md");
 		await f.t.run((ctx) => files_subtree_ops_db_delete(ctx, { opId: firstBlockerId, now: Date.now() }));
@@ -208,9 +212,9 @@ describe("unarchive_nodes", () => {
 		expect((await read_state(f)).nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	}, 120_000);
 
-	test("a folder moved during the restore takes its contents with it", async () => {
+	test("a public Move waits for Restore and then moves every child", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "moving", folderCount: 4, filesPerFolder: 100 });
+		const tree = await seed_tree(f, { name: "moving", folderCount: 2, filesPerFolder: 40 });
 		await archive_to_end(f, tree.topId);
 		const target = await folder(f, "/target");
 
@@ -220,17 +224,58 @@ describe("unarchive_nodes", () => {
 			await step(f, job.runId);
 		}
 		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
+		const moved = await f.asOwner.mutation(api.files_transfer.start, {
+			membershipId: f.db.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "move",
+			sourceIds: [tree.topId],
+			expectedSourceCount: 1,
+			targetParentId: target,
+		});
+		expect(moved._nay).toBeUndefined();
 		expect(
-			await f.asOwner.mutation(api.files_nodes.move_nodes, {
+			await f.asOwner.mutation(api.files_transfer.seal, {
 				membershipId: f.db.membershipId,
-				itemIds: [tree.topId],
-				targetParentId: target,
+				runId: moved._yay!.runId,
 			}),
 		).toEqual({ _yay: null });
+		for (let count = 0; count < 3; count++) {
+			await f.t.mutation(internal.files_transfer.advance, { runId: moved._yay!.runId });
+		}
+		expect((await read_node(f, tree.topId)).path, "Move keeps the old name while Restore runs").toBe("/moving");
+		expect((await f.t.run((ctx) => ctx.db.get("activities", moved._yay!.activityId)))?.progress?.completed).toBe(0);
 
 		const ended = await run_to_end(f, job);
 		expect(ended.activity.status).toBe("succeeded");
-		expect((await read_node(f, tree.fileIds.at(-1)!)).path).toBe("/target/moving/d3/f099.md");
+		await test_finish_transfer_run(f.asOwner, moved._yay!.runId);
+		expect((await f.t.run((ctx) => ctx.db.get("activities", moved._yay!.activityId)))?.status).toBe("succeeded");
+		expect((await read_node(f, tree.fileIds.at(-1)!)).path).toBe("/target/moving/d1/f039.md");
+	}, 120_000);
+
+	test("public Rename waits for Restore and checks the accepted source again", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "rename-wait", folderCount: 2, filesPerFolder: 40 });
+		await archive_to_end(f, tree.topId);
+		const restored = await restore(f, [tree.topId]);
+		expect(restored._nay).toBeUndefined();
+		const renamed = await f.asOwner.mutation(api.files_nodes.rename_node, {
+			membershipId: f.db.membershipId,
+			requestId: crypto.randomUUID(),
+			nodeId: tree.fileIds[0]!,
+			path: "a.md",
+		});
+		expect(renamed._nay).toBeUndefined();
+		expect(renamed._yay).not.toBeNull();
+		for (let count = 0; count < 3; count++) {
+			await f.t.mutation(internal.files_transfer.advance, { runId: renamed._yay!.runId });
+		}
+		expect((await read_node(f, tree.fileIds[0]!)).path, "Rename keeps the old name while Restore runs")
+			.toBe("/rename-wait/d0/f000.md");
+		expect((await f.t.run((ctx) => ctx.db.get("activities", renamed._yay!.activityId)))?.progress?.completed).toBe(0);
+		expect((await run_to_end(f, restored._yay!)).activity.status).toBe("succeeded");
+		await test_finish_transfer_run(f.asOwner, renamed._yay!.runId);
+		expect((await f.t.run((ctx) => ctx.db.get("activities", renamed._yay!.activityId)))?.status).toBe("awaiting_input");
+		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/rename-wait/d0/f000.md");
 	});
 
 	test("refuses to restore an operation that a job is still restoring", async () => {
@@ -521,7 +566,7 @@ describe("unarchive_nodes", () => {
 		// so the queue then holds exactly what one pull queued.
 		const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 1 });
 		expect(
-			await f.asOwner.mutation(api.files_nodes.move_nodes, {
+			await test_move_nodes(f.t, f.asOwner, {
 				membershipId: f.db.membershipId,
 				itemIds: [occupants.fileIds[0]!],
 				targetParentId: tree.folderIds[0]!,
@@ -649,7 +694,7 @@ describe("unarchive_nodes", () => {
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 2 });
 			// Move the new files next to the archived ones, so both names are taken.
 			expect(
-				await f.asOwner.mutation(api.files_nodes.move_nodes, {
+				await test_move_nodes(f.t, f.asOwner, {
 					membershipId: f.db.membershipId,
 					itemIds: occupants.fileIds,
 					targetParentId: tree.folderIds[0]!,
@@ -721,7 +766,7 @@ describe("unarchive_nodes", () => {
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 100 });
 			const occupantIds = names.map((name) => occupants.fileIds[Number(name.slice(1, 4))]!);
 			expect(
-				await f.asOwner.mutation(api.files_nodes.move_nodes, {
+				await test_move_nodes(f.t, f.asOwner, {
 					membershipId: f.db.membershipId,
 					itemIds: occupantIds,
 					targetParentId: tree.folderIds[1]!,
@@ -756,7 +801,7 @@ describe("unarchive_nodes", () => {
 			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 1 });
 			expect(
-				await f.asOwner.mutation(api.files_nodes.move_nodes, {
+				await test_move_nodes(f.t, f.asOwner, {
 					membershipId: f.db.membershipId,
 					itemIds: occupants.fileIds,
 					targetParentId: tree.folderIds[0]!,
@@ -877,7 +922,7 @@ describe("unarchive_nodes", () => {
 			if (archived._yay) await run_to_end(f, archived._yay);
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 100 });
 			expect(
-				await f.asOwner.mutation(api.files_nodes.move_nodes, {
+				await test_move_nodes(f.t, f.asOwner, {
 					membershipId: f.db.membershipId,
 					itemIds: occupants.fileIds,
 					targetParentId: tree.folderIds[0]!,
@@ -1033,7 +1078,7 @@ describe("unarchive_nodes", () => {
 			expect((await read_node(f, queuedFileId)).archiveOperationId).not.toBeNull();
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 1 });
 			expect(
-				await f.asOwner.mutation(api.files_nodes.move_nodes, {
+				await test_move_nodes(f.t, f.asOwner, {
 					membershipId: f.db.membershipId,
 					itemIds: occupants.fileIds,
 					targetParentId: queuedId,

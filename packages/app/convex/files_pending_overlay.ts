@@ -19,14 +19,24 @@ import {
 	files_pending_overlay_db_child_ancestors,
 	files_pending_overlay_db_compute_target,
 	files_pending_overlay_db_create_reader,
+	files_pending_overlay_db_delete_job,
 	files_pending_overlay_db_flush,
 	files_pending_overlay_db_mark_target,
 	files_pending_overlay_db_set_own_job,
 	files_pending_overlay_db_sync_list_key,
+	files_pending_overlay_db_target_cohort,
 } from "../server/files-pending-overlay.ts";
-import { files_share_rows_db_compute_for_grant } from "../server/files-share-rows.ts";
+import {
+	files_saved_placement_db_get_slot,
+	files_saved_placement_db_get_view,
+} from "../server/files-saved-placement.ts";
+import {
+	files_share_rows_db_compute_for_grant,
+	files_share_rows_db_compute_all_for_grant,
+} from "../server/files-share-rows.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import { files_ancestor_ids, type files_PendingTarget } from "../shared/files.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -36,6 +46,11 @@ export const experimental_reuseContext = true;
  * Docs per job page.
  */
 const JOB_PAGE_SIZE = 100;
+
+/**
+ * Four full-size docs leave room for their second reads and the current saved node.
+ */
+const SCOPE_PAGE_SIZE = 4;
 
 /**
  * A job stops before the next doc when fewer ranges are left. A recompute with a deep reader can
@@ -117,12 +132,18 @@ type JobCursor = {
  */
 function job_phases(job: PagedJob) {
 	switch (job.kind) {
-		// Every proposal on the node, every hide of it, every place of it, and the places at its spot
-		// (their owners may claim it).
+		// Proposals, hides, places and claims, then pending content docs whose scope follows the node.
 		case "saved_node":
-			return ["files_pending_updates", "files_pending_hides", "files_pending_places", "files_pending_places"] as const;
+			return [
+				"files_pending_updates",
+				"files_pending_hides",
+				"files_pending_places",
+				"files_pending_places",
+				"files_plain_text_chunks",
+				"files_metadata_docs",
+			] as const;
 		case "parent":
-			return ["files_pending_places"] as const;
+			return ["files_pending_places", "files_pending_updates", "files_pending_nodes"] as const;
 		// The places under the old path, then every pathless place of the user.
 		case "owner_path":
 			return ["files_pending_places", "files_pending_places"] as const;
@@ -134,6 +155,32 @@ async function db_job_page(ctx: MutationCtx, job: PagedJob, cursor: JobCursor) {
 	const places = ctx.db.query("files_pending_places");
 	if (job.kind === "saved_node") {
 		const savedNodeId = job.savedNodeId;
+		if (cursor.phase === 4)
+			return await ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+					q
+						.eq("organizationId", job.organizationId)
+						.eq("workspaceId", job.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", savedNodeId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined),
+				)
+				.paginate({ cursor: cursor.page, numItems: SCOPE_PAGE_SIZE });
+		if (cursor.phase === 5)
+			return await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
+					q
+						.eq("organizationId", job.organizationId)
+						.eq("workspaceId", job.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", savedNodeId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined),
+				)
+				.paginate({ cursor: cursor.page, numItems: SCOPE_PAGE_SIZE });
 		if (cursor.phase === 0)
 			return await ctx.db
 				.query("files_pending_updates")
@@ -162,6 +209,8 @@ async function db_job_page(ctx: MutationCtx, job: PagedJob, cursor: JobCursor) {
 				q
 					.eq("organizationId", job.organizationId)
 					.eq("workspaceId", job.workspaceId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined)
 					.eq("parent.kind", node.parentId === "root" ? "root" : "saved")
 					.eq("parent.id", node.parentId === "root" ? undefined : node.parentId)
 					.eq("name", node.name),
@@ -170,11 +219,34 @@ async function db_job_page(ctx: MutationCtx, job: PagedJob, cursor: JobCursor) {
 	}
 	if (job.kind === "parent") {
 		const parent = job.parent;
+		if (cursor.phase === 1)
+			return await ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_pendingMove_destParent", (q) =>
+					q
+						.eq("pendingMove.destParent.kind", parent.kind)
+						.eq("pendingMove.destParent.id", parent.kind === "root" ? undefined : parent.id),
+				)
+				.paginate(paginationOpts);
+		if (cursor.phase === 2)
+			return await ctx.db
+				.query("files_pending_nodes")
+				.withIndex("by_org_ws_parent_state_name", (q) =>
+					q
+						.eq("organizationId", job.organizationId)
+						.eq("workspaceId", job.workspaceId)
+						.eq("parent.kind", parent.kind)
+						.eq("parent.id", parent.kind === "root" ? undefined : parent.id)
+						.eq("state", "active"),
+				)
+				.paginate(paginationOpts);
 		return await places
 			.withIndex("by_org_ws_parent_name", (q) =>
 				q
 					.eq("organizationId", job.organizationId)
 					.eq("workspaceId", job.workspaceId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined)
 					.eq("parent.kind", parent.kind)
 					.eq("parent.id", parent.kind === "root" ? undefined : parent.id),
 			)
@@ -188,6 +260,8 @@ async function db_job_page(ctx: MutationCtx, job: PagedJob, cursor: JobCursor) {
 					.eq("organizationId", scope.organizationId)
 					.eq("workspaceId", scope.workspaceId)
 					.eq("userId", scope.userId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined)
 					.gt("ownerTreePath", job.prefix)
 					.lt("ownerTreePath", path_tree_prefix_upper_bound(job.prefix)),
 			)
@@ -198,25 +272,61 @@ async function db_job_page(ctx: MutationCtx, job: PagedJob, cursor: JobCursor) {
 				.eq("organizationId", scope.organizationId)
 				.eq("workspaceId", scope.workspaceId)
 				.eq("userId", scope.userId)
+				.eq("moveView.cohortId", undefined)
+				.eq("moveView.view", undefined)
 				.eq("isPathless", true),
 		)
 		.paginate(paginationOpts);
 }
 
 /**
- * Mark the target one doc of a job stream asks to recompute. The flush does the rest.
+ * Mark one target for the flush, or repair one pending content doc's saved scope.
  */
-function job_mark_doc(
+async function job_mark_doc(
 	ctx: MutationCtx,
 	job: PagedJob,
-	doc: Doc<"files_pending_updates"> | Doc<"files_pending_hides"> | Doc<"files_pending_places">,
+	doc:
+		| Doc<"files_pending_updates">
+		| Doc<"files_pending_hides">
+		| Doc<"files_pending_places">
+		| Doc<"files_pending_nodes">
+		| Doc<"files_plain_text_chunks">
+		| Doc<"files_metadata_docs">,
 ) {
+	if (doc.organizationId !== job.organizationId || doc.workspaceId !== job.workspaceId) return;
+	if ("sourceKind" in doc) {
+		if (job.kind !== "saved_node") return;
+		const node = await ctx.db.get("files_nodes", job.savedNodeId);
+		if (!node) return;
+		const archiveOperationId = node.archiveOperationId ?? undefined;
+		// Scope is not part of either source index, so these patches keep the page cursor valid.
+		if ("plainTextChunk" in doc) {
+			if (doc.path !== node.path || doc.archiveOperationId !== archiveOperationId)
+				await ctx.db.patch("files_plain_text_chunks", doc._id, { path: node.path, archiveOperationId });
+		} else if (
+			doc.path !== node.path ||
+			doc.treePath !== node.treePath ||
+			doc.archiveOperationId !== archiveOperationId
+		)
+			await ctx.db.patch("files_metadata_docs", doc._id, {
+				path: node.path,
+				treePath: node.treePath,
+				archiveOperationId,
+			});
+		return;
+	}
 	files_pending_overlay_db_mark_target(ctx, {
 		organizationId: doc.organizationId,
 		workspaceId: doc.workspaceId,
 		userId: doc.userId,
 		target:
-			job.kind === "saved_node" ? { kind: "saved", id: job.savedNodeId } : (doc as Doc<"files_pending_places">).target,
+			job.kind === "saved_node"
+				? { kind: "saved", id: job.savedNodeId }
+				: "savedNodeId" in doc
+					? { kind: "saved", id: doc.savedNodeId }
+					: "state" in doc
+						? { kind: "private", id: doc._id }
+						: doc.target,
 		pendingUpdateId: "revision" in doc ? doc._id : undefined,
 	});
 }
@@ -235,7 +345,9 @@ async function db_pending_metadata_docs(db: QueryCtx["db"], pendingUpdateId: Id<
 	if (!pendingUpdate) return [];
 	const docs = await db
 		.query("files_metadata_docs")
-		.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", pendingUpdateId))
+		.withIndex("by_pendingUpdate_fieldPath", (q) =>
+			q.eq("pendingUpdateId", pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+		)
 		.collect();
 	return docs.filter((doc) => doc.sourceKind === "pending" && doc.proposalRevision === pendingUpdate.revision);
 }
@@ -255,7 +367,9 @@ async function db_place_field_values(db: QueryCtx["db"], place: Doc<"files_pendi
 							.eq("organizationId", place.organizationId)
 							.eq("workspaceId", place.workspaceId)
 							.eq("sourceKind", "committed")
-							.eq("fileNodeId", place.target.id as Id<"files_nodes">),
+							.eq("fileNodeId", place.target.id as Id<"files_nodes">)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
 					)
 					.collect();
 	return docs.map((doc) => ({
@@ -305,7 +419,9 @@ async function db_sync_place_fields(ctx: MutationCtx, placeId: Id<"files_pending
 	const place = await ctx.db.get("files_pending_places", placeId);
 	const fields = await ctx.db
 		.query("files_pending_place_fields")
-		.withIndex("by_place", (q) => q.eq("placeId", placeId))
+		.withIndex("by_place", (q) =>
+			q.eq("placeId", placeId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+		)
 		.collect();
 	const values = place ? await db_place_field_values(ctx.db, place) : [];
 
@@ -371,10 +487,9 @@ export const run_job = internalMutation({
 		kind: job_kind_validator,
 		key: v.string(),
 		/**
-		 * The job's `nextAttemptAt` when this run was scheduled. Missing only in runs scheduled before
-		 * this arg existed.
+		 * The job's `nextAttemptAt` when this run was scheduled.
 		 */
-		nextAttemptAt: v.optional(v.number()),
+		nextAttemptAt: v.number(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -388,24 +503,58 @@ export const run_job = internalMutation({
 		// same; then both runs go on, which is safe because all writes are diffed.
 		if (
 			!job ||
+			job.blockedByCohortId ||
 			job.nextAttemptAt > Date.now() ||
-			(args.nextAttemptAt !== undefined && args.nextAttemptAt !== job.nextAttemptAt)
+			args.nextAttemptAt !== job.nextAttemptAt
 		)
 			return null;
 		if (!(await ctx.db.get("organizations_workspaces", job.workspaceId))) {
-			await ctx.db.delete("files_pending_overlay_jobs", job._id);
+			await files_pending_overlay_db_delete_job(ctx, job);
 			return null;
 		}
 		const own = files_pending_overlay_db_set_own_job(ctx, job);
+		const currentView = await files_saved_placement_db_get_view(ctx.db, job);
+		const target_cohort = async (target: files_PendingTarget) =>
+			await files_pending_overlay_db_target_cohort(ctx.db, {
+				organizationId: job.organizationId,
+				workspaceId: job.workspaceId,
+				target,
+				currentView,
+			});
+		const park = async (
+			cohortId: Id<"files_move_cohorts">,
+			patch: {
+				cursor?: string | null;
+				placeIds?: Id<"files_pending_places">[];
+				items?: Extract<Doc<"files_pending_overlay_jobs">, { kind: "targets" }>["items"];
+			} = {},
+		) => {
+			await ctx.db.patch("files_pending_overlay_jobs", job._id, { ...patch, blockedByCohortId: cohortId });
+		};
+		if (job.kind === "saved_node" || (job.kind === "parent" && job.parent.kind !== "root")) {
+			const target: files_PendingTarget =
+				job.kind === "saved_node" ? { kind: "saved", id: job.savedNodeId } : (job.parent as files_PendingTarget);
+			const cohortId = await target_cohort(target);
+			if (cohortId) {
+				await park(cohortId);
+				return null;
+			}
+		}
 
 		if (job.kind === "place_fields") {
 			let done = 0;
 			for (const placeId of job.placeIds) {
 				if (done > 0 && (await db_job_should_stop(ctx))) break;
+				const place = await ctx.db.get("files_pending_places", placeId);
+				const cohortId = place && (await target_cohort(place.target));
+				if (cohortId) {
+					await park(cohortId, { placeIds: job.placeIds.slice(done) });
+					return null;
+				}
 				await db_sync_place_fields(ctx, placeId);
 				done++;
 			}
-			if (done === job.placeIds.length) await ctx.db.delete("files_pending_overlay_jobs", job._id);
+			if (done === job.placeIds.length) await files_pending_overlay_db_delete_job(ctx, job);
 			else await db_continue_job(ctx, job, { cursor: null, placeIds: job.placeIds.slice(done) });
 			return null;
 		}
@@ -415,6 +564,11 @@ export const run_job = internalMutation({
 			let done = 0;
 			for (const item of job.items) {
 				if (done > 0 && (await db_job_should_stop(ctx))) break;
+				const cohortId = await target_cohort(item.target);
+				if (cohortId) {
+					await park(cohortId, { items: job.items.slice(done) });
+					return null;
+				}
 				files_pending_overlay_db_mark_target(ctx, {
 					organizationId: job.organizationId,
 					workspaceId: job.workspaceId,
@@ -425,7 +579,7 @@ export const run_job = internalMutation({
 				});
 				done++;
 			}
-			if (done === job.items.length) await ctx.db.delete("files_pending_overlay_jobs", job._id);
+			if (done === job.items.length) await files_pending_overlay_db_delete_job(ctx, job);
 			else await db_continue_job(ctx, job, { cursor: null, items: job.items.slice(done) });
 			return null;
 		}
@@ -445,13 +599,29 @@ export const run_job = internalMutation({
 			own.lastPath = null;
 		};
 		let marked = 0;
+		let blockedByCohortId: Id<"files_move_cohorts"> | null = null;
 		const mark_docs = async (ids: string[]) => {
 			const left = [...ids];
 			while (left.length > 0) {
 				if (marked > 0 && (await db_job_should_stop(ctx))) break;
 				const doc = await ctx.db.get(phases[cursor.phase]!, left[0] as Id<(typeof phases)[number]>);
 				if (doc) {
-					job_mark_doc(ctx, job, doc);
+					const target =
+						job.kind === "saved_node"
+							? { kind: "saved" as const, id: job.savedNodeId }
+							: "savedNodeId" in doc
+								? { kind: "saved" as const, id: doc.savedNodeId }
+								: "state" in doc
+									? { kind: "private" as const, id: doc._id }
+									: "target" in doc
+										? doc.target
+										: "fileNodeId" in doc
+											? { kind: "saved" as const, id: doc.fileNodeId }
+											: null;
+					if (!target) throw should_never_happen("Overlay job doc has no target", { jobId: job._id, docId: doc._id });
+					blockedByCohortId = await target_cohort(target);
+					if (blockedByCohortId) break;
+					await job_mark_doc(ctx, job, doc);
 					// The flush asks this job for no walk under its prefix after this place. A doc read from an
 					// older page may have moved back since, so the path only grows: a smaller one would drop
 					// walks of places the page cursor already passed.
@@ -471,7 +641,10 @@ export const run_job = internalMutation({
 		if (cursor.pending.length === 0 && cursor.isDone) next_phase();
 		if (
 			cursor.pending.length === 0 &&
+			blockedByCohortId === null &&
 			cursor.phase < phases.length &&
+			// Start a scope page with a fresh byte budget, after any earlier recomputes.
+			!(job.kind === "saved_node" && cursor.phase >= 4 && marked > 0) &&
 			!(marked > 0 && (await db_job_should_stop(ctx)))
 		) {
 			const page = await db_job_page(ctx, job, cursor);
@@ -484,10 +657,11 @@ export const run_job = internalMutation({
 		// Flush the last marks now, so a rerun they ask for is in the cursor.
 		await files_pending_overlay_db_flush(ctx);
 		cursor.rerun ||= own.rerun;
-		if (cursor.phase < phases.length) await db_continue_job(ctx, job, { cursor: JSON.stringify(cursor) });
+		if (blockedByCohortId) await park(blockedByCohortId, { cursor: JSON.stringify(cursor) });
+		else if (cursor.phase < phases.length) await db_continue_job(ctx, job, { cursor: JSON.stringify(cursor) });
 		// Asked again during the pass: one fresh pass now.
 		else if (cursor.rerun) await db_continue_job(ctx, job, { cursor: null });
-		else await ctx.db.delete("files_pending_overlay_jobs", job._id);
+		else await files_pending_overlay_db_delete_job(ctx, job);
 		return null;
 	},
 });
@@ -503,7 +677,7 @@ export const recover_jobs = internalMutation({
 		const now = Date.now();
 		const jobs = await ctx.db
 			.query("files_pending_overlay_jobs")
-			.withIndex("by_nextAttemptAt", (q) => q.lt("nextAttemptAt", now - RECOVERY_MS))
+			.withIndex("by_blockedCohort", (q) => q.eq("blockedByCohortId", undefined).lt("nextAttemptAt", now - RECOVERY_MS))
 			.take(RECOVERY_BATCH_SIZE);
 		for (const job of jobs) {
 			const attempts = job.attempts + 1;
@@ -557,27 +731,37 @@ async function db_walk_user_page(db: QueryCtx["db"], scope: Scope, cursor: strin
 			: phase === "hides"
 				? await db
 						.query("files_pending_hides")
-						.withIndex("by_org_ws_user_treePath", (q) => owner(q))
+						.withIndex("by_org_ws_user_treePath", (q) =>
+							owner(q).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+						)
 						.paginate(paginationOpts)
 				: phase === "places"
 					? await db
 							.query("files_pending_places")
-							.withIndex("by_org_ws_user_ownerTreePath", (q) => owner(q))
+							.withIndex("by_org_ws_user_ownerTreePath", (q) =>
+								owner(q).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+							)
 							.paginate(paginationOpts)
 					: phase === "list_rows"
 						? await db
 								.query("files_pending_list_rows")
-								.withIndex("by_org_ws_user_listKey_updatedAt", (q) => owner(q))
+								.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
+									owner(q).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+								)
 								.paginate(paginationOpts)
 						: phase === "list_keys"
 							? await db
 									.query("files_pending_list_keys")
-									.withIndex("by_org_ws_user_listKey", (q) => owner(q))
+									.withIndex("by_org_ws_user_listKey", (q) =>
+										owner(q).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+									)
 									.paginate(paginationOpts)
 							: phase === "place_fields"
 								? await db
 										.query("files_pending_place_fields")
-										.withIndex("by_user", (q) => q.eq("userId", scope.userId))
+										.withIndex("by_user", (q) =>
+											q.eq("userId", scope.userId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+										)
 										.paginate(paginationOpts)
 								: await db
 										.query("files_pending_overlay_jobs")
@@ -598,17 +782,7 @@ async function db_walk_user_page(db: QueryCtx["db"], scope: Scope, cursor: strin
 async function db_saved_node_at(db: QueryCtx["db"], place: Doc<"files_pending_places">) {
 	if (place.parent.kind === "private") return null;
 	const parentId = place.parent.kind === "root" ? "root" : place.parent.id;
-	return await db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-			q
-				.eq("organizationId", place.organizationId)
-				.eq("workspaceId", place.workspaceId)
-				.eq("parentId", parentId)
-				.eq("archiveOperationId", null)
-				.eq("name", place.name),
-		)
-		.first();
+	return await files_saved_placement_db_get_slot(db, { ...place, parentId });
 }
 
 /**
@@ -648,7 +822,13 @@ async function db_check_target(
 	if (target.kind === "saved") {
 		const hide = await db
 			.query("files_pending_hides")
-			.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", target.id).eq("userId", scope.userId))
+			.withIndex("by_savedNode_user", (q) =>
+				q
+					.eq("savedNodeId", target.id)
+					.eq("userId", scope.userId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined),
+			)
 			.unique();
 		if (stable_json(hide) !== stable_json(desired.hide))
 			differences.push(`hide of ${name}: stored ${stable_json(hide)}, expected ${stable_json(desired.hide)}`);
@@ -657,7 +837,12 @@ async function db_check_target(
 	const place = await db
 		.query("files_pending_places")
 		.withIndex("by_target_user", (q) =>
-			q.eq("target.kind", target.kind).eq("target.id", target.id).eq("userId", scope.userId),
+			q
+				.eq("target.kind", target.kind)
+				.eq("target.id", target.id)
+				.eq("userId", scope.userId)
+				.eq("moveView.cohortId", undefined)
+				.eq("moveView.view", undefined),
 		)
 		.unique();
 	const storedPlace = place && { ...place, fieldsVersion: undefined };
@@ -667,7 +852,9 @@ async function db_check_target(
 	if (pendingUpdate) {
 		const rows = await db
 			.query("files_pending_list_rows")
-			.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+			.withIndex("by_pendingUpdate", (q) =>
+				q.eq("pendingUpdateId", pendingUpdate._id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			)
 			.collect();
 		const stored = rows.map((row) => `${row.listKey}@${row.updatedAt}`).sort();
 		const expected = desired.listKeys.map((listKey) => `${listKey}@${pendingUpdate.updatedAt}`).sort();
@@ -678,7 +865,9 @@ async function db_check_target(
 	if (place) {
 		const fields = await db
 			.query("files_pending_place_fields")
-			.withIndex("by_place", (q) => q.eq("placeId", place._id))
+			.withIndex("by_place", (q) =>
+				q.eq("placeId", place._id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			)
 			.collect();
 		const stored = fields.map(field_value_key).sort();
 		const expected = (await db_place_field_values(db, place)).map(field_value_key).sort();
@@ -690,7 +879,8 @@ async function db_check_target(
 
 /**
  * Compare one page of a user's derived docs with what the flush would write, and return the
- * differences. Call again with the returned cursor until it is null.
+ * differences. Call again with the returned cursor until it is null. An active workspace Move
+ * returns moveInProgress instead; restart the audit after the Move ends.
  */
 export const check_user = internalQuery({
 	args: {
@@ -699,9 +889,21 @@ export const check_user = internalQuery({
 		userId: v.id("users"),
 		cursor: v.union(v.string(), v.null()),
 	},
-	returns: v.object({ differences: v.array(v.string()), cursor: v.union(v.string(), v.null()) }),
+	returns: v.object({
+		differences: v.array(v.string()),
+		cursor: v.union(v.string(), v.null()),
+		moveInProgress: v.boolean(),
+	}),
 	handler: async (ctx, args) => {
 		const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId, userId: args.userId };
+		const slot = await ctx.db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) =>
+				q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId),
+			)
+			.unique();
+		// Cohort staging has its own exact work proofs. Audit normal docs after cleanup ends.
+		if (slot?.cohortId) return { differences: [], cursor: null, moveInProgress: true };
 		const reader = files_pending_overlay_db_create_reader(ctx.db, scope);
 		const { phase, docs, cursor } = await db_walk_user_page(ctx.db, scope, args.cursor);
 		const differences: string[] = [];
@@ -731,6 +933,8 @@ export const check_user = internalQuery({
 							.eq("organizationId", scope.organizationId)
 							.eq("workspaceId", scope.workspaceId)
 							.eq("userId", scope.userId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined)
 							.eq("listKey", row.listKey),
 					)
 					.unique();
@@ -745,6 +949,8 @@ export const check_user = internalQuery({
 							.eq("organizationId", scope.organizationId)
 							.eq("workspaceId", scope.workspaceId)
 							.eq("userId", scope.userId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined)
 							.eq("listKey", keyDoc.listKey),
 					)
 					.order("desc")
@@ -763,7 +969,7 @@ export const check_user = internalQuery({
 					differences.push(`job ${job.kind} ${job.key} failed ${job.attempts} times`);
 			}
 		}
-		return { differences, cursor };
+		return { differences, cursor, moveInProgress: false };
 	},
 });
 
@@ -860,13 +1066,13 @@ export const check_share_rows = internalQuery({
 				)
 				.paginate(paginationOpts);
 			for (const grant of grants.page) {
-				const desired = await files_share_rows_db_compute_for_grant(ctx.db, grant);
+				const desired = await files_share_rows_db_compute_all_for_grant(ctx.db, grant);
 				const rows = await ctx.db
 					.query("files_share_rows")
 					.withIndex("by_grant", (q) => q.eq("grantId", grant._id))
 					.collect();
-				const stored = rows.map(stable_json).join();
-				const expected = desired ? stable_json(desired) : "";
+				const stored = rows.map(stable_json).sort().join();
+				const expected = desired.map(stable_json).sort().join();
 				if (stored !== expected)
 					differences.push(`share rows of grant ${grant._id}: stored [${stored}], expected [${expected}]`);
 			}
@@ -880,7 +1086,7 @@ export const check_share_rows = internalQuery({
 				.paginate(paginationOpts);
 			for (const row of rows.page) {
 				const grant = await ctx.db.get("access_control_permission_grants", row.grantId);
-				const desired = await files_share_rows_db_compute_for_grant(ctx.db, grant);
+				const desired = await files_share_rows_db_compute_for_grant(ctx.db, grant, row.moveView);
 				if (stable_json(row) !== stable_json(desired))
 					differences.push(`share row ${row._id}: stored ${stable_json(row)}, expected ${stable_json(desired)}`);
 			}

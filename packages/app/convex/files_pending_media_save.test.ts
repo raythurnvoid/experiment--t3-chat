@@ -4,14 +4,15 @@ import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_save_file_pending_update,
+	test_finish_pending_update_run,
+	test_convex,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
-import {
-	files_pending_updates_action_prepare_content,
-	files_pending_updates_db_commit_prepared_content,
-} from "./files_pending_updates.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
+import { files_pending_updates_action_prepare_content } from "./files_pending_updates.ts";
 import {
 	files_pending_media_db_require_validation,
 	files_pending_media_db_validate_prepared,
@@ -276,7 +277,7 @@ async function dependencies(f: Awaited<ReturnType<typeof fixture>>, pending: Doc
 }
 
 async function save(f: Awaited<ReturnType<typeof fixture>>, pending: Doc<"files_pending_updates">) {
-	return await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+	return await test_save_file_pending_update(f.asUser, {
 		membershipId: f.membershipId,
 		target: pending.target,
 		pendingUpdateId: pending._id,
@@ -382,17 +383,6 @@ describe("paged Save media proof", () => {
 		expect(await check(text + "Changed\n")).toHaveProperty("_nay");
 		expect(await check(text, new Set())).toHaveProperty("_nay");
 		const nextImage = images[1]!.pending;
-		const preparedImage = await f.t.action((ctx) =>
-			files_pending_updates_action_prepare_content(ctx, {
-				userId: f.scope.userId,
-				membershipId: f.membershipId,
-				target: nextImage.target,
-				pendingUpdateId: nextImage._id,
-				reviewedRevision: nextImage.revision,
-				reviewedPrivateParentIds: [],
-			}),
-		);
-		if (preparedImage._nay) throw new Error(preparedImage._nay.message);
 		let validated: files_pending_media_ValidatedSave | undefined;
 		await f.t.run(async (ctx) => {
 			const proof = await files_pending_media_db_validate_prepared(ctx, {
@@ -402,13 +392,6 @@ describe("paged Save media proof", () => {
 			});
 			if (proof._nay || !proof._yay) throw new Error("Expected a checked media proof");
 			validated = proof._yay;
-			const published = await files_pending_updates_db_commit_prepared_content(ctx, {
-				userId: f.scope.userId,
-				prepared: preparedImage._yay,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
-			});
-			if (published._nay) throw new Error(published._nay.message);
-			expect(published._yay.target.kind).toBe("saved");
 			expect(
 				await files_pending_media_db_require_validation(ctx, {
 					pendingUpdate: pending,
@@ -419,6 +402,9 @@ describe("paged Save media proof", () => {
 				}),
 			).toEqual({ _yay: null });
 		});
+		const published = await save(f, nextImage);
+		if (published._nay) throw new Error(published._nay.message);
+		expect(published._yay.target.kind).toBe("saved");
 		// A proof checked in another mutation cannot skip the changed clock.
 		expect(
 			await f.t.run((ctx) =>
@@ -577,33 +563,45 @@ async function bulk_save(args: {
 		_yay: null,
 	});
 	for (let pass = 0; pass < 100; pass++) {
+		const job = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_overlay_jobs")
+				.withIndex("by_org_ws", (q) =>
+					q.eq("organizationId", f.scope.organizationId).eq("workspaceId", f.scope.workspaceId),
+				)
+				.first(),
+		);
+		if (job) {
+			await f.t.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+			continue;
+		}
 		await f.t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
 		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
 		if (run?.step !== "planning") break;
 		if (pass === 99) throw new Error("Review planning did not finish");
 	}
 	await afterPlan?.();
-	for (let pass = 0; pass < 20; pass++) {
-		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
-		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		if (!run) throw new Error("Expected review run");
-		if (run.step === "finished")
-			return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.membershipId, runId });
-		const unit = await f.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_update_run_units")
-				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-				.first(),
-		);
-		if (!unit) continue;
-		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
-			runId,
-			fence: run.fence,
-			unitId: unit._id,
-			attemptFence: unit.attemptFence,
-		});
-	}
-	throw new Error("Review did not finish");
+	await test_finish_pending_update_run(f.asUser, runId);
+	const result = await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.membershipId, runId });
+	const units = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_pending_update_run_units")
+			.withIndex("by_run_order", (q) => q.eq("runId", runId))
+			.collect(),
+	);
+	return result
+		? {
+				...result,
+				errors: units
+					.map((unit) => unit.errorMessage)
+					.filter(Boolean)
+					.join("\n"),
+			}
+		: null;
 }
 
 async function copy_replacement(args: {
@@ -768,6 +766,19 @@ describe("Save copied rich-text media", () => {
 			expect(await save(f, pending)).toMatchObject({
 				_nay: { message: expect.stringContaining("Save the selected media") },
 			});
+			const refusedRun =
+				target.kind === "private"
+					? await f.t.run((ctx) =>
+							ctx.db
+								.query("files_pending_update_runs")
+								.withIndex("by_user_requestId", (q) =>
+									q
+										.eq("userId", f.scope.userId)
+										.eq("requestId", `single-save:${f.membershipId}:${target.id}:${pending._id}:${pending.revision}`),
+								)
+								.unique(),
+						)
+					: null;
 			expect(billingCalls()).toBe(billedBefore);
 			expect(await proposal(f, pending.target)).toEqual(pending);
 			if (target.kind === "saved") {
@@ -785,7 +796,18 @@ describe("Save copied rich-text media", () => {
 			}
 			// The same document succeeds once the exact media is saved.
 			expect((await save(f, image.pending))._nay).toBeUndefined();
-			expect((await save(f, pending))._nay).toBeUndefined();
+			expect(
+				(await save(f, pending))._nay,
+				"a new Save retries the refused review after its media is saved",
+			).toBeUndefined();
+			if (refusedRun) {
+				const base = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", refusedRun._id));
+				expect(
+					base?.singleSaveLatestRunId,
+					"the base request points directly at the new deliberate attempt",
+				).toBeDefined();
+				expect(base?.singleSaveLatestRunId).not.toBe(refusedRun._id);
+			}
 			expect(billingCalls()).toBeGreaterThan(billedBefore);
 		},
 	);
@@ -950,7 +972,7 @@ describe("Save copied rich-text media", () => {
 		const archive = await proposal(f, target);
 		expect(archive._id).not.toBe(image.pending._id);
 		expect(await save(f, pending)).toMatchObject({
-			_nay: { message: expect.stringContaining("Save the selected media") },
+			_nay: { message: "The reviewed media is no longer available." },
 		});
 		expect((await bulk_save({ f, selected: [pending, archive] }))?.activity).toMatchObject({
 			status: "failed",
@@ -992,7 +1014,7 @@ describe("Save copied rich-text media", () => {
 			});
 			const result = await bulk_save({ f, selected: [pending, replacement] });
 			if (expectsReplacement) {
-				expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
+				expect(result?.activity, result?.errors).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
 				expect(await f.t.run((ctx) => ctx.db.get("files_nodes", target.id))).toMatchObject({
 					assetId: dependency.assetId,
 				});
@@ -1148,6 +1170,22 @@ describe("cross-workspace Copy from public Save", () => {
 			});
 			const savedPart = await save(copied.destination, partial);
 			if (savedPart._nay || savedPart._yay.target.kind !== "saved") throw new Error("Expected partial Save");
+			expect(
+				await f.t.run((ctx) =>
+					ctx.db
+						.query("files_pending_places")
+						.withIndex("by_target_user", (q) =>
+							q
+								.eq("target.kind", "private")
+								.eq("target.id", copied.pending.target.id)
+								.eq("userId", copied.destination.scope.userId)
+								.eq("moveView.cohortId", undefined)
+								.eq("moveView.view", undefined),
+						)
+						.unique(),
+				),
+				"partial Save retires the normal private place for its published alias",
+			).toBeNull();
 			const nodeId = savedPart._yay.target.id;
 			const before = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 			const full = await saved_proposal({
@@ -1158,7 +1196,10 @@ describe("cross-workspace Copy from public Save", () => {
 			});
 			expect(full._id).toBe(partial._id);
 			const saved = await bulk_save({ f: copied.destination, selected: [full] });
-			expect(saved?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1, blocked: 0 } });
+			expect(saved?.activity, saved?.errors).toMatchObject({
+				status: "succeeded",
+				progress: { completed: 1, blocked: 0 },
+			});
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", full._id))).toBeNull();
 		},
@@ -1232,19 +1273,13 @@ describe("cross-workspace Copy from public Save", () => {
 			const objectsBefore = new Map(objects);
 			const result = await bulk_save({ f: destination, selected: replacement ? [full, replacement] : [full] });
 			const reviewed = await f.t.run(async (ctx) => {
-				const items = await ctx.db.query("files_pending_update_run_items").collect();
+				const items = await ctx.db
+					.query("files_pending_update_run_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", result!.run._id))
+					.collect();
 				const item = items.find((item) => item.pendingUpdateId === full._id)!;
-				return { prepared: item.prepared, unit: await ctx.db.get("files_pending_update_run_units", item.unitId!) };
+				return { unit: await ctx.db.get("files_pending_update_run_units", item.unitId!) };
 			});
-			expect(reviewed.prepared?.kind).toBe(collaborative ? "saved_yjs" : "saved_asset");
-			if (reviewed.prepared?.kind === "saved_asset") {
-				expect(reviewed.prepared.publish).toBeNull();
-				expect(reviewed.prepared.partial).toBeUndefined();
-				expect(reviewed.prepared.unchanged).toBeUndefined();
-			} else if (reviewed.prepared?.kind === "saved_yjs") {
-				expect(reviewed.prepared.trustedStageId).toBeUndefined();
-				expect(reviewed.prepared.partial).toBeUndefined();
-			}
 
 			if (replacement) {
 				const replacementId = replacement._id;
@@ -1252,12 +1287,15 @@ describe("cross-workspace Copy from public Save", () => {
 				expect(reviewed.unit).toMatchObject({
 					status: "blocked",
 					itemCount: 2,
-					errorMessage: expect.stringContaining("Save the selected media"),
+					errorMessage: "A linked media file changed. Review this document again.",
 				});
 				expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", full._id))).toEqual(full);
 				expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", replacementId))).toEqual(replacement);
 			} else {
-				expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1, blocked: 0 } });
+				expect(result?.activity, result?.errors).toMatchObject({
+					status: "succeeded",
+					progress: { completed: 1, blocked: 0 },
+				});
 				expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", full._id))).toBeNull();
 			}
 			expect(
@@ -1352,12 +1390,17 @@ describe("cross-workspace Copy from public Save", () => {
 					imageBefore = await f.t.run((ctx) => ctx.db.get("files_nodes", imageNodeId));
 				},
 			});
-			expect(result?.activity).toMatchObject({
+			expect(result?.activity, result?.errors).toMatchObject({
 				status: removeEmbed ? "partial" : "failed",
 				progress: { completed: removeEmbed ? 1 : 0, blocked: removeEmbed ? 1 : 2 },
 			});
 			expect(result?.run.unitCount).toBe(removeEmbed ? 2 : 1);
-			const items = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect());
+			const items = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_update_run_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", result!.run._id))
+					.collect(),
+			);
 			const documentItem = items.find((item) => item.pendingUpdateId === full._id)!;
 			const imageItem = items.find((item) => item.pendingUpdateId === replacement._id)!;
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", imageItem.unitId!))).toMatchObject({

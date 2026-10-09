@@ -2,7 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 
 beforeEach(() => {
 	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_media_test" as never);
@@ -70,7 +70,7 @@ async function save_media(f: Awaited<ReturnType<typeof fixture>>) {
 		target: f.target,
 	});
 	if (!view?.entry.pendingUpdate) throw new Error("Expected a media proposal");
-	const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+	const saved = await test_save_file_pending_update(f.asUser, {
 		membershipId: f.scope.membershipId,
 		target: f.target,
 		pendingUpdateId: view.entry.pendingUpdate._id,

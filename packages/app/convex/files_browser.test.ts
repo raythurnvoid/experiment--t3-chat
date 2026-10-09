@@ -12,7 +12,7 @@ import {
 	files_browser_db_delete_user_batch,
 	files_browser_db_purge_workspace_batch,
 } from "./files_browser.ts";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
@@ -489,7 +489,7 @@ describe("browser file outputs", () => {
 		for (const parent of view!.requiredParents) {
 			expect(
 				(
-					await asUser.action(api.files_pending_updates.save_file_pending_update, {
+					await test_save_file_pending_update(asUser, {
 						membershipId: scope.membershipId,
 						target: parent.target,
 						pendingUpdateId: parent.pendingUpdateId,
@@ -498,7 +498,7 @@ describe("browser file outputs", () => {
 				)._nay,
 			).toBeUndefined();
 		}
-		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(asUser, {
 			membershipId: scope.membershipId,
 			target,
 			pendingUpdateId: view!.entry.pendingUpdate!._id,
@@ -957,7 +957,7 @@ describe("get_file_read_source", () => {
 		for (const parent of view!.requiredParents) {
 			expect(
 				(
-					await asOwner.action(api.files_pending_updates.save_file_pending_update, {
+					await test_save_file_pending_update(asOwner, {
 						membershipId: scope.membershipId,
 						target: parent.target,
 						pendingUpdateId: parent.pendingUpdateId,
@@ -966,7 +966,7 @@ describe("get_file_read_source", () => {
 				)._nay,
 			).toBeUndefined();
 		}
-		const saved = await asOwner.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(asOwner, {
 			membershipId: scope.membershipId,
 			target,
 			pendingUpdateId: view!.entry.pendingUpdate!._id,
@@ -4733,7 +4733,7 @@ async function saved_node_id_by_path(args: { t: ReturnType<typeof test_convex>; 
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
 					.eq("organizationId", fixture.organizationId)
-					.eq("workspaceId", fixture.workspaceId)
+					.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 					.eq("path", path)
 					.eq("archiveOperationId", null),
 			)

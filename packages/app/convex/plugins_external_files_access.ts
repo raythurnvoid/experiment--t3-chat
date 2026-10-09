@@ -5,7 +5,13 @@ import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "./files_nodes.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { crypto_timing_safe_equal } from "../server/crypto-utils.ts";
-import { files_ROOT_ID } from "../server/files.ts";
+import { files_db_get_visible_node_by_path, files_ROOT_ID } from "../server/files.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_sequence,
+} from "../server/files-saved-placement.ts";
+import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 import { server_path_parent_of } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
@@ -13,16 +19,7 @@ export async function plugins_external_files_db_get_node(
 	ctx: QueryCtx,
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; path: string },
 ) {
-	return await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("path", args.path)
-				.eq("archiveOperationId", null),
-		)
-		.first();
+	return await files_db_get_visible_node_by_path(ctx, args);
 }
 
 export async function plugins_external_files_db_authorize(
@@ -108,7 +105,7 @@ export async function plugins_external_files_db_authorize(
 	const scope = { organizationId: grant.organizationId, workspaceId: grant.workspaceId };
 	// Archive uses the saved node, even when another active item now uses its old path.
 	const node = args.exactNodeId
-		? await ctx.db.get("files_nodes", args.exactNodeId)
+		? await files_saved_placement_db_get_node(ctx.db, args.exactNodeId)
 		: await plugins_external_files_db_get_node(ctx, { ...scope, path: args.path });
 	if (
 		node &&
@@ -151,19 +148,28 @@ export async function plugins_external_files_db_authorize(
 			writer.path === args.path &&
 			writer.rootPath === grant.destinationPathPrefix
 		) {
+			const view = await files_saved_placement_db_get_view(ctx.db, scope);
+			const normal = await files_saved_stream_db_create(ctx.db, scope, { kind: "normal", generation: view.generation });
+			const selected =
+				view.cohortId !== null && view.view !== null
+					? await files_saved_stream_db_create(ctx.db, scope, {
+							kind: "cohort",
+							cohortId: view.cohortId,
+							view: view.view,
+							generation: view.generation,
+						})
+					: null;
 			const [root, binding, child] = await Promise.all([
-				ctx.db.get("files_nodes", writer.rootNodeId),
+				files_saved_placement_db_get_node(ctx.db, writer.rootNodeId),
 				ctx.db
 					.query("plugins_external_file_bindings")
 					.withIndex("by_writer", (q) => q.eq("writerId", writer._id))
 					.first(),
-				ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-						q.eq("organizationId", grant.organizationId).eq("workspaceId", grant.workspaceId).eq("parentId", node._id),
-					)
-					.first(),
+				normal.queries.by_parent_name((q) => q.eq("parentId", node._id)).first(),
 			]);
+			const selectedChild = selected
+				? await selected.queries.by_parent_name((q) => q.eq("parentId", node._id)).first()
+				: null;
 			if (
 				root?.kind === "folder" &&
 				root.path === writer.rootPath &&
@@ -171,6 +177,7 @@ export async function plugins_external_files_db_authorize(
 				binding?.nodeId === node._id &&
 				binding.detachedAt === null &&
 				!child &&
+				!selectedChild &&
 				(await files_metadata_db_read_entry(ctx, { ...scope, fileNodeId: root._id, key: "plugin-name" })) ===
 					installation.pluginName &&
 				(await access_control_db_can_act_on_file_node(ctx, {
@@ -223,9 +230,7 @@ export async function plugins_external_files_db_authorize(
 }
 
 export async function plugins_external_files_db_content_revision(ctx: QueryCtx, node: Doc<"files_nodes">) {
-	const sequence = node.yjsLastSequenceId
-		? await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId)
-		: null;
+	const sequence = await files_saved_placement_db_get_sequence(ctx.db, node);
 	return JSON.stringify([node.assetId, node.yjsLastSequenceId, sequence?.lastSequence ?? null]);
 }
 
@@ -254,8 +259,8 @@ export async function plugins_external_files_db_check_write(
 	}
 
 	const [root, folder, binding] = await Promise.all([
-		ctx.db.get("files_nodes", writer.rootNodeId),
-		ctx.db.get("files_nodes", writer.folderNodeId),
+		files_saved_placement_db_get_node(ctx.db, writer.rootNodeId),
+		files_saved_placement_db_get_node(ctx.db, writer.folderNodeId),
 		ctx.db
 			.query("plugins_external_file_bindings")
 			.withIndex("by_writer", (q) => q.eq("writerId", writer._id))

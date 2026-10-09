@@ -10,13 +10,37 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
+import type { FilesMoveIntake } from "@/lib/files-move-intake.ts";
 
 type TransferRun = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer.get>>;
 type TransferItemPage = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer.list_items>>;
 
-const { mutationMock, itemQueryMock, queryState, toastErrorMock } = vi.hoisted(() => ({
+const {
+	mutationMock,
+	intakeQueryMock,
+	receiptQueryMock,
+	itemQueryMock,
+	queryState,
+	toastErrorMock,
+	intakeState,
+	intakeLoadMock,
+	intakeSaveMock,
+	intakePageMock,
+	intakeUpdateMock,
+	intakeDeleteMock,
+	authState,
+} = vi.hoisted(() => ({
 	mutationMock: vi.fn(),
+	intakeQueryMock: vi.fn(),
+	receiptQueryMock: vi.fn(),
 	itemQueryMock: vi.fn(),
+	authState: { userId: "user" },
+	intakeState: { request: null as FilesMoveIntake | null, sourceIds: [] as app_convex_Id<"files_nodes">[] },
+	intakeLoadMock: vi.fn(),
+	intakeSaveMock: vi.fn(),
+	intakePageMock: vi.fn(),
+	intakeUpdateMock: vi.fn(),
+	intakeDeleteMock: vi.fn(),
 	queryState: {
 		revision: 0,
 		listeners: new Set<() => void>(),
@@ -28,15 +52,31 @@ const { mutationMock, itemQueryMock, queryState, toastErrorMock } = vi.hoisted((
 	toastErrorMock: vi.fn(),
 }));
 
+vi.mock("@/components/app-auth.tsx", () => ({ AppAuthProvider: { useAuthenticated: () => authState } }));
+vi.mock("@/lib/files-move-intake.ts", () => ({
+	files_move_intake_load: intakeLoadMock,
+	files_move_intake_save: intakeSaveMock,
+	files_move_intake_read_page: intakePageMock,
+	files_move_intake_update: intakeUpdateMock,
+	files_move_intake_delete: intakeDeleteMock,
+}));
+
 vi.mock("convex/react", async (importOriginal) => {
 	const original = await importOriginal<typeof import("convex/react")>();
 	const { useSyncExternalStore } = await import("react");
+	const convex = {
+		mutation: mutationMock,
+		query: (reference: FunctionReference<"query">, args: { runId?: string; requestId?: string }) =>
+			getFunctionName(reference) === "files_transfer:get_move_intake"
+				? intakeQueryMock(reference, args)
+				: receiptQueryMock(reference, args),
+	};
 	return {
 		...original,
-		useConvex: () => ({ mutation: mutationMock }),
+		useConvex: () => convex,
 		useQuery: (
 			reference: FunctionReference<"query">,
-			args: { runId?: string; paginationOpts?: { cursor: string | null } } | "skip",
+			args: { runId?: string; state?: string; paginationOpts?: { cursor: string | null } } | "skip",
 		) => {
 			// Thread the revision into every return. The React Compiler keeps a hook's
 			// last result when it does not see that value as an input.
@@ -53,7 +93,8 @@ vi.mock("convex/react", async (importOriginal) => {
 			}
 			if (getFunctionName(reference) === "files_transfer:list_items") {
 				itemQueryMock(args);
-				const itemPage = queryState.itemPages[args.paginationOpts?.cursor ?? "first"];
+				const cursor = args.paginationOpts?.cursor ?? "first";
+				const itemPage = queryState.itemPages[`${args.state ?? "all"}:${cursor}`] ?? queryState.itemPages[cursor];
 				// Return a new page object that includes revision. Mutating nested fields on
 				// the stored page keeps the same object identity, and a compiled consumer
 				// would keep the old UI. revision must appear in the returned value so the
@@ -92,6 +133,7 @@ function make_item(overrides: Partial<TransferItemPage["page"][number]> = {}): T
 		outcome: null,
 		source: { target: { kind: "saved", id: SOURCE_ID }, name: "report.md", path: "/report.md" },
 		output: null,
+		movedNodeId: null,
 		conflictKind: "name_conflict",
 		conflict: {
 			kind: "name_conflict",
@@ -126,7 +168,7 @@ function make_run(
 			userId: "user" as app_convex_Id<"users">,
 			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 			membershipLifetime: 1,
-			source: { kind: "files_transfer_run", id: run._id ?? RUN_ID, transferKind: run.kind ?? "copy" },
+			source: { kind: "files_transfer_run", id: run._id ?? RUN_ID, transferKind: run.kind ?? "copy", isRename: false },
 			title: "Copy files",
 			status,
 			visibility: "requester",
@@ -173,13 +215,14 @@ function press_key(args: { target: HTMLElement; key: string; ctrlKey?: boolean }
 	return result;
 }
 
-function press_paste() {
+async function press_paste() {
+	await act(async () => {});
 	return press_key({ target: screen.getByRole("group", { name: "File navigation" }), key: "v" });
 }
 
 function FileNavigation(props: { blocked?: boolean }) {
 	const navigationRef = useRef<HTMLDivElement | null>(null);
-	const { clipboard, setClipboard, openRun } = FilesClipboardProvider.useContext();
+	const { clipboard, isPasting, setClipboard, move, openRun } = FilesClipboardProvider.useContext();
 	const { stop } = AppActivitiesProvider.useContext();
 	FilesClipboardProvider.useHotkeys({
 		target: navigationRef,
@@ -192,6 +235,8 @@ function FileNavigation(props: { blocked?: boolean }) {
 				<button onClick={() => setClipboard("copy", [SOURCE_ID])}>Copy source</button>
 				<button onClick={() => setClipboard("copy", MANY_SOURCE_IDS)}>Copy many sources</button>
 				<button onClick={() => setClipboard("cut", [SOURCE_ID, SECOND_ID])}>Cut sources</button>
+				<button onClick={() => setClipboard("cut", MANY_SOURCE_IDS)}>Cut many sources</button>
+				<button onClick={() => move(MANY_SOURCE_IDS, TARGET_ID)}>Drag many sources</button>
 				<button onClick={() => setClipboard("copy", [SECOND_ID])}>Copy another source</button>
 				<button onClick={() => openRun(RUN_ID)}>Review operation</button>
 				<button onClick={() => openRun(OLD_RUN_ID)}>Review older operation</button>
@@ -206,6 +251,7 @@ function FileNavigation(props: { blocked?: boolean }) {
 			</div>
 			<textarea aria-label="Chat message" />
 			<output aria-label="Clipboard sources">{clipboard?.sourceIds.join(",") ?? "empty"}</output>
+			<output aria-label="Paste busy">{String(isPasting)}</output>
 		</>
 	);
 }
@@ -226,6 +272,39 @@ function TestClipboard(props: { membershipId?: string; showNavigation?: boolean;
 }
 
 beforeEach(() => {
+	authState.userId = "user";
+	intakeState.request = null;
+	intakeState.sourceIds = [];
+	intakeLoadMock
+		.mockReset()
+		.mockImplementation(async (scope) =>
+			intakeState.request?.userId === scope.userId && intakeState.request?.membershipId === scope.membershipId
+				? { ...intakeState.request }
+				: null,
+		);
+	intakeSaveMock.mockReset().mockImplementation(async ({ request, sourceIds }) => {
+		intakeState.request = { ...request };
+		intakeState.sourceIds = [...sourceIds];
+	});
+	intakePageMock.mockReset().mockImplementation(async ({ offset }) => {
+		const page = intakeState.sourceIds.slice(offset, offset + 100);
+		if (page.length === 0) throw new Error("The saved Move selection is missing a page.");
+		return page;
+	});
+	intakeUpdateMock.mockReset().mockImplementation(async (request: FilesMoveIntake) => {
+		if (intakeState.request?.requestId === request.requestId)
+			intakeState.request = {
+				...request,
+				stopRequested: intakeState.request.stopRequested || request.stopRequested,
+			};
+		else if (!intakeState.request && request.stopRequested && request.runId) intakeState.request = { ...request };
+	});
+	intakeDeleteMock.mockReset().mockImplementation(async (request: FilesMoveIntake) => {
+		if (intakeState.request?.requestId !== request.requestId) return;
+		if (intakeState.request.stopRequested && !request.stopRequested) return;
+		intakeState.request = null;
+		intakeState.sourceIds = [];
+	});
 	queryState.run = undefined;
 	queryState.runsById = {};
 	queryState.runs = [];
@@ -234,6 +313,19 @@ beforeEach(() => {
 	mutationMock.mockReset();
 	itemQueryMock.mockReset();
 	mutationMock.mockResolvedValue({ _yay: { runId: RUN_ID } });
+	intakeQueryMock
+		.mockReset()
+		.mockImplementation(async () =>
+			intakeState.request?.runId ? { runId: intakeState.request.runId, step: "uploading", isFinished: false } : null,
+		);
+	receiptQueryMock.mockReset().mockImplementation(async (_reference, args) => {
+		const run = queryState.runsById[args.runId] ?? queryState.run;
+		return {
+			page: (run?.movedNodeIds ?? []).map((id) => make_item({ state: "completed", movedNodeId: id })),
+			isDone: true,
+			continueCursor: "",
+		};
+	});
 	vi.spyOn(app_convex, "mutation").mockImplementation(mutationMock);
 	toastErrorMock.mockReset();
 });
@@ -269,8 +361,9 @@ describe("FilesClipboardProvider", () => {
 		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SOURCE_ID);
 	});
 
-	test("Escape clears an idle cut and leaves Copy ready", () => {
+	test("Escape clears an idle cut and leaves Copy ready", async () => {
 		render(<TestClipboard />);
+		await act(async () => {});
 		const navigation = screen.getByRole("group", { name: "File navigation" });
 		press_key({ target: navigation, key: "c" });
 		expect(press_key({ target: navigation, key: "Escape", ctrlKey: false })).toBe(true);
@@ -280,34 +373,39 @@ describe("FilesClipboardProvider", () => {
 		expect(screen.getByLabelText("Clipboard sources").textContent).toBe("empty");
 	});
 
-	test("disables Paste without destination write permission", () => {
+	test("disables Paste without destination write permission", async () => {
 		render(<TestClipboard blocked />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		expect(press_paste()).toBe(true);
+		expect(await press_paste()).toBe(true);
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
-	test.each([undefined, [make_run()]])("waits while the current workspace run is loading or active: %s", (runs) => {
-		queryState.runs = runs;
-		render(<TestClipboard />);
-		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		expect(press_paste()).toBe(true);
-		expect(mutationMock).not.toHaveBeenCalled();
-	});
+	test.each([undefined, [make_run()]])(
+		"waits while the current workspace run is loading or active: %s",
+		async (runs) => {
+			queryState.runs = runs;
+			render(<TestClipboard />);
+			fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
+			expect(await press_paste()).toBe(true);
+			expect(mutationMock).not.toHaveBeenCalled();
+		},
+	);
 
-	test("sends Cut once without Copy count, pages, or seal", async () => {
+	test("sends Cut through paged intake and seal", async () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		press_paste();
+		await press_paste();
 		await screen.findByRole("dialog");
-		expect(mutationMock).toHaveBeenCalledOnce();
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
 		expect(mutationMock.mock.calls[0]![1]).toEqual({
 			membershipId: "membership",
 			requestId: expect.any(String),
 			kind: "move",
+			expectedSourceCount: 2,
 			sourceIds: [SOURCE_ID, SECOND_ID],
 			targetParentId: TARGET_ID,
 		});
+		expect(getFunctionName(mutationMock.mock.calls[1]![0])).toBe("files_transfer:seal");
 	});
 
 	test("starts one request with source IDs and keeps Copy after completion", async () => {
@@ -315,8 +413,8 @@ describe("FilesClipboardProvider", () => {
 		mutationMock.mockReturnValue(response.promise);
 		const view = render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		press_paste();
-		press_paste();
+		await press_paste();
+		await press_paste();
 		expect(mutationMock).toHaveBeenCalledOnce();
 		expect(getFunctionName(mutationMock.mock.calls[0]![0])).toBe("files_transfer:start");
 		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
@@ -335,7 +433,7 @@ describe("FilesClipboardProvider", () => {
 	test("removes only moved cut IDs and preserves a newer clipboard", async () => {
 		const view = render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		press_paste();
+		await press_paste();
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
 		push_run(
 			make_run({
@@ -345,7 +443,7 @@ describe("FilesClipboardProvider", () => {
 				movedNodeIds: [SOURCE_ID],
 			}),
 		);
-		expect(view.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID);
+		await waitFor(() => expect(view.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID));
 		cleanup();
 		queryState.run = undefined;
 		queryState.runs = [];
@@ -353,20 +451,20 @@ describe("FilesClipboardProvider", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
 		const response = Promise.withResolvers<{ _yay: { runId: typeof RUN_ID } }>();
 		mutationMock.mockReturnValue(response.promise);
-		press_paste();
+		await press_paste();
 		fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
 		await act(async () => response.resolve({ _yay: { runId: RUN_ID } }));
 		push_run(
 			make_run({ kind: "move", status: "succeeded", progress: { completed: 2 }, movedNodeIds: [SOURCE_ID, SECOND_ID] }),
 		);
-		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID);
+		await waitFor(() => expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID));
 	});
 
 	test("updates cut IDs while the dialog shows an older operation", async () => {
 		queryState.runsById[OLD_RUN_ID] = make_run({ _id: OLD_RUN_ID, status: "succeeded", progress: { completed: 2 } });
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		press_paste();
+		await press_paste();
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
 		fireEvent.click(screen.getByRole("button", { name: "Hide" }));
 		fireEvent.click(screen.getByRole("button", { name: "Review older operation" }));
@@ -379,7 +477,7 @@ describe("FilesClipboardProvider", () => {
 			}),
 		);
 		expect(screen.getByRole("heading", { name: "Copy files" })).toBeTruthy();
-		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID);
+		await waitFor(() => expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID));
 	});
 
 	test("reuses the request ID after a lost start response", async () => {
@@ -387,7 +485,7 @@ describe("FilesClipboardProvider", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		press_paste();
+		await press_paste();
 		fireEvent.click(await screen.findByRole("button", { name: "Retry Paste" }));
 		expect(mutationMock.mock.calls[1]![1]).toEqual(mutationMock.mock.calls[0]![1]);
 		// A one-file paste opens no dialog. Its Activity card can still open it.
@@ -395,10 +493,10 @@ describe("FilesClipboardProvider", () => {
 		expect(screen.queryByRole("dialog")).toBeNull();
 	});
 
-	test("sends all Copy pages before sealing", async () => {
+	test.each(["Copy", "Cut"])("sends all %s pages before sealing", async (mode) => {
 		render(<TestClipboard />);
-		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		press_paste();
+		fireEvent.click(screen.getByRole("button", { name: `${mode} many sources` }));
+		await press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(4));
 		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
 			"files_transfer:start",
@@ -407,6 +505,7 @@ describe("FilesClipboardProvider", () => {
 			"files_transfer:seal",
 		]);
 		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
+			kind: mode === "Cut" ? "move" : "copy",
 			expectedSourceCount: 205,
 			sourceIds: MANY_SOURCE_IDS.slice(0, 100),
 		});
@@ -419,6 +518,484 @@ describe("FilesClipboardProvider", () => {
 			});
 		}
 		expect(mutationMock.mock.calls[3]![1]).toEqual({ membershipId: "membership", runId: RUN_ID });
+	});
+
+	test("saves a drag selection before upload and keeps the clipboard", async () => {
+		const saved = Promise.withResolvers<void>();
+		intakeSaveMock.mockImplementationOnce(async ({ request, sourceIds }) => {
+			await saved.promise;
+			intakeState.request = { ...request };
+			intakeState.sourceIds = [...sourceIds];
+		});
+		render(<TestClipboard />);
+		await act(async () => {});
+		fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
+		fireEvent.click(screen.getByRole("button", { name: "Drag many sources" }));
+		expect(intakeSaveMock).toHaveBeenCalledWith({
+			request: expect.objectContaining({
+				userId: "user",
+				membershipId: "membership",
+				revision: null,
+				sourceCount: 205,
+			}),
+			sourceIds: MANY_SOURCE_IDS,
+		});
+		expect(mutationMock).not.toHaveBeenCalled();
+		await act(async () => saved.resolve());
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(4));
+		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
+			kind: "move",
+			expectedSourceCount: 205,
+			sourceIds: MANY_SOURCE_IDS.slice(0, 100),
+		});
+		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID);
+	});
+
+	test("resumes the same Move and exact pages after a reload with a lost page reply", async () => {
+		let loseReply = true;
+		mutationMock.mockImplementation(async (reference) => {
+			if (getFunctionName(reference) === "files_transfer:append_sources" && loseReply) {
+				loseReply = false;
+				throw new Error("offline");
+			}
+			return { _yay: { runId: RUN_ID } };
+		});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Cut many sources" }));
+		await press_paste();
+		await screen.findByRole("button", { name: "Retry Paste" });
+		const originalStart = mutationMock.mock.calls[0]![1];
+		const originalPage = mutationMock.mock.calls[1]![1];
+		fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
+		cleanup();
+		render(<TestClipboard />);
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		const starts = mutationMock.mock.calls.filter(
+			([reference]) => getFunctionName(reference) === "files_transfer:start",
+		);
+		const pages = mutationMock.mock.calls.filter(
+			([reference]) => getFunctionName(reference) === "files_transfer:append_sources",
+		);
+		expect(starts).toHaveLength(2);
+		expect(starts[1]![1]).toEqual(originalStart);
+		expect(pages[1]![1]).toEqual(originalPage);
+		expect(pages[2]![1]).toMatchObject({ offset: 200, sourceIds: MANY_SOURCE_IDS.slice(200) });
+		expect(getFunctionName(mutationMock.mock.lastCall![0])).toBe("files_transfer:seal");
+	});
+
+	test.each(["running", "succeeded"] as const)(
+		"retires accepted Move input already sealed in another tab while %s",
+		async (status) => {
+			intakeState.request = {
+				userId: "user",
+				membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+				requestId: "saved-request",
+				revision: null,
+				sourceCount: 205,
+				targetParentId: TARGET_ID,
+				runId: RUN_ID,
+				stopRequested: false,
+			};
+			const accepted = make_run({ kind: "move", step: "apply", status });
+			intakeQueryMock.mockResolvedValue({ runId: RUN_ID, step: "apply", isFinished: status === "succeeded" });
+			queryState.runs = status === "running" ? [accepted] : [];
+			render(<TestClipboard />);
+			await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+			expect(intakePageMock).not.toHaveBeenCalled();
+			expect(mutationMock).not.toHaveBeenCalled();
+			expect(screen.queryByRole("alert")).toBeNull();
+			push_run(make_run({ kind: "move", status: "succeeded" }));
+			await waitFor(() => expect(screen.getByLabelText("Paste busy").textContent).toBe("false"));
+			fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
+			await press_paste();
+			await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		},
+	);
+
+	test("clears local intake when another tab seals during a replay reply", async () => {
+		intakeState.request = {
+			userId: "user",
+			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+			requestId: "saved-request",
+			revision: null,
+			sourceCount: 205,
+			targetParentId: TARGET_ID,
+			runId: RUN_ID,
+			stopRequested: false,
+		};
+		intakeState.sourceIds = MANY_SOURCE_IDS;
+		const reply = Promise.withResolvers<{ _yay: { runId: typeof RUN_ID } }>();
+		let starts = 0;
+		let accepted = make_run({ kind: "move", step: "uploading" });
+		intakeQueryMock.mockImplementation(async () => ({
+			runId: accepted._id,
+			step: accepted.step,
+			isFinished: accepted.activity.finishedAt !== undefined,
+		}));
+		mutationMock.mockImplementation(async (reference) => {
+			const name = getFunctionName(reference);
+			if (name === "files_transfer:start" && ++starts === 2) return reply.promise;
+			if (name === "files_transfer:seal") accepted = make_run({ kind: "move", status: "succeeded" });
+			return { _yay: { runId: RUN_ID } };
+		});
+		render(
+			<>
+				<section aria-label="First tab">
+					<TestClipboard />
+				</section>
+				<section aria-label="Second tab">
+					<TestClipboard />
+				</section>
+			</>,
+		);
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		expect(intakeState.sourceIds).toEqual([]);
+		await act(async () => reply.resolve({ _yay: { runId: RUN_ID } }));
+		const secondTab = within(screen.getByRole("region", { name: "Second tab" }));
+		await waitFor(() => expect(secondTab.getByLabelText("Paste busy").textContent).toBe("false"));
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
+			"files_transfer:start",
+			"files_transfer:start",
+			"files_transfer:append_sources",
+			"files_transfer:append_sources",
+			"files_transfer:seal",
+		]);
+		fireEvent.click(secondTab.getByRole("button", { name: "Copy source" }));
+		press_key({ target: secondTab.getByRole("group", { name: "File navigation" }), key: "v" });
+		await waitFor(() => expect(starts).toBe(3));
+	});
+
+	test("keeps a missing Move page error while the server still needs input", async () => {
+		intakeState.request = {
+			userId: "user",
+			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+			requestId: "saved-request",
+			revision: null,
+			sourceCount: 205,
+			targetParentId: TARGET_ID,
+			runId: RUN_ID,
+			stopRequested: false,
+		};
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		render(<TestClipboard />);
+		await screen.findByRole("button", { name: "Retry Paste" });
+		expect(intakeDeleteMock).not.toHaveBeenCalled();
+		expect(mutationMock).not.toHaveBeenCalled();
+		expect(screen.getByLabelText("Paste busy").textContent).toBe("true");
+	});
+
+	test.each(["Resume Move", "Discard saved Move"])(
+		"handles late %s after another tab retired unstarted input",
+		async (action) => {
+			intakeState.request = {
+				userId: "user",
+				membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+				requestId: "saved-request",
+				revision: null,
+				sourceCount: 205,
+				targetParentId: TARGET_ID,
+				runId: null,
+				stopRequested: false,
+			};
+			intakeState.sourceIds = MANY_SOURCE_IDS;
+			let sealed = false;
+			intakeQueryMock.mockImplementation(async () =>
+				sealed ? { runId: RUN_ID, step: "apply", isFinished: true } : null,
+			);
+			mutationMock.mockImplementation(async (reference) => {
+				if (getFunctionName(reference) === "files_transfer:seal") sealed = true;
+				return { _yay: { runId: RUN_ID } };
+			});
+			render(
+				<>
+					<section aria-label="First tab">
+						<TestClipboard />
+					</section>
+					<section aria-label="Second tab">
+						<TestClipboard />
+					</section>
+				</>,
+			);
+			const firstTab = within(screen.getByRole("region", { name: "First tab" }));
+			const secondTab = within(screen.getByRole("region", { name: "Second tab" }));
+			await firstTab.findByRole("button", { name: "Resume Move" });
+			await secondTab.findByRole("button", { name: "Resume Move" });
+			expect(intakeQueryMock).not.toHaveBeenCalled();
+			fireEvent.click(firstTab.getByRole("button", { name: "Resume Move" }));
+			await waitFor(() => expect(intakeState.request).toBeNull());
+			const pagesRead = intakePageMock.mock.calls.length;
+			fireEvent.click(secondTab.getByRole("button", { name: action }));
+			await waitFor(() =>
+				expect(secondTab.getByLabelText("Paste busy").textContent, "late action retires the accepted request").toBe(
+					"false",
+				),
+			);
+			expect(screen.queryByRole("alert")).toBeNull();
+			expect(intakePageMock).toHaveBeenCalledTimes(pagesRead);
+			expect(intakeQueryMock.mock.lastCall![1]).toEqual({ membershipId: "membership", requestId: "saved-request" });
+			expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
+				"files_transfer:start",
+				"files_transfer:append_sources",
+				"files_transfer:append_sources",
+				"files_transfer:seal",
+				...(action === "Discard saved Move" ? ["files_transfer:stop"] : []),
+			]);
+		},
+	);
+
+	test("retries late Discard after a lost Stop reply and reload without pages", async () => {
+		intakeState.request = {
+			userId: "user",
+			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+			requestId: "saved-request",
+			revision: null,
+			sourceCount: 205,
+			targetParentId: TARGET_ID,
+			runId: null,
+			stopRequested: false,
+		};
+		intakeState.sourceIds = MANY_SOURCE_IDS;
+		let sealed = false;
+		let loseStopReply = true;
+		intakeQueryMock.mockImplementation(async () =>
+			sealed ? { runId: RUN_ID, step: "apply", isFinished: true } : null,
+		);
+		mutationMock.mockImplementation(async (reference) => {
+			const name = getFunctionName(reference);
+			if (name === "files_transfer:seal") sealed = true;
+			if (name === "files_transfer:stop" && loseStopReply) {
+				loseStopReply = false;
+				throw new Error("offline");
+			}
+			return { _yay: { runId: RUN_ID } };
+		});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		render(
+			<>
+				<section aria-label="First tab">
+					<TestClipboard />
+				</section>
+				<section aria-label="Second tab">
+					<TestClipboard />
+				</section>
+			</>,
+		);
+		const firstTab = within(screen.getByRole("region", { name: "First tab" }));
+		const secondTab = within(screen.getByRole("region", { name: "Second tab" }));
+		await firstTab.findByRole("button", { name: "Resume Move" });
+		await secondTab.findByRole("button", { name: "Discard saved Move" });
+		fireEvent.click(firstTab.getByRole("button", { name: "Resume Move" }));
+		await waitFor(() => expect(intakeState.request).toBeNull());
+		fireEvent.click(secondTab.getByRole("button", { name: "Discard saved Move" }));
+		await secondTab.findByRole("button", { name: "Retry Stop" });
+		expect(intakeState.request, "the lost Stop reply keeps a header for reload").toMatchObject({
+			runId: RUN_ID,
+			stopRequested: true,
+		});
+		expect(intakeState.sourceIds).toEqual([]);
+		const pagesRead = intakePageMock.mock.calls.length;
+		const queries = intakeQueryMock.mock.calls.length;
+		cleanup();
+		render(<TestClipboard />);
+		await waitFor(() => expect(intakeState.request).toBeNull());
+		expect(intakePageMock).toHaveBeenCalledTimes(pagesRead);
+		expect(intakeQueryMock).toHaveBeenCalledTimes(queries);
+		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
+			"files_transfer:start",
+			"files_transfer:append_sources",
+			"files_transfer:append_sources",
+			"files_transfer:seal",
+			"files_transfer:stop",
+			"files_transfer:stop",
+		]);
+	});
+
+	test.each(["user", "membership"])("does not resume another %s scope", async (changedScope) => {
+		intakeState.request = {
+			userId: "user",
+			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+			requestId: "saved-request",
+			revision: null,
+			sourceCount: 205,
+			targetParentId: TARGET_ID,
+			runId: RUN_ID,
+			stopRequested: false,
+		};
+		intakeState.sourceIds = MANY_SOURCE_IDS;
+		if (changedScope === "user") authState.userId = "another-user";
+		render(<TestClipboard membershipId={changedScope === "membership" ? "another-membership" : "membership"} />);
+		await waitFor(() => expect(screen.getByLabelText("Paste busy").textContent).toBe("false"));
+		expect(mutationMock).not.toHaveBeenCalled();
+		expect(intakeDeleteMock).not.toHaveBeenCalled();
+	});
+
+	test("asks before starting an old unstarted Move after same-ID reinvite", async () => {
+		intakeState.request = {
+			userId: "user",
+			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+			requestId: "saved-before-reinvite",
+			revision: null,
+			sourceCount: 205,
+			targetParentId: TARGET_ID,
+			runId: null,
+			stopRequested: false,
+		};
+		intakeState.sourceIds = MANY_SOURCE_IDS;
+		render(<TestClipboard />);
+		const resume = await screen.findByRole("button", { name: "Resume Move" });
+		expect(mutationMock).not.toHaveBeenCalled();
+		fireEvent.click(resume);
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
+			requestId: "saved-before-reinvite",
+			kind: "move",
+			sourceIds: MANY_SOURCE_IDS.slice(0, 100),
+		});
+	});
+
+	test("discards unstarted input through a confirmed Stop without sealing", async () => {
+		intakeState.request = {
+			userId: "user",
+			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+			requestId: "saved-request",
+			revision: null,
+			sourceCount: 205,
+			targetParentId: TARGET_ID,
+			runId: null,
+			stopRequested: false,
+		};
+		intakeState.sourceIds = MANY_SOURCE_IDS;
+		render(<TestClipboard />);
+		fireEvent.click(await screen.findByRole("button", { name: "Discard saved Move" }));
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
+			"files_transfer:start",
+			"files_transfer:stop",
+		]);
+		expect(intakeUpdateMock.mock.calls[0]![0]).toMatchObject({ stopRequested: true });
+	});
+
+	test("resumes only an unconfirmed Move Stop after reload", async () => {
+		intakeState.request = {
+			userId: "user",
+			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+			requestId: "saved-request",
+			revision: null,
+			sourceCount: 205,
+			targetParentId: TARGET_ID,
+			runId: RUN_ID,
+			stopRequested: true,
+		};
+		intakeQueryMock.mockResolvedValue({ runId: RUN_ID, step: "apply", isFinished: true });
+		render(<TestClipboard />);
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		expect(intakeQueryMock).not.toHaveBeenCalled();
+		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual(["files_transfer:stop"]);
+	});
+
+	test("retires a Stop-only header after the server confirms a missing run", async () => {
+		intakeState.request = {
+			userId: "user",
+			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+			requestId: "expired-request",
+			revision: null,
+			sourceCount: 205,
+			targetParentId: TARGET_ID,
+			runId: RUN_ID,
+			stopRequested: true,
+		};
+		const stopped = Promise.withResolvers<{ _yay: null }>();
+		mutationMock.mockReturnValueOnce(stopped.promise);
+		intakeQueryMock.mockResolvedValue(null);
+		render(<TestClipboard />);
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
+		expect(screen.getByLabelText("Paste busy").textContent).toBe("true");
+		expect(intakeState.request?.stopRequested).toBe(true);
+		await act(async () => stopped.resolve({ _yay: null }));
+		await waitFor(() => {
+			expect(intakeState.request, "confirmed Stop removes the expired request's local header").toBeNull();
+			expect(screen.getByLabelText("Paste busy").textContent, "confirmed Stop allows a new Move").toBe("false");
+		});
+		expect(intakePageMock).not.toHaveBeenCalled();
+		expect(intakeQueryMock).not.toHaveBeenCalled();
+		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual(["files_transfer:stop"]);
+	});
+
+	test("drains every completed Cut page before allowing another Paste", async () => {
+		const lastPage = Promise.withResolvers<TransferItemPage>();
+		receiptQueryMock.mockImplementation(async (_reference, args) => {
+			if (args.paginationOpts.cursor === "last") return lastPage.promise;
+			const offset = args.paginationOpts.cursor === "second" ? 100 : 0;
+			return {
+				page: MANY_SOURCE_IDS.slice(offset, offset + 100).map((id) =>
+					make_item({ state: "completed", movedNodeId: id, source: null, output: null }),
+				),
+				isDone: false,
+				continueCursor: offset === 0 ? "second" : "last",
+			};
+		});
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Cut many sources" }));
+		await press_paste();
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		push_run(make_run({ kind: "move", status: "succeeded", progress: { completed: 205, total: 205 } }));
+		await waitFor(() => expect(receiptQueryMock).toHaveBeenCalledTimes(3));
+		expect(screen.getByLabelText("Paste busy").textContent).toBe("true");
+		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(MANY_SOURCE_IDS.join(","));
+		await press_paste();
+		expect(mutationMock).toHaveBeenCalledTimes(4);
+		await act(async () =>
+			lastPage.resolve({
+				page: MANY_SOURCE_IDS.slice(200).map((id) =>
+					make_item({ state: "completed", movedNodeId: id, source: null, output: null }),
+				),
+				isDone: true,
+				continueCursor: "",
+			}),
+		);
+		await waitFor(() => expect(screen.getByLabelText("Clipboard sources").textContent).toBe("empty"));
+		expect(screen.getByLabelText("Paste busy").textContent).toBe("false");
+		expect(receiptQueryMock.mock.calls.map(([, args]) => args.paginationOpts.cursor)).toEqual([null, "second", "last"]);
+		expect(receiptQueryMock.mock.calls.every(([, args]) => args.state === "completed")).toBe(true);
+	});
+
+	test("retries the failed Cut receipt page without touching a newer clipboard", async () => {
+		const nextPage = Promise.withResolvers<TransferItemPage>();
+		let failPage = true;
+		receiptQueryMock.mockImplementation(async (_reference, args) => {
+			if (args.paginationOpts.cursor === null)
+				return {
+					page: [make_item({ state: "completed", movedNodeId: SOURCE_ID })],
+					isDone: false,
+					continueCursor: "next",
+				};
+			if (failPage) {
+				failPage = false;
+				throw new Error("offline");
+			}
+			return nextPage.promise;
+		});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
+		await press_paste();
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		push_run(make_run({ kind: "move", status: "succeeded", progress: { completed: 2 } }));
+		fireEvent.click(await screen.findByRole("button", { name: "Retry clearing Cut" }));
+		await waitFor(() => expect(receiptQueryMock).toHaveBeenCalledTimes(3));
+		fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
+		await act(async () =>
+			nextPage.resolve({
+				page: [make_item({ state: "completed", movedNodeId: SECOND_ID })],
+				isDone: true,
+				continueCursor: "",
+			}),
+		);
+		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID);
+		expect(screen.queryByText("Clearing completed Cut items…")).toBeNull();
+		expect(receiptQueryMock.mock.calls.map(([, args]) => args.paginationOpts.cursor)).toEqual([null, "next", "next"]);
 	});
 
 	test.each(["files_transfer:append_sources", "files_transfer:seal"])(
@@ -435,7 +1012,7 @@ describe("FilesClipboardProvider", () => {
 			vi.spyOn(console, "error").mockImplementation(() => {});
 			render(<TestClipboard />);
 			fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-			press_paste();
+			await press_paste();
 			await screen.findByRole("button", { name: "Retry Paste" });
 			push_run(make_run({ step: "uploading", progress: { discovered: 0, total: null } }));
 			fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
@@ -458,10 +1035,10 @@ describe("FilesClipboardProvider", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		press_paste();
+		await press_paste();
 		await screen.findByRole("button", { name: "Retry Paste" });
 		fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
-		expect(press_paste()).toBe(true);
+		expect(await press_paste()).toBe(true);
 		expect(mutationMock).toHaveBeenCalledOnce();
 		fireEvent.click(screen.getByRole("button", { name: "Retry Paste" }));
 		expect(mutationMock.mock.calls[1]![1]).toEqual(mutationMock.mock.calls[0]![1]);
@@ -474,10 +1051,10 @@ describe("FilesClipboardProvider", () => {
 		mutationMock.mockResolvedValueOnce({ _yay: { runId: RUN_ID } }).mockReturnValueOnce(page.promise);
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		press_paste();
+		await press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
 		fireEvent.click(screen.getByRole("button", { name: "Hide" }));
-		expect(press_paste()).toBe(true);
+		expect(await press_paste()).toBe(true);
 		expect(mutationMock).toHaveBeenCalledTimes(2);
 		await act(async () => page.resolve({ _yay: null }));
 		expect(mutationMock).toHaveBeenCalledTimes(4);
@@ -498,7 +1075,7 @@ describe("FilesClipboardProvider", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		press_paste();
+		await press_paste();
 		expect((await screen.findByRole("alert")).textContent).toContain("Stop was not confirmed");
 		fireEvent.click(screen.getByRole("button", { name: "Retry Stop" }));
 		await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
@@ -519,7 +1096,7 @@ describe("FilesClipboardProvider", () => {
 			);
 			render(<TestClipboard />);
 			fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-			press_paste();
+			await press_paste();
 			await waitFor(() =>
 				expect(
 					mutationMock.mock.calls.some(([reference]) => getFunctionName(reference) === "files_transfer:stop"),
@@ -540,7 +1117,7 @@ describe("FilesClipboardProvider", () => {
 		);
 		const view = render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		press_paste();
+		await press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
 		view.rerender(<TestClipboard membershipId="another-membership" />);
 		await act(async () => page.resolve({ _yay: null }));
@@ -566,7 +1143,7 @@ describe("FilesClipboardProvider", () => {
 		});
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		press_paste();
+		await press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
 		push_run(make_run({ step: "uploading", progress: { discovered: 0, total: null } }));
 		fireEvent.click(screen.getByRole("button", { name: "Stop" }));
@@ -580,7 +1157,7 @@ describe("FilesClipboardProvider", () => {
 	test("clears the remaining cut IDs after a retry finishes", async () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		press_paste();
+		await press_paste();
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
 		push_run(
 			make_run({
@@ -591,7 +1168,7 @@ describe("FilesClipboardProvider", () => {
 				controls: { canStop: false, canRetry: true, canDismiss: true },
 			}),
 		);
-		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID);
+		await waitFor(() => expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID));
 		mutationMock.mockResolvedValue({ _yay: { runId: OLD_RUN_ID } });
 		fireEvent.click(screen.getByRole("button", { name: "Retry remaining files" }));
 		await waitFor(() => expect(screen.getByRole("heading", { name: "Paste files" })).toBeTruthy());
@@ -604,11 +1181,51 @@ describe("FilesClipboardProvider", () => {
 				progress: { completed: 1 },
 			}),
 		);
-		expect(screen.getByLabelText("Clipboard sources").textContent).toBe("empty");
+		await waitFor(() => expect(screen.getByLabelText("Clipboard sources").textContent).toBe("empty"));
 	});
 });
 
 describe("FilesTransferRunModal", () => {
+	test("opens a full conflict page without reading the completed item pages", async () => {
+		queryState.run = make_run({ kind: "move", status: "awaiting_input" });
+		queryState.itemPages.first = {
+			page: Array.from({ length: 50 }, (_, index) =>
+				make_item({
+					itemId: `completed-${index}` as app_convex_Id<"files_transfer_items">,
+					state: "completed",
+					source: null,
+				}),
+			),
+			isDone: false,
+			continueCursor: "completed-page-2",
+		};
+		queryState.itemPages["conflict:first"] = {
+			page: Array.from({ length: 50 }, (_, index) =>
+				make_item({
+					itemId: `conflict-${index}` as app_convex_Id<"files_transfer_items">,
+					source: {
+						target: { kind: "saved", id: SOURCE_ID },
+						name: `conflict-${index}.md`,
+						path: `/conflict-${index}.md`,
+					},
+				}),
+			),
+			isDone: true,
+			continueCursor: "",
+		};
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
+		expect(itemQueryMock).toHaveBeenLastCalledWith({
+			membershipId: "membership",
+			runId: RUN_ID,
+			state: "conflict",
+			paginationOpts: { numItems: 50, cursor: null },
+		});
+		expect(screen.getByText("/conflict-49.md")).toBeTruthy();
+		expect(screen.getAllByRole("radio", { name: "Keep both" }).length).toBeGreaterThanOrEqual(50);
+		expect(screen.queryByText("Page 2")).toBeNull();
+	});
+
 	test.each(["uploading", "select", "normalize"] as const)(
 		"shows selection loading without output counts at %s",
 		async (step) => {
@@ -700,7 +1317,7 @@ describe("FilesTransferRunModal", () => {
 	test("uses a neutral heading while a move is loading", async () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		press_paste();
+		await press_paste();
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
 		expect(screen.getByRole("heading", { name: "Paste files" })).toBeTruthy();
 		push_run(make_run({ kind: "move" }));
@@ -929,6 +1546,7 @@ describe("FilesTransferRunModal", () => {
 		expect(itemQueryMock).toHaveBeenLastCalledWith({
 			membershipId: "membership",
 			runId: RUN_ID,
+			state: "conflict",
 			paginationOpts: { numItems: 50, cursor: "next" },
 		});
 		expect(screen.getByText("Page 2")).toBeTruthy();

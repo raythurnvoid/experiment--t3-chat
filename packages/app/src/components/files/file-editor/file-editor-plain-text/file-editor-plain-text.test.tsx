@@ -12,7 +12,7 @@ const {
 	fetchFileYjsStateAndTextMock,
 	fetchPrivateFilePendingTextMock,
 	savePrivateFilePendingTextMock,
-	startReviewMock,
+	openReviewRunMock,
 	convexQueryMock,
 	convexActionMock,
 	monacoHarness,
@@ -22,7 +22,7 @@ const {
 	fetchFileYjsStateAndTextMock: vi.fn(),
 	fetchPrivateFilePendingTextMock: vi.fn(),
 	savePrivateFilePendingTextMock: vi.fn(),
-	startReviewMock: vi.fn(),
+	openReviewRunMock: vi.fn(),
 	convexQueryMock: vi.fn(),
 	convexActionMock: vi.fn(),
 	// Shared state between the Editor mock and the tests: the created models with their language,
@@ -53,10 +53,10 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	},
 }));
 
-// Provider boundary: private Save hands this review starter to the save helper.
+// Provider boundary: private Save opens the queued review before clearing busy.
 vi.mock("@/lib/app-activities-context.tsx", () => ({
 	AppActivitiesProvider: {
-		useContext: () => ({ startReview: startReviewMock }),
+		useContext: () => ({ openReviewRun: openReviewRunMock }),
 	},
 }));
 
@@ -288,12 +288,12 @@ describe("view gating", () => {
 });
 
 describe("FileEditorPlainText", () => {
-	test.each(["", "private text\n"])("publishes a private file with its current text: %j", async (text) => {
+	test.each(["", "private text\n"])("queues a private file with its current text: %j", async (text) => {
 		const pendingUpdate = { _id: "pending_update_1", revision: 7 };
 		fetchPrivateFilePendingTextMock.mockResolvedValue({
 			_yay: { text, rootKind: "plain_text", pendingUpdate },
 		});
-		savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { target: { kind: "saved", id: NODE_ID } } });
+		savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { kind: "queued", runId: "run", activityId: "activity" } });
 		const onTargetChange = vi.fn();
 		const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
 		renderPlainTextEditor({ target: PRIVATE_TARGET, onTargetChange, ref });
@@ -328,9 +328,10 @@ describe("FileEditorPlainText", () => {
 			reviewedRevision: pendingUpdate.revision,
 			text: currentText,
 			onUpserted: expect.any(Function),
-			startReview: startReviewMock,
+			openReviewRun: openReviewRunMock,
 		});
-		expect(onTargetChange).toHaveBeenCalledWith({ kind: "saved", id: NODE_ID });
+		expect(onTargetChange, "queued work keeps the private file selected").not.toHaveBeenCalled();
+		expect(monacoHarness.createdModels[0]!.model.getValue(), "queued work keeps the current text").toBe(currentText);
 		expect(convexActionMock).not.toHaveBeenCalled();
 		expect(pushMutationMock).not.toHaveBeenCalled();
 	});
@@ -339,7 +340,7 @@ describe("FileEditorPlainText", () => {
 		fetchPrivateFilePendingTextMock.mockResolvedValue({
 			_yay: { text: "draft\n", rootKind: "plain_text", pendingUpdate: { _id: "pending_update_1", revision: 7 } },
 		});
-		savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { target: null } });
+		savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { kind: "queued", runId: "run", activityId: "activity" } });
 		const onTargetChange = vi.fn();
 		renderPlainTextEditor({ target: PRIVATE_TARGET, onTargetChange });
 		await act(async () => {});

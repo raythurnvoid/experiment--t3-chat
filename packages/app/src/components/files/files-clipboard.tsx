@@ -4,6 +4,7 @@ import { createContext, memo, use, useEffect, useId, useRef, useState, type Reac
 import { useConvex, useQuery } from "convex/react";
 import { ClipboardPaste, Copy, Scissors } from "lucide-react";
 import { toast } from "sonner";
+import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
@@ -33,6 +34,14 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "@/lib/files.ts";
+import {
+	files_move_intake_delete,
+	files_move_intake_load,
+	files_move_intake_read_page,
+	files_move_intake_save,
+	files_move_intake_update,
+	type FilesMoveIntake,
+} from "@/lib/files-move-intake.ts";
 
 // #region provider
 type FilesClipboard = {
@@ -49,6 +58,7 @@ const FilesClipboardContext = createContext<{
 	setClipboard: (mode: FilesClipboard["mode"], sourceIds: app_convex_Id<"files_nodes">[]) => void;
 	clearClipboard: () => void;
 	paste: (targetParentId: app_convex_Doc<"files_nodes">["parentId"]) => void;
+	move: (sourceIds: app_convex_Id<"files_nodes">[], targetParentId: app_convex_Doc<"files_nodes">["parentId"]) => void;
 	openRun: (runId: app_convex_Id<"files_transfer_runs">) => void;
 } | null>(null);
 
@@ -59,35 +69,48 @@ const FilesClipboardProvider = Object.assign(
 	}) {
 		const { membershipId, children } = props;
 		const convex = useConvex();
+		const { userId } = AppAuthProvider.useAuthenticated();
 		const { pendingStopSourceIds } = AppActivitiesProvider.useContext();
 		const currentRuns = useQuery(app_convex_api.files_transfer.list_current, { membershipId });
 		const [clipboard, setClipboardValue] = useState<FilesClipboard | null>(null);
 		const [runId, setRunId] = useState<app_convex_Id<"files_transfer_runs"> | null>(null);
 		const [isRunOpen, setIsRunOpen] = useState(false);
 		const [isStarting, setIsStarting] = useState(false);
-		const [startError, setStartError] = useState<{ message: string; stopRequested: boolean } | null>(null);
-		const run = useQuery(app_convex_api.files_transfer.get, runId ? { membershipId, runId } : "skip");
-		const [cutRun, setCutRun] = useState<{
-			runId: app_convex_Id<"files_transfer_runs">;
-			revision: string;
-			finished: boolean;
+		const [isRecovering, setIsRecovering] = useState(true);
+		const [startError, setStartError] = useState<{
+			message: string;
+			stopRequested: boolean;
+			resumeRequired?: boolean;
 		} | null>(null);
-		// Keep tracking the cut run when Activity opens a different run in the dialog.
-		const cutRunResult = useQuery(
-			app_convex_api.files_transfer.get,
-			cutRun && !cutRun.finished ? { membershipId, runId: cutRun.runId } : "skip",
-		);
+		const run = useQuery(app_convex_api.files_transfer.get, runId ? { membershipId, runId } : "skip");
+		const [cutRuns, setCutRuns] = useState<
+			{
+				runId: app_convex_Id<"files_transfer_runs">;
+				revision: string;
+				finished: boolean;
+			}[]
+		>([]);
 		const startPendingRef = useRef(false);
 		const mountedRef = useRef(true);
 		const startRequestRef = useRef<{
 			requestId: string;
-			clipboard: FilesClipboard;
+			kind: "copy" | "move";
+			sourceIds: app_convex_Id<"files_nodes">[] | null;
+			sourceCount: number;
+			revision: string | null;
 			targetParentId: app_convex_Doc<"files_nodes">["parentId"];
 			runId?: app_convex_Id<"files_transfer_runs">;
 			stopRequested?: boolean;
+			storedMove?: FilesMoveIntake;
 		} | null>(null);
 		// A still-loading run list may hide an already-active run, so treat it as busy.
-		const isPasting = isStarting || startError !== null || currentRuns === undefined || currentRuns.length > 0;
+		const isPasting =
+			isStarting ||
+			isRecovering ||
+			startError !== null ||
+			currentRuns === undefined ||
+			currentRuns.length > 0 ||
+			cutRuns.some((item) => !item.finished && item.revision === clipboard?.revision);
 
 		useEffect(() => {
 			mountedRef.current = true;
@@ -118,6 +141,25 @@ const FilesClipboardProvider = Object.assign(
 			);
 		});
 
+		const retireAcceptedMove = useFn(async (request: NonNullable<typeof startRequestRef.current>) => {
+			if (!request.storedMove || (request.runId && request.stopRequested)) return false;
+			// Another tab may have sealed the selection and removed its saved pages.
+			const accepted = await convex.query(app_convex_api.files_transfer.get_move_intake, {
+				membershipId,
+				requestId: request.requestId,
+			});
+			if (!accepted) return false;
+			request.runId = accepted.runId;
+			request.storedMove.runId = accepted.runId;
+			await files_move_intake_update(request.storedMove);
+			if (request.stopRequested || (accepted.step === "uploading" && !accepted.isFinished)) return false;
+			await files_move_intake_delete(request.storedMove);
+			startRequestRef.current = null;
+			setStartError(null);
+			if (mountedRef.current && request.sourceCount > 1) openRun(request.runId);
+			return true;
+		});
+
 		const sendPaste = useFn(() => {
 			const request = startRequestRef.current;
 			if (!request || startPendingRef.current) return;
@@ -125,61 +167,109 @@ const FilesClipboardProvider = Object.assign(
 			// The ref blocks a second start in the same tick; the state only disables after a render.
 			startPendingRef.current = true;
 			setIsStarting(true);
-			const selection = request.clipboard;
 			(async (/* iife */) => {
+				if (request.kind === "move" && !request.storedMove) {
+					const storedMove: FilesMoveIntake = {
+						userId,
+						membershipId,
+						requestId: request.requestId,
+						revision: request.revision,
+						targetParentId: request.targetParentId,
+						sourceCount: request.sourceCount,
+						runId: null,
+						stopRequested: false,
+					};
+					await files_move_intake_save({
+						request: storedMove,
+						sourceIds: request.sourceIds!,
+					});
+					request.storedMove = storedMove;
+					request.sourceIds = null;
+				}
+				// Leaving the workspace pauses Move intake. Its saved pages resume when we return.
+				if (request.storedMove && !mountedRef.current) return;
+				if (request.storedMove && request.stopRequested) {
+					request.storedMove.stopRequested = true;
+					await files_move_intake_update(request.storedMove);
+				}
+				if (request.storedMove && (await retireAcceptedMove(request))) return;
 				let refusal: string | undefined;
-				if (!request.stopRequested) {
+				if (!request.stopRequested || !request.runId) {
 					// Replay the original selection and pages after a lost reply, even if the clipboard changed.
 					const started = await convex.mutation(app_convex_api.files_transfer.start, {
 						membershipId,
 						requestId: request.requestId,
-						kind: selection.mode === "cut" ? "move" : "copy",
-						...(selection.mode === "copy" ? { expectedSourceCount: selection.sourceIds.length } : {}),
-						sourceIds:
-							selection.mode === "copy"
-								? selection.sourceIds.slice(0, files_TRANSFER_SELECTION_PAGE_SIZE)
-								: selection.sourceIds,
+						kind: request.kind,
+						expectedSourceCount: request.sourceCount,
+						sourceIds: request.storedMove
+							? await files_move_intake_read_page({
+									request: request.storedMove,
+									offset: 0,
+								})
+							: request.sourceIds!.slice(0, files_TRANSFER_SELECTION_PAGE_SIZE),
 						targetParentId: request.targetParentId,
 					});
 					refusal = started._nay?.message;
 					if (!started._nay) {
 						request.runId = started._yay.runId;
+						if (request.storedMove) {
+							request.storedMove.runId = request.runId;
+							await files_move_intake_update(request.storedMove);
+							if (!mountedRef.current) return;
+						}
 						// A one-item paste shows only its Activity card. The card can still open this dialog.
-						if (mountedRef.current && selection.sourceIds.length > 1) openRun(request.runId);
-						if (selection.mode === "cut") {
-							setCutRun({ runId: request.runId, revision: selection.revision, finished: false });
-						} else {
-							for (
-								let offset = files_TRANSFER_SELECTION_PAGE_SIZE;
-								offset < selection.sourceIds.length;
-								offset += files_TRANSFER_SELECTION_PAGE_SIZE
-							) {
-								if (isIntakeStopped(request.runId)) break;
-								const appended = await convex.mutation(app_convex_api.files_transfer.append_sources, {
-									membershipId,
-									runId: request.runId,
-									offset,
-									sourceIds: selection.sourceIds.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
-								});
-								if (appended._nay) {
-									refusal = appended._nay.message;
-									break;
-								}
+						if (mountedRef.current && request.sourceCount > 1) openRun(request.runId);
+						if (request.kind === "move" && request.revision) {
+							const cutRun = {
+								runId: request.runId,
+								revision: request.revision,
+								finished: false,
+							};
+							setCutRuns((current) =>
+								current.some((item) => item.runId === cutRun.runId) ? current : [...current, cutRun],
+							);
+						}
+						for (
+							let offset = files_TRANSFER_SELECTION_PAGE_SIZE;
+							offset < request.sourceCount;
+							offset += files_TRANSFER_SELECTION_PAGE_SIZE
+						) {
+							if (request.storedMove && !mountedRef.current) return;
+							if (request.stopRequested || isIntakeStopped(request.runId)) break;
+							const appended = await convex.mutation(app_convex_api.files_transfer.append_sources, {
+								membershipId,
+								runId: request.runId,
+								offset,
+								sourceIds: request.storedMove
+									? await files_move_intake_read_page({
+											request: request.storedMove,
+											offset,
+										})
+									: request.sourceIds!.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
+							});
+							if (appended._nay) {
+								refusal = appended._nay.message;
+								break;
 							}
-							request.stopRequested = !!refusal || isIntakeStopped(request.runId);
-							if (!request.stopRequested) {
-								const sealed = await convex.mutation(app_convex_api.files_transfer.seal, {
-									membershipId,
-									runId: request.runId,
-								});
-								refusal = sealed._nay?.message;
-							}
+						}
+						if (request.storedMove && !mountedRef.current) return;
+						request.stopRequested = !!request.stopRequested || !!refusal || isIntakeStopped(request.runId);
+						if (!request.stopRequested) {
+							const sealed = await convex.mutation(app_convex_api.files_transfer.seal, {
+								membershipId,
+								runId: request.runId,
+							});
+							refusal = sealed._nay?.message;
 						}
 					}
 				}
 				if (refusal) toast.error(refusal);
 				if (request.runId && (refusal || request.stopRequested)) {
 					request.stopRequested = true;
+					if (request.storedMove) {
+						request.storedMove.stopRequested = true;
+						await files_move_intake_update(request.storedMove);
+					}
 					const stopped = await convex.mutation(app_convex_api.files_transfer.stop, {
 						membershipId,
 						runId: request.runId,
@@ -192,10 +282,17 @@ const FilesClipboardProvider = Object.assign(
 						return;
 					}
 				}
+				if (request.storedMove) await files_move_intake_delete(request.storedMove);
 				startRequestRef.current = null;
 				setStartError(null);
 			})()
-				.catch((error) => {
+				.catch(async (error) => {
+					if (
+						error instanceof Error &&
+						error.message === "The saved Move selection is missing a page." &&
+						(await retireAcceptedMove(request).catch(() => false))
+					)
+						return;
 					console.error("[FilesClipboardProvider.paste] Failed to send paste request", { error });
 					setStartError({
 						message: request.stopRequested
@@ -210,34 +307,141 @@ const FilesClipboardProvider = Object.assign(
 				});
 		});
 
+		const recoverMove = useFn(() => {
+			setIsRecovering(true);
+			files_move_intake_load({ userId, membershipId })
+				.then((saved) => {
+					if (!mountedRef.current) return;
+					if (saved) {
+						startRequestRef.current = {
+							...saved,
+							kind: "move",
+							sourceIds: null,
+							runId: saved.runId ?? undefined,
+							storedMove: saved,
+						};
+						// An unstarted request has no server membership lifetime yet. Ask after any reload.
+						if (saved.runId === null && !saved.stopRequested) {
+							setStartError({
+								message:
+									"A Move selection is saved in this browser. Resume only if you still want to move these items.",
+								stopRequested: false,
+								resumeRequired: true,
+							});
+							return;
+						}
+						sendPaste();
+					}
+					setStartError(null);
+				})
+				.catch((error) => {
+					console.error("[FilesClipboardProvider.recoverMove] Failed to load Move selection", { error });
+					if (mountedRef.current)
+						setStartError({
+							message: "Could not load the saved Move. Retry when browser storage is available.",
+							stopRequested: false,
+						});
+				})
+				.finally(() => {
+					if (mountedRef.current) setIsRecovering(false);
+				});
+		});
+
+		useEffect(() => recoverMove(), [recoverMove]);
+
 		const paste = useFn((targetParentId: app_convex_Doc<"files_nodes">["parentId"]) => {
 			if (!clipboard || isPasting || startPendingRef.current || startRequestRef.current) return;
-			startRequestRef.current = { requestId: crypto.randomUUID(), clipboard, targetParentId };
+			startRequestRef.current = {
+				requestId: crypto.randomUUID(),
+				kind: clipboard.mode === "cut" ? "move" : "copy",
+				sourceIds: clipboard.sourceIds,
+				sourceCount: clipboard.sourceIds.length,
+				revision: clipboard.mode === "cut" ? clipboard.revision : null,
+				targetParentId,
+			};
 			sendPaste();
 		});
 
-		useEffect(() => {
-			if (!cutRunResult || !cutRun || cutRun.finished || cutRunResult.activity.finishedAt === undefined) return;
-			const revision = cutRun.revision;
-			// Keep the revision so a later retry can finish clearing this Cut.
-			setCutRun({ ...cutRun, finished: true });
-			setClipboardValue((current) => {
-				// A newer Cut or Copy changes the revision, so an older run finishing must not touch it.
-				if (current?.revision !== revision) return current;
-				const sourceIds = current.sourceIds.filter((id) => !cutRunResult.movedNodeIds.includes(id));
-				return sourceIds.length > 0 ? { ...current, sourceIds } : null;
-			});
-		}, [cutRunResult, cutRun]);
+		const move = useFn(
+			(sourceIds: app_convex_Id<"files_nodes">[], targetParentId: app_convex_Doc<"files_nodes">["parentId"]) => {
+				if (sourceIds.length === 0) return;
+				if (isPasting || startPendingRef.current || startRequestRef.current) {
+					toast.error("Wait for the current file operation to finish.");
+					return;
+				}
+				const selection = [...new Set(sourceIds)];
+				startRequestRef.current = {
+					requestId: crypto.randomUUID(),
+					kind: "move",
+					sourceIds: selection,
+					sourceCount: selection.length,
+					revision: null,
+					targetParentId,
+				};
+				sendPaste();
+			},
+		);
+
+		const finishCut = useFn(
+			(
+				finishedRunId: app_convex_Id<"files_transfer_runs">,
+				revision: string,
+				movedIds: ReadonlySet<app_convex_Id<"files_nodes">>,
+			) => {
+				setClipboardValue((current) => {
+					// A newer Cut or Copy changes the revision, so an older run finishing must not touch it.
+					if (current?.revision !== revision) return current;
+					const sourceIds = current.sourceIds.filter((id) => !movedIds.has(id));
+					return sourceIds.length > 0 ? { ...current, sourceIds } : null;
+				});
+				setCutRuns((current) =>
+					current.map((item) => (item.runId === finishedRunId ? { ...item, finished: true } : item)),
+				);
+			},
+		);
+		const resume = useFn(() => (startRequestRef.current ? sendPaste() : recoverMove()));
+		const discardSavedMove = useFn(() => {
+			const request = startRequestRef.current;
+			if (!request || startPendingRef.current) return;
+			request.stopRequested = true;
+			sendPaste();
+		});
 
 		return (
-			<FilesClipboardContext.Provider value={{ clipboard, isPasting, setClipboard, clearClipboard, paste, openRun }}>
+			<FilesClipboardContext.Provider
+				value={{
+					clipboard,
+					isPasting,
+					setClipboard,
+					clearClipboard,
+					paste,
+					move,
+					openRun,
+				}}
+			>
 				{children}
+				{cutRuns
+					.filter((item) => !item.finished)
+					.map((item) => (
+						<FilesCutReceipt
+							key={item.runId}
+							membershipId={membershipId}
+							runId={item.runId}
+							revision={item.revision}
+							onFinish={finishCut}
+						/>
+					))}
 				{startError && !isRunOpen ? (
 					<div>
 						<p role="alert">{startError.message}</p>
-						<MyButton disabled={isStarting} onClick={sendPaste}>
-							{startError.stopRequested ? "Retry Stop" : "Retry Paste"}
+						<MyButton disabled={isStarting || isRecovering} onClick={resume}>
+							{startError.stopRequested ? "Retry Stop" : startError.resumeRequired ? "Resume Move" : "Retry Paste"}
 						</MyButton>
+						{startError.resumeRequired ? (
+							<MyButton disabled={isStarting || isRecovering} onClick={discardSavedMove}>
+								Discard saved Move
+							</MyButton>
+						) : null}
 					</div>
 				) : null}
 				{isRunOpen && runId ? (
@@ -248,9 +452,10 @@ const FilesClipboardProvider = Object.assign(
 						run={run}
 						startError={startError}
 						isStarting={isStarting}
-						onResume={sendPaste}
+						onResume={resume}
 						onRetry={(nextRunId) => {
-							if (cutRun?.runId === runId) setCutRun({ ...cutRun, runId: nextRunId, finished: false });
+							const cutRun = cutRuns.find((item) => item.runId === runId);
+							if (cutRun) setCutRuns((current) => [...current, { ...cutRun, runId: nextRunId, finished: false }]);
 							openRun(nextRunId);
 						}}
 						onClose={() => setIsRunOpen(false)}
@@ -270,6 +475,76 @@ const FilesClipboardProvider = Object.assign(
 );
 
 export { FilesClipboardProvider };
+
+const FilesCutReceipt = memo(function FilesCutReceipt(props: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	runId: app_convex_Id<"files_transfer_runs">;
+	revision: string;
+	onFinish: (
+		runId: app_convex_Id<"files_transfer_runs">,
+		revision: string,
+		movedIds: ReadonlySet<app_convex_Id<"files_nodes">>,
+	) => void;
+}) {
+	const { membershipId, runId, revision, onFinish } = props;
+	const convex = useConvex();
+	const run = useQuery(app_convex_api.files_transfer.get, {
+		membershipId,
+		runId,
+	});
+	const [attempt, setAttempt] = useState(0);
+	const [errorMessage, setErrorMessage] = useState<string | null>(null);
+	const receiptRef = useRef({
+		cursor: null as string | null,
+		movedIds: new Set<app_convex_Id<"files_nodes">>(),
+	});
+	const isFinished = run?.activity.finishedAt !== undefined;
+
+	useEffect(() => {
+		if (!isFinished) return;
+		let active = true;
+		setErrorMessage(null);
+		(async (/* iife */) => {
+			const receipt = receiptRef.current;
+			while (active) {
+				const page = await convex.query(app_convex_api.files_transfer.list_items, {
+					membershipId,
+					runId,
+					state: "completed",
+					paginationOpts: { numItems: 100, cursor: receipt.cursor },
+				});
+				if (!active) return;
+				if (!page) throw new Error("Completed Move items are not available. Retry to clear this Cut.");
+				for (const item of page.page) {
+					if (item.movedNodeId) receipt.movedIds.add(item.movedNodeId);
+				}
+				if (page.isDone) {
+					onFinish(runId, revision, receipt.movedIds);
+					return;
+				}
+				receipt.cursor = page.continueCursor;
+			}
+		})().catch((error) => {
+			console.error("[FilesCutReceipt] Failed to clear completed Cut items", {
+				error,
+			});
+			if (active) setErrorMessage("Could not read completed Move items. Retry to clear this Cut.");
+		});
+		return () => {
+			active = false;
+		};
+	}, [attempt, convex, isFinished, membershipId, onFinish, revision, runId]);
+
+	if (!isFinished) return null;
+	return errorMessage ? (
+		<div>
+			<p role="alert">{errorMessage}</p>
+			<MyButton onClick={() => setAttempt((current) => current + 1)}>Retry clearing Cut</MyButton>
+		</div>
+	) : (
+		<p role="status">Clearing completed Cut items…</p>
+	);
+});
 
 function useFilesClipboardHotkeys(args: {
 	target: RefObject<HTMLElement | null>;
@@ -379,7 +654,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	runId: app_convex_Id<"files_transfer_runs">;
 	run: FilesTransferRun | null | undefined;
-	startError: { message: string; stopRequested: boolean } | null;
+	startError: { message: string; stopRequested: boolean; resumeRequired?: boolean } | null;
 	isStarting: boolean;
 	onResume: () => void;
 	onRetry: (runId: app_convex_Id<"files_transfer_runs">) => void;
@@ -394,12 +669,19 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 		folder: null,
 	});
 	const [cursors, setCursors] = useState<(string | null)[]>([null]);
+	const itemState = run?.activity.status === "awaiting_input" ? "conflict" : undefined;
+	const [previousItemState, setPreviousItemState] = useState(itemState);
+	if (previousItemState !== itemState) {
+		setPreviousItemState(itemState);
+		setCursors([null]);
+	}
 	const itemPage = useQuery(
 		app_convex_api.files_transfer.list_items,
 		run
 			? {
 					membershipId,
 					runId,
+					state: itemState,
 					paginationOpts: { numItems: 50, cursor: cursors[cursors.length - 1]! },
 				}
 			: "skip",
@@ -414,6 +696,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 		setPreviousRevision(run?.revision);
 		setChoices({});
 		setApplyToRemaining({ file: null, folder: null });
+		if (itemState === "conflict") setCursors([null]);
 	}
 
 	const status = run?.activity.status;
@@ -572,14 +855,15 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 						<div>
 							<p role="alert">{startError.message}</p>
 							<MyButton disabled={isStarting} onClick={onResume}>
-								{startError.stopRequested ? "Retry Stop" : "Retry Paste"}
+								{startError.stopRequested ? "Retry Stop" : startError.resumeRequired ? "Resume Move" : "Retry Paste"}
 							</MyButton>
 						</div>
 					) : null}
 					{run?.step === "uploading" && !isTerminal ? (
 						<p>
-							Copy starts after the full selection arrives. Keep this tab open. If you reload, stop this request in
-							Activity and paste again.
+							{run.kind === "move"
+								? "Move starts after the full selection arrives. Return to this workspace after a reload to resume loading."
+								: "Copy starts after the full selection arrives. Keep this tab open. If you reload, stop this request in Activity and paste again."}
 						</p>
 					) : null}
 					{progress && isSelecting ? (
@@ -777,7 +1061,11 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 							disabled={isSaving || isStopPending || !run.controls.canStop}
 							onClick={handleStop}
 						>
-							{run.activity.progress.completed > 0 && run.kind === "copy" ? "Stop and keep completed copies" : "Stop"}
+							{run.activity.progress.completed > 0
+								? run.kind === "move"
+									? "Stop and keep completed moves"
+									: "Stop and keep completed copies"
+								: "Stop"}
 						</MyButton>
 					) : null}
 					{status === "awaiting_input" && run ? (

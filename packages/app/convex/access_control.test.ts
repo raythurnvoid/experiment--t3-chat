@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import {
+	test_save_file_pending_update,
 	test_convex,
+	test_rename_node,
+	test_move_nodes,
 	test_get_file_yjs_pointers,
 	test_mocks_cancel_pending_home_file_seeds,
 	test_mocks_fill_db_with,
@@ -22,7 +25,7 @@ import {
 	organizations_db_create_workspace,
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
-import { files_nodes_db_preflight_move } from "./files_nodes.ts";
+import { files_nodes_db_live_scope_reader } from "./files_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
 	access_control_ENFORCED_PERMISSIONS,
@@ -1816,7 +1819,7 @@ describe("enforcement", () => {
 				parentId: files_ROOT_ID,
 				path: "viewer-folder",
 			}),
-			asViewer.mutation(api.files_nodes.rename_node, {
+			test_rename_node(t, asViewer, {
 				membershipId: viewerMembershipId,
 				nodeId: folder._yay!.nodeId,
 				path: "renamed",
@@ -2011,6 +2014,7 @@ describe("enforcement", () => {
 					q
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("parentId", files_ROOT_ID)
 						.eq("name", "stale-denied.md"),
 				)
@@ -2051,7 +2055,7 @@ describe("enforcement", () => {
 		await access_control_test_demote_to_viewer(fixture);
 
 		// A folder proposal is enough: the write check runs before content reads.
-		const saved = await fixture.asMember.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			target,
 			pendingUpdateId: pending._id,
@@ -5840,20 +5844,58 @@ describe("file sharing", () => {
 		// The grant is a write on `/closed` and nothing else. A path-like rename is a move, so both of
 		// these write somewhere else: the first into `/finance`, the second into the root by creating a
 		// folder there. The check at the top of the handler only asked about `/closed`.
-		const intoExisting = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+		const intoExisting = await test_rename_node(t, fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 			path: "finance/closed",
 		});
-		expect(intoExisting._nay?.message).toBe("Permission denied");
+		if (!intoExisting._yay) throw new Error("Rename was not accepted", { cause: intoExisting._nay });
+		expect(await t.run((ctx) => ctx.db.get("activities", intoExisting._yay!.activityId))).toMatchObject({
+			status: "awaiting_input",
+			progress: { completed: 0, blocked: 1 },
+		});
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_move_cohorts")
+					.withIndex("by_origin_run", (q) =>
+						q.eq("origin.kind", "transfer").eq("origin.runId", intoExisting._yay!.runId),
+					)
+					.first(),
+			),
+		).toMatchObject({ phase: "complete", publishedAt: null, errorMessage: "Permission denied" });
+		expect(
+			await fixture.asMember.mutation(api.files_transfer.stop, {
+				membershipId: fixture.memberMembershipId,
+				runId: intoExisting._yay.runId,
+			}),
+		).toEqual({ _yay: null });
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const intoNew = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+		const intoNew = await test_rename_node(t, fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 			path: "newtop/closed",
 		});
-		expect(intoNew._nay?.message).toBe("Permission denied");
+		if (!intoNew._yay) throw new Error("Rename was not accepted", { cause: intoNew._nay });
+		expect(await t.run((ctx) => ctx.db.get("activities", intoNew._yay!.activityId))).toMatchObject({
+			status: "awaiting_input",
+			progress: { completed: 0, blocked: 1 },
+		});
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_move_cohorts")
+					.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", intoNew._yay!.runId))
+					.first(),
+			),
+		).toMatchObject({ phase: "complete", publishedAt: null, errorMessage: "Permission denied" });
+		expect(
+			await fixture.asMember.mutation(api.files_transfer.stop, {
+				membershipId: fixture.memberMembershipId,
+				runId: intoNew._yay.runId,
+			}),
+		).toEqual({ _yay: null });
 
 		// Nothing moved, and no folder was invented at the root.
 		const [folderNode, invented] = await t.run(async (ctx) => [
@@ -5864,6 +5906,7 @@ describe("file sharing", () => {
 					q
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/newtop")
 						.eq("archiveOperationId", null),
 				)
@@ -5876,7 +5919,7 @@ describe("file sharing", () => {
 		// The same rename inside their own granted folder still works, so the refusals above are about
 		// the destination and not about the grant.
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const inside = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+		const inside = await test_rename_node(t, fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 			path: "renamed-closed",
@@ -5887,19 +5930,37 @@ describe("file sharing", () => {
 		// segment has to answer for itself: asking the folder that holds it instead would wave this
 		// through, because `box` is inside the grant.
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const intoVault = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+		const intoVault = await test_rename_node(t, fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: childId,
 			path: "box/vault/inside",
 		});
-		expect(intoVault._nay?.message).toBe("Permission denied");
+		if (!intoVault._yay) throw new Error("Rename was not accepted", { cause: intoVault._nay });
+		expect(await t.run((ctx) => ctx.db.get("activities", intoVault._yay!.activityId))).toMatchObject({
+			status: "awaiting_input",
+			progress: { completed: 0, blocked: 1 },
+		});
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_move_cohorts")
+					.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", intoVault._yay!.runId))
+					.first(),
+			),
+		).toMatchObject({ phase: "complete", publishedAt: null, errorMessage: "Permission denied" });
+		expect(
+			await fixture.asMember.mutation(api.files_transfer.stop, {
+				membershipId: fixture.memberMembershipId,
+				runId: intoVault._yay.runId,
+			}),
+		).toEqual({ _yay: null });
 
 		// A path-like rename that lands where the grant does reach. The rename above has no slash in it,
 		// so on its own it would still pass for a handler that refused every path-like rename. The path
 		// is read from the node's own parent, so this walks both new checks in the allowed direction at
 		// once: `box` is a folder that already exists, and `deep` is one that has to be created.
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const deeper = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+		const deeper = await test_rename_node(t, fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: childId,
 			path: "box/deep/inside",
@@ -6060,7 +6121,7 @@ describe("file sharing", () => {
 				membershipId: fixture.memberMembershipId,
 				parentId: files_ROOT_ID,
 			}),
-			fixture.asMember.mutation(api.files_nodes.rename_node, {
+			test_rename_node(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: childId,
 				path: "renamed-by-grant",
@@ -6121,7 +6182,7 @@ describe("file sharing", () => {
 				membershipId: fixture.memberMembershipId,
 				fileNodeId: String(childId),
 			}),
-			fixture.asMember.mutation(api.files_nodes.rename_node, {
+			test_rename_node(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: childId,
 				path: "nope",
@@ -8357,7 +8418,7 @@ describe("file sharing", () => {
 		// Typing a path into the rename box re-parents the node, so it is a move wearing another name.
 		// Without the scope being carried over, the node would sit inside a restricted folder and stay
 		// readable by the whole workspace.
-		const renamed = await fixture.asOwner.mutation(api.files_nodes.rename_node, {
+		const renamed = await test_rename_node(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: loose._yay!.nodeId,
 			path: "closed/loose-folder",
@@ -8773,7 +8834,7 @@ describe("file sharing", () => {
 		});
 		expect(loose._nay).toBeUndefined();
 
-		const movedIn = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+		const movedIn = await test_move_nodes(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [loose._yay!.nodeId],
 			targetParentId: folderId,
@@ -8788,7 +8849,7 @@ describe("file sharing", () => {
 
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 
-		const movedOut = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+		const movedOut = await test_move_nodes(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [loose._yay!.nodeId],
 			targetParentId: files_ROOT_ID,
@@ -9001,7 +9062,7 @@ describe("file sharing", () => {
 
 		// Editing inside the folder is exactly what "Can edit" buys, so the refusal below is about
 		// leaving the folder and not about the member being unable to touch this node at all.
-		const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+		const renamed = await test_rename_node(t, fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: childId,
 			path: "still-inside",
@@ -9010,7 +9071,7 @@ describe("file sharing", () => {
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
-		const movedByWriter = await fixture.asMember.mutation(api.files_nodes.move_nodes, {
+		const movedByWriter = await test_move_nodes(t, fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			itemIds: [childId],
 			targetParentId: files_ROOT_ID,
@@ -9033,7 +9094,7 @@ describe("file sharing", () => {
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
 		// "Can manage" owns the share list, so the same person may now declassify the node.
-		const movedByManager = await fixture.asMember.mutation(api.files_nodes.move_nodes, {
+		const movedByManager = await test_move_nodes(t, fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			itemIds: [childId],
 			targetParentId: files_ROOT_ID,
@@ -9143,7 +9204,7 @@ describe("file sharing", () => {
 			});
 			const { folderId, childId } = await seed_folder_job({ t, fixture, restricted: false, outerRestricted: false });
 
-			const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+			const renamed = await test_rename_node(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: childId,
 				path: "renamed",
@@ -9151,7 +9212,7 @@ describe("file sharing", () => {
 			expect(renamed._nay?.message).toBe("Permission denied");
 
 			await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-			const moved = await fixture.asMember.mutation(api.files_nodes.move_nodes, {
+			const moved = await test_move_nodes(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				itemIds: [childId],
 				targetParentId: files_ROOT_ID,
@@ -9178,7 +9239,7 @@ describe("file sharing", () => {
 			});
 			expect(shared._nay).toBeUndefined();
 
-			const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+			const renamed = await test_rename_node(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: childId,
 				path: "renamed",
@@ -9186,7 +9247,7 @@ describe("file sharing", () => {
 			expect(renamed._nay).toBeUndefined();
 
 			await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-			const moved = await fixture.asMember.mutation(api.files_nodes.move_nodes, {
+			const moved = await test_move_nodes(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				itemIds: [childId],
 				targetParentId: files_ROOT_ID,
@@ -9215,7 +9276,7 @@ describe("file sharing", () => {
 			expect(shared._nay).toBeUndefined();
 
 			// The child still stores no scope, and the guest role may write nothing outside its grants.
-			const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+			const renamed = await test_rename_node(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: childId,
 				path: "renamed",
@@ -9255,33 +9316,28 @@ describe("file sharing", () => {
 				expect(granted._nay).toBeUndefined();
 				return serviceAccountId;
 			});
-			const rename = () =>
+			const mayWrite = () =>
 				t.run(async (ctx) => {
-					const node = (await ctx.db.get("files_nodes", childId))!;
-					return await files_nodes_db_preflight_move(ctx, {
-						userAuth: { id: fixture.ownerId },
-						membership: (await ctx.db.get("organizations_workspaces_users", fixture.ownerMembershipId))!,
-						writer: { kind: "service_account", serviceAccountId },
-						policyReach: "ancestors",
-						intents: [
-							{
-								nodeId: node._id,
-								expected: node,
-								destination: {
-									parentId: folderId,
-									name: "renamed",
-									expectedParentPath: "/outer/closed",
-									expectedParentArchiveOperationId: null,
-								},
-								occupant: { kind: "empty" },
-							},
-						],
+					const stored = (await ctx.db.get("files_nodes", childId))!;
+					const withLiveScope = await files_nodes_db_live_scope_reader(ctx, {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+					});
+					const node = await withLiveScope(stored);
+					expect(node?.restrictedScopeNodeId).toBe(folderId);
+					return await access_control_db_can_act_on_file_node(ctx, {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+						userId: fixture.ownerId,
+						serviceAccountId,
+						fileNode: node!,
+						permission: "content.write",
 					});
 				});
 
-			expect((await rename())._nay?.message).toBe("Permission denied");
+			expect(await mayWrite()).toBe(false);
 
-			// The same rename works once the account may write the folder, so the refusal above came from the scope.
+			// The public API's file guard needs the live folder grant too.
 			await t.run(async (ctx) => {
 				const granted = await access_control_db_set_service_account_grant(ctx, {
 					organizationId: fixture.organizationId,
@@ -9292,7 +9348,7 @@ describe("file sharing", () => {
 				});
 				expect(granted._nay).toBeUndefined();
 			});
-			expect((await rename())._nay).toBeUndefined();
+			expect(await mayWrite()).toBe(true);
 		});
 
 		test("after an unrestrict, a member can rename an item that still stores the old scope", async () => {
@@ -9303,7 +9359,7 @@ describe("file sharing", () => {
 			});
 			const { childId } = await seed_folder_job({ t, fixture, restricted: true, outerRestricted: false });
 
-			const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+			const renamed = await test_rename_node(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: childId,
 				path: "renamed",
@@ -9325,7 +9381,7 @@ describe("file sharing", () => {
 
 			// The child still points at `closed`, which is open now. Access control ignores that pointer, so
 			// without the live scope the member would pass as if the child were not restricted at all.
-			const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+			const renamed = await test_rename_node(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: childId,
 				path: "renamed",
@@ -9340,7 +9396,7 @@ describe("file sharing", () => {
 			});
 			expect(shared._nay).toBeUndefined();
 			await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-			const renamedWithGrant = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+			const renamedWithGrant = await test_rename_node(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: childId,
 				path: "renamed",
@@ -9390,7 +9446,7 @@ describe("file sharing", () => {
 				return { openId, childId: childId! };
 			});
 
-			const moved = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+			const moved = await test_move_nodes(t, fixture.asOwner, {
 				membershipId: fixture.ownerMembershipId,
 				itemIds: [openId],
 				targetParentId: closedId,
@@ -9401,7 +9457,7 @@ describe("file sharing", () => {
 			expect((await t.run((ctx) => ctx.db.get("files_nodes", childId)))?.restrictedScopeNodeId).toBeNull();
 
 			// Once out of `open`, the job would never reach it, so the stored scope would let it out for good.
-			const movedOut = await fixture.asMember.mutation(api.files_nodes.move_nodes, {
+			const movedOut = await test_move_nodes(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				itemIds: [childId],
 				targetParentId: files_ROOT_ID,
@@ -9435,6 +9491,7 @@ describe("file sharing", () => {
 					q
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("parentId", folderId)
 						.eq("name", "mine"),
 				)
@@ -9462,12 +9519,24 @@ describe("file sharing", () => {
 
 		// A rename that carries a path is a move. The source is theirs, but the destination folder is
 		// found by walking the path, so it needs its own answer.
-		const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
+		const renamed = await test_rename_node(t, fixture.asMember, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: loose._yay!.nodeId,
 			path: "closed/moved",
 		});
-		expect(renamed._nay?.message).toBe("Permission denied");
+		if (!renamed._yay) throw new Error("Rename was not accepted", { cause: renamed._nay });
+		expect(await t.run((ctx) => ctx.db.get("activities", renamed._yay!.activityId))).toMatchObject({
+			status: "awaiting_input",
+			progress: { completed: 0, blocked: 1 },
+		});
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_move_cohorts")
+					.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", renamed._yay!.runId))
+					.first(),
+			),
+		).toMatchObject({ phase: "complete", publishedAt: null, errorMessage: "Permission denied" });
 
 		const looseNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", loose._yay!.nodeId));
 		expect(looseNode?.path).toBe("/loose");
@@ -9657,6 +9726,7 @@ describe("file sharing", () => {
 						q
 							.eq("organizationId", fixture.organizationId)
 							.eq("workspaceId", fixture.defaultWorkspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("path", "/fresh")
 							.eq("archiveOperationId", null),
 					)
@@ -9805,7 +9875,7 @@ describe("file sharing", () => {
 		});
 
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const moved = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+		const moved = await test_move_nodes(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [childId],
 			targetParentId: destinationFolderId,
@@ -10137,7 +10207,7 @@ describe("file sharing", () => {
 		// Unlike the guest two tests above, this member keeps the workspace role, so the write at the root
 		// passes and only the leaving check can refuse. Restoring the child alone lands it at the root and
 		// drops the restriction, which hands a file the share list closed to everybody who can read the
-		// workspace. `move_nodes` refuses the same move, so restoring has to refuse it too.
+		// workspace. Move refuses the same move, so restoring has to refuse it too.
 		const unarchived = await fixture.asMember.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: fixture.memberMembershipId,
 			nodeIds: [String(childId)],
@@ -10431,6 +10501,7 @@ describe("file sharing", () => {
 					q
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("parentId", folderId)
 						.eq("name", "note.md"),
 				)
@@ -10616,6 +10687,7 @@ describe("file sharing", () => {
 					q
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("parentId", folderId)
 						.eq("name", "note.pdf"),
 				)
@@ -11107,19 +11179,19 @@ describe("file write policy management", () => {
 
 		// Renaming or moving a child changes its parent's list, like `rename(2)` on Linux and macOS.
 		// So the parent's rule applies, even to a child the locker cannot see.
-		const renamed = await fixture.asOwner.mutation(api.files_nodes.rename_node, {
+		const renamed = await test_rename_node(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: secret._yay!.nodeId,
 			path: "open/renamed",
 		});
 		expect(renamed._nay?.name).toBe("read_only");
-		const movedOut = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+		const movedOut = await test_move_nodes(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [secret._yay!.nodeId],
 			targetParentId: target._yay!.nodeId,
 		});
 		expect(movedOut._nay?.name).toBe("read_only");
-		const movedToRoot = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+		const movedToRoot = await test_move_nodes(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [secret._yay!.nodeId],
 			targetParentId: files_ROOT_ID,
@@ -11137,20 +11209,20 @@ describe("file write policy management", () => {
 		});
 		expect(memberUnlock._nay).toBeUndefined();
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const movedAfterUnlock = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+		const movedAfterUnlock = await test_move_nodes(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [secret._yay!.nodeId],
 			targetParentId: target._yay!.nodeId,
 		});
 		expect(movedAfterUnlock._nay).toBeUndefined();
 		// Move it back, so the move to the root also starts in the unlocked folder.
-		const movedBack = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+		const movedBack = await test_move_nodes(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [secret._yay!.nodeId],
 			targetParentId: open._yay!.nodeId,
 		});
 		expect(movedBack._nay).toBeUndefined();
-		const movedToRootAfterUnlock = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+		const movedToRootAfterUnlock = await test_move_nodes(t, fixture.asOwner, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [secret._yay!.nodeId],
 			targetParentId: files_ROOT_ID,

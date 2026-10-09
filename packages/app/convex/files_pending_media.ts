@@ -38,7 +38,8 @@ async function db_get_publication_text(
 	if (
 		!batch?.publication ||
 		batch.userId !== args.userId ||
-		batch.expiresAt <= Date.now() ||
+		batch.cohortContentId !== undefined ||
+		(batch.expiresAt !== undefined && batch.expiresAt <= Date.now()) ||
 		!batch.expectedPendingUpdateId
 	)
 		return null;
@@ -71,7 +72,7 @@ async function db_get_publication_text(
 	const input = inputs.find((input) => input.role === "staged");
 	if (
 		!input ||
-		input.expiresAt <= Date.now() ||
+		(input.expiresAt !== undefined && input.expiresAt <= Date.now()) ||
 		input.userId !== args.userId ||
 		input.organizationId !== pending.organizationId ||
 		input.workspaceId !== pending.workspaceId ||

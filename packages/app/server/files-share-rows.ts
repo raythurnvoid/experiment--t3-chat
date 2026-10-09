@@ -7,7 +7,7 @@
 // grant write syncs its row, and a write to a node that is or was a restricted scope root syncs the
 // node's rows. Shares per node are bounded by the share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people
 // and roles, in `convex/files_sharing.ts`, and `MAX_READERS`, 50 plugin readers, in
-// `convex/plugins_external_files.ts`), so a node write rewrites at most about 100 rows.
+// `convex/plugins_external_files.ts`). A reserved node has at most two copies per grant.
 //
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`).
@@ -15,6 +15,7 @@
 import type { WithoutSystemFields } from "convex/server";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
+import { files_saved_placement_db_get_node, type files_saved_placement_FixedView } from "./files-saved-placement.ts";
 
 type ShareRow = WithoutSystemFields<Doc<"files_share_rows">>;
 
@@ -43,7 +44,11 @@ export function files_share_rows_principal_key(kind: "user" | "role", id: string
 /**
  * The share row of one grant on one node, or null when the pair is not a share.
  */
-function share_row_of(node: Doc<"files_nodes">, grant: Doc<"access_control_permission_grants">): ShareRow | null {
+function share_row_of(
+	node: Doc<"files_nodes">,
+	grant: Doc<"access_control_permission_grants">,
+	moveView?: files_saved_placement_FixedView,
+): ShareRow | null {
 	if (grant.resourceKind !== "file" || grant.permission !== "content.read" || grant.resourceId !== node._id)
 		return null;
 	// Service account and public grants are not shares.
@@ -63,6 +68,7 @@ function share_row_of(node: Doc<"files_nodes">, grant: Doc<"access_control_permi
 		return null;
 
 	return {
+		moveView,
 		organizationId: grant.organizationId,
 		workspaceId: grant.workspaceId,
 		principalKey,
@@ -88,11 +94,39 @@ function share_row_of(node: Doc<"files_nodes">, grant: Doc<"access_control_permi
 export async function files_share_rows_db_compute_for_grant(
 	db: QueryCtx["db"],
 	grant: Doc<"access_control_permission_grants"> | null,
+	fixedView?: files_saved_placement_FixedView,
 ) {
 	if (!grant || grant.resourceKind !== "file" || grant.permission !== "content.read") return null;
 	const nodeId = db.normalizeId("files_nodes", grant.resourceId);
+	const node = nodeId && (await files_saved_placement_db_get_node(db, nodeId, fixedView));
+	return node ? share_row_of(node, grant, fixedView) : null;
+}
+
+/**
+ * Current grants apply to both candidates, even before the Move is published.
+ */
+export async function files_share_rows_db_compute_all_for_grant(
+	db: QueryCtx["db"],
+	grant: Doc<"access_control_permission_grants"> | null,
+) {
+	if (!grant || grant.resourceKind !== "file" || grant.permission !== "content.read") return [];
+	const nodeId = db.normalizeId("files_nodes", grant.resourceId);
 	const node = nodeId && (await db.get("files_nodes", nodeId));
-	return node ? share_row_of(node, grant) : null;
+	if (!node) return [];
+	if (!node.moveCohortId) {
+		const row = share_row_of(node, grant);
+		return row ? [row] : [];
+	}
+	const rows: ShareRow[] = [];
+	for (const view of ["before", "after"] as const) {
+		const row = await files_share_rows_db_compute_for_grant(db, grant, { cohortId: node.moveCohortId, view });
+		if (row) rows.push(row);
+	}
+	return rows;
+}
+
+function row_key(row: Pick<ShareRow, "grantId" | "moveView">) {
+	return `${row.grantId}:${row.moveView?.cohortId ?? ""}:${row.moveView?.view ?? ""}`;
 }
 
 /**
@@ -104,16 +138,27 @@ async function db_sync_rows(
 	desiredByGrant: Map<string, ShareRow>,
 ) {
 	for (const row of stored) {
-		const desired = desiredByGrant.get(row.grantId);
-		// A second row of the same grant is deleted too.
-		desiredByGrant.delete(row.grantId);
+		let key = row_key(row);
+		// Tag the old normal copy in place when staging the before candidate.
+		if (!row.moveView && !desiredByGrant.has(key)) {
+			const before = [...desiredByGrant.values()].find(
+				(desired) => desired.grantId === row.grantId && desired.moveView?.view === "before",
+			);
+			if (before) key = row_key(before);
+		}
+		const desired = desiredByGrant.get(key);
+		desiredByGrant.delete(key);
 		if (!desired) {
 			await db.delete("files_share_rows", row._id);
 			continue;
 		}
 		const patch: Record<string, unknown> = {};
-		for (const [field, value] of Object.entries(desired))
-			if (row[field as keyof ShareRow] !== value) patch[field] = value;
+		for (const [field, value] of Object.entries(desired)) {
+			if (field === "moveView") {
+				if (row.moveView?.cohortId !== desired.moveView?.cohortId || row.moveView?.view !== desired.moveView?.view)
+					patch.moveView = value;
+			} else if (row[field as keyof ShareRow] !== value) patch[field] = value;
+		}
 		if (Object.keys(patch).length > 0) await db.patch("files_share_rows", row._id, patch);
 	}
 	for (const desired of desiredByGrant.values()) await db.insert("files_share_rows", desired);
@@ -126,7 +171,7 @@ export async function files_share_rows_db_sync_grant(
 	db: MutationCtx["db"],
 	grantId: Id<"access_control_permission_grants">,
 ) {
-	const desired = await files_share_rows_db_compute_for_grant(
+	const desired = await files_share_rows_db_compute_all_for_grant(
 		db,
 		await db.get("access_control_permission_grants", grantId),
 	);
@@ -134,7 +179,7 @@ export async function files_share_rows_db_sync_grant(
 		.query("files_share_rows")
 		.withIndex("by_grant", (q) => q.eq("grantId", grantId))
 		.collect();
-	await db_sync_rows(db, stored, new Map(desired ? [[grantId, desired]] : []));
+	await db_sync_rows(db, stored, new Map(desired.map((row) => [row_key(row), row])));
 }
 
 /**
@@ -152,6 +197,7 @@ export function files_share_rows_node_changed(
 	if (!wasRoot && !isRoot) return false;
 	if (!old || !node || wasRoot !== isRoot) return true;
 	return (
+		old.moveCohortId !== node.moveCohortId ||
 		old.organizationId !== node.organizationId ||
 		old.workspaceId !== node.workspaceId ||
 		files_share_rows_NODE_FIELDS.some((field) => old[field] !== node[field])
@@ -173,7 +219,7 @@ export async function files_share_rows_db_sync_node(
 ) {
 	const { node } = args;
 	const desiredByGrant = new Map<string, ShareRow>();
-	if (node && node.restrictedScopeNodeId === node._id) {
+	if (node && (node.restrictedScopeNodeId === node._id || node.moveCohortId)) {
 		// Service account and public `content.read` grants are in this range too, but have no row.
 		const grants = await db
 			.query("access_control_permission_grants")
@@ -186,10 +232,9 @@ export async function files_share_rows_db_sync_node(
 					.eq("permission", "content.read"),
 			)
 			.collect();
-		for (const grant of grants) {
-			const row = share_row_of(node, grant);
-			if (row) desiredByGrant.set(grant._id, row);
-		}
+		for (const grant of grants)
+			for (const row of await files_share_rows_db_compute_all_for_grant(db, grant))
+				desiredByGrant.set(row_key(row), row);
 	}
 
 	const stored = await db

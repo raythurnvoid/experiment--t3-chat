@@ -178,6 +178,13 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 vi.mock("@/components/app-auth.tsx", () => ({
 	AppAuthProvider: { useAuthenticated: () => ({ userId: "user_1" }) },
 }));
+vi.mock("@/lib/files-move-intake.ts", () => ({
+	files_move_intake_load: async () => null,
+	files_move_intake_save: vi.fn(),
+	files_move_intake_read_page: vi.fn(),
+	files_move_intake_update: vi.fn(),
+	files_move_intake_delete: vi.fn(),
+}));
 vi.mock("@/components/app-hotkeys.tsx", () => ({ AppHotkeysProvider: { useHotkey: () => {} } }));
 vi.mock("@/lib/activities.ts", () => ({ useFileNodeActivities: () => [] }));
 vi.mock("sonner", () => ({ toast: { info: vi.fn(), error: vi.fn(), success: vi.fn() } }));
@@ -461,6 +468,8 @@ beforeEach(() => {
 	queryMock.mockImplementation((reference: never, args: unknown) => {
 		if (args === "skip") return undefined;
 		switch (getFunctionName(reference)) {
+			case "files_nodes:get_workspace_move_view":
+				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			case "files_nodes:list_tree_children":
 				return treeNodes ?? [node];
 			case "files_nodes:get_tree_ancestors": {
@@ -491,8 +500,8 @@ beforeEach(() => {
 			// Tests write owner views. The list returns only the stored fields of each row, and each row
 			// loads its view with `get_file_pending_target`.
 			case "files_pending_updates:list_files_pending_updates":
-				return (pendingUpdates as PendingViewFixture[]).map((view) =>
-					view.kind === "restricted"
+				return (pendingUpdates as PendingViewFixture[]).map((view, index) => ({
+					...(view.kind === "restricted"
 						? {
 								target: view.target,
 								pendingUpdateId: view.pendingUpdateId,
@@ -504,10 +513,15 @@ beforeEach(() => {
 								pendingUpdateId: view.entry.pendingUpdate._id,
 								revision: view.entry.pendingUpdate.revision,
 								hasReadyContent: view.readiness === "ready" && view.entry.pendingUpdate.content !== undefined,
-							},
-				);
+							}),
+					updatedAt: pendingUpdates.length - index,
+					listRowCreationTime: index,
+					listRowId: `pending_row_${index}`,
+				}));
 			case "files_pending_updates:list_files_pending_sources":
-				return pendingUpdates.length > 0 ? ["own"] : [];
+				return pendingUpdates.length > 0
+					? [{ listKey: "own", lastUpdatedAt: 1, keyCreationTime: 1, keyId: "own_key" }]
+					: [];
 			case "files_pending_updates:get_files_pending_updates_summary":
 				return { count: pendingUpdates.length, truncated: false };
 			case "files_pending_updates:get_pending_move_occupant":
@@ -1344,6 +1358,7 @@ describe("FileNodeView private targets", () => {
 		expect(queryMock).toHaveBeenCalledWith(expect.anything(), {
 			membershipId: "membership_1",
 			folderId: PRIVATE_ENTRY.node._id,
+			savedStream: { kind: "normal", generation: 0 },
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
 		expect(loadMorePendingMock).toHaveBeenCalledWith(50);
@@ -1806,7 +1821,11 @@ describe("FileNodeView folder sort", () => {
 		const { onNavigateSearch } = renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
-		expect(within(table).getByRole("columnheader", { name: /^file\.name/ }).getAttribute("aria-sort")).toBe("ascending");
+		expect(
+			within(table)
+				.getByRole("columnheader", { name: /^file\.name/ })
+				.getAttribute("aria-sort"),
+		).toBe("ascending");
 
 		fireEvent.click(within(table).getByRole("button", { name: /^file\.updated/ }));
 		expect(
@@ -1814,7 +1833,11 @@ describe("FileNodeView folder sort", () => {
 				.getByRole("columnheader", { name: /^file\.updated ↓/ })
 				.getAttribute("aria-sort"),
 		).toBe("descending");
-		expect(within(table).getByRole("columnheader", { name: /^file\.name/ }).getAttribute("aria-sort")).toBeNull();
+		expect(
+			within(table)
+				.getByRole("columnheader", { name: /^file\.name/ })
+				.getAttribute("aria-sort"),
+		).toBeNull();
 		expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify([{ field: "updated", direction: "desc" }]));
 		expect(onNavigateSearch).toHaveBeenLastCalledWith(
 			expect.objectContaining({ filter: "sort_by:file.updated:desc" }),
@@ -1876,7 +1899,11 @@ describe("FileNodeView folder sort", () => {
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		fireEvent.click(within(table).getByRole("button", { name: /^file\.name/ }));
-		expect(within(table).getByRole("columnheader", { name: /^file\.name/ }).getAttribute("aria-sort")).toBe("descending");
+		expect(
+			within(table)
+				.getByRole("columnheader", { name: /^file\.name/ })
+				.getAttribute("aria-sort"),
+		).toBe("descending");
 		expect(screen.queryByRole("button", { name: "Save sort for everyone" })).toBeNull();
 		expect(mutationMock.mock.calls.length).toBe(0);
 	});
@@ -1943,7 +1970,11 @@ describe("FileNodeView folder sort", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
 		fireEvent.click(await screen.findByRole("checkbox", { name: "file.size" }));
 		fireEvent.click(screen.getByRole("button", { name: "Done" }));
-		expect(within(table).getByRole("columnheader", { name: /^file\.size/ }).getAttribute("aria-sort")).toBe("descending");
+		expect(
+			within(table)
+				.getByRole("columnheader", { name: /^file\.size/ })
+				.getAttribute("aria-sort"),
+		).toBe("descending");
 		const [folderRow, fileRow] = within(table).getAllByRole("row").slice(1);
 		expect(
 			within(folderRow!)
@@ -2618,9 +2649,11 @@ describe("FileNodeView folder filter", () => {
 		const note = screen.getByText("Sorted by file.name because of the filter");
 		expect(table.getAttribute("aria-describedby")).toBe(note.id);
 		expect(table.querySelectorAll("[aria-sort]")).toHaveLength(1);
-		expect(within(table).getByRole("columnheader", { name: /^file\.name ↓/ }).getAttribute("aria-sort")).toBe(
-			"descending",
-		);
+		expect(
+			within(table)
+				.getByRole("columnheader", { name: /^file\.name ↓/ })
+				.getAttribute("aria-sort"),
+		).toBe("descending");
 
 		// The disabled header stays focusable, so a click can say why it does not sort. It points at the
 		// visible note.
@@ -2665,9 +2698,11 @@ describe("FileNodeView folder filter", () => {
 		// The filter's own order field still sorts both ways.
 		fireEvent.click(within(table).getByRole("button", { name: /^file\.name/ }));
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "name", direction: "asc" }]);
-		expect(within(table).getByRole("columnheader", { name: /^file\.name ↑/ }).getAttribute("aria-sort")).toBe(
-			"ascending",
-		);
+		expect(
+			within(table)
+				.getByRole("columnheader", { name: /^file\.name ↑/ })
+				.getAttribute("aria-sort"),
+		).toBe("ascending");
 	});
 
 	test("a filter change clears the sort reason, and it does not come back", async () => {
@@ -2680,7 +2715,9 @@ describe("FileNodeView folder filter", () => {
 		// file.updated still cannot sort under the new filter, but the message was about the old one. Going
 		// back to the first filter does not bring it back either.
 		for (const filter of ["file.extension:is:md", "file.extension:is:html"]) {
-			view.rerender(<FileNodeView searchParams={{ nodeId: node._id, filter }} onNavigateSearch={view.onNavigateSearch} />);
+			view.rerender(
+				<FileNodeView searchParams={{ nodeId: node._id, filter }} onNavigateSearch={view.onNavigateSearch} />,
+			);
 			expect(status.isConnected).toBe(true);
 			expect(status.textContent).toBe("");
 		}
@@ -2713,9 +2750,12 @@ describe("FileNodeView folder filter", () => {
 
 		fireEvent.change(input, { target: { value: "file.name:starts_with:abc" } });
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-		expect(onNavigateSearch).toHaveBeenLastCalledWith(expect.objectContaining({ filter: "file.name:starts_with:abc" }), {
-			replace: false,
-		});
+		expect(onNavigateSearch).toHaveBeenLastCalledWith(
+			expect.objectContaining({ filter: "file.name:starts_with:abc" }),
+			{
+				replace: false,
+			},
+		);
 
 		fireEvent.change(input, { target: { value: "file.name:starts_with:xyz" } });
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
@@ -2813,9 +2853,12 @@ describe("FileNodeView folder filter", () => {
 		expect(document.activeElement).toBe(removeButton);
 
 		fireEvent.click(removeButton);
-		expect(onNavigateSearch).toHaveBeenLastCalledWith(expect.objectContaining({ filter: "file.name:starts_with:abc" }), {
-			replace: false,
-		});
+		expect(onNavigateSearch).toHaveBeenLastCalledWith(
+			expect.objectContaining({ filter: "file.name:starts_with:abc" }),
+			{
+				replace: false,
+			},
+		);
 	});
 
 	test("a day filter covers the local calendar day, 25 hours on the day the clocks go back", async () => {

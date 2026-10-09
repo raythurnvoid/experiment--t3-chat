@@ -11,7 +11,7 @@ const {
 	convexActionMock,
 	fetchPrivateFilePendingTextMock,
 	savePrivateFilePendingTextMock,
-	startReviewMock,
+	openReviewRunMock,
 	threadQueriesMock,
 	editorHarness,
 } = vi.hoisted(() => ({
@@ -20,7 +20,7 @@ const {
 	convexActionMock: vi.fn(),
 	fetchPrivateFilePendingTextMock: vi.fn(),
 	savePrivateFilePendingTextMock: vi.fn(),
-	startReviewMock: vi.fn(),
+	openReviewRunMock: vi.fn(),
 	threadQueriesMock: vi.fn(),
 	// The drag handle is the one mounted child that already receives the Tiptap instance, so the
 	// stub below hands it to the tests. That is how a test types into the real document.
@@ -50,7 +50,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // Provider boundary: private Save hands this review starter to the save helper.
 vi.mock("@/lib/app-activities-context.tsx", () => ({
 	AppActivitiesProvider: {
-		useContext: () => ({ startReview: startReviewMock }),
+		useContext: () => ({ openReviewRun: openReviewRunMock }),
 	},
 }));
 
@@ -270,14 +270,14 @@ function createDeferredAction<T>() {
 }
 
 describe("FileEditorRichTextNonCollab", () => {
-	test.each(["", "alpha\n"])("publishes a private file with its current Markdown: %j", async (text) => {
+	test.each(["", "alpha\n"])("queues a private file with its current Markdown: %j", async (text) => {
 		vi.useFakeTimers();
 		try {
 			const pendingUpdate = { _id: "pending_update_1", revision: 7 };
 			fetchPrivateFilePendingTextMock.mockResolvedValue({
 				_yay: { text, rootKind: "rich_text", pendingUpdate },
 			});
-			savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { target: { kind: "saved", id: NODE_ID } } });
+			savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { kind: "queued", runId: "run", activityId: "activity" } });
 			const onTargetChange = vi.fn();
 			renderNonCollabRichEditor({ target: PRIVATE_TARGET, onTargetChange });
 			await flushEditorMount();
@@ -302,9 +302,10 @@ describe("FileEditorRichTextNonCollab", () => {
 				reviewedRevision: pendingUpdate.revision,
 				text: text ? "alpha beta\n" : "",
 				onUpserted: expect.any(Function),
-				startReview: startReviewMock,
+				openReviewRun: openReviewRunMock,
 			});
-			expect(onTargetChange).toHaveBeenCalledWith({ kind: "saved", id: NODE_ID });
+			expect(onTargetChange, "queued work keeps the private file selected").not.toHaveBeenCalled();
+			expect(editorHarness.editor?.getMarkdown(), "queued work keeps the current text").toBe(text ? "alpha beta" : "");
 			expect(convexActionMock).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
@@ -317,7 +318,7 @@ describe("FileEditorRichTextNonCollab", () => {
 			fetchPrivateFilePendingTextMock.mockResolvedValue({
 				_yay: { text: "alpha\n", rootKind: "rich_text", pendingUpdate: { _id: "pending_update_1", revision: 7 } },
 			});
-			savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { target: null } });
+			savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { kind: "queued", runId: "run", activityId: "activity" } });
 			const onTargetChange = vi.fn();
 			renderNonCollabRichEditor({ target: PRIVATE_TARGET, onTargetChange });
 			await flushEditorMount();

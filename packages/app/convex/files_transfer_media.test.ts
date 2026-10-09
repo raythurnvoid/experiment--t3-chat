@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getFunctionName } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { copy_transfer_file } from "./files_nodes_content.ts";
 import { files_transfer_db_prepare_copy_item } from "./files_transfer.ts";
 import { files_transfer_media_db_map_refs } from "./files_transfer_media.ts";
@@ -108,7 +108,7 @@ async function save_media(args: {
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: userId });
 	const view = await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target });
 	if (!view?.entry.pendingUpdate) throw new Error("Expected media proposal");
-	const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+	const saved = await test_save_file_pending_update(asUser, {
 		membershipId,
 		target,
 		pendingUpdateId: view.entry.pendingUpdate._id,
@@ -1162,7 +1162,7 @@ describe("copy_transfer_file media", () => {
 			target: item!.outputTarget!,
 		});
 		const pending = view!.entry.pendingUpdate!;
-		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(f.asUser, {
 			membershipId: f.destination.membershipId,
 			target: pending.target,
 			pendingUpdateId: pending._id,
@@ -1239,7 +1239,7 @@ describe("copy_transfer_file media", () => {
 					target: media.outputTarget!,
 				});
 			expect(
-				await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+				await test_save_file_pending_update(f.asUser, {
 					membershipId: f.destination.membershipId,
 					target: item!.outputTarget!,
 					pendingUpdateId: pending!._id,
@@ -1328,7 +1328,7 @@ describe("copy_transfer_file media", () => {
 			pendingUpdateId: pending._id,
 			reviewedRevision: pending.revision,
 		};
-		expect(await f.asUser.action(api.files_pending_updates.save_file_pending_update, args)).toMatchObject({
+		expect(await test_save_file_pending_update(f.asUser, args)).toMatchObject({
 			_nay: { message: expect.stringContaining("Save the selected media") },
 		});
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", target.id))).toEqual(before);
@@ -1339,7 +1339,7 @@ describe("copy_transfer_file media", () => {
 			userId: f.destination.userId,
 			target: f.selectedMedia!.outputTarget!,
 		});
-		expect(await f.asUser.action(api.files_pending_updates.save_file_pending_update, args)).toMatchObject({
+		expect(await test_save_file_pending_update(f.asUser, args)).toMatchObject({
 			_yay: { target },
 		});
 	});
@@ -1520,7 +1520,7 @@ describe("copy_transfer_file media", () => {
 			}),
 		]);
 		expect(
-			await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+			await test_save_file_pending_update(f.asUser, {
 				membershipId: f.destination.membershipId,
 				target,
 				pendingUpdateId: pending._id,

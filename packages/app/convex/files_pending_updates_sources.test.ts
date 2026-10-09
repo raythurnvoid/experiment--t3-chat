@@ -2,7 +2,7 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_rename_node, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 
 beforeEach(() => {
@@ -156,12 +156,12 @@ describe("pending source summaries", () => {
 				).toBeUndefined();
 			} else {
 				expect(
-					await f.asOwner.mutation(api.files_nodes.rename_node, {
+					await test_rename_node(f.t, f.asOwner, {
 						membershipId: f.owner.membershipId,
 						nodeId: source._yay.nodeId,
 						path: "renamed-source",
 					}),
-				).toEqual({ _yay: null });
+				).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 			}
 			const args = { membershipId: f.home.membershipId, target: proposal.target };
 			const detail = await f.asUser.query(api.files_pending_updates.get_file_pending_target, args);
@@ -186,7 +186,7 @@ describe("pending source summaries", () => {
 			expect(detail?.copyDestination).toEqual({ personal: true, replacement: false, folderPath: "/" });
 			const stored = await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id));
 			expect(stored?.copiedFrom?.path).toBe("/private-source-name");
-			const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+			const saved = await test_save_file_pending_update(f.asUser, {
 				...args,
 				pendingUpdateId: proposal._id,
 				reviewedRevision: proposal.revision,
@@ -267,12 +267,12 @@ describe("pending source summaries", () => {
 			}),
 		).toBeNull();
 		expect(
-			await f.asOwner.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(f.t, f.asOwner, {
 				membershipId: f.owner.membershipId,
 				nodeId: destination._yay.nodeId,
 				path: "new-destination",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		expect(
 			(await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.copyDestination?.folderPath,
 		).toBe("/new-destination");

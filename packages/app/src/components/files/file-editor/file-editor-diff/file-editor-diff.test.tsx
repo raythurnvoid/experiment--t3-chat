@@ -15,6 +15,7 @@ const {
 	useQueryMock,
 	convexWatchQueryMock,
 	waitNewQueryValueMock,
+	openReviewRunMock,
 	monacoHarness,
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
@@ -25,6 +26,7 @@ const {
 	useQueryMock: vi.fn(),
 	convexWatchQueryMock: vi.fn(),
 	waitNewQueryValueMock: vi.fn(),
+	openReviewRunMock: vi.fn(),
 	// Shared state between the DiffEditor stub and the tests: the models the component created
 	// (original first, then modified), the change listeners it put on the modified pane, and the
 	// options it set on the diff editor.
@@ -70,6 +72,10 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
 		useContext: () => tenantContextMock(),
 	},
+}));
+
+vi.mock("@/lib/app-activities-context.tsx", () => ({
+	AppActivitiesProvider: { useContext: () => ({ openReviewRun: openReviewRunMock }) },
 }));
 
 // The real module creates a live ConvexReactClient at import (needs VITE_CONVEX_URL).
@@ -291,6 +297,7 @@ beforeEach(() => {
 	useQueryMock.mockReset();
 	convexWatchQueryMock.mockReset();
 	waitNewQueryValueMock.mockReset();
+	openReviewRunMock.mockReset();
 	vi.mocked(files_fetch_file_yjs_state_and_text).mockReset().mockResolvedValue(null);
 	vi.mocked(files_yjs_rebase_branch_with_local_text).mockClear();
 	vi.mocked(files_persist_file_pending_update_rebased_state).mockReset();
@@ -772,7 +779,7 @@ describe("FileEditorDiff draft versions", () => {
 		expect(convexActionMock).not.toHaveBeenCalled();
 	});
 
-	test("publishes a ready empty private file without saved-file reads", async () => {
+	test("opens queued private Save before clearing busy and never reports completed success", async () => {
 		const target = { kind: "private", id: "private_1" } as const;
 		const pendingUpdate = {
 			...nonCollabPendingUpdate,
@@ -786,8 +793,12 @@ describe("FileEditorDiff draft versions", () => {
 		convexActionMock.mockImplementation(async (reference: unknown) =>
 			reference === "upsert_file_pending_update"
 				? { _yay: { pendingUpdate: { ...pendingUpdate, revision: 2 }, currentYjsLastSequenceId: null } }
-				: { _yay: { target: { kind: "saved", id: NODE_ID }, newSequence: null, pendingUpdateRevision: null } },
+				: { _yay: { kind: "queued", runId: "run_1", activityId: "activity_1" } },
 		);
+		openReviewRunMock.mockImplementation(() => {
+			expect((screen.getByRole("button", { name: "Save staged changes" }) as HTMLButtonElement).disabled,
+				"Activity opens while Save is still busy").toBe(true);
+		});
 		renderNonCollabProposalReview({
 			committedAssetId: "asset_1",
 			target: pendingUpdate.target,
@@ -806,7 +817,10 @@ describe("FileEditorDiff draft versions", () => {
 			target,
 		});
 		expect(convexActionMock.mock.calls[1]?.[1]).toMatchObject({ target, reviewedRevision: 2 });
-		expect(onTargetChange).toHaveBeenCalledWith({ kind: "saved", id: NODE_ID }, { keepReview: false });
+		expect(openReviewRunMock, "queued Save opens its Activity").toHaveBeenCalledWith("run_1");
+		expect(onTargetChange, "queued Save keeps the draft selected").not.toHaveBeenCalled();
+		expect(toast.success, "queued work is not reported as saved").not.toHaveBeenCalled();
+		expect(waitNewQueryValueMock, "queued Save does not wait for a completed doc reply").not.toHaveBeenCalled();
 		expect(files_fetch_file_yjs_state_and_text).not.toHaveBeenCalled();
 		expect(convexQueryMock.mock.calls.every(([reference]) => reference === "get_file_pending_update_state_page")).toBe(
 			true,

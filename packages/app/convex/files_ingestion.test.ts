@@ -3,7 +3,7 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal, api } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { files_ingestion_db_finalize_file } from "./files_ingestion.ts";
 import { files_upload_content_from_bytes } from "../server/files-upload-content.ts";
@@ -237,7 +237,7 @@ describe("prepare_file", () => {
 			}),
 		).toMatchObject({ _yay: prepared });
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: scope.userId });
-		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(asUser, {
 			membershipId: scope.membershipId,
 			target: prepared.target,
 			pendingUpdateId: prepared.pendingUpdateId,
@@ -262,7 +262,7 @@ describe("finalize_file", () => {
 		});
 		if (!view?.entry.pendingUpdate) throw new Error("Expected a proposal");
 		const meterBefore = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
-		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(asUser, {
 			membershipId: scope.membershipId,
 			target: completed._yay.target,
 			pendingUpdateId: view.entry.pendingUpdate._id,

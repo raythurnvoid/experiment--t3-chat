@@ -241,9 +241,9 @@ of never showing hidden items.
   placeholder even when locked. Cancel (discard) does the same for the creator.
 - The up-front check of a folder's contents (`files_nodes_db_require_subtree_writable`) reads at most
   2,000 items, archived ones too. Above that it returns `subtree_too_large`, never a thrown limit
-  error. An agent delete of a bigger folder still gets its proposal, because the accept job checks
-  every item before it archives anything. A move that would replace a bigger folder is refused ("The
-  folder in the way holds too many items to replace.").
+  error. An agent delete of a bigger folder still gets its proposal. Move and reviewed Save check
+  descendants in indexed pages before their group switches. Replacement has no total item cap.
+  A locked archived descendant still blocks replacement.
 - Archive and restore run through one archive job (`files_archive_runs`, Activity source
   `files_archive_run`). The job is the `archive` or `restore` kind of a `files_subtree_ops` op, and it
   walks the folder by `parentId`. The request runs the first step itself. When that step finishes the
@@ -353,9 +353,11 @@ of never showing hidden items.
     confirms that a hidden file exists. When nothing else is left to archive, the request answers "Not
     found". A malformed id still refuses the whole request. A named item the person can read but not
     change goes to the job, which refuses it and archives the others.
-  - Agent delete (accepted `pendingArchive`) uses the same job and removes the proposal when it ends.
-    A Discard of that proposal during the job stops the job at its next step. Plugin archive and
-    service uploads stay synchronous with their 256-node cap.
+  - Reviewed agent delete (`pendingArchive`) uses the Save cohort worker. It checks all descendants
+    in pages, then switches the whole group and removes its proposals. Stop before the switch keeps
+    the saved tree and proposals. Stop after the switch lets required repair finish. Direct Archive
+    and Restore still use the archive job. Plugin archive and service uploads keep their existing
+    synchronous limits.
 - Keep expected target IDs and ordered pending source IDs. These stop stale work from changing a
   different file; they are separate from policy history.
 - If an external write already happened before a final refusal, queue every exact key for durable
@@ -393,8 +395,9 @@ of never showing hidden items.
   acknowledged without changing sharing. No old credential grants new authority.
 - Private draft moves check current access and policy on their saved source and destination parents.
   Replacing a saved occupant also checks that occupant and its affected descendants. Save repeats
-  these checks and the exact saved content-version check before archive and publication commit
-  together. Replacing an owned private occupant requires a ready draft and an empty folder when
+  these checks and the exact saved content-version check in its paged worker and at publication.
+  Old names and content stay visible until the group switches. Replacing an owned private occupant
+  requires a ready draft and an empty folder when
   applicable; all checks pass before its private generation closes.
 - Discard and expiry retire owned private work without deleting saved nodes. A private replacement
   keeps its saved occupant until Save. Discard, expiry, and moving the draft elsewhere leave that

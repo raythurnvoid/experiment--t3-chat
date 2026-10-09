@@ -394,6 +394,8 @@ handler should copy whichever fits:
 
 - `access_control_db_authorize_membership(..., { fileNode })` when the node is already loaded.
 - `access_control_db_authorize_node(..., { nodeId })` when it is not — it loads and checks in one call.
+  It loads the selected saved placement. History and snapshot URL reads use the published folder
+  scope at the group switch, before physical header cleanup.
 - `authorize_file_write(ctx, { nodeId })` in `files_nodes.ts` for a **write target**, where `nodeId`
   is the node itself for a change to an existing node, or the parent folder for a new node or a move
   destination. `files_ROOT_ID` falls back to the workspace. An action cannot read the database, so
@@ -401,14 +403,14 @@ handler should copy whichever fits:
 
 Rules that are easy to miss, all of which were real holes:
 
-- **A write has three legs when it moves something.** `move_nodes`, path-like `rename_node`, and `apply_file_pending_move`
+- **A write has three legs when it moves something.** The `files_transfer` Move worker, path-like `rename_node`, and reviewed pending Save
   check the destination *and* the node. Checking only one lets a grant on a single folder push files
   into a restricted folder. The third leg is `authorize_leaving_restricted_scope` in `files_nodes.ts`:
   taking a node out of the restricted folder it sits in changes who can read it, so it takes
   `content.permissions.manage` on that folder, not `content.write`. A folder that is the restricted
   scope itself carries its scope along and is not asked. Rename resolves paths from the node's own
-  parent, then uses `files_nodes_db_preflight_move` and `files_nodes_db_apply_move`. The shared core
-  checks the current and final scopes before writing. A name-only rename in the same saved parent
+  parent, then queues the shared `files_move_cohorts` worker. It checks the current and final scopes
+  before publication. A name-only rename in the same saved parent
   needs the source grant. Reparenting or creating missing folders also needs destination write.
   `unarchive_nodes` restores a node to a new parent when its own parent is still archived, so it is a
   move and asks the same questions. It skips both of them for a node that is its own restricted
@@ -418,7 +420,7 @@ Rules that are easy to miss, all of which were real holes:
   it. A node that only *inherits* a restriction does lose it at the root, so that one is asked both
   questions: the destination write and the leaving check. Asking only the first was a real hole — a
   write grant on a folder was enough to archive it and then restore one file out of it, which handed
-  that file to the whole workspace while `move_nodes` refused the identical move. Every case here has
+  that file to the whole workspace while the shared Move core refused the identical move. Every case here has
   a test in `access_control.test.ts`.
 - **A mutation an action calls proves its own permission.** Only a check inside the writing mutation
   runs in the same transaction as the write; a check in the action is advisory, because a role taken
@@ -427,27 +429,26 @@ Rules that are easy to miss, all of which were real holes:
   another mutation does not: it already runs inside the caller's transaction. Watch the brand-new
   path in particular: the node walk only checks nodes that already exist, so when nothing is there
   yet the workspace is the only thing left to ask.
-- **A cascade is not covered by the node you named.** `archive_nodes` and `move_nodes` check
-  `content.write` on each distinct restricted scope in their affected descendants, once per scope.
-  The archive job's check walk reads every descendant by `parentId` before the first stamp. A move
-  reads no ordinary descendant: preflight finds the restricted folders inside a reparented folder by
-  their stored `treePath` (`isRestrictedScopeRoot: true`, archived ones too) and asks each one for
-  write access. A hidden restricted child can refuse the whole move with `Permission denied`, without
-  exposing its name. While a move op runs, a child can still store an old `treePath`. So preflight
-  also looks under the old and new paths of each running move op, and keeps only restricted folders
-  whose live `parentId` chain leads to the moved folder. While a scope op or a move op runs, a child
-  can still store an old `restrictedScopeNodeId`. So preflight reads the scope of each item it checks
-  from its live parents instead (the nearest folder that is its own restricted root): the moved items,
-  the item in the way, and the items inside a folder it replaces. Every check of the move uses that
-  scope: source, destination, content write, service account, and Can manage. So do the checks
-  `rename_node` makes before the preflight. Otherwise an item could leave a folder that was just
-  restricted, or a folder just moved into a restricted one, without the check. Once out, the op never
-  reaches it, so it would stay open for good. For these checks, a child of an inner folder that was
-  just unrestricted is under the outer restricted folder at once, even while it still stores the inner
-  folder.
+- **A cascade is not covered by the node you named.** Archive checks every removed descendant.
+  A Move group walks exact saved child ranges in background transactions. Reparenting checks each
+  nested restricted root, including archived roots. A hidden root can refuse the group without
+  exposing its name. Ordinary protected descendants travel with their rules unchanged.
+  Replacement checks every descendant it hides. Existing Move and scope repairs finish before
+  new planning uses stored scopes. Access changes advance the clocks that each group checks.
   A move that keeps the same parent and path does not change descendants. A
   name-only rename in the same saved parent carries nested shares without asking for write access to
   each one. Reparenting through Rename uses the same nested-scope checks as other moves.
+- **Preparation grants no later access.** Every unpublished cohort transaction checks the active
+  membership and its original lifetime, current run, purge state and access clocks. Final publication
+  uses the same proof. Reserved sources and names reject competing content writes. Security writes
+  may still revoke access. Stop or revoked access aborts unpublished work. A published group only
+  finishes its already approved physical repair; it cannot add files or grant new access.
+- **A paged Move proves access again.** `files_transfer.advance` loads the exact active membership
+  lifetime in each step. It waits for running path/scope repairs, then checks nested restricted
+  roots in pages of eight through `by_organization_workspace_isRestrictedScopeRoot_treePath`.
+  The final root mutation checks the access-version pins and direct source/destination access.
+  A changed clock restarts validation. A leave and re-invite cannot revive the old run.
+  Stop or lost access keeps completed roots and ends the remaining work.
 - **Every refusal comes before the first write.** A Convex mutation that returns normally commits, so
   a `Result({ _nay })` after a write keeps that write and reports failure at the same time. Ask every
   question first. `create_upload_node` shows the shape: a filename may carry path segments, so it
@@ -644,7 +645,7 @@ product decision, so record the answer here before changing the behaviour. An en
   already archive every child one by one — `archive_nodes` checks `content.write` per node on purpose
   — so refusing them the folder would mean "you may empty the room but not close the door". Archiving
   discloses nothing and changes nobody's read set. Leaving a restricted scope is the separate
-  question, and `content.permissions.manage` guards that in `move_nodes` and `unarchive_nodes`.
+  question, and `content.permissions.manage` guards that in Move and `unarchive_nodes`.
   Recovery is real, not theoretical: `list_tree_children` with `archived: true` lists a folder's
   archived children, `access_control_db_filter_readable_file_nodes` lets the owner read everything,
   and the sidebar has a "Show archived items" toggle whose rows carry a Restore action. Known property, not a bug: while
@@ -927,9 +928,9 @@ the folder table. Code: `packages/app/server/files-share-rows.ts`.
   (`by_resource_permission`). The share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people and roles, in
   `files_sharing.ts`, and `MAX_READERS`, 50 plugin readers, in `plugins_external_files.ts`) bound it
   to about 100 rows.
-- A move counts the rows of each restricted root it moves in its read and write budgets, so a big move
-  answers `move_too_large` instead of a Convex limit error. 38 restricted folders with 50 shares each
-  fit in one move; 39 do not.
+- Move stages share docs in pages before the group switch. Ordinary selections and connected
+  Pending Save groups use the same worker. Share docs count in each transaction's measured
+  budget. They do not create a total selection cap.
 - After a dashboard edit or `convex import`, run `files_pending_overlay:check_share_rows`
   (organization, workspace, `cursor: null`; call again with the returned cursor until it is null).
   There is no repair door. To fix drift, write a one-time mutation that calls
@@ -1134,7 +1135,7 @@ lifecycle or access-control module, so every caller can import it without a cycl
 | Turn the link off | `set_node_share_link` with `enabled: false` |
 | Restrict or unrestrict the file or a folder above it | `files_nodes_db_set_restricted_scope`, for the node and everything below, only when the scope really changes, before the patch. This covers `restrict_node`, `unrestrict_node`, and plugin bindings. A restrict then unrestrict before the scope job reaches the file does not bring the link back |
 | A scope job gives the file a new scope | `files_nodes_db_rebuild_node`, only when the scope changes. A new path alone (a folder above was renamed) keeps the link |
-| Move to another folder, including move-overwrite and a move into a folder created by the same move | `files_nodes_db_apply_move`, for the reparented roots and the archived occupants, before any patch. This covers `move_nodes`, a rename that changes the parent, and an accepted pending Save move. A move ends the link even when the new folder has the same audience |
+| Move to another folder, including replacement and a new parent created by the same Move | The cohort worker stages link revocation for reparented roots and replaced occupants in pages. The group switch ends their links. Rename in the same folder keeps links. Move ends a link even when the new folder has the same audience |
 | Archive | `files_nodes_db_archive_node` (the exact node), `files_nodes_db_archive_nodes` (the named roots and below, once per workspace), and the archive job when its check passes, for the roots the check kept. A queued, refused, or stopped check keeps the links |
 | Restore from the archive | `files_nodes_db_restore_node`. A restored file comes back with no link |
 | Archive-and-create replacement | The archive helpers above. This covers a replacing upload (`create_upload_node`, `create_upload_nodes`, `/api/v1/files/upload-urls`, `data_import`), `/api/v1/files/write` over a stored file, and plugin and service paths that archive and recreate. The new file has no link |

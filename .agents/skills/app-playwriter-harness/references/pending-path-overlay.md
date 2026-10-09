@@ -143,7 +143,7 @@ The pending overlay's derived docs (`files_pending_hides`, `files_pending_places
 
 1. Get the ids: `vp env exec pnpm --dir packages/app exec convex data files_pending_updates --limit 20 --order desc` prints each draft's `organizationId`, `workspaceId` and `userId`. After a full cleanup there are no drafts; reuse the ids from before.
 2. Run `vp env exec pnpm --dir packages/app exec convex run files_pending_overlay:check_user '{"organizationId":"<org>","workspaceId":"<ws>","userId":"<user>","cursor":null}'`. Put the JSON in a file if PowerShell mangles the quotes.
-3. Expect `differences: []`. While `cursor` is not null, run it again with that cursor; every page must have no differences.
+3. If `moveInProgress` is true, wait for the workspace Move to finish and restart with `cursor: null`. That result is not a clean audit. Otherwise expect `moveInProgress: false` and `differences: []`. While `cursor` is not null, run it again with that cursor; every page must have no differences and no active Move.
 4. A difference is a bug. Note it with the scenario step, and do not fix data by hand. Overlay jobs may lag a few seconds after a write, so check again once before you report it. `files_pending_overlay:repair_user` (same args) rebuilds the user's docs, but run it only to unblock QA after the bug is noted.
 
 ## Cleanup

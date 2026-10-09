@@ -154,8 +154,8 @@ Tree-item components:
   in file.name A to Z order, `principalIndex` 0 to 2). A stream that is not for the reader answers an
   empty, done page. Once `organizations.list` says whether the reader owns the workspace
   (`FilesTreeProvider.useIsOwner`), the client skips the twin for a member and the share streams for
-  the owner. `files_tree_stream_args` builds the args of all 5, so the sidebar's rename optimistic
-  update matches them exactly. `files_merge_sorted_streams` merges each kind in the server order,
+  the owner. `files_tree_stream_args` builds the args of all 5. Rename updates the saved rows when
+  its group publishes. `files_merge_sorted_streams` merges each kind in the server order,
   and a node shared to a member and to their role shows once. `loadMore` loads the stream
   that holds the merge back, subfolders first. A pager reports rows only when every stream is
   settled, because a split page drops its rows for a moment. The provider keeps the old rows until
@@ -734,51 +734,42 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - Upload path conflicts open the conflict modal; file conflicts support replace or renamed upload, while folder conflicts block replacement. The draft carries its `rootKind` (rich, plain, or null for a stored upload) for the modal's copy; its stored type was decided when the file was picked, so the rename field accepts any valid name and only refuses a stored upload without an extension.
 - File name normalization uses conventional `README`, `AGENTS`, and `SKILL` basenames. A new bare `readme` becomes `README.md` in create, rename, upload, and import. Other rename and upload names keep the typed extension. The `.agents` and `.system` folders keep their leading dot (any casing becomes lowercase) and appear like any folder. The cloud browser saves downloads in `/.system/downloads/`. Existing stored names are not migrated, and file lookup stays exact.
 - File rename selects the basename by default so `.md` is not included in the initial edit selection.
-- Rename uses `files_nodes.rename_node` with Convex `optimisticUpdate` and
-  `optimisticallyUpdateValueInPaginatedQuery` for immediate title feedback across cached pages.
-- Rename and saved-node moves use `files_nodes_db_preflight_move` followed by
-  `files_nodes_db_apply_move` in the same mutation. Every move entry uses them: `move_nodes`,
-  `rename_node`, the Cut/Paste commit in `files_transfer.ts`, `apply_file_pending_move`, and review
-  runs. Preflight resolves the final paths, permissions, write policies, search chunks, and
-  metadata of the named items before any Files write. It reads no other descendant. It finds the
-  restricted folders inside a reparented folder by their stored `treePath` and asks each one for
-  write access. Archived renames keep their archive identity and can share an active path.
-- Apply writes the named items now. Then `files_subtree_ops_db_start_rebuild` (kind `move`, in
-  `files_subtree_ops.ts`) starts a move job for each moved folder. The job walks children by
-  `parentId`, in pages of 50 by name and creation time (`by_organization_workspace_parent_name`). The
-  queue takes the row with the highest number first, so the job goes into the folders of a page before it goes back
-  for the next page, and the queue stays small. It rewrites each child's `path`, `treePath`,
-  `pathDepth`, and `restrictedScopeNodeId` from its live parent, with the child's search chunks and
-  metadata docs. A child that is its own restricted folder keeps its own scope. Its
-  `ancestor1..12` follow without job code: the mutation wrapper's flush rewrites them for every
-  node whose parent or `treePath` changed (see "Pending Overlay" in
-  `../files-agent-pending-updates/SKILL.md`). The job is done only
-  after one full pass from the roots writes nothing. A step ends after it writes 75 items or nears a
-  transaction limit. The children of the page it did not reach wait on the queue row (`pending`), and
-  the next step takes them first. A normal page never splits items with the same name and creation
-  time: it leaves the group for the next page. When more than 50 of them share both (every replace
-  of a file leaves an archived one), the job reads that group 50 at a time with a paginated read and
-  saves where it stopped. Convex allows one paginated read per mutation, so a big group can take
-  several steps. The first step runs inside the request, so a
-  small folder is done there with no op and no Activity. A bigger one leaves a `files_subtree_ops`
-  op and a requester-only Activity (source kind `files_subtree_op`, title "Move files") that shows in
-  the feed and has no Stop. Each scheduled step has one retry due after 60 seconds. A retry of a
-  finished step does nothing. The recover cron still schedules a lost step again.
+- Rename calls `files_nodes.rename_node` with a stable request ID and returns an accepted Move
+  Activity. Names update when the group publishes. Missing parent folders are after-only outputs.
+- Rename, Move and reviewed Save use `files_move_cohorts`. The worker stages descendants, search
+  chunks, metadata, owner overlays and public-link changes in indexed pages. Old saved IDs and
+  content stay visible until one group switch. Each step checks current access and local policy.
+  Archived Rename keeps its archive identity and can share an active path. A child that is its
+  own restricted folder keeps its scope. Required physical repair finishes before holds release.
+  Activity Stop keeps completed groups and cancels an unpublished group. Recovery resumes lost work.
+- Cut/Paste and drag/drop use `FilesClipboardProvider.move` or `paste`, then the paged
+  `files_transfer` job. Each selected root uses a `files_move_cohorts` worker. It stages the root,
+  descendants and side docs in small transactions. Normal names keep the old saved IDs until one
+  switch selects the complete after view. The same path serves one item and a large selection.
+  The Move Activity waits for physical repair before the next root. Stop keeps completed roots;
+  their repair still finishes. A later name conflict pauses the remaining roots.
+  The dialog pages conflicts and completed receipts with `list_items`.
+- Before sending Move input, the browser saves its full selection in IndexedDB, in pages of 100.
+  The key binds the user and membership. Accepted input replays after reload. Unstarted input
+  asks for Resume. A new Cut or Copy has a new revision, so old receipts cannot clear it.
+  Recovery looks up the exact server request before reading saved pages. A late tab can retire
+  sealed input after another tab removes those pages. An unconfirmed Stop keeps its local header
+  until the server confirms it, including after old run history is deleted.
 - While a move op exists in the workspace, a child can still carry its old stored path. The tree is
   right, because it lists children by `parentId`. `files_db_get_visible_node_by_path` in
   `server/files.ts` then walks names from the root instead of one path index read. The path picker
   query `files_nodes.get_authorized_by_path` uses that same walk, so a moved child resolves at its
   new path while its stored path still has the old prefix.
-- A path-like rename starts at the source's current parent. Missing folders are planned below a
-  saved parent ID with `missingParentNames`. Shared folder chains are inserted once. Paths and
-  inherited scopes use that saved parent's final position, even when it also moves in the batch.
-  Apply inserts the folders from top to bottom and resolves their real IDs without reading again.
-- Move limits (`move_too_large`) bound only the request: the named items, new parent folders, and a
-  replaced empty folder's archived children. That is at most 139 changed or inserted nodes
-  (`MAX_MOVE_NODE_COUNT`, small enough for the pending overlay flush), 2,000
-  Files docs read or written, and 4 MiB in each direction. Descendants of a moved folder do not count,
-  because the move job writes them. A refusal writes no Files changes. Permission reads and the
-  caller's receipt use separate transaction headroom.
+- Rename also opens a Move Activity. A path starts at the source's current parent. The immutable
+  input pins its source and parent. Missing folders are created one segment per transaction as
+  after-only candidates. They inherit the parent's child defaults. They appear with the renamed
+  source at the same switch. Stop before that switch removes them and keeps the old source name.
+- Move and linked Pending Accept have no total selection, node, document or byte cap. Durable
+  graph rows and native side-data pages keep each transaction small. The limits test checks the
+  full wrapped steps with spare room for the planned metadata catalog. Existing per-file content
+  and quota rules still apply. Cross-workspace Move remains unsupported.
+  Metadata pages also use a 1 MiB source-byte threshold. Draining stages store no metadata-key
+  cursor. Owner field joins use short identity/view cursors because their source docs stay in place.
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
 - Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`. Archive always asks first in the shared `FilesArchiveModal` (`files-archive-modal.tsx`). The sidebar row menu, the toolbar Archive-selected button, the folder explorer row menu and the breadcrumb menu open it with the nodes to archive; the modal owns the mutation, shows a refusal inline in the dialog (`role="alert"`), and reports success to its host. The row menu of a row outside the selection enables Archive from that row alone. On a selected row it acts on the whole selection, like the header Archive-selected action: Archive is enabled when at least one selected row is writable and has no visible protected descendant, even when the clicked row is read-only. The dialog lists every selected row, read-only ones too, one name per line in a read-only `TextMonospaceBlock` (`Items to archive`). Ctrl+A in it selects only the names. It shows 6 lines. With more than 6 names, a Show more button (`aria-expanded`) grows it to 16 lines. A click in the list does not grow it, so the text does not move under a selection. The server refuses each selected item it cannot change, with everything inside it, and archives the rest. When the archive ended in the request but refused items, the dialog closes with a warning toast ("Some items could not be archived. See Activity.") whose View opens the job; the Activity card counts them in its result line ("Archived 45 of 46 items."), still as Completed, and the job dialog lists the archived names under `Archived items` and the refused ones under "Not archived (N)" (see `../activities/SKILL.md` Feed cards). `onArchived` gets only the ids the server did not report as refused (`notArchivedNodeIds`). A background job can refuse more later. When the request's own check refuses every item, the dialog shows the refusal inline and stays open. After a sidebar confirm, keyboard focus moves to the first row after the archived rows, or to the last row before them. The sidebar picks that row while the archived rows are still in the tree (Convex resolves the mutation in the same task as the tree update) and moves DOM focus from an effect once the dialog has closed, because the sidebar is inert while the dialog is open and the closing dialog first gives focus back to the button that opened it. A multi-select archive also clears the selection. Cancel puts focus back on the first row of the request. Restore is still direct.
 - A big archive or restore goes on as a background job (rules in `../files-read-only/SKILL.md`). The job stamps every named item first, at most 75 per step, so with more named items some stay in the tree until a later step. Then it stamps the items inside them, the first named item's folder first. Restore first finds every top item of its archive operation by creation order and keeps at most 64 folder paths that hold them (up to `/`). It checks those paths against running jobs. Then it finds the top items again one page at a time while it brings them back. A name clash inside a restored folder asks like a clash of a top item. A copy during a restore copies only the items already back (see `references/transfer.md`). A blocked restore waits hidden and checks access again after promotion. The job dialog `FilesArchiveRunModal` shows Stop only when the server returns `controls.canStop`: archive never has it, and a restore has it only while it waits for a name clash choice. A restore clash offers Keep both, Replace, or Skip, with no Merge.
@@ -846,7 +837,7 @@ the tree. The link rules live in the "Public file links" section of `../access-c
 
 ## Drag And Drop
 
-- In-tree DnD uses headless-tree `onDrop` -> `files.move_nodes`.
+- In-tree DnD uses headless-tree `onDrop` -> `FilesClipboardProvider.move` -> `files_transfer`.
 - `canDrag`, `canDrop`, and keyboard rename use the same per-node `content.write` answer as each row menu. Restricted scopes are queried once per scope, while unrestricted nodes and root share the workspace answer.
 - `canDrop` also guards target kind, self-drop, descendant-drop, source write access, and destination write access.
 - Moving a descendant out of its restricted scope also needs that scope's `content.permissions.manage` answer. The restricted folder itself carries its scope with it, so moving that folder does not need this extra check.

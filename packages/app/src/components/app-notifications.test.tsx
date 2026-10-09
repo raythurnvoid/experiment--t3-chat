@@ -335,7 +335,7 @@ describe("AppNotifications", () => {
 								_creationTime: 1,
 								status: "running",
 								resultKind: "saved",
-								source: { kind: "files_transfer_run", id: "copy_run", transferKind: "copy" },
+								source: { kind: "files_transfer_run", id: "copy_run", transferKind: "copy", isRename: false },
 								title: "Copy files",
 								errorMessage: null,
 								targets: [],
@@ -590,7 +590,7 @@ describe("AppNotifications", () => {
 								errorMessage: null,
 								targets: [],
 								finishedAt: status === "succeeded" ? 2 : undefined,
-								source: { kind: "files_transfer_run", id: "copy_run", transferKind: "copy" },
+								source: { kind: "files_transfer_run", id: "copy_run", transferKind: "copy", isRename: false },
 								progress: {
 									unit: "files",
 									discovered: 3,

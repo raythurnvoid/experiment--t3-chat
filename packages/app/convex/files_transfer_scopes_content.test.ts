@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { applyUpdate, Doc as YjsDoc, encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import {
+import { test_save_file_pending_update,
 	test_convex,
 	test_create_saved_text_file,
 	test_get_file_yjs_pointers,
@@ -254,7 +254,7 @@ async function save_proposal(args: {
 	const { f, workspace, target } = args;
 
 	const proposal = await get_proposal({ f, workspace, target });
-	return await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+	return await test_save_file_pending_update(f.asUser, {
 		membershipId: f[workspace].membershipId,
 		target,
 		pendingUpdateId: proposal._id,

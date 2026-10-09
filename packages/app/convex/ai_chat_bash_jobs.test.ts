@@ -923,7 +923,12 @@ describe("durable Copy admission helpers", () => {
 			const f = await admission();
 			const result = { stdout: "", stderr: "cp: Destination changed\n", exitCode: 1 };
 			const deliver = (workId: WorkId) =>
-				f.t.mutation(internal.ai_chat_files.deliver_bash_job_copy_refusal, { ...f.fence, workId, result });
+				f.t.mutation(internal.ai_chat_files.deliver_bash_job_copy_refusal, {
+					...f.fence,
+					workId,
+					result,
+					stopJob: false,
+				});
 			const copy = scenario === "linked run" ? await start_copy(f) : null;
 			if (scenario === "lost access")
 				await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));

@@ -2,16 +2,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_convex, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_rename_node, test_move_nodes, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
-import {
-	files_nodes_db_get_content_version,
-	files_nodes_db_move_nodes,
-	files_nodes_db_set_restricted_scope,
-} from "./files_nodes.ts";
+import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import {
 	files_share_links_create_cleanup_state,
 	files_share_links_db_delete_for_roots,
@@ -816,20 +812,20 @@ describe("files_nodes_db_set_restricted_scope", () => {
 	});
 });
 
-describe("files_nodes_db_apply_move", () => {
+describe("public Move share links", () => {
 	test("a rename in the same folder keeps the link, and a move to another folder ends it", async () => {
 		const f = await fixture();
 		const link = await link_on(f, f.nodeId);
 		const rename = async (path: string) => {
 			await reset_rate_limits(f.t, [f.db.userId]);
-			return await f.asOwner.mutation(api.files_nodes.rename_node, {
+			return await test_rename_node(f.t, f.asOwner, {
 				membershipId: f.db.membershipId,
 				nodeId: f.nodeId,
 				path,
 			});
 		};
 
-		expect(await rename("/renamed.md")).toEqual({ _yay: null });
+		expect(await rename("/renamed.md")).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		expect(await read_links(f.t, f.nodeId)).toEqual([link]);
 
 		// A refused move changes nothing.
@@ -842,7 +838,7 @@ describe("files_nodes_db_apply_move", () => {
 			parentId: "root",
 			path: "dest",
 		});
-		expect(await rename("/dest/renamed.md")).toEqual({ _yay: null });
+		expect(await rename("/dest/renamed.md")).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		expect(await read_links(f.t, f.nodeId)).toEqual([]);
 	});
 
@@ -852,12 +848,12 @@ describe("files_nodes_db_apply_move", () => {
 
 		// The new folder has no id while the move is planned, so the plan uses its parent key.
 		expect(
-			await f.asOwner.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(f.t, f.asOwner, {
 				membershipId: f.db.membershipId,
 				nodeId: f.nodeId,
 				path: "/new-folder/doc.md",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.path).toBe("/new-folder/doc.md");
 		expect(await read_links(f.t, f.nodeId)).toEqual([]);
 	});
@@ -876,11 +872,11 @@ describe("files_nodes_db_apply_move", () => {
 		});
 
 		expect(
-			await f.asOwner.mutation(api.files_nodes.move_nodes, {
-				membershipId: f.db.membershipId,
-				itemIds: [innerFolder!.parentId as Id<"files_nodes">],
-				targetParentId: dest._yay!.nodeId,
-			}),
+			await test_move_nodes(f.t, f.asOwner, {
+					membershipId: f.db.membershipId,
+					itemIds: [innerFolder!.parentId as Id<"files_nodes">],
+					targetParentId: dest._yay!.nodeId,
+				}),
 		).toEqual({ _yay: null });
 		expect(await read_links(f.t, nodeId)).toEqual([]);
 		expect(await read_links(f.t, f.nodeId)).toEqual([outside]);
@@ -893,22 +889,17 @@ describe("files_nodes_db_apply_move", () => {
 
 		await reset_rate_limits(f.t, [f.db.userId]);
 		expect(
-			await f.asOwner.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(f.t, f.asOwner, {
 				membershipId: f.db.membershipId,
 				nodeId: folderId,
 				path: "/renamed",
 			}),
-		).toEqual({ _yay: null });
-		// The job has not reached the file yet, so it still has the old path.
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/big/zz.md");
-		expect(await read_links(f.t, nodeId)).toEqual([link]);
-
-		// The job gives the file its new path with `files_nodes_db_rebuild_node`. A new path alone keeps the link.
-		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
+		// Completion includes path repair. A new path alone keeps the link.
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/renamed/zz.md");
 		expect(await read_links(f.t, nodeId)).toEqual([link]);
 		expect(await view_of(f, link.token)).not.toBeNull();
-	});
+	}, 120_000);
 
 	test("a move to the same folder with the same name keeps the link", async () => {
 		const f = await fixture();
@@ -916,11 +907,11 @@ describe("files_nodes_db_apply_move", () => {
 
 		await reset_rate_limits(f.t, [f.db.userId]);
 		expect(
-			await f.asOwner.mutation(api.files_nodes.move_nodes, {
-				membershipId: f.db.membershipId,
-				itemIds: [f.nodeId],
-				targetParentId: "root",
-			}),
+			await test_move_nodes(f.t, f.asOwner, {
+					membershipId: f.db.membershipId,
+					itemIds: [f.nodeId],
+					targetParentId: "root",
+				}),
 		).toEqual({ _yay: null });
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.path).toBe("/doc.md");
 		expect(await read_links(f.t, f.nodeId)).toEqual([link]);
@@ -959,11 +950,11 @@ describe("files_nodes_db_apply_move", () => {
 
 		await reset_rate_limits(f.t, [f.db.userId]);
 		expect(
-			await f.asOwner.mutation(api.files_nodes.move_nodes, {
-				membershipId: f.db.membershipId,
-				itemIds: [folderId],
-				targetParentId: destId,
-			}),
+			await test_move_nodes(f.t, f.asOwner, {
+					membershipId: f.db.membershipId,
+					itemIds: [folderId],
+					targetParentId: destId,
+				}),
 		).toEqual({ _yay: null });
 		expect(await read_links(f.t, nodeId)).toEqual([]);
 
@@ -974,8 +965,8 @@ describe("files_nodes_db_apply_move", () => {
 				(await f.asOwner.mutation(door, { membershipId: f.db.membershipId, nodeId: destId }))._nay,
 			).toBeUndefined();
 		}
-		// No job has given the file its new path yet.
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/big/zz.md");
+		// Move repair has finished before the later scope jobs run.
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/dest/big/zz.md");
 
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
@@ -988,23 +979,18 @@ describe("files_nodes_db_apply_move", () => {
 		// Control: a new link on the same file shows, so the old token is dead only because its doc is gone.
 		const fresh = await link_on(f, nodeId);
 		expect(await view_of(f, fresh.token)).not.toBeNull();
-	});
+	}, 120_000);
 
 	test("a move that replaces a file ends the replaced file's link", async () => {
 		const f = await fixture();
 		await link_on(f, f.nodeId);
 		const sourceId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/src/doc.md" });
 
-		const moved = await f.t.run(async (ctx) => {
-			const membership = await ctx.db.get("organizations_workspaces_users", f.db.membershipId);
-			const occupant = await ctx.db.get("files_nodes", f.nodeId);
-			const contentVersion = await files_nodes_db_get_content_version(ctx, occupant!);
-			return await files_nodes_db_move_nodes(ctx, {
-				userAuth: { id: f.db.userId },
-				membership: membership!,
-				items: [{ nodeId: sourceId, replacement: { nodeId: f.nodeId, contentVersion } }],
-				targetParentId: "root",
-			});
+		const moved = await test_move_nodes(f.t, f.asOwner, {
+			membershipId: f.db.membershipId,
+			itemIds: [sourceId],
+			targetParentId: "root",
+			replaceNodeId: f.nodeId,
 		});
 		expect(moved._nay).toBeUndefined();
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.archiveOperationId).not.toBeNull();

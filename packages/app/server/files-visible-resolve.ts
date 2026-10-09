@@ -9,6 +9,14 @@
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { QueryCtx } from "../convex/_generated/server.js";
 import type { files_PendingParent, files_PendingTarget, files_VisibleEntry } from "../shared/files.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_proposal,
+	files_saved_placement_db_get_publish_receipt,
+	files_saved_placement_db_get_publish_receipt_by_saved_node,
+	files_saved_placement_db_get_view,
+	type files_saved_placement_View,
+} from "./files-saved-placement.ts";
 
 /**
  * Resolve targets and parents through the owner's drafts, within one read budget.
@@ -19,9 +27,12 @@ export function files_visible_resolve_db_create(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
+		fixedView?: { cohortId: Id<"files_move_cohorts">; view: "before" | "after" };
+		currentView?: files_saved_placement_View;
 		readLimit?: number;
 		/** Review preparation may read children before applying these exact parent deletes. */
 		reviewedArchiveIds?: ReadonlySet<Id<"files_pending_updates">>;
+		isReviewedArchive?: (proposal: Doc<"files_pending_updates">) => Promise<boolean>;
 		/**
 		 * Return hidden targets too, with `hidden: true` and their path: a draft delete, a name claim,
 		 * an archived saved node, a closed private node, or a hidden ancestor. A target with no path
@@ -37,6 +48,9 @@ export function files_visible_resolve_db_create(
 	},
 ) {
 	const budget = { exhausted: false, readCount: 0, readLimit: args.readLimit ?? 512 };
+	let view: Promise<files_saved_placement_View> | null = null;
+	const get_view = () =>
+		(view ??= args.currentView ? Promise.resolve(args.currentView) : files_saved_placement_db_get_view(db, args));
 
 	async function read<T>(run: () => Promise<T>): Promise<T | null> {
 		if (budget.readCount >= budget.readLimit) {
@@ -63,7 +77,12 @@ export function files_visible_resolve_db_create(
 				const next = await read(() => iterator.next());
 				if (!next || next.done) return null;
 				// Private claims use the active-node index because discarded proposals can remain until cleanup.
-				if (next.value.target.kind === "saved") return next.value;
+				if (next.value.target.kind === "saved") {
+					const proposal = next.value.moveCohortId
+						? await read(() => files_saved_placement_db_get_proposal(db, next.value._id, args.fixedView))
+						: next.value;
+					if (proposal?.pendingMove) return proposal;
+				}
 			}
 		} finally {
 			await iterator.return?.();
@@ -79,11 +98,13 @@ export function files_visible_resolve_db_create(
 			node.parentId === "root" ? { kind: "root" } : { kind: "saved", id: node.parentId };
 		const parents: files_PendingParent[] = [parentTarget];
 		if (parentTarget.kind === "saved") {
-			const receipt = await read(() =>
-				db
-					.query("files_pending_node_publish_receipts")
-					.withIndex("by_savedNode", (q) => q.eq("savedNodeId", parentTarget.id))
-					.unique(),
+			const receipt = await read(async () =>
+				files_saved_placement_db_get_publish_receipt_by_saved_node(
+					db,
+					{ ...args, savedNodeId: parentTarget.id },
+					args.fixedView,
+					await get_view(),
+				),
 			);
 			if (receipt?.userId === args.userId) parents.push({ kind: "private", id: receipt.privateNodeId });
 		}
@@ -104,13 +125,25 @@ export function files_visible_resolve_db_create(
 					)
 					.first(),
 			);
-			if (privateClaim) return true;
+			if (privateClaim) {
+				const published = await read(async () =>
+					files_saved_placement_db_get_publish_receipt(
+						db,
+						{ ...args, privateNodeId: privateClaim._id },
+						args.fixedView,
+						await get_view(),
+					),
+				);
+				if (!published) return true;
+			}
 
 			const moveClaim = await find_saved_move(parent, node.name);
 			if (moveClaim && moveClaim.target.id !== node._id && !moveClaim.pendingArchive) {
 				const claimantTarget = moveClaim.target;
 				const claimant =
-					claimantTarget.kind === "saved" ? await read(() => db.get("files_nodes", claimantTarget.id)) : null;
+					claimantTarget.kind === "saved"
+						? await read(() => files_saved_placement_db_get_node(db, claimantTarget.id, args.fixedView))
+						: null;
 				if (claimant?.archiveOperationId === null) return true;
 			}
 		}
@@ -147,19 +180,21 @@ export function files_visible_resolve_db_create(
 		if (parent.kind === "private") {
 			const node = await read(() => db.get("files_pending_nodes", parent.id));
 			if (
-				node?.state === "published" &&
+				node &&
 				node.userId === args.userId &&
 				node.organizationId === args.organizationId &&
 				node.workspaceId === args.workspaceId
 			) {
-				const receipt = await read(() =>
-					db
-						.query("files_pending_node_publish_receipts")
-						.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parent.id))
-						.unique(),
+				const receipt = await read(async () =>
+					files_saved_placement_db_get_publish_receipt(
+						db,
+						{ ...args, privateNodeId: parent.id },
+						args.fixedView,
+						await get_view(),
+					),
 				);
-				if (!receipt) return null;
-				return await resolve_parent({ kind: "saved", id: receipt.savedNodeId });
+				if (receipt) return await resolve_parent({ kind: "saved", id: receipt.savedNodeId });
+				if (node.state === "published") return null;
 			}
 		}
 
@@ -176,6 +211,17 @@ export function files_visible_resolve_db_create(
 	async function resolve(target: files_PendingTarget): Promise<Resolved | null> {
 		const key = `${target.kind}:${target.id}`;
 		if (resolved.has(key)) return resolved.get(key)!;
+		if (target.kind === "private") {
+			const receipt = await read(async () =>
+				files_saved_placement_db_get_publish_receipt(
+					db,
+					{ ...args, privateNodeId: target.id },
+					args.fixedView,
+					await get_view(),
+				),
+			);
+			if (receipt) return await resolve({ kind: "saved", id: receipt.savedNodeId });
+		}
 		const cycleIndex = resolving.indexOf(key);
 		if (cycleIndex !== -1) {
 			// The cut node and every node above it on the stack form the cycle.
@@ -193,7 +239,7 @@ export function files_visible_resolve_db_create(
 		const cycleCutIndexBefore = cycleCutIndex;
 		cycleCutIndex = Infinity;
 
-		const pending = await read(() =>
+		const sourcePending = await read(() =>
 			db
 				.query("files_pending_updates")
 				.withIndex("by_user_target", (q) =>
@@ -201,9 +247,14 @@ export function files_visible_resolve_db_create(
 				)
 				.unique(),
 		);
+		const pending = sourcePending?.moveCohortId
+			? await read(() => files_saved_placement_db_get_proposal(db, sourcePending._id, args.fixedView))
+			: sourcePending;
 
 		let result: Resolved | null = null;
-		const deleted = pending?.pendingArchive !== undefined && !args.reviewedArchiveIds?.has(pending._id);
+		const deleted = pending?.pendingArchive !== undefined &&
+			!args.reviewedArchiveIds?.has(pending._id) &&
+			!(args.isReviewedArchive && await args.isReviewedArchive(pending));
 		if (!deleted || args.includeHidden) {
 			if (target.kind === "private") {
 				const node = await read(() => db.get("files_pending_nodes", target.id));
@@ -225,7 +276,7 @@ export function files_visible_resolve_db_create(
 						};
 				}
 			} else {
-				const node = await read(() => db.get("files_nodes", target.id));
+				const node = await read(() => files_saved_placement_db_get_node(db, target.id, args.fixedView));
 				if (
 					node &&
 					(node.archiveOperationId === null || args.includeHidden) &&
@@ -289,6 +340,8 @@ export function files_visible_resolve_db_create(
 			budget.readLimit = limit;
 		},
 		read,
+		getView: get_view,
+		fixedView: args.fixedView,
 		resolve,
 		resolveParent: resolve_parent,
 		findSavedMove: find_saved_move,

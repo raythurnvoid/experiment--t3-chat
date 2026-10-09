@@ -579,7 +579,7 @@ async function get_active_file_node_by_path(
 		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
 				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
+				.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
 				.eq("path", args.path)
 				.eq("archiveOperationId", null),
 		)
@@ -4653,6 +4653,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			workspaceId: db.workspaceId,
 			fileNodeId: upload.nodeId,
 			expectedUploadAssetId: upload.assetId,
+			eventId: "event_replayed_conversion",
 			userId: db.userId,
 			rootKind: "rich_text",
 			contentType: "text/markdown;charset=utf-8",

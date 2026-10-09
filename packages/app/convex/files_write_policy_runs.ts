@@ -36,6 +36,7 @@ import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { path_tree_prefix_upper_bound, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -341,6 +342,10 @@ export const advance = internalMutation({
 			await db_fail_run({ ctx, run, errorMessage: "You can no longer change this folder's protection.", now });
 			return null;
 		}
+		if (await files_move_reservations_db_pause_worker(ctx, {
+			worker: { kind: "write_policy", id: run._id },
+			check: { source: { kind: "saved", id: folder._id } },
+		})) return null;
 
 		if (activity.status === "queued") {
 			await ctx.db.patch("activities", activity._id, {
@@ -380,7 +385,7 @@ export const advance = internalMutation({
 				.withIndex("by_organization_workspace_archiveOperation_treePath", (q) => {
 					const scope = q
 						.eq("organizationId", run.organizationId)
-						.eq("workspaceId", run.workspaceId)
+						.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
 						.eq("archiveOperationId", null);
 					const lower =
 						pageCursor === null

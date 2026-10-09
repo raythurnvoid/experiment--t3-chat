@@ -249,7 +249,7 @@ describe("files_save_private_file_pending_text", () => {
 		reviewedRevision: 4,
 		text: "current text\n",
 		onUpserted: vi.fn(),
-		startReview: vi.fn(),
+		openReviewRun: vi.fn(),
 	};
 
 	beforeEach(() => {
@@ -263,16 +263,16 @@ describe("files_save_private_file_pending_text", () => {
 		convexActionMock.mockReset();
 		convexQueryMock.mockReset();
 		args.onUpserted.mockReset();
-		args.startReview.mockReset();
+		args.openReviewRun.mockReset();
 	});
 
-	test("accepts both text branches and publishes the returned revision", async () => {
-		const savedTarget = { kind: "saved", id: "saved_node" };
+	test("accepts both text branches and opens the queued review for the returned revision", async () => {
+		const queued = { kind: "queued", runId: "run", activityId: "activity" };
 		convexActionMock
 			.mockResolvedValueOnce({ _yay: { pendingUpdate: { _id: "proposal", revision: 5, content: {} } } })
-			.mockResolvedValueOnce({ _yay: { target: savedTarget, newSequence: 0 } });
+			.mockResolvedValueOnce({ _yay: queued });
 
-		expect((await files_save_private_file_pending_text(args))._yay?.target).toEqual(savedTarget);
+		expect((await files_save_private_file_pending_text(args))._yay).toEqual(queued);
 		expect(args.onUpserted).toHaveBeenCalledExactlyOnceWith(5);
 		expect(convexMutationMock.mock.calls).toEqual([
 			["create_file_pending_update_operation_batch", { membershipId: args.membershipId, target: args.target }],
@@ -306,10 +306,10 @@ describe("files_save_private_file_pending_text", () => {
 				},
 			],
 		]);
-		expect(args.startReview).not.toHaveBeenCalled();
+		expect(args.openReviewRun).toHaveBeenCalledExactlyOnceWith("run");
 	});
 
-	test("saves the pending parent folders first, then this text, in one review run", async () => {
+	test("leaves durable parent intake on the server and opens its queued review", async () => {
 		convexQueryMock.mockResolvedValue({
 			requiredParents: [
 				{ pendingUpdateId: "folder_a", reviewedRevision: 2 },
@@ -321,24 +321,13 @@ describe("files_save_private_file_pending_text", () => {
 			.mockResolvedValueOnce({
 				_yay: { pendingUpdate: { _id: "proposal", revision: 5, content: { stagedStateId: "staged_state" } } },
 			})
-			// The direct save refuses this draft on the server. The target only shows if it ran.
-			.mockResolvedValueOnce({ _yay: { target: { kind: "saved", id: "saved_node" } } });
+			.mockResolvedValueOnce({ _yay: { kind: "queued", runId: "parent-run", activityId: "activity" } });
 
-		expect((await files_save_private_file_pending_text(args))._yay?.target).toBeNull();
+		expect((await files_save_private_file_pending_text(args))._yay).toEqual({ kind: "queued", runId: "parent-run", activityId: "activity" });
 		expect(args.onUpserted).toHaveBeenCalledExactlyOnceWith(5);
-		expect(convexQueryMock).toHaveBeenCalledExactlyOnceWith("get_file_pending_target", {
-			membershipId: args.membershipId,
-			target: args.target,
-		});
-		expect(args.startReview).toHaveBeenCalledExactlyOnceWith({
-			kind: "accept",
-			items: [
-				{ pendingUpdateId: "folder_a", reviewedRevision: 2, selectedContentStateId: null },
-				{ pendingUpdateId: "folder_b", reviewedRevision: 3, selectedContentStateId: null },
-				{ pendingUpdateId: "proposal", reviewedRevision: 5, selectedContentStateId: "staged_state" },
-			],
-		});
-		expect(convexActionMock.mock.calls.map(([name]) => name)).toEqual(["upsert_file_pending_update"]);
+		expect(convexQueryMock).not.toHaveBeenCalled();
+		expect(args.openReviewRun).toHaveBeenCalledExactlyOnceWith("parent-run");
+		expect(convexActionMock.mock.calls.map(([name]) => name)).toEqual(["upsert_file_pending_update", "save_file_pending_update"]);
 	});
 
 	test("leaves a draft whose parent folders cannot be saved yet to the direct save and its refusal", async () => {
@@ -354,7 +343,7 @@ describe("files_save_private_file_pending_text", () => {
 		expect((await files_save_private_file_pending_text(args))._nay?.message).toBe(
 			"Review and save the parent draft first.",
 		);
-		expect(args.startReview).not.toHaveBeenCalled();
+		expect(args.openReviewRun).not.toHaveBeenCalled();
 		expect(convexActionMock.mock.calls.map(([name]) => name)).toEqual([
 			"upsert_file_pending_update",
 			"save_file_pending_update",
@@ -381,13 +370,10 @@ describe("files_save_private_file_pending_text", () => {
 				return { _nay: { message: "Save the copied media first." } };
 			})
 			.mockResolvedValueOnce({ _yay: { pendingUpdate: { _id: "proposal", revision: 6, content: {} } } })
-			.mockResolvedValueOnce({ _yay: { target: { kind: "saved", id: "saved_node" } } });
+			.mockResolvedValueOnce({ _yay: { kind: "queued", runId: "retry-run", activityId: "activity" } });
 
 		expect((await files_save_private_file_pending_text(args))._nay?.message).toBe("Save the copied media first.");
-		expect((await files_save_private_file_pending_text({ ...args, reviewedRevision }))._yay?.target).toEqual({
-			kind: "saved",
-			id: "saved_node",
-		});
+		expect((await files_save_private_file_pending_text({ ...args, reviewedRevision }))._yay).toEqual({ kind: "queued", runId: "retry-run", activityId: "activity" });
 		expect(args.onUpserted.mock.calls).toEqual([[5], [6]]);
 		expect(convexActionMock).toHaveBeenNthCalledWith(
 			3,

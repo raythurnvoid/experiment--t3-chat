@@ -119,7 +119,7 @@ Owner-side fixture calls:
 - `files_nodes_content.create_text_node({ membershipId, parentId, path })` (an action, not a mutation)
 - `files_sharing.restrict_node({ membershipId, nodeId })`
 - `files_sharing.set_node_share_grant({ membershipId, nodeId, principal: { kind: "user", userId }, level: "read" | "write" | "manage" })` — `nodeId` must be the restricted node itself
-- `files_nodes.move_nodes({ membershipId, itemIds, targetParentId })` — `itemIds` is an array and the target is a single sibling field, not per-item
+- `files_transfer.start({ membershipId, requestId, kind: "move", expectedSourceCount, sourceIds, targetParentId })` — append further input pages with `append_sources`, then call `seal`. Wait for `get` to report the final Activity and read the item results with `list_items`.
 
 Live demotion recipe: `restrict_node` + `set_node_share_grant(level: "read")` on a node the member could write is the per-file demotion path, and it applies reactively — run it as the owner WHILE the second user holds an open rename input, a drag source, or a writable diff tab to test permission-reactive UI (rename aborts itself, folder-view rows de-register as drag sources without a reload, editors flip read-only). Two gotchas, both verified 2026-08-03: the window between the two mutations has NO access, so the second user's open tab can fall back to `?nodeId=root` (see the demotion entry in `known-hazards.md`), and restricting renames the sidebar row to `<name> restricted`, which breaks name-based locators.
 

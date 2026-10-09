@@ -25,6 +25,9 @@ export default defineConfig({
 		passWithNoTests: true,
 		silent: "passed-only",
 		testTimeout: 30_000,
+		// Run these slow full-size checks with test:files:full-size.
+		testNamePattern:
+			/^(?!.*(?:saves 1,000 Copy outputs beside one ordinary edit|plans 10,001 unrelated saved Move proposals as 10,001 units)$)/,
 		hookTimeout: 30_000,
 		teardownTimeout: 30_000,
 		projects: [

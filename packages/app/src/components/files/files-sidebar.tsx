@@ -48,13 +48,7 @@ import {
 	CopyMinus,
 	CopyPlus,
 } from "lucide-react";
-import {
-	optimisticallyUpdateValueInPaginatedQuery,
-	useConvex,
-	useQueries,
-	useQuery,
-	type ConvexReactClient,
-} from "convex/react";
+import { useConvex, useQueries, useQuery, type ConvexReactClient } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { compareValues } from "convex/values";
 import {
@@ -131,7 +125,7 @@ import {
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { FilesTreeProvider, files_tree_stream_args } from "@/lib/files-tree-context.tsx";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
 import { path_extract_segments_from, path_name_of } from "@/lib/paths.ts";
@@ -689,8 +683,7 @@ async function run_folder_import(args: {
 		const preparedResults = await async_all_settled_with_limit({
 			items: plan.items,
 			limit: FILES_IMPORT_PREPARE_CONCURRENCY,
-			run: (item) =>
-			files_prepare_image_upload_file(item.file),
+			run: (item) => files_prepare_image_upload_file(item.file),
 		});
 
 		const uploadItems: FilesImportPlanItem[] = [];
@@ -838,48 +831,48 @@ async function run_folder_import(args: {
 				items: createdItems,
 				limit: FILES_IMPORT_PUT_CONCURRENCY,
 				run: async (created) => {
-				const item = itemByPath.get(created.relativePath);
-				if (!item) {
-					console.error(
-						should_never_happen("[FilesSidebar.runFolderImport] created item without a matching plan item", {
-							relativePath: created.relativePath,
-						}),
-					);
-					return;
-				}
-
-				// Cancelling removes the nodes whose bytes were never sent, so no "waiting for
-				// upload" phantom rows stay in the tree.
-				if (useFilesImportStore.getState().cancelRequested) {
-					await discard_unuploaded_node(created, { reportFailed: false });
-					return;
-				}
-
-				try {
-					const response = await fetch(created.url, { method: "PUT", headers: created.headers, body: item.file });
-					// This attempt already has an object. Keep its node while the R2 event confirms it.
-					if (response.status === 412) {
-						files_in_flight_uploads_remove(created.nodeId);
-						useFilesImportStore.setState((state) => ({ pendingConfirmation: state.pendingConfirmation + 1 }));
-						show_import_progress_toast();
+					const item = itemByPath.get(created.relativePath);
+					if (!item) {
+						console.error(
+							should_never_happen("[FilesSidebar.runFolderImport] created item without a matching plan item", {
+								relativePath: created.relativePath,
+							}),
+						);
 						return;
 					}
-					if (!response.ok) {
-						throw new Error(`R2 upload failed with status ${response.status}`);
+
+					// Cancelling removes the nodes whose bytes were never sent, so no "waiting for
+					// upload" phantom rows stay in the tree.
+					if (useFilesImportStore.getState().cancelRequested) {
+						await discard_unuploaded_node(created, { reportFailed: false });
+						return;
 					}
-					files_in_flight_uploads_remove(created.nodeId);
-					useFilesImportStore.setState((state) => ({ done: state.done + 1 }));
-					show_import_progress_toast();
-				} catch (error) {
-					// A non-ok response and a rejected fetch (a file changed on disk mid-read)
-					// both end here: report the file and remove its placeholder node.
-					console.error("[FilesSidebar.runFolderImport] Failed to upload file", {
-						error,
-						relativePath: created.relativePath,
-					});
-					await discard_unuploaded_node(created, { reportFailed: true });
-				}
-			},
+
+					try {
+						const response = await fetch(created.url, { method: "PUT", headers: created.headers, body: item.file });
+						// This attempt already has an object. Keep its node while the R2 event confirms it.
+						if (response.status === 412) {
+							files_in_flight_uploads_remove(created.nodeId);
+							useFilesImportStore.setState((state) => ({ pendingConfirmation: state.pendingConfirmation + 1 }));
+							show_import_progress_toast();
+							return;
+						}
+						if (!response.ok) {
+							throw new Error(`R2 upload failed with status ${response.status}`);
+						}
+						files_in_flight_uploads_remove(created.nodeId);
+						useFilesImportStore.setState((state) => ({ done: state.done + 1 }));
+						show_import_progress_toast();
+					} catch (error) {
+						// A non-ok response and a rejected fetch (a file changed on disk mid-read)
+						// both end here: report the file and remove its placeholder node.
+						console.error("[FilesSidebar.runFolderImport] Failed to upload file", {
+							error,
+							relativePath: created.relativePath,
+						});
+						await discard_unuploaded_node(created, { reportFailed: true });
+					}
+				},
 			});
 
 			return "continue";
@@ -4714,33 +4707,6 @@ function is_tree_context_menu_open() {
 	);
 }
 
-function get_tree_items_list_after_optimistic_rename(args: {
-	treeItemsList: files_TreeItem[];
-	itemId: string;
-	normalizedName: string;
-	now: number;
-}) {
-	const renamedItem = args.treeItemsList.find(
-		(treeItem): treeItem is files_VisibleTreeNode => files_is_node(treeItem) && treeItem._id === args.itemId,
-	);
-	if (!renamedItem) {
-		return args.treeItemsList;
-	}
-
-	const parent = args.treeItemsList.find((candidate) => candidate._id === renamedItem.parentId);
-
-	return args.treeItemsList.map((treeItem) => {
-		if (files_is_node(treeItem) && treeItem._id === args.itemId) {
-			return {
-				...treeItem,
-				name: args.normalizedName,
-				...(parent ? { path: join_file_node_path(parent.path, args.normalizedName) } : {}),
-				updatedAt: args.now,
-			};
-		}
-		return treeItem;
-	});
-}
 
 /**
  * The ids of the folders above `nodeId`, nearest first, ending with the root.
@@ -4786,6 +4752,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const convex = useConvex();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { openArchiveRun } = AppActivitiesProvider.useContext();
+	const { move, openRun } = FilesClipboardProvider.useContext();
 
 	const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
 	const [previousRouteQuery, setPreviousRouteQuery] = useState(initialSearchQuery);
@@ -5225,25 +5192,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 
-		return convex
-			.mutation(app_convex_api.files_nodes.move_nodes, {
-				membershipId,
-				itemIds: movedNodeIds.map((itemId) => itemId as app_convex_Id<"files_nodes">),
-				targetParentId:
-					targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">),
-			})
-			.then((result) => {
-				if (result._nay) {
-					console.error("[FilesSidebar.moveNodesToParent] Failed to move nodes", { result });
-					if (result._nay.message === "Permission denied") {
-						toast.error("You don't have permission to edit files in this workspace.");
-						return;
-					}
-					toast.error(result._nay.message);
-					return;
-				}
-			})
-			.catch((error) => console.error("[FilesSidebar.moveNodesToParent] Error moving nodes", { error }));
+		move(
+			movedNodeIds.map((itemId) => itemId as app_convex_Id<"files_nodes">),
+			targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">),
+		);
 	});
 
 	const createUploadNodeAndPut = useFn(
@@ -5558,27 +5510,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				return;
 			}
 
-			return convex
-				.mutation(app_convex_api.files_nodes.move_nodes, {
-					membershipId,
-					itemIds: movedFileNodeIds.map((fileNodeId) => fileNodeId as app_convex_Id<"files_nodes">),
-					targetParentId:
-						targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">),
-				})
-				.then((result) => {
-					if (result._nay) {
-						console.error("[FilesSidebar.handleDropForeignDragObject] Failed to move nodes", { result });
-						if (result._nay.message === "Permission denied") {
-							toast.error("You don't have permission to edit files in this workspace.");
-							return;
-						}
-						toast.error(result._nay.message);
-						return;
-					}
-				})
-				.catch((error) => {
-					console.error("[FilesSidebar.handleDropForeignDragObject] Error moving nodes", { error });
-				});
+			move(
+				movedFileNodeIds.map((fileNodeId) => fileNodeId as app_convex_Id<"files_nodes">),
+				targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">),
+			);
+			return;
 		}
 
 		if (
@@ -5775,80 +5711,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		markFileAsPending(itemId);
 		setKeptNodeIds((oldValue) => (oldValue.includes(itemId) ? oldValue : [...oldValue, itemId]));
 		convex
-			.mutation(
-				app_convex_api.files_nodes.rename_node,
-				{
-					membershipId,
-					nodeId: itemId as app_convex_Id<"files_nodes">,
-					path: normalizedName,
-				},
-				{
-					optimisticUpdate: (localStore) => {
-						// Keep cache writes representable as raw `files_nodes` docs; path-like renames may create folders.
-						if (normalizedName.includes("/")) {
-							return;
-						}
-
-						if (!treeNodesList) {
-							return;
-						}
-						const treeItemsList = files_create_tree_items_list_from_nodes(treeNodesList);
-						const nextTreeItemsList = get_tree_items_list_after_optimistic_rename({
-							treeItemsList,
-							itemId,
-							normalizedName,
-							now: Date.now(),
-						});
-						const renamedItem = nextTreeItemsList.find(
-							(treeItem): treeItem is files_VisibleTreeNode => files_is_node(treeItem) && treeItem._id === itemId,
-						);
-						if (!renamedItem) {
-							return;
-						}
-
-						const renameNode = <Node extends { _id: string }>(node: Node) =>
-							node._id === itemId
-								? {
-										...node,
-										name: renamedItem.name,
-										path: renamedItem.path,
-										updatedAt: renamedItem.updatedAt,
-									}
-								: node;
-						// The row is in its folder's pages. A restricted row is in the owner's restricted twin, or
-						// in the member's share streams and their "Shared with you" group. The tree sorts the new
-						// name with `sort_children`, the server's order.
-						const streamArgs = files_tree_stream_args({
-							membershipId,
-							folderId: renamedItem.parentId,
-							kind: renamedItem.kind,
-							archived: renamedItem.archiveOperationId !== null,
-						});
-						for (const restricted of [false, true]) {
-							optimisticallyUpdateValueInPaginatedQuery(
-								localStore,
-								app_convex_api.files_nodes.list_tree_children,
-								streamArgs.children(restricted),
-								renameNode,
-							);
-						}
-						for (const principalIndex of [0, 1, 2] as const) {
-							optimisticallyUpdateValueInPaginatedQuery(
-								localStore,
-								app_convex_api.files_nodes.list_tree_children_shared,
-								streamArgs.shared(principalIndex),
-								renameNode,
-							);
-							optimisticallyUpdateValueInPaginatedQuery(
-								localStore,
-								app_convex_api.files_nodes.list_tree_shared_roots,
-								{ membershipId, archived: renamedItem.archiveOperationId !== null, principalIndex },
-								renameNode,
-							);
-						}
-					},
-				},
-			)
+			.mutation(app_convex_api.files_nodes.rename_node, {
+				membershipId,
+				requestId: crypto.randomUUID(),
+				nodeId: itemId as app_convex_Id<"files_nodes">,
+				path: normalizedName,
+			})
 			.then((result) => {
 				if (result._nay) {
 					console.error("[FilesSidebar.handleRename] Failed to rename node", { result });
@@ -5860,6 +5728,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					}
 					renameValidation.cacheValidationMessage(result._nay.message);
 					setRenameError(itemId, result._nay.message);
+				} else if (result._yay) {
+					openRun(result._yay.runId);
 				}
 			})
 			.catch((error) => {
@@ -7712,11 +7582,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		return file;
 	};
 
-	const test_file_with_path = (args: {
-		name: string;
-		path: string;
-		type?: string;
-	}) => {
+	const test_file_with_path = (args: { name: string; path: string; type?: string }) => {
 		const { name, path, type = "application/pdf" } = args;
 
 		const file = new File(["content"], name, { type }) as FileWithPath;
@@ -7940,7 +7806,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("build_import_plan normalizes paths and dedupes targets first-wins", () => {
 			const first = test_file_with_path({ name: "A.PDF", path: "/docs/A.PDF" });
 			const duplicate = test_file_with_path({ name: "a.pdf", path: "/docs/a.pdf" });
-			const markdown = test_file_with_path({ name: "notes.markdown", path: "/docs/notes.markdown", type: "text/markdown" });
+			const markdown = test_file_with_path({
+				name: "notes.markdown",
+				path: "/docs/notes.markdown",
+				type: "text/markdown",
+			});
 			const missingExtension = test_file_with_path({ name: "no-extension", path: "/docs/no-extension" });
 			const invalidFolder = test_file_with_path({ name: "up.pdf", path: "../up.pdf" });
 
@@ -7962,7 +7832,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// The browser and server use the same spelling for instruction files.
 			const readme = test_file_with_path({ name: "readme", path: "/docs/readme", type: "text/markdown" });
 			const agents = test_file_with_path({ name: "agents.md", path: "/docs/agents.md", type: "text/markdown" });
-			const skill = test_file_with_path({ name: "skill.md", path: "/.agents/skills/one/skill.md", type: "text/markdown" });
+			const skill = test_file_with_path({
+				name: "skill.md",
+				path: "/.agents/skills/one/skill.md",
+				type: "text/markdown",
+			});
 
 			const plan = build_import_plan(get_import_file_entries([readme, agents, skill]));
 
@@ -7977,8 +7851,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("build_import_plan refuses the whole skill bundle before a resource path changes", () => {
 			const skill = test_file_with_path({ name: "SKILL.md", path: "/one/SKILL.md", type: "text/markdown" });
-			const reference = test_file_with_path({ name: "Output_Format.md", path: "/one/references/Output_Format.md", type: "text/markdown" });
-			const readme = test_file_with_path({ name: "readme.md", path: "/one/references/readme.md", type: "text/markdown" });
+			const reference = test_file_with_path({
+				name: "Output_Format.md",
+				path: "/one/references/Output_Format.md",
+				type: "text/markdown",
+			});
+			const readme = test_file_with_path({
+				name: "readme.md",
+				path: "/one/references/readme.md",
+				type: "text/markdown",
+			});
 
 			const plan = build_import_plan(get_import_file_entries([skill, reference, readme]));
 
@@ -8166,6 +8048,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { ConvexProvider } = await import("convex/react");
 			const { app_convex } = await import("@/lib/app-convex-client.ts");
 			const { AppActivitiesProvider } = await import("@/lib/app-activities-context.tsx");
+			const { AppAuthProvider } = await import("@/components/app-auth.tsx");
+			const moveIntake = await import("@/lib/files-move-intake.ts");
+			vi.spyOn(AppAuthProvider, "useAuthenticated").mockReturnValue({
+				userId: "user" as app_convex_Id<"users">,
+				isAnonymous: false,
+			});
+			vi.spyOn(moveIntake, "files_move_intake_load").mockResolvedValue(null);
 			const emptyResult: never[] = [];
 			vi.spyOn(app_convex, "watchQuery").mockReturnValue({
 				onUpdate: () => () => {},
@@ -9124,43 +9013,5 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 
-	describe("get_tree_items_list_after_optimistic_rename", () => {
-		test("updates only the DB doc fields for simple renames", () => {
-			const root = files_SYNTHETIC_ROOT_FOLDER;
-			const file = test_node({
-				id: "file_1",
-				parentId: files_ROOT_ID,
-				kind: "file",
-				name: "draft.md",
-			});
-			const result = get_tree_items_list_after_optimistic_rename({
-				treeItemsList: [root, file],
-				itemId: file._id,
-				normalizedName: "plan.md",
-				now: 10,
-			});
-
-			expect(result).toEqual([root, { ...file, name: "plan.md", path: "/plan.md", updatedAt: 10 }]);
-		});
-
-		test("returns the original list when the node is missing", () => {
-			const root = files_SYNTHETIC_ROOT_FOLDER;
-			const file = test_node({
-				id: "file_1",
-				parentId: files_ROOT_ID,
-				kind: "file",
-				name: "draft.md",
-			});
-			const treeItemsList = [root, file];
-			const result = get_tree_items_list_after_optimistic_rename({
-				treeItemsList: [root, file],
-				itemId: "missing",
-				normalizedName: "plan.md",
-				now: 10,
-			});
-
-			expect(result).toEqual(treeItemsList);
-		});
-	});
 }
 // #endregion tests

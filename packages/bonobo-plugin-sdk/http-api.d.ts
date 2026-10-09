@@ -2752,7 +2752,7 @@ export type BonoboHttpApi = {
 				"X-Bonobo-Service-Authorization": string;
 			};
 			body: {
-				operation: "exchange" | "renew" | "seal";
+				operation: "seal" | "exchange" | "renew";
 				requestId: string;
 				destinationPathPrefix?: string | undefined;
 			};

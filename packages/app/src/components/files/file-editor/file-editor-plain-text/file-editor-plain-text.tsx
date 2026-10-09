@@ -325,7 +325,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
-	const { startReview } = AppActivitiesProvider.useContext();
+	const { openReviewRun } = AppActivitiesProvider.useContext();
 	const nodeId = target.kind === "saved" ? target.id : null;
 
 	const pushYjsUpdateMutation = useMutation(api.files_nodes.yjs_push_update);
@@ -640,12 +640,13 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					onUpserted: (revision) => {
 						reviewedRevisionRef.current = revision;
 					},
-					startReview,
+					openReviewRun,
 				});
 				if (saved._nay) {
 					toast.error(saved._nay.message);
 					return;
 				}
+				if ("kind" in saved._yay) return;
 				updateDirtyBaselineAfterSave(localMarkdown);
 				if (saved._yay.target) onTargetChange?.(saved._yay.target);
 				return;

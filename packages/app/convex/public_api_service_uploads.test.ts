@@ -13,7 +13,7 @@ import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts
 import { quotas_db_ensure } from "./quotas.ts";
 import { quotas } from "../shared/quotas.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_rename_node, test_mocks_fill_db_with } from "./setup.test.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -800,7 +800,7 @@ describe("service upload plan gate", () => {
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", fixture.organizationId)
-							.eq("workspaceId", fixture.workspaceId)
+							.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 							.eq("path", "/meetings/meeting-1/recording.mp4")
 							.eq("archiveOperationId", null),
 					)
@@ -1730,7 +1730,7 @@ describe("service upload targets", () => {
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", fixture.organizationId)
-							.eq("workspaceId", fixture.workspaceId)
+							.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 							.eq("path", "/meetings/meeting-1/file-16.bin")
 							.eq("archiveOperationId", null),
 					)
@@ -3069,7 +3069,7 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId)
+						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -3079,12 +3079,12 @@ describe("service upload delete", () => {
 			throw new Error("Expected the service upload's parent folder");
 		}
 		expect(
-			await asUser.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(t, asUser, {
 				membershipId: fixture.membershipId,
 				nodeId: meetingsFolder._id,
 				path: "private",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 
 		// Let the R2 event be the first service-side observer of the move. It must set the sticky fence
 		// while it commits and charges the accepted upload.
@@ -3121,12 +3121,12 @@ describe("service upload delete", () => {
 		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", movedOutAt: expect.any(Number) });
 		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
 		expect(
-			await asUser.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(t, asUser, {
 				membershipId: fixture.membershipId,
 				nodeId: meetingsFolder._id,
 				path: "meetings",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		const replayAfterMoveBack = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
 		expect(replayAfterMoveBack.status).toBe(404);
 		expect(await replayAfterMoveBack.json()).toEqual({ message: "Not found" });
@@ -3149,7 +3149,7 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId)
+						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -3159,12 +3159,12 @@ describe("service upload delete", () => {
 			throw new Error("Expected the service upload's parent folder");
 		}
 		expect(
-			await asUser.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(t, asUser, {
 				membershipId: fixture.membershipId,
 				nodeId: meetingsFolder._id,
 				path: "private",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(404);
 
 		expect(
@@ -3203,7 +3203,7 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId)
+						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -3213,12 +3213,12 @@ describe("service upload delete", () => {
 			throw new Error("Expected the service upload's parent folder");
 		}
 		expect(
-			await asUser.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(t, asUser, {
 				membershipId: fixture.membershipId,
 				nodeId: meetingsFolder._id,
 				path: "private",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		expect(
 			await asUser.mutation(api.files_nodes.archive_nodes, {
 				membershipId: fixture.membershipId,
@@ -3245,12 +3245,12 @@ describe("service upload delete", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(
-			await asUser.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(t, asUser, {
 				membershipId: fixture.membershipId,
 				nodeId: meetingsFolder._id,
 				path: "meetings",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		const replayAfterRestore = await call({
 			t,
 			path: REMINT_PATH,
@@ -3293,7 +3293,7 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId)
+						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -3303,12 +3303,12 @@ describe("service upload delete", () => {
 			throw new Error("Expected the service upload's destination folder");
 		}
 		expect(
-			await asUser.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(t, asUser, {
 				membershipId: fixture.membershipId,
 				nodeId: meetingsFolder._id,
 				path: "private",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 
 		// No replay observed the old rows. The new create must reconcile the bounded group itself,
 		// free the moved slots, and recreate the old destination.
@@ -4008,12 +4008,12 @@ describe("service upload archive", () => {
 			external_id: fixture.userId,
 			name: "Test User",
 		});
-		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
+		const renamed = await test_rename_node(t, asUser, {
 			membershipId: fixture.membershipId,
 			nodeId: target.destinationNodeId,
 			path: "renamed-meeting",
 		});
-		expect(renamed).toEqual({ _yay: null });
+		expect(renamed).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} });
 		expect(response.status).toBe(200);
@@ -4052,12 +4052,12 @@ describe("service upload archive", () => {
 			name: "Test User",
 		});
 		expect(
-			await asUser.mutation(api.files_nodes.rename_node, {
+			await test_rename_node(t, asUser, {
 				membershipId: fixture.membershipId,
 				nodeId: target.destinationNodeId,
 				path: "renamed-after-cancel",
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} });
 		expect(response.status).toBe(200);

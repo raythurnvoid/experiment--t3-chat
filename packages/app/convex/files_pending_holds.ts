@@ -8,6 +8,7 @@ import { internalMutation } from "./functions.ts";
 import schema from "./schema.ts";
 import { activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 
 const HOLD_BATCH_SIZE = 32;
 const SOURCE_HOLD_READ_LIMIT = 8;
@@ -146,10 +147,21 @@ async function db_release_hold(ctx: MutationCtx, hold: Doc<"files_pending_holds"
 			// expiry, so the proposal revision and the review clock stay the same. The expiry moves
 			// later, so the owner's expiry check already runs early enough.
 			const expiresAt = terminal_deadline(producer);
-			if (expiresAt > proposal.expiresAt) await ctx.db.patch("files_pending_updates", proposal._id, { expiresAt });
+			if (expiresAt > proposal.expiresAt) {
+				// Keep expiry off the active saved view until repair finishes.
+				if (
+					await files_move_reservations_db_pause_worker(ctx, {
+						worker: { kind: "pending_hold_release", id: hold._id, producer: hold.producer },
+						check: { wholeWorkspace: proposal },
+					})
+				)
+					return false;
+				await ctx.db.patch("files_pending_updates", proposal._id, { expiresAt });
+			}
 		}
 	}
 	await ctx.db.delete("files_pending_holds", hold._id);
+	return true;
 }
 
 export async function files_pending_holds_db_release(
@@ -200,15 +212,20 @@ export async function files_pending_holds_db_release_producer_batch(
 	args: { producer: Doc<"files_pending_holds">["producer"] },
 ) {
 	const producer = await db_get_producer(ctx, args.producer);
-	if (producer && activities_is_active(producer.activity.status)) return { done: false, deletedCount: 0 };
+	if (producer && activities_is_active(producer.activity.status))
+		return { done: false, deletedCount: 0, waiting: false };
 	const holds = await ctx.db
 		.query("files_pending_holds")
 		.withIndex("by_producer_pendingUpdate_role", (q) =>
 			q.eq("producer.kind", args.producer.kind).eq("producer.id", args.producer.id),
 		)
 		.take(HOLD_BATCH_SIZE);
-	for (const hold of holds) await db_release_hold(ctx, hold);
-	return { done: holds.length < HOLD_BATCH_SIZE, deletedCount: holds.length };
+	let deletedCount = 0;
+	for (const hold of holds) {
+		if (!(await db_release_hold(ctx, hold))) return { done: false, deletedCount, waiting: true };
+		deletedCount++;
+	}
+	return { done: holds.length < HOLD_BATCH_SIZE, deletedCount, waiting: false };
 }
 
 async function db_has_ancestor_source_hold(ctx: MutationCtx, proposal: Doc<"files_pending_updates">) {
@@ -239,7 +256,7 @@ async function db_has_ancestor_source_hold(ctx: MutationCtx, proposal: Doc<"file
 					const producer = await db_get_producer(ctx, hold.producer);
 					if (producer && activities_is_active(producer.activity.status)) return true;
 				}
-				await db_release_hold(ctx, hold);
+				if (!(await db_release_hold(ctx, hold))) return true;
 			}
 			checkedHolds += holds.length;
 			// Drain stale holds first. Never expire after an incomplete ancestor check.
@@ -323,7 +340,7 @@ export async function files_pending_holds_db_check_expiry(
 			if (producer && keeps_terminal_output(hold.role))
 				expiresAt = Math.max(expiresAt ?? 0, terminal_deadline(producer));
 		}
-		await db_release_hold(ctx, hold);
+		if (!(await db_release_hold(ctx, hold))) return { held: true, expiresAt };
 	}
 	// More holds may include a live producer. Drain another page before deleting anything.
 	return {
@@ -341,7 +358,8 @@ export const release_producer = internalMutation({
 	handler: async (ctx, args) => {
 		const producer = await db_get_producer(ctx, args.producer);
 		if (producer && activities_is_active(producer.activity.status)) return null;
-		if (!(await files_pending_holds_db_release_producer_batch(ctx, args)).done)
+		const released = await files_pending_holds_db_release_producer_batch(ctx, args);
+		if (!released.done && !released.waiting)
 			await ctx.scheduler.runAfter(0, internal.files_pending_holds.release_producer, args);
 		return null;
 	},

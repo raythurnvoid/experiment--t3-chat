@@ -2,7 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_nodes_db_create_private_node_by_path, files_nodes_db_get_content_version } from "./files_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { r2_create_asset_key } from "./r2_client.ts";
@@ -84,7 +84,7 @@ async function create_fixture() {
 			target: file.target,
 		});
 		if (!view?.entry.pendingUpdate) throw new Error("Expected a proposal");
-		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(asUser, {
 			membershipId: db.membershipId,
 			target: file.target,
 			pendingUpdateId: view.entry.pendingUpdate._id,

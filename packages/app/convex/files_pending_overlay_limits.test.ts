@@ -1,38 +1,90 @@
-// Three big writers also flush the pending overlay: the interactive move, the bulk Accept and the
-// private Discard. This file measures what one transaction of each flow costs, at its size cap. If a
-// flow no longer fits the Convex limits, lower its cap to the measured value with a 25% margin.
+// Measure paged Move and Accept cohort steps and the private Discard core, including
+// the pending overlay flush. Keep a 25% margin when choosing each Move step's size.
 //
 // Vitest hides the logs of passing tests. Run with `--silent=false --reporter=default` to see the
 // numbers. In an agent shell Vitest picks a reporter that hides them even with `--silent=false`.
-// The tests seed hundreds of docs and are slow under a full-suite load, so each has a 120s timeout.
+// The mock scans each indexed table. The maximum fixture can take an hour here.
 
+import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { files_metadata_db_write_entries } from "./files_metadata.ts";
-import { commit_unit } from "./files_pending_update_runs.ts";
+import { advance as advance_review } from "./files_pending_update_runs.ts";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
+import {
+	advance as advance_transfer,
+	start as start_transfer,
+	append_sources as append_transfer_sources,
+	seal as seal_transfer,
+} from "./files_transfer.ts";
+import { advance as advance_subtree } from "./files_subtree_ops.ts";
+import { run_job as run_overlay_job } from "./files_pending_overlay.ts";
 import {
 	test_convex,
+	test_create_saved_text_file,
 	test_mocks,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 	test_spy_handler,
 } from "./setup.test.ts";
-import { files_ROOT_ID } from "../server/files.ts";
+import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
+import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
 import { access_control_FILE_SHARE_LEVELS } from "../shared/access-control.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
-beforeEach(() => vi.useFakeTimers());
+beforeEach(() => {
+	vi.useFakeTimers();
+	const objects = new Map<string, string | ArrayBuffer>();
+	vi.spyOn(r2_confirmed_object_delete, "delete_object").mockImplementation(async (_ctx, key) => {
+		objects.delete(key);
+	});
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey) => {
+		const key = customKey ?? crypto.randomUUID();
+		return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
+	});
+	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const path = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (path.startsWith("https://r2.test/upload?key=")) {
+				const key = decodeURIComponent(path.slice("https://r2.test/upload?key=".length));
+				const body = init?.body;
+				if (typeof body === "string" || body instanceof ArrayBuffer) objects.set(key, body);
+				else if (body instanceof Uint8Array) objects.set(key, files_u8_to_array_buffer(body));
+				else return new Response(null, { status: 400 });
+				return new Response(null, { status: 200 });
+			}
+			if (!path.startsWith("https://r2.test/object?key=")) return new Response(null, { status: 404 });
+			const body = objects.get(decodeURIComponent(path.slice("https://r2.test/object?key=".length)));
+			return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+		}),
+	);
+});
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 	vi.useRealTimers();
 });
 
 type Db = Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
 type Metrics = Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>;
+type Cost = ReturnType<typeof transaction_cost>;
+
+const zero: Cost = {
+	databaseQueries: 0,
+	documentsRead: 0,
+	bytesRead: 0,
+	documentsWritten: 0,
+	bytesWritten: 0,
+	functionsScheduled: 0,
+};
 
 /**
  * The work done between two metric reads in one transaction.
@@ -59,6 +111,67 @@ function expect_under_convex_limits(cost: ReturnType<typeof transaction_cost>) {
 	expect(cost.documentsWritten, "documentsWritten").toBeLessThan(16_000);
 	expect(cost.bytesWritten, "bytesWritten").toBeLessThan(16 * 1024 * 1024);
 	expect(cost.functionsScheduled, "functionsScheduled").toBeLessThan(1000);
+}
+
+function budget_recorder() {
+	const peaks = new Map<string, { measured: Cost; reserve: Cost; combined: Cost; calls: number }>();
+	const record = (phase: string, measured: Cost, extra: Cost = zero) => {
+		const combined = { ...zero };
+		const peak = peaks.get(phase) ?? { measured: { ...zero }, reserve: { ...zero }, combined: { ...zero }, calls: 0 };
+		for (const key of Object.keys(zero) as Array<keyof Cost>) {
+			combined[key] = measured[key] + extra[key];
+			peak.measured[key] = Math.max(peak.measured[key], measured[key]);
+			peak.reserve[key] = Math.max(peak.reserve[key], extra[key]);
+			peak.combined[key] = Math.max(peak.combined[key], combined[key]);
+		}
+		peak.calls++;
+		peaks.set(phase, peak);
+		if (peak.calls === 1 || peak.calls % 500 === 0) console.info("Move budget phase", phase, peak.calls);
+		expect_under_convex_limits(combined);
+		for (const [key, limit] of Object.entries({
+			databaseQueries: 4096,
+			documentsRead: 32_000,
+			bytesRead: 16 * 1024 * 1024,
+			documentsWritten: 16_000,
+			bytesWritten: 16 * 1024 * 1024,
+			functionsScheduled: 1000,
+		}) as Array<[keyof Cost, number]>)
+			expect(combined[key], `${phase}: ${key}, including catalog reserve`).toBeLessThan(limit * 0.75);
+	};
+	return { peaks, record };
+}
+
+function measure_cohort(record: ReturnType<typeof budget_recorder>["record"], reserve: Cost = zero) {
+	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
+		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
+		const phase = cohort?.step === step ? cohort.workPhase : "stale";
+		const before = await ctx.meta.getTransactionMetrics();
+		const result = await handler(ctx, args);
+		// The registered handler includes the mutation wrapper and its overlay flush.
+		const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
+		const addsCatalog = ["sides", "finish_sides", "finish_nodes"].includes(phase);
+		record(`cohort/${phase}`, cost, addsCatalog ? reserve : zero);
+		return result;
+	});
+}
+
+async function finish_scheduled(
+	t: ReturnType<typeof test_convex>,
+	isDone: () => Promise<boolean>,
+) {
+	for (let step = 0; step < 50_000; step++) {
+		vi.advanceTimersByTime(0);
+		await t.finishInProgressScheduledFunctions();
+		if (await isDone()) return;
+		const next = await t.run(async ctx => (await ctx.db.system.query("_scheduled_functions").collect())
+			.filter(job => job.state.kind === "pending")
+			.reduce<number | null>((time, job) => time === null ? job.scheduledTime : Math.min(time, job.scheduledTime), null));
+		if (next === null) throw new Error("The accepted job has no scheduled worker");
+		// Advance between workers, never while an async worker is still reading or writing.
+		vi.advanceTimersByTime(Math.max(0, next - Date.now()));
+	}
+	throw new Error("The scheduled job did not finish");
 }
 
 async function add_member(ctx: MutationCtx, db: Db, clerkUserId: string) {
@@ -104,309 +217,484 @@ async function insert_saved_node(
 	return (await ctx.db.get("files_nodes", nodeId))!;
 }
 
-/**
- * Write committed frontmatter the way a Markdown save does: one field doc and one value doc per key.
- */
-async function write_frontmatter(ctx: MutationCtx, fileNode: Doc<"files_nodes">, fieldCount: number) {
-	await files_metadata_db_write_entries(ctx, {
-		fileNode,
-		entries: Array.from({ length: fieldCount }, (_, index) => ({ key: `field${index}`, value: `value ${index}` })),
-	});
-}
-
-describe("move_nodes", () => {
-	// MAX_MOVE_NODE_COUNT in files_nodes.ts. With the overlay flush, each moved item reads about 19-22
-	// index ranges here: 186 items fit the 4,096 ranges and 187 throw. The cap keeps a 25% margin.
-	// One item more than the cap must answer `move_too_large`, never a Convex limit error.
-	const MAX_MOVE_NODE_COUNT = 139;
-
-	test.each([
-		{ itemCount: MAX_MOVE_NODE_COUNT, allowed: true },
-		{ itemCount: MAX_MOVE_NODE_COUNT + 1, allowed: false },
-	])(
-		"moves $itemCount selected items while other users have drafts inside",
-		async ({ itemCount, allowed }) => {
-			const t = test_convex({ transactionLimits: true });
-			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-
-			// `/project` holds the selected items: folders with two files each, and files with one frontmatter
-			// field each. The move job walks the files inside the folders.
-			const seeded = await t.run(async (ctx) => {
-				const project = await insert_saved_node(ctx, db, { parent: null, name: "project", kind: "folder" });
-				const archive = await insert_saved_node(ctx, db, { parent: null, name: "archive", kind: "folder" });
-				const items: Doc<"files_nodes">[] = [];
-				for (let index = 0; index < itemCount; index++) {
-					const kind = index % 12 === 0 ? "folder" : "file";
-					const item = await insert_saved_node(ctx, db, {
-						parent: project,
-						name: kind === "folder" ? `folder-${index}` : `note-${index}.md`,
-						kind,
-					});
-					items.push(item);
-					if (kind === "file") await write_frontmatter(ctx, item, 1);
-					else
-						for (const name of ["a.md", "b.md"])
-							await write_frontmatter(ctx, await insert_saved_node(ctx, db, { parent: item, name, kind: "file" }), 1);
-				}
-				const others = [
-					await add_member(ctx, db, "clerk_move_other_1"),
-					await add_member(ctx, db, "clerk_move_other_2"),
-				];
-				return { project, archive, items, others };
-			});
-			const files = seeded.items.filter((item) => item.kind === "file");
-			const folders = seeded.items.filter((item) => item.kind === "folder");
-
-			// Each other user drafts 10 moves, 10 renames and 10 deletes of moved items, and a private
-			// folder with a file inside a moved folder.
-			for (const [userIndex, userId] of seeded.others.entries()) {
-				const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId };
-				const mine = files.slice(userIndex * 30, userIndex * 30 + 30);
-				for (const [index, file] of mine.entries()) {
-					const target = { kind: "saved" as const, id: file._id };
-					const drafted =
-						index < 10
-							? await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-									...scope,
-									target,
-									destParent: { kind: "saved", id: folders[1]!._id },
-									destName: file.name,
-								})
-							: index < 20
-								? await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-										...scope,
-										target,
-										destParent: { kind: "saved", id: seeded.project._id },
-										destName: `renamed-${file.name}`,
-									})
-								: await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
-										...scope,
-										target,
-									});
-					if (drafted._nay) throw new Error(drafted._nay.message);
-				}
-				const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
-					...scope,
-					path: `${folders[2 + userIndex]!.path}/private-${userIndex}/draft.md`,
-					kind: "file",
-				});
-				if (created._nay) throw new Error(created._nay.message);
-			}
-
-			const { result, cost } = await asOwner.run(async (ctx) => {
-				const before = await ctx.meta.getTransactionMetrics();
-				const result = await ctx.runMutation(api.files_nodes.move_nodes, {
-					membershipId: db.membershipId,
-					itemIds: seeded.items.map((item) => item._id),
-					targetParentId: seeded.archive._id,
-				});
-				return { result, cost: transaction_cost(before, await ctx.meta.getTransactionMetrics()) };
-			});
-			console.info(`move_nodes, ${itemCount} items`, cost);
-
-			if (allowed) expect(result).toEqual({ _yay: null });
-			else expect(result._nay?.name).toBe("move_too_large");
-			const moved = await t.run(async (ctx) =>
-				(await ctx.db.query("files_nodes").collect()).filter((node) => node.parentId === seeded.archive._id),
-			);
-			expect(moved).toHaveLength(allowed ? itemCount : 0);
-			expect_under_convex_limits(cost);
-		},
-		120_000,
-	);
-
-	// A saved write refreshes every hide and place of each node it moves. A user may add one to a node
-	// only while other users hold fewer than 32 (MAX_OTHER_USERS_DOCS_PER_SAVED_NODE in
-	// server/files-pending-overlay.ts). This moves the most items, each with 32 docs of 16 other users.
-	test("moves the most items while each has the most hides and places of other users", async () => {
+describe("paged Move transaction budgets", () => {
+	test("measures scheduled phases with maximum metadata, draft copies, shares and links", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const seeded = await t.run(async (ctx) => {
-			const project = await insert_saved_node(ctx, db, { parent: null, name: "project", kind: "folder" });
-			const archive = await insert_saved_node(ctx, db, { parent: null, name: "archive", kind: "folder" });
-			const drafts = await insert_saved_node(ctx, db, { parent: null, name: "drafts", kind: "folder" });
-			const items: Doc<"files_nodes">[] = [];
-			for (let index = 0; index < MAX_MOVE_NODE_COUNT; index++)
-				items.push(await insert_saved_node(ctx, db, { parent: project, name: `note-${index}.md`, kind: "file" }));
-			const userIds: Id<"users">[] = [];
-			for (let index = 0; index < 16; index++) userIds.push(await add_member(ctx, db, `clerk_crowd_${index}`));
-			return { archive, drafts, items, userIds };
+		const dates = Array.from({ length: 128 }, (_, index) =>
+			new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+		);
+		const frontmatter = [
+			"---",
+			...dates.map((date, index) => `field${index}: ["distinct-${index}", "${date}"]`),
+			"---",
+			"",
+		].join("\n");
+		const body = "A large saved file keeps its text chunks beside both metadata sources.\n".repeat(12_000);
+		const heavyId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/project/heavy.md",
+			textContent: frontmatter + body,
 		});
-		// The first user drafts a move of every item into /drafts: a hide and a place each. The other
-		// users get copies of those docs, which is faster than 15 more flushes.
-		await test_run_with_flush(t, async (ctx) => {
-			for (const item of seeded.items)
-				await ctx.db.insert("files_pending_updates", {
+		expect(
+			await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: heavyId,
+				metadataYaml: dates.map((date, index) => `key${index}: "${date}"`).join("\n"),
+			}),
+		).toEqual({ _yay: null });
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		console.info("Move budget fixture: committed text and maximum metadata ready");
+
+		const seeded = await t.run(async (ctx) => {
+			const heavy = (await ctx.db.get("files_nodes", heavyId))!;
+			const project = (await ctx.db.get("files_nodes", heavy.parentId as Id<"files_nodes">))!;
+			const target = await insert_saved_node(ctx, db, { parent: null, name: "target", kind: "folder" });
+			const drafts = await insert_saved_node(ctx, db, { parent: null, name: "drafts", kind: "folder" });
+			const shared = await insert_saved_node(ctx, db, { parent: project, name: "shared", kind: "folder" });
+			const light: Doc<"files_nodes">[] = [];
+			const links: Doc<"files_nodes">[] = [];
+			const users: Id<"users">[] = [];
+			for (let index = 0; index < 51; index++) users.push(await add_member(ctx, db, `clerk_move_budget_${index}`));
+			const metadata = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId),
+				)
+				.collect();
+			return { heavy, project, target, drafts, shared, light, links, users, metadata };
+		});
+		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(512);
+		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("metadata."))).toHaveLength(384);
+		let extraLinkId: Id<"files_nodes"> | null = null;
+		for (const [parentId, count] of [
+			[seeded.project._id, 99],
+			[files_ROOT_ID, 402],
+		] as const) {
+			for (let offset = 0; offset < count; offset += 50) {
+				vi.setSystemTime(Date.now() + 60_000);
+				const uploaded = await asOwner.mutation(api.files_nodes.create_upload_nodes, {
+					membershipId: db.membershipId,
+					parentId,
+					onConflict: "skip",
+					items: Array.from({ length: Math.min(50, count - offset) }, (_, index) => ({
+						relativePath: `link-${offset + index}.bin`,
+						size: 1,
+						contentType: "application/octet-stream",
+					})),
+				});
+				if (uploaded._nay) throw new Error(uploaded._nay.message);
+				expect(uploaded._yay.skipped).toHaveLength(0);
+				for (const item of uploaded._yay.created) {
+					expect(await fetch(item.url, { method: "PUT", body: "x" })).toHaveProperty("status", 200);
+					expect(
+						await t.mutation(internal.r2.process_uploaded_asset_event, {
+							assetId: item.assetId,
+							r2Key: r2_create_asset_key({ ...db, assetId: item.assetId }),
+							size: 1,
+							eventId: `move-budget-${item.assetId}`,
+						}),
+					).toEqual({ _yay: null });
+					const node = (await t.run((ctx) => ctx.db.get("files_nodes", item.nodeId)))!;
+					if (seeded.links.length < 500) seeded.links.push(node);
+					else extraLinkId = node._id;
+					if (parentId === seeded.project._id) seeded.light.push(node);
+				}
+			}
+		}
+		if (!extraLinkId) throw new Error("Expected one extra link target");
+		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
+		console.info("Move budget fixture: native upload targets ready");
+
+		// Advance only the clock: setup should not run expiry jobs between fixture writes.
+		const refill_sharing = () => vi.setSystemTime(Date.now() + 3_000);
+		refill_sharing();
+		expect(
+			await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: heavyId }),
+		).toEqual({ _yay: null });
+		for (const userId of seeded.users.slice(0, 50)) {
+			refill_sharing();
+			expect(
+				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: db.membershipId,
+					nodeId: heavyId,
+					principal: { kind: "user", userId },
+					level: "manage",
+				}),
+			).toEqual({ _yay: null });
+		}
+		refill_sharing();
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: db.membershipId,
+					nodeId: heavyId,
+					principal: { kind: "user", userId: seeded.users[50]! },
+					level: "manage",
+				})
+			)._nay?.message,
+		).toContain("at most 50");
+		for (let index = 0; index < 9; index++) {
+			const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path: `${seeded.shared.path}/restricted-${index}`,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			refill_sharing();
+			expect(
+				await asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: db.membershipId,
+					nodeId: created._yay.nodeId,
+				}),
+			).toEqual({ _yay: null });
+		}
+		for (const node of seeded.links) {
+			refill_sharing();
+			expect(
+				await asOwner.mutation(api.files_sharing.set_node_share_link, {
+					membershipId: db.membershipId,
+					nodeId: node._id,
+					enabled: true,
+				}),
+			).toEqual({ _yay: null });
+			if ((seeded.links.indexOf(node) + 1) % 100 === 0) console.info("Move budget fixture: public links ready", seeded.links.indexOf(node) + 1);
+		}
+		refill_sharing();
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.set_node_share_link, {
+					membershipId: db.membershipId,
+					nodeId: extraLinkId,
+					enabled: true,
+				})
+			)._nay?.message,
+		).toContain("at most 500");
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		for (const userId of seeded.users.slice(0, 16)) {
+			expect(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					userId: seeded.userIds[0]!,
-					target: { kind: "saved", id: item._id },
-					revision: 1,
-					size: 0,
-					updatedAt: Date.now(),
-					expiresAt: Date.now() + 60 * 60 * 1000,
-					pendingMove: {
-						destParent: { kind: "saved", id: seeded.drafts._id },
-						destName: item.name,
-						fromPath: item.path,
-					},
-				});
+					userId,
+					target: { kind: "saved", id: heavyId },
+					destParent: { kind: "saved", id: seeded.drafts._id },
+					destName: seeded.heavy.name,
+				}),
+			).toMatchObject({
+				_yay: { fromPath: seeded.heavy.path, destPath: `${seeded.drafts.path}/${seeded.heavy.name}` },
+			});
+		}
+		console.info("Move budget fixture: shares, links and owner drafts ready");
+		await t.run(async (ctx) => {
+			expect(
+				await ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", heavyId))
+					.collect(),
+			).toHaveLength(16);
+			expect(
+				await ctx.db
+					.query("files_pending_places")
+					.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", heavyId))
+					.collect(),
+			).toHaveLength(16);
+			expect(
+				await ctx.db
+					.query("files_share_rows")
+					.withIndex("by_node", (q) => q.eq("nodeId", heavyId))
+					.collect(),
+			).toHaveLength(50);
+			expect(await ctx.db.query("files_share_links").collect()).toHaveLength(500);
+		});
+
+		// The catalog is not built yet. Reserve JSON bytes plus space for ids and timestamps.
+		const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength + 128;
+		const fields = seeded.metadata.filter((doc) => doc.docKind === "field");
+		expect(fields).toHaveLength(256);
+		// Catalog plan 4.3/4.6: Move reads all committed docs, but changes only parent slots.
+		const deltas = fields.flatMap((doc) =>
+			[seeded.project._id, seeded.target._id].map((parentId, index) => ({
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				family: "parent",
+				parentId,
+				fieldPathLower: doc.fieldPath.toLowerCase(),
+				fieldPath: doc.fieldPath,
+				count: index === 0 ? -1 : 1,
+			})),
+		);
+		const markerBytes = bytes({ organizationId: db.organizationId, workspaceId: db.workspaceId });
+		const reserve: Cost = {
+			databaseQueries: 2,
+			documentsRead: seeded.metadata.length + 1,
+			bytesRead: seeded.metadata.reduce((sum, doc) => sum + bytes(doc), 0) + markerBytes,
+			documentsWritten: deltas.length + 1,
+			bytesWritten: deltas.reduce((sum, delta) => sum + bytes(delta), 0) + markerBytes,
+			functionsScheduled: 1,
+		};
+		// The catalog compactor runs in its own transaction, with up to 500 distinct doc changes.
+		const compacted = deltas.slice(0, 500);
+		const compactorReserve: Cost = {
+			databaseQueries: compacted.length + 3,
+			documentsRead: compacted.length * 2 + 2,
+			bytesRead: compacted.reduce((sum, delta) => sum + bytes(delta) * 2, 0) + markerBytes + bytes(deltas[500]),
+			documentsWritten: compacted.length * 2 + 1,
+			bytesWritten: compacted.reduce((sum, delta) => sum + bytes(delta) * 2, 0) + markerBytes,
+			functionsScheduled: 1,
+		};
+		const { peaks, record } = budget_recorder();
+		record("catalog/compactor", zero, compactorReserve);
+		measure_cohort(record, reserve);
+		for (const [phase, registered] of [
+			["start", start_transfer],
+			["append", append_transfer_sources],
+			["seal", seal_transfer],
+		] as const) {
+			test_spy_handler(registered, async (handler, ctx, args) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				const result = await handler(ctx, args);
+				record(phase, transaction_cost(before, await ctx.meta.getTransactionMetrics()), zero);
+				return result;
+			});
+		}
+		// The native 140-root test covers selection size. These roots keep the maximum per-node cost.
+		const sources = [heavyId, seeded.shared._id, seeded.light[0]!._id];
+		const started = await asOwner.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "move-budget",
+			kind: "move",
+			expectedSourceCount: sources.length,
+			sourceIds: sources.slice(0, 1),
+			targetParentId: seeded.target._id,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const { runId } = started._yay;
+		test_spy_handler(advance_transfer, async (handler, ctx, args) => {
+			const run = (await ctx.db.get("files_transfer_runs", runId))!;
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
+			record(`transfer/${run.step}`, cost);
+			return result;
+		});
+		test_spy_handler(advance_subtree, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			record("subtree", transaction_cost(before, await ctx.meta.getTransactionMetrics()), zero);
+			return result;
+		});
+		test_spy_handler(run_overlay_job, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			record("overlay", transaction_cost(before, await ctx.meta.getTransactionMetrics()), zero);
+			return result;
+		});
+		expect(
+			await asOwner.mutation(api.files_transfer.append_sources, {
+				membershipId: db.membershipId,
+				runId,
+				offset: 1,
+				sourceIds: sources.slice(1),
+			}),
+		).toEqual({ _yay: null });
+		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
+			_yay: null,
+		});
+		await finish_scheduled(t, async () =>
+			(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !== undefined);
+		console.info(
+			"paged Move phase peaks, measured and projected catalog reserve",
+			JSON.stringify({ phases: Object.fromEntries(peaks), compactorReserve }),
+		);
+		expect(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId })).toMatchObject({
+			activity: { status: "succeeded", progress: { completed: 3, failed: 0, canceled: 0 } },
+		});
+		expect(peaks.get("cohort/publish")?.calls, "every saved Move root reaches cohort publication").toBe(sources.length);
+		expect(peaks.get("cohort/sides")?.reserve.documentsRead).toBe(897);
+		expect(peaks.get("cohort/finish_nodes")?.reserve.documentsWritten).toBe(513);
+		expect(peaks.get("cohort/descendants")?.calls).toBeGreaterThan(0);
+		expect(peaks.get("cohort/finish_owners")?.calls).toBeGreaterThan(0);
+	}, 7_200_000);
+
+	test("moves one saved file while six owners have large pending content", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/project/heavy.md",
+			textContent: "Saved content.\n",
+		});
+		const seeded = await t.run(async (ctx) => {
+			const target = await insert_saved_node(ctx, db, { parent: null, name: "target", kind: "folder" });
+			const users: Id<"users">[] = [];
+			for (let index = 0; index < 6; index++) users.push(await add_member(ctx, db, `clerk_heavy_content_${index}`));
+			return { target, users };
+		});
+		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
+		const text = "x".repeat(800 * 1024);
+		for (const userId of seeded.users) {
+			const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId };
+			const batch = await t.mutation(
+				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+				{
+					...scope,
+					target: { kind: "saved", id: nodeId },
+				},
+			);
+			if (batch._nay) throw new Error(batch._nay.message);
+			expect(
+				await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+					...scope,
+					operationBatchId: batch._yay.operationBatchId,
+					role: "unstaged",
+					text,
+				}),
+			).toEqual({ _yay: null });
+			expect(
+				await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+					...scope,
+					target: { kind: "saved", id: nodeId },
+					operationBatchId: batch._yay.operationBatchId,
+				}),
+			).toEqual({ _yay: null });
+		}
+		const read_pending_chunks = async (ctx: MutationCtx) =>
+			await ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", nodeId),
+				)
+				.collect();
+		await t.run(async (ctx) => {
+			const chunks = await read_pending_chunks(ctx);
+			expect(new Set(chunks.map((chunk) => (chunk.sourceKind === "pending" ? chunk.userId : null))).size).toBe(6);
+			expect(
+				chunks.reduce((sum, chunk) => sum + new TextEncoder().encode(chunk.plainTextChunk).byteLength, 0),
+			).toBeGreaterThan(4 * 1024 * 1024);
+		});
+		const started = await asOwner.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "move-six-heavy-drafts",
+			kind: "move",
+			expectedSourceCount: 1,
+			sourceIds: [nodeId],
+			targetParentId: seeded.target._id,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const { runId } = started._yay;
+		const { peaks, record } = budget_recorder();
+		measure_cohort(record);
+		test_spy_handler(advance_transfer, async (handler, ctx, args) => {
+			const run = (await ctx.db.get("files_transfer_runs", runId))!;
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
+			record(`transfer/${run.step}`, cost);
+			return result;
+		});
+		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
+			_yay: null,
+		});
+		await finish_scheduled(t, async () =>
+			(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !== undefined);
+		const receipt = await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
+		console.info(
+			"singleton Move with six native 800KiB drafts",
+			JSON.stringify({ phases: Object.fromEntries(peaks), receipt }),
+		);
+		expect(receipt, "one saved root must move with six supported pending content branches").toMatchObject({
+			activity: { status: "succeeded", progress: { completed: 1, failed: 0, canceled: 0 } },
 		});
 		await t.run(async (ctx) => {
-			const hides = await ctx.db.query("files_pending_hides").collect();
-			const places = await ctx.db.query("files_pending_places").collect();
-			expect([hides.length, places.length]).toEqual([MAX_MOVE_NODE_COUNT, MAX_MOVE_NODE_COUNT]);
-			for (const userId of seeded.userIds.slice(1)) {
-				for (const { _id, _creationTime, ...hide } of hides)
-					await ctx.db.insert("files_pending_hides", { ...hide, userId });
-				for (const { _id, _creationTime, ...place } of places)
-					await ctx.db.insert("files_pending_places", { ...place, userId });
-			}
+			const chunks = await read_pending_chunks(ctx);
+			expect(new Set(chunks.map((chunk) => (chunk.sourceKind === "pending" ? chunk.userId : null))).size).toBe(6);
+			expect(chunks.every((chunk) => chunk.path === "/target/heavy.md")).toBe(true);
 		});
-
-		const { result, cost } = await asOwner.run(async (ctx) => {
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await ctx.runMutation(api.files_nodes.move_nodes, {
-				membershipId: db.membershipId,
-				itemIds: seeded.items.map((item) => item._id),
-				targetParentId: seeded.archive._id,
-			});
-			return { result, cost: transaction_cost(before, await ctx.meta.getTransactionMetrics()) };
-		});
-		console.info(`move_nodes, ${MAX_MOVE_NODE_COUNT} items with 32 docs of other users each`, cost);
-
-		expect(result).toEqual({ _yay: null });
-		const hides = await t.run((ctx) => ctx.db.query("files_pending_hides").collect());
-		expect(hides).toHaveLength(MAX_MOVE_NODE_COUNT * 16);
-		expect(hides.every((hide) => hide.parentId === seeded.archive._id)).toBe(true);
-		// The cap keeps a 25% margin under every Convex limit.
-		expect(cost.databaseQueries, "databaseQueries").toBeLessThan(4096 * 0.75);
-		expect(cost.documentsRead, "documentsRead").toBeLessThan(32_000 * 0.75);
-		expect(cost.bytesRead, "bytesRead").toBeLessThan(16 * 1024 * 1024 * 0.75);
-		expect(cost.documentsWritten, "documentsWritten").toBeLessThan(16_000 * 0.75);
-		expect(cost.bytesWritten, "bytesWritten").toBeLessThan(16 * 1024 * 1024 * 0.75);
-		expect(cost.functionsScheduled, "functionsScheduled").toBeLessThan(1000 * 0.75);
-	}, 120_000);
-
-	// The flush rewrites the share rows of each restricted folder a move takes, so the move counts them
-	// in its read and write budgets (MAX_MOVE_DOCUMENT_COUNT, 2,000 docs each). A folder with 50 shares
-	// costs 51 docs of each, and the read budget fills first: 38 folders fit and 39 answer
-	// `move_too_large`. At 38 the move uses about 26% of the Convex read limit.
-	test.each([
-		{ rootCount: 38, allowed: true },
-		{ rootCount: 39, allowed: false },
-	])(
-		"moves $rootCount restricted folders with 50 shares each",
-		async ({ rootCount, allowed }) => {
-			const t = test_convex({ transactionLimits: true });
-			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-			const seeded = await t.run(async (ctx) => {
-				const archive = await insert_saved_node(ctx, db, { parent: null, name: "archive", kind: "folder" });
-				const readerIds: Id<"users">[] = [];
-				for (let index = 0; index < 50; index++)
-					readerIds.push(await ctx.db.insert("users", { clerkUserId: `clerk_reader_${index}` }));
-				const roots: Doc<"files_nodes">[] = [];
-				for (let index = 0; index < rootCount; index++) {
-					const root = await insert_saved_node(ctx, db, { parent: null, name: `shared-${index}`, kind: "folder" });
-					await ctx.db.patch("files_nodes", root._id, { restrictedScopeNodeId: root._id, isRestrictedScopeRoot: true });
-					roots.push(root);
-				}
-				return { archive, readerIds, roots };
-			});
-			// One flush per folder keeps each seed transaction under the limits. Each reader gets the three
-			// grants of a "manage" share. Only the read grant has a row.
-			for (const root of seeded.roots)
-				await test_run_with_flush(t, async (ctx) => {
-					for (const userId of seeded.readerIds)
-						for (const permission of access_control_FILE_SHARE_LEVELS.manage.permissions)
-							await ctx.db.insert("access_control_permission_grants", {
-								organizationId: db.organizationId,
-								workspaceId: db.workspaceId,
-								resourceKind: "file",
-								resourceId: String(root._id),
-								principalKind: "user",
-								userId,
-								permission,
-								createdAt: Date.now(),
-								updatedAt: Date.now(),
-							});
-				});
-
-			const { result, cost } = await asOwner.run(async (ctx) => {
-				const before = await ctx.meta.getTransactionMetrics();
-				const result = await ctx.runMutation(api.files_nodes.move_nodes, {
-					membershipId: db.membershipId,
-					itemIds: seeded.roots.map((root) => root._id),
-					targetParentId: seeded.archive._id,
-				});
-				return { result, cost: transaction_cost(before, await ctx.meta.getTransactionMetrics()) };
-			});
-			console.info(`move_nodes, ${rootCount} restricted folders with 50 shares each`, cost);
-
-			if (allowed) expect(result).toEqual({ _yay: null });
-			else expect(result._nay?.name).toBe("move_too_large");
-			const rows = await t.run((ctx) => ctx.db.query("files_share_rows").collect());
-			expect(rows).toHaveLength(rootCount * 50);
-			expect(rows.every((row) => row.parentId === (allowed ? seeded.archive._id : files_ROOT_ID))).toBe(true);
-			expect_under_convex_limits(cost);
-		},
-		120_000,
-	);
+	}, 900_000);
 });
 
-describe("commit_unit", () => {
-	test("accepts 100 moves of files with 20 frontmatter fields each", async () => {
+describe("cohort Accept transaction budgets", () => {
+	test("measures a linked public Accept through publication and cleanup", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-
-		const seeded = await t.run(async (ctx) => {
-			const inbox = await insert_saved_node(ctx, db, { parent: null, name: "inbox", kind: "folder" });
-			const done = await insert_saved_node(ctx, db, { parent: null, name: "done", kind: "folder" });
-			const files: Doc<"files_nodes">[] = [];
-			for (let index = 0; index < 100; index++) {
-				const file = await insert_saved_node(ctx, db, { parent: inbox, name: `note-${index}.md`, kind: "file" });
-				await write_frontmatter(ctx, file, 20);
-				files.push(file);
-			}
-			return { done, files };
-		});
-		for (const file of seeded.files) {
-			const drafted = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-				...scope,
-				target: { kind: "saved", id: file._id },
-				destParent: { kind: "saved", id: seeded.done._id },
-				destName: file.name,
+		const nodes: Id<"files_nodes">[] = [];
+		for (let index = 0; index < 3; index++) {
+			const nodeId = await test_create_saved_text_file(t, {
+				membershipId: db.membershipId,
+				path: `/inbox/note-${index}.md`,
+				textContent: [
+					"---",
+					...Array.from({ length: 20 }, (_, key) => `field${key}: value-${key}`),
+					"---",
+					"",
+					"Saved text.",
+				].join("\n"),
 			});
-			if (drafted._nay) throw new Error(drafted._nay.message);
+			nodes.push(nodeId);
 		}
-		// These moves do not depend on each other, so the run commits each one as its own unit. Linked
-		// moves share one unit: 99 moves into one new private folder answer `move_too_large`, because
-		// their 4,059 docs pass MAX_MOVE_DOCUMENT_COUNT (2,000).
-		const proposals = await t.run((ctx) => ctx.db.query("files_pending_updates").collect());
-
-		// The review action calls `commit_unit` itself, so no test transaction can wrap it. convex-test
-		// runs a function through its `_handler`. Wrap that to read the metrics inside each commit.
-		const commits: Array<ReturnType<typeof transaction_cost>> = [];
-		test_spy_handler(commit_unit, async (handler, ctx, args) => {
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		const parentId = (await t.run((ctx) => ctx.db.get("files_nodes", nodes[0]!)))!.parentId;
+		if (parentId === files_ROOT_ID) throw new Error("Expected the native inbox folder");
+		const draft = async (index: number, destName: string) => {
+			const proposal = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				...scope,
+				target: { kind: "saved", id: nodes[index]! },
+				destParent: { kind: "saved", id: parentId },
+				destName,
+			});
+			if (proposal._nay) throw new Error(proposal._nay.message);
+		};
+		await draft(0, "temporary-draft-name.md");
+		await draft(2, "note-0.md");
+		await draft(1, "note-2.md");
+		await draft(0, "note-1.md");
+		const proposals = await t.run((ctx) =>
+			Promise.all(
+				nodes.map((nodeId) =>
+					ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_user_target", (q) =>
+							q.eq("userId", db.userId).eq("target.kind", "saved").eq("target.id", nodeId),
+						)
+						.unique(),
+				),
+			),
+		);
+		const { peaks, record } = budget_recorder();
+		// Full per-node catalog allowance. Four KiB per row is a conservative projection.
+		const reserve: Cost = {
+			databaseQueries: 2,
+			documentsRead: 897,
+			bytesRead: 897 * 4096,
+			documentsWritten: 513,
+			bytesWritten: 513 * 4096,
+			functionsScheduled: 1,
+		};
+		measure_cohort(record, reserve);
+		test_spy_handler(advance_review, async (handler, ctx, args) => {
 			const before = await ctx.meta.getTransactionMetrics();
 			const result = await handler(ctx, args);
-			commits.push(transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			record("review/advance", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
 			return result;
 		});
-
 		const started = await asOwner.mutation(api.files_pending_update_runs.start, {
 			membershipId: db.membershipId,
 			requestId: crypto.randomUUID(),
 			kind: "accept",
-			expectedItemCount: proposals.length,
+			expectedItemCount: 3,
 			items: proposals.map((proposal) => ({
-				pendingUpdateId: proposal._id,
-				reviewedRevision: proposal.revision,
+				pendingUpdateId: proposal!._id,
+				reviewedRevision: proposal!.revision,
 				selectedContentStateId: null,
 			})),
 		});
@@ -414,52 +702,24 @@ describe("commit_unit", () => {
 		const { runId } = started._yay;
 		expect(
 			await asOwner.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId }),
-		).toEqual({
-			_yay: null,
-		});
-
-		// Drive the run like its scheduled jobs would: plan, then prepare and commit each unit.
-		for (let pass = 0; ; pass++) {
-			if (pass === 100) throw new Error("Review planning did not finish");
-			await t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
-			if ((await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))?.step !== "planning") break;
-		}
-		for (let pass = 0; ; pass++) {
-			if (pass === 1000) throw new Error("Review did not finish");
-			await t.mutation(internal.files_pending_update_runs.advance, { runId });
-			const run = (await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))!;
-			if (run.step === "finished") break;
-			const unit = await t.run((ctx) =>
-				ctx.db
-					.query("files_pending_update_run_units")
-					.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-					.first(),
-			);
-			if (unit)
-				await t.action(internal.files_pending_update_runs.prepare_unit, {
-					runId,
-					fence: run.fence,
-					unitId: unit._id,
-					attemptFence: unit.attemptFence,
-				});
-		}
-		// Without this, a spy that sees no commit would measure nothing and still pass.
-		expect(commits.length).toBeGreaterThan(0);
-		const biggest = { ...commits[0]! };
-		for (const cost of commits)
-			for (const key of Object.keys(biggest) as Array<keyof typeof biggest>)
-				biggest[key] = Math.max(biggest[key], cost[key]);
-		console.info("files_pending_update_runs accept, 100 moves", { commitUnitCount: commits.length, biggest });
-
+		).toEqual({ _yay: null });
+		await finish_scheduled(t, async () =>
+			(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.run.step === "finished");
 		expect(
 			(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.activity,
-		).toMatchObject({ status: "succeeded", progress: { completed: 100 } });
-		const moved = await t.run(async (ctx) =>
-			(await ctx.db.query("files_nodes").collect()).filter((node) => node.parentId === seeded.done._id),
+			"the measured linked Accept completes through native cohort workers",
+		).toMatchObject({ status: "succeeded", progress: { completed: 3 } });
+		expect(peaks.get("cohort/publish")?.calls, "linked Accept uses one cohort switch").toBe(1);
+		expect(peaks.get("cohort/finish_nodes")?.calls).toBeGreaterThan(0);
+		expect(peaks.get("cohort/finish_nodes")?.reserve.documentsRead).toBe(897);
+		const saved = await t.run((ctx) => Promise.all(nodes.map((nodeId) => ctx.db.get("files_nodes", nodeId))));
+		expect(saved.map((node) => node?.name)).toEqual(["note-1.md", "note-2.md", "note-0.md"]);
+		expect(saved.every((node) => node?.moveCohortId === undefined)).toBe(true);
+		console.info(
+			"linked public Accept phase peaks, including catalog reserve",
+			JSON.stringify(Object.fromEntries(peaks)),
 		);
-		expect(moved).toHaveLength(100);
-		for (const cost of commits) expect_under_convex_limits(cost);
-	}, 120_000);
+	}, 180_000);
 });
 
 describe("discard_file_pending_update", () => {

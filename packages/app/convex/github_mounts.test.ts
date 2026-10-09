@@ -159,7 +159,7 @@ async function list_mount_file_paths(t: ReturnType<typeof test_convex>, mount: s
 			.withIndex("by_organization_workspace_treePath", (q) =>
 				q
 					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
+					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID).eq("moveCohortId", undefined)
 					.gte("treePath", `/${mount}/`)
 					.lt("treePath", path_tree_prefix_upper_bound(`/${mount}/`)),
 			)
@@ -715,7 +715,7 @@ describe("sync_mount", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID).eq("moveCohortId", undefined)
 						.eq("path", `/${MOUNT}/${COMMIT_1}/README.md`)
 						.eq("archiveOperationId", null),
 				)

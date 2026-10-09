@@ -335,7 +335,7 @@ async function db_check_restore_folder(
 
 /**
  * Landing somewhere new is a move. It needs write access where the item lands and permission to
- * leave the item's restricted folder, like `move_nodes`. An item that is its own restricted folder
+ * leave the item's restricted folder, like Move. An item that is its own restricted folder
  * keeps its scope wherever it lands, so it needs neither.
  */
 async function db_check_restore_move(
@@ -633,7 +633,7 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 				q
 					.eq("organizationId", run.organizationId)
-					.eq("workspaceId", run.workspaceId)
+					.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
 					.eq("parentId", node._id)
 					.eq("archiveOperationId", null),
 			)
@@ -684,7 +684,7 @@ async function db_can_replace(
 			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 				q
 					.eq("organizationId", args.occupant.organizationId)
-					.eq("workspaceId", args.occupant.workspaceId)
+					.eq("workspaceId", args.occupant.workspaceId).eq("moveCohortId", undefined)
 					.eq("parentId", args.occupant._id)
 					.eq("archiveOperationId", null),
 			)
@@ -714,7 +714,7 @@ async function db_can_replace(
 			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 				q
 					.eq("organizationId", args.occupant.organizationId)
-					.eq("workspaceId", args.occupant.workspaceId)
+					.eq("workspaceId", args.occupant.workspaceId).eq("moveCohortId", undefined)
 					.eq("parentId", folderId),
 			)
 			.take(CHECK_STEP_MAX_NODES + 1 - inside.length);
@@ -786,7 +786,7 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 				.withIndex("by_organization_workspace_archiveOperation", (q) =>
 					q
 						.eq("organizationId", run.organizationId)
-						.eq("workspaceId", run.workspaceId)
+						.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
 						.eq("archiveOperationId", run.archiveOperationId),
 				)
 				.take(PAGE_SIZE + 1);
@@ -802,7 +802,7 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 					.withIndex("by_organization_workspace_archiveOperation", (q) =>
 						q
 							.eq("organizationId", run.organizationId)
-							.eq("workspaceId", run.workspaceId)
+							.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
 							.eq("archiveOperationId", run.archiveOperationId),
 					)
 					.paginate({ cursor: run.checkCursor.treePath || null, numItems: PAGE_SIZE });
@@ -862,7 +862,7 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 				q
 					.eq("organizationId", run.organizationId)
-					.eq("workspaceId", run.workspaceId)
+					.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
 					.eq("archiveOperationId", run.archiveOperationId)
 					.gt("treePath", cursorTreePath),
 			)
@@ -881,7 +881,7 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 					.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 						q
 							.eq("organizationId", run.organizationId)
-							.eq("workspaceId", run.workspaceId)
+							.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
 							.eq("archiveOperationId", run.archiveOperationId)
 							.eq("treePath", lastNode.treePath)
 							.gte("_creationTime", lastNode._creationTime),
@@ -972,7 +972,7 @@ async function db_find_free_name(
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 				q
 					.eq("organizationId", args.run.organizationId)
-					.eq("workspaceId", args.run.workspaceId)
+					.eq("workspaceId", args.run.workspaceId).eq("moveCohortId", undefined)
 					.eq("parentId", parentId)
 					.eq("name", name)
 					.eq("archiveOperationId", null),
@@ -1060,7 +1060,7 @@ async function db_land_node(
 		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 			q
 				.eq("organizationId", run.organizationId)
-				.eq("workspaceId", run.workspaceId)
+				.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
 				.eq("parentId", landingParentId)
 				.eq("name", node.name)
 				.eq("archiveOperationId", null),
@@ -1166,7 +1166,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 					q
 						.eq("organizationId", run.organizationId)
-						.eq("workspaceId", run.workspaceId)
+						.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
 						.eq("archiveOperationId", run.archiveOperationId),
 				)
 				.take(PAGE_SIZE);

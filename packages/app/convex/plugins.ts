@@ -6596,7 +6596,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 						.withIndex("by_organization_workspace_treePath", (q) =>
 							q
 								.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 								.gte("treePath", `/${version._id}/`)
 								.lt("treePath", path_tree_prefix_upper_bound(`/${version._id}/`)),
 						)
@@ -6719,7 +6719,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 							ctx.db
 								.query("files_nodes")
 								.withIndex("by_organization_workspace_treePath", (q) =>
-									q.eq("organizationId", volume.organizationId).eq("workspaceId", volume._id),
+									q.eq("organizationId", volume.organizationId).eq("workspaceId", volume._id).eq("moveCohortId", undefined),
 								)
 								.take(limit),
 						)

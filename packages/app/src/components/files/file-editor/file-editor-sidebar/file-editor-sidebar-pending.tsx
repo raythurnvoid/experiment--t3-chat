@@ -5,11 +5,15 @@ import { createPatch } from "diff";
 import { measureLineStats, prepareWithSegments } from "@chenglou/pretext";
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
+import { compareValues } from "convex/values";
 import { toast } from "sonner";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
+import { useFilesPendingUpdates } from "@/hooks/files-pending-list-hooks.ts";
+import { files_merge_sorted_streams } from "@/hooks/files-search-hooks.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyLink } from "@/components/my-link.tsx";
@@ -1456,15 +1460,35 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	});
 
 	// The sources that have changes, newest change first. "All changes" is always there.
-	const {
-		results: sourceKeys,
-		status: sourcesStatus,
-		loadMore: loadMoreSources,
-	} = usePaginatedQuery(
+	const savedView = useFilesSavedView(membershipId);
+	const normalSources = usePaginatedQuery(
 		app_convex_api.files_pending_updates.list_files_pending_sources,
-		{ membershipId },
+		savedView.normal ? { membershipId, savedStream: savedView.normal } : "skip",
 		{ initialNumItems: 20 },
 	);
+	const cohortSources = usePaginatedQuery(
+		app_convex_api.files_pending_updates.list_files_pending_sources,
+		savedView.cohort ? { membershipId, savedStream: savedView.cohort } : "skip",
+		{ initialNumItems: 20 },
+	);
+	const sourceStreams = savedView.normal ? [normalSources, ...(savedView.cohort ? [cohortSources] : [])] : [];
+	const sourceMerge = files_merge_sorted_streams({
+		streams: sourceStreams.map((stream) => ({ rows: stream.results, isDone: stream.status === "Exhausted" })),
+		compare: (a, b) =>
+			-compareValues([a.lastUpdatedAt, a.keyCreationTime, a.keyId], [b.lastUpdatedAt, b.keyCreationTime, b.keyId]),
+		key: (row) => row.listKey,
+	});
+	const sourceKeys = sourceMerge.rows.map((row) => row.listKey);
+	const sourcesStatus =
+		savedView.loading || sourceStreams.some((stream) => stream.status === "LoadingFirstPage")
+			? "LoadingFirstPage"
+			: sourceStreams.some((stream) => stream.status === "LoadingMore")
+				? "LoadingMore"
+				: sourceMerge.blockingRank === null
+					? "Exhausted"
+					: "CanLoadMore";
+	const loadMoreSources = (numItems: number) =>
+		sourceMerge.blockingRank === null ? undefined : sourceStreams[sourceMerge.blockingRank]!.loadMore(numItems);
 	// A selected source with no changes left is gone from the list, so the panel falls back to All
 	// changes.
 	const activeSource =
@@ -1474,7 +1498,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 
 	// Keep the queries object stable through a string key. `useQueries` treats a new object as a new
 	// set of subscriptions and schedules render-phase state updates while it reconnects them.
-	const threadIdsKey = sourceKeys.filter((key) => key !== PENDING_SOURCE_OWN).join(",");
+	// The template literal makes React Compiler see a plain string, like the search box keys.
+	const threadIdsKey = `${sourceKeys.filter((key) => key !== PENDING_SOURCE_OWN).join(",")}`;
 	const threadQueryResults = useQueries(
 		useMemo(
 			() =>
@@ -1523,11 +1548,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		results: listRows,
 		status: pendingUpdatesStatus,
 		loadMore,
-	} = usePaginatedQuery(
-		app_convex_api.files_pending_updates.list_files_pending_updates,
-		{ membershipId, listKey: activeSource },
-		{ initialNumItems: 20 },
-	);
+	} = useFilesPendingUpdates({ membershipId, listKey: activeSource });
 	const targetsKey = JSON.stringify(listRows.map((row) => [row.pendingUpdateId, row.target]));
 	// A view that throws, such as a draft too deep for its read limit, comes back as an `Error` for
 	// that row only.

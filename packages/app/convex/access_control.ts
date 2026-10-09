@@ -33,6 +33,7 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { files_share_links_db_delete_for_node } from "./files_share_links_db.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import {
 	organizations_membership_lifetimes_db_get,
 	organizations_membership_lifetimes_db_record,
@@ -1584,7 +1585,7 @@ export async function access_control_db_authorize_node(
 		permission: access_control_Permission;
 	},
 ) {
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (
 		!fileNode ||
 		fileNode.organizationId !== args.membership.organizationId ||

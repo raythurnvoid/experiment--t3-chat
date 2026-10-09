@@ -9,6 +9,7 @@ import {
 	test_create_saved_text_file,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
+	test_save_file_pending_update,
 	test_spy_handler,
 } from "./setup.test.ts";
 import {
@@ -26,12 +27,10 @@ import {
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
-import { copy_transfer_file, files_nodes_content_db_publish_private_node } from "./files_nodes_content.ts";
+import { copy_transfer_file } from "./files_nodes_content.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
-import { files_pending_nodes_db_create, files_pending_nodes_db_discard } from "./files_pending_nodes.ts";
-import { files_private_storage_db_reserve } from "./files_private_storage.ts";
+import { files_pending_nodes_db_discard } from "./files_pending_nodes.ts";
 import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
@@ -94,65 +93,43 @@ async function create_file_fixture(rootKind: "plain_text" | "rich_text" = "plain
 async function create_private_text_fixture(collaborationEnabled: boolean) {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 	const text = "Saved from a private draft\n";
-	const prepared = await t.run(async (ctx) => {
-		const created = await files_pending_nodes_db_create(ctx, {
-			...db,
-			parent: { kind: "root" },
-			name: "private.txt",
-			kind: "file",
-		});
-		if (created._nay) throw new Error(created._nay.message);
-		await ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
-			createIntent: {
-				kind: "text",
-				contentType: "text/plain",
-				textKind: "plain_text",
-				collaborationEnabled,
-				metadata: [],
-			},
-		});
-		const yjsDoc = new YjsDoc();
-		yjsDoc.getText(files_YJS_DOC_KEYS.plainText).insert(0, text);
-		const assetIds: Id<"files_r2_assets">[] = [];
-		for (const kind of collaborationEnabled
-			? (["content_snapshot", "yjs_snapshot"] as const)
-			: (["content_snapshot"] as const)) {
-			const body = kind === "content_snapshot" ? text : encodeStateAsUpdate(yjsDoc);
-			const size = typeof body === "string" ? new TextEncoder().encode(body).byteLength : body.byteLength;
-			const id = await ctx.db.insert("files_r2_assets", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				createdBy: db.userId,
-				kind,
-				r2Bucket: "test",
-				size,
-				unfinalizedExpiresAt: Date.now() + 60_000,
-				updatedAt: Date.now(),
-			});
-			const r2Key = r2_create_asset_key({ ...db, assetId: id });
-			const held = await files_private_storage_db_reserve(ctx, {
-				...db,
-				resource: { kind: "asset", id, r2Key },
-				byteCount: size,
-			});
-			if (held._nay) throw new Error(held._nay.message);
-			objects.set(r2Key, typeof body === "string" ? body : files_u8_to_array_buffer(body));
-			assetIds.push(id);
-		}
-		const membership = await ctx.db.get("organizations_workspaces_users", db.membershipId);
-		const node = await ctx.db.get("files_pending_nodes", created._yay.privateNodeId);
-		const pendingUpdate = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId);
-		if (!membership || !node || !pendingUpdate) throw new Error("Expected private draft records");
-		return {
-			membership,
-			node,
-			pendingUpdate,
-			billedUserId: db.userId,
-			prepared: { text, contentAssetId: assetIds[0]!, yjsSnapshotAssetId: assetIds[1] },
-		};
+	const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+		...scope,
+		path: "/private.txt",
+		kind: "file",
 	});
-	return { t, db, prepared };
+	if (created._nay || !created._yay.pendingUpdateId || !created._yay.operationBatchId)
+		throw new Error("Expected a private text draft");
+	const { target, pendingUpdateId, operationBatchId } = created._yay;
+	await t.run(async (ctx) => {
+		const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
+		if (proposal?.createIntent?.kind !== "text") throw new Error("Expected a text create intent");
+		await ctx.db.patch("files_pending_updates", pendingUpdateId, {
+			createIntent: { ...proposal.createIntent, collaborationEnabled },
+		});
+	});
+	for (const role of ["staged", "unstaged"] as const) {
+		const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			...scope,
+			operationBatchId,
+			role,
+			text,
+		});
+		if (staged._nay) throw new Error(staged._nay.message);
+	}
+	const ready = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		...scope,
+		target,
+		pendingUpdateId,
+		operationBatchId,
+	});
+	if (ready._nay) throw new Error(ready._nay.message);
+	const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
+	if (!proposal) throw new Error("Expected the private proposal");
+	return { t, db, asUser, text, proposal, target };
 }
 
 async function create_transfer_copy_item(
@@ -209,7 +186,7 @@ async function create_transfer_copy_item(
 		await activities_db_start(ctx, {
 			...db,
 			membershipLifetime: scope.membershipLifetime,
-			source: { kind: "files_transfer_run", id: runId, transferKind: "copy" },
+			source: { kind: "files_transfer_run", id: runId, transferKind: "copy", isRename: false },
 			title: "Copy files",
 			targets: [],
 			visibility: "requester",
@@ -538,11 +515,11 @@ async function expect_retired_uploads(t: ReturnType<typeof test_convex>, count: 
 	});
 }
 
-describe("files_nodes_content_db_publish_private_node", () => {
+describe("public private text Save", () => {
 	test.each([false, true])(
 		"publishes complete text with collaboration %s and settles storage above the new cap",
 		async (collaborationEnabled) => {
-			const { t, prepared } = await create_private_text_fixture(collaborationEnabled);
+			const { t, db, asUser, proposal, target, text } = await create_private_text_fixture(collaborationEnabled);
 			await t.run(async (ctx) => {
 				for (const hold of await ctx.db.query("files_private_storage_reservations").collect()) {
 					await ctx.db.patch("quotas", hold.userQuotaId, { maxCount: 0 });
@@ -550,50 +527,53 @@ describe("files_nodes_content_db_publish_private_node", () => {
 				}
 				expect(await ctx.db.query("files_nodes").collect()).toEqual([]);
 			});
-			const result = await t.run(async (ctx) =>
-				files_nodes_content_db_publish_private_node(ctx, {
-					...prepared,
-					shareLinkCleanup: files_share_links_create_cleanup_state(),
-				}),
-			);
+			const result = await test_save_file_pending_update(asUser, {
+				membershipId: db.membershipId,
+				target,
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+			});
 			if (result._nay) throw new Error(result._nay.message);
+			const savedTarget = result._yay.target;
+			if (savedTarget.kind !== "saved") throw new Error("Expected the saved text");
 			await t.run(async (ctx) => {
-				const node = await ctx.db.get("files_nodes", result._yay.target.id);
+				const node = await ctx.db.get("files_nodes", savedTarget.id);
 				expect(node).toMatchObject({
 					path: "/private.txt",
-					assetId: prepared.prepared.contentAssetId,
+					assetId: expect.any(String),
 					textKind: "plain_text",
 					collaborationEnabled,
 				});
 				const chunks = await ctx.db.query("files_text_chunks").collect();
-				expect(chunks.map((chunk) => chunk.textChunk).join("")).toBe(prepared.prepared.text);
+				expect(chunks.map((chunk) => chunk.textChunk).join("")).toBe(text);
 				expect(await ctx.db.query("files_snapshots").collect()).toMatchObject([
-					{ fileNodeId: result._yay.target.id, assetId: prepared.prepared.contentAssetId },
+					{ fileNodeId: result._yay.target.id, assetId: node!.assetId },
 				]);
 				expect(await ctx.db.query("files_pending_node_publish_receipts").collect()).toMatchObject([
 					{
-						privateNodeId: prepared.node._id,
+						privateNodeId: target.id,
 						savedNodeId: result._yay.target.id,
-						proposalRevision: prepared.pendingUpdate.revision,
+						proposalRevision: proposal.revision,
 					},
 				]);
-				expect(await ctx.db.get("files_pending_nodes", prepared.node._id)).toMatchObject({
+				expect(await ctx.db.get("files_pending_nodes", target.id as Id<"files_pending_nodes">)).toMatchObject({
 					state: "published",
 					creationGeneration: 2,
 				});
 				const holds = await ctx.db.query("files_private_storage_reservations").collect();
-				expect(holds.every((hold) => hold.settlement.kind === "saved")).toBe(true);
+				expect(
+					holds.find((hold) => hold.resource.kind === "node" && hold.resource.id === target.id)?.settlement.kind,
+				).toBe("saved");
 				for (const hold of holds) {
 					expect(await ctx.db.get("quotas", hold.userQuotaId)).toMatchObject({ usedCount: 0 });
 				}
 				if (collaborationEnabled) {
-					expect(result._yay.base).toEqual({ kind: "yjs", sequence: 0, lineageGeneration: 0 });
 					expect(await ctx.db.get("files_yjs_docs_last_sequences", node!.yjsLastSequenceId!)).toMatchObject({
 						lastSequence: 0,
 						lineageGeneration: 0,
 					});
 				} else {
-					expect(result._yay.base).toEqual({ kind: "asset", assetId: prepared.prepared.contentAssetId });
+					expect(node!.yjsLastSequenceId).toBeNull();
 					expect(await ctx.db.query("files_yjs_snapshots").collect()).toEqual([]);
 				}
 			});
@@ -601,51 +581,31 @@ describe("files_nodes_content_db_publish_private_node", () => {
 	);
 
 	test("refuses a saved name collision without publishing assets or settling the draft", async () => {
-		const { t, db, prepared } = await create_private_text_fixture(false);
-		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const { t, db, asUser, proposal, target } = await create_private_text_fixture(false);
 		const occupant = await asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "/private.txt",
 		});
 		expect(occupant._nay).toBeUndefined();
-		const result = await t.run(async (ctx) =>
-			files_nodes_content_db_publish_private_node(ctx, {
-				...prepared,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
-			}),
-		);
+		const holdsBefore = await t.run((ctx) => ctx.db.query("files_private_storage_reservations").collect());
+		const result = await test_save_file_pending_update(asUser, {
+			membershipId: db.membershipId,
+			target,
+			pendingUpdateId: proposal._id,
+			reviewedRevision: proposal.revision,
+		});
 		expect(result._nay).toBeDefined();
 		await t.run(async (ctx) => {
 			expect(await ctx.db.query("files_nodes").collect()).toHaveLength(1);
 			expect(await ctx.db.query("files_snapshots").collect()).toEqual([]);
 			expect(await ctx.db.query("files_pending_node_publish_receipts").collect()).toEqual([]);
-			expect(await ctx.db.get("files_pending_nodes", prepared.node._id)).toMatchObject({
+			expect(await ctx.db.get("files_pending_nodes", target.id as Id<"files_pending_nodes">)).toMatchObject({
 				state: "active",
 				creationGeneration: 1,
 			});
-			expect(
-				(await ctx.db.query("files_private_storage_reservations").collect()).every(
-					(hold) => hold.settlement.kind === "held",
-				),
-			).toBe(true);
+			expect(await ctx.db.query("files_private_storage_reservations").collect()).toEqual(holdsBefore);
 		});
-	});
-
-	test("refuses retired prepared assets before creating any saved data", async () => {
-		const { t, prepared } = await create_private_text_fixture(false);
-		await t.run(async (ctx) =>
-			ctx.db.patch("files_r2_assets", prepared.prepared.contentAssetId, { uploadRetiredAt: Date.now() }),
-		);
-		const result = await t.run(async (ctx) =>
-			files_nodes_content_db_publish_private_node(ctx, {
-				...prepared,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
-			}),
-		);
-		expect(result._nay?.name).toBe("target_changed");
-		expect(await t.run(async (ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
-		expect(await t.run(async (ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
 	});
 });
 
@@ -2118,6 +2078,7 @@ describe("cleanup_file_yjs_task", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId,
+			userId: db.userId,
 			expectedYjsLastSequenceId: fresh.yjsLastSequenceId,
 			sequence: 1,
 			targetSequence: 1,

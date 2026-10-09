@@ -2,14 +2,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import {
-	files_nodes_db_get_content_version,
-	files_nodes_db_hard_delete_node,
-	files_nodes_db_move_nodes,
-} from "./files_nodes.ts";
+import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
-import { test_convex, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_rename_node, test_move_nodes, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
@@ -224,7 +220,7 @@ describe("files_updated_by_docs sync", () => {
 		const leafId = await create_folder("/sort-parent/leaf");
 
 		// The rename creates two folders. The leaf gets the inner one's id only when the plan is applied.
-		const renamed = await asOwner.mutation(api.files_nodes.rename_node, {
+		const renamed = await test_rename_node(t, asOwner, {
 			membershipId: db.membershipId,
 			nodeId: leafId,
 			path: "new/deep/zeta",
@@ -244,31 +240,26 @@ describe("files_updated_by_docs sync", () => {
 			sortName: files_sort_text_key("zeta"),
 		});
 
-		const moved = await asOwner.mutation(api.files_nodes.move_nodes, {
-			membershipId: db.membershipId,
-			itemIds: [newId],
-			targetParentId: files_ROOT_ID,
-		});
+		const moved = await test_move_nodes(t, asOwner, {
+				membershipId: db.membershipId,
+				itemIds: [newId],
+				targetParentId: files_ROOT_ID,
+			});
 		expect(moved._nay).toBeUndefined();
 		expect(await read_doc(newId), "moved folder").toMatchObject({ parentId: files_ROOT_ID, name: "new" });
 		expect(await read_doc(leafId)).toMatchObject({ parentId: deepId, name: "zeta" });
 	});
 
 	test("a move over an existing file archives the destination's doc", async () => {
-		const { t, db, read_doc, read_node } = await fixture();
+		const { t, db, asOwner, read_doc, read_node } = await fixture();
 		const occupantId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path: "/doc.md" });
 		const sourceId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path: "/src/doc.md" });
 
-		const moved = await t.run(async (ctx) => {
-			const membership = await ctx.db.get("organizations_workspaces_users", db.membershipId);
-			const occupant = await ctx.db.get("files_nodes", occupantId);
-			const contentVersion = await files_nodes_db_get_content_version(ctx, occupant!);
-			return await files_nodes_db_move_nodes(ctx, {
-				userAuth: { id: db.userId },
-				membership: membership!,
-				items: [{ nodeId: sourceId, replacement: { nodeId: occupantId, contentVersion } }],
-				targetParentId: "root",
-			});
+		const moved = await test_move_nodes(t, asOwner, {
+			membershipId: db.membershipId,
+			itemIds: [sourceId],
+			targetParentId: "root",
+			replaceNodeId: occupantId,
 		});
 		expect(moved._nay).toBeUndefined();
 

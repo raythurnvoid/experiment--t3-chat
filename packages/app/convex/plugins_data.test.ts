@@ -18,7 +18,7 @@ import {
 import { files_ROOT_ID } from "../server/files.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_rename_node, test_move_nodes, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { access_control_SystemRole } from "../shared/access-control.ts";
 import { public_api_PLUGIN_SERVICE_TOKEN_REGEX } from "../shared/public-api.ts";
@@ -2062,7 +2062,7 @@ describe("invoke file write preconditions", () => {
 				if (change === "rename") {
 					expect(
 						(
-							await fixture.asUser.mutation(api.files_nodes.rename_node, {
+							await test_rename_node(t, fixture.asUser, {
 								membershipId: fixture.membershipId,
 								nodeId: fixture.parentId,
 								path: "/mirror/renamed",
@@ -2072,11 +2072,11 @@ describe("invoke file write preconditions", () => {
 				} else if (change === "move") {
 					expect(
 						(
-							await fixture.asUser.mutation(api.files_nodes.move_nodes, {
-								membershipId: fixture.membershipId,
-								itemIds: [fixture.parentId],
-								targetParentId: files_ROOT_ID,
-							})
+							await test_move_nodes(t, fixture.asUser, {
+									membershipId: fixture.membershipId,
+									itemIds: [fixture.parentId],
+									targetParentId: files_ROOT_ID,
+								})
 						)._nay,
 					).toBeUndefined();
 				} else {

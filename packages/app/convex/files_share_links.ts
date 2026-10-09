@@ -16,7 +16,6 @@ import type { Doc, Id, TableNames } from "./_generated/dataModel.js";
 import { action, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { files_merge_contiguous_chunks, files_nodes_db_get_tree_reader } from "./files_nodes.ts";
-import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
 import { files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
 import { files_subtree_ops_db_find_blocked_paths } from "./files_subtree_ops.ts";
 import { r2 } from "./r2_client.ts";
@@ -25,6 +24,12 @@ import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_resolve_read_target,
+} from "../server/files-saved-placement.ts";
+import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
+import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
 import {
 	files_editable_text_shape_of,
 	files_get_signed_download_serving,
@@ -119,7 +124,7 @@ export async function files_share_links_db_resolve_live_scope(
 			return null;
 		}
 
-		const parent = await ctx.db.get("files_nodes", parentId);
+		const parent = await files_saved_placement_db_get_node(ctx.db, parentId);
 		if (!parent || parent.organizationId !== args.node.organizationId || parent.workspaceId !== args.node.workspaceId) {
 			return null;
 		}
@@ -351,6 +356,14 @@ async function reads_get<TableName extends TableNames>(args: {
 	return doc;
 }
 
+async function reads_get_node(args: { ctx: QueryCtx; reads: ViewReads; id: Id<"files_nodes"> }) {
+	// A reserved node adds one cohort and one candidate read.
+	reads_reserve({ reads: args.reads, calls: 3, docs: 3 });
+	const node = await files_saved_placement_db_get_node(args.ctx.db, args.id);
+	reads_count(args.reads, node);
+	return node;
+}
+
 /**
  * Read the docs of one index range. Count each doc before Convex reads it.
  */
@@ -398,7 +411,7 @@ async function db_read_folder_chain(args: {
 			return null;
 		}
 
-		const folder = await reads_get({ ctx, reads, table: "files_nodes", id: folderId });
+		const folder = await reads_get_node({ ctx, reads, id: folderId });
 		reads_reserve({ reads, calls: 2, docs: 2 });
 		if (
 			!folder ||
@@ -547,7 +560,7 @@ async function db_read_media_node(args: {
 		const privateNodeId = ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId);
 		if (privateNodeId) {
 			reads_reserve({ reads, calls: 1, docs: 1 });
-			const resolved = await files_pending_nodes_db_resolve_read_target(ctx, {
+			const resolved = await files_saved_placement_db_resolve_read_target(ctx.db, {
 				organizationId: reads.organizationId,
 				workspaceId: reads.workspaceId,
 				target: { kind: "private", id: privateNodeId },
@@ -559,7 +572,7 @@ async function db_read_media_node(args: {
 		return null;
 	}
 
-	const mediaNode = await reads_get({ ctx, reads, table: "files_nodes", id: mediaNodeId });
+	const mediaNode = await reads_get_node({ ctx, reads, id: mediaNodeId });
 	if (
 		!mediaNode ||
 		mediaNode.kind !== "file" ||
@@ -648,7 +661,7 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 		.query("files_share_links")
 		.withIndex("by_token", (q) => q.eq("token", token))
 		.first();
-	if (!link) {
+	if (!link || !(await files_share_links_db_is_selected(ctx.db, link))) {
 		return null;
 	}
 
@@ -660,7 +673,7 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 	};
 	reads_count(reads, link);
 
-	const node = await reads_get({ ctx, reads, table: "files_nodes", id: link.nodeId });
+	const node = await reads_get_node({ ctx, reads, id: link.nodeId });
 	if (
 		!node ||
 		node.kind !== "file" ||
@@ -690,15 +703,11 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 	if (node.textKind !== null) {
 		for await (const chunk of reads_iterate(
 			reads,
-			ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q
-						.eq("organizationId", link.organizationId)
-						.eq("workspaceId", link.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", node._id),
-				),
+			files_saved_content_db_text_chunks(ctx.db, {
+				organizationId: link.organizationId,
+				workspaceId: link.workspaceId,
+				nodeId: node._id,
+			}),
 		)) {
 			if (chunk.sourceKind === "committed") {
 				chunks.push(chunk);
@@ -1131,12 +1140,17 @@ export const list_workspace_links = query({
 		const { userAuth, membership } = reader;
 
 		// `set_node_share_link` keeps at most this many links in a workspace.
-		const links = await ctx.db
+		const stored = await ctx.db
 			.query("files_share_links")
 			.withIndex("by_organization_workspace_node", (q) =>
 				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
 			)
 			.take(files_share_links_MAX_PER_WORKSPACE);
+		const links = (
+			await Promise.all(
+				stored.map(async (link) => ((await files_share_links_db_is_selected(ctx.db, link)) ? link : null)),
+			)
+		).filter((link) => link !== null);
 
 		// The link doc keeps the file's restricted scope. The hooks that change a file's scope delete its
 		// link in the same write, so the nodes do not need to be loaded here.

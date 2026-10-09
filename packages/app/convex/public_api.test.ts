@@ -237,6 +237,7 @@ async function seed_markdown_file(args: {
 					q
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", parentPath)
 						.eq("archiveOperationId", null),
 				)
@@ -1325,6 +1326,9 @@ describe("public files API", () => {
 			scopes: ["files:list"],
 		});
 		if (key._nay) throw new Error(key._nay.message);
+		expect(await t.query(internal.public_api.get_file_read_membership, {
+			organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
+		})).not.toBeNull();
 		for (const path of ["/", "/scope", `/scope/${suffix}folder`]) {
 			for (const contentTypePrefixes of [undefined, ["image/png;charset="]]) {
 				const response = await t.fetch("/api/v1/files/list", {
@@ -2005,6 +2009,7 @@ describe("public files API", () => {
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/api-stamped/report.md")
 						.eq("archiveOperationId", null),
 				)
@@ -4528,6 +4533,7 @@ describe("files upload-urls", () => {
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/imports/pending.bin")
 						.eq("archiveOperationId", null),
 				)
@@ -4587,6 +4593,7 @@ describe("files upload-urls", () => {
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/imports/big.bin")
 						.eq("archiveOperationId", null),
 				)
@@ -4628,6 +4635,7 @@ describe("files upload-urls", () => {
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/imports/paid.bin")
 						.eq("archiveOperationId", null),
 				)
@@ -4730,6 +4738,7 @@ describe("files write-many", () => {
 					q
 						.eq("organizationId", args.db.organizationId)
 						.eq("workspaceId", args.db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", args.path)
 						.eq("archiveOperationId", null),
 				)
@@ -5192,6 +5201,7 @@ describe("files write billing", () => {
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/billing/refused.md")
 						.eq("archiveOperationId", null),
 				)
@@ -5326,6 +5336,7 @@ describe("files write billing", () => {
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/billing/batch-1.md")
 						.eq("archiveOperationId", null),
 				)
@@ -5511,6 +5522,7 @@ describe("files read-only locks", () => {
 					q
 						.eq("organizationId", args.db.organizationId)
 						.eq("workspaceId", args.db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", args.path)
 						.eq("archiveOperationId", null),
 				)
@@ -6872,6 +6884,7 @@ describe("files read-only locks", () => {
 					q
 						.eq("organizationId", writer.db.organizationId)
 						.eq("workspaceId", writer.db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/appeared-aba.md")
 						.eq("archiveOperationId", null),
 				)
@@ -7115,6 +7128,7 @@ describe("service file writes", () => {
 					q
 						.eq("organizationId", args.db.organizationId)
 						.eq("workspaceId", args.db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", args.path)
 						.eq("archiveOperationId", null),
 				)
@@ -7903,7 +7917,7 @@ describe("service file writes", () => {
 			ctx.db
 				.query("files_nodes")
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/meetings"),
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("moveCohortId", undefined).eq("path", "/meetings"),
 				)
 				.first(),
 		);

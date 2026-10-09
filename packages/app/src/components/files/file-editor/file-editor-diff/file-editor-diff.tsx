@@ -10,6 +10,7 @@ import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
 import { useConvex, useQuery } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { cn, copy_to_clipboard, should_never_happen, sx } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { app_qa_register_monaco_editor } from "@/lib/app-qa.ts";
@@ -2500,6 +2501,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	const targetKey = `${target.kind}:${target.id}`;
 
 	const convex = useConvex();
+	const { openReviewRun } = AppActivitiesProvider.useContext();
 	const pendingUpdateResult = useStableQuery(api.files_pending_updates.get_file_pending_update, {
 		membershipId,
 		target,
@@ -2656,6 +2658,10 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 					return;
 				}
 				toast.error(savePendingResult._nay.message ?? "Failed to save pending updates");
+				return;
+			}
+			if ("kind" in savePendingResult._yay) {
+				openReviewRun(savePendingResult._yay.runId);
 				return;
 			}
 			if (savePendingResult._yay.target.kind !== target.kind || savePendingResult._yay.target.id !== target.id) {

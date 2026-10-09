@@ -1,9 +1,10 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { useSyncExternalStore, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
 
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
+import { useFilesPendingUpdates } from "@/hooks/files-pending-list-hooks.ts";
 
 const {
 	tenantContextMock,
@@ -22,6 +23,8 @@ const {
 	loadMoreMock,
 	pagination,
 	reviewStart,
+	moveView,
+	cohortUpdates,
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	useQueryMock: vi.fn(),
@@ -39,6 +42,13 @@ const {
 	loadMoreMock: vi.fn(),
 	pagination: { status: "Exhausted" as "CanLoadMore" | "LoadingMore" | "Exhausted" },
 	reviewStart: { isStarting: false, listeners: new Set<() => void>() },
+	moveView: {
+		cohortId: null as app_convex_Id<"files_move_cohorts"> | null,
+		view: null as "before" | "after" | null,
+		generation: 0,
+		searchGeneration: 0,
+	},
+	cohortUpdates: { current: [] as app_convex_Doc<"files_pending_updates">[] },
 }));
 
 // Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
@@ -46,16 +56,18 @@ const {
 // sources, the summary and each row's view are built from them, like the server builds them.
 vi.mock("convex/react", () => ({
 	useQuery: (query: unknown, args: unknown) => {
+		const queryResultMock = useQueryMock;
+		if (query === "get_workspace_move_view") return moveView;
 		// The summary counts the test's proposals, like the list.
 		const isSummary = query === "get_files_pending_updates_summary";
-		const result = useQueryMock(isSummary ? "list_files_pending_updates" : query, args);
+		const result = queryResultMock(isSummary ? "list_files_pending_updates" : query, args);
 		return isSummary ? makeSummaryFixture(result, (args as { listKey: string }).listKey) : result;
 	},
-	usePaginatedQuery: (query: unknown, args: { listKey?: string }) => {
-		const updates: app_convex_Doc<"files_pending_updates">[] | undefined = useQueryMock(
-			"list_files_pending_updates",
-			args,
-		);
+	usePaginatedQuery: (query: unknown, args: { listKey?: string; savedStream?: { kind: string } } | "skip") => {
+		const queryResultMock = useQueryMock;
+		if (args === "skip") return { results: [], status: "Exhausted", loadMore: loadMoreMock };
+		const updates: app_convex_Doc<"files_pending_updates">[] | undefined =
+			args.savedStream?.kind === "cohort" ? cohortUpdates.current : queryResultMock("list_files_pending_updates", args);
 		return {
 			results:
 				(query === "list_files_pending_sources"
@@ -145,6 +157,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			accept_file_pending_replacement: "accept_file_pending_replacement",
 		},
 		files_nodes: {
+			get_workspace_move_view: "get_workspace_move_view",
 			get_file_node_for_membership: "get_file_node_for_membership",
 			get_current_user_file_write_permission: "get_current_user_file_write_permission",
 		},
@@ -370,12 +383,15 @@ function listKeysOf(pendingUpdate: app_convex_Doc<"files_pending_updates">) {
 function makeListRowFixtures(updates: app_convex_Doc<"files_pending_updates">[] | undefined, listKey: string) {
 	return updates
 		?.filter((pendingUpdate) => listKeysOf(pendingUpdate).includes(listKey))
-		.map((pendingUpdate) => {
+		.map((pendingUpdate, index) => {
 			listedUpdatesById.set(pendingUpdate._id, pendingUpdate);
 			return {
 				target: pendingUpdate.target,
 				pendingUpdateId: pendingUpdate._id,
 				revision: pendingUpdate.revision,
+				updatedAt: updates!.length - index,
+				listRowCreationTime: pendingUpdate._creationTime,
+				listRowId: `${pendingUpdate._id}_row`,
 				...(pendingUpdate.threadIds ? { threadIds: pendingUpdate.threadIds } : {}),
 				hasReadyContent: true,
 			};
@@ -384,7 +400,15 @@ function makeListRowFixtures(updates: app_convex_Doc<"files_pending_updates">[] 
 
 // `list_files_pending_sources`: the list keys with changes, newest first, without "all".
 function makeSourceKeyFixtures(updates: app_convex_Doc<"files_pending_updates">[] | undefined) {
-	return updates && [...new Set(updates.flatMap((pendingUpdate) => listKeysOf(pendingUpdate).slice(1)))];
+	return (
+		updates &&
+		[...new Set(updates.flatMap((pendingUpdate) => listKeysOf(pendingUpdate).slice(1)))].map((listKey, index) => ({
+			listKey,
+			lastUpdatedAt: updates.length - index,
+			keyCreationTime: index,
+			keyId: `${listKey}_key`,
+		}))
+	);
 }
 
 function makeSummaryFixture(updates: app_convex_Doc<"files_pending_updates">[] | undefined, listKey: string) {
@@ -540,6 +564,8 @@ function makeNode(args: {
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 
 beforeEach(() => {
+	Object.assign(moveView, { cohortId: null, view: null, generation: 0, searchGeneration: 0 });
+	cohortUpdates.current = [];
 	startReviewMock.mockReset();
 	startReviewMock.mockResolvedValue(undefined);
 	reviewStart.isStarting = false;
@@ -592,6 +618,32 @@ afterEach(() => {
 });
 
 describe("FileEditorSidebarPending", () => {
+	test("merges normal and selected Pending rows once by the full sort key", () => {
+		Object.assign(moveView, { cohortId: "cohort_1", view: "before", generation: 6 });
+		const normal = makePendingUpdate({ id: "pu_a", fileNodeId: "a" });
+		const selected = makePendingUpdate({ id: "pu_b", fileNodeId: "b" });
+		const shared = makePendingUpdate({ id: "pu_shared", fileNodeId: "shared" });
+		useQueryMock.mockReturnValue([normal, shared]);
+		cohortUpdates.current = [selected, shared];
+		const { result } = renderHook(() => useFilesPendingUpdates({ membershipId: MEMBERSHIP_ID, listKey: "all" }));
+		expect(
+			result.current.results.map((row) => row.pendingUpdateId),
+			"selected Pending rows remain in the merged page",
+		).toEqual(["pu_b", "pu_a", "pu_shared"]);
+		expect(result.current.status).toBe("Exhausted");
+	});
+
+	test("waits for an empty continuing source before showing later Pending rows", () => {
+		Object.assign(moveView, { cohortId: "cohort_1", view: "before", generation: 6 });
+		useQueryMock.mockReturnValue([]);
+		cohortUpdates.current = [makePendingUpdate({ id: "pu_b", fileNodeId: "b" })];
+		pagination.status = "CanLoadMore";
+		const { result } = renderHook(() => useFilesPendingUpdates({ membershipId: MEMBERSHIP_ID, listKey: "all" }));
+		expect(result.current.results).toEqual([]);
+		result.current.loadMore(20);
+		expect(loadMoreMock).toHaveBeenCalledWith(20);
+	});
+
 	test("waits for the owner query before listing pending changes", () => {
 		useQueryMock.mockReturnValue(undefined);
 		treeNodesMock.mockReturnValue(undefined);

@@ -6,7 +6,7 @@ import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import { files_pending_updates_action_stage_private_state_family } from "./files_pending_updates.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_set_file_metadata,
@@ -203,7 +203,7 @@ describe("agent file write source", () => {
 		expect(await balances()).toEqual(before);
 		const proposal = (await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect()))[0]!;
 		expect(proposal.workspaceId).toBe(f.home.workspaceId);
-		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(f.asUser, {
 			membershipId: f.home.membershipId,
 			target: proposal.target,
 			pendingUpdateId: proposal._id,
@@ -224,7 +224,7 @@ describe("agent file write source", () => {
 			kind: "folder",
 		});
 		if (created._nay || !created._yay.pendingUpdateId) throw new Error("Expected a folder proposal");
-		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(f.asUser, {
 			membershipId: f.home.membershipId,
 			target: created._yay.target,
 			pendingUpdateId: created._yay.pendingUpdateId,
@@ -595,7 +595,7 @@ describe("agent file write source", () => {
 				userIdToRemove: f.home.userId,
 			}),
 		).toEqual({ _yay: null });
-		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(f.asUser, {
 			membershipId: f.home.membershipId,
 			target: created._yay.target,
 			pendingUpdateId: created._yay.pendingUpdateId,

@@ -58,6 +58,7 @@ import {
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { files_saved_placement_db_get_node, files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 
 // #region shared
 
@@ -402,7 +403,7 @@ async function db_validate_target_node(
 		return false;
 	}
 
-	const destination = await ctx.db.get("files_nodes", args.destinationNodeId);
+	const destination = await files_saved_placement_db_get_node(ctx.db, args.destinationNodeId);
 	if (
 		!destination ||
 		destination.kind !== "folder" ||
@@ -414,7 +415,7 @@ async function db_validate_target_node(
 
 	let parentId = node.parentId;
 	while (parentId !== files_ROOT_ID && parentId !== destination._id) {
-		const parent = await ctx.db.get("files_nodes", parentId);
+		const parent = await files_saved_placement_db_get_node(ctx.db, parentId);
 		if (!parent || parent.organizationId !== args.organizationId || parent.workspaceId !== args.workspaceId) {
 			return false;
 		}
@@ -509,7 +510,7 @@ async function db_authorize_live_target_node(
 		return Result({ _nay: { message: "Not found" } });
 	}
 
-	const node = await ctx.db.get("files_nodes", args.target.nodeId);
+	const node = await files_saved_placement_db_get_node(ctx.db, args.target.nodeId);
 	if (!node) {
 		return Result({ _nay: { message: "Not found" } });
 	}
@@ -585,7 +586,7 @@ async function db_get_live_delete_group_targets(
 			continue;
 		}
 
-		const node = await ctx.db.get("files_nodes", target.nodeId);
+		const node = await files_saved_placement_db_get_node(ctx.db, target.nodeId);
 		if (node && !public_api_is_path_inside_prefix(node.path, target.destinationPath)) {
 			await ctx.db.patch("plugin_service_storage_targets", target._id, {
 				movedOutAt: now,
@@ -899,16 +900,11 @@ export const create_upload_target = internalMutation({
 
 		// A service never overwrites. A meeting's files land on fresh paths; a collision means either a
 		// replay under a new target key (a caller bug) or a member's file, and both must survive.
-		const existingNode = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-				q
-					.eq("organizationId", args.principal.organizationId)
-					.eq("workspaceId", args.principal.workspaceId)
-					.eq("path", args.path)
-					.eq("archiveOperationId", null),
-			)
-			.first();
+		const existingNode = await files_db_get_visible_node_by_path(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			path: args.path,
+		});
 		if (existingNode) {
 			// Check access first so a restricted file the actor cannot see still answers Permission
 			// denied instead of revealing that the path is taken.
@@ -933,16 +929,11 @@ export const create_upload_target = internalMutation({
 		let effectiveDestinationAclNode: Doc<"files_nodes"> | null = null;
 		for (let index = 1; index < segments.length; index++) {
 			const ancestorPath = `/${segments.slice(0, index).join("/")}`;
-			const ancestor = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", args.principal.organizationId)
-						.eq("workspaceId", args.principal.workspaceId)
-						.eq("path", ancestorPath)
-						.eq("archiveOperationId", null),
-				)
-				.first();
+			const ancestor = await files_db_get_visible_node_by_path(ctx, {
+				organizationId: args.principal.organizationId,
+				workspaceId: args.principal.workspaceId,
+				path: ancestorPath,
+			});
 			if (!ancestor) {
 				continue;
 			}
@@ -1544,7 +1535,7 @@ export const delete_upload_target = internalMutation({
 			path: string;
 		}> = [];
 		for (const target of liveTargets) {
-			const node = await ctx.db.get("files_nodes", target.nodeId);
+			const node = await files_saved_placement_db_get_node(ctx.db, target.nodeId);
 			// A member may move a service file after upload. The old seal no longer reaches that live
 			// node, and its new path must not appear in this response.
 			if (node && !public_api_is_path_inside_prefix(node.path, args.principal.pathPrefix)) {
@@ -1749,6 +1740,7 @@ export async function public_api_service_uploads_db_collect_bounded_descendants(
 ) {
 	const descendants: Array<Doc<"files_nodes">> = [];
 	const stack = [args.parentId];
+	const view = await files_saved_placement_db_get_view(ctx.db, args);
 
 	while (stack.length > 0) {
 		const parentId = stack.pop();
@@ -1756,14 +1748,23 @@ export async function public_api_service_uploads_db_collect_bounded_descendants(
 			continue;
 		}
 		const remaining = args.maxNodes - descendants.length;
-		const children = await ctx.db
+		const normal = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", parentId),
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined).eq("parentId", parentId),
 			)
 			.take(remaining + 1);
-		if (children.length > remaining) {
+		const selected = view.cohortId === null ? [] : await ctx.db.query("files_saved_places")
+			.withIndex("by_view_parent_name_archive", (q) => q.eq("cohortId", view.cohortId)
+				.eq("view", view.view).eq("parentId", parentId)).take(remaining + 1);
+		if (normal.length + selected.length > remaining) {
 			return null;
+		}
+		const children = [...normal];
+		for (const place of selected) {
+			const node = await files_saved_placement_db_get_node(ctx.db, place.nodeId, { cohortId: place.cohortId, view: place.view });
+			if (!node) throw should_never_happen("A selected service archive node is missing", { nodeId: place.nodeId });
+			children.push(node);
 		}
 		for (const child of children) {
 			descendants.push(child);
@@ -1844,16 +1845,11 @@ export const archive_destination = internalMutation({
 			}
 			throughEpoch = record?.currentEpoch ?? 1;
 
-			const labelledFolder = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", args.principal.organizationId)
-						.eq("workspaceId", args.principal.workspaceId)
-						.eq("path", args.principal.pathPrefix)
-						.eq("archiveOperationId", null),
-				)
-				.first();
+			const labelledFolder = await files_db_get_visible_node_by_path(ctx, {
+				organizationId: args.principal.organizationId,
+				workspaceId: args.principal.workspaceId,
+				path: args.principal.pathPrefix,
+			});
 			if (
 				labelledFolder?.kind !== "folder" ||
 				(await files_metadata_db_read_entry(ctx, {
@@ -1872,7 +1868,7 @@ export const archive_destination = internalMutation({
 			}
 			throughEpoch = stableTarget.destinationEpoch;
 
-			const targetFolder = await ctx.db.get("files_nodes", stableTarget.destinationNodeId);
+			const targetFolder = await files_saved_placement_db_get_node(ctx.db, stableTarget.destinationNodeId);
 			if (!targetFolder) {
 				// A target proves this folder existed. Refuse instead of telling the caller its delete worked.
 				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination folder no longer exists" } });
@@ -1888,16 +1884,11 @@ export const archive_destination = internalMutation({
 			// A member can restore an older generation after a newer folder used the same path. Follow
 			// that active folder only when a target proves this installation created that exact node.
 			if (targetFolder.archiveOperationId !== null) {
-				const restoredDestination = await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-						q
-							.eq("organizationId", args.principal.organizationId)
-							.eq("workspaceId", args.principal.workspaceId)
-							.eq("path", args.principal.pathPrefix)
-							.eq("archiveOperationId", null),
-					)
-					.first();
+				const restoredDestination = await files_db_get_visible_node_by_path(ctx, {
+					organizationId: args.principal.organizationId,
+					workspaceId: args.principal.workspaceId,
+					path: args.principal.pathPrefix,
+				});
 				const restoredTarget =
 					restoredDestination?.kind === "folder"
 						? await ctx.db

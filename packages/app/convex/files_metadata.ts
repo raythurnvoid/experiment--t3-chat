@@ -1,4 +1,4 @@
-import type { RegisteredQuery } from "convex/server";
+import type { RegisteredQuery, WithoutSystemFields } from "convex/server";
 import { compareValues, v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
@@ -33,6 +33,9 @@ import {
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_pending_overlay_list_over_budget } from "../server/files-pending-overlay.ts";
+import { files_index_range_apply } from "../server/files-index-range.ts";
+import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
+import { files_saved_content_db_get_tags } from "../server/files-saved-content.ts";
 import {
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_frontmatter_exceeds_index_caps,
@@ -54,6 +57,12 @@ import {
 import { files_sort_text_key, files_sort_value_of } from "../shared/files-sort.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { files_db_get_visible_node_by_path, files_db_patch_pending_update } from "../server/files.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_node_view,
+	files_saved_placement_db_get_view,
+	type files_saved_placement_FixedView,
+} from "../server/files-saved-placement.ts";
 import {
 	files_pending_update_content_is_stale,
 	files_pending_update_has_pending_chunks,
@@ -110,7 +119,10 @@ function value_doc_payload(value: files_metadata_Value) {
  * The flag and the key come from `restrictedScopeNodeId` and `name`, the fields the node's stored
  * copies are built from, so the field doc always matches the node's real state.
  */
-function committed_field_sort_fields(fileNode: Doc<"files_nodes">, fieldValues: files_metadata_Value[]) {
+export function files_metadata_committed_field_sort_fields(
+	fileNode: Doc<"files_nodes">,
+	fieldValues: files_metadata_Value[],
+) {
 	const sortValue = files_sort_value_of(fieldValues);
 	return {
 		parentId: fileNode.parentId,
@@ -145,6 +157,8 @@ export async function files_metadata_db_delete_committed_frontmatter(
 				.eq("workspaceId", args.workspaceId)
 				.eq("sourceKind", "committed")
 				.eq("fileNodeId", args.nodeId)
+				.eq("moveView.cohortId", undefined)
+				.eq("moveView.view", undefined)
 				.gte("fieldPath", files_metadata_FRONTMATTER_FIELD_PREFIX)
 				.lt("fieldPath", "frontmatter/"),
 		)
@@ -158,7 +172,9 @@ export async function files_metadata_db_delete_pending(
 ) {
 	const docs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+		.withIndex("by_pendingUpdate_fieldPath", (q) =>
+			q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+		)
 		.collect();
 	await Promise.all(docs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
 }
@@ -228,7 +244,7 @@ export async function files_metadata_db_insert_committed(
 				...scope,
 				fieldPath,
 				docKind: "field" as const,
-				...committed_field_sort_fields(
+				...files_metadata_committed_field_sort_fields(
 					fileNode,
 					metadata.values.filter((value) => value.fieldPath === fieldPath),
 				),
@@ -242,6 +258,91 @@ export async function files_metadata_db_insert_committed(
 			}),
 		),
 	]);
+}
+
+/**
+ * Build one file's write-bounded metadata. The cohort writes this output in pages.
+ */
+export function files_metadata_content_stage_docs(args: {
+	node: Doc<"files_nodes">;
+	metadata?: files_metadata_Entry[];
+	yjsSequence?: number;
+	text?: string;
+	pending?: {
+		proposalId: Id<"files_pending_updates">;
+		proposal: WithoutSystemFields<Doc<"files_pending_updates">>;
+		text?: string;
+	};
+}) {
+	const docs: WithoutSystemFields<Doc<"files_metadata_docs">>[] = [];
+	const build = (text: string | undefined, createMetadata: files_metadata_Entry[] = []) => {
+		const metadata = files_metadata_extract_entries(createMetadata);
+		const entryIndexByField = new Map(metadata.fields.map((field, index) => [field, index]));
+		const preflight = text === undefined ? null : files_metadata_preflight_frontmatter(text);
+		if (preflight?._yay) {
+			if (files_metadata_frontmatter_exceeds_index_caps(preflight._yay))
+				throw convex_error({ message: "Too many frontmatter fields" });
+			metadata.fields.push(...preflight._yay.metadata.fields);
+			metadata.values.push(...preflight._yay.metadata.values);
+		}
+		return { metadata, entryIndexByField };
+	};
+	const committed = build(args.node.textKind === "rich_text" ? args.text : undefined, args.metadata);
+	const savedScope = {
+		organizationId: args.node.organizationId,
+		workspaceId: args.node.workspaceId,
+		fileNodeId: args.node._id,
+		sourceKind: "committed" as const,
+		yjsSequence: args.yjsSequence,
+		path: args.node.path,
+		treePath: args.node.treePath,
+		archiveOperationId: args.node.archiveOperationId ?? undefined,
+	};
+	for (const fieldPath of committed.metadata.fields)
+		docs.push({
+			...savedScope,
+			fieldPath,
+			docKind: "field",
+			...files_metadata_committed_field_sort_fields(
+				args.node,
+				committed.metadata.values.filter((value) => value.fieldPath === fieldPath),
+			),
+		});
+	for (const value of committed.metadata.values)
+		docs.push({
+			...savedScope,
+			fieldPath: value.fieldPath,
+			entryIndex: committed.entryIndexByField.get(value.fieldPath),
+			...value_doc_payload(value),
+		});
+	if (args.pending) {
+		const proposal = args.pending.proposal;
+		const pending = build(
+			args.node.textKind === "rich_text" ? args.pending.text : undefined,
+			proposal.createIntent?.metadata ?? [],
+		);
+		const scope = {
+			organizationId: proposal.organizationId,
+			workspaceId: proposal.workspaceId,
+			userId: proposal.userId,
+			target: proposal.target,
+			pendingUpdateId: args.pending.proposalId,
+			proposalRevision: proposal.revision,
+			sourceKind: "pending" as const,
+			path: args.node.path,
+			treePath: args.node.path,
+			archiveOperationId: args.node.archiveOperationId ?? undefined,
+		};
+		for (const fieldPath of pending.metadata.fields) docs.push({ ...scope, fieldPath, docKind: "field" });
+		for (const value of pending.metadata.values)
+			docs.push({
+				...scope,
+				fieldPath: value.fieldPath,
+				entryIndex: pending.entryIndexByField.get(value.fieldPath),
+				...value_doc_payload(value),
+			});
+	}
+	return docs;
 }
 
 export async function files_metadata_db_replace_pending(
@@ -318,6 +419,7 @@ export async function files_metadata_db_patch_file_scope(
 		organizationId: Doc<"files_metadata_docs">["organizationId"];
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		nodeId: Id<"files_nodes">;
+		fixedView?: files_saved_placement_FixedView;
 		path?: string;
 		treePath?: string;
 		archiveOperationId?: string;
@@ -351,26 +453,18 @@ export async function files_metadata_db_patch_file_scope(
 		sortFieldsPatch.name = args.name;
 		sortFieldsPatch.sortName = files_sort_text_key(args.name);
 	}
-	const docs = (
-		await Promise.all([
-			ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-				)
-				.collect(),
-			ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("target.kind", "saved")
-						.eq("target.id", args.nodeId),
-				)
-				.collect(),
-		])
-	).flat();
+	// Committed metadata is bounded by its write caps. Other owners' pending docs follow in pages.
+	const docs = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("fileNodeId", args.nodeId)
+				.eq("moveView.cohortId", args.fixedView?.cohortId)
+				.eq("moveView.view", args.fixedView?.view),
+		)
+		.collect();
 	await Promise.all(
 		docs.flatMap((doc) => {
 			const docPatch =
@@ -477,6 +571,18 @@ async function db_search_sample_is_readable(args: {
 	return false;
 }
 
+function merge_search_samples(pages: Doc<"files_metadata_docs">[][]) {
+	return pages
+		.flat()
+		.sort((a, b) =>
+			compareValues(
+				[a.stringValue ?? null, a.treePath, a._creationTime, a._id],
+				[b.stringValue ?? null, b.treePath, b._creationTime, b._id],
+			),
+		)
+		.slice(0, SEARCH_CATALOG_SAMPLE_DOCS);
+}
+
 /**
  * The index range of one plan over saved (committed), active docs, for the search box
  * (`files_nodes.search_saved`) and the agent's metadata stream (`files_visible.internal_search_metadata_saved`).
@@ -492,6 +598,8 @@ export function files_metadata_db_query_saved_plan(
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		plan: files_metadata_SearchPlan;
 		treePathPrefix: string | null;
+		moveView?: files_saved_placement_FixedView;
+		bounds?: Parameters<typeof files_index_range_apply>[1];
 	},
 ) {
 	const { plan, treePathPrefix } = args;
@@ -502,9 +610,12 @@ export function files_metadata_db_query_saved_plan(
 					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
 					.eq("sourceKind", "committed")
+					.eq("moveView.cohortId", args.moveView?.cohortId)
+					.eq("moveView.view", args.moveView?.view)
 					.eq("archiveOperationId", undefined)
 					.eq("docKind", "field")
 					.eq("fieldPath", plan.fieldPath);
+				if (args.bounds) return files_index_range_apply(base, args.bounds);
 				return treePathPrefix === null
 					? base
 					: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
@@ -520,11 +631,14 @@ export function files_metadata_db_query_saved_plan(
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("sourceKind", "committed")
+							.eq("moveView.cohortId", args.moveView?.cohortId)
+							.eq("moveView.view", args.moveView?.view)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
 							.eq("fieldPath", plan.fieldPath)
 							.eq("valueKind", "string")
 							.eq("stringValue", value);
+						if (args.bounds) return files_index_range_apply(base, args.bounds);
 						return treePathPrefix === null
 							? base
 							: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
@@ -540,11 +654,14 @@ export function files_metadata_db_query_saved_plan(
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("sourceKind", "committed")
+							.eq("moveView.cohortId", args.moveView?.cohortId)
+							.eq("moveView.view", args.moveView?.view)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
 							.eq("fieldPath", plan.fieldPath)
 							.eq("valueKind", "number")
 							.eq("numberValue", value);
+						if (args.bounds) return files_index_range_apply(base, args.bounds);
 						return treePathPrefix === null
 							? base
 							: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
@@ -560,11 +677,14 @@ export function files_metadata_db_query_saved_plan(
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("sourceKind", "committed")
+							.eq("moveView.cohortId", args.moveView?.cohortId)
+							.eq("moveView.view", args.moveView?.view)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
 							.eq("fieldPath", plan.fieldPath)
 							.eq("valueKind", "boolean")
 							.eq("booleanValue", value);
+						if (args.bounds) return files_index_range_apply(base, args.bounds);
 						return treePathPrefix === null
 							? base
 							: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
@@ -579,13 +699,16 @@ export function files_metadata_db_query_saved_plan(
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("sourceKind", "committed")
+						.eq("moveView.cohortId", args.moveView?.cohortId)
+						.eq("moveView.view", args.moveView?.view)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
 						.eq("fieldPath", plan.fieldPath)
-						.eq("valueKind", "string")
-						.gte("stringValue", plan.value);
+						.eq("valueKind", "string");
+					if (args.bounds) return files_index_range_apply(base, args.bounds);
+					const lower = base.gte("stringValue", plan.value);
 					const upperBound = string_prefix_upper_bound(plan.value);
-					return upperBound === null ? base : base.lt("stringValue", upperBound);
+					return upperBound === null ? lower : lower.lt("stringValue", upperBound);
 				});
 
 		case "range":
@@ -597,10 +720,13 @@ export function files_metadata_db_query_saved_plan(
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("sourceKind", "committed")
+						.eq("moveView.cohortId", args.moveView?.cohortId)
+						.eq("moveView.view", args.moveView?.view)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
 						.eq("fieldPath", plan.fieldPath)
 						.eq("valueKind", plan.valueKind);
+					if (args.bounds) return files_index_range_apply(base, args.bounds);
 					if (plan.gte != null) {
 						const lower = base.gte("numberValue", plan.gte);
 						if (plan.lte != null) return lower.lte("numberValue", plan.lte);
@@ -645,6 +771,11 @@ export const list_search_fields = query({
 		}
 
 		const { organizationId, workspaceId } = caller.membership;
+		const moveView = await files_saved_placement_db_get_view(ctx.db, caller.membership);
+		const views = [
+			undefined,
+			...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }]),
+		];
 		const mut_cache: SearchSampleCache = {
 			reader: await files_search_db_create_reader(ctx, {
 				organizationId,
@@ -669,19 +800,29 @@ export const list_search_fields = query({
 			!mut_cache.overBudget
 		) {
 			const after = lastFieldPath;
-			const nextFieldDoc = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_org_ws_source_archive_docKind_field_tree", (q) =>
-					q
-						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("archiveOperationId", undefined)
-						.eq("docKind", "field")
-						.gt("fieldPath", after),
-				)
-				.first();
-			mut_cache.reads += 1;
+			const nextFields = await Promise.all(
+				views.map((view) =>
+					ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_org_ws_source_archive_docKind_field_tree", (q) =>
+							q
+								.eq("organizationId", organizationId)
+								.eq("workspaceId", workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("moveView.cohortId", view?.cohortId)
+								.eq("moveView.view", view?.view)
+								.eq("archiveOperationId", undefined)
+								.eq("docKind", "field")
+								.gt("fieldPath", after),
+						)
+						.first(),
+				),
+			);
+			const nextFieldDoc = nextFields.reduce<Doc<"files_metadata_docs"> | null>(
+				(first, doc) => (doc && (!first || compareValues(doc.fieldPath, first.fieldPath) < 0) ? doc : first),
+				null,
+			);
+			mut_cache.reads += views.length;
 			if (!nextFieldDoc) {
 				break;
 			}
@@ -693,39 +834,55 @@ export const list_search_fields = query({
 			}
 
 			// The samples are read raw, so one index read is one read.
-			const fieldDocs = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_org_ws_source_archive_docKind_field_tree", (q) =>
-					q
-						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("archiveOperationId", undefined)
-						.eq("docKind", "field")
-						.eq("fieldPath", fieldPath),
-				)
-				.take(SEARCH_CATALOG_SAMPLE_DOCS);
-			mut_cache.reads += 1;
+			const fieldDocs = merge_search_samples(
+				await Promise.all(
+					views.map((view) =>
+						ctx.db
+							.query("files_metadata_docs")
+							.withIndex("by_org_ws_source_archive_docKind_field_tree", (q) =>
+								q
+									.eq("organizationId", organizationId)
+									.eq("workspaceId", workspaceId)
+									.eq("sourceKind", "committed")
+									.eq("moveView.cohortId", view?.cohortId)
+									.eq("moveView.view", view?.view)
+									.eq("archiveOperationId", undefined)
+									.eq("docKind", "field")
+									.eq("fieldPath", fieldPath),
+							)
+							.take(SEARCH_CATALOG_SAMPLE_DOCS),
+					),
+				),
+			);
+			mut_cache.reads += views.length;
 			let readable = await db_search_sample_is_readable({ ctx, docs: fieldDocs, mut_cache });
 
 			// Every value index has `valueKind` right after the key, so the string index serves all
 			// four kinds. A kind is listed only when the caller can read a file that holds it.
 			const valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> = [];
 			for (const valueKind of SEARCH_VALUE_KINDS) {
-				const valueDocs = await ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) =>
-						q
-							.eq("organizationId", organizationId)
-							.eq("workspaceId", workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("archiveOperationId", undefined)
-							.eq("docKind", "value")
-							.eq("fieldPath", fieldPath)
-							.eq("valueKind", valueKind),
-					)
-					.take(SEARCH_CATALOG_SAMPLE_DOCS);
-				mut_cache.reads += 1;
+				const valueDocs = merge_search_samples(
+					await Promise.all(
+						views.map((view) =>
+							ctx.db
+								.query("files_metadata_docs")
+								.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) =>
+									q
+										.eq("organizationId", organizationId)
+										.eq("workspaceId", workspaceId)
+										.eq("sourceKind", "committed")
+										.eq("moveView.cohortId", view?.cohortId)
+										.eq("moveView.view", view?.view)
+										.eq("archiveOperationId", undefined)
+										.eq("docKind", "value")
+										.eq("fieldPath", fieldPath)
+										.eq("valueKind", valueKind),
+								)
+								.take(SEARCH_CATALOG_SAMPLE_DOCS),
+						),
+					),
+				);
+				mut_cache.reads += views.length;
 				if (valueDocs.length > 0 && (await db_search_sample_is_readable({ ctx, docs: valueDocs, mut_cache }))) {
 					valueKinds.push(valueKind);
 					readable = true;
@@ -762,6 +919,11 @@ export const list_search_values = query({
 		}
 
 		const { organizationId, workspaceId } = caller.membership;
+		const moveView = await files_saved_placement_db_get_view(ctx.db, caller.membership);
+		const views = [
+			undefined,
+			...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }]),
+		];
 		const mut_cache: SearchSampleCache = {
 			reader: await files_search_db_create_reader(ctx, {
 				organizationId,
@@ -787,21 +949,33 @@ export const list_search_values = query({
 		) {
 			const lowerBound: { gte: string } | { gt: string } =
 				lastValue === null ? { gte: args.prefix } : { gt: lastValue };
-			const nextValueDoc = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) => {
-					const base = q
-						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("archiveOperationId", undefined)
-						.eq("docKind", "value")
-						.eq("fieldPath", args.fieldPath)
-						.eq("valueKind", "string");
-					return "gte" in lowerBound ? base.gte("stringValue", lowerBound.gte) : base.gt("stringValue", lowerBound.gt);
-				})
-				.first();
-			mut_cache.reads += 1;
+			const nextValues = await Promise.all(
+				views.map((view) =>
+					ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) => {
+							const base = q
+								.eq("organizationId", organizationId)
+								.eq("workspaceId", workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("moveView.cohortId", view?.cohortId)
+								.eq("moveView.view", view?.view)
+								.eq("archiveOperationId", undefined)
+								.eq("docKind", "value")
+								.eq("fieldPath", args.fieldPath)
+								.eq("valueKind", "string");
+							return "gte" in lowerBound
+								? base.gte("stringValue", lowerBound.gte)
+								: base.gt("stringValue", lowerBound.gt);
+						})
+						.first(),
+				),
+			);
+			const nextValueDoc = nextValues.reduce<Doc<"files_metadata_docs"> | null>(
+				(first, doc) => (doc && (!first || compareValues(doc.stringValue, first.stringValue) < 0) ? doc : first),
+				null,
+			);
+			mut_cache.reads += views.length;
 			if (
 				!nextValueDoc ||
 				nextValueDoc.stringValue === undefined ||
@@ -814,21 +988,29 @@ export const list_search_values = query({
 			lastValue = value;
 
 			// Read raw for the same reason as in `list_search_fields`: one index read is one read.
-			const valueDocs = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) =>
-					q
-						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("archiveOperationId", undefined)
-						.eq("docKind", "value")
-						.eq("fieldPath", args.fieldPath)
-						.eq("valueKind", "string")
-						.eq("stringValue", value),
-				)
-				.take(SEARCH_CATALOG_SAMPLE_DOCS);
-			mut_cache.reads += 1;
+			const valueDocs = merge_search_samples(
+				await Promise.all(
+					views.map((view) =>
+						ctx.db
+							.query("files_metadata_docs")
+							.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) =>
+								q
+									.eq("organizationId", organizationId)
+									.eq("workspaceId", workspaceId)
+									.eq("sourceKind", "committed")
+									.eq("moveView.cohortId", view?.cohortId)
+									.eq("moveView.view", view?.view)
+									.eq("archiveOperationId", undefined)
+									.eq("docKind", "value")
+									.eq("fieldPath", args.fieldPath)
+									.eq("valueKind", "string")
+									.eq("stringValue", value),
+							)
+							.take(SEARCH_CATALOG_SAMPLE_DOCS),
+					),
+				),
+			);
+			mut_cache.reads += views.length;
 			if (await db_search_sample_is_readable({ ctx, docs: valueDocs, mut_cache })) {
 				values.push(value);
 			}
@@ -880,7 +1062,7 @@ export async function files_metadata_db_get_table_node(
 	},
 ) {
 	if (args.target.kind !== "saved") return null;
-	const fileNode = await ctx.db.get("files_nodes", args.target.id);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.target.id);
 	if (
 		!fileNode ||
 		fileNode.organizationId !== args.membership.organizationId ||
@@ -924,18 +1106,28 @@ export async function files_metadata_db_get_table_field(
 	ctx: QueryCtx,
 	args: { fileNode: Doc<"files_nodes">; field: string },
 ) {
-	const metadataDoc = await ctx.db
-		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-			q
-				.eq("organizationId", args.fileNode.organizationId)
-				.eq("workspaceId", args.fileNode.workspaceId)
-				.eq("sourceKind", "committed")
-				.eq("fileNodeId", args.fileNode._id)
-				.eq("fieldPath", args.field),
-		)
-		.filter((q) => q.eq(q.field("docKind"), "field"))
-		.first();
+	const selected = await files_saved_placement_db_get_node_view(ctx.db, args.fileNode._id);
+	const views = selected ? [undefined, selected] : [undefined];
+	const candidates = await Promise.all(
+		views.map((moveView) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", args.fileNode.organizationId)
+						.eq("workspaceId", args.fileNode.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", args.fileNode._id)
+						.eq("moveView.cohortId", moveView?.cohortId)
+						.eq("moveView.view", moveView?.view)
+						.eq("fieldPath", args.field),
+				)
+				.filter((q) => q.eq(q.field("docKind"), "field"))
+				.first(),
+		),
+	);
+	// Staging and cleanup move each bounded field between these two exact ranges.
+	const metadataDoc = candidates.find((candidate) => candidate !== null);
 	if (!metadataDoc) return null;
 	check_table_field_source(metadataDoc, args.fileNode);
 	return metadataDoc;
@@ -957,11 +1149,16 @@ export const list_folder_fields = query({
 		const caller = await db_get_search_caller(ctx, args);
 		if (!caller) return null;
 		const { membership, userAuth, hasWorkspaceRead } = caller;
+		const moveView = await files_saved_placement_db_get_view(ctx.db, membership);
+		const views = [
+			undefined,
+			...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }]),
+		];
 		const empty = { fields: [], afterField: null, isDone: true };
 		if (args.parentId === "root") {
 			if (!hasWorkspaceRead) return empty;
 		} else {
-			const folder = await ctx.db.get("files_nodes", args.parentId);
+			const folder = await files_saved_placement_db_get_node(ctx.db, args.parentId);
 			if (
 				!folder ||
 				folder.kind !== "folder" ||
@@ -983,21 +1180,32 @@ export const list_folder_fields = query({
 		// children together. Other callers read the open children only.
 		const organization = await ctx.db.get("organizations", membership.organizationId);
 		const isOwner = organization?.ownerUserId === userAuth.id;
-		const read_next_field = (isRestrictedScopeRoot: boolean, after: string | null) =>
-			ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_org_ws_source_archive_docKind_parent_restricted_field", (q) => {
-					const prefix = q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("archiveOperationId", undefined)
-						.eq("docKind", "field")
-						.eq("parentId", args.parentId)
-						.eq("isRestrictedScopeRoot", isRestrictedScopeRoot);
-					return after === null ? prefix : prefix.gt("fieldPath", after);
-				})
-				.first();
+		const read_next_field = async (isRestrictedScopeRoot: boolean, after: string | null) => {
+			const candidates = await Promise.all(
+				views.map((view) =>
+					ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_org_ws_source_archive_docKind_parent_restricted_field", (q) => {
+							const prefix = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("moveView.cohortId", view?.cohortId)
+								.eq("moveView.view", view?.view)
+								.eq("archiveOperationId", undefined)
+								.eq("docKind", "field")
+								.eq("parentId", args.parentId)
+								.eq("isRestrictedScopeRoot", isRestrictedScopeRoot);
+							return after === null ? prefix : prefix.gt("fieldPath", after);
+						})
+						.first(),
+				),
+			);
+			return candidates.reduce<Doc<"files_metadata_docs"> | null>(
+				(first, doc) => (doc && (!first || compareValues(doc.fieldPath, first.fieldPath) < 0) ? doc : first),
+				null,
+			);
+		};
 
 		const budget = { readBytes: 0 };
 		const fields: string[] = [];
@@ -1024,7 +1232,9 @@ export const list_folder_fields = query({
 			const isRestrictedScopeRoot = metadataDoc === restrictedDoc;
 			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 			const node =
-				metadataDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", metadataDoc.fileNodeId) : null;
+				metadataDoc.sourceKind === "committed"
+					? await files_saved_placement_db_get_node(ctx.db, metadataDoc.fileNodeId)
+					: null;
 			count_table_doc(budget, node);
 			if (!(await fits_table_read_budget({ ctx, budget }))) break;
 			// Each range is readable only while its copied scope flag matches the real node.
@@ -1068,7 +1278,19 @@ export const list_node_fields = query({
 		if (!caller) return null;
 		const fileNode = await files_metadata_db_get_table_node(ctx, { ...caller, target: args.target });
 		if (!fileNode) return null;
-		const scope = JSON.stringify([args.membershipId, args.target.kind, args.target.id]);
+		const moveView = await files_saved_placement_db_get_view(ctx.db, caller.membership);
+		const views = [
+			undefined,
+			...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }]),
+		];
+		const scope = JSON.stringify([
+			args.membershipId,
+			args.target.kind,
+			args.target.id,
+			moveView.cohortId,
+			moveView.view,
+			moveView.generation,
+		]);
 		let afterField: string | null = null;
 		if (args.cursor !== null) {
 			let cursor;
@@ -1087,17 +1309,27 @@ export const list_node_fields = query({
 		for (let count = 0; count < TABLE_FIELDS_MAX_CANDIDATES; count++) {
 			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 			const after = afterField;
-			const metadataDoc = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) => {
-					const prefix = q
-						.eq("organizationId", caller.membership.organizationId)
-						.eq("workspaceId", caller.membership.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", fileNode._id);
-					return after === null ? prefix : prefix.gt("fieldPath", after);
-				})
-				.first();
+			const candidates = await Promise.all(
+				views.map((view) =>
+					ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) => {
+							const prefix = q
+								.eq("organizationId", caller.membership.organizationId)
+								.eq("workspaceId", caller.membership.workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("fileNodeId", fileNode._id)
+								.eq("moveView.cohortId", view?.cohortId)
+								.eq("moveView.view", view?.view);
+							return after === null ? prefix : prefix.gt("fieldPath", after);
+						})
+						.first(),
+				),
+			);
+			const metadataDoc = candidates.reduce<Doc<"files_metadata_docs"> | null>(
+				(first, doc) => (doc && (!first || compareValues(doc.fieldPath, first.fieldPath) < 0) ? doc : first),
+				null,
+			);
 			count_table_doc(budget, metadataDoc);
 			if (!(await fits_table_read_budget({ ctx, budget }))) break;
 			if (!metadataDoc) {
@@ -1293,30 +1525,57 @@ export const get_by_path = internalQuery({
 				? entry.pendingUpdate
 				: null;
 
-		// Saved metadata stays current beside pending frontmatter. Private entries own both indexes.
+		// Each range owns one write-bounded file or proposal. Merge its normal and selected docs.
 		const sourceKind = pendingUpdate ? ("pending" as const) : ("committed" as const);
+		const committedTags =
+			entry.kind === "private" ? [] : await files_saved_content_db_get_tags(ctx.db, { nodeId: entry.node._id });
 		const committedDocs =
 			entry.kind === "private"
 				? []
-				: await ctx.db
-						.query("files_metadata_docs")
-						.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", entry.node._id),
+				: (
+						await Promise.all(
+							committedTags.map((tag) =>
+								ctx.db
+									.query("files_metadata_docs")
+									.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+										q
+											.eq("organizationId", args.organizationId)
+											.eq("workspaceId", args.workspaceId)
+											.eq("sourceKind", "committed")
+											.eq("fileNodeId", entry.node._id)
+											.eq("moveView.cohortId", tag?.cohortId)
+											.eq("moveView.view", tag?.view),
+									)
+									.collect(),
+							),
 						)
-						.collect();
+					).flat();
+		const pendingTags = pendingUpdate
+			? await files_saved_content_db_get_tags(ctx.db, { pendingUpdateId: pendingUpdate._id })
+			: [];
+		const pendingDocs = !pendingUpdate
+			? []
+			: (
+					await Promise.all(
+						pendingTags.map((tag) =>
+							ctx.db
+								.query("files_metadata_docs")
+								.withIndex("by_pendingUpdate_fieldPath", (q) =>
+									q
+										.eq("pendingUpdateId", pendingUpdate._id)
+										.eq("moveView.cohortId", tag?.cohortId)
+										.eq("moveView.view", tag?.view),
+								)
+								.collect(),
+						),
+					)
+				).flat();
 		const docs = pendingUpdate
 			? [
 					...committedDocs.filter((doc) => doc.fieldPath.startsWith(files_metadata_METADATA_FIELD_PREFIX)),
-					...(
-						await ctx.db
-							.query("files_metadata_docs")
-							.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-							.collect()
-					).filter((doc) => doc.sourceKind === "pending" && doc.proposalRevision === pendingUpdate.revision),
+					...pendingDocs.filter(
+						(doc) => doc.sourceKind === "pending" && doc.proposalRevision === pendingUpdate.revision,
+					),
 				]
 			: committedDocs;
 
@@ -1379,6 +1638,7 @@ async function db_query_metadata_docs(
 		organizationId: Doc<"files_metadata_docs">["organizationId"];
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		fileNodeId: Id<"files_nodes">;
+		moveView?: files_saved_placement_FixedView;
 	},
 ) {
 	return await ctx.db
@@ -1389,6 +1649,8 @@ async function db_query_metadata_docs(
 				.eq("workspaceId", args.workspaceId)
 				.eq("sourceKind", "committed")
 				.eq("fileNodeId", args.fileNodeId)
+				.eq("moveView.cohortId", args.moveView?.cohortId)
+				.eq("moveView.view", args.moveView?.view)
 				.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
 				.lt("fieldPath", "metadata/"),
 		)
@@ -1411,7 +1673,10 @@ export async function files_metadata_db_read_entries(
 		fileNodeId: Id<"files_nodes">;
 	},
 ) {
-	const docs = await db_query_metadata_docs(ctx, args);
+	const selected = await files_saved_placement_db_get_node_view(ctx.db, args.fileNodeId);
+	const views = selected ? [undefined, selected] : [undefined];
+	// A file's metadata write limit bounds both ranges. No workspace or folder is read here.
+	const docs = (await Promise.all(views.map((moveView) => db_query_metadata_docs(ctx, { ...args, moveView })))).flat();
 
 	return docs
 		.filter((doc) => doc.docKind === "value" && doc.valueKind !== "maybe_date")
@@ -1431,17 +1696,27 @@ export async function files_metadata_db_read_entry(
 		key: string;
 	},
 ) {
-	const docs = await ctx.db
-		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("sourceKind", "committed")
-				.eq("fileNodeId", args.fileNodeId)
-				.eq("fieldPath", `${files_metadata_METADATA_FIELD_PREFIX}${args.key}`),
+	const selected = await files_saved_placement_db_get_node_view(ctx.db, args.fileNodeId);
+	const views = selected ? [undefined, selected] : [undefined];
+	const docs = (
+		await Promise.all(
+			views.map((moveView) =>
+				ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", args.fileNodeId)
+							.eq("moveView.cohortId", moveView?.cohortId)
+							.eq("moveView.view", moveView?.view)
+							.eq("fieldPath", `${files_metadata_METADATA_FIELD_PREFIX}${args.key}`),
+					)
+					.collect(),
+			),
 		)
-		.collect();
+	).flat();
 	// A scalar has an existence doc and a value doc, plus a date index when applicable.
 	const valueDoc = docs.find((doc) => doc.docKind === "value" && doc.valueKind !== "maybe_date");
 	return valueDoc ? read_entry_value(valueDoc) : undefined;
@@ -1483,6 +1758,8 @@ export async function files_metadata_db_write_entries(
 					.withIndex("by_pendingUpdate_fieldPath", (q) =>
 						q
 							.eq("pendingUpdateId", args.privateEntry.pendingUpdate._id)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined)
 							.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
 							.lt("fieldPath", "metadata/"),
 					)
@@ -1523,7 +1800,7 @@ export async function files_metadata_db_write_entries(
 				fieldPath,
 				docKind: "field" as const,
 				...("fileNode" in args
-					? committed_field_sort_fields(
+					? files_metadata_committed_field_sort_fields(
 							args.fileNode,
 							extracted.values.filter((value) => value.fieldPath === fieldPath),
 						)
@@ -1557,7 +1834,7 @@ async function db_authorize_metadata_write(
 		fileNodeId: Id<"files_nodes">;
 	},
 ) {
-	const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.fileNodeId);
 	// A node from another workspace is not this member's to see.
 	if (
 		!fileNode ||
@@ -1581,6 +1858,8 @@ async function db_authorize_metadata_write(
 	if (writable._nay) {
 		return writable;
 	}
+	const busy = await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: fileNode._id } });
+	if (busy._nay) return busy;
 
 	return Result({ _yay: fileNode });
 }
@@ -1605,7 +1884,7 @@ export const get_entries = query({
 			return [];
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.fileNodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
@@ -1746,6 +2025,16 @@ export const update_entries_by_path = internalMutation({
 		if (accessNode) {
 			const writable = await files_nodes_db_require_user_writable(ctx, { node: accessNode, userId: args.userId });
 			if (writable._nay) return writable;
+		}
+		const busy = await files_move_reservations_db_check(ctx.db, {
+			source: entry.kind === "saved" ? { kind: "saved", id: entry.node._id } : { kind: "private", id: entry.node._id },
+		});
+		if (busy._nay) return busy;
+		if (entry.kind === "private") {
+			const proposalBusy = await files_move_reservations_db_check(ctx.db, {
+				source: { kind: "proposal", id: entry.pendingUpdate._id },
+			});
+			if (proposalBusy._nay) return proposalBusy;
 		}
 
 		const currentEntries =

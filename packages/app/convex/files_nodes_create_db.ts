@@ -22,6 +22,8 @@ export async function files_nodes_db_insert_committed_text_chunks(
 		path: string;
 		archiveOperationId?: string;
 		yjsSequence?: number;
+		moveView?: Doc<"files_text_chunks">["moveView"];
+		chunkCount?: number;
 		chunks: ReadonlyArray<{
 			chunkIndex: number;
 			textChunk: string;
@@ -44,6 +46,7 @@ export async function files_nodes_db_insert_committed_text_chunks(
 					workspaceId: args.workspaceId,
 					fileNodeId: args.nodeId,
 					sourceKind: "committed" as const,
+					moveView: args.moveView,
 					...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
 					chunkIndex: chunk.chunkIndex,
 					startIndex: chunk.startIndex,
@@ -63,6 +66,7 @@ export async function files_nodes_db_insert_committed_text_chunks(
 					workspaceId: args.workspaceId,
 					fileNodeId: args.nodeId,
 					sourceKind: "committed",
+					moveView: args.moveView,
 					...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
 					textChunkId: textChunkIds[index]!,
 					chunkIndex: chunk.chunkIndex,
@@ -75,8 +79,8 @@ export async function files_nodes_db_insert_committed_text_chunks(
 					lineStart: chunk.lineStart,
 					lineEnd: chunk.lineEnd,
 					chunkFlags: chunk.chunkFlags,
-					hasChunkAbove: start + index > 0,
-					hasChunkBelow: start + index < args.chunks.length - 1,
+					hasChunkAbove: chunk.chunkIndex > 0,
+					hasChunkBelow: chunk.chunkIndex < (args.chunkCount ?? args.chunks.length) - 1,
 				}),
 			),
 		);
@@ -104,6 +108,11 @@ export async function files_nodes_db_hand_unpublished_assets_to_deletion_ledger(
 		if (!asset || asset.r2Key !== undefined) {
 			continue;
 		}
+		const claim = await ctx.db
+			.query("files_move_asset_claims")
+			.withIndex("by_asset", (q) => q.eq("assetId", assetId))
+			.first();
+		if (claim) continue;
 
 		// Add the job before deleting the doc. Both changes save together.
 		// The deletion job now owns this R2 file.

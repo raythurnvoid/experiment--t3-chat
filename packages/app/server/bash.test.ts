@@ -13,12 +13,23 @@ import {
 import { ai_chat_runs_db_begin, ai_chat_runs_db_insert_node } from "../convex/ai_chat_runs.ts";
 import type { bash_ReviewScratch } from "../convex/bash.ts";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
-import { organizations_membership_lifetimes_db_ensure } from "../convex/organizations_membership_lifetimes.ts";
+import {
+	organizations_membership_lifetimes_db_ensure,
+	organizations_membership_lifetimes_db_record,
+} from "../convex/organizations_membership_lifetimes.ts";
 import { files_db_yjs_push_update, files_nodes_db_create_node_recursively_at_path } from "../convex/files_nodes.ts";
 import { db_insert_file_text_content, files_nodes_db_insert_file_content_docs } from "../convex/files_nodes_content.ts";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
 import { r2, r2_confirmed_object_delete, r2_server_side_copy } from "../convex/r2_client.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "../convex/setup.test.ts";
+import {
+	test_save_file_pending_update,
+	test_apply_file_pending_move,
+	test_finish_pending_update_run,
+	test_convex,
+	test_mocks,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "../convex/setup.test.ts";
 import { ai_chat_DEFAULT_MODEL_ID, type ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { delay } from "../shared/async-utils.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
@@ -96,6 +107,9 @@ describe("bash_run_command", () => {
 				const url = new URL(href);
 				// Keep uploaded content and snapshots available for later reads.
 				if (url.origin === "https://r2.test" && url.pathname === "/upload" && init?.method === "PUT") {
+					const key = decodeURIComponent(url.searchParams.get("key") ?? "");
+					if (new Headers(init.headers).get("If-None-Match") === "*" && test_r2_objects.has(key))
+						return new Response(null, { status: 412 });
 					const body = init.body;
 					const bytes =
 						typeof body === "string"
@@ -107,7 +121,7 @@ describe("bash_run_command", () => {
 									: body instanceof Blob
 										? new Uint8Array(await body.arrayBuffer())
 										: new TextEncoder().encode("");
-					test_r2_objects.set(decodeURIComponent(url.searchParams.get("key") ?? ""), bytes);
+					test_r2_objects.set(key, bytes);
 					return new Response(null, { status: 200 });
 				}
 				if (url.origin !== "https://r2.test" || !url.pathname.startsWith("/object/")) {
@@ -123,7 +137,10 @@ describe("bash_run_command", () => {
 				if (rangeMatch) {
 					const start = Number(rangeMatch[1]);
 					const endInclusive = Math.min(Number(rangeMatch[2]), bytes.byteLength - 1);
-					return new Response(bytes.slice(start, endInclusive + 1), { status: 206 });
+					return new Response(bytes.slice(start, endInclusive + 1), {
+						status: 206,
+						headers: { "Content-Range": `bytes ${start}-${endInclusive}/${bytes.byteLength}` },
+					});
 				}
 				return new Response(bytes.slice(0), { status: 200 });
 			}),
@@ -216,6 +233,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", scope.organizationId)
 						.eq("workspaceId", scope.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", ancestorPath)
 						.eq("archiveOperationId", null),
 				)
@@ -399,6 +417,8 @@ describe("bash_run_command", () => {
 						.eq("workspaceId", scope.workspaceId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", fileId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined)
 						.eq("yjsSequence", 1),
 				)
 				.collect();
@@ -692,6 +712,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", path)
 						.eq("archiveOperationId", null),
 				)
@@ -866,46 +887,44 @@ describe("bash_run_command", () => {
 		runner: Awaited<ReturnType<typeof create_bash_runner>>,
 		nodeIds: Id<"files_nodes">[],
 	) {
-		const asUser = runner_as_user(runner);
-		const reviews = await Promise.all(nodeIds.map((nodeId) => pending_review_for_test(runner, nodeId)));
-		const started = await asUser.mutation(api.files_pending_update_runs.start, {
-			membershipId: runner.seeded.membershipId,
-			requestId: crypto.randomUUID(),
-			kind: "accept",
-			expectedItemCount: reviews.length,
-			items: reviews.map(({ pendingUpdateId, reviewedRevision }) => ({
-				pendingUpdateId,
-				reviewedRevision,
-				selectedContentStateId: null,
-			})),
-		});
-		if (started._nay) throw new Error(started._nay.message);
-		const { runId } = started._yay;
-		expect(
-			await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: runner.seeded.membershipId, runId }),
-		).toEqual({ _yay: null });
-		await runner.t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
-		await runner.t.mutation(internal.files_pending_update_runs.advance, { runId });
-		const unit = await runner.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_update_run_units")
-				.withIndex("by_run_order", (q) => q.eq("runId", runId))
-				.unique(),
-		);
-		if (!unit) throw new Error("Expected one connected move group");
-		await runner.t.action(internal.files_pending_update_runs.prepare_unit, {
-			runId,
-			fence: 0,
-			unitId: unit._id,
-			attemptFence: unit.attemptFence,
-		});
-		await runner.t.mutation(internal.files_pending_update_runs.advance, { runId });
-		const result = await asUser.query(api.files_pending_update_runs.get, {
-			membershipId: runner.seeded.membershipId,
-			runId,
-		});
-		expect(result?.activity.status).toBe("succeeded");
-		expect(result?.activity.progress?.completed).toBe(nodeIds.length);
+		const hadFakeTimers = vi.isFakeTimers();
+		if (!hadFakeTimers) vi.useFakeTimers();
+		try {
+			const asUser = runner_as_user(runner);
+			const reviews = await Promise.all(nodeIds.map((nodeId) => pending_review_for_test(runner, nodeId)));
+			const started = await asUser.mutation(api.files_pending_update_runs.start, {
+				membershipId: runner.seeded.membershipId,
+				requestId: crypto.randomUUID(),
+				kind: "accept",
+				expectedItemCount: reviews.length,
+				items: reviews.map(({ pendingUpdateId, reviewedRevision }) => ({
+					pendingUpdateId,
+					reviewedRevision,
+					selectedContentStateId: null,
+				})),
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			const { runId } = started._yay;
+			expect(
+				await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: runner.seeded.membershipId, runId }),
+			).toEqual({ _yay: null });
+			await test_finish_pending_update_run(asUser, runId);
+			const unit = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_update_run_units")
+					.withIndex("by_run_order", (q) => q.eq("runId", runId))
+					.unique(),
+			);
+			if (!unit) throw new Error("Expected one connected move group");
+			const result = await asUser.query(api.files_pending_update_runs.get, {
+				membershipId: runner.seeded.membershipId,
+				runId,
+			});
+			expect(result?.activity.status).toBe("succeeded");
+			expect(result?.activity.progress?.completed).toBe(nodeIds.length);
+		} finally {
+			if (!hadFakeTimers) vi.useRealTimers();
+		}
 	}
 
 	/**
@@ -918,8 +937,8 @@ describe("bash_run_command", () => {
 		runner: Awaited<ReturnType<typeof create_bash_runner>>,
 		nodeId: Id<"files_nodes">,
 	) {
-		const saved = await runner_as_user(runner).action(
-			api.files_pending_updates.save_file_pending_update,
+		const saved = await test_save_file_pending_update(
+			runner_as_user(runner),
 			await pending_review_for_test(runner, nodeId),
 		);
 		if (saved._nay) {
@@ -970,7 +989,7 @@ describe("bash_run_command", () => {
 	async function save_private_copy_for_test(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
 		const draft = await get_private_entry(runner, path);
 		const target = { kind: "private" as const, id: draft.node._id };
-		const saved = await runner_as_user(runner).action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(runner_as_user(runner), {
 			membershipId: runner.seeded.membershipId,
 			target,
 			pendingUpdateId: draft.pendingUpdate._id,
@@ -4598,86 +4617,457 @@ describe("bash_run_command", () => {
 			expect((await runner.run({ command: "cat control.txt" })).stdout).toBe("after\n");
 		});
 
-		test.each([
-			"capture_bash_job_copy_scopes",
-			"save_bash_job_copy_checkpoint",
-			"stage_bash_job_copy_page",
-			"seal_bash_job_copy_checkpoint",
-			"start_for_agent",
-			"append_sources_for_agent",
-			"seal_for_agent",
-			"requeue_bash_job_copy",
-		])("durable Copy worker crash after %s never repeats expansion", async (crashAt) => {
+		test.each(
+			[
+				"capture_bash_job_copy_scopes",
+				"ready_bash_job_copy_input",
+				"accept_bash_job_copy_source",
+				"seal_bash_job_copy_checkpoint",
+				"seal_for_agent",
+				"requeue_bash_job_copy",
+			]
+				.flatMap((crashAt) =>
+					["cp", "mv"].map((command) => ({ command, crashAt, crashOffset: undefined as number | undefined })),
+				)
+				.concat(["cp", "mv"].map((command) => ({ command, crashAt: "accept_bash_job_copy_source", crashOffset: 100 }))),
+		)(
+			"durable $command worker crash after $crashAt at offset $crashOffset never repeats expansion",
+			async ({ command, crashAt, crashOffset }) => {
+				let workNumber = 0;
+				vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(
+					async () => `copy-crash-work-${workNumber++}` as never,
+				);
+				const runner = await create_bash_runner();
+				await runner.run({ command: "mkdir copies" });
+				await runner.run({
+					command: `{ ${command} $(echo once >> count.txt; echo docs/readme.md) ${Array.from({ length: 100 }, () => "docs/readme.md").join(" ")} copies/; echo after > after.txt; } &`,
+				});
+				const queued = await job_row(runner, 1);
+				const mutate = runner.runMutation.getMockImplementation()!;
+				const query = runner.runQuery.getMockImplementation()!;
+				let crashed = false;
+				runner.runMutation.mockImplementation(async (reference, args) => {
+					const result = await mutate(reference, args);
+					if (
+						function_name_of(reference)?.endsWith(`:${crashAt}`) &&
+						(crashOffset === undefined || args.offset === crashOffset)
+					) {
+						crashed = true;
+						throw new Error("worker crashed");
+					}
+					return result;
+				});
+				runner.runQuery.mockImplementation(async (reference, args) => {
+					if (crashed && function_name_of(reference) === "ai_chat_files:read_bash_job_copy_invocation")
+						throw new Error("worker crashed");
+					return await query(reference, args);
+				});
+				await expect(run_job(runner, 1)).rejects.toThrow("worker crashed");
+				runner.runMutation.mockImplementation(mutate);
+				runner.runQuery.mockImplementation(query);
+				const beforeCallback = await job_row(runner, 1);
+				await runner.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+					workId: queued.job.workId!,
+					context: { invocationId: queued._id },
+					result: { kind: "failed", error: "worker crashed" },
+				});
+				// A worker lost after its requeue committed is already stale. Its callback must not requeue
+				// or settle the newer worker's continuation.
+				if (crashAt === "requeue_bash_job_copy") expect(await job_row(runner, 1)).toEqual(beforeCallback);
+				const incomplete = crashAt === "capture_bash_job_copy_scopes";
+				if (incomplete) {
+					expect((await job_row(runner, 1)).status).toBe("interrupted");
+					expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(
+						0,
+					);
+					await run_job(runner, 1);
+					expect((await runner.run({ command: "cat after.txt" })).metadata.exitCode).not.toBe(0);
+				} else {
+					expect(
+						(await job_row(runner, 1)).status,
+						"a lost worker resumes unsealed Move input without repeating expansion",
+					).toBe("running");
+					await run_job(runner, 1);
+					const waiting = await job_row(runner, 1);
+					if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+					await runner.runQuery(internal.files_transfer.get_for_agent, {
+						membershipId: waiting.membershipId,
+						threadId: waiting.threadId,
+						runId: waiting.job.copy.runId,
+					});
+					await run_job(runner, 1);
+					expect((await runner.run({ command: "cat after.txt" })).stdout).toBe("after\n");
+					expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(
+						1,
+					);
+				}
+				expect((await runner.run({ command: "cat count.txt" })).stdout).toBe("once\n");
+			},
+		);
+
+		test.each(["missing", "changed"])("durable Move ends the whole job for $0 expanded input", async (problem) => {
 			let workNumber = 0;
 			vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(
-				async () => `copy-crash-work-${workNumber++}` as never,
+				async () => `fatal-input-${workNumber++}` as never,
 			);
 			const runner = await create_bash_runner();
 			await runner.run({ command: "mkdir copies" });
 			await runner.run({
-				command: `{ cp $(echo once >> count.txt; echo docs/readme.md) ${Array.from({ length: 100 }, () => "docs/readme.md").join(" ")} copies/; echo after > after.txt; } &`,
+				command: "{ mv $(echo once >> count.txt; echo docs/readme.md) copies/; echo after > after.txt; } &",
 			});
 			const queued = await job_row(runner, 1);
 			const mutate = runner.runMutation.getMockImplementation()!;
-			const query = runner.runQuery.getMockImplementation()!;
-			let crashed = false;
+			// Keep cleanup and the agent wake queued until this test runs them.
+			vi.useFakeTimers();
+			let delayed = false;
 			runner.runMutation.mockImplementation(async (reference, args) => {
-				const result = await mutate(reference, args);
-				if (function_name_of(reference)?.endsWith(`:${crashAt}`)) {
-					crashed = true;
-					throw new Error("worker crashed");
+				if (function_name_of(reference) === "ai_chat_files:save_bash_job_copy_checkpoint") {
+					// The upload lease was already made. The save reaches Convex one second later.
+					if (!delayed) {
+						vi.setSystemTime(Date.now() + 1_000);
+						delayed = true;
+					}
+					await mutate(reference, args);
+					throw new Error("worker crashed before upload");
 				}
-				return result;
+				return await mutate(reference, args);
 			});
-			runner.runQuery.mockImplementation(async (reference, args) => {
-				if (crashed && function_name_of(reference) === "ai_chat_files:read_bash_job_copy_invocation")
-					throw new Error("worker crashed");
-				return await query(reference, args);
-			});
-			await expect(run_job(runner, 1)).rejects.toThrow("worker crashed");
+			await expect(run_job(runner, 1)).rejects.toThrow("worker crashed before upload");
 			runner.runMutation.mockImplementation(mutate);
-			runner.runQuery.mockImplementation(query);
-			const beforeCallback = await job_row(runner, 1);
 			await runner.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
 				workId: queued.job.workId!,
 				context: { invocationId: queued._id },
 				result: { kind: "failed", error: "worker crashed" },
 			});
-			// A worker lost after its requeue committed is already stale. Its callback must not requeue
-			// or settle the newer worker's continuation.
-			if (crashAt === "requeue_bash_job_copy") expect(await job_row(runner, 1)).toEqual(beforeCallback);
-			const incomplete =
-				crashAt === "capture_bash_job_copy_scopes" ||
-				crashAt === "save_bash_job_copy_checkpoint" ||
-				crashAt === "stage_bash_job_copy_page";
-			if (incomplete) {
-				expect((await job_row(runner, 1)).status).toBe("interrupted");
-				expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(
-					0,
-				);
-				await run_job(runner, 1);
-				expect((await runner.run({ command: "cat after.txt" })).metadata.exitCode).not.toBe(0);
-			} else {
-				await run_job(runner, 1);
-				const waiting = await job_row(runner, 1);
-				if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+			const saved = await job_row(runner, 1);
+			if (saved.job.copy?.phase !== "admitting" || !saved.job.copy.input)
+				throw new Error("Expected saved input reservation");
+			const input = saved.job.copy.input;
+			vi.setSystemTime(input.putMayArriveUntil + 1);
+			expect(Date.now(), "The upload lease ends before the intake idle deadline").toBeLessThan(
+				saved.job.copy.admissionDeadlineAt,
+			);
+			if (problem === "changed") test_r2_objects.set(input.r2Key, new Uint8Array([0]));
+			const ended = await run_job(runner, 1);
+			const later = await runner.t.query(internal.files_nodes.get_visible_entry_by_path, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				visibilityUserId: runner.ctxData.userId,
+				overlayUserId: runner.ctxData.userId,
+				path: "/after.txt",
+			});
+			expect(later, "Lost expanded input never runs later shell writes").toBeNull();
+			expect(ended.status).toBe("interrupted");
+			expect(await activity_of(runner, 1)).toMatchObject({
+				status: "failed",
+				errorMessage: expect.stringMatching(/input/i),
+			});
+			expect(mutation_calls(runner, "ai_chat_files:accept_bash_job_copy_source")).toBe(0);
+			expect((await runner.run({ command: "cat count.txt" })).stdout).toBe("once\n");
+			expect(await runner.t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toEqual([]);
+			const deletion = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", input.r2Key))
+					.unique(),
+			);
+			expect(deletion).toMatchObject({
+				organizationId: saved.organizationId,
+				workspaceId: saved.workspaceId,
+				r2Key: input.r2Key,
+				reason: "bash_input",
+				putMayArriveUntil: input.putMayArriveUntil,
+			});
+			await runner.t.action(internal.r2_client.process_object_deletion_job, {
+				jobId: deletion!._id,
+				generation: deletion!.generation,
+			});
+			expect(test_r2_objects.has(input.r2Key)).toBe(false);
+			expect(
+				vi.mocked(r2_confirmed_object_delete.delete_object).mock.calls.some(([, key]) => key === input.r2Key),
+			).toBe(true);
+			expect(await runner.t.run((ctx) => ctx.db.get("files_r2_object_deletion_jobs", deletion!._id))).toBeNull();
+		});
+
+		test("durable Move never replays missing expanded input and Stop cleans a late upload", async () => {
+			let workNumber = 0;
+			vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(
+				async () => `missing-input-${workNumber++}` as never,
+			);
+			const runner = await create_bash_runner();
+			await runner.run({ command: "mkdir copies" });
+			await runner.run({
+				command: "{ mv $(echo once >> count.txt; echo docs/readme.md) copies/; echo after > after.txt; } &",
+			});
+			const queued = await job_row(runner, 1);
+			const mutate = runner.runMutation.getMockImplementation()!;
+			runner.runMutation.mockImplementation(async (reference, args) => {
+				const result = await mutate(reference, args);
+				if (function_name_of(reference) === "ai_chat_files:save_bash_job_copy_checkpoint")
+					throw new Error("worker crashed before upload");
+				return result;
+			});
+			await expect(run_job(runner, 1)).rejects.toThrow("worker crashed before upload");
+			runner.runMutation.mockImplementation(mutate);
+			await runner.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+				workId: queued.job.workId!,
+				context: { invocationId: queued._id },
+				result: { kind: "failed", error: "worker crashed" },
+			});
+			const waiting = await run_job(runner, 1);
+			if (waiting.job.copy?.phase !== "admitting" || !waiting.job.copy.input)
+				throw new Error("Expected reserved input");
+			const input = waiting.job.copy.input;
+			expect(input.ready).toBe(false);
+			expect(waiting.job.copy.sourcesCount).toBe(0);
+			expect(test_r2_objects.has(input.r2Key)).toBe(false);
+			expect((await runner.run({ command: "cat count.txt" })).stdout).toBe("once\n");
+			expect((await runner.run({ command: "cat after.txt" })).metadata.exitCode).not.toBe(0);
+			await runner.run({ command: "kill 1" });
+			const deletion = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", input.r2Key))
+					.unique(),
+			);
+			expect(deletion).toMatchObject({ reason: "bash_input", putMayArriveUntil: input.putMayArriveUntil });
+			await runner.t.action(internal.r2_client.process_object_deletion_job, {
+				jobId: deletion!._id,
+				generation: deletion!.generation,
+			});
+			// The signed PUT can arrive after Stop and the first confirmed delete.
+			test_r2_objects.set(input.r2Key, new TextEncoder().encode("late input"));
+			vi.useFakeTimers({ toFake: ["Date"] });
+			vi.setSystemTime(input.putMayArriveUntil + 1);
+			await runner.t.action(internal.r2_client.process_object_deletion_job, {
+				jobId: deletion!._id,
+				generation: deletion!.generation,
+			});
+			expect(test_r2_objects.has(input.r2Key), "Stop cleanup removes late expanded input").toBe(false);
+			expect(await runner.t.run((ctx) => ctx.db.get("files_r2_object_deletion_jobs", deletion!._id))).toBeNull();
+		});
+
+		test("durable Move holds an accepted private source until Stop releases it", async () => {
+			const runner = await create_bash_runner();
+			await runner.run({ command: "echo source > source.txt; mkdir copies" });
+			await runner.run({ command: "{ mv source.txt docs/readme.md copies/; } &" });
+			const queued = await job_row(runner, 1);
+			const mutate = runner.runMutation.getMockImplementation()!;
+			runner.runMutation.mockImplementation(async (reference, args) => {
+				const result = await mutate(reference, args);
+				if (function_name_of(reference) === "ai_chat_files:accept_bash_job_copy_source")
+					throw new Error("worker crashed after accepting a private source");
+				return result;
+			});
+			await expect(run_job(runner, 1)).rejects.toThrow("worker crashed after accepting a private source");
+			runner.runMutation.mockImplementation(mutate);
+			const saved = await job_row(runner, 1);
+			if (saved.job.copy?.phase !== "admitting" || !saved.job.copy.runId) throw new Error("Expected unsealed transfer");
+			const runId = saved.job.copy.runId;
+			const source = await runner.t.query(internal.files_nodes.get_visible_entry_by_path, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				visibilityUserId: runner.ctxData.userId,
+				overlayUserId: runner.ctxData.userId,
+				path: "/source.txt",
+			});
+			if (source?.kind !== "private") throw new Error("Expected private source");
+			const expiryArgs = {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				userId: runner.ctxData.userId,
+			};
+			const make_expiry_due = () =>
+				runner.t.run(async (ctx) => {
+					await ctx.db.patch("files_pending_updates", source.pendingUpdate._id, { expiresAt: Date.now() - 1 });
+					const check = await ctx.db
+						.query("files_pending_update_expiry_checks")
+						.withIndex("by_organization_workspace_user", (q) =>
+							q
+								.eq("organizationId", expiryArgs.organizationId)
+								.eq("workspaceId", expiryArgs.workspaceId)
+								.eq("userId", expiryArgs.userId),
+						)
+						.unique();
+					await ctx.db.patch("files_pending_update_expiry_checks", check!._id, { nextCheckAt: Date.now() - 1 });
+					const active = await ctx.db
+						.query("users_last_active")
+						.withIndex("by_user", (q) => q.eq("userId", expiryArgs.userId))
+						.unique();
+					if (active) await ctx.db.patch("users_last_active", active._id, { lastActiveAt: 0 });
+				});
+			await make_expiry_due();
+			await runner.t.mutation(internal.files_pending_updates.expire_file_pending_updates, expiryArgs);
+			expect(
+				(await runner.t.run((ctx) => ctx.db.get("files_pending_nodes", source.node._id)))?.state,
+				"An unsealed recovered Move holds each accepted private source",
+			).toBe("active");
+			await runner.run({ command: "kill 1" });
+			await runner.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+				workId: queued.job.workId!,
+				context: { invocationId: queued._id },
+				result: { kind: "failed", error: "worker crashed" },
+			});
+			await runner.runQuery(internal.files_transfer.get_for_agent, {
+				membershipId: saved.membershipId,
+				threadId: saved.threadId,
+				runId,
+			});
+			await runner.t.mutation(internal.files_pending_holds.release_producer, {
+				producer: { kind: "files_transfer_run", id: runId },
+			});
+			await make_expiry_due();
+			await runner.t.mutation(internal.files_pending_updates.expire_file_pending_updates, expiryArgs);
+			expect(
+				(await runner.t.run((ctx) => ctx.db.get("files_pending_nodes", source.node._id)))?.state,
+				"Stop releases an unsealed Move source for expiry",
+			).not.toBe("active");
+		});
+
+		test("durable Move input progress can pass the normal shell lifetime", async () => {
+			let workNumber = 0;
+			vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(
+				async () => `long-input-${workNumber++}` as never,
+			);
+			const runner = await create_bash_runner();
+			await runner.run({ command: "mkdir copies" });
+			await runner.run({
+				command: `{ mv ${Array.from({ length: 301 }, () => "docs/readme.md").join(" ")} copies/; echo after; } &`,
+			});
+			const mutate = runner.runMutation.getMockImplementation()!;
+			vi.useFakeTimers({ toFake: ["Date"] });
+			const startedAt = Date.now();
+			runner.runMutation.mockImplementation(async (reference, args) => {
+				const result = await mutate(reference, args);
+				if (function_name_of(reference) === "ai_chat_files:accept_bash_job_copy_source")
+					vi.setSystemTime(Date.now() + 5 * 60_000);
+				return result;
+			});
+			let current = await run_job(runner, 1);
+			for (
+				let worker = 0;
+				worker < 310 && current.status === "running" && current.job.copy?.phase === "admitting";
+				worker++
+			)
+				current = await run_job(runner, 1);
+			expect(Date.now() - startedAt).toBeGreaterThan(24 * 60 * 60_000);
+			expect(current.job.copy?.phase, "Healthy source intake has no total shell lifetime cap").toBe("waiting");
+			expect(current.job.excludedCopyWaitMs).toBeGreaterThan(24 * 60 * 60_000);
+			expect(current.job.workerGeneration).toBeGreaterThan(1);
+		}, 120_000);
+
+		test("durable Move rejects unsealed input after the same membership is reinvited", async () => {
+			let workNumber = 0;
+			vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(
+				async () => `reinvited-input-${workNumber++}` as never,
+			);
+			const runner = await create_bash_runner();
+			await runner.run({ command: "mkdir copies" });
+			await runner.run({
+				command:
+					"{ mv $(echo once >> count.txt; echo docs/readme.md) docs/tutorial.md copies/; echo after > after.txt; } &",
+			});
+			const queued = await job_row(runner, 1);
+			const mutate = runner.runMutation.getMockImplementation()!;
+			runner.runMutation.mockImplementation(async (reference, args) => {
+				const result = await mutate(reference, args);
+				if (function_name_of(reference) === "ai_chat_files:accept_bash_job_copy_source")
+					throw new Error("worker crashed");
+				return result;
+			});
+			await expect(run_job(runner, 1)).rejects.toThrow("worker crashed");
+			runner.runMutation.mockImplementation(mutate);
+			await runner.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+				workId: queued.job.workId!,
+				context: { invocationId: queued._id },
+				result: { kind: "failed", error: "worker crashed" },
+			});
+			const before = await job_row(runner, 1);
+			expect(before.job.copy).toMatchObject({ phase: "admitting", sealed: false, sourcesCount: 1 });
+			const runId = before.job.copy?.runId;
+			if (!runId) throw new Error("Expected linked transfer");
+			await runner.t.run(async (ctx) => {
+				const membership = await ctx.db.get("organizations_workspaces_users", runner.seeded.membershipId);
+				if (!membership) throw new Error("Expected membership");
+				await ctx.db.patch("organizations_workspaces_users", membership._id, { active: false });
+				await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: false }]);
+				await ctx.db.patch("organizations_workspaces_users", membership._id, { active: true });
+				await organizations_membership_lifetimes_db_record(ctx, [
+					{ membership: { ...membership, active: true }, active: true },
+				]);
+			});
+			const after = await run_job(runner, 1);
+			expect(after.status, "Reinviting the same membership cannot revive old expanded input").toBe("interrupted");
+			expect((await activity_of(runner, 1))?.status).toBe("canceled");
+			expect(
+				await runner.t.run((ctx) =>
+					ctx.db
+						.query("files_transfer_selection_items")
+						.withIndex("by_run_order", (q) => q.eq("runId", runId))
+						.collect(),
+				),
+				"The old membership cannot accept another source",
+			).toHaveLength(1);
+			const later = await runner.t.query(internal.files_nodes.get_visible_entry_by_path, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				visibilityUserId: runner.ctxData.userId,
+				overlayUserId: runner.ctxData.userId,
+				path: "/after.txt",
+			});
+			expect(later).toBeNull();
+		});
+
+		test.each([
+			{ command: "cp -R docs copies/", policy: "merge", exitCode: 0, child: true },
+			{ command: "mv docs copies/", policy: "error", exitCode: 1, child: false },
+			{ command: "mv -n docs copies/", policy: "skip", exitCode: 0, child: false },
+			{ command: "mv -Tf docs copies/docs", policy: "replace_empty", exitCode: 0, child: true },
+			{ command: "mv -Tf docs copies/docs", policy: "replace_empty", exitCode: 1, child: false, occupied: true },
+		])(
+			"durable background folder policy $command with occupied=$occupied",
+			async ({ command, policy, exitCode, child, occupied }) => {
+				const runner = await create_bash_runner();
+				await runner.run({ command: "mkdir -p copies/docs" });
+				if (occupied) await runner.run({ command: "echo keep > copies/docs/keep.txt" });
+				await runner.run({ command: `{ ${command}; } &` });
+				const waiting = await run_job(runner, 1);
+				if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting transfer");
+				const run = await runner.t.run((ctx) => ctx.db.get("files_transfer_runs", waiting.job.copy!.runId!));
+				expect(run?.conflictPolicy.folder).toBe(policy);
 				await runner.runQuery(internal.files_transfer.get_for_agent, {
 					membershipId: waiting.membershipId,
 					threadId: waiting.threadId,
 					runId: waiting.job.copy.runId,
 				});
-				await run_job(runner, 1);
-				expect((await runner.run({ command: "cat after.txt" })).stdout).toBe("after\n");
-				expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(
-					1,
-				);
-			}
-			expect((await runner.run({ command: "cat count.txt" })).stdout).toBe("once\n");
-		});
+				const finished = await run_job(runner, 1);
+				expect(finished.status).toBe("finished");
+				expect(finished.result?.metadata.exitCode, finished.result?.stderr).toBe(exitCode);
+				const output = await runner.t.query(internal.files_nodes.get_visible_entry_by_path, {
+					organizationId: runner.seeded.organizationId,
+					workspaceId: runner.seeded.workspaceId,
+					visibilityUserId: runner.ctxData.userId,
+					overlayUserId: runner.ctxData.userId,
+					path: "/copies/docs/tutorial.md",
+				});
+				expect(output !== null, "folder policy controls whether the child is moved or copied").toBe(child);
+				if (occupied) expect((await runner.run({ command: "cat copies/docs/keep.txt" })).stdout).toBe("keep\n");
+			},
+		);
 
 		test("durable Copy admission spreads more than 32 source pages over worker slices", async () => {
 			const runner = await create_bash_runner();
 			await runner.run({ command: "mkdir copies" });
+			const mutate = runner.runMutation.getMockImplementation()!;
+			let sourceReadsBeforeCheckpoint = -1;
+			runner.runMutation.mockImplementation(async (reference, args) => {
+				if (function_name_of(reference) === "ai_chat_files:save_bash_job_copy_checkpoint")
+					sourceReadsBeforeCheckpoint = runner.runQuery.mock.calls.filter(
+						([ref, query]) =>
+							function_name_of(ref) === "files_nodes:get_visible_entry_by_path" && query.path === "/docs/readme.md",
+					).length;
+				return await mutate(reference, args);
+			});
 			// 3,401 sources need 35 pages. One worker appends at most 32 pages, then requeues the job.
 			await runner.run({
 				command:
@@ -4685,13 +5075,16 @@ describe("bash_run_command", () => {
 			});
 
 			const first = await run_job(runner, 1);
+			expect(sourceReadsBeforeCheckpoint, "source resolution begins after saved input").toBe(0);
 			if (first.job.copy?.phase !== "admitting" || first.job.copy.runId === null)
 				throw new Error("Expected a linked Copy admission");
 			const scope = { membershipId: first.membershipId, threadId: first.threadId, runId: first.job.copy.runId };
 			expect(first.job.workerGeneration).toBe(1);
+			expect(first.job.copy.sourcesCount, "the first worker leaves source resolution unfinished").toBe(3200);
+			expect(first.job.copy.input?.cursor).toBeLessThan(first.job.copy.input!.sourceByteCount);
 			expect(await runner.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({
 				step: "uploading",
-				selection: { expectedCount: 3401, count: 3300 },
+				selection: { expectedCount: 3401, count: 3200 },
 			});
 
 			const second = await run_job(runner, 1);
@@ -4701,22 +5094,43 @@ describe("bash_run_command", () => {
 			});
 			expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(1);
 			expect((await runner.run({ command: "cat count.txt" })).stdout).toBe("once\n");
+			const inputReads = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("bash-inputs"));
+			expect(inputReads.length).toBeGreaterThan(1);
+			for (const [, request] of inputReads) {
+				if (request?.method === "PUT") continue;
+				const range = /^bytes=(\d+)-(\d+)$/.exec(new Headers(request?.headers).get("Range") ?? "");
+				expect(range, "recovery reads only bounded input windows").not.toBeNull();
+				expect(Number(range![2]) - Number(range![1]) + 1).toBeLessThanOrEqual(64 * 1024);
+			}
 		}, 120_000);
 
-		test.each([
-			"none",
-			"save_bash_job_copy_checkpoint",
-			"stage_bash_job_copy_page",
-			"seal_bash_job_copy_checkpoint",
-			"start_for_agent",
-			"append_sources_for_agent",
-			"seal_for_agent",
-			"take_bash_job_copy_result",
-		])("durable plain Copy survives a lost %s reply without replay", async (lostReply) => {
+		test.each(
+			[
+				"none",
+				"upload",
+				"save_bash_job_copy_checkpoint",
+				"ready_bash_job_copy_input",
+				"accept_bash_job_copy_source",
+				"seal_bash_job_copy_checkpoint",
+				"seal_for_agent",
+				"take_bash_job_copy_result",
+			].flatMap((lostReply) => ["cp", "mv"].map((command) => ({ command, lostReply }))),
+		)("durable plain $command survives a lost $lostReply reply without replay", async ({ command, lostReply }) => {
 			const runner = await create_bash_runner();
 			await runner.run({ command: "echo source > source.txt; mkdir copies" });
 			const original = runner.runMutation.getMockImplementation()!;
 			let lost = false;
+			if (lostReply === "upload") {
+				const upload = vi.mocked(fetch).getMockImplementation()!;
+				vi.mocked(fetch).mockImplementation(async (url, init) => {
+					const response = await upload(url, init);
+					if (!lost && init?.method === "PUT" && String(url).includes("bash-inputs")) {
+						lost = true;
+						throw new Error("upload reply lost");
+					}
+					return response;
+				});
+			}
 			runner.runMutation.mockImplementation(async (reference, args) => {
 				const result = await original(reference, args);
 				if (!lost && function_name_of(reference)?.endsWith(`:${lostReply}`)) {
@@ -4726,7 +5140,7 @@ describe("bash_run_command", () => {
 				return result;
 			});
 			await runner.run({
-				command: `{ echo before; cp $(echo expanded >> count.txt; echo source.txt) ${Array.from({ length: 100 }, () => "source.txt").join(" ")} copies/; echo after; } &`,
+				command: `{ echo before; ${command} $(echo expanded >> count.txt; echo source.txt) ${Array.from({ length: 100 }, () => "source.txt").join(" ")} copies/; echo after; } &`,
 			});
 			const waiting = await run_job(runner, 1);
 			expect(waiting.status).toBe("running");
@@ -5053,13 +5467,14 @@ describe("bash_run_command", () => {
 					async () => `refusal-work-${workNumber++}` as never,
 				);
 				const runner = await create_bash_runner();
+				await runner.run({ command: "echo source > source.txt" });
 				await runner.run({
-					command: `{ ${mode === "errexit" ? "set -e; " : ""}cp docs/readme.md docs/copy.md; echo "status=$?"; echo after > after.txt; } &`,
+					command: `{ ${mode === "errexit" ? "set -e; " : ""}cp source.txt docs/copy.md; echo "status=$?"; echo after > after.txt; } &`,
 				});
 				const original = runner.runMutation.getMockImplementation()!;
 				let starts = 0;
 				runner.runMutation.mockImplementation(async (reference, args) => {
-					if (function_name_of(reference) === "files_transfer:start_for_agent" && starts++ === 0)
+					if (function_name_of(reference) === "ai_chat_files:accept_bash_job_copy_source" && starts++ === 0)
 						// Files renames the destination folder after the input was staged.
 						await runner.t.run(async (ctx) => {
 							const docs = (await ctx.db.query("files_nodes").collect()).find(
@@ -5096,8 +5511,8 @@ describe("bash_run_command", () => {
 					expect(finished.result?.stdout).toBe("status=1\n");
 					expect((await runner.run({ command: "cat after.txt" })).stdout).toBe("after\n");
 				}
-				// The suspended worker and the next one each tried to start once. No transfer exists.
-				expect(starts).toBe(2);
+				// Each worker retries acceptance once for a lost reply. No transfer exists.
+				expect(starts).toBe(4);
 				expect(await runner.t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toEqual([]);
 			},
 		);
@@ -5110,12 +5525,18 @@ describe("bash_run_command", () => {
 			const holder = await run_job(runner, 1);
 			if (holder.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
 			await runner.run({ command: "{ cp source.txt second.txt; echo after; } &" });
-			const starts = () => mutation_calls(runner, "files_transfer:start_for_agent");
+			const starts = () => mutation_calls(runner, "ai_chat_files:accept_bash_job_copy_source");
 			const startsBefore = starts();
 
 			for (let attempt = 0; attempt < 5; attempt++) await run_job(runner, 2);
 			const waiting = await job_row(runner, 2);
-			expect(waiting.job.copy).toMatchObject({ phase: "admitting", sealed: true, runId: null });
+			expect(waiting.job.copy).toMatchObject({
+				phase: "admitting",
+				sealed: false,
+				runId: null,
+				sourcesCount: 0,
+				input: { ready: true },
+			});
 			expect(starts()).toBe(startsBefore);
 
 			// Once the lane is free, the next worker starts the Copy once.
@@ -6762,8 +7183,8 @@ describe("bash_run_command", () => {
 				`${test_db_files_mount}/docs/tutorial.md\n`,
 			);
 			expect((await runner.run({ command: "mv docs/tutorial.md reports/manual.md" })).metadata.exitCode).toBe(0);
-			const accepted = await runner_as_user(runner).mutation(
-				api.files_pending_updates.apply_file_pending_move,
+			const accepted = await test_apply_file_pending_move(
+				runner_as_user(runner),
 				await pending_review_for_test(runner, nodeId),
 			);
 			expect(accepted._nay).toBeUndefined();
@@ -7676,6 +8097,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", runner.ctxData.organizationId)
 						.eq("workspaceId", runner.ctxData.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/draft-note.md"),
 				)
 				.collect(),
@@ -8223,10 +8645,7 @@ describe("bash_run_command", () => {
 			external_id: runner.seeded.userId,
 			email: "bash-folder-swap-accept@test.local",
 		});
-		const incomplete = await asUser.mutation(
-			api.files_pending_updates.apply_file_pending_move,
-			await pending_review_for_test(runner, folderAId),
-		);
+		const incomplete = await test_apply_file_pending_move(asUser, await pending_review_for_test(runner, folderAId));
 		expect(incomplete._nay?.name).toBe("needs_review");
 		await accept_pending_move_group_for_test(runner, [folderAId, folderBId]);
 
@@ -8307,10 +8726,7 @@ describe("bash_run_command", () => {
 			external_id: runner.seeded.userId,
 			email: "bash-edr-accept@test.local",
 		});
-		const accepted = await asUser.mutation(
-			api.files_pending_updates.apply_file_pending_move,
-			await pending_review_for_test(runner, sourceId),
-		);
+		const accepted = await test_apply_file_pending_move(asUser, await pending_review_for_test(runner, sourceId));
 		expect(accepted._nay).toBeUndefined();
 
 		const movedFolder = await get_seeded_node(runner, "/edr-dst");
@@ -8493,10 +8909,7 @@ describe("bash_run_command", () => {
 			external_id: runner.seeded.userId,
 			email: "bash-edr-vac@test.local",
 		});
-		const acceptedAFirst = await asUser.mutation(
-			api.files_pending_updates.apply_file_pending_move,
-			await pending_review_for_test(runner, folderAId),
-		);
+		const acceptedAFirst = await test_apply_file_pending_move(asUser, await pending_review_for_test(runner, folderAId));
 		expect(acceptedAFirst._nay?.name).toBe("needs_review");
 
 		await accept_pending_move_group_for_test(runner, [folderAId, folderBId]);
@@ -10307,10 +10720,7 @@ describe("bash_run_command", () => {
 				external_id: runner.seeded.userId,
 				email: "bash-subtype-rename-accept@test.local",
 			});
-			const accepted = await asUser.mutation(
-				api.files_pending_updates.apply_file_pending_move,
-				await pending_review_for_test(runner, nodeId),
-			);
+			const accepted = await test_apply_file_pending_move(asUser, await pending_review_for_test(runner, nodeId));
 			expect(accepted._nay).toBeUndefined();
 
 			// The accept patches the name and the extension index. The stored type stays: a rename
@@ -10410,6 +10820,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/big.md")
 						.eq("archiveOperationId", null),
 				)
@@ -11448,14 +11859,15 @@ describe("bash_run_command", () => {
 		const read = await runner.run({ command: "pwd" });
 		expect(read.stdout).toBe(`${test_db_files_mount}/renamed-cwd\n`);
 		const proposal = await runner.t.run((ctx) => ctx.db.get("files_pending_updates", draft.pendingUpdate._id));
-		const saved = await runner.t
-			.withIdentity({ issuer: "https://clerk.test", external_id: runner.seeded.userId })
-			.action(api.files_pending_updates.save_file_pending_update, {
+		const saved = await test_save_file_pending_update(
+			runner.t.withIdentity({ issuer: "https://clerk.test", external_id: runner.seeded.userId }),
+			{
 				membershipId: runner.seeded.membershipId,
 				target,
 				pendingUpdateId: draft.pendingUpdate._id,
 				reviewedRevision: proposal!.revision,
-			});
+			},
+		);
 		if (saved._nay) throw new Error(saved._nay.message);
 		expect((await runner.run({ command: "pwd" })).stdout).toBe(`${test_db_files_mount}/renamed-cwd\n`);
 		expect((await get_shell({ t: runner.t, threadId: runner.threadId }))?.cwdTarget).toEqual(saved._yay.target);
@@ -11863,6 +12275,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/archive")
 						.eq("archiveOperationId", null),
 				)
@@ -11881,10 +12294,7 @@ describe("bash_run_command", () => {
 			external_id: runner.seeded.userId,
 			email: "bash-cp-accept@test.local",
 		});
-		const accepted = await asUser.mutation(
-			api.files_pending_updates.apply_file_pending_move,
-			await pending_review_for_test(runner, reportsId),
-		);
+		const accepted = await test_apply_file_pending_move(asUser, await pending_review_for_test(runner, reportsId));
 		expect(accepted._nay).toBeUndefined();
 		const movedFolder = await get_seeded_node(runner, "/archive");
 		expect(movedFolder._id).toBe(reportsId);
@@ -11927,6 +12337,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/archive")
 						.eq("archiveOperationId", null),
 				)
@@ -11941,10 +12352,7 @@ describe("bash_run_command", () => {
 			external_id: runner.seeded.userId,
 			email: "bash-mkdir-accept@test.local",
 		});
-		const accepted = await asUser.mutation(
-			api.files_pending_updates.apply_file_pending_move,
-			await pending_review_for_test(runner, reportsId),
-		);
+		const accepted = await test_apply_file_pending_move(asUser, await pending_review_for_test(runner, reportsId));
 		expect(accepted._nay).toBeUndefined();
 		const movedSub = await get_private_entry(runner, "/archive/sub");
 		expect(movedSub.node._id).toBe(sub.node._id);
@@ -11980,6 +12388,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/reports/sub")
 						.eq("archiveOperationId", null),
 				)
@@ -12011,6 +12420,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/foo.md")
 						.eq("archiveOperationId", null),
 				)
@@ -12041,6 +12451,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/foo.md")
 						.eq("archiveOperationId", null),
 				)
@@ -12065,6 +12476,7 @@ describe("bash_run_command", () => {
 					q
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/docs/readme.md/sub")
 						.eq("archiveOperationId", null),
 				)

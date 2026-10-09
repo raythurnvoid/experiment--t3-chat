@@ -10,7 +10,7 @@ import {
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { r2_confirmed_object_delete, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_agent_write_file_text } from "../server/bash-utils.ts";
 
 beforeEach(() => {
@@ -468,7 +468,7 @@ describe("private storage purge", () => {
 				}),
 			);
 			expect(written._nay).toBeUndefined();
-			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+			const saved = await test_save_file_pending_update(asUser, {
 				membershipId: db.membershipId,
 				target: parent._yay.target,
 				pendingUpdateId: parent._yay.pendingUpdateId,

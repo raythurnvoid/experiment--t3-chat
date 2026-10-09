@@ -16,6 +16,7 @@ import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_
 import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
 export const rollback = internalMutation({
@@ -176,8 +177,8 @@ export const rollback = internalMutation({
 			});
 
 		const [root, folder, binding] = await Promise.all([
-			ctx.db.get("files_nodes", writer.rootNodeId),
-			ctx.db.get("files_nodes", writer.folderNodeId),
+			files_saved_placement_db_get_node(ctx.db, writer.rootNodeId),
+			files_saved_placement_db_get_node(ctx.db, writer.folderNodeId),
 			ctx.db
 				.query("plugins_external_file_bindings")
 				.withIndex("by_writer", (q) => q.eq("writerId", writer._id))

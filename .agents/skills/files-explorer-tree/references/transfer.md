@@ -19,13 +19,14 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Recheck all three scopes before later reads and writes. A leave and re-invite cannot revive a run.
 
 - The in-memory clipboard lasts for the current tab and workspace. Paste saves a run, which can
-  continue after navigation or reload. Only one run per user and workspace may be active.
-- Copy intake uses `start`, `append_sources`, and `seal`, with at most 100 sources per page
+  continue after navigation or reload. Copy and Move share one active bulk run per user and
+  chat workspace. Rename has its own queue and is accepted while that bulk run is active.
+- Copy and Move intake use `start`, `append_sources`, and `seal`, with at most 100 sources per page
   (`files_TRANSFER_SELECTION_PAGE_SIZE` in `shared/files.ts`; Paste and Bash use the same constant).
   The expected count includes duplicate entries. Page replay must match the accepted page exactly.
   An incomplete selection cannot start discovery. After sealing, indexed selection docs remove
   duplicates and children covered by a selected ancestor, including an ancestor on a later page.
-  There is no total Copy root or item cap. Sources and destination parents use tagged saved/private
+  There is no total selection cap. Sources and destination parents use tagged saved/private
   IDs. The destination path, parent, optional target name, and missing Copy parents are fixed at
   start. A repeated request ID returns its original run; changed intent or expired membership refuses.
 - Copy discovers active descendants in pages of 50 before creating output.
@@ -42,17 +43,40 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Two file workers may prepare bytes at once. The item records its attempt, assets, payer, and
   completed node. A repeated callback cannot create another copy or bill it again. Reserving
   cross-workspace output IDs does not spend one of the three content-worker attempts.
-- Cut uses one atomic move transaction for the named items. It allows at most 500 named or inserted
-  nodes, 2,000 scanned nodes, search chunks, and metadata docs, and separate 4 MiB read and write
-  budgets. Descendants of a moved folder do not count: a move job (`files_subtree_ops`, kind `move`)
-  gives them their new paths after the transaction. Permission checks are outside that scan counter.
-  Every restricted folder inside a reparented folder needs write access, even when it is hidden or
-  archived. An oversized or unauthorized move fails before moving anything. It never falls back to
-  partial batches.
-- Saved Move and reviewed pending Move use the common preflight/apply plan in `files_nodes.ts`.
-  Private publication uses that same plan for a saved replacement occupant. These path moves stay
-  within one workspace. Cross-workspace Move is refused before creating a transfer or output.
+- Cut and drag/drop queue one selected root at a time. The browser saves all input pages in
+  IndexedDB before Start. Accepted input replays with the same request ID after reload. Unstarted
+  input asks for Resume. Storage keys bind the exact user and membership.
+  `get_move_intake` reads the exact owner/workspace/request index. A late tab can retire sealed
+  input after another tab removes its pages. Stop keeps a local header until the server confirms it.
+  The public Transfer Stop door treats missing and unowned runs as a no-op after checking current
+  auth and active owned membership. This lets recovery finish after history cleanup. Auth and
+  membership failures still refuse. Other Stop doors keep their own rules.
+- Saved Move and reviewed pending Save use `files_move_cohorts.ts`. Its indexed work docs stage
+  headers, descendants, content, metadata, search chunks and owner overlays in separate transactions.
+  Normal names keep their old IDs and content until one small switch selects the complete group.
+  Physical repair then drains before the next transfer item. A folder uses the same path.
+  Existing Move, scope, Archive and Restore repairs must finish before a new Move starts.
+- Each preparation transaction checks current membership lifetime, source and destination access,
+  local write rules and version pins. A moved folder carries protected children unchanged.
+  Reparenting checks nested restricted roots. Replacement checks every removed descendant.
+  Source, subtree and name reservations block competing writes. Security changes can revoke access;
+  their clocks prevent a later publication from using stale permission.
+- Move and Accept have no total selection cap. The limits test measures native worker transactions
+  with room for future catalog work. Transaction page sizes never refuse a large selection.
+  These path moves stay within one workspace. Cross-workspace Move is refused before output.
   OS links, ownership bits, timestamps, and subtree replacement are not supported.
+- Rename starts the same Move Activity. Parent segments use the fixed relative path and source
+  pins. Missing folders are after-only candidates, created one at a time. Archived Rename keeps
+  its archive identity and does not claim a normal active file's name.
+- Ready Renames run in order before the next bulk group. The active Move group finishes repair
+  first. In-flight Copy workers finish and dispose their callbacks first; progress alone does
+  not prove that they have stopped. New Copy workers wait. The two user/workspace/kind/inFlight
+  indexes cover source and destination workspaces, including Copy started in another chat.
+  All queue reads use exact indexed ranges. A Rename waiting for a conflict answer gives way;
+  its pins and access are checked again when it resumes. Stop can cancel a queued Rename alone.
+  `list_current` and agent busy polling return bulk first, then an active Rename. The Activity
+  feed and returned run ID expose every queued Rename. Waiting extends the idle deadline;
+  fixed Bash deadlines keep their original time.
 
 ## Conflicts and concurrent changes
 
@@ -63,8 +87,10 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Keep both allocates `report-copy-1.md`, then `report-copy-2.md`, preserving the extension.
   Publication keeps each planned name. A later outside collision chooses another name while keeping
   the other roots' planned names reserved.
-  It tries at most 100 counter names. Each initial check and move commit has a 200-lookup budget;
-  exceeding it returns a clear refusal. Copy also supports file replacement. Only Bash `cp` merges a
+  For Move, Keep both tries 100 counter names per step and saves its next counter. Later steps
+  continue until a free name is found. Exact name claims keep other roots' planned names reserved.
+  Copy still refuses when its existing name-search attempt limit is reached.
+  Copy also supports file replacement. Only Bash `cp` merges a
   folder into an existing one; merge keeps the destination folder ID, metadata, and unrelated
   children. A paste has no Merge: `resolve_conflicts` refuses `merge` ("A pasted folder cannot merge
   into another folder"), and a folder Replace is only for a Move run. File replacement names
@@ -112,7 +138,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
   A completed image/video item keeps its exact output asset ID, without owning the asset. The first
   document mapping must still match that ID. Saving unchanged media is allowed; replacing it is not.
   Save checks the embeds still present in the accepted text. Each must be saved at the copied version
-  or selected in that same atomic Save unit. Large Copy review saves selected media before its
+  or selected in that same Save group. Large Copy review saves selected media before its
   dependent documents. Removed embeds need no media Save. See the pending spec.
 - Media mappings live in `files_media_dependency_sets` and indexed `files_media_dependencies` docs.
   A sealed set belongs to a transfer capture, a proposal, or cleanup. Adoption changes that owner
@@ -152,14 +178,14 @@ the same producer with private proposals. `files_pending_updates.ts` and
   replacement claim follows the source with the same saved ID and content version.
   A saved occupant with its own pending Move must be saved or discarded before it can be replaced.
 - A saved occupant stays intact while a private source claims its name. Single Save and bulk Save
-  archive that exact occupant and publish the source in one transaction. Active saved children,
+  archive that exact occupant and publish the source at one group switch. Active saved children,
   private children, pending moves into the folder, changed content, a new occupant, or lost access
   refuse the affected Save. Discard, expiry, and moving away keep the saved occupant unchanged.
 - Bulk review stores the selected proposal IDs, revisions, and content states. Independent Copy
   outputs save in small units. Indexed prerequisites put copied parents and selected media first.
   A failed unit blocks its dependents, not unrelated copies. Completed saves remain after Stop
-  or a later failure. Ordinary connected move, content, and replacement work keeps bounded atomic
-  units. An unselected affected proposal,
+  or a later failure. Connected Move, content and replacement work uses the same paged group
+  worker, with no total item cap. An unselected affected proposal,
   including another chat's proposal on the occupant, requires a new selection. The worker never
   silently includes it. A partial private Save keeps unresolved text on the same proposal, retargets
   it to the saved source, and removes the completed create and move claims.
@@ -181,7 +207,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
   The destination payer pays for storage; agent-run billing is unchanged.
 - Copy current content, metadata, and supported write rules. Keep history, comments, and chats
   at the source. TODO: revisit copying versions and comments in a future change.
-- A large same-workspace Move works through the move job. Its limits bound only the named items.
+- A large same-workspace Move works through the transfer job. It has no total selection cap.
 
 ## Stop, Activity, and cleanup
 
@@ -202,7 +228,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Stop keeps completed copies. It first saves the stopping state, then cancels this run's queued
   work. It drains at most 50 unfinished items per mutation and moves blocked counts to canceled.
   It keeps worker IDs until callbacks or upload leases settle. Publication after Stop is refused.
-- A move racing Stop either commits all non-skipped roots or moves none. The saved result wins.
+- A Move racing Stop may commit its current root. Completed roots stay moved. Remaining roots
+  stop, and child repair for committed folders still finishes.
 - While Stop awaits confirmation, the dialog and Activity say `Stop requested. Waiting for the
   server…`. Track the pending Stop request in `AppActivitiesProvider` so hiding or reopening either
   view does not lose it. Show it even before run details load. A saved stopping or final result takes
@@ -245,7 +272,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Verified Copy waiting time is excluded from the general 24-hour Bash compute/sleep age.
   Worker generations reject stale queued actions. Stop fences the linked Copy before clearing
   its checkpoint. The Bash job and its Activity remain the visible owner of background work.
-- Active Copy and review jobs hold their exact proposals against idle expiry. Source folders
+- Active Copy, proposal Move and review jobs hold their exact proposals against idle expiry. Source folders
   also protect their not-yet-discovered private children. Retry protects later manifest pages
   before their new holds are installed. Holds grant no read or write access.
 - Retry renews holds on its existing private destination and prepared parents at admission.
@@ -254,6 +281,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Edits and renames of the same proposal keep retention; a new replacement at the same target does not.
 - Completed output gets a fixed four-hour review window from producer completion. Release pages
   install that deadline before deleting holds; repeated release never starts another window.
+  An active workspace view parks the exact hold release until repair wakes it. Expiry leaves
+  that workspace's proposals alone and retries its check after 60 seconds.
   Cleanup callbacks check the current cleanup-task ID, generation, deadline, and holds.
 - Failed or expired attempts hand unfinished upload staging to the exact-key deletion ledger,
   including the asset's `putMayArriveUntil`. Allocation sets it to 25 minutes later: two ten-minute
@@ -285,11 +314,19 @@ the same producer with private proposals. `files_pending_updates.ts` and
   large discovery, exact replay, long-running output, and retry retention.
 - `convex/files_transfer_media.test.ts` and `convex/files_pending_media_save.test.ts`: selected media,
   exact versions, partial Save, and linked review units.
-- `convex/files_nodes.test.ts`: atomic move scope, cycles, read/write bounds, and policy checks.
+- `convex/files_nodes.test.ts`: public Move and Rename permissions, scope and names.
+- `convex/files_move_cohorts.test.ts`: linked cycles, one group switch, Stop and cleanup.
+- `convex/files_pending_overlay_limits.test.ts`: full transaction costs and catalog reserve.
 - `convex/files_pending_updates.test.ts`: all saved/private Move pairs, exact replacements,
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.
 - `convex/files_pending_update_runs*.test.ts`: selected connected units, transaction bounds,
   preparation, retry, Stop, and cleanup.
+- The normal test commands omit only the 1,001-input Copy/Move completion check and the
+  10,001-unit planner check. Run both with
+  `vp env exec pnpm --dir packages/app run test:files:full-size`.
+  This command keeps every input and assertion. It runs the two files one at a time.
+  The test database scans stored docs, so these checks can take many hours. They have no
+  test time limit. All other checks keep their time limits.
 - `server/bash*.test.ts`: foreground and background-job transfer commands, invocation replay, cwd identity,
   mixed operations, exit status, and deadlines.
 - `convex/activities.test.ts` and `convex/data_deletion.test.ts`: private controls and bounded cleanup.

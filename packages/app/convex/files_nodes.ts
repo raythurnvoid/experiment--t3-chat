@@ -12,6 +12,7 @@ import {
 	type PaginationResult,
 	type RegisteredMutation,
 	type RegisteredQuery,
+	type IndexRange,
 } from "convex/server";
 import { Workpool } from "@convex-dev/workpool";
 import {
@@ -22,7 +23,7 @@ import {
 	path_tree_prefix_upper_bound,
 	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
-import { v, type Infer } from "convex/values";
+import { compareValues, v, type Infer } from "convex/values";
 import {
 	date_get_week_start_timestamp,
 	date_get_day_start_timestamp,
@@ -47,7 +48,6 @@ import {
 	files_node_has_editable_yjs_state,
 	files_pending_update_has_pending_chunks,
 	files_db_delete_pending_update_yjs_states,
-	files_db_get_pending_update,
 	files_db_patch_pending_update,
 	files_db_delete_pending_update,
 	files_db_get_visible_node_by_path,
@@ -82,8 +82,30 @@ import app_convex_schema, {
 	files_table_filter_validator,
 	file_content_materialization_state_validator,
 	file_content_materialization_header_validator,
+	files_saved_stream_validator,
 } from "./schema.ts";
 import { files_search_db_create_reader } from "./files_search.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_slot,
+	files_saved_placement_db_get_proposal,
+	files_saved_placement_db_get_sequence,
+} from "../server/files-saved-placement.ts";
+import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import {
+	files_saved_content_collect,
+	files_saved_content_db_plain_text_chunks,
+	files_saved_content_db_text_chunks,
+	files_saved_content_db_yjs_updates,
+} from "../server/files-saved-content.ts";
+import { files_index_range_apply, files_index_range_phases } from "../server/files-index-range.ts";
+import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
+import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
+import {
+	files_move_reservations_db_check,
+	files_move_reservations_db_enter_security,
+	files_move_reservations_db_find_blocker,
+} from "../server/files-move-reservations.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
@@ -113,13 +135,13 @@ import {
 import type { access_control_Permission } from "../shared/access-control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
+import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_ANCESTOR_FIELD_COUNT,
 	files_derive_tree_path_for_file_node,
 	files_is_ancestor_field,
 	files_lowercase_extension,
-	files_normalize_file_rename_name,
 	files_default_text_shape_for_name,
 	files_get_normalized_node_path_segments,
 	files_normalize_markdown_name,
@@ -141,13 +163,12 @@ import {
 	files_search_query_FIELD_PATH_MAX_LENGTH,
 } from "../shared/files-search-query.ts";
 import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
-import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
+import { files_transfer_db_start_rename } from "./files_transfer.ts";
 import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_service_uploads.ts";
 import {
 	files_pending_nodes_db_create,
 	files_pending_nodes_db_get_ancestry,
 	files_pending_nodes_db_resolve_read_target,
-	files_pending_nodes_db_resolve_saved_parent,
 } from "./files_pending_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
@@ -176,12 +197,8 @@ const files_content_materialization_workpool = new Workpool(components.files_con
 	} as const,
 });
 
-// Measured with the pending overlay flush: 186 selected items fit the 4,096 index ranges
-// in `files_pending_overlay_limits.test.ts`, so the cap keeps a 25% margin.
-export const files_nodes_MAX_MOVE_NODE_COUNT = 139;
-// The subtree write check before an archive or a Replace uses this limit too.
-const MAX_MOVE_DOCUMENT_COUNT = 2000;
-const MAX_MOVE_BYTES = 4 * 1024 * 1024;
+// The up-front Archive policy check can defer larger trees to its background worker.
+const MAX_SUBTREE_POLICY_NODE_COUNT = 2000;
 
 const TREE_CHILDREN_MAX_ITEMS = 200;
 // The page cap and the split guard of the share pages. Each share row is its own scope, so each one
@@ -283,26 +300,13 @@ async function db_patch_plain_text_chunks_scope(
 	if ("archiveOperationId" in args) {
 		patch.archiveOperationId = args.archiveOperationId;
 	}
-	const chunks = (
-		await Promise.all([
-			ctx.db
-				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-				)
-				.collect(),
-			ctx.db
-				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("target.kind", "saved")
-						.eq("target.id", args.nodeId),
-				)
-				.collect(),
-		])
-	).flat();
+	// Saved content is bounded by one file. Other owners' drafts use the overlay job.
+	const chunks = await ctx.db
+		.query("files_plain_text_chunks")
+		.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
+		)
+		.collect();
 	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, patch)));
 }
 
@@ -370,6 +374,28 @@ export async function enqueue_file_content_materialization(
 		...existingJobs.map((job) => files_content_materialization_workpool.cancel(ctx, job.jobId)),
 		...existingJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
 	]);
+}
+
+export async function files_nodes_db_resume_file_content_materialization(
+	ctx: MutationCtx,
+	args: { jobId: Id<"files_content_materialization_jobs">; userId: Id<"users"> },
+) {
+	const job = await ctx.db.get("files_content_materialization_jobs", args.jobId);
+	if (!job) return;
+	const jobId = await files_content_materialization_workpool.enqueueAction(
+		ctx,
+		internal.files_nodes_content.materialize_file_content,
+		{
+			organizationId: job.organizationId,
+			workspaceId: job.workspaceId,
+			nodeId: job.fileNodeId,
+			userId: args.userId,
+			targetSequence: job.targetSequence,
+		},
+		{ runAfter: 0 },
+	);
+	// Keep the accepted job identity while replacing its completed workpool attempt.
+	await ctx.db.patch("files_content_materialization_jobs", job._id, { jobId });
 }
 
 /**
@@ -729,7 +755,7 @@ export async function files_nodes_db_set_restricted_scope(args: {
 }) {
 	const { ctx, shareLinkCleanup } = args;
 
-	const node = await ctx.db.get("files_nodes", args.nodeId);
+	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (shareLinkCleanup && node?.restrictedScopeNodeId !== args.restrictedScopeNodeId) {
 		await files_share_links_db_delete_for_roots({
 			ctx,
@@ -741,6 +767,38 @@ export async function files_nodes_db_set_restricted_scope(args: {
 	}
 
 	const isRestrictedScopeRoot = args.restrictedScopeNodeId === args.nodeId;
+	if (
+		node &&
+		(node.moveCohortId ||
+			(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: node._id } })))
+	)
+		files_move_reservations_db_enter_security(ctx, { nodeId: node._id });
+	if (node?.moveCohortId) {
+		// Each placement inherits from its own parent. The access rule changes in both views now.
+		for (const view of ["before", "after"] as const) {
+			const fixedView = { cohortId: node.moveCohortId, view };
+			const place = await ctx.db
+				.query("files_saved_places")
+				.withIndex("by_cohort_view_node", (q) =>
+					q.eq("cohortId", fixedView.cohortId).eq("view", view).eq("nodeId", node._id),
+				)
+				.unique();
+			if (!place) continue;
+			let scopeNodeId = isRestrictedScopeRoot ? node._id : null;
+			let parentId = place.parentId;
+			while (!scopeNodeId && parentId !== files_ROOT_ID) {
+				const parent = await files_saved_placement_db_get_node(ctx.db, parentId, fixedView);
+				if (!parent) break;
+				if (parent.isRestrictedScopeRoot) scopeNodeId = parent._id;
+				parentId = parent.parentId;
+			}
+			await ctx.db.patch("files_saved_places", place._id, {
+				restrictedScopeNodeId: scopeNodeId,
+				isRestrictedScopeRoot,
+			});
+			await files_metadata_db_patch_file_scope(ctx, { ...args, isRestrictedScopeRoot, fixedView });
+		}
+	}
 	await ctx.db.patch("files_nodes", args.nodeId, {
 		restrictedScopeNodeId: args.restrictedScopeNodeId,
 		isRestrictedScopeRoot,
@@ -999,7 +1057,7 @@ export type files_nodes_get_user_file_write_access_Result =
 /**
  * Load every descendant below `parentId`. Include archived descendants.
  * Use parent ids because active and archived trees can have the same path.
- * Return null when there are more than `MAX_MOVE_DOCUMENT_COUNT`, so one mutation never reads a
+ * Return null when there are more than `MAX_SUBTREE_POLICY_NODE_COUNT`, so one mutation never reads a
  * huge folder and fails on the Convex read limits.
  */
 async function db_collect_descendants(
@@ -1022,12 +1080,16 @@ async function db_collect_descendants(
 		const children = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", parentId),
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("parentId", parentId),
 			)
-			.take(MAX_MOVE_DOCUMENT_COUNT + 1 - descendants.length);
+			.take(MAX_SUBTREE_POLICY_NODE_COUNT + 1 - descendants.length);
 
 		descendants.push(...children);
-		if (descendants.length > MAX_MOVE_DOCUMENT_COUNT) {
+		if (descendants.length > MAX_SUBTREE_POLICY_NODE_COUNT) {
 			return null;
 		}
 		// Only folders have children. Skip the files so the walk reads one index range per folder.
@@ -1094,7 +1156,7 @@ export async function files_nodes_db_require_swept_nodes_writable(
  * Use only for delete, archive, and replace paths. Rename and move never call this:
  * protected descendants travel along and keep their rules.
  * Include archived descendants because hiding them changes them too.
- * Refuse with `subtree_too_large` when the folder holds more than `MAX_MOVE_DOCUMENT_COUNT` items.
+ * Refuse with `subtree_too_large` when the folder holds more than `MAX_SUBTREE_POLICY_NODE_COUNT` items.
  */
 export async function files_nodes_db_require_subtree_writable(
 	ctx: MutationCtx,
@@ -1392,6 +1454,11 @@ async function db_set_write_policy(
 	}
 
 	// Local change only. Children keep their own rules.
+	if (
+		args.node.moveCohortId ||
+		(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: args.node._id } }))
+	)
+		files_move_reservations_db_enter_security(ctx, { nodeId: args.node._id });
 	await ctx.db.patch("files_nodes", args.node._id, {
 		writePolicy: args.writePolicy,
 	});
@@ -1647,6 +1714,11 @@ export async function files_nodes_db_set_new_child_write_policy(
 	}
 
 	// The default changes, but existing children keep their rules.
+	if (
+		args.node.moveCohortId ||
+		(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: args.node._id } }))
+	)
+		files_move_reservations_db_enter_security(ctx, { nodeId: args.node._id });
 	await ctx.db.patch("files_nodes", args.node._id, {
 		newChildWritePolicy: args.newChildWritePolicy,
 	});
@@ -2039,7 +2111,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		expectedParentWritePolicy?: Doc<"files_nodes">["writePolicy"];
 	},
 ) {
-	let parentNode = args.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.parentId);
+	let parentNode =
+		args.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.parentId);
 	// Only an active folder takes children. An archived parent is hidden, so a live child created
 	// there would be hidden too until a restore.
 	if (
@@ -2068,17 +2141,12 @@ export async function files_nodes_db_create_node_recursively_at_path(
 
 	// Resolve every existing segment before creating anything. A later refusal must leave no folders.
 	for (const [i, name] of segments.entries()) {
-		const existing = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("parentId", parentNode?._id ?? files_ROOT_ID)
-					.eq("name", name)
-					.eq("archiveOperationId", null),
-			)
-			.first();
+		const existing = await files_saved_placement_db_get_slot(ctx.db, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			parentId: parentNode?._id ?? files_ROOT_ID,
+			name,
+		});
 		firstMissing = i;
 		if (!existing) {
 			break;
@@ -2192,6 +2260,17 @@ export async function files_nodes_db_create_node_recursively_at_path(
 				}
 			}
 		}
+	}
+
+	const organizationId = ctx.db.normalizeId("organizations", args.organizationId);
+	const workspaceId = ctx.db.normalizeId("organizations_workspaces", args.workspaceId);
+	if (organizationId && workspaceId && missingNames[0] !== undefined) {
+		const parentId = parentNode?._id ?? files_ROOT_ID;
+		const busy = await files_move_reservations_db_check(ctx.db, {
+			parent: parentId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: parentId },
+			slot: { organizationId, workspaceId, parentId, name: missingNames[0] },
+		});
+		if (busy._nay) return busy;
 	}
 
 	let currentParent = parentNode?._id ?? files_ROOT_ID;
@@ -2323,6 +2402,7 @@ export const create_folder_node_by_path = internalMutation({
 				q
 					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("path", args.path)
 					.eq("archiveOperationId", null),
 			)
@@ -2469,6 +2549,7 @@ export async function files_nodes_db_plan_private_node_by_path(
 					q
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", candidate)
 						.eq("archiveOperationId", null),
 				)
@@ -2729,6 +2810,7 @@ export async function files_nodes_db_delete_subtree_batch(
 				q
 					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
+					.eq("moveCohortId", undefined)
 					.gte("treePath", lower)
 					.lt("treePath", upper),
 			)
@@ -2863,6 +2945,7 @@ export async function files_nodes_db_delete_subtree_batch(
 			q
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
+				.eq("moveCohortId", undefined)
 				.gte("treePath", lower)
 				.lt("treePath", upper),
 		)
@@ -3273,6 +3356,7 @@ export const create_upload_node = mutation({
 				q
 					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("path", path)
 					.eq("archiveOperationId", null),
 			)
@@ -3295,6 +3379,7 @@ export const create_upload_node = mutation({
 					q
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("parentId", intermediateParentId)
 						.eq("name", name)
 						.eq("archiveOperationId", null),
@@ -3705,6 +3790,7 @@ export const create_upload_nodes = mutation({
 						q
 							.eq("organizationId", membership.organizationId)
 							.eq("workspaceId", membership.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("parentId", currentWalkParentId)
 							.eq("name", name)
 							.eq("archiveOperationId", null),
@@ -3759,6 +3845,7 @@ export const create_upload_nodes = mutation({
 					q
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", item.targetPath)
 						.eq("archiveOperationId", null),
 				)
@@ -3971,6 +4058,7 @@ export const get_upload_conflicts = query({
 						q
 							.eq("organizationId", membership.organizationId)
 							.eq("workspaceId", membership.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("path", path_join(parentPath, relativePath))
 							.eq("archiveOperationId", null),
 					)
@@ -4133,6 +4221,7 @@ async function db_folder_occupant_is_empty(
 						q
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("parentId", target.id)
 							.eq("archiveOperationId", null),
 					)
@@ -4235,22 +4324,23 @@ export async function files_nodes_db_validate_occupant_replace(
 				return Result({
 					_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
 				});
-			const checked = await files_nodes_db_preflight_move(ctx, {
-				userAuth: { id: membership.userId },
-				membership,
-				intents: [],
-				writer: { kind: "user", userId: membership.userId },
-				policyReach: "ancestors",
-				privateReplacements: [
-					{
-						node: occupant.node,
-						parentId: ancestry._yay.savedParent?._id ?? files_ROOT_ID,
-						occupant: { nodeId: claim.replacesTarget.id, contentVersion: claim.replacesContentVersion },
-					},
-				],
-			});
-			if (checked._nay) return checked;
 			replacesNode = await ctx.db.get("files_nodes", claim.replacesTarget.id);
+			if (
+				!replacesNode ||
+				replacesNode.organizationId !== membership.organizationId ||
+				replacesNode.workspaceId !== membership.workspaceId ||
+				replacesNode.archiveOperationId !== null ||
+				replacesNode.parentId !== (ancestry._yay.savedParent?._id ?? files_ROOT_ID) ||
+				replacesNode.name !== occupant.node.name ||
+				replacesNode.kind !== occupant.node.kind ||
+				!files_transfer_source_versions_equal(
+					await files_nodes_db_get_content_version(ctx, replacesNode),
+					claim.replacesContentVersion,
+				)
+			)
+				return Result({
+					_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
+				});
 			replacesContentVersion = claim.replacesContentVersion;
 		}
 	}
@@ -4279,22 +4369,7 @@ export async function files_nodes_db_validate_occupant_replace(
 		const writable = await files_nodes_db_require_user_writable(ctx, { node: replacesNode, userId: membership.userId });
 		if (writable._nay) return writable;
 
-		const subtree = await files_nodes_db_require_subtree_writable(ctx, {
-			...scope,
-			node: replacesNode,
-			writeContext: {
-				writer: { kind: "user", userId: membership.userId },
-				actorUserId: membership.userId,
-				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
-			},
-		});
-		if (subtree._nay?.name === "subtree_too_large") {
-			return Result({
-				_nay: { name: "subtree_too_large", message: "The folder in the way holds too many items to replace." },
-			});
-		}
-		if (subtree._nay) return subtree;
+		// This only records a draft. The Save cohort checks archived descendants before publication.
 	}
 
 	return Result({ _yay: { replacesEntry: occupant, replacesNode, replacesContentVersion } });
@@ -4385,337 +4460,44 @@ export async function files_nodes_db_validate_pending_move_target_for_proposal(
 	});
 }
 
-/**
- * Apply one independent structural proposal through the same bounded plan as a direct move.
- * Mixed content and connected proposals need one reviewed unit before any saved writes.
- */
-export async function files_nodes_db_apply_pending_move(
-	ctx: MutationCtx,
-	args: {
-		userAuth: { id: Id<"users"> };
-		membership: Doc<"organizations_workspaces_users">;
-		pendingUpdate: Doc<"files_pending_updates">;
-	},
-) {
-	const { userAuth, membership, pendingUpdate } = args;
-	const move = pendingUpdate.pendingMove;
-	if (
-		pendingUpdate.target.kind !== "saved" ||
-		!move ||
-		pendingUpdate.userId !== userAuth.id ||
-		pendingUpdate.organizationId !== membership.organizationId ||
-		pendingUpdate.workspaceId !== membership.workspaceId
-	) {
-		return Result({ _nay: { message: "Not found" } });
-	}
-	if (pendingUpdate.content || pendingUpdate.pendingReplacement || pendingUpdate.pendingArchive) {
-		return Result({ _nay: { name: "needs_review", message: "Review this move and its content together" } });
-	}
-	const node = await ctx.db.get("files_nodes", pendingUpdate.target.id);
-	if (!node || node.archiveOperationId !== null) return Result({ _nay: { message: "Not found" } });
-	const destination = await files_pending_nodes_db_resolve_saved_parent(ctx, {
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-		userId: userAuth.id,
-		parent: move.destParent,
-	});
-	if (destination._nay) return destination;
-	const { parentId } = destination._yay;
-	const parent = parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", parentId);
-	if (parentId !== files_ROOT_ID && !parent) {
-		return Result({ _nay: { message: "Destination folder is missing" } });
-	}
-
-	// A moved ancestor belongs to the same review unit as its source or destination.
-	const checkedAncestors = new Set<Id<"files_nodes">>();
-	for (const firstParentId of [node.parentId, parentId]) {
-		let ancestorId = firstParentId;
-		while (ancestorId !== files_ROOT_ID && !checkedAncestors.has(ancestorId)) {
-			if (checkedAncestors.size === files_nodes_MAX_MOVE_NODE_COUNT) {
-				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-			}
-			checkedAncestors.add(ancestorId);
-
-			const ancestorProposal = await files_db_get_pending_update(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
-				target: { kind: "saved", id: ancestorId },
-			});
-			if (ancestorProposal?.pendingMove || ancestorProposal?.pendingArchive) {
-				return Result({ _nay: { name: "needs_review", message: "Review the parent changes with this move" } });
-			}
-
-			const ancestor = await ctx.db.get("files_nodes", ancestorId);
-			if (!ancestor) return Result({ _nay: { message: "Destination folder is missing" } });
-			ancestorId = ancestor.parentId;
-		}
-	}
-
-	const occupant = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-			q
-				.eq("organizationId", membership.organizationId)
-				.eq("workspaceId", membership.workspaceId)
-				.eq("parentId", parentId)
-				.eq("name", move.destName)
-				.eq("archiveOperationId", null),
-		)
-		.first();
-
-	let occupantIntent: Parameters<typeof files_nodes_db_preflight_move>[1]["intents"][number]["occupant"];
-	if (occupant?._id === node._id) {
-		occupantIntent = { kind: "vacated", nodeId: node._id };
-	} else if (occupant) {
-		const occupantProposal = await files_db_get_pending_update(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			target: { kind: "saved", id: occupant._id },
-		});
-		if (occupantProposal) {
-			return Result({ _nay: { name: "needs_review", message: "Review the destination's changes with this move" } });
-		}
-		if (
-			move.replacesTarget?.kind !== "saved" ||
-			move.replacesTarget.id !== occupant._id ||
-			move.replacesContentVersion === undefined
-		) {
-			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again" } });
-		}
-		occupantIntent = { kind: "replace", nodeId: occupant._id, contentVersion: move.replacesContentVersion };
-	} else {
-		if (move.replacesTarget) {
-			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again" } });
-		}
-		occupantIntent = { kind: "empty" };
-	}
-
-	const plan = await files_nodes_db_preflight_move(ctx, {
-		userAuth,
-		membership,
-		writer: { kind: "user", userId: userAuth.id },
-		policyReach: "ancestors",
-		intents: [
-			{
-				nodeId: node._id,
-				expected: node,
-				destination: {
-					parentId,
-					name: move.destName,
-					expectedParentPath: parent?.path ?? "/",
-					expectedParentArchiveOperationId: parent?.archiveOperationId ?? null,
-				},
-				occupant: occupantIntent,
-			},
-		],
-	});
-	if (plan._nay) return plan;
-
-	for (const archivedNodeId of plan._yay.archivedNodeIds) {
-		const privateChild = await ctx.db
-			.query("files_pending_nodes")
-			.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", userAuth.id)
-					.eq("parent.kind", "saved")
-					.eq("parent.id", archivedNodeId)
-					.eq("state", "active"),
-			)
-			.first();
-		if (privateChild) {
-			return Result({
-				_nay: { name: "needs_review", message: "Review the destination's child drafts with this move" },
-			});
-		}
-	}
-
-	await files_nodes_db_apply_move({ ctx, plan: plan._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
-	return Result({ _yay: { destPath: plan._yay.moved.find((moved) => moved.nodeId === node._id)?.path ?? node.path } });
-}
-
 export const rename_node = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		requestId: v.string(),
 		nodeId: v.id("files_nodes"),
 		path: v.string(),
 	},
-	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
+	returns: v_result({
+		_yay: v.union(v.object({ runId: v.id("files_transfer_runs"), activityId: v.id("activities") }), v.null()),
+		_nay: { data: v.any() },
+	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
+		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
+		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
 		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== membership.organizationId ||
-			fileNode.workspaceId !== membership.workspaceId
-		) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		// Use the live scope in the checks before the preflight too. While a job runs, the stored scope can
-		// be old, so a check could refuse a grant or allow a write it should not.
-		const withLiveScope = await db_live_scope_reader(ctx, membership);
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+		return await files_transfer_db_start_rename(ctx, {
 			membership,
-			permission: "content.write",
-			fileNode: await withLiveScope(fileNode),
+			requestId: args.requestId,
+			nodeId: args.nodeId,
+			path: args.path,
 		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
-		const readBudget = { readDocumentCount: 0, readBytes: 0 };
-		if (!fits_move_read_budget(readBudget, fileNode)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		const pathSegments = path_extract_segments_from(files_normalize_special_node_path(fileNode.kind, args.path));
-		const leafName = pathSegments.at(-1) ?? "";
-		let targetParentId = fileNode.parentId;
-		let targetParent = targetParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", targetParentId);
-		if (targetParent && !fits_move_read_budget(readBudget, targetParent)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		let missingSegmentNames: string[] = [];
-		for (const [index, name] of pathSegments.slice(0, -1).entries()) {
-			const existing = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("parentId", targetParentId)
-						.eq("name", name)
-						.eq("archiveOperationId", null),
-				)
-				.first();
-			if (!existing) {
-				missingSegmentNames = pathSegments.slice(index, -1);
-				break;
-			}
-			if (!fits_move_read_budget(readBudget, existing)) {
-				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-			}
-			if (existing._id === fileNode._id) return Result({ _nay: { message: "Not found" } });
-			// A source grant says nothing about the folders named in a path-like rename.
-			const authorizedSegment = await access_control_db_authorize_membership(ctx, {
-				userAuth,
-				membership,
-				permission: "content.write",
-				fileNode: await withLiveScope(existing),
-			});
-			if (authorizedSegment._nay) return authorizedSegment;
-			if (existing.kind !== "folder") return Result({ _nay: { message: "This folder already exists." } });
-			targetParentId = existing._id;
-			targetParent = existing;
-		}
-
-		// New folders are empty. Check for a name conflict only in an existing folder.
-		if (fileNode.archiveOperationId === null && missingSegmentNames.length === 0) {
-			// Check whether an active sibling already owns the target name.
-			const activeSiblingConflict = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("parentId", targetParentId)
-						.eq("name", leafName)
-						.eq("archiveOperationId", null),
-				)
-				.first();
-			if (activeSiblingConflict && !fits_move_read_budget(readBudget, activeSiblingConflict)) {
-				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-			}
-			if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
-				// Check access before reporting the conflict. Keep a restricted sibling hidden.
-				const authorizedConflict = await access_control_db_authorize_membership(ctx, {
-					userAuth,
-					membership,
-					permission: "content.write",
-					fileNode: await withLiveScope(activeSiblingConflict),
-				});
-				if (authorizedConflict._nay) {
-					return Result({ _nay: { name: "nay", message: "Permission denied" } });
-				}
-				return Result({
-					_nay: {
-						name: "nay",
-						message: "Path already exists",
-					},
-				});
-			}
-		}
-
-		const plan = await files_nodes_db_preflight_move(ctx, {
-			userAuth,
-			membership,
-			writer: { kind: "user", userId: userAuth.id },
-			policyReach: "ancestors",
-			readBudget,
-			intents: [
-				{
-					nodeId: fileNode._id,
-					expected: fileNode,
-					destination: {
-						parentId: targetParentId,
-						missingParentNames: missingSegmentNames,
-						name: leafName,
-						expectedParentPath: targetParent?.path ?? "/",
-						expectedParentArchiveOperationId: targetParent?.archiveOperationId ?? null,
-					},
-					occupant:
-						missingSegmentNames.length === 0 && targetParentId === fileNode.parentId && leafName === fileNode.name
-							? { kind: "vacated", nodeId: fileNode._id }
-							: { kind: "empty" },
-				},
-			],
-		});
-		if (plan._nay) return plan;
-		await files_nodes_db_apply_move({
-			ctx,
-			plan: plan._yay,
-			shareLinkCleanup: files_share_links_create_cleanup_state(),
-		});
-
-		return Result({ _yay: null });
 	},
 });
 
 // #region move nodes
-
-function fits_move_read_budget(budget: { readDocumentCount: number; readBytes: number }, value: object) {
-	budget.readDocumentCount += 1;
-	budget.readBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
-	return budget.readDocumentCount <= MAX_MOVE_DOCUMENT_COUNT && budget.readBytes <= MAX_MOVE_BYTES;
-}
 
 /**
  * A scope op or a move op writes the new scope to the items inside in later steps. Until then an item
  * can store its old scope. While one runs, the returned function gives a node the scope of its
  * parents, so a permission check asks about the scope the node really has.
  */
-async function db_live_scope_reader(
+export async function files_nodes_db_live_scope_reader(
 	ctx: QueryCtx | MutationCtx,
 	args: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId">,
 ) {
@@ -4752,1031 +4534,6 @@ async function db_live_scope_reader(
 }
 
 /**
- * Plan exact saved-node moves in one read snapshot. Callers resolve review dependencies first.
- * Callers also prove the credential's resource scope and supply its current policy reach.
- * Explicit child moves stay in the plan even when an ancestor is also moving.
- */
-export async function files_nodes_db_preflight_move(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		userAuth: { id: Id<"users"> };
-		membership: Doc<"organizations_workspaces_users">;
-		writer: files_nodes_WriteContext["writer"];
-		policyReach: files_nodes_WriteContext["policyReach"];
-		readBudget?: { readDocumentCount: number; readBytes: number };
-		/**
-		 * Private publication uses the same saved-occupant checks before inserting its new node.
-		 * The caller has checked the private proposal and resolved its parent in this mutation.
-		 */
-		privateReplacements?: Array<{
-			node: Doc<"files_pending_nodes">;
-			parentId: Doc<"files_nodes">["parentId"];
-			occupant: {
-				nodeId: Id<"files_nodes">;
-				contentVersion: Infer<typeof files_content_version_validator> | null;
-			};
-		}>;
-		intents: Array<{
-			nodeId: Id<"files_nodes">;
-			expected: Pick<Doc<"files_nodes">, "parentId" | "name" | "path" | "archiveOperationId">;
-			destination: {
-				parentId: Doc<"files_nodes">["parentId"];
-				// These folders do not exist yet. parentId is their nearest saved ancestor.
-				missingParentNames?: string[];
-				name: string;
-				expectedParentPath: string;
-				expectedParentArchiveOperationId: string | null;
-			};
-			occupant:
-				| { kind: "empty" }
-				| { kind: "vacated"; nodeId: Id<"files_nodes"> }
-				| {
-						kind: "replace";
-						nodeId: Id<"files_nodes">;
-						contentVersion: Infer<typeof files_content_version_validator> | null;
-				  };
-		}>;
-	},
-) {
-	const { userAuth, membership, writer } = args;
-	if (args.intents.length + (args.privateReplacements?.length ?? 0) > files_nodes_MAX_MOVE_NODE_COUNT) {
-		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-	}
-
-	// Count nodes, version docs, search chunks, and metadata. Permission reads and the caller's
-	// receipt use the transaction headroom outside this smaller Files budget.
-	const readBudget = args.readBudget ?? { readDocumentCount: 0, readBytes: 0 };
-	const nodesById = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
-	let readBudgetExceeded = false;
-
-	// Give each node read here its live scope. Every permission check below then asks about the scope the
-	// node really has, and the planned scopes follow it.
-	const withLiveScope = await db_live_scope_reader(ctx, membership);
-
-	async function readNode(nodeId: Id<"files_nodes">) {
-		const cached = nodesById.get(nodeId);
-		if (cached) return cached;
-		const stored = await ctx.db.get("files_nodes", nodeId);
-		if (!stored) return null;
-		readBudgetExceeded ||= !fits_move_read_budget(readBudget, stored);
-		const node = await withLiveScope(stored);
-		nodesById.set(nodeId, node);
-		return node;
-	}
-
-	const intentsById = new Map<Id<"files_nodes">, (typeof args.intents)[number]>();
-	for (const intent of args.intents) {
-		if (intentsById.has(intent.nodeId)) {
-			return Result({ _nay: { message: "A move names the same item more than once." } });
-		}
-		intentsById.set(intent.nodeId, intent);
-
-		const node = await readNode(intent.nodeId);
-		const parent = intent.destination.parentId === files_ROOT_ID ? null : await readNode(intent.destination.parentId);
-		if (readBudgetExceeded) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		if (!node || (intent.destination.parentId !== files_ROOT_ID && (!parent || parent.kind !== "folder"))) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (
-			node.organizationId !== membership.organizationId ||
-			node.workspaceId !== membership.workspaceId ||
-			(parent && (parent.organizationId !== membership.organizationId || parent.workspaceId !== membership.workspaceId))
-		) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-			fileNode: node,
-		});
-		if (authorized._nay) return authorized;
-
-		// Renaming inside the same saved parent uses the source grant. Creating folders or
-		// changing parents also needs a grant on the destination.
-		const needsParentWrite =
-			node.parentId !== intent.destination.parentId || (intent.destination.missingParentNames?.length ?? 0) > 0;
-		if (needsParentWrite) {
-			const authorizedParent = await access_control_db_authorize_membership(ctx, {
-				userAuth,
-				membership,
-				permission: "content.write",
-				...(parent ? { fileNode: parent } : {}),
-			});
-			if (authorizedParent._nay) return authorizedParent;
-
-			if (writer.kind === "service_account") {
-				const allowed = parent
-					? await access_control_db_can_act_on_file_node(ctx, {
-							organizationId: membership.organizationId,
-							workspaceId: membership.workspaceId,
-							userId: userAuth.id,
-							serviceAccountId: writer.serviceAccountId,
-							fileNode: parent,
-							permission: "content.write",
-						})
-					: await access_control_db_has_permission(ctx, {
-							organizationId: membership.organizationId,
-							workspaceId: membership.workspaceId,
-							defaultWorkspaceId: authorizedParent._yay.defaultWorkspaceId,
-							organizationOwnerUserId: authorizedParent._yay.organization.ownerUserId,
-							serviceAccountId: writer.serviceAccountId,
-							resource: { kind: "workspace", id: membership.workspaceId },
-							permission: "content.write",
-						});
-				if (!allowed) return Result({ _nay: { message: "Permission denied" } });
-			}
-		}
-
-		if (
-			node.parentId !== intent.expected.parentId ||
-			node.name !== intent.expected.name ||
-			node.path !== intent.expected.path ||
-			node.archiveOperationId !== intent.expected.archiveOperationId
-		) {
-			return Result({ _nay: { name: "source_changed", message: "A source changed. Start the move again." } });
-		}
-		if (
-			(parent?.path ?? "/") !== intent.destination.expectedParentPath ||
-			(parent?.archiveOperationId ?? null) !== intent.destination.expectedParentArchiveOperationId
-		) {
-			return Result({
-				_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
-			});
-		}
-		if (node.archiveOperationId === null && parent?.archiveOperationId != null) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		const name =
-			node.kind === "file"
-				? files_normalize_file_rename_name(intent.destination.name)
-				: files_normalize_name(node.kind, intent.destination.name);
-		if (name._nay) return name;
-		if (name._yay !== intent.destination.name) {
-			return Result({ _nay: { message: "The destination name is not valid." } });
-		}
-
-		if ((intent.destination.missingParentNames?.length ?? 0) > files_nodes_MAX_MOVE_NODE_COUNT) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		for (const segment of intent.destination.missingParentNames ?? []) {
-			const folderName = files_normalize_name("folder", segment);
-			if (folderName._nay) return folderName;
-			if (folderName._yay !== segment) return Result({ _nay: { message: "The destination name is not valid." } });
-		}
-	}
-
-	for (const replacement of args.privateReplacements ?? []) {
-		const { node, parentId } = replacement;
-		const occupant = await readNode(replacement.occupant.nodeId);
-		if (parentId !== files_ROOT_ID) await readNode(parentId);
-		if (readBudgetExceeded || !fits_move_read_budget(readBudget, node))
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		if (
-			node.state !== "active" ||
-			node.userId !== userAuth.id ||
-			node.organizationId !== membership.organizationId ||
-			node.workspaceId !== membership.workspaceId ||
-			!occupant ||
-			occupant.organizationId !== membership.organizationId ||
-			occupant.workspaceId !== membership.workspaceId ||
-			occupant.archiveOperationId !== null ||
-			occupant.parentId !== parentId ||
-			occupant.name !== node.name
-		)
-			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again." } });
-	}
-
-	// Load current ancestors once. The final graph below uses these same docs for both policies.
-	for (const node of nodesById.values()) {
-		if (node.parentId === files_ROOT_ID || nodesById.has(node.parentId)) continue;
-		const parent = await readNode(node.parentId);
-		if (readBudgetExceeded) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		if (!parent) {
-			const errorMessage = "fileNode.parentId points to a missing files_nodes doc";
-			const errorData = { nodeId: node._id, parentId: node.parentId };
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-	}
-
-	type FinalNodeFields = Pick<
-		Doc<"files_nodes">,
-		| "parentId"
-		| "name"
-		| "sortName"
-		| "path"
-		| "treePath"
-		| "pathDepth"
-		| "lowercaseExtension"
-		| "restrictedScopeNodeId"
-	>;
-	const finalById = new Map<Id<"files_nodes">, FinalNodeFields>();
-	const visiting = new Set<Id<"files_nodes">>();
-	function finalFields(nodeId: Id<"files_nodes">): FinalNodeFields | null {
-		const cached = finalById.get(nodeId);
-		if (cached) return cached;
-		if (visiting.has(nodeId)) return null;
-		visiting.add(nodeId);
-		const node = nodesById.get(nodeId)!;
-		const intent = intentsById.get(nodeId);
-		const parentId = intent?.destination.parentId ?? node.parentId;
-		const parent = parentId === files_ROOT_ID ? null : finalFields(parentId);
-		if (parentId !== files_ROOT_ID && !parent) return null;
-		const name = intent?.destination.name ?? node.name;
-		let parentPath = parent?.path ?? "/";
-		for (const segment of intent?.destination.missingParentNames ?? []) parentPath = path_join(parentPath, segment);
-		const path = path_join(parentPath, name);
-		const fields: FinalNodeFields = {
-			parentId,
-			name,
-			sortName: files_sort_text_key(name),
-			path,
-			treePath: files_derive_tree_path_for_file_node(path, node.kind),
-			pathDepth: files_path_depth(path),
-			lowercaseExtension: files_lowercase_extension(path, node.kind),
-			restrictedScopeNodeId:
-				node.restrictedScopeNodeId === node._id ? node._id : (parent?.restrictedScopeNodeId ?? null),
-		};
-		visiting.delete(nodeId);
-		finalById.set(nodeId, fields);
-		return fields;
-	}
-	for (const node of nodesById.values()) {
-		if (!finalFields(node._id)) {
-			return Result({ _nay: { message: "Cannot move a folder into itself or its descendants." } });
-		}
-	}
-
-	// A move checks the named node, its source parent, and its destination parent. Each check is
-	// local: protected descendants never block a move, and their rules travel with them unchanged.
-	function isLocallyWritable(node: Doc<"files_nodes">) {
-		const policy = node.writePolicy;
-		if (policy === null) {
-			return true;
-		}
-		if (policy.mode === "read_only") {
-			return false;
-		}
-		return files_nodes_writer_matches_policy({ policy, writer });
-	}
-
-	function readOnlyRefusal() {
-		return Result({ _nay: { name: "read_only" as const, message: "This item is read-only." } });
-	}
-
-	const moved: Array<{ nodeId: Id<"files_nodes">; name: string; path: string }> = [];
-	const unchangedNodeIds: Array<Id<"files_nodes">> = [];
-	const changedById = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
-	const claimedDestinations = new Set<string>();
-	const plannedFolders = new Map<string, { parentKey: string | null; node: ReturnType<typeof node_insert_fields> }>();
-	const plannedParentKeys = new Map<Id<"files_nodes">, string>();
-	const now = Date.now();
-
-	for (const intent of args.intents) {
-		const { parentId, missingParentNames = [] } = intent.destination;
-		const parent = parentId === files_ROOT_ID ? null : finalById.get(parentId)!;
-		let parentKey: string | null = null;
-		let path = parent?.path ?? "/";
-
-		// Brand-new middle folders copy the destination default. A nested middle folder lands
-		// inside the previous one, so one protected default refuses the deeper levels too.
-		const destParentDefault =
-			parentId === files_ROOT_ID ? null : ((await readNode(parentId))?.newChildWritePolicy ?? null);
-		if (readBudgetExceeded) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		if (missingParentNames.length > 1 && destParentDefault !== null) {
-			const nestedBlocked =
-				destParentDefault.mode === "read_only" ||
-				!files_nodes_writer_matches_policy({ policy: destParentDefault, writer: args.writer }) ||
-				args.policyReach !== "ancestors";
-			if (nestedBlocked) {
-				return readOnlyRefusal();
-			}
-		}
-
-		for (const [index, name] of missingParentNames.entries()) {
-			const key = JSON.stringify([parentId, ...missingParentNames.slice(0, index + 1)]);
-			path = path_join(path, name);
-
-			if (!plannedFolders.has(key)) {
-				if (index === 0) {
-					const existing = await ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-							q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
-								.eq("parentId", parentId)
-								.eq("name", name)
-								.eq("archiveOperationId", null),
-						)
-						.first();
-					if (existing && !fits_move_read_budget(readBudget, existing)) {
-						return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-					}
-					if (existing)
-						return Result({
-							_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
-						});
-				}
-
-				if (plannedFolders.size >= files_nodes_MAX_MOVE_NODE_COUNT) {
-					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-				}
-
-				plannedFolders.set(key, {
-					parentKey,
-					node: node_insert_fields({
-						userId: userAuth.id,
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						parentId,
-						name,
-						path,
-						kind: "folder",
-						restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
-						writePolicy: destParentDefault,
-						newChildWritePolicy: destParentDefault,
-						now,
-					}),
-				});
-				claimedDestinations.add(key);
-			}
-			parentKey = key;
-		}
-
-		if (parentKey) plannedParentKeys.set(intent.nodeId, parentKey);
-	}
-
-	const archiveNodes = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
-	const archivedDescendants = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
-	const replacementChecks: Array<{
-		kind: Doc<"files_nodes">["kind"];
-		occupant: Doc<"files_nodes">;
-		contentVersion: Infer<typeof files_content_version_validator> | null;
-	}> = [];
-
-	for (const intent of args.intents) {
-		const node = nodesById.get(intent.nodeId)!;
-		const fields = finalById.get(node._id)!;
-
-		if (node.archiveOperationId === null) {
-			const destinationKey = JSON.stringify([
-				fields.parentId,
-				...(intent.destination.missingParentNames ?? []),
-				fields.name,
-			]);
-			if (claimedDestinations.has(destinationKey)) {
-				return Result({ _nay: { name: "nay", message: "Path already exists" } });
-			}
-			claimedDestinations.add(destinationKey);
-		}
-
-		if (!isLocallyWritable(node)) {
-			return readOnlyRefusal();
-		}
-
-		// Moving a child out changes its old parent, like `rename(2)`. So check the old parent's rule for
-		// every destination, the workspace root included.
-		if (node.parentId !== files_ROOT_ID && node.parentId !== fields.parentId) {
-			const sourceParent = await readNode(node.parentId);
-			if (readBudgetExceeded) {
-				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-			}
-			if (!sourceParent || !isLocallyWritable(sourceParent)) {
-				return readOnlyRefusal();
-			}
-		}
-
-		if (fields.parentId !== files_ROOT_ID) {
-			const parent = nodesById.get(fields.parentId)!;
-			if (!isLocallyWritable(parent)) {
-				return readOnlyRefusal();
-			}
-
-			if (node.parentId !== fields.parentId || plannedParentKeys.has(node._id)) {
-				const finalParent = { ...parent, ...finalById.get(parent._id)! };
-				const authorizedParent = await access_control_db_authorize_membership(ctx, {
-					userAuth,
-					membership,
-					permission: "content.write",
-					fileNode: finalParent,
-				});
-				if (authorizedParent._nay) return authorizedParent;
-
-				if (writer.kind === "service_account") {
-					const allowed = await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						userId: userAuth.id,
-						serviceAccountId: writer.serviceAccountId,
-						fileNode: finalParent,
-						permission: "content.write",
-					});
-					if (!allowed) return Result({ _nay: { message: "Permission denied" } });
-				}
-			}
-		}
-
-		if (
-			!plannedParentKeys.has(node._id) &&
-			node.parentId === fields.parentId &&
-			node.name === fields.name &&
-			node.path === fields.path &&
-			node.restrictedScopeNodeId === fields.restrictedScopeNodeId
-		) {
-			unchangedNodeIds.push(node._id);
-		} else {
-			moved.push({ nodeId: node._id, name: fields.name, path: fields.path });
-			changedById.set(node._id, node);
-		}
-
-		// Archived renames keep their archive identity and may share an active path.
-		if (node.archiveOperationId !== null) continue;
-
-		if (plannedParentKeys.has(node._id)) {
-			if (intent.occupant.kind !== "empty")
-				return Result({
-					_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
-				});
-			continue;
-		}
-
-		const storedOccupant = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("parentId", fields.parentId)
-					.eq("name", fields.name)
-					.eq("archiveOperationId", null),
-			)
-			.first();
-		if (storedOccupant && !fits_move_read_budget(readBudget, storedOccupant)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		const occupant = storedOccupant && (nodesById.get(storedOccupant._id) ?? (await withLiveScope(storedOccupant)));
-		if (occupant && !nodesById.has(occupant._id)) nodesById.set(occupant._id, occupant);
-
-		if (intent.occupant.kind === "empty") {
-			if (occupant) {
-				const readable = await access_control_db_authorize_membership(ctx, {
-					userAuth,
-					membership,
-					permission: "content.read",
-					fileNode: occupant,
-				});
-				return Result({ _nay: { name: "nay", message: readable._nay ? "Permission denied" : "Path already exists" } });
-			}
-			continue;
-		}
-
-		if (!occupant || occupant._id !== intent.occupant.nodeId) {
-			return Result({
-				_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
-			});
-		}
-
-		if (intent.occupant.kind === "vacated") {
-			const occupantIntent = intentsById.get(occupant._id);
-			const occupantFinal = finalById.get(occupant._id);
-			if (
-				occupant._id !== node._id &&
-				(!occupantIntent ||
-					!occupantFinal ||
-					(!plannedParentKeys.has(occupant._id) &&
-						occupantFinal.parentId === fields.parentId &&
-						occupantFinal.name === fields.name))
-			) {
-				return Result({ _nay: { name: "nay", message: "Path already exists" } });
-			}
-			continue;
-		}
-
-		replacementChecks.push({ kind: node.kind, occupant, contentVersion: intent.occupant.contentVersion });
-	}
-
-	for (const replacement of args.privateReplacements ?? [])
-		replacementChecks.push({
-			kind: replacement.node.kind,
-			occupant: nodesById.get(replacement.occupant.nodeId)!,
-			contentVersion: replacement.occupant.contentVersion,
-		});
-
-	for (const { kind, occupant, contentVersion: expectedVersion } of replacementChecks) {
-		const authorizedOccupant = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-			fileNode: occupant,
-		});
-		if (authorizedOccupant._nay) return authorizedOccupant;
-		if (occupant.kind !== kind || intentsById.has(occupant._id)) {
-			return Result({ _nay: { message: "Cannot replace this item." } });
-		}
-
-		const contentVersion = await files_nodes_db_get_content_version(ctx, occupant);
-		if (contentVersion?.kind === "yjs") {
-			const sequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", contentVersion.lastSequenceId);
-			// Count both this budget read and the version helper's read.
-			if (
-				sequenceDoc &&
-				(!fits_move_read_budget(readBudget, sequenceDoc) || !fits_move_read_budget(readBudget, sequenceDoc))
-			) {
-				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-			}
-		}
-
-		const versionMatches =
-			contentVersion === null || expectedVersion === null
-				? contentVersion === expectedVersion
-				: contentVersion.contentType === expectedVersion.contentType &&
-					contentVersion.textKind === expectedVersion.textKind &&
-					contentVersion.collaborationEnabled === expectedVersion.collaborationEnabled &&
-					(contentVersion.kind === "asset" && expectedVersion.kind === "asset"
-						? contentVersion.assetId === expectedVersion.assetId
-						: contentVersion.kind === "yjs" &&
-							expectedVersion.kind === "yjs" &&
-							contentVersion.lastSequenceId === expectedVersion.lastSequenceId &&
-							contentVersion.lineageGeneration === expectedVersion.lineageGeneration &&
-							contentVersion.sequence === expectedVersion.sequence);
-		if (!versionMatches) {
-			return Result({
-				_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
-			});
-		}
-
-		archiveNodes.set(occupant._id, occupant);
-		const descendants = [occupant];
-		for (const ancestor of descendants) {
-			for await (const child of ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("parentId", ancestor._id),
-				)) {
-				if (!fits_move_read_budget(readBudget, child)) {
-					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-				}
-				if (child.archiveOperationId === null) {
-					return Result({ _nay: { message: "Cannot replace a non-empty folder." } });
-				}
-				const liveChild = await withLiveScope(child);
-				nodesById.set(child._id, liveChild);
-				archivedDescendants.set(child._id, liveChild);
-				descendants.push(liveChild);
-			}
-		}
-	}
-
-	for (const node of nodesById.values()) {
-		if (!finalFields(node._id)) {
-			return Result({ _nay: { message: "Cannot move a folder into itself or its descendants." } });
-		}
-	}
-	for (const intent of args.intents) {
-		let node: Doc<"files_nodes"> | undefined = nodesById.get(intent.nodeId)!;
-		while (node) {
-			if (archiveNodes.has(node._id)) {
-				return Result({ _nay: { message: "Cannot replace an ancestor of a moved item." } });
-			}
-			node = node.parentId === files_ROOT_ID ? undefined : nodesById.get(node.parentId);
-		}
-		let parentId = intent.destination.parentId;
-		while (parentId !== files_ROOT_ID) {
-			if (archiveNodes.has(parentId)) {
-				return Result({ _nay: { message: "Cannot move into an item being replaced." } });
-			}
-			parentId = finalById.get(parentId)!.parentId;
-		}
-	}
-
-	const checkedWriteScopes = new Set<Id<"files_nodes">>();
-	const checkedLeavingScopes = new Set<Id<"files_nodes">>();
-	const affectedNodes = new Map([...changedById, ...archiveNodes]);
-	const reparentedTrees = args.intents
-		.filter(
-			(intent) =>
-				nodesById.get(intent.nodeId)!.parentId !== intent.destination.parentId || plannedParentKeys.has(intent.nodeId),
-		)
-		.map((intent) => nodesById.get(intent.nodeId)!);
-
-	for (const node of new Map([...affectedNodes, ...archivedDescendants]).values()) {
-		const final = finalById.get(node._id)!;
-		// Named nodes, archived descendants, and replaced occupants are all removed or hidden, so each
-		// one needs its own local check. The descendants of a moved folder keep their rules, and the
-		// job gives them their new paths after this request.
-		if (!isLocallyWritable(node)) {
-			const readable = await access_control_db_authorize_membership(ctx, {
-				userAuth,
-				membership,
-				permission: "content.read",
-				fileNode: node,
-			});
-			return Result({
-				_nay: {
-					name: readable._nay ? "nay" : "read_only",
-					message: readable._nay ? "Permission denied" : "This item is read-only.",
-				},
-			});
-		}
-
-		// `readNode` gave this node its live scope. Without it, an item could leave a folder that was just
-		// restricted, or just moved into a restricted one, without the checks below.
-		const scope = node.restrictedScopeNodeId;
-		const needsContentWrite = intentsById.has(node._id) || archiveNodes.has(node._id);
-
-		if (scope && !checkedWriteScopes.has(scope) && affectedNodes.has(node._id) && needsContentWrite) {
-			const authorized = await access_control_db_authorize_membership(ctx, {
-				userAuth,
-				membership,
-				permission: "content.write",
-				fileNode: node,
-			});
-			if (authorized._nay) return authorized;
-			checkedWriteScopes.add(scope);
-		}
-
-		if (writer.kind === "service_account" && needsContentWrite) {
-			const allowed = await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
-				serviceAccountId: writer.serviceAccountId,
-				fileNode: node,
-				permission: "content.write",
-			});
-			if (!allowed) return Result({ _nay: { message: "Permission denied" } });
-
-			if (changedById.has(node._id) && scope !== final.restrictedScopeNodeId) {
-				const allowedFinal = await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
-					serviceAccountId: writer.serviceAccountId,
-					fileNode: { ...node, ...final },
-					permission: "content.write",
-				});
-				if (!allowedFinal) return Result({ _nay: { message: "Permission denied" } });
-			}
-		}
-
-		if (
-			changedById.has(node._id) &&
-			scope &&
-			scope !== node._id &&
-			scope !== final.restrictedScopeNodeId &&
-			!checkedLeavingScopes.has(scope)
-		) {
-			const authorized = await access_control_db_authorize_membership(ctx, {
-				userAuth,
-				membership,
-				permission: "content.permissions.manage",
-				fileNode: node,
-			});
-			if (authorized._nay) {
-				return Result({
-					_nay: { name: "nay", message: "You need Can manage on the shared folder to move this out of it." },
-				});
-			}
-
-			if (writer.kind === "service_account") {
-				const allowed = await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
-					serviceAccountId: writer.serviceAccountId,
-					fileNode: node,
-					permission: "content.permissions.manage",
-				});
-				if (!allowed) return Result({ _nay: { message: "Permission denied" } });
-			}
-			checkedLeavingScopes.add(scope);
-		}
-	}
-
-	// A name change carries nested shares without changing their parent or readers. Reparenting a
-	// folder still asks each restricted folder inside it for write access. The move reads no other
-	// descendant, so find those folders by their stored tree path. Restricted folders are few.
-	//
-	// A running move op leaves old tree paths on the items inside its folder until its walk rewrites
-	// them. So also look under each path such an item can still store, in both directions. A stored path
-	// can then point into this folder by mistake, so while a move op runs, keep only the folders whose
-	// parents really lead here. Few move ops run at once.
-	const moveOps = await ctx.db
-		.query("files_subtree_ops")
-		.withIndex("by_organization_workspace_kind", (q) =>
-			q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("kind", "move"),
-		)
-		.collect();
-	for (const root of reparentedTrees) {
-		if (root.kind !== "folder") continue;
-
-		const treePaths = [root.treePath];
-		for (let index = 0; index < treePaths.length; index += 1) {
-			const treePath = treePaths[index]!;
-			for (const op of moveOps) {
-				if (op.kind !== "move") continue;
-				for (const [opIndex, newTreePath] of op.treePaths.entries()) {
-					const oldTreePath = op.oldTreePaths[opIndex]!;
-					for (const [from, to] of [
-						[newTreePath, oldTreePath],
-						[oldTreePath, newTreePath],
-					] as const) {
-						const other = treePath.startsWith(from)
-							? to + treePath.slice(from.length)
-							: from.startsWith(treePath)
-								? to
-								: null;
-						if (other !== null && !treePaths.includes(other)) treePaths.push(other);
-					}
-				}
-			}
-		}
-
-		for (const treePath of treePaths) {
-			for await (const nested of ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_isRestrictedScopeRoot_treePath", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("isRestrictedScopeRoot", true)
-						.gt("treePath", treePath)
-						.lt("treePath", path_tree_prefix_upper_bound(treePath)),
-				)) {
-				if (checkedWriteScopes.has(nested._id)) continue;
-				if (moveOps.length > 0) {
-					let parentId = nested.parentId;
-					while (parentId !== files_ROOT_ID && parentId !== root._id) {
-						parentId = (await ctx.db.get("files_nodes", parentId))?.parentId ?? files_ROOT_ID;
-					}
-					if (parentId !== root._id) continue;
-				}
-
-				const authorized = await access_control_db_authorize_membership(ctx, {
-					userAuth,
-					membership,
-					permission: "content.write",
-					fileNode: nested,
-				});
-				if (authorized._nay) return authorized;
-
-				if (writer.kind === "service_account") {
-					const allowed = await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						userId: userAuth.id,
-						serviceAccountId: writer.serviceAccountId,
-						fileNode: nested,
-						permission: "content.write",
-					});
-					if (!allowed) return Result({ _nay: { message: "Permission denied" } });
-				}
-				checkedWriteScopes.add(nested._id);
-			}
-		}
-	}
-
-	const nodePatches: Array<{ id: Id<"files_nodes">; parentKey?: string; patch: Partial<Doc<"files_nodes">> }> = [];
-	const chunkPatches: Array<{
-		id: Id<"files_plain_text_chunks">;
-		patch: Pick<Doc<"files_plain_text_chunks">, "path" | "archiveOperationId">;
-	}> = [];
-	const metadataPatches: Array<{
-		id: Id<"files_metadata_docs">;
-		parentKey?: string;
-		patch: Pick<Doc<"files_metadata_docs">, "path" | "treePath" | "archiveOperationId"> &
-			Partial<Pick<Doc<"files_nodes">, "parentId" | "name" | "sortName">>;
-	}> = [];
-	let writeBytes = 0;
-	let writeDocumentCount = 0;
-
-	// Updater sort docs are not counted. Each node patch and inserted folder adds at most one doc
-	// write and two index reads.
-	function fitsWriteBudget(value: object) {
-		writeDocumentCount += 1;
-		writeBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
-		return writeDocumentCount <= MAX_MOVE_DOCUMENT_COUNT && writeBytes <= MAX_MOVE_BYTES;
-	}
-
-	for (const folder of plannedFolders.values()) {
-		if (!fitsWriteBudget(folder.node)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-	}
-
-	const archiveOperationId = archiveNodes.size > 0 ? crypto.randomUUID() : null;
-	for (const node of affectedNodes.values()) {
-		const archived = archiveNodes.has(node._id);
-		const fields = finalById.get(node._id)!;
-		const patch = {
-			...fields,
-			...(archived ? { archiveOperationId: archiveOperationId! } : {}),
-			...(archived || intentsById.has(node._id) ? { updatedBy: userAuth.id, updatedAt: now } : {}),
-		};
-
-		if (
-			!archived &&
-			!plannedParentKeys.has(node._id) &&
-			node.parentId === fields.parentId &&
-			node.name === fields.name &&
-			node.path === fields.path &&
-			node.restrictedScopeNodeId === fields.restrictedScopeNodeId
-		)
-			continue;
-
-		if (nodePatches.length + plannedFolders.size >= files_nodes_MAX_MOVE_NODE_COUNT || !fitsWriteBudget({ ...node, ...patch })) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-
-		nodePatches.push({
-			id: node._id,
-			...(plannedParentKeys.has(node._id) ? { parentKey: plannedParentKeys.get(node._id)! } : {}),
-			patch,
-		});
-
-		// The flush rewrites each share row of a restricted root it moves. The share caps bound the rows
-		// of one node (about 100).
-		if (node.restrictedScopeNodeId === node._id) {
-			for await (const row of ctx.db.query("files_share_rows").withIndex("by_node", (q) => q.eq("nodeId", node._id))) {
-				if (!fits_move_read_budget(readBudget, row) || !fitsWriteBudget(row)) {
-					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-				}
-			}
-		}
-
-		const { path, treePath } = fields;
-		const nextArchiveOperationId = archived ? archiveOperationId! : (node.archiveOperationId ?? undefined);
-
-		if (node.kind === "file") {
-			for (const chunks of [
-				ctx.db
-					.query("files_plain_text_chunks")
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-						q
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
-							.eq("fileNodeId", node._id),
-					),
-				ctx.db
-					.query("files_plain_text_chunks")
-					.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
-						q
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
-							.eq("target.kind", "saved")
-							.eq("target.id", node._id),
-					),
-			]) {
-				for await (const chunk of chunks) {
-					const chunkPatch = { path, archiveOperationId: nextArchiveOperationId };
-					if (!fits_move_read_budget(readBudget, chunk) || !fitsWriteBudget({ ...chunk, ...chunkPatch })) {
-						return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-					}
-					chunkPatches.push({ id: chunk._id, patch: chunkPatch });
-				}
-			}
-		}
-
-		for (const metadataDocs of [
-			ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("fileNodeId", node._id),
-				),
-			ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("target.kind", "saved")
-						.eq("target.id", node._id),
-				),
-		]) {
-			for await (const metadata of metadataDocs) {
-				// Only committed field docs carry the folder table sort fields.
-				const sortFields =
-					metadata.sourceKind === "committed" && metadata.docKind === "field"
-						? { parentId: fields.parentId, name: fields.name, sortName: fields.sortName }
-						: {};
-				const metadataPatch = { path, treePath, archiveOperationId: nextArchiveOperationId, ...sortFields };
-				if (!fits_move_read_budget(readBudget, metadata) || !fitsWriteBudget({ ...metadata, ...metadataPatch })) {
-					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-				}
-				metadataPatches.push({
-					id: metadata._id,
-					// A node under a planned folder gets that folder's id only when the plan is applied.
-					...(plannedParentKeys.has(node._id) && "parentId" in sortFields
-						? { parentKey: plannedParentKeys.get(node._id)! }
-						: {}),
-					patch: metadataPatch,
-				});
-			}
-		}
-	}
-
-	return Result({
-		_yay: {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			folderInserts: [...plannedFolders].map(([key, folder]) => ({ key, ...folder })),
-			nodePatches,
-			chunkPatches,
-			metadataPatches,
-			moved,
-			unchangedNodeIds,
-			archivedNodeIds: [...archiveNodes.keys()],
-			// A move to another folder or a replaced occupant ends the public links on it and below it.
-			// A rename in the same folder keeps them. A planned new parent has no id yet, so this list is
-			// built here from the intents.
-			shareLinkRootNodeIds: [...reparentedTrees.map((node) => node._id), ...archiveNodes.keys()],
-			// The folders whose descendants need a new path or scope. The job after the request walks them.
-			walkRoots: nodePatches
-				.filter((patch) => nodesById.get(patch.id)!.kind === "folder" && !archiveNodes.has(patch.id))
-				.map((patch) => ({ nodeId: patch.id, oldTreePath: nodesById.get(patch.id)!.treePath })),
-			userId: userAuth.id,
-			membership,
-			budget: { ...readBudget, writeDocumentCount, writeBytes },
-		},
-	});
-}
-
-/**
- * Apply only a plan built in this same mutation. No normal refusal remains. The moved items change
- * now. A job gives their descendants the new paths and scope, and its first step runs here too.
- * Returns the job, or null when the walk ended inside this request.
- */
-export async function files_nodes_db_apply_move(args: {
-	ctx: MutationCtx;
-	plan: NonNullable<Awaited<ReturnType<typeof files_nodes_db_preflight_move>>["_yay"]>;
-	shareLinkCleanup: files_share_links_CleanupState;
-}) {
-	const { ctx, plan, shareLinkCleanup } = args;
-
-	await files_share_links_db_delete_for_roots({
-		ctx,
-		organizationId: plan.organizationId,
-		workspaceId: plan.workspaceId,
-		rootNodeIds: plan.shareLinkRootNodeIds,
-		state: shareLinkCleanup,
-	});
-
-	const folderIds = new Map<string, Id<"files_nodes">>();
-	for (const folder of plan.folderInserts) {
-		const parentId = folder.parentKey ? folderIds.get(folder.parentKey)! : folder.node.parentId;
-		folderIds.set(folder.key, await ctx.db.insert("files_nodes", { ...folder.node, parentId }));
-	}
-	for (const node of plan.nodePatches)
-		await ctx.db.patch("files_nodes", node.id, {
-			...node.patch,
-			...(node.parentKey ? { parentId: folderIds.get(node.parentKey)! } : {}),
-		});
-	for (const chunk of plan.chunkPatches) await ctx.db.patch("files_plain_text_chunks", chunk.id, chunk.patch);
-	for (const metadata of plan.metadataPatches)
-		await ctx.db.patch("files_metadata_docs", metadata.id, {
-			...metadata.patch,
-			...(metadata.parentKey ? { parentId: folderIds.get(metadata.parentKey)! } : {}),
-		});
-	// After all patches, so folders the move created have real ids. Replaced destinations are in
-	// `nodePatches` too.
-	for (const nodeId of [...folderIds.values(), ...plan.nodePatches.map((node) => node.id)])
-		await files_updated_by_db_sync_node(ctx, { nodeId });
-	if (plan.folderInserts.length > 0 || plan.nodePatches.length > 0)
-		await files_media_validation_db_advance_version(ctx, plan);
-
-	const roots = [];
-	for (const root of plan.walkRoots) {
-		roots.push({ node: (await ctx.db.get("files_nodes", root.nodeId))!, oldTreePath: root.oldTreePath });
-	}
-	return await files_subtree_ops_db_start_rebuild(ctx, {
-		kind: "move",
-		organizationId: plan.organizationId,
-		workspaceId: plan.workspaceId,
-		userId: plan.userId,
-		membership: plan.membership,
-		roots,
-		budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
-		now: Date.now(),
-	});
-}
-
-/**
  * Give a child the path and restricted scope that its live parent implies, with its side docs.
  * A move or restrict job calls this for each child after the parent is right. Returns whether it
  * wrote anything. The caller advances the media validation version once after its writes.
@@ -5806,9 +4563,8 @@ export async function files_nodes_db_rebuild_node(
 		return false;
 	}
 
-	// A new scope ends the node's public link. A new path alone keeps it here. For a rename that is right,
-	// because a rename keeps links. For a move to another folder, `files_nodes_db_apply_move` already
-	// deleted the moved links before this job runs.
+	// A new scope ends the public link. Rename keeps links. Move cohorts remove reparented links
+	// before publication. Scope repair also uses this helper.
 	if (node.restrictedScopeNodeId !== fields.restrictedScopeNodeId) {
 		await files_share_links_db_delete_for_node(ctx, {
 			organizationId: node.organizationId,
@@ -5829,159 +4585,6 @@ export async function files_nodes_db_rebuild_node(
 	}
 	return true;
 }
-
-/**
- * Normalize a human selection before planning its moves. A selected ancestor carries its children.
- */
-export async function files_nodes_db_move_nodes(
-	ctx: MutationCtx,
-	args: {
-		userAuth: { id: Id<"users"> };
-		membership: Doc<"organizations_workspaces_users">;
-		items: Array<{
-			nodeId: Id<"files_nodes">;
-			expected?: { parentId: Doc<"files_nodes">["parentId"]; name: string; path: string };
-			destName?: string;
-			replacement?: { nodeId: Id<"files_nodes">; contentVersion: Infer<typeof files_content_version_validator> | null };
-		}>;
-		targetParentId: Doc<"files_nodes">["parentId"];
-		expectedTargetPath?: string;
-	},
-) {
-	if (args.items.length > files_nodes_MAX_MOVE_NODE_COUNT) {
-		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-	}
-
-	const readBudget = { readDocumentCount: 0, readBytes: 0 };
-	const selected = new Map<Id<"files_nodes">, { node: Doc<"files_nodes">; item: (typeof args.items)[number] }>();
-
-	for (const item of args.items) {
-		if (selected.has(item.nodeId)) continue;
-		const node = await ctx.db.get("files_nodes", item.nodeId);
-		if (node && !fits_move_read_budget(readBudget, node)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		if (!node || node.archiveOperationId !== null) return Result({ _nay: { message: "Not found" } });
-		if (node.organizationId !== args.membership.organizationId || node.workspaceId !== args.membership.workspaceId) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		selected.set(item.nodeId, { node, item });
-	}
-
-	const roots = [...selected.values()].filter(
-		({ node }) =>
-			![...selected.values()].some(
-				({ node: ancestor }) =>
-					ancestor._id !== node._id && ancestor.kind === "folder" && node.path.startsWith(ancestor.path + "/"),
-			),
-	);
-
-	const parent = args.targetParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.targetParentId);
-	if (parent && !fits_move_read_budget(readBudget, parent)) {
-		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-	}
-	if (
-		args.targetParentId !== files_ROOT_ID &&
-		(!parent || parent.kind !== "folder" || parent.archiveOperationId !== null)
-	) {
-		return Result({ _nay: { message: "Not found" } });
-	}
-
-	const intents: Parameters<typeof files_nodes_db_preflight_move>[1]["intents"] = [];
-	const rootIds = new Set(roots.map(({ node }) => node._id));
-	for (const { node, item } of roots) {
-		const name =
-			item.destName === undefined
-				? Result({ _yay: node.name })
-				: node.kind === "file"
-					? files_normalize_file_rename_name(item.destName)
-					: files_normalize_name(node.kind, item.destName);
-		if (name._nay) return name;
-
-		const occupant = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q
-					.eq("organizationId", args.membership.organizationId)
-					.eq("workspaceId", args.membership.workspaceId)
-					.eq("parentId", args.targetParentId)
-					.eq("name", name._yay)
-					.eq("archiveOperationId", null),
-			)
-			.first();
-		if (occupant && !fits_move_read_budget(readBudget, occupant)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-
-		intents.push({
-			nodeId: node._id,
-			expected: { ...(item.expected ?? node), archiveOperationId: null },
-			destination: {
-				parentId: args.targetParentId,
-				name: name._yay,
-				expectedParentPath: args.expectedTargetPath ?? parent?.path ?? "/",
-				expectedParentArchiveOperationId: null,
-			},
-			occupant: item.replacement
-				? { kind: "replace", ...item.replacement }
-				: occupant && rootIds.has(occupant._id)
-					? { kind: "vacated", nodeId: occupant._id }
-					: { kind: "empty" },
-		});
-	}
-
-	const plan = await files_nodes_db_preflight_move(ctx, {
-		userAuth: args.userAuth,
-		membership: args.membership,
-		writer: { kind: "user", userId: args.userAuth.id },
-		policyReach: "ancestors",
-		readBudget,
-		intents,
-	});
-	if (plan._nay) return plan;
-
-	await files_nodes_db_apply_move({ ctx, plan: plan._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
-	return Result({ _yay: { moved: plan._yay.moved, unchangedNodeIds: plan._yay.unchangedNodeIds } });
-}
-
-export const move_nodes = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		itemIds: v.array(v.id("files_nodes")),
-		targetParentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const moved = await files_nodes_db_move_nodes(ctx, {
-			userAuth,
-			membership,
-			items: args.itemIds.map((nodeId) => ({ nodeId })),
-			targetParentId: args.targetParentId,
-		});
-		if (moved._nay) {
-			return moved;
-		}
-		return Result({ _yay: null });
-	},
-});
 
 // #endregion move nodes
 
@@ -6392,6 +4995,7 @@ export const unarchive_nodes = mutation({
 					q
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("archiveOperationId", archiveOperationId),
 				)
 				.first();
@@ -6490,6 +5094,7 @@ function get_public_node_fields(fileNode: Doc<"files_nodes">, writeBlockedReason
 		newChildWritePolicy: _newChildWritePolicy,
 		sortName: _sortName,
 		isRestrictedScopeRoot: _isRestrictedScopeRoot,
+		moveCohortId: _moveCohortId,
 		...fields
 	} = fileNode;
 	// Leave `ancestor1..12` out too. Only the name search index reads them.
@@ -6537,7 +5142,7 @@ export const get_file_node_for_membership = query({
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", fileNodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, fileNodeId);
 		if (!fileNode) {
 			return null;
 		}
@@ -6677,6 +5282,28 @@ export async function files_nodes_db_get_tree_reader(
 	};
 }
 
+export const get_workspace_move_view = query({
+	args: { membershipId: v.id("organizations_workspaces_users") },
+	returns: v.union(
+		v.null(),
+		v.object({
+			cohortId: v.union(v.id("files_move_cohorts"), v.null()),
+			view: v.union(v.literal("before"), v.literal("after"), v.null()),
+			generation: v.number(),
+			searchGeneration: v.number(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const reader = await files_nodes_db_get_tree_reader(ctx, args);
+		if (!reader) return null;
+		const { cohortId, view, generation, searchGeneration } = await files_saved_placement_db_get_view(
+			ctx.db,
+			reader.membership,
+		);
+		return { cohortId, view, generation, searchGeneration };
+	},
+});
+
 /**
  * Load one node of the reader's workspace, or `null` when it is missing, in another workspace, or
  * hidden from the reader. All three cases give the same answer, so a caller cannot learn that a
@@ -6696,7 +5323,7 @@ async function db_get_readable_tree_node(
 		nodeId: Id<"files_nodes">;
 	},
 ) {
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (
 		!fileNode ||
 		fileNode.organizationId !== args.reader.membership.organizationId ||
@@ -6927,7 +5554,10 @@ async function db_get_share_tree_rows(
 
 	const pairs = (
 		await Promise.all(
-			args.shareRows.map(async (shareRow) => ({ shareRow, node: await ctx.db.get("files_nodes", shareRow.nodeId) })),
+			args.shareRows.map(async (shareRow) => ({
+				shareRow,
+				node: await files_saved_placement_db_get_node(ctx.db, shareRow.nodeId, shareRow.moveView),
+			})),
 		)
 	).filter((pair): pair is { shareRow: Doc<"files_share_rows">; node: Doc<"files_nodes"> } => {
 		const { shareRow, node } = pair;
@@ -6983,6 +5613,7 @@ async function db_get_share_tree_rows(
 export const list_tree_children = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		savedStream: v.optional(files_saved_stream_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		archived: v.boolean(),
@@ -7032,35 +5663,36 @@ export const list_tree_children = query({
 			...args.paginationOpts,
 			numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS),
 		};
-		const result = args.archived
-			? await ctx.db
-					.query("files_nodes")
-					.withIndex("by_org_ws_parent_kind_restricted_archive_sortName_name", (q) =>
+		const saved = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const rawResult = args.archived
+			? await saved.queries
+					.by_parent_kind_restricted_archive_sort_name((q) =>
 						q
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
 							.eq("parentId", args.parentId)
 							.eq("kind", args.kind)
 							.eq("isRestrictedScopeRoot", args.restricted)
 							.gt("archiveOperationId", null),
 					)
 					.paginate(paginationOpts)
-			: await ctx.db
-					.query("files_nodes")
-					.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) =>
+			: await saved.queries
+					.by_parent_archive_restricted_kind_sort_name((q) =>
 						q
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
 							.eq("parentId", args.parentId)
 							.eq("archiveOperationId", null)
 							.eq("isRestrictedScopeRoot", args.restricted)
 							.eq("kind", args.kind),
 					)
 					.paginate(paginationOpts);
-
-		if (args.restricted && tree_page_needs_split(result, TREE_RESTRICTED_SPLIT_GUARD)) {
-			return tree_page_split_required(result);
+		// Selected rows also read their saved node, cohort and place before checking access.
+		if (
+			tree_page_needs_split(
+				rawResult,
+				args.savedStream?.kind === "cohort" ? 500 : args.restricted ? TREE_RESTRICTED_SPLIT_GUARD : Infinity,
+			)
+		) {
+			return tree_page_split_required(rawResult);
 		}
+		const result = { ...rawResult, page: await saved.read_nodes(rawResult.page) };
 		for (const node of result.page) {
 			check_tree_stream_row(node, {
 				membership,
@@ -7093,6 +5725,7 @@ export const list_tree_children = query({
 export const list_tree_children_sorted = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		savedStream: v.optional(files_saved_stream_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		/**
@@ -7131,7 +5764,9 @@ export const list_tree_children_sorted = query({
 	handler: async (
 		ctx,
 		args,
-	): Promise<PaginationResult<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_RowKey }>> => {
+	): Promise<
+		PaginationResult<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_RowKey }>
+	> => {
 		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
 		// (files-explorer-tree skill, "Saved-only lists").
 
@@ -7170,6 +5805,7 @@ export const list_tree_children_sorted = query({
 			numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS),
 		};
 		const direction = sort.direction;
+		const saved = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
 
 		const table_page = async (
 			result: PaginationResult<unknown>,
@@ -7203,6 +5839,8 @@ export const list_tree_children_sorted = query({
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
 						.eq("sourceKind", "committed")
+						.eq("moveView.cohortId", saved.tag?.cohortId)
+						.eq("moveView.view", saved.tag?.view)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "field")
 						.eq("fieldPath", metadataField)
@@ -7231,7 +5869,7 @@ export const list_tree_children_sorted = query({
 			if (
 				tree_page_needs_split(
 					result,
-					args.restricted ? TREE_METADATA_RESTRICTED_SPLIT_GUARD : TREE_METADATA_SPLIT_GUARD,
+					saved.tag ? 500 : args.restricted ? TREE_METADATA_RESTRICTED_SPLIT_GUARD : TREE_METADATA_SPLIT_GUARD,
 				)
 			) {
 				return tree_page_split_required(result);
@@ -7240,7 +5878,9 @@ export const list_tree_children_sorted = query({
 			const rows = await Promise.all(
 				result.page.map(async (fieldDoc) => {
 					const node =
-						fieldDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", fieldDoc.fileNodeId) : null;
+						fieldDoc.sourceKind === "committed"
+							? await files_saved_placement_db_get_node(ctx.db, fieldDoc.fileNodeId, saved.tag)
+							: null;
 					if (!node || fieldDoc.sourceKind !== "committed") {
 						const errorMessage = "fieldDoc.fileNodeId points to a missing files_nodes doc";
 						const errorData = { fieldDocId: fieldDoc._id };
@@ -7270,30 +5910,20 @@ export const list_tree_children_sorted = query({
 
 		const by_name = (node: Doc<"files_nodes">): files_sort_Key => [node.sortName, node.name];
 		const stream = await (async (/* iife */): Promise<{
-			result: PaginationResult<Doc<"files_nodes">>;
+			result: PaginationResult<Doc<"files_nodes"> | Doc<"files_saved_places">>;
 			sortKey: (node: Doc<"files_nodes">) => files_sort_Key | null;
 		}> => {
 			// Convex appends `_creationTime` to every index, so this index is in creation order.
 			if (filter === null ? sort.field === "created" : filter.kind === "date" && filter.field === "created") {
 				const day = filter?.kind === "date" ? filter : null;
 				return {
-					result: await ctx.db
-						.query("files_nodes")
-						.withIndex("by_org_ws_parent_archive_restricted_kind", (q) => {
-							const children = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
-								.eq("parentId", args.parentId)
-								.eq("archiveOperationId", null)
-								.eq("isRestrictedScopeRoot", args.restricted)
-								.eq("kind", args.kind);
-							return day === null
-								? children
-								: day.op === "before"
-									? children.lt("_creationTime", day.start)
-									: day.op === "after"
-										? children.gte("_creationTime", day.end)
-										: children.gte("_creationTime", day.start).lt("_creationTime", day.end);
+					result: await saved.queries
+						.by_parent_archive_restricted_kind_created({
+							parentId: args.parentId,
+							archiveOperationId: null,
+							isRestrictedScopeRoot: args.restricted,
+							kind: args.kind,
+							day,
 						})
 						.order(direction)
 						.paginate(paginationOpts),
@@ -7304,12 +5934,9 @@ export const list_tree_children_sorted = query({
 			if (filter === null ? sort.field === "updated" : filter.kind === "date") {
 				const day = filter?.kind === "date" ? filter : null;
 				return {
-					result: await ctx.db
-						.query("files_nodes")
-						.withIndex("by_org_ws_parent_archive_restricted_kind_updatedAt_name", (q) => {
+					result: await saved.queries
+						.by_parent_archive_restricted_kind_updated((q) => {
 							const children = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
 								.eq("parentId", args.parentId)
 								.eq("archiveOperationId", null)
 								.eq("isRestrictedScopeRoot", args.restricted)
@@ -7333,12 +5960,9 @@ export const list_tree_children_sorted = query({
 			if (filter?.kind === "extension") {
 				const extension = filter.op === "is" ? filter.value.toLowerCase() : null;
 				return {
-					result: await ctx.db
-						.query("files_nodes")
-						.withIndex("by_org_ws_parent_archive_restricted_kind_ext_sortName_name", (q) => {
+					result: await saved.queries
+						.by_parent_archive_restricted_kind_ext((q) => {
 							const value = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
 								.eq("parentId", args.parentId)
 								.eq("archiveOperationId", null)
 								.eq("isRestrictedScopeRoot", args.restricted)
@@ -7357,12 +5981,9 @@ export const list_tree_children_sorted = query({
 			if (filter?.kind === "size" && (filter.op === "is" || filter.op === "missing")) {
 				const size = filter.op === "is" ? filter.value : null;
 				return {
-					result: await ctx.db
-						.query("files_nodes")
-						.withIndex("by_org_ws_parent_archive_restricted_kind_size_sortName_name", (q) => {
+					result: await saved.queries
+						.by_parent_archive_restricted_kind_size((q) => {
 							const value = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
 								.eq("parentId", args.parentId)
 								.eq("archiveOperationId", null)
 								.eq("isRestrictedScopeRoot", args.restricted)
@@ -7382,12 +6003,9 @@ export const list_tree_children_sorted = query({
 			if (filter?.kind === "size") {
 				const bound = filter.value;
 				return {
-					result: await ctx.db
-						.query("files_nodes")
-						.withIndex("by_org_ws_parent_archive_restricted_kind_size_sortName_name", (q) => {
+					result: await saved.queries
+						.by_parent_archive_restricted_kind_size((q) => {
 							const children = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
 								.eq("parentId", args.parentId)
 								.eq("archiveOperationId", null)
 								.eq("isRestrictedScopeRoot", args.restricted)
@@ -7407,12 +6025,9 @@ export const list_tree_children_sorted = query({
 			const missing = args.segment === "missing";
 			if (filter === null && sort.field === "extension") {
 				return {
-					result: await ctx.db
-						.query("files_nodes")
-						.withIndex("by_org_ws_parent_archive_restricted_kind_ext_sortName_name", (q) => {
+					result: await saved.queries
+						.by_parent_archive_restricted_kind_ext((q) => {
 							const children = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
 								.eq("parentId", args.parentId)
 								.eq("archiveOperationId", null)
 								.eq("isRestrictedScopeRoot", args.restricted)
@@ -7427,12 +6042,9 @@ export const list_tree_children_sorted = query({
 
 			if (filter === null && sort.field === "size" && args.kind === "file") {
 				return {
-					result: await ctx.db
-						.query("files_nodes")
-						.withIndex("by_org_ws_parent_archive_restricted_kind_size_sortName_name", (q) => {
+					result: await saved.queries
+						.by_parent_archive_restricted_kind_size((q) => {
 							const children = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
 								.eq("parentId", args.parentId)
 								.eq("archiveOperationId", null)
 								.eq("isRestrictedScopeRoot", args.restricted)
@@ -7448,12 +6060,9 @@ export const list_tree_children_sorted = query({
 			// The name order: no filter with a name sort, a `name starts with` filter, and folders in a size
 			// sort (they have no size, so their key is null).
 			return {
-				result: await ctx.db
-					.query("files_nodes")
-					.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) => {
+				result: await saved.queries
+					.by_parent_archive_restricted_kind_sort_name((q) => {
 						const children = q
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
 							.eq("parentId", args.parentId)
 							.eq("archiveOperationId", null)
 							.eq("isRestrictedScopeRoot", args.restricted)
@@ -7468,13 +6077,18 @@ export const list_tree_children_sorted = query({
 			};
 		})();
 
-		if (args.restricted && tree_page_needs_split(stream.result, TREE_RESTRICTED_SPLIT_GUARD)) {
+		if (
+			tree_page_needs_split(
+				stream.result,
+				args.savedStream?.kind === "cohort" ? 500 : args.restricted ? TREE_RESTRICTED_SPLIT_GUARD : Infinity,
+			)
+		) {
 			return tree_page_split_required(stream.result);
 		}
 
 		return await table_page(
 			stream.result,
-			stream.result.page.map((node) => ({ node, sortKey: stream.sortKey(node) })),
+			(await saved.read_nodes(stream.result.page)).map((node) => ({ node, sortKey: stream.sortKey(node) })),
 		);
 	},
 });
@@ -7498,6 +6112,7 @@ export const list_tree_children_sorted = query({
 export const list_tree_children_shared = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		savedStream: v.optional(files_saved_stream_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		archived: v.boolean(),
@@ -7571,6 +6186,7 @@ export const list_tree_children_shared = query({
 			...args.paginationOpts,
 			numItems: Math.min(args.paginationOpts.numItems, TREE_SHARE_PAGE_MAX_ITEMS),
 		};
+		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
 		const direction = sort.direction;
 
 		const by_name = (row: Doc<"files_share_rows">): files_sort_Key => [row.sortName, row.name];
@@ -7588,6 +6204,8 @@ export const list_tree_children_shared = query({
 								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
 								.eq("principalKey", principalKey)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view)
 								.eq("parentId", args.parentId)
 								.eq("kind", args.kind)
 								.gt("archiveOperationId", null),
@@ -7609,6 +6227,8 @@ export const list_tree_children_shared = query({
 								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
 								.eq("principalKey", principalKey)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view)
 								.eq("parentId", args.parentId)
 								.eq("kind", args.kind)
 								.eq("archiveOperationId", null);
@@ -7636,6 +6256,8 @@ export const list_tree_children_shared = query({
 								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
 								.eq("principalKey", principalKey)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view)
 								.eq("parentId", args.parentId)
 								.eq("kind", args.kind)
 								.eq("archiveOperationId", null);
@@ -7665,6 +6287,8 @@ export const list_tree_children_shared = query({
 								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
 								.eq("principalKey", principalKey)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view)
 								.eq("parentId", args.parentId)
 								.eq("kind", args.kind)
 								.eq("archiveOperationId", null)
@@ -7689,6 +6313,8 @@ export const list_tree_children_shared = query({
 								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
 								.eq("principalKey", principalKey)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view)
 								.eq("parentId", args.parentId)
 								.eq("kind", args.kind)
 								.eq("archiveOperationId", null)
@@ -7714,6 +6340,8 @@ export const list_tree_children_shared = query({
 								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
 								.eq("principalKey", principalKey)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view)
 								.eq("parentId", args.parentId)
 								.eq("kind", args.kind)
 								.eq("archiveOperationId", null);
@@ -7739,6 +6367,8 @@ export const list_tree_children_shared = query({
 								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
 								.eq("principalKey", principalKey)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view)
 								.eq("parentId", args.parentId)
 								.eq("kind", args.kind)
 								.eq("archiveOperationId", null);
@@ -7759,6 +6389,8 @@ export const list_tree_children_shared = query({
 								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
 								.eq("principalKey", principalKey)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view)
 								.eq("parentId", args.parentId)
 								.eq("kind", args.kind)
 								.eq("archiveOperationId", null);
@@ -7780,6 +6412,8 @@ export const list_tree_children_shared = query({
 							.eq("organizationId", membership.organizationId)
 							.eq("workspaceId", membership.workspaceId)
 							.eq("principalKey", principalKey)
+							.eq("moveView.cohortId", tag?.cohortId)
+							.eq("moveView.view", tag?.view)
 							.eq("parentId", args.parentId)
 							.eq("kind", args.kind)
 							.eq("archiveOperationId", null);
@@ -7841,39 +6475,40 @@ export const has_tree_children_shared = query({
 			return false;
 		}
 
-		// One `.first()` per principal and kind. The answer only picks a note that names no item, so it
+		const view = await files_saved_placement_db_get_view(ctx.db, reader.membership);
+		const tags = [undefined, ...(view.cohortId && view.view ? [{ cohortId: view.cohortId, view: view.view }] : [])];
+		// One `.first()` per view, principal and kind. The answer names no item, so it
 		// reads no node and checks no access. A plugin grant row with an old membership lifetime reads
 		// nothing, like in `db_get_share_tree_rows`. Such rows live only while a drain deletes them, and
 		// reading past one would be a scan, so the answer can be a short false "no" then.
 		let liveLifetime: Awaited<ReturnType<typeof organizations_membership_lifetimes_db_get>> | undefined;
-		for (const principalKey of await db_get_share_principal_keys(ctx, reader)) {
-			for (const kind of ["folder", "file"] as const) {
-				const shareRow = await ctx.db
-					.query("files_share_rows")
-					.withIndex("by_org_ws_principal_parent_kind_archive_sortName_name", (q) => {
-						const children = q
-							.eq("organizationId", reader.membership.organizationId)
-							.eq("workspaceId", reader.membership.workspaceId)
-							.eq("principalKey", principalKey)
-							.eq("parentId", args.parentId)
-							.eq("kind", kind);
-						return args.archived ? children.gt("archiveOperationId", null) : children.eq("archiveOperationId", null);
-					})
-					.first();
-				if (!shareRow) {
-					continue;
-				}
-				if (shareRow.externalPluginMembershipLifetime === null) {
-					return true;
-				}
-				if (liveLifetime === undefined) {
-					liveLifetime = await organizations_membership_lifetimes_db_get(ctx, {
-						workspaceId: reader.membership.workspaceId,
-						userId: reader.userAuth.id,
-					});
-				}
-				if (liveLifetime?.active === true && liveLifetime.lifetime === shareRow.externalPluginMembershipLifetime) {
-					return true;
+		for (const tag of tags) {
+			for (const principalKey of await db_get_share_principal_keys(ctx, reader)) {
+				for (const kind of ["folder", "file"] as const) {
+					const shareRow = await ctx.db
+						.query("files_share_rows")
+						.withIndex("by_org_ws_principal_parent_kind_archive_sortName_name", (q) => {
+							const children = q
+								.eq("organizationId", reader.membership.organizationId)
+								.eq("workspaceId", reader.membership.workspaceId)
+								.eq("principalKey", principalKey)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view)
+								.eq("parentId", args.parentId)
+								.eq("kind", kind);
+							return args.archived ? children.gt("archiveOperationId", null) : children.eq("archiveOperationId", null);
+						})
+						.first();
+					if (!shareRow) continue;
+					if (shareRow.externalPluginMembershipLifetime === null) return true;
+					if (liveLifetime === undefined) {
+						liveLifetime = await organizations_membership_lifetimes_db_get(ctx, {
+							workspaceId: reader.membership.workspaceId,
+							userId: reader.userAuth.id,
+						});
+					}
+					if (liveLifetime?.active === true && liveLifetime.lifetime === shareRow.externalPluginMembershipLifetime)
+						return true;
 				}
 			}
 		}
@@ -7970,6 +6605,7 @@ export const get_tree_ancestors = query({
 export const list_tree_shared_roots = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		savedStream: v.optional(files_saved_stream_validator),
 		archived: v.boolean(),
 		/**
 		 * 0 reads the member's own shares, 1 and 2 the shares of their roles.
@@ -7998,6 +6634,7 @@ export const list_tree_shared_roots = query({
 		if (!principalKey) {
 			return refused;
 		}
+		const { tag } = await files_saved_stream_db_create(ctx.db, reader.membership, args.savedStream);
 
 		const result = await ctx.db
 			.query("files_share_rows")
@@ -8005,7 +6642,9 @@ export const list_tree_shared_roots = query({
 				const shares = q
 					.eq("organizationId", reader.membership.organizationId)
 					.eq("workspaceId", reader.membership.workspaceId)
-					.eq("principalKey", principalKey);
+					.eq("principalKey", principalKey)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view);
 				return args.archived ? shares.gt("archiveOperationId", null) : shares.eq("archiveOperationId", null);
 			})
 			.paginate({
@@ -8066,6 +6705,7 @@ export const get_folder_readme = query({
 						const range = q
 							.eq("organizationId", membership.organizationId)
 							.eq("workspaceId", membership.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("parentId", args.folderId)
 							.eq("archiveOperationId", null)
 							.eq("kind", "file")
@@ -8117,35 +6757,50 @@ export const has_drafts_in_folder = query({
 		}
 
 		// A draft that adds or moves an item here has a visible place in this folder.
-		const place = await ctx.db
-			.query("files_pending_places")
-			.withIndex("by_org_ws_user_visible_parent_name", (q) => {
-				const visible = q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", userAuth.id)
-					.eq("isVisible", true);
-				return args.folderId === files_ROOT_ID
-					? visible.eq("parent.kind", "root")
-					: visible.eq("parent.kind", "saved").eq("parent.id", args.folderId);
-			})
-			.first();
-		if (place) {
+		const view = await files_saved_placement_db_get_view(ctx.db, membership);
+		const selected = view.cohortId && view.view ? { cohortId: view.cohortId, view: view.view } : undefined;
+		const views = selected ? [undefined, selected] : [undefined];
+		const places = await Promise.all(
+			views.map((moveView) =>
+				ctx.db
+					.query("files_pending_places")
+					.withIndex("by_org_ws_user_visible_parent_name", (q) => {
+						const visible = q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("userId", userAuth.id)
+							.eq("moveView.cohortId", moveView?.cohortId)
+							.eq("moveView.view", moveView?.view)
+							.eq("isVisible", true);
+						return args.folderId === files_ROOT_ID
+							? visible.eq("parent.kind", "root")
+							: visible.eq("parent.kind", "saved").eq("parent.id", args.folderId);
+					})
+					.first(),
+			),
+		);
+		if (places.some((place) => place !== null)) {
 			return true;
 		}
 
 		// A draft that moves, renames or deletes a saved item here has a hide in this folder.
-		const hide = await ctx.db
-			.query("files_pending_hides")
-			.withIndex("by_org_ws_user_parent_name", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", userAuth.id)
-					.eq("parentId", args.folderId),
-			)
-			.first();
-		return hide !== null;
+		const hides = await Promise.all(
+			views.map((moveView) =>
+				ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_org_ws_user_parent_name", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("userId", userAuth.id)
+							.eq("moveView.cohortId", moveView?.cohortId)
+							.eq("moveView.view", moveView?.view)
+							.eq("parentId", args.folderId),
+					)
+					.first(),
+			),
+		);
+		return hides.some((hide) => hide !== null);
 	},
 });
 
@@ -8188,7 +6843,11 @@ async function db_list_children(
 		const result = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_archiveOperation_updatedAt", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("archiveOperationId", null),
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("archiveOperationId", null),
 			)
 			.order(args.order ?? "desc")
 			.paginate({
@@ -8231,6 +6890,7 @@ async function db_list_children(
 						q
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("parentId", parentId)
 							.eq("archiveOperationId", null),
 					)
@@ -8245,6 +6905,7 @@ async function db_list_children(
 						q
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("parentId", parentId)
 							.eq("archiveOperationId", null),
 					)
@@ -8306,6 +6967,12 @@ export type files_nodes_list_children_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+const subtree_key_validator = v.object({
+	value: v.string(),
+	createdAt: v.number(),
+	nodeId: v.string(),
+});
+
 export const list_subtree = internalQuery({
 	args: {
 		agentSource: v.optional(ai_chat_workspaces_source_validator),
@@ -8317,6 +6984,14 @@ export const list_subtree = internalQuery({
 		folderPath: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
+		savedStream: v.optional(files_saved_stream_validator),
+		seek: v.optional(
+			v.object({
+				lowerKey: v.union(subtree_key_validator, v.null()),
+				upperKey: v.union(subtree_key_validator, v.null()),
+				phase: v.number(),
+			}),
+		),
 		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
 		kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
 		lowercaseExtension: v.optional(v.string()),
@@ -8325,11 +7000,16 @@ export const list_subtree = internalQuery({
 		maxDepth: v.optional(v.number()),
 		maximumRowsRead: v.optional(v.number()),
 	},
-	returns: paginationResultValidator(doc(app_convex_schema, "files_nodes")),
+	returns: v.object({
+		...paginationResultValidator(doc(app_convex_schema, "files_nodes")).fields,
+		frontier: v.optional(v.union(subtree_key_validator, v.null())),
+		phaseCount: v.optional(v.number()),
+	}),
 	handler: async (ctx, args) => {
 		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
 		if (authorized._nay) return { page: [], continueCursor: args.cursor ?? "", isDone: true };
 		const scope = files_db_resolve_scope(ctx, args.workspaceId);
+		const saved = await files_saved_stream_db_create(ctx.db, args, args.savedStream);
 		const lowercaseExtension = args.lowercaseExtension;
 		const kind = args.kind;
 
@@ -8388,92 +7068,74 @@ export const list_subtree = internalQuery({
 			};
 		}
 
-		const query = directChildren
-			? lowercaseExtension != null
-				? ctx.db
-						.query("files_nodes")
-						.withIndex("by_org_ws_parent_archive_kind_ext_name", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("parentId", parentId)
-								.eq("archiveOperationId", null)
-								.eq("kind", "file")
-								.eq("lowercaseExtension", lowercaseExtension),
+		const seek = args.seek;
+		if (seek && (withRoot || !Number.isInteger(seek.phase) || seek.phase < 0)) {
+			throw convex_invalid_cursor_error("Invalid saved list seek.");
+		}
+		for (const key of [seek?.lowerKey, seek?.upperKey]) {
+			if (
+				key &&
+				!directChildren &&
+				(compareValues(key.value, lowerBound) <= 0 || compareValues(key.value, upperBound) >= 0)
+			) {
+				throw convex_invalid_cursor_error("The saved list key is outside its folder.");
+			}
+		}
+		const phases = files_index_range_phases({
+			fields: [
+				directChildren ? "name" : "treePath",
+				...(args.savedStream?.kind === "cohort" ? ["nodeCreationTime", "nodeId"] : ["_creationTime", "_id"]),
+			],
+			order: args.order ?? "asc",
+			start: seek?.lowerKey
+				? [seek.lowerKey.value, seek.lowerKey.createdAt, seek.lowerKey.nodeId]
+				: directChildren
+					? []
+					: [lowerBound],
+			end: seek?.upperKey
+				? [seek.upperKey.value, seek.upperKey.createdAt, seek.upperKey.nodeId]
+				: directChildren
+					? []
+					: [upperBound],
+			startInclusive: seek?.lowerKey ? false : withRoot,
+			endInclusive: false,
+		});
+		const phase = phases[seek?.phase ?? 0];
+		if (!phase) return { page: [], continueCursor: "", isDone: true, phaseCount: phases.length, frontier: null };
+		const range = (q: IndexRange) => files_index_range_apply(q, phase);
+		const query = (
+			directChildren
+				? lowercaseExtension != null
+					? saved.queries.by_parent_archive_kind_ext_name((q) =>
+							range(
+								q
+									.eq("parentId", parentId)
+									.eq("archiveOperationId", null)
+									.eq("kind", "file")
+									.eq("lowercaseExtension", lowercaseExtension),
+							),
 						)
-						.order(args.order ?? "asc")
-				: kind == null
-					? ctx.db
-							.query("files_nodes")
-							.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-								q
-									.eq("organizationId", args.organizationId)
-									.eq("workspaceId", args.workspaceId)
-									.eq("parentId", parentId)
-									.eq("archiveOperationId", null),
+					: kind == null
+						? saved.queries.by_parent_archive_name((q) =>
+								range(q.eq("parentId", parentId).eq("archiveOperationId", null)),
 							)
-							.order(args.order ?? "asc")
-					: ctx.db
-							.query("files_nodes")
-							.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
-								q
-									.eq("organizationId", args.organizationId)
-									.eq("workspaceId", args.workspaceId)
-									.eq("parentId", parentId)
-									.eq("archiveOperationId", null)
-									.eq("kind", kind),
+						: saved.queries.by_parent_archive_kind_name((q) =>
+								range(q.eq("parentId", parentId).eq("archiveOperationId", null).eq("kind", kind)),
 							)
-							.order(args.order ?? "asc")
-			: lowercaseExtension != null
-				? ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_archive_kind_lowercaseExtension_tree", (q) => {
-							const eq = q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("archiveOperationId", null)
-								.eq("kind", "file")
-								.eq("lowercaseExtension", lowercaseExtension);
-							return (withRoot ? eq.gte("treePath", lowerBound) : eq.gt("treePath", lowerBound)).lt(
-								"treePath",
-								upperBound,
-							);
-						})
-						.order(args.order ?? "asc")
-				: kind == null
-					? ctx.db
-							.query("files_nodes")
-							.withIndex("by_organization_workspace_archiveOperation_treePath", (q) => {
-								const eq = q
-									.eq("organizationId", args.organizationId)
-									.eq("workspaceId", args.workspaceId)
-									.eq("archiveOperationId", null);
-								return (withRoot ? eq.gte("treePath", lowerBound) : eq.gt("treePath", lowerBound)).lt(
-									"treePath",
-									upperBound,
-								);
-							})
-							.order(args.order ?? "asc")
-					: ctx.db
-							.query("files_nodes")
-							.withIndex("by_organization_workspace_archiveOperation_kind_treePath", (q) => {
-								const eq = q
-									.eq("organizationId", args.organizationId)
-									.eq("workspaceId", args.workspaceId)
-									.eq("archiveOperationId", null)
-									.eq("kind", kind);
-								return (withRoot ? eq.gte("treePath", lowerBound) : eq.gt("treePath", lowerBound)).lt(
-									"treePath",
-									upperBound,
-								);
-							})
-							.order(args.order ?? "asc");
+				: lowercaseExtension != null
+					? saved.queries.by_archive_kind_ext_tree((q) =>
+							range(q.eq("archiveOperationId", null).eq("kind", "file").eq("lowercaseExtension", lowercaseExtension)),
+						)
+					: kind == null
+						? saved.queries.by_archive_tree((q) => range(q.eq("archiveOperationId", null)))
+						: saved.queries.by_archive_kind_tree((q) => range(q.eq("archiveOperationId", null).eq("kind", kind)))
+		).order(args.order ?? "asc");
 
 		let filteredQuery = query;
 		const contentTypePrefixes = args.contentTypePrefixes;
 		// Kept for the public files/list `contentTypePrefixes` and `scanLimit` until the plugins send
 		// `extension` instead.
-		if (contentTypePrefixes != null) {
+		if (contentTypePrefixes != null && seek === undefined) {
 			// Use string ranges because Convex filters have no startsWith. The pagination scan cap below
 			// still bounds sparse matches.
 			filteredQuery = filteredQuery.filter((q) =>
@@ -8496,7 +7158,7 @@ export const list_subtree = internalQuery({
 			numItems: rootFirst ? Math.max(1, args.numItems - 1) : args.numItems,
 			// The scan cap applies to content type filters and to subtree listings with `minDepth` (the
 			// public `files/list` always sends it). Other depth shapes read whole pages.
-			...(contentTypePrefixes == null && (directChildren || args.minDepth === undefined)
+			...(seek !== undefined || (contentTypePrefixes == null && (directChildren || args.minDepth === undefined))
 				? {}
 				: {
 						maximumRowsRead: Math.min(
@@ -8508,13 +7170,31 @@ export const list_subtree = internalQuery({
 		const rootLast = directChildren && rootRow !== null && result.isDone && args.order === "desc";
 		const nodes = [
 			...(rootFirst && rootRow ? [rootRow] : []),
-			...result.page,
+			...(await saved.read_nodes(result.page)),
 			...(rootLast && rootRow ? [rootRow] : []),
 		];
 
 		// A bounded query filter or the access check can make a page shorter. The cursor still walks
 		// the whole subtree; only the page size varies.
-		return { ...result, page: await filter_readable(nodes) };
+		const last = result.page.at(-1);
+		const frontier = last
+			? {
+					value: directChildren ? last.name : last.treePath,
+					createdAt: "nodeId" in last ? last.nodeCreationTime : last._creationTime,
+					nodeId: "nodeId" in last ? last.nodeId : last._id,
+				}
+			: null;
+		// The old sparse content-type filter needs the raw frontier when streams can migrate.
+		const matchingNodes =
+			seek && contentTypePrefixes
+				? nodes.filter((node) => contentTypePrefixes.some((prefix) => node.contentType?.startsWith(prefix)))
+				: nodes;
+		return {
+			...result,
+			page: await filter_readable(matchingNodes),
+			frontier,
+			...(seek ? { phaseCount: phases.length } : {}),
+		};
 	},
 });
 
@@ -8677,7 +7357,7 @@ export async function files_nodes_db_get_content_version(
 		throw should_never_happen(errorMessage, errorData);
 	}
 
-	const sequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
+	const sequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 	if (
 		!sequenceDoc ||
 		sequenceDoc.organizationId !== fileNode.organizationId ||
@@ -8711,13 +7391,12 @@ export async function db_get_file_content_materialization_db_state(
 		return null;
 	}
 
-	const yjsUpdatesDocs = await ctx.db
-		.query("files_yjs_updates")
-		.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-		)
-		.order("asc")
-		.collect();
+	const yjsUpdatesDocs: Doc<"files_yjs_updates">[] = [];
+	for await (const update of files_saved_content_db_yjs_updates(ctx.db, {
+		...args,
+		throughSequence: header.yjsLastSequenceDoc.lastSequence,
+	}))
+		yjsUpdatesDocs.push(update);
 
 	return {
 		fileNode: header.fileNode,
@@ -8739,7 +7418,7 @@ async function db_get_file_content_materialization_header(
 	ctx: QueryCtx,
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
 ) {
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
 		return null;
 	}
@@ -8751,7 +7430,7 @@ async function db_get_file_content_materialization_header(
 	const [asset, yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
 		ctx.db.get("files_r2_assets", fileNode.assetId),
 		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
-		ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
+		files_saved_placement_db_get_sequence(ctx.db, fileNode),
 	]);
 
 	// Do not check the asset kind here. node.assetId always holds the file's current bytes, but
@@ -8845,7 +7524,7 @@ export const get_file_content_materialization_state = internalQuery({
 	returns: v.union(file_content_materialization_state_validator, v.null()),
 	handler: async (ctx, args) => {
 		if (args.userId !== undefined || args.serviceAccountId !== undefined) {
-			const node = await ctx.db.get("files_nodes", args.nodeId);
+			const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 			if (!node || args.userId === undefined) {
 				return null;
 			}
@@ -8915,6 +7594,8 @@ export const get_file_next_yjs_update = internalQuery({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
+		expectedLastSequenceId: v.id("files_yjs_docs_last_sequences"),
+		expectedLineageGeneration: v.number(),
 		afterSequence: v.number(),
 		throughSequence: v.number(),
 	},
@@ -8924,18 +7605,17 @@ export const get_file_next_yjs_update = internalQuery({
 		v.object({ kind: v.literal("gap"), expectedSequence: v.number(), foundSequence: v.number() }),
 	),
 	handler: async (ctx, args) => {
-		const rows = await ctx.db
-			.query("files_yjs_updates")
-			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("fileNodeId", args.nodeId)
-					.gt("sequence", args.afterSequence)
-					.lte("sequence", args.throughSequence),
-			)
-			.order("asc")
-			.take(2);
+		const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+		if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId)
+			return { kind: "done" as const };
+		const head = await files_saved_placement_db_get_sequence(ctx.db, node);
+		if (head?._id !== args.expectedLastSequenceId || head.lineageGeneration !== args.expectedLineageGeneration)
+			return { kind: "done" as const };
+		const rows: Doc<"files_yjs_updates">[] = [];
+		for await (const update of files_saved_content_db_yjs_updates(ctx.db, args)) {
+			rows.push(update);
+			if (rows.length === 2) break;
+		}
 
 		const row = rows[0];
 		if (!row) {
@@ -9141,7 +7821,7 @@ async function db_resolve_committed_chunk_source(
 	// This holds in both editable modes: a file with collaboration off carries proposals too. A
 	// move-only doc has no text of its own, and a stale proposal's text is not served, so the
 	// committed chunks below answer for both, the same way the read doors fall through.
-	const pendingUpdate = await ctx.db
+	const pendingSource = await ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_organization_workspace_user_target", (q) =>
 			q
@@ -9152,6 +7832,7 @@ async function db_resolve_committed_chunk_source(
 				.eq("target.id", fileNode._id),
 		)
 		.first();
+	const pendingUpdate = pendingSource ? await files_saved_placement_db_get_proposal(ctx.db, pendingSource._id) : null;
 	if (
 		pendingUpdate != null &&
 		files_pending_update_has_pending_chunks(pendingUpdate) &&
@@ -9357,16 +8038,13 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			const tailChunks: Array<Doc<"files_text_chunks">> = [];
 			let lastLineEnd: number | null = null;
 			let tailChunksLength = 0;
-			for await (const chunk of ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", source.nodeId),
-				)
-				.order("desc")) {
+			for await (const chunk of files_saved_content_db_text_chunks(ctx.db, {
+				...args,
+				nodeId: source.nodeId,
+				pendingUpdateId: undefined,
+				startLine: undefined,
+				order: "desc",
+			})) {
 				if (lastLineEnd === null) lastLineEnd = chunk.lineEnd; // file's last line (first iterated, desc)
 				// Bound the walk by size as well as by lines: every piece of a mid-line-split long
 				// line shares one line number, so the distinct-line stop below can never fire inside
@@ -9403,33 +8081,24 @@ export const read_committed_file_chunks_line_range = internalQuery({
 		// non-decreasing in chunkIndex, so that first beyond-chunk means every later chunk is beyond too
 		// — we read only the chunks overlapping the range, never the whole file, regardless of depth.
 		const range = await files_read_forward_line_range_from_ordered_chunks(
-			ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", source.nodeId)
-						.gte("lineEnd", Math.max(1, Math.trunc(args.startLine))),
-				)
-				.order("asc"),
+			files_saved_content_db_text_chunks(ctx.db, {
+				...args,
+				nodeId: source.nodeId,
+				pendingUpdateId: undefined,
+				startLine: Math.max(1, Math.trunc(args.startLine)),
+			}),
 			{ startLine: args.startLine, maxLines },
 		);
 		if (range == null) return { usable: false as const };
 		if (!range.hasChunks) {
 			// No chunk ends at/after startLine: either startLine is past EOF (a valid empty page on a
 			// materialized file) or the file is not materialized (fall back).
-			const anyChunk = await ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", source.nodeId),
-				)
-				.first();
+			const { value: anyChunk } = await files_saved_content_db_text_chunks(ctx.db, {
+				...args,
+				nodeId: source.nodeId,
+				pendingUpdateId: undefined,
+				startLine: undefined,
+			}).next();
 			if (anyChunk) return { usable: true as const, nodeId: source.nodeId, content: "", moreLines: false };
 			return source.byteSize > 0
 				? { usable: false as const }
@@ -9553,19 +8222,21 @@ export const read_file_content_from_chunks = internalQuery({
 				// read. Otherwise use the current pending edit for this user and file.
 				let pendingUpdate: Doc<"files_pending_updates"> | null = null;
 				if (args.pendingUpdateId != null) {
-					pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId).then((pendingUpdate) => {
-						if (
-							!pendingUpdate ||
-							pendingUpdate.organizationId !== organizationId ||
-							pendingUpdate.workspaceId !== workspaceId ||
-							pendingUpdate.userId !== args.userId ||
-							pendingUpdate.target.kind !== target.kind ||
-							pendingUpdate.target.id !== target.id
-						) {
-							return null;
-						}
-						return pendingUpdate;
-					});
+					pendingUpdate = await files_saved_placement_db_get_proposal(ctx.db, args.pendingUpdateId).then(
+						(pendingUpdate) => {
+							if (
+								!pendingUpdate ||
+								pendingUpdate.organizationId !== organizationId ||
+								pendingUpdate.workspaceId !== workspaceId ||
+								pendingUpdate.userId !== args.userId ||
+								pendingUpdate.target.kind !== target.kind ||
+								pendingUpdate.target.id !== target.id
+							) {
+								return null;
+							}
+							return pendingUpdate;
+						},
+					);
 					if (pendingUpdate == null) return null;
 				} else if (args.committedOnly !== true) {
 					pendingUpdate = await ctx.db
@@ -9580,6 +8251,7 @@ export const read_file_content_from_chunks = internalQuery({
 						)
 						.first();
 				}
+				if (pendingUpdate) pendingUpdate = await files_saved_placement_db_get_proposal(ctx.db, pendingUpdate._id);
 
 				// Keep the source family even when stale reads show saved text. Review may replace
 				// this family before a read-based edit writes its result.
@@ -9599,10 +8271,11 @@ export const read_file_content_from_chunks = internalQuery({
 				) {
 					// Pending chunks are already the markdown text the user sees. Full reads
 					// still honor maxBytes; line reads stream only the overlapping chunks.
-					const chunks = ctx.db
-						.query("files_text_chunks")
-						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-						.filter((q) => q.eq(q.field("proposalRevision"), pendingUpdate.revision));
+					const chunks = files_saved_content_db_text_chunks(ctx.db, {
+						...args,
+						pendingUpdateId: pendingUpdate._id,
+						proposalRevision: pendingUpdate.revision,
+					});
 
 					if (args.mode.kind === "prefix") {
 						const prefix = await files_read_prefix_from_ordered_chunks(
@@ -9621,7 +8294,7 @@ export const read_file_content_from_chunks = internalQuery({
 
 					if (args.mode.kind === "full") {
 						if (pendingUpdate.size > args.mode.maxBytes) return null;
-						const collectedChunks = await chunks.collect();
+						const collectedChunks = await files_saved_content_collect(chunks);
 						if (collectedChunks.length === 0) {
 							return pendingUpdate.size > 0
 								? null
@@ -9647,12 +8320,12 @@ export const read_file_content_from_chunks = internalQuery({
 
 					const startLine = Math.max(1, Math.trunc(args.mode.startLine));
 					const range = await files_read_forward_line_range_from_ordered_chunks(
-						ctx.db
-							.query("files_text_chunks")
-							.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
-								q.eq("pendingUpdateId", pendingUpdate._id).gte("lineEnd", startLine),
-							)
-							.filter((q) => q.eq(q.field("proposalRevision"), pendingUpdate.revision)),
+						files_saved_content_db_text_chunks(ctx.db, {
+							...args,
+							pendingUpdateId: pendingUpdate._id,
+							proposalRevision: pendingUpdate.revision,
+							startLine,
+						}),
 						{
 							startLine,
 							maxLines: args.mode.maxLines,
@@ -9713,15 +8386,7 @@ export const read_file_content_from_chunks = internalQuery({
 
 		if (args.mode.kind === "prefix") {
 			const prefix = await files_read_prefix_from_ordered_chunks(
-				ctx.db
-					.query("files_text_chunks")
-					.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("fileNodeId", fileNode._id),
-					),
+				files_saved_content_db_text_chunks(ctx.db, { ...args, nodeId: fileNode._id, pendingUpdateId: undefined }),
 				Math.max(0, Math.min(files_READ_RANGE_MAX_BYTES, args.mode.maxBytes)),
 			);
 			if (prefix == null || (!prefix.hasChunks && byteSize > 0)) return null;
@@ -9739,16 +8404,13 @@ export const read_file_content_from_chunks = internalQuery({
 			// only when the file is small enough to return inline.
 			if (byteSize > args.mode.maxBytes) return null;
 
-			const chunks = await ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", fileNode._id),
-				)
-				.collect();
+			const chunks = await files_saved_content_collect(
+				files_saved_content_db_text_chunks(ctx.db, {
+					...args,
+					nodeId: fileNode._id,
+					pendingUpdateId: undefined,
+				}),
+			);
 			if (chunks.length === 0) {
 				return byteSize > 0
 					? null
@@ -9770,31 +8432,21 @@ export const read_file_content_from_chunks = internalQuery({
 		// and avoid reading unrelated leading chunks.
 		const startLine = Math.max(1, Math.trunc(args.mode.startLine));
 		const range = await files_read_forward_line_range_from_ordered_chunks(
-			ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", fileNode._id)
-						.gte("lineEnd", startLine),
-				)
-				.order("asc"),
+			files_saved_content_db_text_chunks(ctx.db, {
+				...args,
+				nodeId: fileNode._id,
+				pendingUpdateId: undefined,
+				startLine,
+			}),
 			{ startLine, maxLines: args.mode.maxLines },
 		);
 		if (range == null) return null;
 		if (!range.hasChunks) {
-			const anyChunk = await ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", fileNode._id),
-				)
-				.first();
+			const { value: anyChunk } = await files_saved_content_db_text_chunks(ctx.db, {
+				...args,
+				nodeId: fileNode._id,
+				pendingUpdateId: undefined,
+			}).next();
 			if (!anyChunk && byteSize > 0) return null;
 		}
 
@@ -10390,7 +9042,7 @@ async function db_get_text_match_source(
 		}
 	} else {
 		if (args.target.kind !== "saved" || args.pendingUpdateId != null) return null;
-		fileNode = await ctx.db.get("files_nodes", args.target.id);
+		fileNode = await files_saved_placement_db_get_node(ctx.db, args.target.id);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
@@ -10503,24 +9155,12 @@ export const match_text_file_lines = internalQuery({
 
 		const window = args.window;
 		if (pendingUpdateId != null) {
-			const chunks =
-				window?.kind === "lines"
-					? ctx.db
-							.query("files_text_chunks")
-							.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
-								q.eq("pendingUpdateId", pendingUpdateId).gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
-							)
-					: window?.kind === "slice"
-						? ctx.db
-								.query("files_text_chunks")
-								.withIndex("by_pendingUpdate_endIndex_chunkIndex", (q) =>
-									q
-										.eq("pendingUpdateId", pendingUpdateId)
-										.gte("endIndex", Math.max(0, Math.trunc(window.startIndex)) + 1),
-								)
-						: ctx.db
-								.query("files_text_chunks")
-								.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId));
+			const chunks = files_saved_content_db_text_chunks(ctx.db, {
+				...args,
+				pendingUpdateId,
+				startLine: window?.kind === "lines" ? Math.max(1, Math.trunc(window.startLine)) : undefined,
+				startIndex: window?.kind === "slice" ? Math.max(0, Math.trunc(window.startIndex)) + 1 : undefined,
+			});
 
 			return await match_text_chunks_list(chunks, {
 				target: args.target,
@@ -10556,36 +9196,13 @@ export const match_text_file_lines = internalQuery({
 			}
 		}
 
-		const chunks =
-			window?.kind === "lines"
-				? ctx.db.query("files_text_chunks").withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("fileNodeId", fileNode._id)
-							.gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
-					)
-				: window?.kind === "slice"
-					? ctx.db
-							.query("files_text_chunks")
-							.withIndex("by_organization_workspace_source_fileNode_endIndex_chunk", (q) =>
-								q
-									.eq("organizationId", args.organizationId)
-									.eq("workspaceId", args.workspaceId)
-									.eq("sourceKind", "committed")
-									.eq("fileNodeId", fileNode._id)
-									.gte("endIndex", Math.max(0, Math.trunc(window.startIndex)) + 1),
-							)
-					: ctx.db
-							.query("files_text_chunks")
-							.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-								q
-									.eq("organizationId", args.organizationId)
-									.eq("workspaceId", args.workspaceId)
-									.eq("sourceKind", "committed")
-									.eq("fileNodeId", fileNode._id),
-							);
+		const chunks = files_saved_content_db_text_chunks(ctx.db, {
+			...args,
+			nodeId: fileNode._id,
+			pendingUpdateId: undefined,
+			startLine: window?.kind === "lines" ? Math.max(1, Math.trunc(window.startLine)) : undefined,
+			startIndex: window?.kind === "slice" ? Math.max(0, Math.trunc(window.startIndex)) + 1 : undefined,
+		});
 
 		return await match_text_chunks_list(chunks, {
 			target: args.target,
@@ -10657,9 +9274,7 @@ export const match_plain_text_file_lines = internalQuery({
 		const { fileNode, pendingUpdateId } = source;
 
 		if (pendingUpdateId != null) {
-			const chunks = ctx.db
-				.query("files_plain_text_chunks")
-				.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId));
+			const chunks = files_saved_content_db_plain_text_chunks(ctx.db, { ...args, pendingUpdateId });
 
 			return await match_plain_text_chunks_list(db_plain_text_chunks_with_lines(chunks), {
 				target: args.target,
@@ -10693,15 +9308,11 @@ export const match_plain_text_file_lines = internalQuery({
 			}
 		}
 
-		const chunks = ctx.db
-			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", fileNode._id),
-			);
+		const chunks = files_saved_content_db_plain_text_chunks(ctx.db, {
+			...args,
+			nodeId: fileNode._id,
+			pendingUpdateId: undefined,
+		});
 
 		return await match_plain_text_chunks_list(db_plain_text_chunks_with_lines(chunks), {
 			target: args.target,
@@ -10742,7 +9353,7 @@ export const get_file_last_yjs_sequence = query({
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!files_node_has_editable_yjs_state(fileNode) ||
 			fileNode.organizationId !== membership.organizationId ||
@@ -10761,13 +9372,11 @@ export const get_file_last_yjs_sequence = query({
 			return null;
 		}
 
-		const lastYjsSequenceDoc = await ctx.db
-			.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId)
-			.then((doc) => {
-				if (!doc || doc.organizationId !== fileNode.organizationId || doc.workspaceId !== fileNode.workspaceId)
-					return null;
-				return doc;
-			});
+		const lastYjsSequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode).then((doc) => {
+			if (!doc || doc.organizationId !== fileNode.organizationId || doc.workspaceId !== fileNode.workspaceId)
+				return null;
+			return doc;
+		});
 
 		if (!lastYjsSequenceDoc) {
 			const errorMessage =
@@ -10798,6 +9407,7 @@ function db_text_search_filtered_query(
 		query: string;
 		targets?: files_PendingTarget[];
 		sourceKind: "pending" | "committed";
+		tag?: { cohortId: Id<"files_move_cohorts">; view: "before" | "after" };
 	},
 ) {
 	let searchQuery = ctx.db.query("files_plain_text_chunks").withSearchIndex("search_by_plainTextChunk", (q) => {
@@ -10805,6 +9415,8 @@ function db_text_search_filtered_query(
 			.search("plainTextChunk", args.query)
 			.eq("organizationId", args.organizationId)
 			.eq("workspaceId", args.workspaceId)
+			.eq("moveView.cohortId", args.tag?.cohortId)
+			.eq("moveView.view", args.tag?.view)
 			.eq("archiveOperationId", undefined);
 		// Committed chunks have no `userId`. Pending chunks are only the caller's own.
 		return args.sourceKind === "committed"
@@ -10829,11 +9441,16 @@ function db_text_search_filtered_query(
 }
 
 /**
- * Where a content search goes on. The caller's pending chunks and the committed chunks are two
- * searches, because one Convex function can run only one paginated read. `read` counts the chunk docs
- * the current search returned so far.
+ * Each owner/saved and normal/selected source gets its own native page.
+ * The cursor pins the search and saved view. A side-row change requires a fresh search.
  */
-type TextSearchPosition = { sourceKind: "pending" | "committed"; cursor: string | null; read: number };
+type TextSearchPosition = {
+	sourceIndex: number;
+	cursor: string | null;
+	read: number;
+	scope: string;
+	searchedTop: boolean;
+};
 
 function text_search_parse_cursor(cursor: string): TextSearchPosition | null {
 	let raw: unknown;
@@ -10843,11 +9460,12 @@ function text_search_parse_cursor(cursor: string): TextSearchPosition | null {
 		return null;
 	}
 	if (typeof raw !== "object" || raw === null) return null;
-	const { sourceKind, cursor: innerCursor, read } = raw as Record<string, unknown>;
-	if (sourceKind !== "pending" && sourceKind !== "committed") return null;
+	const { sourceIndex, cursor: innerCursor, read, scope, searchedTop } = raw as Record<string, unknown>;
+	if (typeof sourceIndex !== "number" || !Number.isInteger(sourceIndex) || sourceIndex < 0) return null;
 	if (innerCursor !== null && typeof innerCursor !== "string") return null;
-	if (typeof read !== "number") return null;
-	return { sourceKind, cursor: innerCursor, read };
+	if (typeof read !== "number" || !Number.isSafeInteger(read) || read < 0) return null;
+	if (typeof scope !== "string" || typeof searchedTop !== "boolean") return null;
+	return { sourceIndex, cursor: innerCursor, read, scope, searchedTop };
 }
 
 const text_search_args = {
@@ -10946,18 +9564,36 @@ export const text_search_files = internalQuery({
 		const reader = await files_search_db_create_reader(ctx, args);
 		if (!reader.active) return empty;
 
-		// Only the owner's overlay reads pending chunks, like the reader. Read them first: they are
-		// few, and the committed search then fills the rest.
+		// Only the owner's overlay reads pending chunks, like the reader.
 		const ownerPending =
 			args.serviceAccountId === undefined &&
 			!organizations_is_global_organization_id(args.organizationId) &&
 			scope.kind === "workspace";
+		const view = await files_saved_placement_db_get_view(ctx.db, args);
+		const tags = view.cohortId && view.view ? [undefined, { cohortId: view.cohortId, view: view.view }] : [undefined];
+		const sources = (ownerPending ? ["pending" as const, "committed" as const] : ["committed" as const]).flatMap(
+			(sourceKind) => tags.map((tag) => ({ sourceKind, tag })),
+		);
+		const cursorScope = JSON.stringify({
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			serviceAccountId: args.serviceAccountId,
+			agentSource: args.agentSource,
+			hasWorkspaceRead: args.hasWorkspaceRead,
+			query: args.query,
+			pathPrefix: args.pathPrefix,
+			targets: args.targets,
+			view,
+		});
 		const position =
 			args.cursor === null
-				? { sourceKind: ownerPending ? ("pending" as const) : ("committed" as const), cursor: null, read: 0 }
+				? { sourceIndex: 0, cursor: null, read: 0, scope: cursorScope, searchedTop: false }
 				: text_search_parse_cursor(args.cursor);
-		if (!position) throw convex_error({ message: "Invalid search cursor" });
-		const result = await db_text_search_filtered_query(ctx, { ...args, sourceKind: position.sourceKind }).paginate({
+		if (!position || position.scope !== cursorScope || !sources[position.sourceIndex])
+			throw convex_error({ message: "Search changed. Start the search again." });
+		const source = sources[position.sourceIndex]!;
+		const result = await db_text_search_filtered_query(ctx, { ...args, ...source }).paginate({
 			cursor: position.cursor,
 			numItems: Math.max(1, Math.min(100, args.numItems)),
 		});
@@ -10988,17 +9624,20 @@ export const text_search_files = internalQuery({
 		}
 
 		const read = position.read + result.page.length;
+		const searchedTop =
+			position.searchedTop ||
+			(source.sourceKind === "committed" && result.isDone && read >= files_TEXT_SEARCH_MAX_RESULTS);
 		const next: TextSearchPosition | null = !result.isDone
-			? { ...position, cursor: result.continueCursor, read }
-			: position.sourceKind === "pending"
-				? { sourceKind: "committed", cursor: null, read: 0 }
+			? { ...position, cursor: result.continueCursor, read, searchedTop }
+			: position.sourceIndex + 1 < sources.length
+				? { ...position, sourceIndex: position.sourceIndex + 1, cursor: null, read: 0, searchedTop }
 				: null;
 		return {
 			items,
 			continueCursor: next ? JSON.stringify(next) : "",
 			isDone: next === null,
 			retrySmaller: false,
-			searchedTop: next === null && read >= files_TEXT_SEARCH_MAX_RESULTS,
+			searchedTop,
 		};
 	},
 });
@@ -11018,6 +9657,8 @@ export type files_nodes_text_search_files_Result =
 export const search_saved = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		savedStream: v.optional(files_saved_stream_validator),
+		searchGeneration: v.optional(v.number()),
 		clause: v.union(
 			// Whole words and word starts of the name. `nodeKind` lists only files or only folders.
 			v.object({
@@ -11076,6 +9717,10 @@ export const search_saved = query({
 		}
 		const { userAuth, membership } = reader;
 		const clause = args.clause;
+		const saved = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		if (args.searchGeneration !== undefined && args.searchGeneration !== saved.view.searchGeneration) {
+			throw convex_invalid_cursor_error("The saved search view changed.");
+		}
 		const paginationOpts = {
 			...args.paginationOpts,
 			numItems: Math.min(args.paginationOpts.numItems, SEARCH_SAVED_MAX_ITEMS),
@@ -11111,6 +9756,7 @@ export const search_saved = query({
 		};
 
 		if (clause.kind === "path") {
+			if (saved.tag) return refused;
 			if (args.folderPath !== undefined || clause.path.length > SEARCH_SAVED_PATH_MAX_LENGTH) {
 				return refused;
 			}
@@ -11124,7 +9770,10 @@ export const search_saved = query({
 						})
 					)?._id
 				: ctx.db.normalizeId("files_nodes", clause.path);
-			return { ...refused, page: await readable_rows([nodeId ? await ctx.db.get("files_nodes", nodeId) : null]) };
+			return {
+				...refused,
+				page: await readable_rows([nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null]),
+			};
 		}
 
 		// The folder comes from its saved row, never from the typed text: its stored ancestors and
@@ -11174,22 +9823,35 @@ export const search_saved = query({
 					keyof Doc<"files_nodes">,
 					`ancestor${number}`
 				>;
-				const result = await ctx.db
-					.query("files_nodes")
-					.withSearchIndex("search_name", (q) => {
-						const active = q
-							.search("name", text)
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
-							.eq("archiveOperationId", null);
-						const kinded = nodeKind ? active.eq("kind", nodeKind) : active;
-						return folderId ? kinded.eq(ancestorField, folderId) : kinded;
-					})
-					.paginate(paginationOpts);
+				const result = saved.tag
+					? await ctx.db
+							.query("files_saved_places")
+							.withSearchIndex("search_name", (q) => {
+								const active = q
+									.search("name", text)
+									.eq("cohortId", saved.tag!.cohortId)
+									.eq("view", saved.tag!.view)
+									.eq("archiveOperationId", null);
+								const kinded = nodeKind ? active.eq("kind", nodeKind) : active;
+								return folderId ? kinded.eq(ancestorField, folderId) : kinded;
+							})
+							.paginate(paginationOpts)
+					: await ctx.db
+							.query("files_nodes")
+							.withSearchIndex("search_name", (q) => {
+								const active = q
+									.search("name", text)
+									.eq("workspaceId", membership.workspaceId)
+									.eq("moveCohortId", undefined)
+									.eq("archiveOperationId", null);
+								const kinded = nodeKind ? active.eq("kind", nodeKind) : active;
+								return folderId ? kinded.eq(ancestorField, folderId) : kinded;
+							})
+							.paginate(paginationOpts);
 				if (result.page.length > SEARCH_SAVED_MAX_ITEMS) {
 					throw convex_invalid_cursor_error("The search page grew past its cap");
 				}
-				return { ...result, page: await readable_rows(result.page) };
+				return { ...result, page: await readable_rows(await saved.read_nodes(result.page)) };
 			}
 
 			// Committed chunks only: drafts never count toward the top matches.
@@ -11201,7 +9863,9 @@ export const search_saved = query({
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
 						.eq("archiveOperationId", undefined)
-						.eq("sourceKind", "committed"),
+						.eq("sourceKind", "committed")
+						.eq("moveView.cohortId", saved.tag?.cohortId)
+						.eq("moveView.view", saved.tag?.view),
 				)
 				.paginate(paginationOpts);
 			if (result.page.length > SEARCH_SAVED_MAX_ITEMS) {
@@ -11209,7 +9873,9 @@ export const search_saved = query({
 			}
 			const chunks = result.page.flatMap((chunk) => (chunk.sourceKind === "committed" ? [chunk] : []));
 			const rows = await readable_rows(
-				await Promise.all(chunks.map((chunk) => ctx.db.get("files_nodes", chunk.fileNodeId))),
+				await Promise.all(
+					chunks.map((chunk) => files_saved_placement_db_get_node(ctx.db, chunk.fileNodeId, saved.tag)),
+				),
 			);
 			return {
 				...result,
@@ -11236,6 +9902,7 @@ export const search_saved = query({
 				workspaceId: membership.workspaceId,
 				plan,
 				treePathPrefix: folderTreePath,
+				moveView: saved.tag,
 			}).paginate(paginationOpts);
 			if (tree_page_needs_split(result, SEARCH_SAVED_SPLIT_GUARD)) {
 				return tree_page_split_required(result);
@@ -11245,7 +9912,9 @@ export const search_saved = query({
 				page: await readable_rows(
 					await Promise.all(
 						result.page.map(async (metadataDoc) =>
-							metadataDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", metadataDoc.fileNodeId) : null,
+							metadataDoc.sourceKind === "committed"
+								? await files_saved_placement_db_get_node(ctx.db, metadataDoc.fileNodeId, saved.tag)
+								: null,
 						),
 					),
 				),
@@ -11254,6 +9923,7 @@ export const search_saved = query({
 
 		// `set_node_share_link` keeps at most 500 links in a workspace, so a folder can drop rows of a
 		// page here instead of in an index range.
+		if (saved.tag) return refused;
 		const result = await ctx.db
 			.query("files_share_links")
 			.withIndex("by_organization_workspace_node", (q) =>
@@ -11263,7 +9933,13 @@ export const search_saved = query({
 		if (tree_page_needs_split(result, SEARCH_SAVED_SPLIT_GUARD)) {
 			return tree_page_split_required(result);
 		}
-		const nodes = await Promise.all(result.page.map((link) => ctx.db.get("files_nodes", link.nodeId)));
+		const nodes = await Promise.all(
+			result.page.map(async (link) =>
+				(await files_share_links_db_is_selected(ctx.db, link))
+					? await files_saved_placement_db_get_node(ctx.db, link.nodeId)
+					: null,
+			),
+		);
 		return {
 			...result,
 			page: await readable_rows(
@@ -12212,7 +10888,7 @@ export const yjs_get_incremental_updates = query({
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
@@ -12236,16 +10912,17 @@ export const yjs_get_incremental_updates = query({
 			return null;
 		}
 
-		const updates = await ctx.db
-			.query("files_yjs_updates")
-			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("fileNodeId", args.nodeId),
-			)
-			.order("desc")
-			.collect();
+		const sequence = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
+		if (!sequence) return null;
+		const updates = await files_saved_content_collect(
+			files_saved_content_db_yjs_updates(ctx.db, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId: args.nodeId,
+				order: "desc",
+				throughSequence: sequence.lastSequence,
+			}),
+		);
 
 		// Return the exact lineage even when the log is empty. Clients fetch the snapshot and update
 		// log separately, so they need this token to refuse a mixed-lineage read.
@@ -12346,6 +11023,11 @@ export const cleanup_old_snapshots = internalMutation({
 			if (node?.assetId === snapshot.assetId) {
 				continue;
 			}
+			const claim = await ctx.db
+				.query("files_move_asset_claims")
+				.withIndex("by_asset", (q) => q.eq("assetId", snapshot.assetId))
+				.first();
+			if (claim) continue;
 
 			const asset = await ctx.db.get("files_r2_assets", snapshot.assetId);
 			if (

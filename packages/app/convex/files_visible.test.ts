@@ -922,6 +922,7 @@ describe("list_files_pending_updates", () => {
 									.eq("organizationId", f.db.organizationId)
 									.eq("workspaceId", f.db.workspaceId)
 									.eq("userId", f.db.userId)
+									.eq("moveView.cohortId", undefined).eq("moveView.view", undefined)
 									.eq("listKey", "all"),
 							)
 							.order("desc")
@@ -981,7 +982,7 @@ describe("list_files_pending_sources", () => {
 		expect(first.isDone).toBe(false);
 		const second = await read(first.continueCursor);
 		expect(second.isDone).toBe(true);
-		expect([...first.page, ...second.page]).toEqual([...threadIds.toReversed(), "own"]);
+		expect([...first.page, ...second.page].map((row) => row.listKey)).toEqual([...threadIds.toReversed(), "own"]);
 	});
 });
 

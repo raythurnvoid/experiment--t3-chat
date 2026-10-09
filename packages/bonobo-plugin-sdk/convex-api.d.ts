@@ -1365,10 +1365,10 @@ export type BonoboConvexApi = {
 			ownership: "shared" | "owned";
 		}>, string | undefined>;
 		watch_recent: import("convex/server").FunctionReference<"query", "public", {
+			before?: number | undefined;
 			order?: "asc" | "desc" | undefined;
 			scopeId?: string | undefined;
 			since?: number | undefined;
-			before?: number | undefined;
 			collection: string;
 			limit: number;
 		}, {

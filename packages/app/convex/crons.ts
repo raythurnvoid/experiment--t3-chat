@@ -149,6 +149,7 @@ crons.cron("recover expired transfer attempts", "*/5 * * * *", internal.files_tr
 
 // Every 5 minutes — resume interrupted review plans and commits.
 crons.cron("recover pending review jobs", "*/5 * * * *", internal.files_pending_update_runs.recover, {});
+crons.cron("recover Move groups", "*/5 * * * *", internal.files_move_cohorts.recover, {});
 
 // Every 15 minutes — crash/abandon fallback for paged pending states: expired temporary
 // states/batches/text inputs, expired trusted-update stages, and retired-state cleanup tasks.

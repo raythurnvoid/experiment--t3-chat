@@ -188,7 +188,16 @@ describe("bash_transfer_command_run", () => {
 		expect(runner.transferContext.nextCommandNumber).not.toHaveBeenCalled();
 	});
 
-	test.each([1, 100, 101, 201])("Copy sends %i selected sources in pages and seals before waiting", async (count) => {
+	test.each([
+		["cp", 1],
+		["cp", 100],
+		["cp", 101],
+		["cp", 201],
+		["mv", 1],
+		["mv", 100],
+		["mv", 101],
+		["mv", 201],
+	] as const)("%s sends %i selected sources in pages and seals before waiting", async (command, count) => {
 		const runner = create_runner();
 		const sources = Array.from({ length: count }, (_, index) => (index % 2 ? "b.txt" : "a.txt"));
 		let accepted = 0;
@@ -219,25 +228,13 @@ describe("bash_transfer_command_run", () => {
 			expect(sealed).toBe(true);
 			return { activity: { status: "succeeded", progress: { completed: 2, skipped: 0, failed: 0 } } };
 		});
-		expect(await runner.run("cp", [...sources, "dest"])).toMatchObject({ exitCode: 0 });
+		expect(await runner.run(command, [...sources, "dest"])).toMatchObject({ exitCode: 0 });
 		expect(sealed).toBe(true);
 		expect(runner.runMutation.mock.calls.map(([ref]) => getFunctionName(ref))).toEqual([
 			"files_transfer:start_for_agent",
 			...Array.from({ length: Math.ceil(count / 100) - 1 }, () => "files_transfer:append_sources_for_agent"),
 			"files_transfer:seal_for_agent",
 		]);
-	});
-
-	test("same-workspace Move keeps its bounded start without Copy intake", async () => {
-		const runner = create_runner();
-		expect(await runner.run("mv", ["a.txt", "dest"])).toMatchObject({ exitCode: 0 });
-		expect(runner.runMutation).toHaveBeenCalledTimes(1);
-		expect(runner.runMutation.mock.calls[0]![1]).not.toHaveProperty("expectedSourceCount");
-		expect(await runner.run("mv", [...Array.from({ length: 201 }, () => "a.txt"), "dest"])).toMatchObject({
-			exitCode: 1,
-			stderr: "mv: select at most 200 sources\n",
-		});
-		expect(runner.runMutation).toHaveBeenCalledTimes(1);
 	});
 
 	test.each(["append_sources_for_agent", "seal_for_agent"])("stops accepted Copy when %s refuses", async (door) => {
@@ -359,12 +356,18 @@ describe("bash_transfer_command_run", () => {
 			exitCode: 0,
 			stderr: "",
 		});
-		expect(runner.runMutation).toHaveBeenCalledExactlyOnceWith(
+		expect(runner.runMutation).toHaveBeenNthCalledWith(
+			1,
 			internal.files_transfer.start_for_agent,
 			expect.objectContaining({
 				kind: "move",
 				sources: [runner.entries.get("/a.txt")!.target, runner.personalEntries.get("/b.txt")!.target],
 			}),
+		);
+		expect(runner.runMutation).toHaveBeenNthCalledWith(
+			2,
+			internal.files_transfer.seal_for_agent,
+			expect.objectContaining({ runId: "transfer_1" }),
 		);
 	});
 

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "./app-tenant-context.tsx";
 import { FilesTreeProvider, files_tree_stream_args } from "./files-tree-context.tsx";
+import type { files_SavedStream } from "../../shared/files.ts";
 
 vi.mock("@/components/files/files-clipboard.tsx", () => ({
 	FilesClipboardProvider: (props: { children: ReactNode }) => props.children,
@@ -44,6 +45,7 @@ function children_key(args: {
 	archived?: boolean;
 	restricted?: boolean;
 	principalIndex?: 0 | 1 | 2;
+	savedStream?: files_SavedStream;
 }) {
 	const { archived = false, cursor, kind, parentId, restricted = false, principalIndex } = args;
 	const streamArgs = files_tree_stream_args({
@@ -51,6 +53,7 @@ function children_key(args: {
 		folderId: parentId as app_convex_Id<"files_nodes">,
 		kind,
 		archived,
+		savedStream: args.savedStream ?? { kind: "normal", generation: 0 },
 	});
 
 	return principalIndex === undefined
@@ -77,13 +80,14 @@ function receive_empty_twins(parentId: string) {
 	}
 }
 
-function shared_roots_key(args: { principalIndex: 0 | 1 | 2; archived?: boolean; cursor?: string | null }) {
+function shared_roots_key(args: { principalIndex: 0 | 1 | 2; archived?: boolean; cursor?: string | null; savedStream?: files_SavedStream }) {
 	const { archived = false, cursor = null, principalIndex } = args;
 
 	return watch_key(getFunctionName(app_convex_api.files_nodes.list_tree_shared_roots), {
 		membershipId: "membership_1",
 		archived,
 		principalIndex,
+		savedStream: args.savedStream ?? { kind: "normal", generation: 0 },
 		paginationOpts: { cursor },
 	});
 }
@@ -157,6 +161,9 @@ function TestWorkspace(props: { membershipId: string; children?: ReactNode }) {
 beforeEach(() => {
 	results.clear();
 	listeners.clear();
+	results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: "membership_1" }), {
+		cohortId: null, view: null, generation: 0, searchGeneration: 0,
+	});
 	client = new ConvexReactClient("https://tree-test.convex.cloud");
 	// Keep the real pagination and subscription hooks. Only replace the server watches.
 	vi.spyOn(client, "watchQuery").mockImplementation((query, args?, _options?) => {
@@ -182,6 +189,33 @@ afterEach(async () => {
 });
 
 describe("FilesTreeProvider.useFolders", () => {
+	test("finishes empty when the workspace view refuses access", () => {
+		results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: "membership_1" }), null);
+		render(<TestWorkspace membershipId="membership_1"><FoldersConsumer folderIds={[]} /></TestWorkspace>);
+		expect(screen.getByLabelText("Rows").textContent).toBe("");
+		expect(screen.getByLabelText("Status").textContent).toBe("root:done");
+		expect(screen.getByLabelText("Shared").textContent).toBe(":done");
+	});
+
+	test("merges normal and selected rows in the tree", () => {
+		const cohortId = "cohort_1" as app_convex_Id<"files_move_cohorts">;
+		const normal: files_SavedStream = { kind: "normal", generation: 1 };
+		const cohort: files_SavedStream = { kind: "cohort", cohortId, view: "before", generation: 1 };
+		results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: "membership_1" }), {
+			cohortId, view: "before", generation: 1, searchGeneration: 1,
+		});
+		for (const savedStream of [normal, cohort]) {
+			for (const kind of ["folder", "file"] as const) {
+				for (const restricted of [false, true]) results.set(children_key({ parentId: "root", kind, cursor: null, restricted, savedStream }), EMPTY_PAGE);
+				for (const principalIndex of [0, 1, 2] as const) results.set(children_key({ parentId: "root", kind, cursor: null, principalIndex, savedStream }), EMPTY_PAGE);
+			}
+		}
+		results.set(children_key({ parentId: "root", kind: "file", cursor: null, savedStream: normal }), { ...EMPTY_PAGE, page: [row("b.md")] });
+		results.set(children_key({ parentId: "root", kind: "file", cursor: null, savedStream: cohort }), { ...EMPTY_PAGE, page: [row("a.md")] });
+		render(<TestWorkspace membershipId="membership_1"><FoldersConsumer folderIds={[]} /></TestWorkspace>);
+		expect(screen.getByLabelText("Rows").textContent).toBe("a.md,b.md");
+	});
+
 	test("loads the root folders and files together", () => {
 		render(
 			<TestWorkspace membershipId="membership_1">

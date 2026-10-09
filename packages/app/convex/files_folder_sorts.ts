@@ -13,6 +13,7 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_sort_DEFAULT, files_sort_is_valid } from "../shared/files-sort.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -35,7 +36,7 @@ async function db_get_folder(
 		return Result({ _yay: null });
 	}
 
-	const folder = await ctx.db.get("files_nodes", args.folderId);
+	const folder = await files_saved_placement_db_get_node(ctx.db, args.folderId);
 	// A node from another workspace is not this member's to see.
 	if (
 		!folder ||

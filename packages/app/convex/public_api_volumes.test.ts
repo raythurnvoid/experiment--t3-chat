@@ -466,7 +466,7 @@ async function volume_nodes(f: Awaited<ReturnType<typeof fixture>>) {
 		return await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_archiveOperation", (q) =>
-				q.eq("organizationId", f.owner.organizationId).eq("workspaceId", volume._id).eq("archiveOperationId", null),
+				q.eq("organizationId", f.owner.organizationId).eq("workspaceId", volume._id).eq("moveCohortId", undefined).eq("archiveOperationId", null),
 			)
 			.collect();
 	});

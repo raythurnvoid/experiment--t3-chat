@@ -57,6 +57,7 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
 import {
@@ -108,6 +109,7 @@ import {
 	public_api_visibility_user_id,
 } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { public_api_service_uploads_db_validate_node_target } from "./public_api_service_uploads.ts";
 import {
@@ -1527,7 +1529,9 @@ export const resolve_principal = internalQuery({
 			// active node (the download path already fails closed on archived sources in r2.ts).
 			// A run that fired on no file has no source to lose, so it skips this check instead of
 			// failing it.
-			const sourceFileNode = pluginRun.fileNodeId ? await ctx.db.get("files_nodes", pluginRun.fileNodeId) : null;
+			const sourceFileNode = pluginRun.fileNodeId
+				? await files_saved_placement_db_get_node(ctx.db, pluginRun.fileNodeId)
+				: null;
 			if (
 				pluginRun.fileNodeId &&
 				(!sourceFileNode ||
@@ -1980,6 +1984,35 @@ export type public_api_resolve_principal_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * Pin the active membership for an action read and its continuation cursor.
+ */
+export const get_file_read_membership = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+	},
+	returns: v.union(v.object({ membershipId: v.id("organizations_workspaces_users"), lifetime: v.union(v.number(), v.null()) }), v.null()),
+	handler: async (ctx, args) => {
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) return null;
+		const lifetime = await organizations_membership_lifetimes_db_get(ctx, args);
+		if (lifetime && (!lifetime.active || lifetime.membershipId !== membership._id)) return null;
+		// Durable work creates the lifetime. Pin absence too, so later creation ends this cursor.
+		return { membershipId: membership._id, lifetime: lifetime?.lifetime ?? null };
+	},
+});
+
 // The service exchange routes in `plugins_service.ts` call these two through the generated `internal`
 // object, which erases the return type. Each alias gives that call its type back.
 
@@ -2127,7 +2160,7 @@ async function db_authorize_file_policy_request(
 	}
 
 	const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
-	const node = nodeId ? await ctx.db.get("files_nodes", nodeId) : null;
+	const node = nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
 	if (
 		!node ||
 		node.organizationId !== args.organizationId ||
@@ -2383,7 +2416,7 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 		)
 			return Result({ _nay: { message: "File unavailable" } });
 		for (const item of args.nodes) {
-			const node = await ctx.db.get("files_nodes", item.nodeId);
+			const node = await files_saved_placement_db_get_node(ctx.db, item.nodeId);
 			if (
 				!node ||
 				node.organizationId !== run.organizationId ||
@@ -2564,7 +2597,9 @@ export async function public_api_db_revalidate_file_write_principal(
 		// Archived counts as missing: publishing beside an archived source would recreate the
 		// user-deleted parent folder as a new active node. A run that fired on no file has no source
 		// to write beside, so it falls into the refusal below.
-		const sourceFileNode = pluginRun.fileNodeId ? await ctx.db.get("files_nodes", pluginRun.fileNodeId) : null;
+		const sourceFileNode = pluginRun.fileNodeId
+			? await files_saved_placement_db_get_node(ctx.db, pluginRun.fileNodeId)
+			: null;
 		if (
 			!sourceFileNode ||
 			sourceFileNode.archiveOperationId !== null ||
@@ -2824,16 +2859,7 @@ async function db_get_active_node_at_path(
 		path: string;
 	},
 ) {
-	return await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("path", args.path)
-				.eq("archiveOperationId", null),
-		)
-		.first();
+	return await files_db_get_visible_node_by_path(ctx, args);
 }
 
 /**
@@ -2952,7 +2978,7 @@ async function db_require_file_write_parent(
 	if (args.expectedParentNodeId === undefined) {
 		return Result({ _yay: null });
 	}
-	const parent = await ctx.db.get("files_nodes", args.expectedParentNodeId);
+	const parent = await files_saved_placement_db_get_node(ctx.db, args.expectedParentNodeId);
 	if (
 		!parent ||
 		parent.organizationId !== args.organizationId ||
@@ -3341,7 +3367,7 @@ export const publish_file_write = internalMutation({
 			// Keep the actor's existing replacement ceiling on each folder in the path.
 			let ancestorId = activeNode.parentId;
 			while (ancestorId !== files_ROOT_ID) {
-				const ancestor: Doc<"files_nodes"> | null = await ctx.db.get("files_nodes", ancestorId);
+				const ancestor: Doc<"files_nodes"> | null = await files_saved_placement_db_get_node(ctx.db, ancestorId);
 				if (!ancestor) {
 					break;
 				}
@@ -3559,7 +3585,7 @@ export const publish_file_write = internalMutation({
 
 		await ctx.db.delete("public_api_file_write_stages", stage._id);
 		if (stage.externalFileWrite && "fingerprint" in revalidated._yay) {
-			const node = await ctx.db.get("files_nodes", created._yay);
+			const node = await files_saved_placement_db_get_node(ctx.db, created._yay);
 			await plugins_external_files_db_record_write(ctx, {
 				stage,
 				node: node!,
@@ -3673,7 +3699,7 @@ export const publish_file_fill = internalMutation({
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 		// Bind only the tenant and node before access checks. Path, archive, type, mode, and lineage
 		// are details a caller without node access must not learn from the conflict response.
-		const fileNode = await ctx.db.get("files_nodes", args.expectedNodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.expectedNodeId);
 		if (!fileNode || fileNode.organizationId !== stage.organizationId || fileNode.workspaceId !== stage.workspaceId) {
 			return Result({ _nay: { message: "The file changed during the write" } });
 		}
@@ -3823,7 +3849,7 @@ export const publish_file_fill = internalMutation({
 		await ctx.db.delete("public_api_file_write_stages", stage._id);
 
 		if (stage.externalFileWrite && "fingerprint" in revalidated._yay) {
-			const node = await ctx.db.get("files_nodes", fileNode._id);
+			const node = await files_saved_placement_db_get_node(ctx.db, fileNode._id);
 			await plugins_external_files_db_record_write(ctx, {
 				stage,
 				node: node!,
@@ -3892,18 +3918,9 @@ export const publish_file_touch = internalMutation({
 		const serviceAccountId =
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 
-		const activeNode = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-				q
-					.eq("organizationId", stage.organizationId)
-					.eq("workspaceId", stage.workspaceId)
-					.eq("path", stage.path)
-					.eq("archiveOperationId", null),
-			)
-			.first();
+		const activeNode = await files_db_get_visible_node_by_path(ctx, stage);
 		if (activeNode) {
-			// This lookup is raw, because a path holds one active node and a restricted one still has to
+			// This lookup does not check access. A restricted node still has to
 			// stop the create below. So it can find a file the caller may not touch, and answering the
 			// touch would hand back its stable node id.
 			if (
@@ -4138,7 +4155,7 @@ export const can_write_file_node = internalQuery({
 	},
 	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only")),
 	handler: async (ctx, args) => {
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
@@ -4208,7 +4225,7 @@ export const start_run_activity = internalMutation({
 		const [installation, version, fileNode, actorMembership, workspace] = await Promise.all([
 			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
 			ctx.db.get("plugins_versions", pluginRun.pluginVersionId),
-			pluginRun.fileNodeId ? ctx.db.get("files_nodes", pluginRun.fileNodeId) : null,
+			pluginRun.fileNodeId ? files_saved_placement_db_get_node(ctx.db, pluginRun.fileNodeId) : null,
 			ctx.db
 				.query("organizations_workspaces_users")
 				.withIndex("by_active_user_organization_workspace", (q) =>
@@ -4484,16 +4501,7 @@ export const create_file_upload_targets = internalMutation({
 					});
 				}
 
-				const ancestor = await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("path", ancestorPath)
-							.eq("archiveOperationId", null),
-					)
-					.first();
+				const ancestor = await files_db_get_visible_node_by_path(ctx, { ...args, path: ancestorPath });
 				if (!ancestor) {
 					continue;
 				}

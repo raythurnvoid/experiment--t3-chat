@@ -1002,7 +1002,7 @@ export const gc_sweep_mount_roots = internalMutation({
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
 					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
+					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID).eq("moveCohortId", undefined)
 					.eq("path", `/${mount.name}`)
 					.eq("archiveOperationId", null),
 			)
@@ -1015,7 +1015,7 @@ export const gc_sweep_mount_roots = internalMutation({
 			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 				q
 					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
+					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID).eq("moveCohortId", undefined)
 					.eq("parentId", mountRoot._id)
 					.eq("archiveOperationId", null),
 			)

@@ -52,6 +52,8 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_pending_update_content_of, files_ROOT_ID } from "../shared/files.ts";
+import { files_saved_placement_db_get_node, files_saved_placement_db_get_proposal, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
+import { files_saved_content_collect, files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
 import {
 	files_yjs_create_empty_state_update,
 	files_yjs_doc_apply_array_buffer_update,
@@ -129,6 +131,7 @@ import {
 	type files_pending_updates_stage_trusted_yjs_update_Result,
 } from "./files_pending_updates.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
+import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import {
 	r2,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
@@ -156,9 +159,6 @@ import {
 	type files_nodes_get_visible_entry_by_path_Result,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_copied_from_policy_fields,
-	files_nodes_db_validate_occupant_replace,
-	files_nodes_db_preflight_move,
-	files_nodes_db_apply_move,
 	files_tail_lines_from_text,
 	yjs_reserve_and_increment_last_sequence,
 	type files_nodes_read_committed_file_chunk_stats_Result,
@@ -197,16 +197,12 @@ import {
 import { files_pending_holds_db_release } from "./files_pending_holds.ts";
 import { files_transfer_rewrite_media_refs } from "../server/files-transfer-media.ts";
 import {
-	files_pending_nodes_db_get_ancestry,
-	files_pending_nodes_db_can_save_to_copied_parent,
-	files_pending_nodes_db_publish,
 	files_pending_nodes_db_resolve_read_target,
 } from "./files_pending_nodes.ts";
 import { files_private_storage_db_release, files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
-import type { files_share_links_CleanupState } from "./files_share_links_db.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	files_nodes_db_insert_committed_text_chunks,
@@ -690,7 +686,7 @@ async function db_resolve_create_destination_read_only_state(
 				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
+						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
 						.eq("parentId", currentParentId)
 						.eq("name", name)
 						.eq("archiveOperationId", null),
@@ -778,7 +774,7 @@ export const get_create_file_node_write_preflight = internalQuery({
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
+						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", prefixPath)
 						.eq("archiveOperationId", null),
 				)
@@ -948,7 +944,7 @@ export const create_file_node = internalMutation({
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", authorOrganizationId)
-							.eq("workspaceId", authorWorkspaceId)
+							.eq("workspaceId", authorWorkspaceId).eq("moveCohortId", undefined)
 							.eq("path", prefixPath)
 							.eq("archiveOperationId", null),
 					)
@@ -1071,346 +1067,6 @@ export const create_file_node = internalMutation({
 	},
 });
 
-/**
- * Publish one prepared private node. The caller checks the reviewed proposal and output states
- * first, then settles or retargets that proposal in this same transaction after this returns.
- */
-export async function files_nodes_content_db_publish_private_node(
-	ctx: MutationCtx,
-	args: {
-		membership: Doc<"organizations_workspaces_users">;
-		node: Doc<"files_pending_nodes">;
-		pendingUpdate: Doc<"files_pending_updates">;
-		billedUserId: Id<"users">;
-		reviewedPendingUpdateIds?: Set<Id<"files_pending_updates">>;
-		prepared?: {
-			text: string;
-			contentAssetId: Id<"files_r2_assets">;
-			yjsSnapshotAssetId?: Id<"files_r2_assets">;
-		};
-		shareLinkCleanup: files_share_links_CleanupState;
-	},
-) {
-	const { membership, node, pendingUpdate, prepared } = args;
-	if (
-		!membership.active ||
-		membership.organizationId !== node.organizationId ||
-		membership.workspaceId !== node.workspaceId ||
-		membership.userId !== node.userId ||
-		pendingUpdate.target.kind !== "private" ||
-		pendingUpdate.target.id !== node._id ||
-		pendingUpdate.organizationId !== node.organizationId ||
-		pendingUpdate.workspaceId !== node.workspaceId ||
-		pendingUpdate.userId !== node.userId
-	) {
-		return Result({ _nay: { name: "not_found", message: "Not found" } });
-	}
-
-	const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...node, privateNodeId: node._id });
-	if (ancestry._nay) return ancestry;
-
-	if (
-		ancestry._yay.node.creationGeneration !== node.creationGeneration ||
-		ancestry._yay.node.structuralRevision !== node.structuralRevision
-	) {
-		return Result({ _nay: { name: "target_changed", message: "This draft changed. Review it again." } });
-	}
-
-	if (ancestry._yay.ancestors.length > 0) {
-		return Result({ _nay: { name: "needs_review", message: "Review and save the parent draft first." } });
-	}
-
-	const createIntent = pendingUpdate.createIntent;
-	if (!createIntent || (createIntent.kind === "text" && !prepared)) {
-		return Result({ _nay: { name: "not_ready", message: "This draft is still preparing." } });
-	}
-
-	if (pendingUpdate.pendingArchive) {
-		return Result({ _nay: { name: "needs_review", message: "This draft has a pending delete." } });
-	}
-
-	const parentId = ancestry._yay.savedParent?._id ?? files_ROOT_ID;
-	const authorized = await authorize_file_write(ctx, { userAuth: { id: node.userId }, membership, nodeId: parentId });
-	if (authorized._nay) return authorized;
-
-	let expectedParentWritePolicy: Doc<"files_nodes">["writePolicy"] | undefined;
-	if (ancestry._yay.savedParent) {
-		const writable = await files_nodes_db_require_user_writable(ctx, {
-			node: ancestry._yay.savedParent,
-			userId: node.userId,
-		});
-		if (writable._nay) {
-			if (
-				writable._nay.name !== "read_only" ||
-				!(await files_pending_nodes_db_can_save_to_copied_parent(ctx, {
-					membership,
-					node,
-					savedParent: ancestry._yay.savedParent,
-				}))
-			)
-				return writable;
-			// Save keeps the copied parent's lock; it does not grant editing access.
-			expectedParentWritePolicy = ancestry._yay.savedParent.writePolicy;
-		}
-	}
-
-	const now = Date.now();
-	const assetIds =
-		createIntent.kind === "folder"
-			? []
-			: createIntent.kind === "stored"
-				? [createIntent.assetId]
-				: [prepared!.contentAssetId, ...(prepared!.yjsSnapshotAssetId ? [prepared!.yjsSnapshotAssetId] : [])];
-	const assets = await Promise.all(assetIds.map((id) => ctx.db.get("files_r2_assets", id)));
-	const reservations = await Promise.all(
-		assetIds.map((id) =>
-			ctx.db
-				.query("files_private_storage_reservations")
-				.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", id))
-				.first(),
-		),
-	);
-	for (const [index, asset] of assets.entries()) {
-		const reservation = reservations[index];
-		if (
-			!asset ||
-			asset.organizationId !== node.organizationId ||
-			asset.workspaceId !== node.workspaceId ||
-			asset.createdBy !== node.userId ||
-			asset.uploadRetiredAt !== undefined ||
-			// Stored copies are already finalized. Their private hold still owns the bytes.
-			(createIntent.kind === "text" &&
-				(asset.unfinalizedExpiresAt === undefined || asset.unfinalizedExpiresAt <= now)) ||
-			!reservation ||
-			reservation.settlement.kind !== "held" ||
-			reservation.userId !== node.userId ||
-			reservation.byteCount !== asset.size ||
-			reservation.resource.kind !== "asset" ||
-			reservation.resource.r2Key !== r2_create_asset_key({ ...node, assetId: asset._id })
-		) {
-			return Result({ _nay: { name: "target_changed", message: "The prepared content is no longer available." } });
-		}
-	}
-	if (
-		(createIntent.kind === "text" &&
-			(assets[0]!.size !== files_get_utf8_byte_size(prepared!.text) ||
-				createIntent.collaborationEnabled !== (prepared!.yjsSnapshotAssetId !== undefined))) ||
-		(createIntent.kind === "stored" && (!assets[0]!.r2Key || assets[0]!.size !== createIntent.size))
-	) {
-		return Result({ _nay: { name: "target_changed", message: "The prepared content changed. Review it again." } });
-	}
-
-	let billedUser: Doc<"users"> | null = null;
-	if (createIntent.kind !== "folder") {
-		const organization = await ctx.db.get("organizations", node.organizationId);
-		if (!organization) {
-			throw should_never_happen("Private node publication has no organization", { privateNodeId: node._id });
-		}
-		const billedUserId = args.billedUserId;
-		billedUser = await ctx.db.get("users", billedUserId);
-		if (!billedUser) {
-			throw should_never_happen("Private node publication has no billed user", { billedUserId });
-		}
-		const credits = await billing_db_check_credits(ctx, { userId: billedUserId, minimumRequiredCents: 1 });
-		if (!credits.hasCredits) return Result({ _nay: { message: "Insufficient funds" } });
-		if (
-			createIntent.kind === "stored" &&
-			!(await billing_db_check_paid_plan(ctx, { userId: billedUserId })).hasPaidPlan
-		) {
-			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
-		}
-	}
-
-	const claim = pendingUpdate.pendingMove;
-	let replacementPlan: Awaited<ReturnType<typeof files_nodes_db_preflight_move>> | null = null;
-
-	if (claim?.replacesTarget) {
-		if (claim.replacesTarget.kind !== "saved" || claim.replacesContentVersion === undefined)
-			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again." } });
-
-		const occupant = await ctx.db.get("files_nodes", claim.replacesTarget.id);
-		if (!occupant || occupant.organizationId !== node.organizationId || occupant.workspaceId !== node.workspaceId)
-			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again." } });
-
-		const occupantProposal = await files_db_get_pending_update(ctx, {
-			...node,
-			target: { kind: "saved", id: occupant._id },
-		});
-		if (occupantProposal && !args.reviewedPendingUpdateIds?.has(occupantProposal._id))
-			return Result({
-				_nay: { name: "needs_review", message: "Review the destination changes with this replacement." },
-			});
-
-		const checked = await files_nodes_db_validate_occupant_replace(ctx, {
-			membership,
-			sourceKind: node.kind,
-			replace: true,
-			occupant: { kind: "saved", node: occupant, pendingUpdate: occupantProposal, path: occupant.path },
-		});
-		if (checked._nay) return checked;
-
-		replacementPlan = await files_nodes_db_preflight_move(ctx, {
-			userAuth: { id: node.userId },
-			membership,
-			writer: { kind: "user", userId: node.userId },
-			policyReach: "ancestors",
-			intents: [],
-			privateReplacements: [
-				{ node, parentId, occupant: { nodeId: occupant._id, contentVersion: claim.replacesContentVersion } },
-			],
-		});
-
-		if (replacementPlan._nay) return replacementPlan;
-		await files_nodes_db_apply_move({ ctx, plan: replacementPlan._yay, shareLinkCleanup: args.shareLinkCleanup });
-	}
-
-	const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
-		organizationId: node.organizationId,
-		workspaceId: node.workspaceId,
-		userId: node.userId,
-		parentId,
-		path: node.name,
-		kind: node.kind,
-		contentType: createIntent.kind === "folder" ? undefined : createIntent.contentType,
-		assetId: assets[0]?._id,
-		expectsTextContent: createIntent.kind === "text" ? true : undefined,
-		metadata: createIntent.metadata,
-		expectedParentWritePolicy,
-		// A published copy keeps the protection its transfer captured at first finalize.
-		// Ordinary drafts have no captured source and use the destination default.
-		...(pendingUpdate.copiedFrom?.sourceWritePolicy === undefined
-			? {}
-			: {
-					writePolicy: pendingUpdate.copiedFrom.sourceWritePolicy,
-					...(node.kind === "folder" && pendingUpdate.copiedFrom.sourceNewChildWritePolicy !== undefined
-						? { newChildWritePolicy: pendingUpdate.copiedFrom.sourceNewChildWritePolicy }
-						: {}),
-					trustPolicySource: true as const,
-				}),
-		now,
-	});
-
-	if (created._nay) {
-		// A replacement must roll its archive back if creation refuses.
-		if (replacementPlan) throw convex_error(created._nay);
-		return created;
-	}
-
-	const nodeId = created._yay;
-	let base: NonNullable<Doc<"files_pending_updates">["content"]>["base"] | null = null;
-
-	if (createIntent.kind === "text") {
-		await files_nodes_db_insert_file_content_docs(ctx, {
-			organizationId: node.organizationId,
-			workspaceId: node.workspaceId,
-			nodeId,
-			path: path_join(ancestry._yay.savedParent?.path ?? "/", node.name),
-			parentId,
-			contentType: createIntent.contentType,
-			rootKind: createIntent.textKind,
-			textContent: prepared!.text,
-			readOnly: false,
-			nonCollaborative: !createIntent.collaborationEnabled,
-			yjsSnapshotAssetId: prepared!.yjsSnapshotAssetId,
-			userId: node.userId,
-			now,
-		});
-
-		await files_nodes_db_finalize_editable_text_node_creation(ctx, {
-			organizationId: node.organizationId,
-			workspaceId: node.workspaceId,
-			nodeId,
-			userId: node.userId,
-			versionSnapshotAssetId: assets[0]!._id,
-			versionSnapshotSize: assets[0]!.size,
-			yjsSnapshot: assets[1] ? { assetId: assets[1]._id, size: assets[1].size } : undefined,
-		});
-
-		base = createIntent.collaborationEnabled
-			? { kind: "yjs", sequence: 0, lineageGeneration: 0 }
-			: { kind: "asset", assetId: assets[0]!._id };
-	} else if (createIntent.kind === "stored") {
-		await ctx.db.patch("files_r2_assets", createIntent.assetId, { unfinalizedExpiresAt: undefined, updatedAt: now });
-
-		await store_version_snapshot(ctx, {
-			organizationId: node.organizationId,
-			workspaceId: node.workspaceId,
-			nodeId,
-			assetId: createIntent.assetId,
-			userId: node.userId,
-			contentType: createIntent.contentType,
-			yjsRootKind: null,
-			collaborationEnabled: false,
-		});
-	}
-
-	if (billedUser) {
-		if (createIntent.kind === "stored") {
-			const settled = await files_stored_uploads_db_settle(ctx, {
-				organizationId: node.organizationId,
-				workspaceId: node.workspaceId,
-				actorUserId: node.userId,
-				billedUserId: billedUser._id,
-				nodeId,
-				assetId: createIntent.assetId,
-				declaredBytes: createIntent.size,
-				actualBytes: assets[0]!.size,
-				chargeKey: createIntent.assetId,
-				chargeable: true,
-			});
-			if (settled._nay) throw convex_error(settled._nay);
-		} else {
-			await billing_ingest_events(ctx, {
-				billedUserEvents: [
-					{
-						billedUser,
-						event: billing_event({
-							name: "file_save",
-							externalCustomerId: billedUser._id,
-							externalMemberId: node.userId,
-							externalId: composite_id(
-								"billing",
-								"file_save",
-								billedUser._id,
-								node.userId,
-								node.organizationId,
-								node.workspaceId,
-								nodeId,
-								assets[0]!._id,
-							),
-							metadata: {
-								amount: 1,
-								actorUserId: node.userId,
-								billedUserId: billedUser._id,
-								organizationId: node.organizationId,
-								workspaceId: node.workspaceId,
-								nodeId,
-								version: assets[0]!._id,
-							},
-						}),
-					},
-				],
-			});
-		}
-	}
-
-	await files_pending_nodes_db_publish(ctx, { node, pendingUpdate, savedNodeId: nodeId });
-
-	for (const reservation of reservations) {
-		await files_private_storage_db_release(ctx, {
-			reservationId: reservation!._id,
-			settlement: { kind: "saved", savedNodeId: nodeId, settledAt: now },
-		});
-	}
-
-	return Result({
-		_yay: {
-			target: { kind: "saved" as const, id: nodeId },
-			newSequence: base?.kind === "yjs" ? base.sequence : null,
-			base,
-		},
-	});
-}
 
 export const cleanup_file_node_creation_assets = internalMutation({
 	args: {
@@ -3622,6 +3278,8 @@ export const copy_transfer_file = internalAction({
 								organizationId: copyData.sourceScope.organizationId,
 								workspaceId: copyData.sourceScope.workspaceId,
 								nodeId: copyData.source.id,
+								expectedLastSequenceId: capture.sourceVersion.lastSequenceId,
+								expectedLineageGeneration: capture.sourceVersion.lineageGeneration,
 								afterSequence: sequence,
 								throughSequence: capture.sourceVersion.sequence,
 							})) as get_file_next_yjs_update_Result;
@@ -4260,7 +3918,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				: args.pendingUpdateId
 					? await ctx.db.get("files_pending_updates", args.pendingUpdateId)
 					: null;
-		const pendingUpdate =
+		let pendingUpdate =
 			args.includePending === false
 				? null
 				: pendingUpdateById &&
@@ -4281,6 +3939,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 									.eq("target.id", fileNode._id),
 							)
 							.first();
+		if (pendingUpdate) pendingUpdate = await files_saved_placement_db_get_proposal(ctx.db, pendingUpdate._id);
 
 		// The acting user's whole-file replacement (`cp` onto this path) shows here before it is
 		// accepted: the agent reads back what it copied. Only a text replacement reads as text. A
@@ -4322,7 +3981,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		// A non-collaborative file has no last-sequence doc; the asset check below screens its
 		// proposals instead.
 		if (pendingUpdate && pendingUpdateContent && fileNode.yjsLastSequenceId) {
-			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
+			const lastSequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 			if (
 				!lastSequenceDoc ||
 				pendingUpdateContent.base.kind !== "yjs" ||
@@ -4418,16 +4077,9 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			asset &&
 			(args.maxBytes === undefined || asset.size <= args.maxBytes)
 		) {
-			const chunks = await ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q
-						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", fileNode._id),
-				)
-				.collect();
+			const chunks = await files_saved_content_collect(files_saved_content_db_text_chunks(ctx.db, {
+				organizationId, workspaceId, nodeId: fileNode._id,
+			}));
 			const committedContent = chunks.length > 0 ? files_merge_contiguous_chunks(chunks) : asset.size === 0 ? "" : null;
 			if (committedContent != null) {
 				return {
@@ -5233,6 +4885,8 @@ async function db_delete_covered_file_content_docs(
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("fileNodeId", args.nodeId)
+				.eq("moveView.cohortId", undefined)
+				.eq("moveView.view", undefined)
 				.lte("sequence", args.throughSequence),
 		)
 		.take(FILE_CONTENT_CLEANUP_BATCH_SIZE);
@@ -5255,6 +4909,26 @@ async function db_delete_covered_file_content_docs(
 
 	return false;
 }
+
+async function db_pause_file_materialization(
+	ctx: MutationCtx,
+	args: { nodeId: Id<"files_nodes">; userId: Id<"users">; targetSequence: number },
+) {
+	// The enqueue path replaces older jobs, so one node has at most one current job.
+	const job = await ctx.db.query("files_content_materialization_jobs")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId)).first();
+	if (!job || job.targetSequence !== args.targetSequence) return false;
+	return await files_move_reservations_db_pause_worker(ctx, {
+		worker: { kind: "content", id: job._id, userId: args.userId },
+		check: { source: { kind: "saved", id: args.nodeId } },
+	});
+}
+
+export const pause_file_content_materialization = internalMutation({
+	args: { nodeId: v.id("files_nodes"), userId: v.id("users"), targetSequence: v.number() },
+	returns: v.boolean(),
+	handler: db_pause_file_materialization,
+});
 
 export const finalize_file_content_materialization = internalMutation({
 	args: {
@@ -5279,6 +4953,15 @@ export const finalize_file_content_materialization = internalMutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
+		if (await db_pause_file_materialization(ctx, args)) {
+			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetIds: [args.yjsSnapshotAssetId, args.versionSnapshotAssetId],
+				reason: "failed_create",
+			});
+			return Result({ _yay: null });
+		}
 		// The header carries every doc except the update log. The covered log is never loaded
 		// here: one allowed update doc may itself be 930,000 bytes, and the bounded continuation
 		// scheduled below deletes the covered docs after this transaction commits.
@@ -5448,6 +5131,14 @@ export const cleanup_file_materialization_covered_rows = internalMutation({
 		) {
 			return null;
 		}
+		if (await files_move_reservations_db_pause_worker(ctx, {
+			worker: {
+				kind: "content_cleanup", id: args.expectedYjsLastSequenceId,
+				organizationId: args.organizationId, workspaceId: args.workspaceId,
+				nodeId: args.nodeId, throughSequence: args.throughSequence,
+			},
+			check: { source: { kind: "saved", id: args.nodeId } },
+		})) return null;
 
 		if (await db_delete_covered_file_content_docs(ctx, args)) {
 			await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_materialization_covered_rows, args);
@@ -5471,6 +5162,7 @@ export const mark_file_content_too_large = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
+		userId: v.id("users"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		sequence: v.number(),
 		targetSequence: v.number(),
@@ -5478,6 +5170,7 @@ export const mark_file_content_too_large = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		if (await db_pause_file_materialization(ctx, args)) return null;
 		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -5530,12 +5223,14 @@ export const mark_file_content_shape_mismatch = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
+		userId: v.id("users"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		sequence: v.number(),
 		targetSequence: v.number(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		if (await db_pause_file_materialization(ctx, args)) return null;
 		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -5583,6 +5278,7 @@ export const mark_file_content_yjs_state_too_large = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
+		userId: v.id("users"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		sequence: v.number(),
 		targetSequence: v.number(),
@@ -5590,6 +5286,7 @@ export const mark_file_content_yjs_state_too_large = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		if (await db_pause_file_materialization(ctx, args)) return null;
 		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -5638,6 +5335,7 @@ export const mark_file_content_frontmatter_too_large = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
+		userId: v.id("users"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		sequence: v.number(),
 		targetSequence: v.number(),
@@ -5646,6 +5344,7 @@ export const mark_file_content_frontmatter_too_large = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		if (await db_pause_file_materialization(ctx, args)) return null;
 		const header = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_header, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -5695,6 +5394,9 @@ export const materialize_file_content = internalAction({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
+		if (await ctx.runMutation(internal.files_nodes_content.pause_file_content_materialization, {
+			nodeId: args.nodeId, userId: args.userId, targetSequence: args.targetSequence,
+		})) return Result({ _yay: null });
 		// The header freezes `throughSequence = targetSequence` and returns no update log: one
 		// allowed update doc may itself be 930,000 bytes, so the log is read one doc per call
 		// below. A concurrent `S+1` push is ignored by this run — its own job covers it.
@@ -5715,6 +5417,7 @@ export const materialize_file_content = internalAction({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				nodeId: args.nodeId,
+				userId: args.userId,
 				expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 				sequence: header.throughSequence,
 				targetSequence: args.targetSequence,
@@ -5755,6 +5458,8 @@ export const materialize_file_content = internalAction({
 				workspaceId: args.workspaceId,
 				nodeId: args.nodeId,
 				afterSequence: appliedSequence,
+				expectedLastSequenceId: header.yjsLastSequenceDoc._id,
+				expectedLineageGeneration: header.yjsLastSequenceDoc.lineageGeneration,
 				throughSequence: header.throughSequence,
 			})) as get_file_next_yjs_update_Result;
 
@@ -5805,6 +5510,7 @@ export const materialize_file_content = internalAction({
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					nodeId: args.nodeId,
+					userId: args.userId,
 					expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 					sequence: header.throughSequence,
 					targetSequence: args.targetSequence,
@@ -5838,6 +5544,7 @@ export const materialize_file_content = internalAction({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				nodeId: args.nodeId,
+				userId: args.userId,
 				expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 				sequence,
 				targetSequence: args.targetSequence,
@@ -5864,6 +5571,7 @@ export const materialize_file_content = internalAction({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				nodeId: args.nodeId,
+				userId: args.userId,
 				expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 				sequence,
 				targetSequence: args.targetSequence,
@@ -5905,6 +5613,7 @@ export const materialize_file_content = internalAction({
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					nodeId: args.nodeId,
+					userId: args.userId,
 					expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 					sequence,
 					targetSequence: args.targetSequence,
@@ -6223,7 +5932,7 @@ export const get_non_collaborative_file_content = query({
 			return authorized;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
@@ -6242,16 +5951,9 @@ export const get_non_collaborative_file_content = query({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
-		const chunks = await ctx.db
-			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", fileNode._id),
-			)
-			.collect();
+		const chunks = await files_saved_content_collect(files_saved_content_db_text_chunks(ctx.db, {
+			organizationId: membership.organizationId, workspaceId: membership.workspaceId, nodeId: fileNode._id,
+		}));
 		// An empty file stores no chunk at all, so an empty result is only real when the asset says
 		// the file has no bytes. Otherwise the chunks are missing and the editor must not open on a
 		// stand-in document: every later save would replace the real text with what it shows.
@@ -7176,7 +6878,7 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 			batch.workspaceId !== args.workspaceId ||
 			batch.target.kind !== "saved" ||
 			batch.target.id !== args.nodeId ||
-			batch.expiresAt <= Date.now() ||
+			batch.cohortContentId !== undefined || (batch.expiresAt !== undefined && batch.expiresAt <= Date.now()) ||
 			batch.expectedPendingUpdateId !== args.pendingUpdateId ||
 			batch.expectedRevision !== args.expectedRevision ||
 			batch.publication.contentAssetId !== args.contentAssetId ||
@@ -8569,6 +8271,8 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 					workspaceId: args.workspaceId,
 					nodeId: args.nodeId,
 					afterSequence: appliedSequence,
+					expectedLastSequenceId: data.yjsLastSequenceDoc._id,
+					expectedLineageGeneration: data.yjsLastSequenceDoc.lineageGeneration,
 					throughSequence: data.throughSequence,
 				})) as get_file_next_yjs_update_Result;
 				if (next.kind === "done") {
@@ -8957,6 +8661,9 @@ async function db_delete_superseded_yjs_asset(
 ) {
 	const asset = await ctx.db.get("files_r2_assets", args.supersededYjsAssetId);
 	if (!asset) return;
+	const cohortClaim = await ctx.db.query("files_move_asset_claims")
+		.withIndex("by_asset", (q) => q.eq("assetId", asset._id)).first();
+	if (cohortClaim) return;
 
 	const referencingSnapshot = await ctx.db
 		.query("files_yjs_snapshots")
@@ -8989,6 +8696,10 @@ export const cleanup_file_yjs_task = internalMutation({
 		if (!task) {
 			return null;
 		}
+		if (await files_move_reservations_db_pause_worker(ctx, {
+			worker: { kind: "yjs_task", id: task._id },
+			check: { source: { kind: "saved", id: task.fileNodeId } },
+		})) return null;
 
 		const fileNode = await ctx.db.get("files_nodes", task.fileNodeId);
 
@@ -9071,6 +8782,16 @@ export const cleanup_file_yjs_covered_rows = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		if (await files_move_reservations_db_pause_worker(ctx, {
+			worker: {
+				kind: "yjs_covered", id: args.supersededYjsAssetId,
+				organizationId: args.organizationId, workspaceId: args.workspaceId,
+				nodeId: args.nodeId, throughSequence: args.throughSequence,
+				expectedActiveYjsLastSequenceId: args.expectedActiveYjsLastSequenceId,
+				putMayArriveUntil: args.putMayArriveUntil,
+			},
+			check: { source: { kind: "saved", id: args.nodeId } },
+		})) return null;
 		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 		const sameTenant = fileNode?.organizationId === args.organizationId && fileNode.workspaceId === args.workspaceId;
 		const canDeleteCoveredRows =

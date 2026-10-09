@@ -50,6 +50,8 @@ import {
 	type RmOptions,
 } from "just-bash/browser";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
+import { ConvexError } from "convex/values";
+import { z } from "zod";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
@@ -75,7 +77,8 @@ import {
 } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { ai_chat_tool_output_keep } from "./ai-chat-tool-output.ts";
-import { r2_fetch_object_range_from_bucket } from "../convex/r2_client.ts";
+import { r2, r2_fetch_object_range_from_bucket, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "../convex/r2_client.ts";
+import { crypto_sha256_hex } from "./crypto-utils.ts";
 import { bash_cat_command_create } from "./bash-cat-command.ts";
 import { bash_cp_command_create } from "./bash-cp-command.ts";
 import { bash_find_command_create } from "./bash-find-command.ts";
@@ -134,7 +137,6 @@ import {
 	bash_COMMAND_EXIT_CANNOT_EXECUTE,
 	bash_COMMAND_EXIT_STOPPED,
 	bash_COMMAND_EXIT_TIMED_OUT,
-	bash_JOB_COPY_PAGE_MAX_BYTES,
 	bash_JOB_NUMBERS_MAX_COUNT,
 	bash_TERMINAL_LINE_ENDING_REGEX,
 	bash_SHELL_COMMENT_LINE_REGEX,
@@ -188,6 +190,13 @@ const BASH_JOB_DEADLINE_ABORT_REASON = "Bash deadline reached";
 // slice. It also stops this long before the run's transfer deadline.
 const BASH_JOB_COPY_ADMIT_MAX_PAGES = 32;
 const BASH_JOB_COPY_ADMIT_HEADROOM_MS = 10_000;
+const BASH_JOB_INPUT_WINDOW_BYTES = 64 * 1024;
+const BASH_JOB_INPUT_UPLOAD_SECONDS = 300;
+const bash_job_input_source_schema = z.object({ path: z.string(), requiresFolder: z.boolean() });
+const bash_job_input_refusal_schema = z.object({
+	message: z.string(),
+	data: z.object({ message: z.string(), name: z.string().optional() }),
+});
 
 const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
 
@@ -2295,25 +2304,127 @@ function bash_response(args: {
 }
 
 /**
- * Upload saved input in bounded steps. Lost replies read or retry the same intent;
- * they never repeat shell expansion or select sources again.
- * Returns a final refusal as the failed `cp` result, or null to wait or continue later.
+ * Read saved sources with a byte cursor and bounded storage requests.
+ */
+async function* bash_job_input_sources(input: { r2Key: string; cursor: number; sourceByteCount: number }) {
+	let cursor = input.cursor;
+	let bytes = new Uint8Array(0);
+	while (cursor < input.sourceByteCount) {
+		const newline = bytes.indexOf(10);
+		if (newline < 0) {
+			const start = cursor + bytes.byteLength;
+			const endInclusive = Math.min(start + BASH_JOB_INPUT_WINDOW_BYTES, input.sourceByteCount) - 1;
+			const response = await r2_fetch_object_range_from_bucket({ key: input.r2Key, start, endInclusive });
+			if (response.status !== 206) {
+				await response.body?.cancel();
+				throw new Error("Saved Bash input did not return a byte range.");
+			}
+			const window = new Uint8Array(await response.arrayBuffer());
+			if (window.byteLength !== endInclusive - start + 1) throw new Error("Saved Bash input has missing bytes.");
+			const joined = new Uint8Array(bytes.byteLength + window.byteLength);
+			joined.set(bytes);
+			joined.set(window, bytes.byteLength);
+			bytes = joined;
+			continue;
+		}
+		const source = bash_job_input_source_schema.parse(JSON.parse(new TextDecoder().decode(bytes.subarray(0, newline))));
+		const nextCursor = cursor + newline + 1;
+		yield { ...source, cursor, nextCursor };
+		cursor = nextCursor;
+		bytes = bytes.slice(newline + 1);
+	}
+}
+
+/**
+ * Accept saved input in bounded steps. A retry never repeats shell expansion.
+ * Return a command refusal, or null to wait or continue later.
  */
 async function bash_job_admit_copy(ctx: ActionCtx, row: Doc<"ai_chat_bash_invocations">) {
 	const checkpoint = row.job?.copy;
 	const workId = row.job?.workId;
-	if (!checkpoint || checkpoint.phase !== "admitting" || !checkpoint.sealed || !workId) return null;
+	if (!checkpoint || checkpoint.phase !== "admitting" || (!checkpoint.sealed && !checkpoint.input) || !workId)
+		return null;
 	const fence = { invocationId: row._id, workId, commandNumber: checkpoint.commandNumber };
-	const refusal = (refused: { name?: string; message: string }) =>
+	const refusal = (refused: { name?: string; message: string; stopJob?: boolean }) =>
 		// An old worker stops here. The newer worker owns the checkpoint.
 		refused.name === "stale_job"
 			? null
 			: {
 					stdout: "",
-					stderr: `cp: ${refused.message}\n`,
+					stderr: `${checkpoint.command ?? "cp"}: ${refused.message}\n`,
 					exitCode: refused.name === "timed_out" ? bash_COMMAND_EXIT_TIMED_OUT : 1,
+					stopJob: refused.stopJob ?? false,
 				};
 	let runId = checkpoint.runId;
+	if (checkpoint.input) {
+		const input = checkpoint.input;
+		if (!input.ready) {
+			const response = await r2_fetch_object_range_from_bucket({ key: input.r2Key, start: 0, endInclusive: 0 }).catch(
+				() => null,
+			);
+			if (!response)
+				return Date.now() < input.putMayArriveUntil
+					? null
+					: refusal({ message: "Expanded input was not saved. The command was not replayed.", stopJob: true });
+			await response.body?.cancel();
+			if (response.status !== 206 || response.headers.get("Content-Range") !== `bytes 0-0/${input.byteCount}`)
+				return refusal({ message: "The saved Bash input changed.", stopJob: true });
+			const ready = () => ctx.runMutation(internal.ai_chat_files.ready_bash_job_copy_input, fence);
+			const marked = await ready().catch(ready);
+			if (marked._nay) return refusal(marked._nay);
+		}
+		if (!runId) {
+			const current = await ctx.runQuery(internal.files_transfer.get_current_activity_for_agent, {
+				membershipId: row.membershipId,
+				threadId: row.threadId,
+			});
+			if (current?.status === "awaiting_input")
+				return refusal({
+					message: `a transfer in this workspace is waiting for input (activity ${current.activityId})`,
+				});
+			if (current) return null;
+		}
+		let offset = checkpoint.sourcesCount;
+		let acceptedCount = 0;
+		for await (const source of bash_job_input_sources(input)) {
+			if (
+				acceptedCount >= BASH_JOB_COPY_ADMIT_MAX_PAGES * files_TRANSFER_SELECTION_PAGE_SIZE ||
+				Date.now() >= row.transferDeadlineAt - BASH_JOB_COPY_ADMIT_HEADROOM_MS
+			)
+				return null;
+			const accept = () =>
+				ctx.runMutation(internal.ai_chat_files.accept_bash_job_copy_source, { ...fence, ...source, offset });
+			const accepted = await accept()
+				.catch(accept)
+				.catch((error: unknown) => {
+					const refused = error instanceof ConvexError ? bash_job_input_refusal_schema.safeParse(error.data) : null;
+					if (!refused?.success) throw error;
+					return { _nay: refused.data.data };
+				});
+			if (accepted._nay) return accepted._nay.name === "busy" ? null : refusal(accepted._nay);
+			offset++;
+			acceptedCount++;
+		}
+		const sealInput = () => ctx.runMutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, fence);
+		const sealedInput = await sealInput().catch(sealInput);
+		if (sealedInput._nay) return refusal(sealedInput._nay);
+		const saved = await ctx.runQuery(internal.ai_chat_files.read_bash_job_copy_invocation, {
+			invocationId: row._id,
+			workId,
+		});
+		const inputRunId = saved?.job?.copy?.runId;
+		if (!inputRunId) throw new Error("Saved Bash input has no transfer.");
+		const seal = () =>
+			ctx.runMutation(internal.files_transfer.seal_for_agent, {
+				membershipId: row.membershipId,
+				threadId: row.threadId,
+				runId: inputRunId,
+				job: fence,
+			});
+		const sealed = await seal().catch(seal);
+		if (sealed._nay) return refusal(sealed._nay);
+		return null;
+	}
 	if (!runId) {
 		// Check for a busy lane with this query first. It does not charge the Files write rate limit.
 		// Start charges that limit even when the lane is busy.
@@ -2334,7 +2445,7 @@ async function bash_job_admit_copy(ctx: ActionCtx, row: Doc<"ai_chat_bash_invoca
 				threadId: row.threadId,
 				invocation: { id: row._id, commandNumber: checkpoint.commandNumber, workId },
 				requestId: `${row._id}:${checkpoint.commandNumber}`,
-				kind: "copy",
+				kind: checkpoint.command === "mv" ? "move" : "copy",
 				sourceWorkspace: checkpoint.sourceWorkspace,
 				destinationWorkspace: checkpoint.destinationWorkspace,
 				expectedSourceCount: checkpoint.expectedSourceCount,
@@ -2402,9 +2513,9 @@ async function bash_job_admit_copy(ctx: ActionCtx, row: Doc<"ai_chat_bash_invoca
 }
 
 /**
- * Run one worker slice. Plain Copy waits use saved input and result-only continuation.
+ * Run one worker slice. Plain Copy or Move intake and waits use saved input and result-only continuation.
  * Other statements use the normal sleep pauses and bounded shell execution.
- * Only verified Copy waiting is excluded from the normal 24-hour job lifetime.
+ * Only verified Copy or Move intake and waiting are excluded from the normal 24-hour job lifetime.
  */
 export async function bash_run_job(
 	actionCtx: ActionCtx,
@@ -2431,9 +2542,16 @@ export async function bash_run_job(
 			return null;
 		}
 		// Claim the refusal as this command's result before any later statement runs.
+		const { stopJob, ...commandResult } = result;
 		const refused = await ctx
-			.runMutation(internal.ai_chat_files.deliver_bash_job_copy_refusal, { ...fence, result })
-			.catch(() => ctx.runMutation(internal.ai_chat_files.deliver_bash_job_copy_refusal, { ...fence, result }));
+			.runMutation(internal.ai_chat_files.deliver_bash_job_copy_refusal, { ...fence, result: commandResult, stopJob })
+			.catch(() =>
+				ctx.runMutation(internal.ai_chat_files.deliver_bash_job_copy_refusal, {
+					...fence,
+					result: commandResult,
+					stopJob,
+				}),
+			);
 		// Null: the job ended or another worker owns it.
 		if (!refused?.job) return null;
 		row = { ...refused, job: refused.job };
@@ -2678,8 +2796,8 @@ export async function bash_run_job(
 			onOutput,
 			onStatementBoundary,
 			onPlainCommand: async ({ continuation }, roots) => {
-				if (continuation.command !== "cp") return "run";
-				const parsed = bash_parse_cp_mv_operands("cp", continuation.args);
+				if (continuation.command !== "cp" && continuation.command !== "mv") return "run";
+				const parsed = bash_parse_cp_mv_operands(continuation.command, continuation.args);
 				if (
 					parsed._nay ||
 					parsed.operands.some(
@@ -2692,9 +2810,10 @@ export async function bash_run_job(
 				const preparation = await bash_transfer_command_prepare({
 					ctx,
 					dbFilesRoots: roots,
-					command: "cp",
+					command: continuation.command,
 					commandCtx: continuation,
 					parsed: parsed._yay,
+					resolveSources: false,
 					transferContext: {
 						invocationId: row._id,
 						membershipId: row.membershipId,
@@ -2726,12 +2845,29 @@ export async function bash_run_job(
 					});
 					if (scopes._nay) throw new Error(scopes._nay.message);
 					const copyCommandNumber = commandNumber++;
+					const sourceInput = new Blob(input.sourceOperands.map((source) => `${JSON.stringify(source)}\n`));
+					const expandedInput = new Blob([sourceInput, ...continuation.args.map((arg) => `${JSON.stringify(arg)}\n`)]);
+					const sha256 = await crypto_sha256_hex(await expandedInput.arrayBuffer());
+					const r2Key = `bash-inputs/${row.organizationId}/${row.workspaceId}/${row._id}/${copyCommandNumber}/${sha256}`;
+					const upload = await r2.generateUploadUrl(r2Key, {
+						createOnly: true,
+						expiresIn: BASH_JOB_INPUT_UPLOAD_SECONDS,
+					});
 					const saveArgs = {
 						invocationId: row._id,
 						workId,
 						output,
+						input: {
+							r2Key,
+							sha256,
+							byteCount: expandedInput.size,
+							sourceByteCount: sourceInput.size,
+							putMayArriveUntil: Date.now() + BASH_JOB_INPUT_UPLOAD_SECONDS * 1000 + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+							recursive: parsed._yay.recursive,
+						},
 						checkpoint: {
 							phase: "admitting" as const,
+							command: continuation.command === "mv" ? ("mv" as const) : undefined,
 							commandNumber: copyCommandNumber,
 							lastArg: continuation.lastArg,
 							...scopes._yay,
@@ -2741,9 +2877,19 @@ export async function bash_run_job(
 							targetPath: input.targetPath,
 							targetName: input.targetName,
 							missingParentNames: input.missingParentNames,
-							conflictPolicy: { file: parsed._yay.conflictPolicy, folder: "merge" as const },
+							conflictPolicy: {
+								file: parsed._yay.conflictPolicy,
+								folder:
+									continuation.command === "cp"
+										? ("merge" as const)
+										: parsed._yay.conflictPolicy === "skip"
+											? ("skip" as const)
+											: parsed._yay.noTargetDirectory && parsed._yay.conflictPolicy === "replace"
+												? ("replace_empty" as const)
+												: ("error" as const),
+							},
 							expectedArgCount: continuation.args.length,
-							expectedSourceCount: input.sources.length,
+							expectedSourceCount: input.sourceOperands.length,
 						},
 						resume: {
 							script: continuation.scriptAfter,
@@ -2758,49 +2904,23 @@ export async function bash_run_job(
 					const save = () => ctx.runMutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, saveArgs);
 					const saved = await save().catch(save);
 					if (saved._nay) throw new Error(saved._nay.message);
-					let argOffset = 0;
-					for (
-						let page = 0;
-						page * files_TRANSFER_SELECTION_PAGE_SIZE < input.sources.length || argOffset < continuation.args.length;
-						page++
-					) {
-						const sources = input.sources.slice(
-							page * files_TRANSFER_SELECTION_PAGE_SIZE,
-							(page + 1) * files_TRANSFER_SELECTION_PAGE_SIZE,
-						);
-						const pageArgs: string[] = [];
-						while (pageArgs.length < files_TRANSFER_SELECTION_PAGE_SIZE && argOffset < continuation.args.length) {
-							const next = continuation.args[argOffset]!;
-							if (
-								new TextEncoder().encode(JSON.stringify({ args: [...pageArgs, next], sources })).byteLength >
-								bash_JOB_COPY_PAGE_MAX_BYTES
-							)
-								break;
-							pageArgs.push(next);
-							argOffset++;
-						}
-						if (!sources.length && !pageArgs.length)
-							throw new Error("One expanded Copy argument is larger than 64 KiB.");
-						const stage = () =>
-							ctx.runMutation(internal.ai_chat_files.stage_bash_job_copy_page, {
+					// Reuse this create-only URL. A stopped worker cannot renew its upload lease.
+					const response = await fetch(upload.url, {
+						method: "PUT",
+						headers: { "Content-Type": "application/x-ndjson", "If-None-Match": "*" },
+						body: expandedInput,
+						signal: AbortSignal.any([abort.signal, AbortSignal.timeout(30_000)]),
+					}).catch(() => null);
+					if (response && (response.ok || response.status === 412)) {
+						const ready = () =>
+							ctx.runMutation(internal.ai_chat_files.ready_bash_job_copy_input, {
 								invocationId: row._id,
 								workId,
 								commandNumber: copyCommandNumber,
-								page,
-								args: pageArgs,
-								sources,
 							});
-						const staged = await stage().catch(stage);
-						if (staged._nay) throw new Error(staged._nay.message);
+						const marked = await ready().catch(ready);
+						if (marked._nay) throw new Error(marked._nay.message);
 					}
-					const seal = () =>
-						ctx.runMutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, {
-							invocationId: row._id,
-							workId,
-							commandNumber: copyCommandNumber,
-						});
-					const sealed = await seal().catch(seal);
-					if (sealed._nay) throw new Error(sealed._nay.message);
 				};
 				return "suspend";
 			},
@@ -2813,7 +2933,7 @@ export async function bash_run_job(
 			job.copy?.phase === "delivering"
 				? {
 						continuation: {
-							command: "cp",
+							command: job.copy.command ?? "cp",
 							args: [],
 							cwd: job.startCwd,
 							snapshot: job.shellState,

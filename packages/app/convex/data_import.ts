@@ -133,7 +133,7 @@ export const create_upload_targets = internalMutation({
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
+						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", item.path)
 						.eq("archiveOperationId", null),
 				)
@@ -178,7 +178,7 @@ export const create_upload_targets = internalMutation({
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
+							.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
 							.eq("path", ancestorPath)
 							.eq("archiveOperationId", null),
 					)
@@ -321,7 +321,7 @@ export const verify_run = internalQuery({
 			ctx.db
 				.query("files_nodes")
 				.withIndex("by_organization_workspace_treePath", (q) =>
-					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined),
 				)
 				.collect(),
 			ctx.db
@@ -466,7 +466,7 @@ export const verify_metadata = internalQuery({
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
+						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", path)
 						.eq("archiveOperationId", null),
 				)
@@ -484,6 +484,8 @@ export const verify_metadata = internalQuery({
 						.eq("workspaceId", args.workspaceId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", node._id)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined)
 						// Count frontmatter only. The same table also holds the `metadata.` map a user or an
 						// agent wrote next to the file, and counting those too would let this check pass for a
 						// file whose frontmatter never indexed. The bound stops at `frontmatter/` because `/`

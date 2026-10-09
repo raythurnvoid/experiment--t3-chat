@@ -12,6 +12,7 @@ import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_authorize_membership, access_control_db_authorize_node } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { channels_LIMITS, channels_normalize_name } from "../shared/channels.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 
 // Make Convex reuse the loaded module between calls. No mutable module state is allowed here.
 export const experimental_reuseContext = true;
@@ -32,7 +33,7 @@ export async function channels_db_get_access(
 	if (channel.organizationId !== membership.organizationId || channel.workspaceId !== membership.workspaceId) {
 		return Result({ _nay: { message: "Not found" } });
 	}
-	const fileNode = channel.kind === "file" ? await ctx.db.get("files_nodes", channel.fileNodeId) : null;
+	const fileNode = channel.kind === "file" ? await files_saved_placement_db_get_node(ctx.db, channel.fileNodeId) : null;
 	if (channel.kind === "file" && (!fileNode || fileNode.kind !== "file")) {
 		return Result({ _nay: { message: "Not found" } });
 	}

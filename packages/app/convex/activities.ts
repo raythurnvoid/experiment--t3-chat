@@ -30,6 +30,7 @@ import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -77,7 +78,7 @@ async function db_filter_visible_activities(
 		return candidates.filter((activity) => activity.visibility === "requester" || args.hasWorkspaceRead);
 	}
 
-	const targetNodes = (await Promise.all(targetNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
+	const targetNodes = (await Promise.all(targetNodeIds.map((nodeId) => files_saved_placement_db_get_node(ctx.db, nodeId)))).filter(
 		(fileNode) => fileNode !== null,
 	);
 	const targetNodeById = new Map(targetNodes.map((fileNode) => [fileNode._id, fileNode] as const));

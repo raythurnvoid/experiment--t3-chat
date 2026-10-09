@@ -1,13 +1,17 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
-import { getFunctionName } from "convex/server";
+import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
-import { files_db_patch_pending_update, files_u8_to_array_buffer } from "../server/files.ts";
+import { test_convex, test_finish_pending_update_run, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	files_db_load_pending_update_yjs_state_bytes,
+	files_db_patch_pending_update,
+	files_u8_to_array_buffer,
+} from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
@@ -193,13 +197,30 @@ async function start_review(args: {
 	expect(
 		await f.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: f.db.membershipId, runId }),
 	).toEqual({ _yay: null });
-	for (let pass = 0; pass < 100; pass++) {
+	for (let pass = 0; pass < 50_000; pass++) {
+		const job = await f.t.run(async (ctx) =>
+			(
+				await ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_org_ws", (q) =>
+						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+					)
+					.collect()
+			).find((row) => !row.blockedByCohortId),
+		);
+		if (job) {
+			await f.t.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+			continue;
+		}
 		await f.t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
 		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		if (run?.step !== "planning") break;
-		if (pass === 99) throw new Error("Review planning did not finish");
+		if (run?.step !== "planning") return runId;
 	}
-	return runId;
+	throw new Error("Review planning did not finish");
 }
 
 async function finish_review(args: {
@@ -209,28 +230,9 @@ async function finish_review(args: {
 }) {
 	const { f, runId, stepMs = 0 } = args;
 
-	for (let pass = 0; pass < 1_000; pass++) {
-		if (stepMs) vi.setSystemTime(Date.now() + stepMs);
-		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
-		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		if (!run) throw new Error("Expected the review run");
-		if (run.step === "finished")
-			return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
-		const unit = await f.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_update_run_units")
-				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-				.first(),
-		);
-		if (!unit) continue;
-		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
-			runId,
-			fence: run.fence,
-			unitId: unit._id,
-			attemptFence: unit.attemptFence,
-		});
-	}
-	throw new Error("Review did not finish");
+	if (stepMs) vi.setSystemTime(Date.now() + stepMs);
+	await test_finish_pending_update_run(f.asUser, runId);
+	return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
 }
 
 async function saved_text(f: Awaited<ReturnType<typeof fixture>>, nodeId: Id<"files_nodes">) {
@@ -396,12 +398,17 @@ describe("review job content", () => {
 				.first(),
 		);
 		expect(unit?.status).toBe("preparing");
-		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
-			runId,
-			fence: 0,
-			unitId: unit!._id,
-			attemptFence: unit!.attemptFence,
-		});
+		if (!unit?.cohortId) throw new Error("Expected the partial Save group");
+		for (let pass = 0; pass < 50_000; pass++) {
+			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
+			if (!cohort) throw new Error("Expected the partial Save group");
+			if (cohort.phase === "complete") {
+				await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
+				break;
+			}
+			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			if (pass === 49_999) throw new Error("Partial Save did not finish");
+		}
 		const remainder = await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id));
 		expect(remainder).toMatchObject({ target: { kind: "saved" }, revision: partial.revision + 1 });
 		if (remainder?.target.kind !== "saved") throw new Error("Expected the saved remainder");
@@ -430,6 +437,133 @@ describe("review job content", () => {
 			expiresAt: result!.activity.finishedAt! + 4 * 60 * 60 * 1000,
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(2);
+	});
+
+	test("keeps a partial Save remainder held after Stop until published repair finishes", async () => {
+		const f = await fixture();
+		const draft = await private_node({ f, path: "/partial.txt", text: "initial\n" });
+		const other = await private_node({ f, path: "/other" });
+		const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			membershipId: f.db.membershipId,
+			target: draft.target,
+		});
+		if (batch._nay) throw new Error(batch._nay.message);
+		const partial = await stage_text({
+			f,
+			target: draft.target,
+			operationBatchId: batch._yay.operationBatchId,
+			text: "selected\n",
+			pendingUpdateId: draft._id,
+			unstagedText: "remainder\n",
+		});
+		const runId = await start_review({ f, proposals: [partial, other], selected: "staged" });
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const unit = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.first(),
+		);
+		if (!unit?.cohortId) throw new Error("Expected the partial Save group");
+		const cohortId = unit.cohortId;
+		for (let pass = 0; pass < 50_000; pass++) {
+			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId));
+			if (!cohort) throw new Error("Expected the partial Save group");
+			if (cohort.publishedAt !== null) {
+				expect(cohort.workPhase).toBe("finish_content");
+				break;
+			}
+			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			if (pass === 49_999) throw new Error("Partial Save did not publish");
+		}
+		const beforeRepair = await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id));
+		expect(beforeRepair).toMatchObject({ target: partial.target, revision: partial.revision });
+		const current = await f.asUser.query(api.files_pending_update_runs.get, {
+			membershipId: f.db.membershipId,
+			runId,
+		});
+		if (!current) throw new Error("Expected the review Activity");
+		vi.setSystemTime(Date.now() + 60_000);
+		expect(
+			await f.asUser.mutation(api.activities.request_stop, {
+				membershipId: f.db.membershipId,
+				activityId: current.activity._id,
+			}),
+		).toEqual({ _yay: null });
+		const stopped = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
+		const outputReviewUntil = stopped?.outputReviewUntil;
+		if (outputReviewUntil === undefined) throw new Error("Expected the fixed review deadline");
+		expect(outputReviewUntil).toBeGreaterThan(partial.expiresAt);
+		const producer = { kind: "files_pending_update_run" as const, id: runId };
+		const getHold = () =>
+			f.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_holds")
+					.withIndex("by_producer_pendingUpdate_role", (q) =>
+						q
+							.eq("producer.kind", producer.kind)
+							.eq("producer.id", runId)
+							.eq("pendingUpdateId", partial._id)
+							.eq("role", "review"),
+					)
+					.unique(),
+			);
+		const hold = await getHold();
+		expect(hold).toMatchObject({ target: partial.target, privateGeneration: 1 });
+		await expect(
+			f.t.mutation(internal.files_pending_holds.release_producer, { producer }),
+			"terminal hold release waits for published repair and finishes afterward",
+		).resolves.toBeNull();
+		expect(await getHold()).toEqual(hold);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id))).toEqual(beforeRepair);
+		// Deliver the real expiry job while the original draft is due and repair still owns it.
+		vi.setSystemTime(partial.expiresAt + 1);
+		await expect(
+			f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, f.scope),
+			"due expiry waits for published repair without changing the remainder",
+		).resolves.toBeNull();
+		expect(await getHold()).toEqual(hold);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id))).toEqual(beforeRepair);
+		for (let pass = 0; pass < 50_000; pass++) {
+			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId));
+			if (!cohort) throw new Error("Expected the partial Save group");
+			if (cohort.phase === "complete") break;
+			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			if (pass === 49_999) throw new Error("Stopped partial Save did not finish repair");
+		}
+		await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
+		await f.t.mutation(internal.files_move_cohorts.wake_waiters, { cohortId });
+		expect(await f.t.mutation(internal.files_pending_holds.release_producer, { producer })).toBeNull();
+		expect(await getHold()).toBeNull();
+		const remainder = await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id));
+		expect(remainder).toMatchObject({ target: { kind: "saved" }, revision: partial.revision + 1 });
+		if (remainder?.target.kind !== "saved") throw new Error("Expected the saved remainder");
+		expect(await saved_text(f, remainder.target.id)).toBe("selected\n");
+		const remainderText = await f.t.run(async (ctx) => {
+			if (!remainder.content) throw new Error("Expected the remainder content");
+			const state = await ctx.db.get("files_pending_update_yjs_states", remainder.content.unstagedStateId);
+			if (!state) throw new Error("Expected the remainder state");
+			const bytes = await files_db_load_pending_update_yjs_state_bytes(ctx, { stateDoc: state });
+			if (bytes._nay) throw new Error(bytes._nay.message);
+			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(files_u8_to_array_buffer(bytes._yay));
+			const text = files_yjs_doc_get_text({ yjsDoc, rootKind: "plain_text" });
+			if (text._nay) throw new Error(text._nay.message);
+			return text._yay;
+		});
+		expect(remainderText).toBe("remainder\n");
+		expect(remainder.expiresAt).toBeGreaterThanOrEqual(outputReviewUntil);
+		vi.setSystemTime(Date.now() + 60_000);
+		expect(await f.t.mutation(internal.files_pending_holds.release_producer, { producer })).toBeNull();
+		expect(
+			await f.asUser.mutation(api.activities.request_stop, {
+				membershipId: f.db.membershipId,
+				activityId: current.activity._id,
+			}),
+		).toEqual({ _yay: null });
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id))).toEqual(remainder);
+		expect((await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))?.outputReviewUntil).toBe(
+			outputReviewUntil,
+		);
 	});
 
 	test("saves independent Copy replacements separately with exact target IDs and one charge each", async () => {
@@ -514,8 +648,8 @@ describe("review job content", () => {
 					.collect(),
 			),
 		).toMatchObject([
-			{ kind: "copy", itemCount: 1 },
-			{ kind: "copy", itemCount: 1 },
+			{ kind: "cohort", itemCount: 1 },
+			{ kind: "cohort", itemCount: 1 },
 		]);
 		expect((await finish_review({ f, runId }))?.activity).toMatchObject({
 			status: "succeeded",
@@ -671,6 +805,7 @@ describe("review job content", () => {
 		},
 	);
 
+	// The mock database makes these large cases slow.
 	test("saves more than 200 Copy media before its document and keeps one unit per output", async () => {
 		const f = await fixture();
 		const source = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...f.scope, path: "/source" });
@@ -688,7 +823,7 @@ describe("review job content", () => {
 		const runId = await start_review({ f, proposals: [document, ...images.map(({ pending }) => pending)] });
 		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
 		expect(units).toHaveLength(202);
-		expect(units.every((unit) => unit.kind === "copy" && unit.itemCount === 1)).toBe(true);
+		expect(units.every((unit) => unit.kind === "cohort" && unit.itemCount === 1)).toBe(true);
 		expect(units.find((unit) => unit.order === 0)).toMatchObject({
 			status: "waiting",
 			remainingPrerequisiteCount: 201,
@@ -701,13 +836,26 @@ describe("review job content", () => {
 		expect(await saved_text(f, saved.find((node) => node.path === "/document.md")!._id)).toBe(text);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(202);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
-		const proof = await f.t.run((ctx) => ctx.db.query("files_pending_update_text_inputs").collect());
-		expect(
-			proof.some(
-				(input) => input.mediaValidation?.validatedCount === 201 && input.mediaValidation.reviewRunId === runId,
-			),
-		).toBe(true);
-	}, 120_000);
+		const documentUnit = await f.t.run((ctx) =>
+			ctx.db.get("files_pending_update_run_units", units.find((unit) => unit.order === 0)!._id),
+		);
+		if (!documentUnit?.cohortId) throw new Error("Expected the completed document group");
+		const content = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_move_cohort_content")
+				.withIndex("by_cohort_proposal", (q) =>
+					q.eq("cohortId", documentUnit.cohortId!).eq("pendingUpdateId", document._id),
+				)
+				.unique(),
+		);
+		expect(content?.mediaProof).toMatchObject({
+			reviewedRevision: document.revision,
+			selectedContentStateId: document.content?.unstagedStateId,
+			expectedCount: 201,
+			validatedCount: 201,
+			sealed: true,
+		});
+	}, 10_800_000);
 
 	test("resumes the exact reviewed-embed cursor without adding duplicate prerequisites", async () => {
 		const f = await fixture();
@@ -740,63 +888,68 @@ describe("review job content", () => {
 		expect(
 			await f.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: f.db.membershipId, runId }),
 		).toEqual({ _yay: null });
-		for (let pass = 0; pass < 2; pass++)
-			expect(
-				(await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 }))._nay,
-			).toBeUndefined();
-		expect(
-			await f.t.mutation(internal.files_pending_update_runs.advance_atomic_plan, {
+		let page: NonNullable<
+			FunctionReturnType<typeof internal.files_pending_update_plan_producer.advance>["_yay"]
+		> | null = null;
+		for (let pass = 0; pass < 100; pass++) {
+			const job = await f.t.run((ctx) => ctx.db.query("files_pending_overlay_jobs").first());
+			if (job) {
+				await f.t.mutation(internal.files_pending_overlay.run_job, {
+					kind: job.kind,
+					key: job.key,
+					nextAttemptAt: job.nextAttemptAt,
+				});
+				continue;
+			}
+			const produced = await f.t.mutation(internal.files_pending_update_plan_producer.advance, {
 				runId,
 				fence: 0,
-				cursor: null,
-				nextCursor: null,
-				promoteIds: [],
-				done: true,
-			}),
-		).toEqual({ _yay: null });
-		for (let pass = 0; pass < 2; pass++)
-			expect(
-				(await f.t.mutation(internal.files_pending_update_runs.stage_copy_units_page, { runId, fence: 0 }))._nay,
-			).toBeUndefined();
-		const page = await f.t.query(internal.files_pending_update_runs.get_dependency_plan_page, { runId, fence: 0 });
-		if (page._nay || !page._yay.item) throw new Error("Expected the document dependency page");
-		if (!page._yay.run.plan) throw new Error("Expected the review plan");
-		const unitId = page._yay.item.unitId;
-		if (!unitId) throw new Error("Expected the document unit");
+				planEpoch: 0,
+			});
+			if (produced._nay) throw new Error(produced._nay.message);
+			if (produced._yay.media) {
+				page = produced._yay;
+				break;
+			}
+		}
+		if (!page?.media) throw new Error("Expected the document dependency page");
 		const args = {
 			runId,
 			fence: 0,
-			cursor: page._yay.run.plan.cursor,
-			dependencyCursor: null,
-			itemId: page._yay.item._id,
-			mediaRefs: images.slice(0, 8).map(({ dependency }) => dependency.src),
+			planEpoch: page.plan.epoch,
+			offset: 0,
+			itemId: page.media.item._id,
+			refs: images.slice(0, 8).map(({ dependency }) => dependency.src),
 			isDone: false,
 			error: null,
 		};
-		expect(await f.t.mutation(internal.files_pending_update_runs.stage_dependency_plan_page, args)).toEqual({
-			_yay: null,
+		expect((await f.t.mutation(internal.files_pending_update_plan_producer.stage_media, args))._nay).toBeUndefined();
+		const before = await f.t.run((ctx) => ctx.db.get("files_pending_update_plans", page.plan._id));
+		expect(before).toMatchObject({ producerPhase: "media", producerMediaOffset: 8, relationCount: 8 });
+		expect(await f.t.mutation(internal.files_pending_update_plan_producer.stage_media, args)).toMatchObject({
+			_nay: { name: "invalid_plan" },
 		});
-		const before = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		expect(before?.plan).toMatchObject({ phase: "dependencies", itemId: args.itemId, dependencyCursor: "8" });
-		expect(await f.t.mutation(internal.files_pending_update_runs.stage_dependency_plan_page, args)).toMatchObject({
-			_nay: { name: "stopped" },
-		});
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_dependencies").collect())).toHaveLength(8);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_plan_relations").collect())).toHaveLength(8);
 		vi.setSystemTime(Date.now() + 5 * 60 * 1000);
 		await f.t.mutation(internal.files_pending_update_runs.recover, {});
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).toMatchObject({
 			fence: 1,
-			plan: before!.plan,
+			graphPlanId: before!._id,
 		});
-		expect(await f.t.mutation(internal.files_pending_update_runs.stage_dependency_plan_page, args)).toMatchObject({
+		expect(await f.t.mutation(internal.files_pending_update_plan_producer.stage_media, args)).toMatchObject({
 			_nay: { name: "stopped" },
 		});
 		await f.t.action(internal.files_pending_update_runs.plan, { runId, fence: 1 });
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).toMatchObject({
 			step: "running",
-			plan: { phase: "ready", dependencyCursor: null },
 		});
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_dependencies").collect())).toHaveLength(9);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_plans", before!._id))).toMatchObject({
+			producerPhase: "sealed",
+			phase: "ready",
+			producerMediaOffset: 0,
+		});
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_plan_relations").collect())).toHaveLength(9);
+		const unitId = (await f.t.run((ctx) => ctx.db.get("files_pending_update_run_items", args.itemId)))!.unitId!;
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", unitId))).toMatchObject({
 			remainingPrerequisiteCount: 9,
 			status: "waiting",
@@ -858,7 +1011,7 @@ describe("review job content", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(1);
 	});
 
-	test("checks both media proofs before an atomic parent and two documents change the clocks", async () => {
+	test("checks both media proofs before a linked parent and two documents change the clocks", async () => {
 		const f = await fixture();
 		const parent = await private_node({ f, path: "/parent" });
 		const image = await private_media({ f, path: "/parent/photo.png" });
@@ -875,7 +1028,7 @@ describe("review job content", () => {
 		});
 		const runId = await start_review({ f, proposals: [first, second, image.pending, parent] });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
-			{ kind: "atomic", itemCount: 4 },
+			{ kind: "cohort", itemCount: 4 },
 		]);
 		const result = await finish_review({ f, runId });
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 4 } });
@@ -1040,6 +1193,37 @@ describe("review job content", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(4);
 	});
 
+	test("keeps private metadata key order after Save", async () => {
+		const f = await fixture();
+		const proposal = await private_node({ f, path: "/metadata" });
+		const entries = [
+			{ key: "z", value: 1 },
+			{ key: "a", value: 2 },
+		];
+		expect(
+			await f.t.mutation(internal.files_metadata.update_entries_by_path, {
+				...f.scope,
+				path: "/metadata",
+				set: entries,
+				remove: [],
+			}),
+		).toEqual({ _yay: { path: "/metadata", entries } });
+		const current = (await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id)))!;
+		expect(current.createIntent?.metadata).toEqual(entries);
+		const result = await finish_review({ f, runId: await start_review({ f, proposals: [current] }) });
+		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
+		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").first());
+		if (!saved) throw new Error("Expected the saved folder");
+		expect(saved.path).toBe("/metadata");
+		expect(
+			await f.asUser.query(api.files_metadata.get_entries, {
+				membershipId: f.db.membershipId,
+				fileNodeId: saved._id,
+			}),
+			"Save keeps private metadata in the written key order",
+		).toEqual(entries);
+	});
+
 	test.each([false, true])(
 		"saves text above private storage caps and settles its holds (anonymous: %s)",
 		async (anonymous) => {
@@ -1077,12 +1261,12 @@ describe("review job content", () => {
 			const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").unique());
 			if (!saved) throw new Error("Expected the saved text");
 			expect(await saved_text(f, saved._id)).toBe("selected content\n");
-			const item = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").unique());
+			const content = await f.t.run((ctx) => ctx.db.query("files_move_cohort_content").unique());
+			expect(content).toMatchObject({ nodeId: saved._id, sealed: true });
 			const holds = await f.t.run((ctx) => ctx.db.query("files_private_storage_reservations").collect());
-			const publicationHolds = holds.filter((hold) => hold.publicationBatchId);
+			const publicationHolds = holds.filter((hold) => hold.cohortContentId === content!._id && hold.publicationBatchId);
 			expect(publicationHolds.length).toBeGreaterThan(0);
-			expect(publicationHolds.reduce((total, hold) => total + hold.byteCount, 0)).toBeLessThanOrEqual(20 * 1024 * 1024);
-			for (const hold of publicationHolds) expect(item?.prepared?.operationBatchIds).toContain(hold.publicationBatchId);
+			for (const hold of publicationHolds) expect(hold.publicationBatchId).toBe(content!.operationBatchId);
 			const savedAssets = publicationHolds.filter((hold) => hold.resource.kind === "asset");
 			expect(savedAssets.length).toBeGreaterThan(0);
 			for (const hold of savedAssets) expect(hold.settlement).toMatchObject({ kind: "saved", savedNodeId: saved._id });
@@ -1095,6 +1279,7 @@ describe("review job content", () => {
 					.filter(
 						(hold) =>
 							hold.settlement.kind === "held" &&
+							hold.cohortContentId === undefined &&
 							hold.resource.kind !== "node" &&
 							(hold.userQuotaId === quota._id || hold.workspaceQuotaId === quota._id),
 					)
@@ -1122,7 +1307,7 @@ describe("review job content", () => {
 		},
 	);
 
-	test("keeps failed preparation bytes held when a connected unit fills the 20 MiB allowance", async () => {
+	test("saves a connected text unit above the old 20 MiB preparation allowance", async () => {
 		const f = await fixture();
 		const parent = await private_node({ f, path: "/full" });
 		const children = [];
@@ -1139,27 +1324,55 @@ describe("review job content", () => {
 			}
 		});
 		const result = await finish_review({ f, runId: await start_review({ f, proposals }) });
-		expect(result?.activity).toMatchObject({ status: "failed", progress: { completed: 0, blocked: proposals.length } });
+		expect(result?.activity, "the whole connected Save passes the old preparation allowance").toMatchObject({
+			status: "succeeded",
+			progress: { completed: 13, blocked: 0 },
+		});
 		expect(result?.run.unitCount).toBe(1);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
-			{
-				status: "blocked",
-				errorCode: "storage_full",
-				errorMessage: "Save preparation space is full. Try again after cleanup finishes",
-			},
+			{ kind: "cohort", status: "completed", itemCount: 13 },
 		]);
-		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual(proposals);
+		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+		expect(saved).toHaveLength(13);
+		expect(saved.find((node) => node.path === "/full")).toMatchObject({ kind: "folder", parentId: "root" });
+		for (let index = 0; index < 12; index++) {
+			const node = saved.find((node) => node.path === `/full/file-${index}.txt`);
+			expect(node).toMatchObject({ kind: "file", parentId: saved.find((row) => row.path === "/full")!._id });
+			expect(await saved_text(f, node!._id)).toBe(text);
+		}
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(13);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(beforeBilling);
-		expect(enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")).toEqual([]);
+		const billingCalls = enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
+		expect(billingCalls).toHaveLength(12);
+		expect(billingCalls.map((call) => call[2])).toEqual(
+			expect.arrayContaining(
+				saved
+					.filter((node) => node.kind === "file")
+					.map((node) =>
+						expect.objectContaining({
+							events: [
+								expect.objectContaining({
+									name: "file_save",
+									metadata: expect.objectContaining({ amount: 1, nodeId: node._id }),
+								}),
+							],
+						}),
+					),
+			),
+		);
 		const holds = await f.t.run((ctx) => ctx.db.query("files_private_storage_reservations").collect());
-		const publicationHolds = holds.filter((hold) => hold.publicationBatchId && hold.settlement.kind === "held");
+		const contents = await f.t.run((ctx) => ctx.db.query("files_move_cohort_content").collect());
+		expect(contents).toHaveLength(13);
+		const publicationHolds = holds.filter((hold) => hold.publicationBatchId && hold.cohortContentId);
 		const publicationBytes = publicationHolds.reduce((sum, hold) => sum + hold.byteCount, 0);
-		expect(publicationBytes).toBeGreaterThan(20 * 1024 * 1024 - 2 * 1024 * 1024);
-		expect(publicationBytes).toBeLessThanOrEqual(20 * 1024 * 1024);
-		expect(publicationHolds.length).toBeLessThan(128);
-		expect(holds.some((hold) => hold.settlement.kind === "saved")).toBe(false);
+		expect(publicationBytes, "cohort output is not capped by the one-Save allowance").toBeGreaterThan(20 * 1024 * 1024);
+		for (const hold of publicationHolds) {
+			const content = contents.find((row) => row._id === hold.cohortContentId);
+			expect(hold.publicationBatchId).toBe(content?.operationBatchId);
+			if (hold.resource.kind === "asset")
+				expect(hold.settlement).toMatchObject({ kind: "saved", savedNodeId: content?.nodeId });
+		}
 		const quotas = await f.t.run((ctx) => ctx.db.query("quotas").collect());
 		for (const quota of quotas.filter(
 			(quota) => quota.quotaName === "files_private_user_bytes" || quota.quotaName === "files_private_workspace_bytes",
@@ -1168,16 +1381,17 @@ describe("review job content", () => {
 				.filter(
 					(hold) =>
 						hold.settlement.kind === "held" &&
+						hold.cohortContentId === undefined &&
 						hold.resource.kind !== "node" &&
 						(hold.userQuotaId === quota._id || hold.workspaceQuotaId === quota._id),
 				)
 				.reduce((sum, hold) => sum + hold.byteCount, 0);
 			expect(quota.usedCount).toBe(heldBytes);
 		}
-	}, 120_000);
+	}, 7_200_000);
 
 	test.each([false, true])(
-		"rolls back a connected content unit above the commit budget (anonymous: %s)",
+		"saves a connected content unit above the old commit budget (anonymous: %s)",
 		async (anonymous) => {
 			const f = await fixture(anonymous);
 			const parent = await private_node({ f, path: "/large" });
@@ -1187,49 +1401,72 @@ describe("review job content", () => {
 			const proposals = [parent, ...children];
 			const beforeBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
 			const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
-			// Let preparation refill the real Save rate limit without running background jobs.
+			// Each upload advances time while the same reviewed group stays active.
 			uploadDurationMs = 1_200;
 			const runId = await start_review({ f, proposals });
 			const startedAt = Date.now();
 			const result = await finish_review({ f, runId });
 			expect(Date.now() - startedAt).toBeGreaterThan(0);
 			expect(Date.now() - startedAt).toBeLessThan(5 * 60 * 1000);
-			expect(result?.activity).toMatchObject({
-				status: "failed",
-				progress: { completed: 0, blocked: proposals.length },
+			expect(result?.activity, "the whole connected Save passes the old commit budget").toMatchObject({
+				status: "succeeded",
+				progress: { completed: 65, blocked: 0 },
 			});
 			expect(result?.run.unitCount).toBe(1);
 			expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
-				{ status: "blocked", errorCode: "review_too_large" },
+				{ kind: "cohort", status: "completed", itemCount: 65 },
 			]);
-			expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
-			expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
-			expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual(proposals);
-			expect(await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(beforeBilling);
+			const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+			expect(saved).toHaveLength(65);
+			const savedParent = saved.find((node) => node.path === "/large");
+			expect(savedParent).toMatchObject({ kind: "folder", parentId: "root" });
+			for (let index = 0; index < 64; index++) {
+				const node = saved.find((row) => row.path === `/large/file-${index}.txt`);
+				expect(node).toMatchObject({ kind: "file", parentId: savedParent!._id });
+				expect(await saved_text(f, node!._id)).toBe(`file ${index}\n`);
+			}
+			expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(65);
+			expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 			const holds = await f.t.run((ctx) => ctx.db.query("files_private_storage_reservations").collect());
-			expect(holds.some((hold) => hold.publicationBatchId)).toBe(true);
-			expect(holds.some((hold) => hold.settlement.kind === "saved")).toBe(false);
-			if (!anonymous) {
-				const calls = enqueue.mock.calls.flatMap((call, index) =>
-					getFunctionName(call[1]) === "billing:ingest_events" ? [index] : [],
+			const publicationHolds = holds.filter((hold) => hold.publicationBatchId && hold.cohortContentId);
+			expect(publicationHolds.length).toBeGreaterThan(0);
+			expect(
+				publicationHolds.filter((hold) => hold.resource.kind === "asset" && hold.settlement.kind === "saved"),
+			).toHaveLength(128);
+			const billingCalls = enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
+			const afterBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
+			if (anonymous) {
+				expect(billingCalls).toHaveLength(0);
+				expect(afterBilling?.meter?.consumedUnits).toBe(beforeBilling!.meter!.consumedUnits + 64);
+				expect(afterBilling?.meter?.balance).toBe(beforeBilling!.meter!.balance - 64);
+			} else {
+				expect(billingCalls).toHaveLength(64);
+				expect(afterBilling).toEqual(beforeBilling);
+				expect(billingCalls.map((call) => call[2])).toEqual(
+					expect.arrayContaining(
+						saved
+							.filter((node) => node.kind === "file")
+							.map((node) =>
+								expect.objectContaining({
+									events: [
+										expect.objectContaining({
+											name: "file_save",
+											metadata: expect.objectContaining({ amount: 1, nodeId: node._id }),
+										}),
+									],
+								}),
+							),
+					),
 				);
-				// At least one write was attempted before the transaction reached its limit.
-				expect(calls.length).toBeGreaterThan(0);
-				const enqueued = await Promise.allSettled(calls.map((index) => enqueue.mock.results[index]!.value));
-				expect(enqueued.some((result) => result.status === "fulfilled")).toBe(true);
-				for (const result of enqueued) {
-					// The limit can refuse the last enqueue before it returns a work ID.
-					if (result.status === "rejected") {
-						expect(result.reason).toMatchObject({ data: { data: { code: "review_too_large" } } });
-						continue;
-					}
-					const workId = result.value;
+				for (const call of billingCalls) {
+					const index = enqueue.mock.calls.indexOf(call);
+					const workId = await enqueue.mock.results[index]!.value;
 					expect(
 						await f.t.query((ctx) => new Workpool(components.billing_workpool_usage_event, {}).status(ctx, workId)),
-					).toEqual({ state: "finished" });
+					).toMatchObject({ state: "pending" });
 				}
 			}
 		},
-		120_000,
+		7_200_000,
 	);
 });

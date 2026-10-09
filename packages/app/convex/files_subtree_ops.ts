@@ -27,6 +27,7 @@ import { files_nodes_db_rebuild_node } from "./files_nodes.ts";
 import { files_transfer_db_promote } from "./files_transfer.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
+import { files_move_reservations_db_find_blocker, files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -82,6 +83,25 @@ function busy_tree_paths(op: Doc<"files_subtree_ops">) {
 function tree_paths_overlap(left: string, right: string) {
 	const holds = (outer: string, inner: string) => outer === inner || (outer.endsWith("/") && inner.startsWith(outer));
 	return holds(left, right) || holds(right, left);
+}
+
+/**
+ * Copy writes final paths. Only running repairs can leave stored paths or scopes behind.
+ */
+export async function files_subtree_ops_db_find_repair(
+	ctx: QueryCtx | MutationCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+) {
+	for (const kind of ["move", "scope", "archive", "restore"] as const) {
+		const op = await ctx.db
+			.query("files_subtree_ops")
+			.withIndex("by_organization_workspace_kind_status", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("kind", kind).eq("status", "running"),
+			)
+			.first();
+		if (op) return op;
+	}
+	return null;
 }
 
 /**
@@ -263,7 +283,7 @@ async function db_read_children(
 			.withIndex("by_organization_workspace_parent_name", (q) =>
 				q
 					.eq("organizationId", folder.organizationId)
-					.eq("workspaceId", folder.workspaceId)
+					.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
 					.eq("parentId", folder._id)
 					.eq("name", cursor.name)
 					.eq("_creationTime", cursor.creationTime),
@@ -285,7 +305,7 @@ async function db_read_children(
 					.withIndex("by_organization_workspace_parent_name", (q) =>
 						q
 							.eq("organizationId", folder.organizationId)
-							.eq("workspaceId", folder.workspaceId)
+							.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
 							.eq("parentId", folder._id),
 					)
 					.take(PAGE_SIZE + 1)
@@ -294,7 +314,7 @@ async function db_read_children(
 					.withIndex("by_organization_workspace_parent_name", (q) =>
 						q
 							.eq("organizationId", folder.organizationId)
-							.eq("workspaceId", folder.workspaceId)
+							.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
 							.eq("parentId", folder._id)
 							.eq("name", cursor.name)
 							.gt("_creationTime", cursor.creationTime),
@@ -309,7 +329,7 @@ async function db_read_children(
 				.withIndex("by_organization_workspace_parent_name", (q) =>
 					q
 						.eq("organizationId", folder.organizationId)
-						.eq("workspaceId", folder.workspaceId)
+						.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
 						.eq("parentId", folder._id)
 						.gt("name", cursor.name),
 				)
@@ -413,6 +433,7 @@ async function db_rebuild_walk(args: {
 	budget: { nodes: number; hasPaginated: boolean };
 }) {
 	const { ctx, op, budget } = args;
+	if (await db_pause_for_move(ctx, op)) return false;
 
 	const walk = await db_require_walk(ctx, op._id);
 	let passWrote = walk.passWrote;
@@ -490,8 +511,8 @@ async function db_rebuild_walk(args: {
 }
 
 /**
- * Start the walk of a move or restrict after the request changed the roots. The first step runs
- * now. Returns null when the walk ended inside this request. Then no op and no Activity remain.
+ * Start the walk after the request changed the roots. A transfer defers the first walk so root
+ * publication has its own budget. Return null when the walk finished in this request.
  */
 export async function files_subtree_ops_db_start_rebuild(
 	ctx: MutationCtx,
@@ -510,6 +531,7 @@ export async function files_subtree_ops_db_start_rebuild(
 		 */
 		roots: Array<{ node: Doc<"files_nodes">; oldTreePath: string }>;
 		budget: { nodes: number; hasPaginated: boolean };
+		deferWalk?: boolean;
 		now: number;
 	},
 ) {
@@ -540,7 +562,7 @@ export async function files_subtree_ops_db_start_rebuild(
 	});
 
 	const op = (await ctx.db.get("files_subtree_ops", opId))!;
-	if (await db_rebuild_walk({ ctx, op, budget: args.budget })) {
+	if (!args.deferWalk && (await db_rebuild_walk({ ctx, op, budget: args.budget }))) {
 		await files_subtree_ops_db_delete(ctx, { opId, now: args.now });
 		return null;
 	}
@@ -560,8 +582,8 @@ export async function files_subtree_ops_db_start_rebuild(
 		title: args.kind === "move" ? "Move files" : "Restrict files",
 		targets: [],
 		visibility: "requester",
-		// A restrict shows no card. Its Activity only lets the recover cron find the op.
-		feedVisible: args.kind === "move",
+		// A transfer owns the visible card. Keep this Activity for recovery after Stop.
+		feedVisible: args.kind === "move" && !args.deferWalk,
 		status: "running",
 		resultKind: "saved",
 		deadlineAt: args.now + files_subtree_ops_RECOVER_AFTER_MS,
@@ -665,6 +687,22 @@ export async function files_subtree_ops_db_recover(ctx: MutationCtx, args: { opI
 	await ctx.scheduler.runAfter(0, internal.files_subtree_ops.advance, { opId: op._id, step: walk.step });
 }
 
+async function db_pause_for_move(ctx: MutationCtx, op: Doc<"files_subtree_ops">) {
+	const worker = { kind: "subtree" as const, id: op._id };
+	// Whole-workspace restore has no root yet. Other jobs check only their exact roots.
+	if (op.rootNodeIds.length === 0) return await files_move_reservations_db_pause_worker(ctx, {
+		worker, check: { wholeWorkspace: { organizationId: op.organizationId, workspaceId: op.workspaceId } },
+	});
+	for (const nodeId of op.rootNodeIds) {
+		const check = { source: { kind: "saved" as const, id: nodeId } };
+		if (await files_move_reservations_db_find_blocker(ctx.db, check))
+			return await files_move_reservations_db_pause_worker(ctx, { worker, check });
+	}
+	return await files_move_reservations_db_pause_worker(ctx, {
+		worker, check: { source: { kind: "saved", id: op.rootNodeIds[0]! } },
+	});
+}
+
 export const advance = internalMutation({
 	args: { opId: v.id("files_subtree_ops"), step: v.number() },
 	returns: v.null(),
@@ -696,6 +734,7 @@ export const advance = internalMutation({
 			}
 			case "archive":
 			case "restore": {
+				if (await db_pause_for_move(ctx, op)) return null;
 				await files_archive_runs_db_advance(ctx, { op, now });
 				return null;
 			}
@@ -716,6 +755,7 @@ export const promote = internalMutation({
 		if (!op || op.status !== "queued" || op.blockedByOpId !== null) {
 			return null;
 		}
+		if (await db_pause_for_move(ctx, op)) return null;
 
 		const now = Date.now();
 		switch (op.kind) {

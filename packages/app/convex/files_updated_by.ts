@@ -15,6 +15,10 @@ import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_table_updated_by_text } from "../shared/files-table.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+import {
+	files_saved_placement_db_get_node,
+	type files_saved_placement_FixedView,
+} from "../server/files-saved-placement.ts";
 
 const DRAIN_USER_NAME_BATCH_SIZE = 100;
 
@@ -35,14 +39,42 @@ async function db_read_sort_user_name(ctx: MutationCtx, userId: Id<"users">) {
  * A new doc or a new updater reads the updater's current name. Otherwise the doc keeps its key, and a
  * name change reaches it through the name drain, so the key can lag behind the name a cell shows.
  */
-export async function files_updated_by_db_sync_node(ctx: MutationCtx, args: { nodeId: Id<"files_nodes"> }) {
-	const [node, existing] = await Promise.all([
-		ctx.db.get("files_nodes", args.nodeId),
+export async function files_updated_by_db_sync_node(
+	ctx: MutationCtx,
+	args: { nodeId: Id<"files_nodes">; fixedView?: files_saved_placement_FixedView },
+) {
+	const source = await ctx.db.get("files_nodes", args.nodeId);
+	if (source?.moveCohortId && !args.fixedView) {
+		for (const view of ["before", "after"] as const)
+			await files_updated_by_db_sync_node(ctx, {
+				nodeId: args.nodeId,
+				fixedView: { cohortId: source.moveCohortId, view },
+			});
+		return;
+	}
+	const [node, stored] = await Promise.all([
+		args.fixedView ? files_saved_placement_db_get_node(ctx.db, args.nodeId, args.fixedView) : Promise.resolve(source),
 		ctx.db
 			.query("files_updated_by_docs")
-			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+			.withIndex("by_fileNode", (q) =>
+				q
+					.eq("fileNodeId", args.nodeId)
+					.eq("moveView.cohortId", args.fixedView?.cohortId)
+					.eq("moveView.view", args.fixedView?.view),
+			)
 			.first(),
 	]);
+	// Staging keeps the old normal doc as the before candidate.
+	const existing =
+		stored ??
+		(args.fixedView?.view === "before"
+			? await ctx.db
+					.query("files_updated_by_docs")
+					.withIndex("by_fileNode", (q) =>
+						q.eq("fileNodeId", args.nodeId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+					)
+					.first()
+			: null);
 
 	// A deleted node keeps no doc. SYSTEM writes only the GLOBAL and plugin volume trees, which the
 	// folder table never lists.
@@ -63,6 +95,7 @@ export async function files_updated_by_db_sync_node(ctx: MutationCtx, args: { no
 	}
 
 	const fields = {
+		moveView: args.fixedView,
 		organizationId,
 		workspaceId: scope.workspaceId,
 		fileNodeId: node._id,
@@ -76,16 +109,20 @@ export async function files_updated_by_db_sync_node(ctx: MutationCtx, args: { no
 		// The name drain owns name changes, so the same updater keeps its key. This saves two reads per
 		// node in big moves and archives, which run close to Convex's per-transaction read limit.
 		sortUserName:
-			existing?.userId === node.updatedBy
-				? existing.sortUserName
-				: await db_read_sort_user_name(ctx, node.updatedBy),
+			existing?.userId === node.updatedBy ? existing.sortUserName : await db_read_sort_user_name(ctx, node.updatedBy),
 	};
 
 	if (!existing) {
 		await ctx.db.insert("files_updated_by_docs", fields);
 		return;
 	}
-	if (Object.entries(fields).every(([key, value]) => existing[key as keyof typeof fields] === value)) {
+	if (
+		Object.entries(fields).every(([key, value]) =>
+			key === "moveView"
+				? existing.moveView?.cohortId === fields.moveView?.cohortId && existing.moveView?.view === fields.moveView?.view
+				: existing[key as keyof typeof fields] === value,
+		)
+	) {
 		return;
 	}
 	// `patch` removes `archiveOperationId` when it is undefined, so a restored node's doc is active again.
@@ -96,11 +133,12 @@ export async function files_updated_by_db_sync_node(ctx: MutationCtx, args: { no
  * Delete the updater sort doc of one file node, if it has one.
  */
 export async function files_updated_by_db_delete_for_node(ctx: MutationCtx, args: { nodeId: Id<"files_nodes"> }) {
-	const doc = await ctx.db
+	// One normal doc or two saved candidates per node.
+	const docs = await ctx.db
 		.query("files_updated_by_docs")
 		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
-		.first();
-	if (doc) {
+		.collect();
+	for (const doc of docs) {
 		await ctx.db.delete("files_updated_by_docs", doc._id);
 	}
 }

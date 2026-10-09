@@ -13,6 +13,9 @@ import { files_visible_db_create_reader } from "./files_visible.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
 	test_convex,
+	test_rename_node,
+	test_move_nodes,
+	test_finish_pending_update_run,
 	test_mocks,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
@@ -188,11 +191,11 @@ async function fixture() {
 	};
 
 	const v_move = async (node: { id: Id<"files_nodes"> }, parent: { id: Id<"files_nodes"> } | null) => {
-		const moved = await asV.mutation(api.files_nodes.move_nodes, {
-			membershipId: vMember.membershipId,
-			itemIds: [node.id],
-			targetParentId: parent?.id ?? files_ROOT_ID,
-		});
+		const moved = await test_move_nodes(t, asV, {
+				membershipId: vMember.membershipId,
+				itemIds: [node.id],
+				targetParentId: parent?.id ?? files_ROOT_ID,
+			});
 		if (moved._nay) throw new Error(moved._nay.message);
 		await settle();
 	};
@@ -201,7 +204,7 @@ async function fixture() {
 	 * V renames a saved node. Like `rename_node`, `name` is relative to the node's parent.
 	 */
 	const v_rename = async (node: { id: Id<"files_nodes"> }, name: string) => {
-		const renamed = await asV.mutation(api.files_nodes.rename_node, {
+		const renamed = await test_rename_node(t, asV, {
 			membershipId: vMember.membershipId,
 			nodeId: node.id,
 			path: name,
@@ -248,30 +251,7 @@ async function fixture() {
 		const { runId } = started._yay;
 		const sealed = await as.mutation(api.files_pending_update_runs.seal, { membershipId, runId });
 		if (sealed._nay) throw new Error(sealed._nay.message);
-		for (let pass = 0; ; pass++) {
-			if (pass === 100) throw new Error("Review planning did not finish");
-			await t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
-			if ((await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))?.step !== "planning") break;
-		}
-		for (let pass = 0; ; pass++) {
-			if (pass === 1000) throw new Error("Review did not finish");
-			await t.mutation(internal.files_pending_update_runs.advance, { runId });
-			const run = (await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))!;
-			if (run.step === "finished") break;
-			const unit = await t.run((ctx) =>
-				ctx.db
-					.query("files_pending_update_run_units")
-					.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-					.first(),
-			);
-			if (unit)
-				await t.action(internal.files_pending_update_runs.prepare_unit, {
-					runId,
-					fence: run.fence,
-					unitId: unit._id,
-					attemptFence: unit.attemptFence,
-				});
-		}
+		await test_finish_pending_update_run(asU, runId);
 		await settle();
 	};
 
@@ -287,6 +267,21 @@ async function fixture() {
 			remove: [],
 		});
 		if (updated._nay) throw new Error(updated._nay.message);
+	};
+
+	const run_job = async (kind: Doc<"files_pending_overlay_jobs">["kind"], key: string) => {
+		const job = await t.run((ctx) =>
+			ctx.db
+				.query("files_pending_overlay_jobs")
+				.withIndex("by_kind_key", (q) => q.eq("kind", kind).eq("key", key))
+				.unique(),
+		);
+		if (job)
+			await t.mutation(internal.files_pending_overlay.run_job, {
+				kind,
+				key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
 	};
 
 	/**
@@ -359,10 +354,11 @@ async function fixture() {
 			const differences: string[] = [];
 			let cursor: string | null = null;
 			do {
-				const page: { differences: string[]; cursor: string | null } = await t.query(
+				const page: { differences: string[]; cursor: string | null; moveInProgress: boolean } = await t.query(
 					internal.files_pending_overlay.check_user,
 					{ ...scope, cursor },
 				);
+				expect(page.moveInProgress, "a clean audit must finish outside a Move").toBe(false);
 				differences.push(...page.differences);
 				cursor = page.cursor;
 			} while (cursor);
@@ -441,6 +437,7 @@ async function fixture() {
 		v_restore,
 		review,
 		set_metadata,
+		run_job,
 		settle,
 		overlay,
 		v_find,
@@ -601,7 +598,7 @@ describe("files_pending_overlay flush", () => {
 		await f.draft_delete(target(x));
 
 		// V's own transactions keep U's hide true at once, before any job runs.
-		const renamed = await f.asV.mutation(api.files_nodes.rename_node, {
+		const renamed = await test_rename_node(f.t, f.asV, {
 			membershipId: f.vMember.membershipId,
 			nodeId: x._id,
 			path: "y.md",
@@ -1135,14 +1132,14 @@ describe("files_pending_overlay flush", () => {
 		// The owner restricts /hr without sharing it with V, then moves /team into it and renames it.
 		await f.restrict(hr);
 		await f.as_u(() =>
-			f.asU.mutation(api.files_nodes.move_nodes, {
+			test_move_nodes(f.t, f.asU, {
 				membershipId: f.db.membershipId,
 				itemIds: [team._id],
 				targetParentId: hr._id,
 			}),
 		);
 		await f.as_u(() =>
-			f.asU.mutation(api.files_nodes.rename_node, {
+			test_rename_node(f.t, f.asU, {
 				membershipId: f.db.membershipId,
 				nodeId: team._id,
 				path: "secret",
@@ -1465,6 +1462,7 @@ describe("files_pending_overlay flush", () => {
 				scheduledFunctionId: await ctx.scheduler.runAfter(60 * 60 * 1000, internal.files_pending_overlay.run_job, {
 					kind: "targets",
 					key,
+					nextAttemptAt: Date.now() + 60 * 60 * 1000,
 				}),
 				attempts: 0,
 			});
@@ -1859,12 +1857,13 @@ describe("files_pending_overlay jobs", () => {
 				scheduledFunctionId: await ctx.scheduler.runAfter(0, internal.files_pending_overlay.run_job, {
 					kind: "saved_node",
 					key: x._id,
+					nextAttemptAt: Date.now(),
 				}),
 				attempts: 0,
 			});
 		});
 
-		const renamed = await f.asV.mutation(api.files_nodes.rename_node, {
+		const renamed = await test_rename_node(f.t, f.asV, {
 			membershipId: f.vMember.membershipId,
 			nodeId: x._id,
 			path: "y.md",
@@ -1907,6 +1906,7 @@ describe("files_pending_overlay jobs", () => {
 					q
 						.eq("organizationId", f.u.organizationId)
 						.eq("workspaceId", f.u.workspaceId)
+						.eq("moveView.cohortId", undefined).eq("moveView.view", undefined)
 						.eq("parent.kind", "saved")
 						.eq("parent.id", pOld._id)
 						.eq("name", "x"),
@@ -1934,19 +1934,20 @@ describe("files_pending_overlay jobs", () => {
 				scheduledFunctionId: await ctx.scheduler.runAfter(60 * 60 * 1000, internal.files_pending_overlay.run_job, {
 					kind: "saved_node",
 					key: x._id,
+					nextAttemptAt: Date.now(),
 				}),
 				attempts: 0,
 			});
 		});
 
 		// V moves x next to U's private /pnew/x, which then claims its name.
-		const moved = await f.asV.mutation(api.files_nodes.move_nodes, {
-			membershipId: f.vMember.membershipId,
-			itemIds: [x._id],
-			targetParentId: pNew._id,
-		});
+		const moved = await test_move_nodes(f.t, f.asV, {
+				membershipId: f.vMember.membershipId,
+				itemIds: [x._id],
+				targetParentId: pNew._id,
+			});
 		if (moved._nay) throw new Error(moved._nay.message);
-		await f.t.mutation(internal.files_pending_overlay.run_job, { kind: "saved_node", key: x._id });
+		await f.run_job("saved_node", x._id);
 		expect((await f.overlay(target(x))).hidden).toBe(true);
 		expect((await f.overlay(claimer)).place).toMatchObject({ ownerTreePath: "/pnew/x" });
 		await f.expect_overlay_true();
@@ -1978,12 +1979,13 @@ describe("files_pending_overlay jobs", () => {
 				scheduledFunctionId: await ctx.scheduler.runAfter(60 * 60 * 1000, internal.files_pending_overlay.run_job, {
 					kind: "owner_path",
 					key,
+					nextAttemptAt: Date.now(),
 				}),
 				attempts: 0,
 			});
 		});
 		// The first run walks one page: g, c.md and 98 files of /j/m.
-		await f.t.mutation(internal.files_pending_overlay.run_job, { kind: "owner_path", key });
+		await f.run_job("owner_path", key);
 
 		// Changes only the job's walk finds: g's draft now goes to /j/e, and /j/w is now /j/s/g. The
 		// second run reaches /j/w, whose claim recomputes g behind the place the job reached.
@@ -2002,7 +2004,7 @@ describe("files_pending_overlay jobs", () => {
 				name: "g",
 			});
 		});
-		await f.t.mutation(internal.files_pending_overlay.run_job, { kind: "owner_path", key });
+		await f.run_job("owner_path", key);
 		await f.settle();
 		expect((await f.overlay(target(g))).place).toMatchObject({ ownerTreePath: "/j/e/g/" });
 		expect((await f.overlay(child)).place).toMatchObject({ ownerTreePath: "/j/e/g/c.md" });
@@ -2046,13 +2048,14 @@ describe("files_pending_overlay jobs", () => {
 				scheduledFunctionId: await ctx.scheduler.runAfter(60 * 60 * 1000, internal.files_pending_overlay.run_job, {
 					kind: "owner_path",
 					key,
+					nextAttemptAt: Date.now(),
 				}),
 				attempts: 0,
 			});
 		});
 
 		// b's walk of /j/b/ is behind /j/m.md, so it gets its own job and moves c.
-		await f.t.mutation(internal.files_pending_overlay.run_job, { kind: "owner_path", key });
+		await f.run_job("owner_path", key);
 		await f.settle();
 		expect((await f.overlay(c)).place).toMatchObject({ ownerTreePath: "/j/y/c.md" });
 		await f.expect_overlay_true();
@@ -2078,7 +2081,8 @@ describe("files_pending_overlay jobs", () => {
 		});
 		// V's rename of the top folder moves every place under the deepest one.
 		await f.v_rename({ id: top._id }, "top");
-		expect(parentRuns).toBe(1);
+		// Places, incoming moves and private children each have their own native page.
+		expect(parentRuns).toBe(3);
 		await f.expect_overlay_true();
 	}, 120_000);
 
@@ -2142,12 +2146,12 @@ describe("files_share_rows", () => {
 		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
 		const membershipId = f.db.membershipId;
 
-		await f.as_u(() => f.asU.mutation(api.files_nodes.rename_node, { membershipId, nodeId: s._id, path: "t" }));
+		await f.as_u(() => test_rename_node(f.t, f.asU, { membershipId, nodeId: s._id, path: "t" }));
 		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: a._id }]);
-		await f.as_u(() => f.asU.mutation(api.files_nodes.rename_node, { membershipId, nodeId: a._id, path: "a2" }));
+		await f.as_u(() => test_rename_node(f.t, f.asU, { membershipId, nodeId: a._id, path: "a2" }));
 		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: a._id }]);
 		await f.as_u(() =>
-			f.asU.mutation(api.files_nodes.move_nodes, { membershipId, itemIds: [s._id], targetParentId: b._id }),
+			test_move_nodes(f.t, f.asU, { membershipId, itemIds: [s._id], targetParentId: b._id }),
 		);
 		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: b._id }]);
 		await f.expect_share_rows_true();
@@ -2250,7 +2254,7 @@ describe("files_share_rows", () => {
 		expect(await share_keys(f, s._id)).toEqual([]);
 
 		await f.as_u(() =>
-			f.asU.mutation(api.files_nodes.rename_node, { membershipId: f.db.membershipId, nodeId: s._id, path: "t" }),
+			test_rename_node(f.t, f.asU, { membershipId: f.db.membershipId, nodeId: s._id, path: "t" }),
 		);
 		expect(await share_keys(f, s._id)).toEqual([]);
 		await f.expect_share_rows_true();
@@ -2291,7 +2295,7 @@ describe("files_share_rows", () => {
 
 		// A node write reads every `content.read` grant of the node again.
 		await f.as_u(() =>
-			f.asU.mutation(api.files_nodes.rename_node, { membershipId: f.db.membershipId, nodeId: s._id, path: "t" }),
+			test_rename_node(f.t, f.asU, { membershipId: f.db.membershipId, nodeId: s._id, path: "t" }),
 		);
 		expect(await share_keys(f, s._id)).toEqual([`user:${f.v.userId}`]);
 		await f.expect_share_rows_true();
@@ -2371,11 +2375,11 @@ describe("files_share_rows", () => {
 		await f.restrict(a);
 		expect(await share_keys(f, s._id)).toEqual([`user:${f.v.userId}`]);
 		await f.as_u(() =>
-			f.asU.mutation(api.files_nodes.move_nodes, {
-				membershipId: f.db.membershipId,
-				itemIds: [s._id],
-				targetParentId: r._id,
-			}),
+			test_move_nodes(f.t, f.asU, {
+					membershipId: f.db.membershipId,
+					itemIds: [s._id],
+					targetParentId: r._id,
+				}),
 		);
 		expect(await share_rows(f, s._id)).toMatchObject([{ principalKey: `user:${f.v.userId}`, parentId: r._id }]);
 		expect(await share_keys(f, r._id)).toEqual(["role:member"]);
@@ -2415,7 +2419,11 @@ describe("files_nodes ancestors", () => {
 			ctx.db
 				.query("files_nodes")
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q.eq("organizationId", f.u.organizationId).eq("workspaceId", f.u.workspaceId).eq("path", path),
+					q
+						.eq("organizationId", f.u.organizationId)
+						.eq("workspaceId", f.u.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("path", path),
 				)
 				.first(),
 		);
@@ -2459,20 +2467,20 @@ describe("files_nodes ancestors", () => {
 		await expect_ancestors_true(f);
 
 		// A rename changes paths, not ancestors.
-		await f.as_u(() => f.asU.mutation(api.files_nodes.rename_node, { membershipId, nodeId: a._id, path: "a2" }));
+		await f.as_u(() => test_rename_node(f.t, f.asU, { membershipId, nodeId: a._id, path: "a2" }));
 		expect((await node_at(f, "/a2/b/c")).ancestors).toEqual([a._id, b._id]);
 
 		// `b` moves into `/d/e`, and its child follows it in the move's subtree step.
 		const e = await node_at(f, "/d/e");
 		await f.as_u(() =>
-			f.asU.mutation(api.files_nodes.move_nodes, { membershipId, itemIds: [b._id], targetParentId: e._id }),
+			test_move_nodes(f.t, f.asU, { membershipId, itemIds: [b._id], targetParentId: e._id }),
 		);
 		expect((await node_at(f, "/d/e/b")).ancestors).toEqual([d._id, e._id]);
 		expect((await node_at(f, "/d/e/b/c")).ancestors).toEqual([d._id, e._id, b._id]);
 
 		// A nested move: `d` with everything inside moves into `/a2`.
 		await f.as_u(() =>
-			f.asU.mutation(api.files_nodes.move_nodes, { membershipId, itemIds: [d._id], targetParentId: a._id }),
+			test_move_nodes(f.t, f.asU, { membershipId, itemIds: [d._id], targetParentId: a._id }),
 		);
 		expect((await node_at(f, "/a2/d")).ancestors).toEqual([a._id]);
 		expect((await node_at(f, "/a2/d/e/b/c")).ancestors).toEqual([a._id, d._id, e._id, b._id]);

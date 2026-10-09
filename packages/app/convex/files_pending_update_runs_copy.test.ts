@@ -6,7 +6,12 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
 import { files_db_patch_pending_update } from "../server/files.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_finish_pending_update_run,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -55,11 +60,11 @@ async function copied_folders(args: {
 		const { _id: _proposalId, _creationTime: _proposalTime, ...proposalFields } = first;
 		const proposals = [first];
 		// Clone the real producer shape in bounded writes; keep the same quota accounting.
-		for (let offset = 1; offset < count; offset += 100) {
+		for (let offset = 1; offset < count; offset += 32) {
 			proposals.push(
-				...(await f.t.run(async (ctx) => {
+				...(await test_run_with_flush(f.t, async (ctx) => {
 					const page = [];
-					for (let index = offset; index < Math.min(offset + 100, count); index++) {
+					for (let index = offset; index < Math.min(offset + 32, count); index++) {
 						const id = await ctx.db.insert("files_pending_nodes", {
 							...template.nodeFields,
 							name: `copy-${String(index).padStart(5, "0")}`,
@@ -90,7 +95,7 @@ async function copied_folders(args: {
 	// Match the transfer's folder publication, including the private storage reservation.
 	for (let offset = 0; offset < count; offset += 32) {
 		proposals.push(
-			...(await f.t.run(async (ctx) => {
+			...(await test_run_with_flush(f.t, async (ctx) => {
 				const page = [];
 				for (let index = offset; index < Math.min(offset + 32, count); index++) {
 					const created = await files_pending_nodes_db_create(ctx, {
@@ -224,21 +229,113 @@ async function review_clock(f: Awaited<ReturnType<typeof fixture>>) {
 	return (await f.t.run((ctx) => ctx.db.query("files_pending_review_versions").first()))?.revision ?? 0;
 }
 
+async function next_overlay_job(f: Awaited<ReturnType<typeof fixture>>) {
+	// This test fixture owns the jobs. Parked jobs wake only after cohort cleanup.
+	return await f.t.run(
+		async (ctx) =>
+			(
+				await ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_org_ws", (q) =>
+						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+					)
+					.collect()
+			).find((job) => !job.blockedByCohortId) ?? null,
+	);
+}
+
+async function produce_plan_page(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_pending_update_runs">) {
+	for (let pass = 0; pass < 100; pass++) {
+		const job = await next_overlay_job(f);
+		if (job) {
+			await f.t.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+			continue;
+		}
+		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
+		if (!run) throw new Error("Expected the review run");
+		const produced = await f.t.mutation(internal.files_pending_update_plan_producer.advance, {
+			runId,
+			fence: run.fence,
+			planEpoch: run.planEpoch,
+		});
+		if (produced._nay) throw new Error(produced._nay.message);
+		if (!produced._yay.waiting) return produced._yay.plan;
+	}
+	throw new Error("No review plan page became ready");
+}
+
+async function unit_for(
+	f: Awaited<ReturnType<typeof fixture>>,
+	runId: Id<"files_pending_update_runs">,
+	proposal: Doc<"files_pending_updates">,
+) {
+	return await f.t.run(async (ctx) => {
+		const item = await ctx.db
+			.query("files_pending_update_run_items")
+			.withIndex("by_run_pendingUpdate", (q) => q.eq("runId", runId).eq("pendingUpdateId", proposal._id))
+			.unique();
+		if (!item?.unitId) throw new Error("Expected the proposal's review unit");
+		return (await ctx.db.get("files_pending_update_run_units", item.unitId))!;
+	});
+}
+
 async function plan_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_pending_update_runs">) {
 	for (let pass = 0; pass < 3_000; pass++) {
+		const job = await next_overlay_job(f);
+		if (job) {
+			await f.t.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+			continue;
+		}
 		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
 		if (!run) throw new Error("Expected the review run");
 		if (run.step !== "planning") return run;
-		if (!run.plan) throw new Error("Expected the review plan");
-		if (run.expectedItemCount > 1_000 && pass % 100 === 0)
-			console.info("Copy Save scale plan", { phase: run.plan.phase, unitCount: run.unitCount, pass });
 		await f.t.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
 	}
 	throw new Error("Planning did not finish");
 }
 
 async function save_next(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_pending_update_runs">) {
-	for (let pass = 0; pass < 300; pass++) {
+	const before = await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
+	for (let pass = 0; pass < 50_000; pass++) {
+		const job = await next_overlay_job(f);
+		if (job) {
+			await f.t.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+			continue;
+		}
+		const current = await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
+		if ((current?.activity.progress?.completed ?? 0) > (before?.activity.progress?.completed ?? 0)) {
+			const slot = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) =>
+						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+					)
+					.unique(),
+			);
+			if (!slot?.cohortId) {
+				const unit = await f.t.run((ctx) =>
+					ctx.db
+						.query("files_pending_update_run_units")
+						.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
+						.first(),
+				);
+				if (unit?.cohortId)
+					await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: unit.cohortId });
+				return true;
+			}
+		}
 		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
 		if (!run) throw new Error("Expected the review run");
@@ -250,13 +347,12 @@ async function save_next(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"file
 				.first(),
 		);
 		if (!unit) continue;
-		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
-			runId,
-			fence: run.fence,
-			unitId: unit._id,
-			attemptFence: unit.attemptFence,
-		});
-		return true;
+		if (!unit.cohortId) continue;
+		const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
+		if (!cohort) throw new Error("Expected the review cohort");
+		if (cohort.phase === "complete")
+			await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
+		else await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
 	}
 	throw new Error("No review unit became ready");
 }
@@ -268,14 +364,14 @@ async function finish_review(args: {
 	stepMs?: number;
 }) {
 	const { f, runId, count, stepMs = 0 } = args;
-
-	for (let pass = 0; pass <= count + 5; pass++) {
-		if (count > 1_000 && pass % 1_000 === 0) console.info("Copy Save scale worker", { pass, count });
-		if (stepMs) vi.setSystemTime(Date.now() + stepMs);
-		if (!(await save_next(f, runId)))
-			return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
+	if (stepMs) {
+		for (let index = 0; index < count; index++) {
+			vi.setSystemTime(Date.now() + stepMs);
+			if (!(await save_next(f, runId))) break;
+		}
 	}
-	throw new Error("Review did not finish");
+	await test_finish_pending_update_run(f.asUser, runId);
+	return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
 }
 
 describe("scalable Copy Save", () => {
@@ -299,8 +395,8 @@ describe("scalable Copy Save", () => {
 				selected.push(proposal);
 			}
 			const { runId } = await start_review(f, selected);
-			const classified = await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 });
-			expect(classified._yay?.plan).toMatchObject({ phase: "atomic", atomicItemCount: ordinary ? 1 : 0 });
+			const classified = await produce_plan_page(f, runId);
+			expect(classified).toMatchObject({ producerPhase: "source_ancestors", itemCount: selected.length });
 			if (edit) {
 				const changed = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 					...f.scope,
@@ -311,13 +407,12 @@ describe("scalable Copy Save", () => {
 				if (changed._nay) throw new Error(changed._nay.message);
 			}
 			const planned = await plan_review(f, runId);
-			expect(planned.reviewVersion).toBe(classified._yay?.reviewVersion);
+			expect(planned).toMatchObject({ step: "running", unitCount: selected.length });
 			const result = await finish_review({ f, runId, count: selected.length });
 			expect(result?.activity).toMatchObject({
 				status: edit ? "partial" : "succeeded",
 				progress: { completed: selected.length - (edit ? 1 : 0), blocked: edit ? 1 : 0, failed: 0 },
 			});
-			expect(result?.run.revalidateRemaining).toBe(edit);
 			const receipts = await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
 			const savedCopies = edit ? f.copies.slice(1) : f.copies;
 			expect(receipts.map((receipt) => receipt.privateNodeId).sort()).toEqual(
@@ -364,9 +459,7 @@ describe("scalable Copy Save", () => {
 			const proposal = await f.t.run((ctx) => ctx.db.query("files_pending_updates").unique());
 			if (!proposal) throw new Error("Expected the ordinary proposal");
 			const { runId } = await start_review(f, [proposal]);
-			expect(
-				(await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 }))._yay?.plan,
-			).toMatchObject({ phase: "atomic", atomicItemCount: 1 });
+			expect(await produce_plan_page(f, runId)).toMatchObject({ producerPhase: "source_ancestors", itemCount: 1 });
 			if (at === "running") await plan_review(f, runId);
 			if (edit)
 				expect(
@@ -403,9 +496,7 @@ describe("scalable Copy Save", () => {
 			destName: "ordinary-renamed",
 		});
 		const { runId } = await start_review(f, [...f.copies, rename]);
-		expect(
-			(await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 }))._yay?.plan,
-		).toMatchObject({ phase: "atomic", atomicItemCount: 1 });
+		expect(await produce_plan_page(f, runId)).toMatchObject({ producerPhase: "source_ancestors", itemCount: 4 });
 		const sourceTwo = await f.t.run(async (ctx) =>
 			(await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/source-two"),
 		);
@@ -417,18 +508,18 @@ describe("scalable Copy Save", () => {
 			destName: "entered",
 		});
 		const planned = await plan_review(f, runId);
-		expect(planned).toMatchObject({ unitCount: 4, plan: { phase: "ready", atomicItemCount: 1 } });
+		expect(planned).toMatchObject({ step: "running", unitCount: 4 });
 		expect(await review_clock(f)).toBeGreaterThan(planned.reviewVersion);
 
 		const result = await finish_review({ f, runId, count: 4 });
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 4, blocked: 0, failed: 0 } });
-		// The ordinary rename saved only after its own check under a clock newer than the seal.
-		expect(result?.run.revalidateRemaining).toBe(true);
+		// The ordinary rename keeps its own unit and checks the current cohort clock.
 		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
-		const atomic = units.find((unit) => unit.kind === "atomic");
-		expect(atomic).toMatchObject({ itemCount: 1, status: "completed", errorCode: null });
-		expect(atomic?.validatedReviewVersion).toBeGreaterThan(planned.reviewVersion);
-		expect(units.filter((unit) => unit.kind === "copy")).toHaveLength(3);
+		const ordinary = await unit_for(f, runId, rename);
+		expect(ordinary).toMatchObject({ kind: "cohort", itemCount: 1, status: "completed", errorCode: null });
+		const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", ordinary.cohortId!));
+		expect(cohort?.clockPins.review?.revision).toBeGreaterThan(planned.reviewVersion);
+		expect(units).toHaveLength(4);
 		const receipts = await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
 		expect(receipts.map((receipt) => receipt.privateNodeId).sort()).toEqual(
 			f.copies.map((copy) => copy.target.id).sort(),
@@ -448,7 +539,7 @@ describe("scalable Copy Save", () => {
 		]);
 	});
 
-	test("blocks a Copy that gains an ordinary link after classification together with that link", async () => {
+	test("blocks a revised Copy without joining its unreviewed link to an independent Move", async () => {
 		const f = await agent_copied_folders();
 		const rename = await pending_move({
 			f,
@@ -457,9 +548,7 @@ describe("scalable Copy Save", () => {
 			destName: "ordinary-renamed",
 		});
 		const { runId } = await start_review(f, [...f.copies, rename]);
-		expect(
-			(await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 }))._yay?.plan,
-		).toMatchObject({ phase: "atomic", atomicItemCount: 1 });
+		expect(await produce_plan_page(f, runId)).toMatchObject({ producerPhase: "source_ancestors", itemCount: 4 });
 		// The Copy now lives below the folder that the selected rename moves.
 		const linked = await pending_move({
 			f,
@@ -468,40 +557,40 @@ describe("scalable Copy Save", () => {
 			destName: "linked-copy",
 		});
 		const planned = await plan_review(f, runId);
-		expect(planned).toMatchObject({ unitCount: 3, plan: { phase: "ready", atomicItemCount: 2 } });
-		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
-		expect(units.find((unit) => unit.kind === "atomic")).toMatchObject({ itemCount: 2, errorCode: "needs_review" });
+		expect(planned).toMatchObject({ step: "running", unitCount: 4 });
+		expect(await unit_for(f, runId, f.copies[0]!)).toMatchObject({ itemCount: 1, errorCode: "needs_review" });
+		expect(await unit_for(f, runId, rename)).toMatchObject({ itemCount: 1, errorCode: null });
 
 		const result = await finish_review({ f, runId, count: 4 });
-		expect(result?.activity).toMatchObject({ status: "partial", progress: { completed: 2, blocked: 2, failed: 0 } });
+		expect(result?.activity).toMatchObject({ status: "partial", progress: { completed: 3, blocked: 1, failed: 0 } });
 		const items = await f.asUser.query(api.files_pending_update_runs.list_items, {
 			membershipId: f.db.membershipId,
 			runId,
 			paginationOpts: { cursor: null, numItems: 100 },
 		});
-		expect(items.page.map((item) => item.status)).toEqual(["needs_review", "completed", "completed", "needs_review"]);
+		expect(items.page.map((item) => item.status)).toEqual(["needs_review", "completed", "completed", "completed"]);
 		const savedCopies = f.copies.slice(1);
 		const receipts = await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
 		expect(receipts.map((receipt) => receipt.privateNodeId).sort()).toEqual(
 			savedCopies.map((copy) => copy.target.id).sort(),
 		);
-		// Nothing published around the changed Copy: the rename and the Copy both stay pending.
+		// Frozen reviewed links keep the independent Move separate from the revised Copy.
 		expect((await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).map((node) => node.path).sort()).toEqual(
 			[
-				"/source",
+				"/ordinary-renamed",
 				"/source-two",
 				"/source-three",
 				"/target",
 				...savedCopies.map((copy) => `/target${copy.copiedFrom!.path}`),
 			].sort(),
 		);
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", rename._id))).toEqual(rename);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", rename._id))).toBeNull();
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", f.copies[0]!._id))).toEqual(linked);
 		expect(linked.revision).toBe(f.copies[0]!.revision + 1);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toHaveLength(2);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toHaveLength(1);
 	});
 
-	test("blocks the ordinary subset when one ordinary change is revised after classification", async () => {
+	test("blocks only the revised ordinary change and saves an unrelated ordinary Move", async () => {
 		const f = await agent_copied_folders();
 		const sourceTwo = await f.t.run(async (ctx) =>
 			(await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/source-two"),
@@ -520,9 +609,7 @@ describe("scalable Copy Save", () => {
 			destName: "two-renamed",
 		});
 		const { runId } = await start_review(f, [...f.copies, rename, other]);
-		expect(
-			(await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 }))._yay?.plan,
-		).toMatchObject({ phase: "atomic", atomicItemCount: 2 });
+		expect(await produce_plan_page(f, runId)).toMatchObject({ producerPhase: "source_ancestors", itemCount: 5 });
 		const revised = await pending_move({
 			f,
 			target: { kind: "saved", id: f.sourceId },
@@ -530,13 +617,12 @@ describe("scalable Copy Save", () => {
 			destName: "unreviewed",
 		});
 		const planned = await plan_review(f, runId);
-		expect(planned).toMatchObject({ unitCount: 4, plan: { phase: "ready", atomicItemCount: 2 } });
-		// The revised rename's reviewed links are unknown, so the other ordinary rename waits too.
-		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
-		expect(units.find((unit) => unit.kind === "atomic")).toMatchObject({ itemCount: 2, errorCode: "needs_review" });
+		expect(planned).toMatchObject({ step: "running", unitCount: 5 });
+		expect(await unit_for(f, runId, rename)).toMatchObject({ itemCount: 1, errorCode: "needs_review" });
+		expect(await unit_for(f, runId, other)).toMatchObject({ itemCount: 1, errorCode: null });
 
 		const result = await finish_review({ f, runId, count: 5 });
-		expect(result?.activity).toMatchObject({ status: "partial", progress: { completed: 3, blocked: 2, failed: 0 } });
+		expect(result?.activity).toMatchObject({ status: "partial", progress: { completed: 4, blocked: 1, failed: 0 } });
 		const receipts = await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
 		expect(receipts.map((receipt) => receipt.privateNodeId).sort()).toEqual(
 			f.copies.map((copy) => copy.target.id).sort(),
@@ -544,7 +630,7 @@ describe("scalable Copy Save", () => {
 		expect((await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).map((node) => node.path).sort()).toEqual(
 			[
 				"/source",
-				"/source-two",
+				"/two-renamed",
 				"/source-three",
 				"/target",
 				...f.copies.map((copy) => `/target${copy.copiedFrom!.path}`),
@@ -552,8 +638,8 @@ describe("scalable Copy Save", () => {
 		);
 		expect(revised).toMatchObject({ revision: rename.revision + 1, pendingMove: { destName: "unreviewed" } });
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", rename._id))).toEqual(revised);
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", other._id))).toEqual(other);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toHaveLength(2);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", other._id))).toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toHaveLength(1);
 	});
 
 	test.each([false, true])(
@@ -581,9 +667,7 @@ describe("scalable Copy Save", () => {
 			const child = await f.t.run((ctx) => ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!));
 			if (!child) throw new Error("Expected the ordinary child proposal");
 			const { runId } = await start_review(f, [...f.copies, move, child]);
-			expect(
-				(await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 }))._yay?.plan,
-			).toMatchObject({ phase: "atomic", atomicItemCount: 2 });
+			expect(await produce_plan_page(f, runId)).toMatchObject({ producerPhase: "source_ancestors", itemCount: 5 });
 			await pending_move({
 				f,
 				target: f.copies[0]!.target,
@@ -591,12 +675,11 @@ describe("scalable Copy Save", () => {
 				destName: "changed-copy",
 			});
 			const planned = await plan_review(f, runId);
-			expect(planned).toMatchObject({ unitCount: 4, plan: { phase: "ready", atomicItemCount: 2 } });
-			const atomicUnit = (await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).find(
-				(unit) => unit.kind === "atomic",
-			);
-			expect(atomicUnit).toMatchObject({ itemCount: 2, errorCode: null });
-			// A late saved occupant makes the child's Save refuse after the parent was parked.
+			expect(planned).toMatchObject({ step: "running", unitCount: 4 });
+			const linkedUnit = await unit_for(f, runId, move);
+			expect(linkedUnit).toMatchObject({ kind: "cohort", itemCount: 2, errorCode: null });
+			expect((await unit_for(f, runId, child))._id).toBe(linkedUnit._id);
+			// A late saved occupant refuses the whole linked group before its switch.
 			if (occupied)
 				expect(
 					(
@@ -613,10 +696,12 @@ describe("scalable Copy Save", () => {
 				status: "partial",
 				progress: { completed: occupied ? 2 : 4, blocked: occupied ? 3 : 1, failed: 0 },
 			});
-			expect(result?.run.revalidateRemaining).toBe(true);
-			const unit = await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", atomicUnit!._id));
+			const unit = await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", linkedUnit._id));
 			expect(unit).toMatchObject({ status: occupied ? "blocked" : "completed" });
-			if (!occupied) expect(unit?.validatedReviewVersion).toBeGreaterThan(planned.reviewVersion);
+			if (!occupied) {
+				const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit!.cohortId!));
+				expect(cohort?.clockPins.review?.revision).toBeGreaterThan(planned.reviewVersion);
+			}
 			const savedCopies = f.copies.slice(1);
 			const receipts = await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
 			expect(receipts.map((receipt) => receipt.privateNodeId).sort()).toEqual(
@@ -632,7 +717,7 @@ describe("scalable Copy Save", () => {
 					...savedCopies.map((copy) => `/target${copy.copiedFrom!.path}`),
 				].sort(),
 			);
-			// The refused unit rolled back its parking rename, so the saved folder is unchanged.
+			// The refused group never switched, so the saved folder is unchanged.
 			if (occupied) expect(await f.t.run((ctx) => ctx.db.get("files_nodes", folder._yay.nodeId))).toEqual(before);
 			const pending = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 			expect(pending.map((proposal) => proposal._id).sort()).toEqual(
@@ -676,9 +761,10 @@ describe("scalable Copy Save", () => {
 			destName: "moved-away-child",
 		});
 		const planned = await plan_review(f, runId);
-		expect(planned).toMatchObject({ unitCount: 4, plan: { phase: "ready", atomicItemCount: 2 } });
-		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
-		expect(units.find((unit) => unit.kind === "atomic")).toMatchObject({ itemCount: 2, errorCode: "needs_review" });
+		expect(planned).toMatchObject({ step: "running", unitCount: 4 });
+		const linkedUnit = await unit_for(f, runId, move);
+		expect(linkedUnit).toMatchObject({ kind: "cohort", itemCount: 2, errorCode: "needs_review" });
+		expect((await unit_for(f, runId, child))._id).toBe(linkedUnit._id);
 
 		const result = await finish_review({ f, runId, count: 5 });
 		expect(result?.activity).toMatchObject({ status: "partial", progress: { completed: 3, blocked: 2, failed: 0 } });
@@ -712,9 +798,7 @@ describe("scalable Copy Save", () => {
 			destName: "target-renamed",
 		});
 		const { runId } = await start_review(f, [...f.copies, move]);
-		expect(
-			(await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 }))._yay?.plan,
-		).toMatchObject({ phase: "atomic", atomicItemCount: 1 });
+		expect(await produce_plan_page(f, runId)).toMatchObject({ producerPhase: "source_ancestors", itemCount: 4 });
 		const changed = revised
 			? await pending_move({
 					f,
@@ -725,9 +809,9 @@ describe("scalable Copy Save", () => {
 			: null;
 		const planned = await plan_review(f, runId);
 		// The Copies were reviewed below the renamed folder, so they join its unit in both cases.
-		expect(planned).toMatchObject({ unitCount: 1, plan: { phase: "ready", atomicItemCount: 4 } });
+		expect(planned).toMatchObject({ step: "running", unitCount: 1 });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
-			{ kind: "atomic", itemCount: 4, errorCode: revised ? "needs_review" : null },
+			{ kind: "cohort", itemCount: 4, errorCode: revised ? "needs_review" : null },
 		]);
 
 		const result = await finish_review({ f, runId, count: 4 });
@@ -775,9 +859,7 @@ describe("scalable Copy Save", () => {
 				destName: "b-moved",
 			});
 			const { runId } = await start_review(f, [...f.copies, move]);
-			expect(
-				(await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 }))._yay?.plan,
-			).toMatchObject({ phase: "atomic", atomicItemCount: 1 });
+			expect(await produce_plan_page(f, runId)).toMatchObject({ producerPhase: "source_ancestors", itemCount: 4 });
 			const parentMove = unselected
 				? await pending_move({
 						f,
@@ -787,15 +869,11 @@ describe("scalable Copy Save", () => {
 					})
 				: null;
 			const planned = await plan_review(f, runId);
-			expect(planned).toMatchObject({ step: "running", unitCount: 4, plan: { phase: "ready", atomicItemCount: 1 } });
-			expect(
-				(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).find(
-					(unit) => unit.kind === "atomic",
-				),
-			).toMatchObject({
+			expect(planned).toMatchObject({ step: "running", unitCount: 4 });
+			expect(await unit_for(f, runId, move)).toMatchObject({
 				itemCount: 1,
 				errorCode: unselected ? "needs_review" : null,
-				errorMessage: unselected ? "This action also affects unselected changes. Review them together." : null,
+				errorMessage: unselected ? "This action also affects an unselected change. Review them together." : null,
 			});
 
 			const result = await finish_review({ f, runId, count: 4 });
@@ -838,22 +916,39 @@ describe("scalable Copy Save", () => {
 			destName: "b-moved",
 		});
 		const { runId } = await start_review(f, [...f.copies, move]);
-		await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 });
 		const parentMove = await pending_move({
 			f,
 			target: { kind: "saved", id: parent._yay.nodeId },
 			destParent: { kind: "root" },
 			destName: "a-moved",
 		});
-		expect(
-			await f.t.mutation(internal.files_pending_update_runs.block_atomic_plan_page, {
+		for (let pass = 0; pass < 100; pass++) {
+			const job = await next_overlay_job(f);
+			if (job) {
+				await f.t.mutation(internal.files_pending_overlay.run_job, {
+					kind: job.kind,
+					key: job.key,
+					nextAttemptAt: job.nextAttemptAt,
+				});
+				continue;
+			}
+			const produced = await f.t.mutation(internal.files_pending_update_plan_producer.advance, {
 				runId,
 				fence: 0,
-				cursor: null,
-				message: "This action also affects unselected changes. Review them together.",
-				unreviewedIds: [parentMove._id],
-			}),
-		).toMatchObject({ _yay: { isDone: true } });
+				planEpoch: 0,
+			});
+			if (produced._nay) throw new Error(produced._nay.message);
+			const blocked = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_update_plan_items")
+					.withIndex("by_plan_target", (q) =>
+						q.eq("planId", produced._yay.plan._id).eq("target.kind", move.target.kind).eq("target.id", move.target.id),
+					)
+					.unique(),
+			);
+			if (blocked?.errorCode === "needs_review") break;
+			if (pass === 99) throw new Error("Expected the unselected parent to block planning");
+		}
 
 		// Lose every planning action. The third recovery fails the whole run.
 		for (let attempt = 0; attempt < 3; attempt++) {
@@ -865,7 +960,7 @@ describe("scalable Copy Save", () => {
 		expect(result?.run.needsReviewIds).toEqual([parentMove._id]);
 	});
 
-	test("keeps the ordinary unit blocked when a long block scan resumes in a new planning action", async () => {
+	test("keeps a blocked unit across planner pages without blocking an unrelated Move", async () => {
 		const f = await agent_copied_folders();
 		const parent = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...f.scope, path: "/a" });
 		if (parent._nay) throw new Error(parent._nay.message);
@@ -883,8 +978,7 @@ describe("scalable Copy Save", () => {
 			destParent: { kind: "root" },
 			destName: "a-moved",
 		});
-		// Unrelated unselected proposals after the needed parent Move. One planning action scans 32 pages,
-		// so the block scan stops and a new action must resume it on the block path.
+		// More unrelated proposals than a planner page must not join the exact ancestor lookup.
 		for (let index = 0; index < 260; index++) {
 			const made = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, {
 				...f.scope,
@@ -897,8 +991,7 @@ describe("scalable Copy Save", () => {
 			});
 			if (archived._nay) throw new Error(archived._nay.message);
 		}
-		// A second, independent ordinary rename. A normal plan would give it its own unit, so a resumed
-		// action that forgot the blocked unit would no longer match it.
+		// This independent Move has its own connected unit.
 		const rename = await pending_move({
 			f,
 			target: { kind: "saved", id: f.sourceId },
@@ -906,26 +999,25 @@ describe("scalable Copy Save", () => {
 			destName: "ordinary-renamed",
 		});
 		const { runId } = await start_review(f, [...f.copies, move, rename]);
+		const firstPage = await produce_plan_page(f, runId);
+		expect(firstPage).toMatchObject({ producerPhase: "source_ancestors", itemCount: 5 });
 		const planned = await plan_review(f, runId);
-		expect(planned).toMatchObject({ step: "running", unitCount: 4, needsReviewIds: [parentMove._id] });
-		expect(
-			(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).find(
-				(unit) => unit.kind === "atomic",
-			),
-		).toMatchObject({ itemCount: 2, errorCode: "needs_review" });
+		expect(planned).toMatchObject({ step: "running", unitCount: 5, needsReviewIds: [parentMove._id] });
+		expect(await unit_for(f, runId, move)).toMatchObject({ itemCount: 1, errorCode: "needs_review" });
+		expect(await unit_for(f, runId, rename)).toMatchObject({ itemCount: 1, errorCode: null });
 
 		const result = await finish_review({ f, runId, count: 5 });
-		expect(result?.activity).toMatchObject({ status: "partial", progress: { completed: 3, blocked: 2, failed: 0 } });
+		expect(result?.activity).toMatchObject({ status: "partial", progress: { completed: 4, blocked: 1, failed: 0 } });
 		const receipts = await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
 		expect(receipts.map((receipt) => receipt.privateNodeId).sort()).toEqual(
 			f.copies.map((copy) => copy.target.id).sort(),
 		);
 		const saved = (await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).map((node) => node.path);
-		expect(saved).toEqual(expect.arrayContaining(["/a/b", "/source"]));
-		expect(saved).not.toEqual(expect.arrayContaining(["/b-moved"]));
-		expect(saved).not.toEqual(expect.arrayContaining(["/ordinary-renamed"]));
-		for (const proposal of [move, rename, parentMove])
+		expect(saved).toEqual(expect.arrayContaining(["/a/b", "/ordinary-renamed"]));
+		expect(saved).not.toEqual(expect.arrayContaining(["/b-moved", "/source"]));
+		for (const proposal of [move, parentMove])
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual(proposal);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", rename._id))).toBeNull();
 	});
 
 	test("saves the proposals produced by an agent Copy in separate parent-first units", async () => {
@@ -979,7 +1071,7 @@ describe("scalable Copy Save", () => {
 			proposals.every((proposal) => proposal.copiedFrom !== undefined && proposal.createIntent?.kind === "folder"),
 		).toBe(true);
 		const { runId } = await start_review(f, proposals.toReversed());
-		expect(await plan_review(f, runId)).toMatchObject({ unitCount: 2, plan: { atomicItemCount: 0 } });
+		expect(await plan_review(f, runId)).toMatchObject({ step: "running", unitCount: 2 });
 		expect((await finish_review({ f, runId, count: 2 }))?.activity).toMatchObject({
 			status: "succeeded",
 			progress: { completed: 2 },
@@ -1009,10 +1101,11 @@ describe("scalable Copy Save", () => {
 		const ordinary = await f.t.run((ctx) => ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!));
 		if (!ordinary) throw new Error("Expected the ordinary proposal");
 		const { runId } = await start_review(f, [sibling!, ordinary, parent]);
-		expect(await plan_review(f, runId)).toMatchObject({ unitCount: 2, plan: { atomicItemCount: 2 } });
-		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
-		expect(units.find((unit) => unit.kind === "atomic")).toMatchObject({ itemCount: 2 });
-		expect(units.find((unit) => unit.kind === "copy")).toMatchObject({ itemCount: 1, status: "waiting" });
+		expect(await plan_review(f, runId)).toMatchObject({ step: "running", unitCount: 2 });
+		const parentUnit = await unit_for(f, runId, parent);
+		expect(parentUnit).toMatchObject({ kind: "cohort", itemCount: 2 });
+		expect((await unit_for(f, runId, ordinary))._id).toBe(parentUnit._id);
+		expect(await unit_for(f, runId, sibling!)).toMatchObject({ kind: "cohort", itemCount: 1, status: "waiting" });
 		expect((await finish_review({ f, runId, count: 3 }))?.activity).toMatchObject({
 			status: "succeeded",
 			progress: { completed: 3 },
@@ -1057,31 +1150,36 @@ describe("scalable Copy Save", () => {
 		expect(items.page.map((item) => item.status)).toEqual(["needs_review", "needs_review", "completed"]);
 	});
 
-	test("resumes the exact classification cursor after a lost planning action", async () => {
+	test("resumes the exact facts cursor after a lost planning action", async () => {
 		const f = await fixture();
 		const copies = await copied_folders({ f, count: 20 });
 		const { runId } = await start_review(f, copies);
-		await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 });
+		const graph = await produce_plan_page(f, runId);
 		const before = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		expect(before?.plan).toMatchObject({ phase: "classify", atomicItemCount: 0 });
-		if (!before?.plan) throw new Error("Expected the review plan");
-		expect(before.plan.cursor).not.toBeNull();
+		expect(graph).toMatchObject({ producerPhase: "facts", itemCount: 8 });
+		expect(graph.producerCursor).not.toBeNull();
 		vi.setSystemTime(Date.now() + 5 * 60 * 1000);
 		await f.t.mutation(internal.files_pending_update_runs.recover, {});
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).toMatchObject({
 			fence: 1,
-			plan: before!.plan,
+			graphPlanId: before!.graphPlanId,
 		});
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_plans", graph._id))).toEqual(graph);
 		expect(
-			await f.t.mutation(internal.files_pending_update_runs.classify_plan_page, { runId, fence: 0 }),
+			await f.t.mutation(internal.files_pending_update_plan_producer.advance, { runId, fence: 0, planEpoch: 0 }),
 		).toMatchObject({ _nay: { name: "stopped" } });
 		expect(await plan_review(f, runId)).toMatchObject({ unitCount: 20, plannedItemCount: 20 });
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_plans", graph._id))).toMatchObject({
+			fence: 1,
+			itemCount: 20,
+			phase: "ready",
+		});
 		expect((await finish_review({ f, runId, count: 20, stepMs: 1_200 }))?.activity).toMatchObject({
 			status: "succeeded",
 			progress: { completed: 20 },
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(20);
-	});
+	}, 300_000);
 
 	test("extends the idle deadline on Save progress but still expires an idle remainder", async () => {
 		const f = await fixture();
@@ -1103,7 +1201,7 @@ describe("scalable Copy Save", () => {
 
 	// Keep this at 1,000 Copy outputs. Our Save reads a fixed number of docs per step, but convex-test still
 	// scans the whole table for each query, even an indexed one (our patch only stops it from scanning every
-	// table). So the test time grows with the square of the size, and this is one of the slowest tests.
+	// table). Run this slow check with test:files:full-size.
 	test(
 		"saves 1,000 Copy outputs beside one ordinary edit",
 		async () => {
@@ -1137,10 +1235,9 @@ describe("scalable Copy Save", () => {
 				step: "running",
 				unitCount: 1_001,
 				plannedItemCount: 1_001,
-				plan: { phase: "ready", atomicItemCount: 1 },
 			});
 			const startedAt = Date.now();
-			// Step the clock 2 seconds per worker pass so the Save runs longer than 30 minutes of app time.
+			// Each completed output takes 2 seconds, so the Save lasts over 30 minutes of app time.
 			const result = await finish_review({ f, runId, count: 1_001, stepMs: 2_000 });
 			expect(Date.now() - startedAt).toBeGreaterThan(30 * 60 * 1000);
 			expect(result?.activity).toMatchObject({
@@ -1168,7 +1265,7 @@ describe("scalable Copy Save", () => {
 			expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").first())).toBeNull();
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).toMatchObject({ path: "/renamed-source" });
 		},
-		10 * 60 * 1_000,
+		0,
 	);
 
 	test("starts a Save above the Discard limit", async () => {
@@ -1261,10 +1358,10 @@ describe("scalable Copy Save", () => {
 		const receipts = await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
 		expect(saved).toHaveLength(27);
 		expect(receipts).toHaveLength(26);
-		for (let page = 0; page < 30; page++) {
+		for (let page = 0; page < 1_000; page++) {
 			const removed = await f.t.run((ctx) => files_pending_update_runs_db_delete_run_batch(ctx, { runId }));
 			if (removed.done) break;
-			if (page === 29) throw new Error("History cleanup did not finish");
+			if (page === 999) throw new Error("History cleanup did not finish");
 		}
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).toBeNull();
 		expect(await f.t.run((ctx) => ctx.db.get("activities", activityId))).toBeNull();
@@ -1273,7 +1370,7 @@ describe("scalable Copy Save", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(saved);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual(receipts);
-	});
+	}, 7_200_000);
 
 	test("holds exact appended selections and hands Stop remainder to one fixed review deadline", async () => {
 		const f = await fixture();

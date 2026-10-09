@@ -14,6 +14,15 @@ import type { Merge } from "type-fest";
 
 export const files_ROOT_ID = "root" as const;
 
+export type files_SavedStream =
+	| { kind: "normal"; generation: number }
+	| {
+			kind: "cohort";
+			cohortId: app_convex_Id<"files_move_cohorts">;
+			view: "before" | "after";
+			generation: number;
+	  };
+
 export type files_PendingTarget = app_convex_Doc<"files_pending_updates">["target"];
 export type files_PendingParent = app_convex_Doc<"files_pending_nodes">["parent"];
 export type files_VisibleEntry =
