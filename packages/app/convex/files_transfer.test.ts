@@ -379,7 +379,9 @@ describe("start", () => {
 				.status,
 		).toBe("running");
 	});
-	test.each([200, 201])("starts a copy of %s selected roots across intake pages", async (count) => {
+	// 200 fills the last intake page exactly. 201 roots are in files_transfer_selection.test.ts.
+	test("starts a copy of 200 selected roots across intake pages", async () => {
+		const count = 200;
 		const paths = Array.from({ length: count }, (_entry, index) => `/root-${index.toString().padStart(3, "0")}`);
 		const fixture = await create_folder_fixture(paths);
 		const { t, db, asUser, folders } = fixture;

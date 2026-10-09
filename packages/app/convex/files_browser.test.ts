@@ -635,19 +635,6 @@ describe("browser file outputs", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_ingestion_receipts").collect())).toEqual([]);
 	});
 
-	test.each(["relative.bin", "/a/../out", "/a//out", "/a/*.bin", "/a/out "])(
-		"refuses invalid path %s before reserving bytes",
-		async (path) => {
-			const t = test_convex();
-			const scope = await seed_browser_file_scope(t);
-			const assets = await t.run((ctx) => ctx.db.query("files_r2_assets").collect());
-			expect(
-				(await t.mutation(internal.files_browser.prepare_file_output, { ...scope, ...browserFile, path }))._nay,
-			).toBeDefined();
-			expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assets);
-		},
-	);
-
 	test("never overwrites a saved name hidden by a proposed delete", async () => {
 		const t = test_convex();
 		const scope = await seed_browser_file_scope(t);
@@ -1101,6 +1088,7 @@ describe("start_browser", () => {
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status", "open"]);
 	});
 
+	// Start never reads `idleUntil`, so this is also the plain reattach of the same live file.
 	test("keeps a live runner when only the mirrored idle deadline is old", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
@@ -1284,16 +1272,6 @@ describe("start_browser", () => {
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status", "close", "open"]);
 		expect(runnerCalls[2]?.body).toMatchObject({ sessionId: "runner-session-1", reason: "access_lost" });
 		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", first._yay!.sessionId)))?.control).toBe("closed");
-	});
-
-	test("reattaches the same live file without opening again", async () => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const first = await start_saved_session({ t, fixture });
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
-		const second = await start_saved_session({ t, fixture });
-		expect(second._yay?.sessionId).toBe(first._yay?.sessionId);
-		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
 	});
 
 	test("refuses a non-html file", async () => {

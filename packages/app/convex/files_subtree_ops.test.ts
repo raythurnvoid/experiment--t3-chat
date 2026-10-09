@@ -20,8 +20,8 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-async function fixture() {
-	const t = test_convex({ transactionLimits: true });
+async function fixture(transactionLimits: NonNullable<Parameters<typeof test_convex>[0]>["transactionLimits"] = true) {
+	const t = test_convex({ transactionLimits });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	return {
 		t,
@@ -214,15 +214,16 @@ describe("files_subtree_ops_db_find_blocker", () => {
 
 describe("advance", () => {
 	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
-		const { t, scope } = await fixture();
+		// A lower read limit makes the step stop after fewer rows. The step stops at 25% of the limit left.
+		const { t, scope } = await fixture({ databaseQueries: 800 });
 		const opId = await t.run((ctx) =>
 			insert_scope_op(ctx, { scope, treePath: "/", status: "running", blockedByOpId: null }),
 		);
 		// Each deleted folder costs the step 2 reads and each empty folder 3. Together they are more than
-		// the 4,096 reads one mutation may do.
+		// the 800 reads this test allows one mutation.
 		for (const isDeleted of [true, false]) {
 			await t.run(async (ctx) => {
-				for (let index = 0; index < 1200; index++) {
+				for (let index = 0; index < 240; index++) {
 					const name = `${isDeleted ? "deleted" : "empty"}-${index}`;
 					const nodeId = await ctx.db.insert("files_nodes", {
 						...test_mocks.files.base(),
@@ -241,7 +242,7 @@ describe("advance", () => {
 					await ctx.db.insert("files_subtree_op_nodes", {
 						opId,
 						// Take these rows before the walk rows, which get small numbers.
-						sequence: 1_000_000 + (isDeleted ? 0 : 1200) + index,
+						sequence: 1_000_000 + (isDeleted ? 0 : 240) + index,
 						nodeId,
 						nodeDone: true,
 						cursor: null,
@@ -272,7 +273,7 @@ describe("advance", () => {
 		const afterFirstStep = await read_walk();
 		expect(afterFirstStep).toMatchObject({ step: 1 });
 		expect(afterFirstStep.queued).toBeGreaterThan(0);
-		expect(afterFirstStep.queued).toBeLessThan(2400);
+		expect(afterFirstStep.queued).toBeLessThan(480);
 
 		for (let count = 0; count < 10 && (await read_walk()).op; count++) {
 			await t.mutation(internal.files_subtree_ops.advance, { opId, step: (await read_walk()).step! });
@@ -288,7 +289,7 @@ describe("advance", () => {
 				f,
 				fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null },
 			});
-			for (let index = 0; index < 30; index++) {
+			for (let index = 0; index < 4; index++) {
 				const child = await insert_node({
 					ctx,
 					f,
@@ -315,9 +316,9 @@ describe("advance", () => {
 			return top;
 		});
 
-		// The queue holds `/top`, its 30 folders, and one page of 50 folders of the folder the walk is in.
-		// If the walk took the oldest row first, the queue would hold the folders of every `/top/d*` folder
-		// at once.
+		// The queue holds `/top`, its 4 folders, and one page of 50 folders of the folder the walk is in.
+		// If the walk took the oldest row first, it would finish `/top/d0` before it walks into its folders,
+		// so the queue would hold all 60 folders of `/top/d0` and the other `/top/d*` folders.
 		let largestQueue = 0;
 		await restrict_to_end({
 			f,
@@ -326,7 +327,7 @@ describe("advance", () => {
 				largestQueue = Math.max(largestQueue, queued.length);
 			},
 		});
-		expect(largestQueue).toBeLessThanOrEqual(1 + 30 + 50);
+		expect(largestQueue).toBeLessThanOrEqual(1 + 4 + 50);
 
 		const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
 		expect(nodes.filter((node) => node.restrictedScopeNodeId !== top._id)).toEqual([]);

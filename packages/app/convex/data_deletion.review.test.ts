@@ -1711,8 +1711,9 @@ for (const path of ["queue", "admin"] as const) {
 	});
 }
 
-// Workspace is content-only by contract. Organization and reset also exercise structure cleanup.
-for (const path of ["workspace", "organization", "reset"] as const) {
+// Workspace is content-only by contract. Reset also exercises structure cleanup. The organization
+// path runs every content family in "organization structure at batch size one" below.
+for (const path of ["workspace", "reset"] as const) {
 	test(`finishes every ${path} content family with batch size one`, async () => {
 		const t = test_convex({ transactionLimits: true });
 		vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined as never);
@@ -1721,20 +1722,8 @@ for (const path of ["workspace", "organization", "reset"] as const) {
 				clerkUserId: null,
 				displayName: `Every ${path} family`,
 			});
-			let organizationId = user.defaultOrganizationId;
+			const organizationId = user.defaultOrganizationId;
 			let workspaceId = user.defaultWorkspaceId;
-			if (path === "organization") {
-				const organization = await organizations_db_create(ctx, {
-					userId: user.userId,
-					name: "review-org",
-					description: "",
-					now: Date.now(),
-					default: false,
-				});
-				if (organization._nay) throw new Error(organization._nay.message);
-				organizationId = organization._yay.organizationId;
-				workspaceId = organization._yay.defaultWorkspaceId;
-			}
 			if (path === "workspace") {
 				const extra = await organizations_db_create_workspace(ctx, {
 					userId: user.userId,
@@ -1770,15 +1759,10 @@ for (const path of ["workspace", "organization", "reset"] as const) {
 							userId: seeded.user.userId,
 							_test_batchSize: 1,
 						})
-					: path === "organization"
-						? await t.mutation(internal.data_deletion.process_organization_deletion_request, {
-								requestId: seeded.requestId!,
-								_test_batchSize: 1,
-							})
-						: await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
-								requestId: seeded.requestId!,
-								_test_batchSize: 1,
-							});
+					: await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
+							requestId: seeded.requestId!,
+							_test_batchSize: 1,
+						});
 			if (result.done) {
 				done = true;
 				passes += 1;
@@ -1804,8 +1788,6 @@ for (const path of ["workspace", "organization", "reset"] as const) {
 			).filter((row) => row.quotaName === "stored_file_bytes"),
 		);
 		expect(quotaRows).toEqual([]);
-		if (path === "organization")
-			expect(await t.run((ctx) => ctx.db.get("organizations", seeded.organizationId))).toBeNull();
 		if (path === "reset") {
 			const workspace = await t.run((ctx) => ctx.db.get("organizations_workspaces", seeded.workspaceId));
 			expect(workspace).not.toBeNull();
@@ -2013,6 +1995,9 @@ describe("organization structure at batch size one", () => {
 				),
 			);
 			expect(remainingStructure.filter((family) => family.count > 0)).toEqual([]);
+			for (const tag of ["structure-0", "structure-1"])
+				for (const index of [0, 1])
+					expect(volumeDeleteObjectSpy).toHaveBeenCalledWith(expect.anything(), `volumes/review-${tag}/${index}`);
 			expect(await t.run((ctx) => ctx.db.get("organizations_integration_policies", seeded.policyId))).toBeNull();
 			expect(seeded.retainedRequests).toHaveLength(2);
 			for (const request of seeded.retainedRequests) {

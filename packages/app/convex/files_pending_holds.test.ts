@@ -194,21 +194,19 @@ describe("proposal hold expiry", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).not.toBeNull();
 	});
 
-	test.each(["succeeded", "partial", "failed", "canceled", "timed_out"] as const)(
-		"%s fixes one terminal window and replay cannot extend it",
-		async (status) => {
-			const f = await fixture();
-			const d = await draft(f);
-			await hold({ f, d });
-			const endedAt = Date.now();
-			await finish(f, status);
-			vi.setSystemTime(endedAt + 1000);
-			await finish(f, status);
-			expect((await f.t.run((ctx) => ctx.db.get("files_transfer_runs", f.producer.id)))?.outputReviewUntil).toBe(
-				endedAt + FOUR_HOURS,
-			);
-		},
-	);
+	// The finish reads only whether the Activity ended, not how, so one terminal status is enough.
+	test("a finish fixes one terminal window and replay cannot extend it", async () => {
+		const f = await fixture();
+		const d = await draft(f);
+		await hold({ f, d });
+		const endedAt = Date.now();
+		await finish(f, "partial");
+		vi.setSystemTime(endedAt + 1000);
+		await finish(f, "partial");
+		expect((await f.t.run((ctx) => ctx.db.get("files_transfer_runs", f.producer.id)))?.outputReviewUntil).toBe(
+			endedAt + FOUR_HOURS,
+		);
+	});
 
 	test("source release keeps another role on the same proposal and does not change its deadline", async () => {
 		const f = await fixture();

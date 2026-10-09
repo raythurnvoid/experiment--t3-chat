@@ -96,7 +96,7 @@ import { files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_table_filter_order_field, type files_table_Filter } from "../shared/files-table.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
-import { insert_tree_node, seed_tree_access_fixture, seed_folder_table, type Page } from "./files_nodes.setup.test.ts";
+import { insert_tree_node, seed_tree_access_fixture, seed_folder_table } from "./files_nodes.setup.test.ts";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
 const streamTextMock = vi.hoisted(() => vi.fn());
@@ -646,11 +646,11 @@ describe("list_tree_children", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read.
-	test("an owner restricted page whose end cursor holds more than 1,000 rows asks for a split and reads no row", async () => {
+	// runs before any row read, not the 1,000 guard: a page asks for at most 200 rows.
+	test("an owner restricted page whose end cursor holds more rows than it asks for asks for a split and reads no row", async () => {
 		const { t, db, asOwner, parentId, insert_children } = await seed_folder_table();
 		const ids = await insert_children(
-			Array.from({ length: 1003 }, (_, index) => ({
+			Array.from({ length: 103 }, (_, index) => ({
 				name: `r-${String(index).padStart(4, "0")}`,
 				kind: "folder" as const,
 				updatedAt: 1,
@@ -667,14 +667,12 @@ describe("list_tree_children", () => {
 				paginationOpts,
 			});
 
-		// Pages hold at most 200 rows, so 5 pages and 2 more rows put the end cursor after row 1,002.
-		let cursor: string | null = null;
-		for (let index = 0; index < 5; index++) cursor = (await read({ numItems: 200, cursor })).continueCursor;
-		const endCursor = (await read({ numItems: 2, cursor })).continueCursor;
+		// 100 rows and 2 more put the end cursor after row 102: one more than `numItems` + 1.
 		const first = await read({ numItems: 100, cursor: null });
+		const endCursor = (await read({ numItems: 2, cursor: first.continueCursor })).continueCursor;
 
 		// A SYSTEM author makes the tree rows throw, so this page proves the guard runs before any row read.
-		await t.run((ctx) => ctx.db.patch("files_nodes", ids[125]!, { createdBy: users_SYSTEM_AUTHOR }));
+		await t.run((ctx) => ctx.db.patch("files_nodes", ids[101]!, { createdBy: users_SYSTEM_AUTHOR }));
 		expect(await read({ numItems: 100, cursor: null, endCursor })).toEqual({
 			page: [],
 			isDone: false,
@@ -1018,14 +1016,15 @@ describe("list_tree_shared_roots", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read. A cost test under `list_tree_children_shared` checks the guard number.
-	test("a page whose end cursor holds more than 187 rows asks for a split and reads no row", async () => {
+	// runs before any row read, not the 187 guard. A cost test under `list_tree_children_shared`
+	// checks the guard number.
+	test("a page whose end cursor holds more rows than it asks for asks for a split and reads no row", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const ids = await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			const nodeIds: Array<Id<"files_nodes">> = [];
-			for (let index = 0; index < 252; index++) {
+			for (let index = 0; index < 102; index++) {
 				const nodeId = await insert_tree_node({
 					ctx,
 					owner: f.owner,
@@ -1057,14 +1056,13 @@ describe("list_tree_shared_roots", () => {
 				paginationOpts,
 			});
 
-		// The member's shares by name: `granted`, the 252 new ones, then `shared`. Read 252 rows to get
-		// the cursor right after the last new one.
+		// The member's shares by name: `granted`, the 102 new ones, then `shared`. Read 100 rows and 2
+		// more to get the cursor right after row 102: one more than `numItems` + 1.
 		const first = await read_page({ numItems: 100, cursor: null });
-		const second = await read_page({ numItems: 100, cursor: first.continueCursor });
-		const endCursor = (await read_page({ numItems: 52, cursor: second.continueCursor })).continueCursor;
+		const endCursor = (await read_page({ numItems: 2, cursor: first.continueCursor })).continueCursor;
 
 		// A SYSTEM author makes the tree rows throw, so this page proves the guard runs before any row read.
-		await t.run((ctx) => ctx.db.patch("files_nodes", ids[125]!, { createdBy: users_SYSTEM_AUTHOR }));
+		await t.run((ctx) => ctx.db.patch("files_nodes", ids[100]!, { createdBy: users_SYSTEM_AUTHOR }));
 		expect(await read_page({ numItems: 100, cursor: null, endCursor })).toEqual({
 			page: [],
 			isDone: false,
@@ -13473,45 +13471,46 @@ describe("list_tree_children_sorted", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read, not the guard number. The cost test below checks the guard numbers.
+	// runs before any row read, not the guard number. A page asks for at most 200 rows, under every
+	// guard, so only that mark can trip the split here. The cost test below checks the guard numbers.
 	test.each([
-		{ restricted: false, field: "metadata.status", guard: 1800 },
-		{ restricted: true, field: "metadata.status", guard: 700 },
-		{ restricted: true, field: "name", guard: 1000 },
+		{ restricted: false, field: "metadata.status" },
+		{ restricted: true, field: "metadata.status" },
+		{ restricted: true, field: "name" },
 	])(
-		"a page whose end cursor holds more than $guard rows asks for a split and reads no row ($field, restricted $restricted)",
-		async ({ restricted, field, guard }) => {
+		"a page whose end cursor holds more rows than it asks for asks for a split and reads no row ($field, restricted $restricted)",
+		async ({ restricted, field }) => {
 			const { t, insert_children, set_metadata, read_page } = await seed_folder_table();
-			const names = Array.from({ length: guard + 2 }, (_, index) => `n-${String(index).padStart(4, "0")}.md`);
+			const names = Array.from({ length: 103 }, (_, index) => `n-${String(index).padStart(4, "0")}.md`);
 			const ids = await insert_children(
 				names.map((name) => ({ name, kind: "file" as const, updatedAt: 1, restricted })),
 			);
 			if (field !== "name") await set_metadata(ids.map((id) => [id, [{ key: "status", value: "open" }]]));
 			const sort = { field, direction: "asc" as const };
 
-			// Read `guard` rows, then one more, to get the cursor right after row `guard + 1`.
-			let cursor: string | null = null;
-			let firstCursor: string | null = null;
-			for (let read = 0; read < guard; read += 100) {
-				const page: Page = await read_page({
+			// Read 100 rows, then 2 more, to get the cursor right after row 102: one more than `numItems` + 1.
+			const first = await read_page({
+				kind: "file",
+				sort,
+				restricted,
+				paginationOpts: { numItems: 100, cursor: null },
+			});
+			expect(first.page).toHaveLength(100);
+			const endCursor = (
+				await read_page({
 					kind: "file",
 					sort,
 					restricted,
-					paginationOpts: { numItems: 100, cursor },
-				});
-				expect(page.page).toHaveLength(100);
-				cursor = page.continueCursor;
-				firstCursor ??= cursor;
-			}
-			const endCursor = (await read_page({ kind: "file", sort, restricted, paginationOpts: { numItems: 1, cursor } }))
-				.continueCursor;
+					paginationOpts: { numItems: 2, cursor: first.continueCursor },
+				})
+			).continueCursor;
 
 			// A field doc whose node is gone makes a node read throw, and a SYSTEM author makes the tree
 			// rows throw. So this page proves the guard runs before any row read.
 			await t.run((ctx) =>
 				field === "name"
-					? ctx.db.patch("files_nodes", ids[guard / 2]!, { createdBy: users_SYSTEM_AUTHOR })
-					: ctx.db.delete("files_nodes", ids[guard / 2]!),
+					? ctx.db.patch("files_nodes", ids[101]!, { createdBy: users_SYSTEM_AUTHOR })
+					: ctx.db.delete("files_nodes", ids[101]!),
 			);
 			expect(
 				await read_page({ kind: "file", sort, restricted, paginationOpts: { numItems: 100, cursor: null, endCursor } }),
@@ -13527,7 +13526,7 @@ describe("list_tree_children_sorted", () => {
 				kind: "file",
 				sort,
 				restricted,
-				paginationOpts: { numItems: 200, cursor: null, endCursor: firstCursor! },
+				paginationOpts: { numItems: 200, cursor: null, endCursor: first.continueCursor },
 			});
 			expect(small.page.map((row) => row.name)).toEqual(names.slice(0, 100));
 		},

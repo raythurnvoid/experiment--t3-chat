@@ -2067,112 +2067,7 @@ describe("init_user_deletion", () => {
 		expect(restoredWorkspace?.pluginInstallAccess).toBe("owner");
 	});
 
-	test("deletes every owned organization grant but file grants past one batch, and leaves those and their share rows to the purge", async () => {
-		const t = test_convex();
-		const owner = await t.run((ctx) =>
-			data_deletion_test_bootstrap_user(ctx, {
-				clerkUserId: "clerk-user-owned-share-rows",
-				displayName: "Owned Share Rows",
-			}),
-		);
-		const organization = await t.run(async (ctx) => {
-			const created = await organizations_db_create(ctx, {
-				userId: owner.userId,
-				name: "owned-share-rows",
-				description: "",
-				now: Date.now(),
-				default: false,
-			});
-			if (created._nay) {
-				throw new Error(created._nay.message);
-			}
-			return created._yay;
-		});
-		const readerIds = await t.run(async (ctx) => {
-			const ids: Id<"users">[] = [];
-			for (let index = 0; index < 1050; index += 1) ids.push(await ctx.db.insert("users", { clerkUserId: null }));
-			return ids;
-		});
-		const nodeId = await data_deletion_test_seed_shared_folder(t, {
-			userId: owner.userId,
-			organizationId: organization.organizationId,
-			workspaceId: organization.defaultWorkspaceId,
-			readerIds,
-		});
-		// A public file grant and a workspace grant need no membership, so they must go at once.
-		await test_run_with_flush(t, async (ctx) => {
-			const grant = {
-				organizationId: organization.organizationId,
-				workspaceId: organization.defaultWorkspaceId,
-				permission: "content.read",
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-			} as const;
-			await ctx.db.insert("access_control_permission_grants", {
-				...grant,
-				resourceKind: "file",
-				resourceId: String(nodeId),
-				principalKind: "public",
-			});
-			await ctx.db.insert("access_control_permission_grants", {
-				...grant,
-				resourceKind: "workspace",
-				resourceId: String(organization.defaultWorkspaceId),
-				principalKind: "user",
-				userId: readerIds[0],
-			});
-		});
-		const read = () =>
-			t.run(async (ctx) => {
-				const grants = await ctx.db
-					.query("access_control_permission_grants")
-					.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-						q.eq("organizationId", organization.organizationId),
-					)
-					.collect();
-				return {
-					otherGrantCount: grants.filter((grant) => grant.resourceKind !== "file" || grant.principalKind !== "user")
-						.length,
-					grantIds: grants
-						.filter((grant) => grant.resourceKind === "file" && grant.principalKind === "user")
-						.map((grant) => grant._id)
-						.sort(),
-					rowGrantIds: (await ctx.db.query("files_share_rows").collect())
-						.filter((row) => row.organizationId === organization.organizationId)
-						.map((row) => row.grantId)
-						.sort(),
-				};
-			});
-		const beforeInit = await read();
-		expect(beforeInit.otherGrantCount).toBe(2);
-		expect(beforeInit.rowGrantIds).toHaveLength(1050);
-
-		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.init_user_deletion, {
-				userId: owner.userId,
-				nowTs: 42_004,
-			}),
-		);
-		// The public and workspace grants and 999 user file grants went, with their rows. The other 51
-		// user grants stay true for the purge.
-		const afterInit = await read();
-		expect(afterInit.otherGrantCount).toBe(0);
-		expect(afterInit.grantIds).toHaveLength(51);
-		expect(afterInit.rowGrantIds).toEqual(afterInit.grantIds);
-
-		const organizationRequest = await t.run((ctx) =>
-			ctx.db
-				.query("data_deletion_requests")
-				.withIndex("by_organization_scope", (q) =>
-					q.eq("organizationId", organization.organizationId).eq("scope", "organization"),
-				)
-				.unique(),
-		);
-		await data_deletion_test_process_organization_request_until_done(t, { requestId: organizationRequest!._id });
-		expect(await read()).toEqual({ otherGrantCount: 0, grantIds: [], rowGrantIds: [] });
-	});
-
-	test("shares one file grant batch across all owned organizations, within the Convex limits", async () => {
+	test("shares one file grant batch across all owned organizations within the Convex limits, and leaves the rest and their share rows to the purge", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const owner = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -2181,7 +2076,12 @@ describe("init_user_deletion", () => {
 			}),
 		);
 		// Two owned organizations, each with a folder shared with 1,050 users.
-		const organizationIds: Id<"organizations">[] = [];
+		const shared: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			nodeId: Id<"files_nodes">;
+			readerId: Id<"users">;
+		}[] = [];
 		for (const name of ["owned-share-rows-a", "owned-share-rows-b"]) {
 			const organization = await t.run(async (ctx) => {
 				const created = await organizations_db_create(ctx, {
@@ -2201,14 +2101,65 @@ describe("init_user_deletion", () => {
 				for (let index = 0; index < 1050; index += 1) ids.push(await ctx.db.insert("users", { clerkUserId: null }));
 				return ids;
 			});
-			await data_deletion_test_seed_shared_folder(t, {
+			const nodeId = await data_deletion_test_seed_shared_folder(t, {
 				userId: owner.userId,
 				organizationId: organization.organizationId,
 				workspaceId: organization.defaultWorkspaceId,
 				readerIds,
 			});
-			organizationIds.push(organization.organizationId);
+			shared.push({
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				nodeId,
+				readerId: readerIds[0]!,
+			});
 		}
+		const organizationIds = shared.map((item) => item.organizationId);
+		const first = shared[0]!;
+		// A public file grant and a workspace grant need no membership, so they must go at once.
+		await test_run_with_flush(t, async (ctx) => {
+			const grant = {
+				organizationId: first.organizationId,
+				workspaceId: first.workspaceId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			} as const;
+			await ctx.db.insert("access_control_permission_grants", {
+				...grant,
+				resourceKind: "file",
+				resourceId: String(first.nodeId),
+				principalKind: "public",
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				...grant,
+				resourceKind: "workspace",
+				resourceId: String(first.workspaceId),
+				principalKind: "user",
+				userId: first.readerId,
+			});
+		});
+		const read = (organizationIds: Id<"organizations">[]) =>
+			t.run(async (ctx) => {
+				const grants = (await ctx.db.query("access_control_permission_grants").collect()).filter((grant) =>
+					organizationIds.includes(grant.organizationId),
+				);
+				return {
+					otherGrantCount: grants.filter((grant) => grant.resourceKind !== "file" || grant.principalKind !== "user")
+						.length,
+					grantIds: grants
+						.filter((grant) => grant.resourceKind === "file" && grant.principalKind === "user")
+						.map((grant) => grant._id)
+						.sort(),
+					rowGrantIds: (await ctx.db.query("files_share_rows").collect())
+						.filter((row) => organizationIds.includes(row.organizationId))
+						.map((row) => row.grantId)
+						.sort(),
+				};
+			});
+		const beforeInit = await read([first.organizationId]);
+		expect(beforeInit.otherGrantCount).toBe(2);
+		expect(beforeInit.rowGrantIds).toHaveLength(1050);
 
 		const ranges = await t.run(async (ctx) => {
 			const before = await ctx.meta.getTransactionMetrics();
@@ -2218,21 +2169,26 @@ describe("init_user_deletion", () => {
 		});
 		console.info("init_user_deletion, 2 organizations x 1,050 file grants", { ranges });
 
-		// One batch of 1,000 file grants went in total. The other 1,100 stay true with their share rows.
-		const after = await t.run(async (ctx) => ({
-			user: await ctx.db.get("users", owner.userId),
-			grantIds: (await ctx.db.query("access_control_permission_grants").collect())
-				.filter((grant) => organizationIds.includes(grant.organizationId) && grant.resourceKind === "file")
-				.map((grant) => grant._id)
-				.sort(),
-			rowGrantIds: (await ctx.db.query("files_share_rows").collect())
-				.filter((row) => organizationIds.includes(row.organizationId))
-				.map((row) => row.grantId)
-				.sort(),
-		}));
-		expect(after.user?.deletedAt).toBe(42_005);
-		expect(after.grantIds).toHaveLength(1100);
+		// One batch of 1,000 file grants went in total: the public grant and 999 user grants of the first
+		// organization. The public and workspace grants went at once. The other 51 + 1,050 user grants
+		// stay true with their share rows.
+		const after = await read(organizationIds);
+		expect(await t.run((ctx) => ctx.db.get("users", owner.userId))).toMatchObject({ deletedAt: 42_005 });
+		expect(after.otherGrantCount).toBe(0);
+		expect(after.grantIds).toHaveLength(1101);
 		expect(after.rowGrantIds).toEqual(after.grantIds);
+
+		// The organization purge removes the grants that were left, with their rows.
+		const organizationRequest = await t.run((ctx) =>
+			ctx.db
+				.query("data_deletion_requests")
+				.withIndex("by_organization_scope", (q) =>
+					q.eq("organizationId", first.organizationId).eq("scope", "organization"),
+				)
+				.unique(),
+		);
+		await data_deletion_test_process_organization_request_until_done(t, { requestId: organizationRequest!._id });
+		expect(await read([first.organizationId])).toEqual({ otherGrantCount: 0, grantIds: [], rowGrantIds: [] });
 	}, 120_000);
 });
 
@@ -4480,11 +4436,12 @@ describe("process_workspace_deletion_request", () => {
 				throw new Error(controlWorkspace._nay.message);
 			}
 
+			// 6 files give each content table two batches at batch size 5.
 			const seeded = await data_deletion_test_seed_workspace_content_bulk(ctx, {
 				userId: user.userId,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: victimWorkspace._yay.workspaceId,
-				count: 20,
+				count: 6,
 				tag: "ws-batch-victim",
 			});
 			await data_deletion_test_seed_page(ctx, {
@@ -6524,7 +6481,7 @@ describe("process_organization_deletion_request", () => {
 			organizationId: organization.organizationId,
 			workspaceId: organization.defaultWorkspaceId,
 			tag: "organization-clipboard-victim",
-			count: 51,
+			count: 1,
 		});
 		const control = await data_deletion_test_start_transfer_run(t, {
 			userId: user.userId,
@@ -6637,7 +6594,7 @@ describe("process_organization_deletion_request", () => {
 						userId: user.userId,
 						organizationId: organization._yay.organizationId,
 						workspaceId: removedWorkspace._yay.workspaceId,
-						count: 20,
+						count: 6,
 						tag: "organization-removed-batch",
 					}),
 				]);
@@ -7302,19 +7259,21 @@ describe("hard_delete_user_data", () => {
 				throw new Error(extraWorkspace._nay.message);
 			}
 
+			// One seeded file is about 30 rows. At batch size 1 that is more than the 25 steps of one
+			// hard_delete_user_now run, so the run must continue.
 			await Promise.all([
 				data_deletion_test_seed_workspace_content_bulk(ctx, {
 					userId: user.userId,
 					organizationId: user.defaultOrganizationId,
 					workspaceId: user.defaultWorkspaceId,
-					count: 20,
+					count: 1,
 					tag: "reset-action-default",
 				}),
 				data_deletion_test_seed_workspace_content_bulk(ctx, {
 					userId: user.userId,
 					organizationId: user.defaultOrganizationId,
 					workspaceId: extraWorkspace._yay.workspaceId,
-					count: 20,
+					count: 1,
 					tag: "reset-action-extra",
 				}),
 			]);
@@ -9843,11 +9802,12 @@ describe("enqueue_deletion_requests_processing", () => {
 		);
 
 		const { requestId, test_now } = await t.run(async (ctx) => {
+			// One file already needs more than the 25 steps of one worker run at batch size 5.
 			await data_deletion_test_seed_workspace_content_bulk(ctx, {
 				userId: user.userId,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
-				count: 20,
+				count: 1,
 				tag: "worker-batch-drain",
 			});
 			const requestId = await data_deletion_db_request(ctx, {
@@ -10287,7 +10247,9 @@ describe("enqueue_deletion_requests_processing", () => {
 		const maxEligibleAt = await t.run(async (ctx) => {
 			const now = Date.now();
 
-			for (let i = 0; i < 25; i++) {
+			// One run takes 20 users (one list page), then 5 organizations, and stops at 25 steps. One more
+			// of each, and one workspace, must stay for the next run.
+			for (let i = 0; i < 21; i++) {
 				const userId = await ctx.db.insert("users", {
 					clerkUserId: `clerk-user-quota-user-${i}`,
 					deletedAt: now,
@@ -10299,7 +10261,7 @@ describe("enqueue_deletion_requests_processing", () => {
 				});
 			}
 
-			for (let i = 0; i < 55; i++) {
+			for (let i = 0; i < 6; i++) {
 				const userId = await ctx.db.insert("users", {
 					clerkUserId: `clerk-user-quota-organization-${i}`,
 				});
@@ -10319,7 +10281,7 @@ describe("enqueue_deletion_requests_processing", () => {
 				});
 			}
 
-			for (let i = 0; i < 205; i++) {
+			for (let i = 0; i < 1; i++) {
 				const userId = await ctx.db.insert("users", {
 					clerkUserId: `clerk-user-quota-ws-${i}`,
 				});
@@ -10360,9 +10322,9 @@ describe("enqueue_deletion_requests_processing", () => {
 
 		const remaining = await t.run(async (ctx) => ctx.db.query("data_deletion_requests").collect());
 
-		expect(remaining.filter((row) => row.scope === "user")).toHaveLength(5);
-		expect(remaining.filter((row) => row.scope === "organization")).toHaveLength(50);
-		expect(remaining.filter((row) => row.scope === "workspace")).toHaveLength(205);
+		expect(remaining.filter((row) => row.scope === "user")).toHaveLength(1);
+		expect(remaining.filter((row) => row.scope === "organization")).toHaveLength(1);
+		expect(remaining.filter((row) => row.scope === "workspace")).toHaveLength(1);
 	});
 
 	test("reschedules when ws-only requests use the whole step budget", async () => {

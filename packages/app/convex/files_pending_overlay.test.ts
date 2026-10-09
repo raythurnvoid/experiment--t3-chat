@@ -101,8 +101,8 @@ async function expect_window_bound(t: ReturnType<typeof test_convex>) {
 	}
 }
 
-async function fixture() {
-	const t = test_convex();
+async function fixture(transactionLimits?: NonNullable<Parameters<typeof test_convex>[0]>["transactionLimits"]) {
+	const t = test_convex({ transactionLimits });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const u: Scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 	const asU = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -2218,7 +2218,10 @@ describe("files_pending_overlay jobs", () => {
 	});
 
 	test("a parent job reuses its reader across the places it walks", async () => {
-		const f = await fixture();
+		// A job stops when fewer than 2,048 ranges are left, so this limit leaves the parent job 800 ranges.
+		// One reader reads the 20 folders once: about 330 ranges for 25 places. A new reader per place reads
+		// them again, about 100 ranges per place.
+		const f = await fixture({ databaseQueries: 2_048 + 800 });
 		const top = await f.saved(null, "c00", "folder");
 		let folder = top;
 		let path = "/c00";
@@ -2227,7 +2230,7 @@ describe("files_pending_overlay jobs", () => {
 			folder = await f.saved(folder, name, "folder");
 			path += `/${name}`;
 		}
-		for (let index = 0; index < 100; index++) await f.create_private(`${path}/f${String(index).padStart(3, "0")}.md`);
+		for (let index = 0; index < 25; index++) await f.create_private(`${path}/f${String(index).padStart(3, "0")}.md`);
 		await f.settle();
 
 		let parentRuns = 0;

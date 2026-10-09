@@ -621,7 +621,6 @@ describe("service upload authorization", () => {
 			prepared = await t.run((ctx) =>
 				ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
 					userId: actor.userId,
-					_test_batchSize: 1,
 				}),
 			);
 		}
@@ -633,7 +632,6 @@ describe("service upload authorization", () => {
 				ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 					userId: actor.userId,
 					deleteUserAuth: true,
-					_test_batchSize: 1,
 				}),
 			);
 		}

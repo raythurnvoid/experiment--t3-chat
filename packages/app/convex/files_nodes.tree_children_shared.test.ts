@@ -35,17 +35,19 @@ describe("list_tree_children_shared", () => {
 	const HOUR = 60 * 60 * 1000;
 
 	/**
-	 * 644 children. Every restricted child but `hidden` and `zz-hidden.md` is shared with a member: 600
+	 * 164 children. Every restricted child but `hidden` and `zz-hidden.md` is shared with a member: 150
 	 * files and a folder. So the member's table must be the owner's table without those two.
+	 * Each share row checks its access with reads that scan the whole grant table in convex-test, so a
+	 * bigger table costs a lot more time. No limit needs more rows: the member pages still take many pages.
 	 */
 	async function seed_shared_table() {
 		const seeded = await seed_folder_table();
 		const children = [
-			...Array.from({ length: 640 }, (_, index) => ({
+			...Array.from({ length: 160 }, (_, index) => ({
 				name: `f-${String(index).padStart(3, "0")}${[".md", ".txt", ""][index % 3]}`,
 				kind: "file" as const,
-				// 37 and 640 share no factor, so every file has its own time.
-				updatedAt: DAY + (((index * 37) % 640) - 320) * HOUR,
+				// 37 and 160 share no factor, so every file has its own time.
+				updatedAt: DAY + (((index * 37) % 160) - 80) * HOUR,
 				lowercaseExtension: ["md", "txt", undefined][index % 3],
 				contentByteSize: index % 4 === 0 ? undefined : (index * 7) % 500,
 				restricted: index % 16 !== 0,
@@ -66,55 +68,57 @@ describe("list_tree_children_shared", () => {
 		const member = await seeded.add_member("clerk_shared_table", "member");
 		const hidden = ["hidden", "zz-hidden.md"];
 		const sharedIds = ids.filter((_, index) => children[index]!.restricted && !hidden.includes(children[index]!.name));
-		expect(sharedIds).toHaveLength(601);
+		expect(sharedIds).toHaveLength(151);
 		await seeded.grant_read({ userId: member.userId }, sharedIds);
 		return { ...seeded, member, hidden };
 	}
 
-	// One test per sort or filter and direction: each one reads the 644 rows twice.
+	// One test per sort and direction: each one reads the 164 rows twice.
 	test.each(
 		["name", "created", "updated", "extension", "size"].flatMap((field) =>
 			(["asc", "desc"] as const).map((direction) => ({ field, direction })),
 		),
 	)(
-		"a member pages 600 user shares in the $field $direction sort, like the owner's table without the hidden rows",
+		"a member pages 150 user shares in the $field $direction sort, like the owner's table without the hidden rows",
 		async (sort) => {
 			const { read_table, member, hidden } = await seed_shared_table();
 
 			const owner = await read_table(sort, { numItems: 200 });
-			expect(owner).toHaveLength(644);
-			// 70 rows per page, so the 601 shares take 9 pages.
-			expect(await read_table(sort, { numItems: 70, member })).toEqual(owner.filter((name) => !hidden.includes(name)));
+			expect(owner).toHaveLength(164);
+			// 20 rows per page, so the 151 shares take 8 pages.
+			expect(await read_table(sort, { numItems: 20, member })).toEqual(owner.filter((name) => !hidden.includes(name)));
 		},
 	);
 
 	const day = { start: DAY, end: DAY + 24 * HOUR };
-	test.each(
-		(
-			[
-				{ filter: { kind: "name", field: "name", op: "starts_with", value: "f-" }, namePrefix: null },
-				{ filter: { kind: "extension", field: "extension", op: "is", value: "md" }, namePrefix: null },
-				{ filter: { kind: "extension", field: "extension", op: "is", value: "md" }, namePrefix: "f-" },
-				{ filter: { kind: "extension", field: "extension", op: "missing" }, namePrefix: null },
-				{ filter: { kind: "size", field: "size", op: "is", value: 7 }, namePrefix: null },
-				{ filter: { kind: "size", field: "size", op: "missing" }, namePrefix: null },
-				{ filter: { kind: "size", field: "size", op: "at_least", value: 250 }, namePrefix: null },
-				{ filter: { kind: "size", field: "size", op: "at_most", value: 100 }, namePrefix: null },
-				{ filter: { kind: "date", field: "updated", op: "on", ...day }, namePrefix: null },
-				{ filter: { kind: "date", field: "updated", op: "before", ...day }, namePrefix: null },
-				{ filter: { kind: "date", field: "updated", op: "after", ...day }, namePrefix: null },
-				{ filter: { kind: "date", field: "created", op: "after", start: 0, end: 24 * HOUR }, namePrefix: null },
-			] satisfies Array<{ filter: files_table_Filter; namePrefix: string | null }>
-		).flatMap((filterCase) => (["asc", "desc"] as const).map((direction) => ({ ...filterCase, direction }))),
-	)(
-		"a member pages 600 user shares in the $filter.field $filter.op filter (prefix $namePrefix, $direction), like the owner's table without the hidden rows",
+	// With a filter there is no `missing` segment, so the direction only flips the index order. One
+	// direction per filter is enough, and each index gets both directions across the rows.
+	test.each([
+		{ filter: { kind: "name", field: "name", op: "starts_with", value: "f-" }, namePrefix: null, direction: "asc" },
+		{ filter: { kind: "extension", field: "extension", op: "is", value: "md" }, namePrefix: null, direction: "asc" },
+		{ filter: { kind: "extension", field: "extension", op: "is", value: "md" }, namePrefix: "f-", direction: "desc" },
+		{ filter: { kind: "extension", field: "extension", op: "missing" }, namePrefix: null, direction: "asc" },
+		{ filter: { kind: "size", field: "size", op: "is", value: 7 }, namePrefix: null, direction: "asc" },
+		{ filter: { kind: "size", field: "size", op: "missing" }, namePrefix: null, direction: "desc" },
+		{ filter: { kind: "size", field: "size", op: "at_least", value: 250 }, namePrefix: null, direction: "asc" },
+		{ filter: { kind: "size", field: "size", op: "at_most", value: 100 }, namePrefix: null, direction: "desc" },
+		{ filter: { kind: "date", field: "updated", op: "on", ...day }, namePrefix: null, direction: "asc" },
+		{ filter: { kind: "date", field: "updated", op: "before", ...day }, namePrefix: null, direction: "desc" },
+		{ filter: { kind: "date", field: "updated", op: "after", ...day }, namePrefix: null, direction: "asc" },
+		{
+			filter: { kind: "date", field: "created", op: "after", start: 0, end: 24 * HOUR },
+			namePrefix: null,
+			direction: "desc",
+		},
+	] satisfies Array<{ filter: files_table_Filter; namePrefix: string | null; direction: "asc" | "desc" }>)(
+		"a member pages 150 user shares in the $filter.field $filter.op filter (prefix $namePrefix, $direction), like the owner's table without the hidden rows",
 		async ({ filter, namePrefix, direction }) => {
 			const { read_table, member, hidden } = await seed_shared_table();
 			const sort = { field: files_table_filter_order_field(filter), direction };
 
 			const owner = await read_table(sort, { filter, namePrefix, numItems: 200 });
 			expect(owner.length).toBeGreaterThan(0);
-			expect(await read_table(sort, { filter, namePrefix, numItems: 70, member })).toEqual(
+			expect(await read_table(sort, { filter, namePrefix, numItems: 20, member })).toEqual(
 				owner.filter((name) => !hidden.includes(name)),
 			);
 		},
@@ -424,10 +428,10 @@ describe("list_tree_children_shared", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read. The cost test below checks the guard number.
-	test("a page whose end cursor holds more than 187 rows asks for a split and reads no row", async () => {
+	// runs before any row read, not the 187 guard. The cost test below checks the guard number.
+	test("a page whose end cursor holds more rows than it asks for asks for a split and reads no row", async () => {
 		const { t, insert_children, add_member, grant_read, read_page } = await seed_folder_table();
-		const names = Array.from({ length: 203 }, (_, index) => `n-${String(index).padStart(4, "0")}.md`);
+		const names = Array.from({ length: 103 }, (_, index) => `n-${String(index).padStart(4, "0")}.md`);
 		const ids = await insert_children(
 			names.map((name) => ({ name, kind: "file" as const, updatedAt: 1, restricted: true })),
 		);
@@ -436,12 +440,12 @@ describe("list_tree_children_shared", () => {
 		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
 			read_page({ ...member, kind: "file", sort: BY_NAME, principalIndex: 0, paginationOpts });
 
+		// 100 rows and 2 more put the end cursor after row 102: one more than `numItems` + 1.
 		const first = await read({ numItems: 100, cursor: null });
-		const second = await read({ numItems: 100, cursor: first.continueCursor });
-		const endCursor = (await read({ numItems: 2, cursor: second.continueCursor })).continueCursor;
+		const endCursor = (await read({ numItems: 2, cursor: first.continueCursor })).continueCursor;
 
 		// A SYSTEM author makes the tree rows throw, so this page proves the guard runs before any row read.
-		await t.run((ctx) => ctx.db.patch("files_nodes", ids[125]!, { createdBy: users_SYSTEM_AUTHOR }));
+		await t.run((ctx) => ctx.db.patch("files_nodes", ids[101]!, { createdBy: users_SYSTEM_AUTHOR }));
 		expect(await read({ numItems: 100, cursor: null, endCursor })).toEqual({
 			page: [],
 			isDone: false,

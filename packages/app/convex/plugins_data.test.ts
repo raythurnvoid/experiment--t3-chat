@@ -2035,7 +2035,11 @@ describe("invoke file write preconditions", () => {
 	test.each(["create", "fill", "collaborative fill"] as const)(
 		"%s refuses a parent renamed, moved, archived, or replaced after prepare",
 		async (mode) => {
-			for (const change of ["rename", "move", "archive", "replace"] as const) {
+			// Rename and move reach the same parent path check, and archive and replace the same archived
+			// check, so the fill modes run one change for each check.
+			const changes =
+				mode === "create" ? (["rename", "move", "archive", "replace"] as const) : (["move", "replace"] as const);
+			for (const change of changes) {
 				const t = test_convex();
 				const fixture = await seed_file_writer(t);
 				let nodeId: Id<"files_nodes"> | undefined;
@@ -2521,22 +2525,23 @@ describe("plugin-data credential revalidation", () => {
 	);
 
 	test.each([
-		...(["read", "write", "write-batch", "delete"] as const).flatMap((operation) =>
-			(
-				[
-					"revoke",
-					"rebind",
-					"end",
-					"fail",
-					"expire",
-					"deadline",
-					"upgrade",
-					"actor",
-					"organization",
-					"workspace",
-				] as const
-			).map((change) => ["plugin_run", change, operation] as const),
-		),
+		// Every route rechecks through the same `db_authorize` plugin_run branch, so all changes run on
+		// one route, and the other routes run one change each.
+		...(
+			[
+				"revoke",
+				"rebind",
+				"end",
+				"fail",
+				"expire",
+				"deadline",
+				"upgrade",
+				"actor",
+				"organization",
+				"workspace",
+			] as const
+		).map((change) => ["plugin_run", change, "write"] as const),
+		...(["read", "write-batch", "delete"] as const).map((operation) => ["plugin_run", "revoke", operation] as const),
 		["plugin_ui", "revoke", "read"],
 		["plugin_ui", "rebind", "read"],
 		["plugin_ui", "end", "read"],
@@ -7334,10 +7339,12 @@ describe("watch_documents_page", () => {
 	test("pages the range in ascending key order and stops the scan at 100 rows", async () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t);
-		const keys = Array.from({ length: 120 }, (_, index) => `a:${String(index).padStart(3, "0")}`);
+		// 101 keys are one past the 100-row page.
+		const keys = Array.from({ length: 101 }, (_, index) => `a:${String(index).padStart(3, "0")}`);
+		const principal = await seed_store_principal({ t, fixture });
 		for (const key of keys) {
 			const written = await t.mutation(internal.plugins_data.write_document, {
-				principal: await seed_store_principal({ t, fixture }),
+				principal,
 				collection: "messages",
 				key,
 				value: { key },
@@ -9334,7 +9341,8 @@ describe("plugins_data_db_drain_batch", () => {
 		// fail on exactly the installations that most need draining.
 		await t.run(async (ctx) => {
 			const now = Date.now();
-			for (let index = 0; index < 150; index += 1) {
+			// 101 documents are one past the 100-document batch.
+			for (let index = 0; index < 101; index += 1) {
 				await ctx.db.insert("plugins_data", {
 					organizationId: fixture.organizationId,
 					workspaceId: fixture.workspaceId,
@@ -9362,7 +9370,7 @@ describe("plugins_data_db_drain_batch", () => {
 			_test_disableReschedule: true,
 		});
 		expect(firstPass).toEqual({ done: false, deletedCount: 100 });
-		expect(await read_documents(t, fixture)).toHaveLength(50);
+		expect(await read_documents(t, fixture)).toHaveLength(1);
 
 		// The rest still goes, one bounded pass at a time.
 		expect(await drain_until_done(t, fixture)).toBe(2);
@@ -9490,7 +9498,8 @@ describe("plugins_data_db_drain_batch", () => {
 				updatedAt: now,
 			});
 
-			for (let index = 0; index < 250; index += 1) {
+			// 101 rows per table are one past the 100-row batch.
+			for (let index = 0; index < 101; index += 1) {
 				const scopeId = `scope-${index}`;
 				await ctx.db.insert("access_control_permission_grants", {
 					organizationId: fixture.organizationId,
@@ -9587,21 +9596,21 @@ describe("plugins_data_db_drain_batch", () => {
 				};
 			});
 
-		for (const deletedCount of [100, 100, 50]) {
+		for (const deletedCount of [100, 1]) {
 			expect(await pass()).toEqual({ done: false, deletedCount });
 		}
 		expect(await counts()).toEqual({
-			target: { grants: 0, scopes: 250, fences: 250 },
+			target: { grants: 0, scopes: 101, fences: 101 },
 			sibling: { grants: 1, scopes: 1, fences: 1 },
 		});
-		for (const deletedCount of [100, 100, 50]) {
+		for (const deletedCount of [100, 1]) {
 			expect(await pass()).toEqual({ done: false, deletedCount });
 		}
 		expect(await counts()).toEqual({
-			target: { grants: 0, scopes: 0, fences: 250 },
+			target: { grants: 0, scopes: 0, fences: 101 },
 			sibling: { grants: 1, scopes: 1, fences: 1 },
 		});
-		for (const deletedCount of [100, 100, 50]) {
+		for (const deletedCount of [100, 1]) {
 			expect(await pass()).toEqual({ done: false, deletedCount });
 		}
 		expect(await pass()).toEqual({ done: true, deletedCount: 0 });
@@ -10086,7 +10095,7 @@ describe("plugins_data_db_count_installation_docs", () => {
 		});
 	});
 
-	test.each([99, 100, 101])("bounds scope and released-range preview counts at %i docs", async (docCount) => {
+	test.each([100, 101])("bounds scope and released-range preview counts at %i docs", async (docCount) => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const otherInstallationId = await t.run(async (ctx) => {

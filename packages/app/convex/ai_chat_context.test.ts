@@ -8,6 +8,7 @@ import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } fro
 import { ai_chat_context_create, ai_chat_context_read_instructions } from "../server/ai-chat-context.ts";
 import { files_agent_write_file_text } from "../server/bash-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 beforeEach(() => {
 	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_context_test" as never);
@@ -402,14 +403,35 @@ describe("discover_sources", () => {
 	}, 300_000);
 
 	test("reports one bounded catalog when more than 100 readable skills exist across both roots", async () => {
-		// Saving 101 fixture files through the full publish flow needs more time during the full suite.
-		vi.spyOn(RateLimiter.prototype, "limit").mockResolvedValue({ ok: true, retryAfter: 0 });
 		const f = await fixture();
-		for (let index = 0; index < 101; index++) {
-			await f.create({
-				path: `/.agents/skills/skill-${index}/SKILL.md`,
-				textContent: `---\nname: skill-${index}\ndescription: Skill\n---\n`,
-				workspace: index < 60 ? "current" : "personal",
+		// 60 + 41 = 101 skills, one past the catalog limit of 100. Save one real skill per root, then
+		// clone its folder and SKILL.md rows: discovery reads paths and access, not the content.
+		for (const [workspace, count] of [
+			["current", 60],
+			["personal", 41],
+		] as const) {
+			const fileId = await f.create({ path: "/.agents/skills/skill-0/SKILL.md", textContent: skillText, workspace });
+			await f.t.run(async (ctx) => {
+				const { _id, _creationTime, ...file } = (await ctx.db.get("files_nodes", fileId))!;
+				const folder = (await ctx.db.get("files_nodes", file.parentId as Id<"files_nodes">))!;
+				const { _id: _folderId, _creationTime: _folderCreationTime, ...folderFields } = folder;
+				for (let index = 1; index < count; index++) {
+					const name = `skill-${index}`;
+					const path = `/.agents/skills/${name}`;
+					const parentId = await ctx.db.insert("files_nodes", {
+						...folderFields,
+						name,
+						sortName: files_sort_text_key(name),
+						path,
+						treePath: `${path}/`,
+					});
+					await ctx.db.insert("files_nodes", {
+						...file,
+						parentId,
+						path: `${path}/SKILL.md`,
+						treePath: `${path}/SKILL.md`,
+					});
+				}
 			});
 		}
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
