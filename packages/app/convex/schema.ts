@@ -809,7 +809,7 @@ const app_convex_schema = defineSchema({
 		clientGeneratedId: v.string(),
 		title: v.union(v.string(), v.null()),
 		archived: v.boolean(),
-		starred: v.optional(v.boolean()),
+		starred: v.boolean(),
 
 		/**
 		 * Keep this stored value. It does not track the AI SDK major version.
@@ -824,12 +824,12 @@ const app_convex_schema = defineSchema({
 		 **/
 		updatedAt: v.number(),
 		/**
-		 * timestamp in milliseconds
+		 * timestamp in milliseconds. Missing while the thread has no message yet.
 		 **/
 		lastMessageAt: v.optional(v.number()),
 		/**
 		 * Read cursor, timestamp in milliseconds.
-		 * The thread is unread while `lastMessageAt > readAt`.
+		 * The thread is unread while `lastMessageAt > readAt`. Missing together with `lastMessageAt`.
 		 **/
 		readAt: v.optional(v.number()),
 		/**
@@ -837,11 +837,6 @@ const app_convex_schema = defineSchema({
 		 * so this only grows. Missing means no job was ever started.
 		 **/
 		bashJobCounter: v.optional(v.number()),
-		/**
-		 * Unused. It once counted job wakeups in a row to end the chain; every finish
-		 * now posts and wakes with no cap. The field stays so old docs still read.
-		 **/
-		bashJobWakeupCount: v.optional(v.number()),
 		activeRun: v.optional(ai_chat_thread_active_run_validator),
 		/**
 		 * Set by Delete chat. From then on every thread door treats the chat as not found, and a
@@ -1451,22 +1446,6 @@ const app_convex_schema = defineSchema({
 		activityId: v.id("activities"),
 	})
 		.index("by_invocation_commandNumber", ["invocationId", "commandNumber"])
-		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
-
-	/**
-	 * Unread leftover. The old stderr job notes used one cursor per user and thread so member B's
-	 * call could not hide member A's notes. Code no longer reads these docs. User deletion still
-	 * deletes them.
-	 */
-	ai_chat_bash_job_notice_cursors: defineTable({
-		organizationId: v.string(),
-		workspaceId: v.string(),
-		threadId: v.id("ai_chat_threads"),
-		userId: v.id("users"),
-		noticeAt: v.number(),
-	})
-		.index("by_user_thread", ["userId", "threadId"])
-		.index("by_user", ["userId"])
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
 	/**
@@ -4719,17 +4698,14 @@ const app_convex_schema = defineSchema({
 		),
 		/**
 		 * Secret names the manifest declares, so the details page can report which required
-		 * secrets are still missing. Optional because versions published before this field
-		 * exist without it; read as `version.secrets ?? []`.
+		 * secrets are still missing.
 		 */
-		secrets: v.optional(
-			v.array(
-				v.object({
-					name: v.string(),
-					description: v.string(),
-					optional: v.boolean(),
-				}),
-			),
+		secrets: v.array(
+			v.object({
+				name: v.string(),
+				description: v.string(),
+				optional: v.boolean(),
+			}),
 		),
 		events: v.array(
 			v.object({
@@ -4776,28 +4752,19 @@ const app_convex_schema = defineSchema({
 		/**
 		 * Backend endpoints the invoke door may run, normalized to `[]` when the manifest declares
 		 * none. `serialization` is normalized to `"installation"` when the manifest omits it.
-		 *
-		 * Every stored version has been backfilled. The field stays optional on purpose: a reader
-		 * treats an absent value as "no endpoint restriction", which is the safe direction, and
-		 * tightening the validator would reject any version written by an older publish path.
 		 */
-		endpoints: v.optional(
-			v.array(
-				v.object({
-					id: v.string(),
-					path: v.string(),
-					serialization: v.union(v.literal("installation"), v.literal("caller-key")),
-				}),
-			),
+		endpoints: v.array(
+			v.object({
+				id: v.string(),
+				path: v.string(),
+				serialization: v.union(v.literal("installation"), v.literal("caller-key")),
+			}),
 		),
 		/**
 		 * The collections a member-identity writer may write. Null means the manifest declared no
 		 * list, so every collection stays user-writable; `[]` means nothing is.
-		 *
-		 * Every stored version has been backfilled. The field stays optional on purpose: readers
-		 * treat absent the same as null, which is the documented "no list declared" case.
 		 */
-		userWritableCollections: v.optional(v.union(v.array(v.string()), v.null())),
+		userWritableCollections: v.union(v.array(v.string()), v.null()),
 		capabilities: v.array(plugins_capability_validator),
 		/**
 		 * Exact https origins the plugin's code declares it calls; consented at install.
@@ -5691,15 +5658,13 @@ const app_convex_schema = defineSchema({
 		createdByUserId: v.id("users"),
 		createdAt: v.number(),
 		/**
-		 * Durable last accepted append in this collection. Optional while old rows are backfilled.
+		 * Durable last accepted append in this collection. Null until the first append.
 		 */
-		lastAppend: v.optional(
-			v.union(v.null(), v.object({ at: v.number(), key: v.string(), createdByUserId: v.id("users") })),
-		),
+		lastAppend: v.union(v.null(), v.object({ at: v.number(), key: v.string(), createdByUserId: v.id("users") })),
 		/**
-		 * Count accepted appends in this collection. Optional while old rows are backfilled.
+		 * Count accepted appends in this collection.
 		 */
-		appendSequence: v.optional(v.number()),
+		appendSequence: v.number(),
 		/**
 		 * Shared by every row of one scope. Increase it for each accepted membership change.
 		 */
@@ -5966,21 +5931,18 @@ const app_convex_schema = defineSchema({
 		 * A different request under the same run and target key is refused, not stored twice.
 		 */
 		requestFingerprint: v.string(),
-		/**
-		 * Historical targets omit these flags and behave as false. New targets always store both.
-		 */
-		readOnly: v.optional(v.boolean()),
-		nonCollaborative: v.optional(v.boolean()),
+		readOnly: v.boolean(),
+		nonCollaborative: v.boolean(),
 		/**
 		 * The authoritative sealed replay fence and its stable destination node id at create time.
 		 */
 		destinationPath: v.string(),
 		destinationNodeId: v.id("files_nodes"),
 		/**
-		 * Logical service lifecycle under this destination. Older dev targets omit it and belong to
-		 * epoch 1. The first create after an archive opens the next epoch.
+		 * Logical service lifecycle under this destination. The first create after an archive opens
+		 * the next epoch.
 		 */
-		destinationEpoch: v.optional(v.number()),
+		destinationEpoch: v.number(),
 		path: v.string(),
 		contentType: v.string(),
 		/**
@@ -6926,9 +6888,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		/**
-		 * What the grant is about. `"thread"` is never written: no code makes a thread grant, and
-		 * `access_control_Resource` cannot build one. Chat threads are checked with `content.read` and
-		 * `content.write` on their workspace instead. The literal stays so old docs still validate.
+		 * What the grant is about.
 		 *
 		 * `"plugin_scope"` is a private range of one plugin's data store — a private channel or a
 		 * direct message. Its grants close a door instead of opening one: inside a scope a role gives
@@ -6939,7 +6899,6 @@ const app_convex_schema = defineSchema({
 			v.literal("organization"),
 			v.literal("workspace"),
 			v.literal("file"),
-			v.literal("thread"),
 			v.literal("plugin_scope"),
 			v.literal("plugin_installation"),
 		),
@@ -7100,7 +7059,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		updatedAt: v.optional(v.number()),
+		updatedAt: v.number(),
 		/**
 		 * `false` during account-deletion retention so memberships stay recoverable but non-effective.
 		 * `true` for normal active membership.

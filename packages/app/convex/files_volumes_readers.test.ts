@@ -61,6 +61,9 @@ async function fixture() {
 			sourceLastError: null,
 			createdBy: db.userId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
 			organizationId: db.organizationId,

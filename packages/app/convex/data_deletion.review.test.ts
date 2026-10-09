@@ -133,6 +133,7 @@ async function data_deletion_test_seed_page(
 		writePolicy: null,
 
 		archiveOperationId: null,
+		newChildWritePolicy: null,
 	});
 
 	const markdown = `# ${args.tag}`;
@@ -197,6 +198,9 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		sourceLastError: null,
 		createdBy: args.userId,
 		updatedAt: now,
+		secrets: [],
+		endpoints: [],
+		userWritableCollections: null,
 	});
 	const installationId = await ctx.db.insert("plugins_workspace_installations", {
 		serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
@@ -289,6 +293,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			writePolicy: null,
 
 			archiveOperationId: null,
+			newChildWritePolicy: null,
 		});
 		const contentR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/markdown`;
 		const yjsR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/yjs`;
@@ -529,6 +534,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			updatedAt: Date.now(),
 			lastMessageAt: Date.now(),
 			newestNodeId: null,
+			starred: false,
 		});
 		const [shellId, aiFileNodeId] = await Promise.all([
 			ctx.db.insert("ai_chat_bash_shells", {
@@ -565,13 +571,6 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				seq: 0,
 				text: "$ printf hi",
 				bytes: 11,
-			}),
-			ctx.db.insert("ai_chat_bash_job_notice_cursors", {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				threadId,
-				userId: args.userId,
-				noticeAt: Date.now(),
 			}),
 			ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 				organizationId: args.organizationId,
@@ -663,7 +662,6 @@ const review_workspace_tables = [
 	"ai_chat_threads_messages_aisdk_5",
 	"ai_chat_bash_shell_transcripts",
 	"ai_chat_bash_shells",
-	"ai_chat_bash_job_notice_cursors",
 	"ai_chat_threads",
 	"api_credentials",
 	"public_api_grants",
@@ -994,7 +992,6 @@ async function review_seed_all_workspace_content(
 			...tenant,
 			installationId,
 			userId: args.userId,
-			generation: "document_bound",
 			usedBytes: 16,
 			usedDocuments: 2,
 			machineBytes: 0,
@@ -1208,6 +1205,7 @@ async function review_seed_all_workspace_content(
 			writePolicy: null,
 
 			archiveOperationId: null,
+			newChildWritePolicy: null,
 		});
 		const uploadAssetId = await ctx.db.insert("files_r2_assets", {
 			...tenant,
@@ -1249,6 +1247,7 @@ async function review_seed_all_workspace_content(
 			writePolicy: null,
 
 			archiveOperationId: null,
+			newChildWritePolicy: null,
 		});
 		await ctx.db.insert("plugin_service_storage_destinations", {
 			...tenant,
@@ -1490,6 +1489,7 @@ async function review_seed_two_shared_memberships(ctx: MutationCtx, userId: Id<"
 			workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
 		});
 		await quotas_db_ensure(ctx, {
@@ -1845,6 +1845,7 @@ async function review_seed_organization_structure(
 				workspaceId,
 				userId: user.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await quotas_db_ensure(ctx, {
@@ -2726,6 +2727,7 @@ describe("review: account event producer during workspace purge", () => {
 					updatedAt: Date.now(),
 					lastMessageAt: Date.now(),
 					newestNodeId: null,
+					starred: false,
 				});
 			});
 			await t.mutation(internal.data_deletion.init_user_deletion, { userId: user.userId });

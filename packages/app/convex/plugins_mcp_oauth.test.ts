@@ -163,6 +163,9 @@ async function install_oauth_plugin(t: TestConvex, member: Pick<Member, "organiz
 			sourceLastError: null,
 			createdBy: member.userId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const installationId = await ctx.db.insert("plugins_workspace_installations", {
 			serviceAccountId: await ctx.db.insert("access_control_service_accounts", {

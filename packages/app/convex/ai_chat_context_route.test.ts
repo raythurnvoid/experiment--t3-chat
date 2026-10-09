@@ -156,6 +156,9 @@ async function insert_skill_plugin(
 		sourceLastError: null,
 		createdBy: userId,
 		updatedAt: now,
+		secrets: [],
+		endpoints: [],
+		userWritableCollections: null,
 	});
 	await ctx.db.insert("plugins_workspace_installations", {
 		serviceAccountId: await ctx.db.insert("access_control_service_accounts", {

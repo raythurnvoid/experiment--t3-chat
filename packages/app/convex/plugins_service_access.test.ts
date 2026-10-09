@@ -52,6 +52,9 @@ async function seed_installation(args: {
 			sourceLastError: null,
 			createdBy: membership.userId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const serviceAccountId = await test_mocks_fill_db_with.plugin_service_account(ctx, {
 			...membership,
@@ -371,6 +374,8 @@ describe("get_snapshot", () => {
 					workspaceId: fixture.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				});
 				return userId;
 			});
@@ -450,6 +455,8 @@ describe("get_snapshot", () => {
 					workspaceId: fixture.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				});
 			}
 		});

@@ -344,7 +344,7 @@ const AiChatThreadsListItem = memo(function AiChatThreadsListItem(props: AiChatT
 	});
 
 	const handleStarToggle = useFn(() => {
-		const isStarred = thread.starred === true;
+		const isStarred = thread.starred;
 		onToggleFavourite(thread._id, !isStarred);
 	});
 
@@ -369,7 +369,7 @@ const AiChatThreadsListItem = memo(function AiChatThreadsListItem(props: AiChatT
 		onDelete(thread._id);
 	});
 
-	const isStarred = thread.starred === true;
+	const isStarred = thread.starred;
 	const starButtonLabel = isStarred ? "Remove from favorites" : "Add to favorites";
 	const archiveLabel = isArchived ? "Unarchive" : "Archive";
 	// The open chat is being read right now, so it never shows a dot.

@@ -110,6 +110,7 @@ const NODE = {
 	restrictedScopeNodeId: null,
 	isRestrictedScopeRoot: false,
 	writePolicy: null,
+	newChildWritePolicy: null,
 	canWrite: true,
 	writeBlockedReason: null,
 	writePolicyState: "none",

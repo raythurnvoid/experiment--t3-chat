@@ -77,6 +77,9 @@ async function seed_installation(
 			sourceLastError: null,
 			createdBy: membership.userId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
 			organizationId: membership.organizationId,
@@ -181,6 +184,8 @@ async function seed_member_page_token(args: {
 			workspaceId: fixture.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
+			updatedAt: Date.now(),
 		});
 		for (const permission of args.permissions ?? ["content.read"]) {
 			await ctx.db.insert("access_control_permission_grants", {

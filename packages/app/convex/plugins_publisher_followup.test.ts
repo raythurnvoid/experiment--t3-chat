@@ -55,6 +55,9 @@ describe("plugins list_user_published_repositories", () => {
 				sourceLastError: null,
 				createdBy: publisherUserId,
 				updatedAt: 100,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			return { publisherUserId, repositoryId };
 		});
@@ -124,6 +127,9 @@ describe("plugins list_user_published_repositories", () => {
 				sourceStatus: "ready" as const,
 				sourceLastError: null,
 				createdBy: publisherUserId,
+				secrets: [] as [],
+				endpoints: [] as [],
+				userWritableCollections: null,
 			};
 			await ctx.db.insert("plugins_versions", {
 				...sharedFields,

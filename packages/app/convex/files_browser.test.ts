@@ -368,6 +368,7 @@ async function seed_browser_file_scope(t: ReturnType<typeof test_convex>) {
 			updatedBy: fixture.userId,
 			updatedAt: Date.now(),
 			newestNodeId: null,
+			starred: false,
 		}),
 	);
 
@@ -921,6 +922,8 @@ describe("get_file_read_source", () => {
 				workspaceId: scope.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, { ...scope, userId, role: "member", now: Date.now() });
 			return { userId, membershipId };
@@ -3105,6 +3108,8 @@ async function add_workspace_member(args: {
 			workspaceId: owner.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
+			updatedAt: Date.now(),
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: owner.organizationId,

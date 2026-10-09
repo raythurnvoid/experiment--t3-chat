@@ -108,6 +108,9 @@ async function fixture() {
 			sourceLastError: null,
 			createdBy: personal.userId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 	});
 

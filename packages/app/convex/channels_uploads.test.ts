@@ -44,6 +44,7 @@ async function fixture(plan: "Pay As You Go" | "Free" = "Pay As You Go") {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -707,6 +708,7 @@ describe("get_upload_url", () => {
 				workspaceId: f.workspaceId,
 				userId: f.member.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 		});

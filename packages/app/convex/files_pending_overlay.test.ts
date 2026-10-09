@@ -109,6 +109,7 @@ async function fixture() {
 			workspaceId: db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
@@ -432,7 +433,13 @@ async function fixture() {
  */
 async function add_member(ctx: MutationCtx, scope: Omit<Scope, "userId">, clerkUserId: string): Promise<Scope> {
 	const userId = await ctx.db.insert("users", { clerkUserId });
-	await ctx.db.insert("organizations_workspaces_users", { ...scope, userId, active: true, updatedAt: Date.now() });
+	await ctx.db.insert("organizations_workspaces_users", {
+		...scope,
+		userId,
+		active: true,
+		updatedAt: Date.now(),
+		pendingOrganizationRemoval: false,
+	});
 	await access_control_db_ensure_role_assignment(ctx, { ...scope, userId, role: "member", now: Date.now() });
 	return { ...scope, userId };
 }

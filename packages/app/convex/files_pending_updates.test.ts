@@ -256,6 +256,7 @@ async function seed_file_with_markdown(args: {
 		restrictedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
 		writePolicy: null,
+		newChildWritePolicy: null,
 	});
 
 	const snapshotId = await ctx.db.insert("files_yjs_snapshots", {
@@ -336,6 +337,7 @@ async function seed_folder_node(args: {
 		writePolicy: null,
 
 		archiveOperationId: null,
+		newChildWritePolicy: null,
 	});
 }
 
@@ -468,6 +470,7 @@ async function seed_non_collaborative_file(args: { ctx: MutationCtx; path: strin
 		writePolicy: null,
 
 		archiveOperationId: null,
+		newChildWritePolicy: null,
 	});
 	await files_nodes_db_insert_file_content_docs(ctx, {
 		organizationId,
@@ -872,6 +875,7 @@ async function seed_chat_thread(args: {
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
 		newestNodeId: null,
+		starred: false,
 	});
 }
 
@@ -2647,6 +2651,7 @@ describe("private pending text", () => {
 				workspaceId: draft.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -10236,6 +10241,8 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 				workspaceId: seeded.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: seeded.organizationId,
@@ -10514,6 +10521,8 @@ describe("get_file_pending_update", () => {
 					workspaceId: seeded.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
 					organizationId: seeded.organizationId,
@@ -10960,6 +10969,7 @@ describe("prepare_file_pending_update_for_agent upload in flight", () => {
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			return { assetId, nodeId };
 		});
@@ -11269,6 +11279,8 @@ describe("prepare_file_pending_update_for_review", () => {
 						workspaceId: file.workspaceId,
 						userId,
 						active: true,
+						pendingOrganizationRemoval: false,
+						updatedAt: Date.now(),
 					});
 					await access_control_db_ensure_role_assignment(ctx, {
 						organizationId: file.organizationId,
@@ -13268,6 +13280,7 @@ describe("upsert_file_pending_move_in_db", () => {
 				writePolicy: null,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			}),
 		);
 		const relabeled = await upsert_file_pending_move_for_test({
@@ -14443,6 +14456,7 @@ describe("apply_file_pending_move", () => {
 				writePolicy: null,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			}),
 		);
 
@@ -15123,6 +15137,7 @@ describe("apply_file_pending_move", () => {
 				workspaceId: seeded.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -16897,6 +16912,7 @@ describe("apply_file_pending_archive", () => {
 				workspaceId: seeded.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -18407,6 +18423,7 @@ describe("discard_file_pending_structural", () => {
 				workspaceId: dest.workspaceId,
 				userId: otherUserId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			// Writing files needs `content.write`, which comes from the member role.
@@ -18507,6 +18524,7 @@ describe("discard_file_pending_structural", () => {
 				workspaceId: dest.workspaceId,
 				userId: otherUserId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			// Writing files needs `content.write`, which comes from the member role.
@@ -19186,6 +19204,7 @@ describe("expire_file_pending_updates structural rows", () => {
 				workspaceId: dest.workspaceId,
 				userId: otherUserId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			// Writing files needs `content.write`, which comes from the member role.
@@ -19517,6 +19536,7 @@ describe("pending path overlay reads", () => {
 				writePolicy: null,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 		});
 		const newcomer = await t.query(internal.files_nodes.get_by_path, {

@@ -182,6 +182,9 @@ async function install_mcp_plugin(args: {
 			sourceLastError: null,
 			createdBy: userId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const installationId = await ctx.db.insert("plugins_workspace_installations", {
 			serviceAccountId: await ctx.db.insert("access_control_service_accounts", {

@@ -360,6 +360,7 @@ export const test_mocks = {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
+				newChildWritePolicy: null,
 				archiveOperationId: null,
 			});
 		};

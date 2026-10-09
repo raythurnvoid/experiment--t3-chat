@@ -130,6 +130,9 @@ async function seed_installation(
 			sourceLastError: null,
 			createdBy: membership.userId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const installationId = await ctx.db.insert("plugins_workspace_installations", {
 			serviceAccountId,
@@ -853,6 +856,8 @@ describe("service upload plan gate", () => {
 				workspaceId: fixture.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			// Ownership carries every permission, so the acting member needs a role of their own once the
 			// organization belongs to someone else. `admin` is the role that has everything except billing.
@@ -1558,6 +1563,8 @@ describe("service upload targets", () => {
 				workspaceId: fixture.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -2999,6 +3006,8 @@ describe("service upload delete", () => {
 				workspaceId: fixture.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -4103,6 +4112,7 @@ describe("service upload archive", () => {
 					restrictedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
 					writePolicy: null,
+					newChildWritePolicy: null,
 				});
 			}
 		});
@@ -4315,6 +4325,8 @@ describe("service upload archive", () => {
 				workspaceId: fixture.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,

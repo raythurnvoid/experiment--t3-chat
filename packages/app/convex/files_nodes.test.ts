@@ -522,6 +522,7 @@ async function seed_tree_access_fixture(t: ReturnType<typeof test_convex>) {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			return { userId, membershipId };
@@ -2095,6 +2096,7 @@ describe("get_path_by_id", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -2154,6 +2156,7 @@ describe("get_path_by_id", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -4062,6 +4065,7 @@ describe("move_nodes", () => {
 					workspaceId: db.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
@@ -4748,6 +4752,7 @@ test("home file can be renamed and moved like any file", async () => {
 			pathDepth: 1,
 			lowercaseExtension: "md",
 			archiveOperationId: null,
+			newChildWritePolicy: null,
 		}),
 	);
 
@@ -4819,6 +4824,7 @@ test("home file can be archived like any file", async () => {
 			pathDepth: 1,
 			lowercaseExtension: "md",
 			archiveOperationId: null,
+			newChildWritePolicy: null,
 		}),
 	);
 
@@ -6973,6 +6979,8 @@ describe("upload plan gate", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			// Ownership carries every permission, so the acting member needs a role of their own once the
 			// organization belongs to someone else. `admin` is the role that has everything except billing.
@@ -9009,6 +9017,7 @@ async function test_insert_searchable_markdown_file(args: {
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: now,
+			newChildWritePolicy: null,
 		});
 		const chunks = await db_insert_file_text_content(ctx, {
 			organizationId: db.organizationId,
@@ -9543,6 +9552,7 @@ async function test_insert_committed_external_markdown(args: {
 			createdBy: users_SYSTEM_AUTHOR,
 			updatedBy: users_SYSTEM_AUTHOR,
 			updatedAt: now,
+			newChildWritePolicy: null,
 		});
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
@@ -9852,6 +9862,7 @@ describe("non-collaborative files", () => {
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
+				newChildWritePolicy: null,
 			});
 
 			await files_nodes_db_insert_file_content_docs(ctx, {
@@ -10430,6 +10441,7 @@ describe("non-collaborative files", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -11200,6 +11212,7 @@ describe("non-collaborative files", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -12294,6 +12307,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 			workspaceId: db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: now,
 		});
 		await ctx.db.insert("access_control_role_assignments", {
@@ -12583,6 +12597,7 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 			workspaceId: db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
@@ -12807,6 +12822,7 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: Date.now(),
+			newChildWritePolicy: null,
 		}),
 	);
 
@@ -13577,6 +13593,7 @@ describe("folder metadata", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -14182,6 +14199,7 @@ async function seed_folder_table(options: Parameters<typeof test_convex>[0] = {}
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			if (role) {
@@ -15722,6 +15740,7 @@ describe("get_visible_target_by_path", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -15862,6 +15881,7 @@ describe("search box doors", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			return { userId, membershipId };
@@ -16318,6 +16338,7 @@ describe("search box doors", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -17364,6 +17385,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: Date.now(),
+			newChildWritePolicy: null,
 		}),
 	);
 
@@ -18332,6 +18354,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
+				newChildWritePolicy: null,
 			});
 			return { nodeId, assetId };
 		});
@@ -21609,6 +21632,7 @@ describe("files_nodes.set_node_write_policy", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			return { userId, membershipId };
@@ -22057,6 +22081,8 @@ describe("selected file writers", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -22899,6 +22925,7 @@ describe("files_nodes destination conflict privacy", () => {
 				workspaceId: db.workspaceId,
 				userId: memberUserId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await ctx.db.insert("access_control_role_assignments", {
@@ -23385,6 +23412,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 				workspaceId: db.workspaceId,
 				userId: otherUserId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			// Archiving needs `content.write`, which comes from the member role.
@@ -24294,6 +24322,7 @@ describe("files_nodes public read-only view", () => {
 				workspaceId: db.workspaceId,
 				userId: memberUserId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await ctx.db.insert("access_control_permission_grants", {
@@ -24530,6 +24559,7 @@ describe("member controls on plugin-labeled nodes", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			return { userId, membershipId };
@@ -24975,6 +25005,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await ctx.db.insert("access_control_role_assignments", {

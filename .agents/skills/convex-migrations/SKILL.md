@@ -141,8 +141,7 @@ export const run_backfill_example = app_migrations.runner(internal.migrations.ba
 For a migration that must stay replayable, never reference a legacy field through `Doc<...>`
 directly — once the field leaves the schema the migration stops compiling, and returning
 `{ old_field: undefined }` from `migrateOne` fails tsc for the same reason. Define an Omit-based
-cast type (see `LegacyVersionReview` / `LegacyPluginsVersion` in `migrations.ts`) and strip fields
-with destructure + `ctx.db.replace`:
+cast type and strip fields with destructure + `ctx.db.replace`:
 
 ```ts
 type LegacyPluginsVersion = Omit<Doc<"plugins_versions">, "backend"> & {

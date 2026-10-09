@@ -1045,6 +1045,7 @@ describe("FileNodeView private targets", () => {
 					pathDepth: 1,
 					lowercaseExtension: "html",
 					writePolicy: null,
+					newChildWritePolicy: null,
 					statsId: null,
 					contentTooLargeByteSize: null,
 					contentShapeMismatchAt: null,

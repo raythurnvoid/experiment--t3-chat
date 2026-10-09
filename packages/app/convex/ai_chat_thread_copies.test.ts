@@ -29,6 +29,7 @@ async function fixture() {
 			updatedBy: seeded.userId,
 			updatedAt: Date.now(),
 			newestNodeId: null,
+			starred: false,
 		}),
 	);
 	return { t, seeded, asUser, sourceThreadId };

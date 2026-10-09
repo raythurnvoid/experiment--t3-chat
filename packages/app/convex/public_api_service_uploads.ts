@@ -364,7 +364,7 @@ async function db_target_destination_is_closed(
 		installationId: target.installationId,
 		destinationPath: target.destinationPath,
 	});
-	return destination !== null && (target.destinationEpoch ?? 1) <= destination.closedEpoch;
+	return destination !== null && target.destinationEpoch <= destination.closedEpoch;
 }
 
 /**
@@ -577,7 +577,7 @@ async function db_get_live_delete_group_targets(
 	const destination = await db_get_destination(ctx, args);
 	const attachedTargets: Array<Doc<"plugin_service_storage_targets">> = [];
 	for (const target of [...pending, ...committed]) {
-		if (destination && (target.destinationEpoch ?? 1) <= destination.closedEpoch) {
+		if (destination && target.destinationEpoch <= destination.closedEpoch) {
 			await ctx.db.patch("plugin_service_storage_targets", target._id, {
 				movedOutAt: now,
 				updatedAt: now,
@@ -1870,7 +1870,7 @@ export const archive_destination = internalMutation({
 			if (await db_target_destination_is_closed(ctx, stableTarget)) {
 				return Result({ _yay: { archivedNodes: 0 } });
 			}
-			throughEpoch = stableTarget.destinationEpoch ?? 1;
+			throughEpoch = stableTarget.destinationEpoch;
 
 			const targetFolder = await ctx.db.get("files_nodes", stableTarget.destinationNodeId);
 			if (!targetFolder) {

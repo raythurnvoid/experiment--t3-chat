@@ -33,6 +33,8 @@ async function fixture(transactionLimits: NonNullable<Parameters<typeof test_con
 			workspaceId: db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
+			updatedAt: Date.now(),
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: db.organizationId,
@@ -524,6 +526,8 @@ describe("advance", () => {
 				workspaceId: f.db.workspaceId,
 				userId: f.member.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await organizations_membership_lifetimes_db_ensure(
 				ctx,

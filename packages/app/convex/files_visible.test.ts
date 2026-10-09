@@ -64,6 +64,7 @@ async function add_member(f: Awaited<ReturnType<typeof fixture>>) {
 			workspaceId: f.db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: now,
 		});
 		await access_control_db_ensure_role_assignment(ctx, {

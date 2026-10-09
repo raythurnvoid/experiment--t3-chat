@@ -68,6 +68,7 @@ async function add_member(ctx: MutationCtx, db: Db, clerkUserId: string) {
 		workspaceId: db.workspaceId,
 		userId,
 		active: true,
+		pendingOrganizationRemoval: false,
 		updatedAt: Date.now(),
 	});
 	await access_control_db_ensure_role_assignment(ctx, {

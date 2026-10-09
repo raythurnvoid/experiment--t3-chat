@@ -81,6 +81,7 @@ describe("tenant deletion with many direct file grants", () => {
 							writePolicy: null,
 
 							archiveOperationId: null,
+							newChildWritePolicy: null,
 						});
 						await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 						for (const permission of access_control_FILE_SHARE_LEVELS.manage.permissions) {

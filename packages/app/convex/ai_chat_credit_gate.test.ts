@@ -288,6 +288,7 @@ describe("/api/chat credit gate", () => {
 					workspaceId: owner.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
 				});
 				await access_control_db_ensure_role_assignment(ctx, {

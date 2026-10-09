@@ -235,6 +235,7 @@ async function users_test_seed_page(
 		writePolicy: null,
 
 		archiveOperationId: null,
+		newChildWritePolicy: null,
 	});
 
 	return {
@@ -1645,6 +1646,7 @@ describe("get_workspace_member_anagraphic", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: member.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -1749,6 +1751,8 @@ describe("list_current_user_account_deletion_blocking_organizations", () => {
 				workspaceId: sharedOrganization._yay.defaultWorkspaceId,
 				userId: owner.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: sharedOrganization._yay.organizationId,
@@ -1783,6 +1787,8 @@ describe("list_current_user_account_deletion_blocking_organizations", () => {
 				workspaceId: workspaceScopedWorkspace._yay.workspaceId,
 				userId: owner.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			// A strong role inside one workspace must not be shown as organization ownership.
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -1859,6 +1865,8 @@ describe("delete_current_user_account", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: collaborator.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 
 			await test_mocks_cancel_pending_home_file_seeds(ctx);
@@ -2829,6 +2837,7 @@ describe("delete_current_user_account", () => {
 					workspaceId: organization._yay.defaultWorkspaceId,
 					userId: member.userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				await quotas_db_ensure(ctx, {

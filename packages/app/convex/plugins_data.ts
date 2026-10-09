@@ -214,7 +214,7 @@ export function plugins_data_parse_append_key_at(key: string) {
  * Pick one durable append marker. A lexical key maximum breaks equal-time ties.
  */
 export function plugins_data_max_last_append(
-	current: plugins_data_LastAppend | null | undefined,
+	current: plugins_data_LastAppend | null,
 	candidate: plugins_data_LastAppend,
 ) {
 	if (!current || candidate.at > current.at || (candidate.at === current.at && candidate.key > current.key)) {
@@ -568,7 +568,7 @@ async function db_authorize(
 			return Result({ _nay: { message: "Not found" } });
 		}
 		// A null list means the manifest declared none, so every collection stays user-writable.
-		const userWritableCollections = version.userWritableCollections ?? null;
+		const userWritableCollections = version.userWritableCollections;
 		if (userWritableCollections !== null) {
 			for (const collection of args.collections) {
 				if (!userWritableCollections.includes(collection)) {
@@ -873,7 +873,7 @@ function check_capacity(args: {
 	return Result({ _yay: null });
 }
 
-async function db_get_member_usage_doc(
+async function db_get_member_usage(
 	ctx: QueryCtx,
 	args: { installationId: Id<"plugins_workspace_installations">; userId: Id<"users"> },
 ) {
@@ -881,14 +881,6 @@ async function db_get_member_usage_doc(
 		.query("plugins_data_member_usage")
 		.withIndex("by_installation_user", (q) => q.eq("installationId", args.installationId).eq("userId", args.userId))
 		.first();
-}
-
-async function db_get_member_usage(
-	ctx: QueryCtx,
-	args: { installationId: Id<"plugins_workspace_installations">; userId: Id<"users"> },
-) {
-	const usage = await db_get_member_usage_doc(ctx, args);
-	return usage?.generation === "document_bound" ? usage : null;
 }
 
 /**
@@ -918,9 +910,9 @@ async function db_patch_member_usage(
 		return null;
 	}
 
-	let existing =
+	const existing =
 		args.targetUsageId === "current"
-			? await db_get_member_usage_doc(ctx, { installationId: args.installation._id, userId: args.userId })
+			? await db_get_member_usage(ctx, { installationId: args.installation._id, userId: args.userId })
 			: await ctx.db.get("plugins_data_member_usage", args.targetUsageId);
 	if (existing && (existing.installationId !== args.installation._id || existing.userId !== args.userId)) {
 		const errorMessage = "Plugin document points at the wrong member usage row";
@@ -931,14 +923,6 @@ async function db_patch_member_usage(
 	// An exact old generation may already be pruned. Never redirect its credit into the current row.
 	if (!existing && args.targetUsageId !== "current") {
 		return null;
-	}
-	if (existing && existing.generation !== "document_bound") {
-		if (args.targetUsageId !== "current") {
-			return null;
-		}
-		// Rows from before exact document binding cannot be updated safely after leave and rejoin.
-		await ctx.db.delete("plugins_data_member_usage", existing._id);
-		existing = null;
 	}
 
 	const collectionNames = existing ? [...existing.collectionNames] : [];
@@ -967,7 +951,6 @@ async function db_patch_member_usage(
 			workspaceId: args.installation.workspaceId,
 			installationId: args.installation._id,
 			userId: args.userId,
-			generation: "document_bound",
 			usedBytes,
 			usedDocuments,
 			machineBytes,
@@ -3024,7 +3007,7 @@ export const user_append_document = mutation({
 			// Keep append activity separate from the membership revision stored in `updatedAt`.
 			await ctx.db.patch("plugins_data_scopes", scopedWrite._yay._id, {
 				lastAppend,
-				appendSequence: (scopedWrite._yay.appendSequence ?? 0) + 1,
+				appendSequence: scopedWrite._yay.appendSequence + 1,
 			});
 		}
 
@@ -5311,14 +5294,14 @@ export const watch_my_scopes = query({
 					collections: scopeDocs.map((scopeDoc) => scopeDoc.collection).sort(),
 					appendActivity: scopeDocs
 						.flatMap((scopeDoc) =>
-							scopeDoc.lastAppend === null || scopeDoc.lastAppend === undefined
+							scopeDoc.lastAppend === null
 								? []
 								: [
 										{
 											collection: scopeDoc.collection,
 											at: scopeDoc.lastAppend.at,
 											createdByUserId: String(scopeDoc.lastAppend.createdByUserId),
-											sequence: scopeDoc.appendSequence ?? 1,
+											sequence: scopeDoc.appendSequence,
 										},
 									],
 						)
@@ -6245,6 +6228,7 @@ export const write_versioned_document = internalMutation({
 			await ctx.db.patch("plugins_data", existing._id, {
 				value: args.value,
 				byteSize: byteSize._yay,
+				machineBytes: byteSize._yay,
 				revision: args.revision,
 				updatedBy: args.principal.actorUserId,
 				updatedAt: now,
@@ -6261,6 +6245,7 @@ export const write_versioned_document = internalMutation({
 				key: key._yay,
 				value: args.value,
 				byteSize: byteSize._yay,
+				machineBytes: byteSize._yay,
 				revision: args.revision,
 				writeMode: "versioned",
 				// Versioned service documents are workspace-visible data, not member-owned.
@@ -7095,7 +7080,7 @@ export async function plugins_data_db_delete_append_replay_receipt(
 
 	if (receipt.memberUsageId) {
 		const memberUsage = await ctx.db.get("plugins_data_member_usage", receipt.memberUsageId);
-		if (memberUsage?.generation === "document_bound") {
+		if (memberUsage) {
 			const usedDocuments = Math.max(0, memberUsage.usedDocuments - 1);
 			if (
 				memberUsage.usedBytes === 0 &&

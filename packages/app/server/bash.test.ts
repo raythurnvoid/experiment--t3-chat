@@ -1725,6 +1725,7 @@ describe("bash_run_command", () => {
 					workspaceId: seeded.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
@@ -6144,6 +6145,7 @@ describe("bash_run_command", () => {
 					workspaceId: owner.seeded.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
@@ -10065,6 +10067,7 @@ describe("bash_run_command", () => {
 					workspaceId: owner.seeded.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
@@ -12347,6 +12350,7 @@ describe("bash_run_command", () => {
 				workspaceId: runner.seeded.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -13135,6 +13139,8 @@ describe("bash_run_command", () => {
 					sourceLastError: null,
 					createdBy: owner.userId,
 					updatedAt: Date.now(),
+					secrets: [],
+					userWritableCollections: null,
 				}),
 			);
 			const installed = await asOwner.mutation(api.plugins.install_version, {
@@ -14390,6 +14396,9 @@ describe("bash_run_command", () => {
 					sourceLastError: null,
 					createdBy: runner.seeded.userId,
 					updatedAt: now,
+					secrets: [],
+					endpoints: [],
+					userWritableCollections: null,
 				}),
 			);
 			for (const file of files) {

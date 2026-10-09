@@ -935,7 +935,7 @@ export const start_invoke_run = internalMutation({
 		if (!version || !version.backendEntrypointFile) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		const endpoint = version.endpoints?.find((entry) => entry.id === args.endpointId);
+		const endpoint = version.endpoints.find((entry) => entry.id === args.endpointId);
 		if (!endpoint) {
 			return Result({ _nay: { message: "Endpoint not found" } });
 		}

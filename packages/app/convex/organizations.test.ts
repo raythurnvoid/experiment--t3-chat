@@ -228,6 +228,7 @@ async function organizations_test_seed_workspace_scoped_rows(
 		writePolicy: null,
 
 		archiveOperationId: null,
+		newChildWritePolicy: null,
 	});
 	const assetId = await ctx.db.insert("files_r2_assets", {
 		organizationId: args.organizationId,
@@ -256,6 +257,7 @@ async function organizations_test_seed_workspace_scoped_rows(
 		updatedAt: Date.now(),
 		lastMessageAt: Date.now(),
 		newestNodeId: null,
+		starred: false,
 	});
 	await ctx.db.insert("ai_chat_bash_shells", {
 		organizationId: args.organizationId,
@@ -337,6 +339,9 @@ async function organizations_test_seed_live_plugin_authority(
 		sourceLastError: null,
 		createdBy: args.userId,
 		updatedAt: now,
+		secrets: [],
+		endpoints: [],
+		userWritableCollections: null,
 	});
 	const installationId = await ctx.db.insert("plugins_workspace_installations", {
 		serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
@@ -1284,6 +1289,7 @@ describe("create_workspace", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -1963,6 +1969,7 @@ describe("invite_user_to_organization_workspace", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: adminId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -2044,6 +2051,7 @@ describe("invite_user_to_organization_workspace", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: adminId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -2158,6 +2166,7 @@ describe("invite_user_to_organization_workspace", () => {
 					workspaceId: created._yay!.defaultWorkspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
@@ -2297,6 +2306,7 @@ describe("invite_user_to_organization_workspace", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: managerId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -2395,6 +2405,7 @@ describe("invite_user_to_organization_workspace", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: managerId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -2497,6 +2508,7 @@ describe("invite_user_to_organization_workspace", () => {
 					workspaceId: created._yay!.defaultWorkspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				if (role) {
@@ -2625,6 +2637,7 @@ describe("invite_user_to_organization_workspace", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -2761,6 +2774,8 @@ describe("remove_user_from_organization", () => {
 						workspaceId: created._yay!.defaultWorkspaceId,
 						userId,
 						active: true,
+						pendingOrganizationRemoval: false,
+						updatedAt: Date.now(),
 					});
 					await access_control_db_ensure_role_assignment(ctx, {
 						organizationId: created._yay!.organizationId,
@@ -2845,24 +2860,32 @@ describe("remove_user_from_organization", () => {
 					workspaceId: organization._yay!.defaultWorkspaceId,
 					userId: memberId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				}),
 				ctx.db.insert("organizations_workspaces_users", {
 					organizationId: organization._yay!.organizationId,
 					workspaceId: workspace._yay!.workspaceId,
 					userId: memberId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				}),
 				ctx.db.insert("organizations_workspaces_users", {
 					organizationId: organization._yay!.organizationId,
 					workspaceId: organization._yay!.defaultWorkspaceId,
 					userId: otherMemberId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				}),
 				ctx.db.insert("organizations_workspaces_users", {
 					organizationId: otherOrganization._yay!.organizationId,
 					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
 					userId: memberId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				}),
 				quotas_db_ensure(ctx, {
 					quotaName: "active_api_credentials",
@@ -2960,6 +2983,9 @@ describe("remove_user_from_organization", () => {
 				sourceLastError: null,
 				createdBy: ownerId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			const [removedInstallationId, projectInstallationId, keptInstallationId] = await Promise.all([
 				ctx.db.insert("plugins_workspace_installations", {
@@ -3448,6 +3474,8 @@ describe("remove_user_from_organization", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await quotas_db_ensure(ctx, {
 				quotaName: "active_api_credentials",
@@ -3502,6 +3530,9 @@ describe("remove_user_from_organization", () => {
 				sourceLastError: null,
 				createdBy: ownerId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
 				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
@@ -3538,6 +3569,8 @@ describe("remove_user_from_organization", () => {
 					createdByUserId: memberId,
 					createdAt: now,
 					updatedAt: now,
+					lastAppend: null,
+					appendSequence: 0,
 				});
 				await ctx.db.insert("access_control_permission_grants", {
 					organizationId: created._yay!.organizationId,
@@ -3737,7 +3770,14 @@ describe("remove_user_from_organization", () => {
 		const seeded = await t.run(async (ctx) => {
 			const now = Date.now();
 			for (const userId of [memberId, otherMemberId]) {
-				await ctx.db.insert("organizations_workspaces_users", { organizationId, workspaceId, userId, active: true });
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId,
+					workspaceId,
+					userId,
+					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
+				});
 				await access_control_db_ensure_role_assignment(ctx, {
 					organizationId,
 					workspaceId,
@@ -3844,9 +3884,17 @@ describe("remove_user_from_organization", () => {
 					updatedAt: now,
 					lastMessageAt: now,
 					newestNodeId: null,
+					starred: false,
 				});
 				for (const userId of [memberId, otherMemberId]) {
-					await ctx.db.insert("organizations_workspaces_users", { organizationId, workspaceId, userId, active: true });
+					await ctx.db.insert("organizations_workspaces_users", {
+						organizationId,
+						workspaceId,
+						userId,
+						active: true,
+						pendingOrganizationRemoval: false,
+						updatedAt: Date.now(),
+					});
 					await access_control_db_ensure_role_assignment(ctx, {
 						organizationId,
 						workspaceId,
@@ -4001,6 +4049,7 @@ describe("access_control.transfer_organization_ownership", () => {
 					workspaceId: created._yay!.defaultWorkspaceId,
 					userId: newOwnerId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				}),
 				// Invited organization members already have a member role before transfer.
@@ -4034,6 +4083,7 @@ describe("access_control.transfer_organization_ownership", () => {
 				workspaceId: secondWorkspace._yay.workspaceId,
 				userId: newOwnerId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await ctx.db.insert("access_control_role_assignments", {
@@ -4246,6 +4296,7 @@ describe("access_control", () => {
 					workspaceId: created._yay!.defaultWorkspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
@@ -4516,6 +4567,7 @@ describe("access_control", () => {
 				workspaceId: workspaceBId,
 				userId: scopedUserId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 
@@ -4604,6 +4656,7 @@ describe("access_control", () => {
 					writePolicy: null,
 
 					archiveOperationId: null,
+					newChildWritePolicy: null,
 				}),
 				ctx.db.insert("files_nodes", {
 					organizationId: organization.organizationId,
@@ -4637,6 +4690,7 @@ describe("access_control", () => {
 					writePolicy: null,
 
 					archiveOperationId: null,
+					newChildWritePolicy: null,
 				}),
 			]);
 
@@ -4837,6 +4891,7 @@ describe("edit_organization", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5330,6 +5385,7 @@ describe("edit_workspace", () => {
 					workspaceId: created._yay!.defaultWorkspaceId,
 					userId: memberId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				}),
 				ctx.db.insert("organizations_workspaces_users", {
@@ -5337,6 +5393,7 @@ describe("edit_workspace", () => {
 					workspaceId: workspace._yay!.workspaceId,
 					userId: memberId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				}),
 			]);
@@ -5427,6 +5484,7 @@ describe("edit_workspace", () => {
 				workspaceId: organization._yay!.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5955,6 +6013,7 @@ describe("delete_workspace", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -6050,6 +6109,8 @@ describe("delete_organization", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			// A membership alone gives no permission. Without this role the test would use a user with no
 			// permissions at all, instead of the member its name promises.
@@ -6122,6 +6183,8 @@ describe("delete_organization", () => {
 				workspaceId: extraWorkspace._yay!.workspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 
 			await organizations_test_seed_workspace_scoped_rows(ctx, {
@@ -6634,6 +6697,7 @@ describe("set_organization_billing_mode", () => {
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -6692,6 +6756,7 @@ describe("set_organization_billing_mode", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				userId: adminId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -6930,6 +6995,8 @@ describe("list", () => {
 				workspaceId: extra._yay!.workspaceId,
 				userId: userIds[1],
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 		});
 
@@ -7067,6 +7134,7 @@ describe("quotas.get", () => {
 				workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 
@@ -7144,6 +7212,7 @@ describe("quotas.get", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 
@@ -7273,6 +7342,8 @@ describe("quotas.get", () => {
 				workspaceId: extra._yay!.workspaceId,
 				userId: userIds[1],
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 		});
 

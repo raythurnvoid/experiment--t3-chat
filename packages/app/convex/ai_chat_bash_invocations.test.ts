@@ -271,6 +271,7 @@ describe("list_bash_invocation_transfers", () => {
 				workspaceId: f.db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			return { userId, membershipId };

@@ -39,6 +39,7 @@ async function notifications_test_seed_target(ctx: MutationCtx) {
 		workspaceId,
 		userId,
 		active: true,
+		pendingOrganizationRemoval: false,
 		updatedAt: now,
 	});
 

@@ -279,6 +279,7 @@ async function seed_markdown_file(args: {
 					restrictedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
 					archiveOperationId: null,
+					newChildWritePolicy: null,
 				});
 			}
 		}
@@ -372,6 +373,7 @@ async function seed_markdown_file(args: {
 			restrictedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			archiveOperationId: null,
+			newChildWritePolicy: null,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 			organizationId: args.organizationId,
@@ -771,6 +773,8 @@ describe("file write policy API", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await quotas_db_ensure(ctx, {
 				quotaName: "active_api_credentials",
@@ -1228,6 +1232,8 @@ describe("service-bound API credentials", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			return { userId, membershipId };
 		});
@@ -2442,6 +2448,7 @@ describe("public files API", () => {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			const innerId = await ctx.db.insert("files_nodes", {
 				writePolicy: null,
@@ -2474,6 +2481,7 @@ describe("public files API", () => {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
 			await ctx.db.patch("files_nodes", innerId, { restrictedScopeNodeId: innerId });
@@ -2484,6 +2492,7 @@ describe("public files API", () => {
 				workspaceId: db.workspaceId,
 				userId: writerId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -2621,6 +2630,7 @@ describe("public files API", () => {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			await ctx.db.patch("files_nodes", folderId, { restrictedScopeNodeId: folderId });
 			return folderId;
@@ -2674,6 +2684,7 @@ describe("public files API", () => {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 			return nodeId;
@@ -2698,6 +2709,7 @@ describe("public files API", () => {
 						workspaceId,
 						userId,
 						active: true,
+						pendingOrganizationRemoval: false,
 						updatedAt: now,
 					});
 				}
@@ -3181,6 +3193,8 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await quotas_db_ensure(ctx, {
 				quotaName: "active_api_credentials",
@@ -3229,6 +3243,8 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await quotas_db_ensure(ctx, {
 				quotaName: "active_api_credentials",
@@ -3413,6 +3429,8 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await quotas_db_ensure(ctx, {
 				quotaName: "active_api_credentials",
@@ -3556,6 +3574,8 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await ctx.db.insert("api_credentials", {
 				serviceAccountId: null,
@@ -3605,6 +3625,7 @@ describe("public files API", () => {
 					workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 			}
@@ -4349,6 +4370,7 @@ describe("files upload-urls", () => {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
 			await ctx.db.patch("files_nodes", hiddenFileId, { restrictedScopeNodeId: hiddenFileId });
@@ -4362,6 +4384,7 @@ describe("files upload-urls", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5430,6 +5453,7 @@ describe("files read-only locks", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5589,6 +5613,7 @@ describe("files read-only locks", () => {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 			return nodeId;
@@ -6402,6 +6427,7 @@ describe("files read-only locks", () => {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 		});
 		await set_lock({ writer, nodeId: midId, locked: true });
@@ -6552,6 +6578,7 @@ describe("files read-only locks", () => {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 			await ctx.db.insert("access_control_permission_grants", {
@@ -6623,6 +6650,7 @@ describe("files read-only locks", () => {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 			await ctx.db.insert("access_control_permission_grants", {
@@ -6998,6 +7026,9 @@ describe("service file writes", () => {
 				sourceLastError: null,
 				createdBy: args.db.userId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
 				organizationId: args.db.organizationId,
@@ -7455,6 +7486,7 @@ describe("service file writes", () => {
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -7556,6 +7588,7 @@ describe("service file writes", () => {
 						workspaceId: db.workspaceId,
 						userId,
 						active: true,
+						pendingOrganizationRemoval: false,
 						updatedAt: now,
 					});
 					await access_control_db_ensure_role_assignment(ctx, {

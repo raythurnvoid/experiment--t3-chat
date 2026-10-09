@@ -31,7 +31,6 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 } from "../server/server-utils.ts";
 import { organizations_db_ensure_default_organization_and_workspace_for_user } from "./organizations.ts";
-import { access_control_db_ensure_organization_member_role } from "./access_control.ts";
 import {
 	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
@@ -765,30 +764,6 @@ export const resolve_user = internalMutation({
 					.filter((row) => row.scope === "user")
 					.map((row) => ctx.db.delete("data_deletion_requests", row._id)),
 			]);
-
-			// A membership that comes back also needs its organization role back. The role assignment
-			// normally survives account deletion, because `delete_role` lowers an inactive holder
-			// instead of deleting them. But the old migration
-			// `backfill_access_control_member_assignments` skipped inactive docs. So a membership that
-			// was already waiting for deletion when that migration ran comes back with no role at all.
-			// That user would be an active member with zero permissions: the file tree would load empty
-			// instead of showing an error, and nobody could tell what is wrong. The helper keeps any role
-			// that is still there, whatever it is.
-			await Promise.all(
-				reactivatedMemberships.map(async (membership) => {
-					const organization = await ctx.db.get("organizations", membership.organizationId);
-					if (!organization) {
-						return;
-					}
-
-					await access_control_db_ensure_organization_member_role(ctx, {
-						organization,
-						workspaceId: membership.workspaceId,
-						userId: deletedUser._id,
-						now,
-					});
-				}),
-			);
 
 			await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 				userId: deletedUser._id,

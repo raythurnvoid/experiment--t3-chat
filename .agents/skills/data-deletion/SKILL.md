@@ -71,7 +71,7 @@ Load each companion skill that owns the affected boundary:
   manifest is being copied. All user-deletion paths wait before removing memberships or the user.
 - Transfer cleanup drains selection pages and items before its holds and Activity. Completed
   copies in retained workspaces stay.
-- `db_drain_user_bash_jobs_batch`: stops and deletes one background Bash job the user started (its receipts, Activity and row, at most `batchSize` docs per pass), then the user's `ai_chat_bash_job_notice_cursors` docs, before deleting memberships. Both user-deletion paths run it right after transfer runs.
+- `db_drain_user_bash_jobs_batch`: stops and deletes one background Bash job the user started (its receipts, Activity and row, at most `batchSize` docs per pass) before deleting memberships. Both user-deletion paths run it right after transfer runs.
 - `db_drain_user_pending_review_runs_batch`: fences one review run before deleting its prepared content and at most eight item rows per pass. Units, Activity viewer state, Activity, and the run follow. Completed saves stay in retained workspaces. Both user deletion paths drain reviews before memberships and proposals.
 - `db_drain_user_write_policy_runs_batch`: stops and deletes one "Apply to contents" protection job the user started, with its Activity. Items it already updated keep their new rule. Both user-deletion paths run it right after review runs.
 - `db_drain_user_archive_runs_batch`: stops and deletes one archive or restore job the user started, with its Activity. Items it already archived or restored stay that way. Both user-deletion paths run it right after protection jobs.
@@ -251,7 +251,7 @@ Current purge coverage includes:
 - `ai_chat_bash_invocation_transfers` before `ai_chat_bash_invocations`, both before the thread. Results expire after seven days; the small terminal call identity stays until this purge. Delete at most eight invocation docs per pass because retained results can use 700 KiB each. A job row (one with a `job` field) owns an Activity and receipts, so a pass that finds one deletes that job through `ai_chat_files_db_delete_job_batch` instead of the plain batch. Missing records make late deadline and expiry callbacks no-ops.
 - `ai_chat_files_content`, `ai_chat_files`
 - `ai_chat_run_steps` (at most 8 per pass, because a step can be close to 1 MiB), `ai_chat_run_inbox`, `ai_chat_tool_receipts`, `ai_chat_compactions`, after the chat files and before the messages
-- `ai_chat_threads_messages_aisdk_5` (the `aisdk_5` in that name is stored data and does not track the AI SDK major version), `ai_chat_bash_shell_transcripts`, `ai_chat_bash_shells`, `ai_chat_bash_job_notice_cursors` (per user and thread; Delete chat removes one chat's cursors, and this purge removes the rest), `ai_chat_threads`
+- `ai_chat_threads_messages_aisdk_5` (the `aisdk_5` in that name is stored data and does not track the AI SDK major version), `ai_chat_bash_shell_transcripts`, `ai_chat_bash_shells`, `ai_chat_threads`
 - Chat runs and stored outputs, after shells and before notice cursors: `ai_chat_output_owners`, unattached `ai_chat_output_objects` (a `deleting` object is left to its R2 job), `ai_chat_thread_copies` with their `ai_chat_thread_copy_pages`, then `ai_chat_runs`. The R2 deletion jobs can outlive the purge. The quota step retires chat output counters that still have holds, and the last settle deletes them.
 - `api_credentials`
 - `public_api_grants`

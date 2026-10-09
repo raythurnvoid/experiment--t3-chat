@@ -28,6 +28,7 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 			workspaceId: scope.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
 		});
 		await access_control_db_ensure_role_assignment(ctx, { ...owner, userId, role: "viewer", now: Date.now() });

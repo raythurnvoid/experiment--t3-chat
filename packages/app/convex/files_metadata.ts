@@ -482,6 +482,8 @@ async function db_search_sample_is_readable(args: {
  * (`files_nodes.search_saved`) and the agent's metadata stream (`files_visible.internal_search_metadata_saved`).
  * A folder is the last range of the `exists` and `eq` plans: `treePathPrefix` is the folder's stored
  * `treePath`, which ends with `/`. `prefix` and `range` put their range on the value, so they take no folder.
+ * The folder range includes the folder's own doc on purpose: a folder's metadata is shown nowhere else, so
+ * a metadata search inside a folder lists the folder itself. Name search leaves the folder out; keep both.
  */
 export function files_metadata_db_query_saved_plan(
 	ctx: QueryCtx,

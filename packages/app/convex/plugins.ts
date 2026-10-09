@@ -5942,7 +5942,7 @@ export const get_installation_health = query({
 
 		// Versions published before the secrets field exist without it; absent means "declares no
 		// secrets" and routes to the capability notice below, never to a false missing_secret.
-		const declaredSecrets = version.secrets ?? [];
+		const declaredSecrets = version.secrets;
 		const requiredSecrets = declaredSecrets.filter((secret) => !secret.optional);
 		if (requiredSecrets.length > 0) {
 			// Only row existence leaves this block; the encrypted docs never reach the response.

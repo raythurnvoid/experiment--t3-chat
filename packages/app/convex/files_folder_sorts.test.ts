@@ -28,6 +28,7 @@ async function fixture() {
 			workspaceId: scope.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: now,
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
@@ -262,6 +263,7 @@ describe("get_folder_sort", () => {
 				workspaceId: scope.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			return { userId, membershipId };

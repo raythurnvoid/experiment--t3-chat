@@ -288,7 +288,7 @@ const FileEditorSidebarAgentThreadPickerList = memo(function FileEditorSidebarAg
 								value={thread._id}
 								title={title}
 								isOptimistic={isOptimisticThread}
-								starred={thread.starred === true}
+								starred={thread.starred}
 								archived={thread.archived === true}
 								unread={thread._id !== selectedThreadId && ai_chat_thread_is_unread(thread)}
 								lastMessageAt={thread.lastMessageAt}

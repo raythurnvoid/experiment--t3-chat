@@ -308,14 +308,15 @@ async function register_media_plugin(args: {
 		],
 		pages: args.pages ?? [],
 		fileViews: [],
-		endpoints: args.endpoints,
+		endpoints: args.endpoints ?? [],
 		capabilities: args.capabilities ?? ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: args.outboundOrigins ?? [],
 		uiOutboundOrigins: args.uiOutboundOrigins ?? [],
 		mcpServers: args.mcpServers ?? [],
 		mcpServersFingerprint: args.mcpServersFingerprint ?? "mcp-servers-hash",
 		skills: args.skills ?? [],
-		secrets: args.secrets,
+		secrets: args.secrets ?? [],
+		userWritableCollections: null,
 		files: [
 			{
 				path: "dist/backend/worker.js",
@@ -514,6 +515,8 @@ describe("install_version service accounts", () => {
 				workspaceId: membership.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			return { userId, membershipId };
 		});
@@ -684,6 +687,8 @@ describe("install_version service accounts", () => {
 				workspaceId: membership.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			for (const permission of [
 				"workspace.service_accounts.manage",
@@ -1059,7 +1064,7 @@ describe("plugins Phase 0", () => {
 			{ name: "OPENAI_API_KEY", description: "OpenAI key used for transcription.", optional: false },
 		]);
 
-		// Versions published before the field existed have no secrets field at all.
+		// A version that declares no secrets stores an empty list.
 		const undeclared = await register_media_plugin({
 			t,
 			userId: membership.userId,
@@ -1067,7 +1072,7 @@ describe("plugins Phase 0", () => {
 			version: "0.1.0",
 		});
 		const undeclaredVersion = await t.run((ctx) => ctx.db.get("plugins_versions", undeclared.pluginVersionId));
-		expect(undeclaredVersion?.secrets).toBeUndefined();
+		expect(undeclaredVersion?.secrets).toEqual([]);
 	});
 
 	test("rechecks plugin-name ownership after a successful publish preflight", async () => {
@@ -1885,6 +1890,7 @@ describe("plugins Phase 0", () => {
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 		});
 		expect(upload.nodeId).not.toBe(memberFileId);
@@ -2107,6 +2113,9 @@ describe("plugins Phase 0", () => {
 				state: "pending",
 				createdBy: membership.userId,
 				updatedAt: now,
+				readOnly: false,
+				nonCollaborative: false,
+				destinationEpoch: 1,
 			});
 			await ctx.db.insert("plugin_service_storage_attempts", {
 				organizationId: membership.organizationId,
@@ -2560,6 +2569,7 @@ describe("plugins Phase 0", () => {
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 		});
 		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
@@ -3580,6 +3590,7 @@ describe("plugins Phase 0", () => {
 				workspaceId: fixture.membership.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await ctx.db.insert("access_control_role_assignments", {
@@ -5011,6 +5022,7 @@ describe("plugins Phase 0", () => {
 				workspaceId: membership.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await ctx.db.insert("access_control_role_assignments", {
@@ -5079,6 +5091,7 @@ describe("plugins Phase 0", () => {
 					workspaceId: fixture.membership.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				const roleId = await ctx.db.insert("access_control_roles", {
@@ -6290,6 +6303,7 @@ describe("plugins get_installation_health", () => {
 				workspaceId: fixture.membership.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await ctx.db.insert("access_control_role_assignments", {
@@ -6370,6 +6384,7 @@ describe("plugins get_installation_storage_usage", () => {
 				workspaceId: args.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			const roleId = await ctx.db.insert("access_control_roles", {
@@ -6730,6 +6745,7 @@ describe("plugins update_installation_configuration", () => {
 				workspaceId: membershipA.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await ctx.db.insert("access_control_role_assignments", {
@@ -7571,6 +7587,9 @@ describe("plugins publish_version", () => {
 				sourceLastError: null,
 				createdBy: args.createdBy,
 				updatedAt: Date.now(),
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 		});
 	}
@@ -7883,6 +7902,9 @@ describe("plugins publish_version", () => {
 			skills: [],
 			files: [],
 			createdBy: publisherA.userId,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		};
 		const prepared = await t.mutation(internal.plugins.upsert_plugin, registration);
 		if (prepared._nay) throw new Error(prepared._nay.message);
@@ -7964,6 +7986,8 @@ describe("plugins publish_version", () => {
 			skills: [],
 			files: [],
 			createdBy: publisher.userId,
+			endpoints: [],
+			userWritableCollections: null,
 		});
 
 		expect(registration).toEqual({
@@ -8005,6 +8029,8 @@ describe("plugins publish_version", () => {
 			skills: [],
 			files: [],
 			createdBy: publisher.userId,
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		if (prepared._nay) throw new Error(prepared._nay.message);
 		await t.run((ctx) => ctx.db.patch("users", publisher.userId, { deletedAt: Date.now() }));
@@ -8120,6 +8146,8 @@ describe("plugins publish_version", () => {
 			skills: [],
 			files: [],
 			createdBy: publisher.userId,
+			endpoints: [],
+			userWritableCollections: null,
 		};
 
 		expect(await t.mutation(internal.plugins.upsert_plugin, registrationArgs)).toEqual({
@@ -11995,6 +12023,7 @@ describe("plugins uninstall_version", () => {
 				updatedAt: Date.now(),
 				lastMessageAt: Date.now(),
 				newestNodeId: null,
+				starred: false,
 			});
 			await test_mocks_fill_db_with.mcp_call(ctx, { ...scope, threadId });
 		});
@@ -14069,6 +14098,7 @@ describe("plugins metadata file doors", () => {
 				writePolicy: null,
 				archiveOperationId: null,
 				contentType: null,
+				newChildWritePolicy: null,
 			});
 		});
 	}
@@ -14092,6 +14122,8 @@ describe("plugins metadata file doors", () => {
 				createdByUserId: fixture.membership.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 		});
 	}
@@ -14108,6 +14140,7 @@ describe("plugins metadata file doors", () => {
 				workspaceId: fixture.membership.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await ctx.db.insert("access_control_role_assignments", {
@@ -14569,6 +14602,8 @@ describe("plugins metadata file doors", () => {
 				createdByUserId: fixture.membership.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 		});
 		const scoped = await door_call({
@@ -14880,6 +14915,7 @@ describe("plugins metadata file doors", () => {
 				workspaceId: fixture.membership.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await ctx.db.insert("access_control_role_assignments", {
@@ -15104,6 +15140,7 @@ describe("plugins metadata file doors", () => {
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 		});
 		const refused = await door_call({
@@ -15344,6 +15381,8 @@ describe("plugins metadata file doors", () => {
 				createdByUserId: fixture.membership.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 		});
 		const read_binding_rows = async () =>
@@ -15540,6 +15579,7 @@ describe("plugins metadata file doors", () => {
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 		});
 		const existing = await door_call({
@@ -16176,6 +16216,7 @@ describe("plugins metadata file doors", () => {
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 		});
 		await t.run((ctx) => ctx.db.patch("plugins_event_runs", run.runId, { fileNodeId: sourceNodeId }));
@@ -16324,6 +16365,7 @@ describe("plugins users.account.deleted dispatch", () => {
 					workspaceId: tenant.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 			}
@@ -17068,6 +17110,9 @@ describe("plugins admin hard delete", () => {
 				sourceLastError: null,
 				createdBy: membership.userId,
 				updatedAt: Date.now(),
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			return { repositoryId, pluginVersionId };
 		});
@@ -17153,6 +17198,9 @@ describe("plugins admin hard delete", () => {
 				sourceLastError: null,
 				createdBy: membership.userId,
 				updatedAt: Date.now(),
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			return { pluginVersionId, repositoryId };
 		});
@@ -17205,6 +17253,9 @@ describe("plugins admin hard delete", () => {
 						sourceLastError: null,
 						createdBy: membership.userId,
 						updatedAt: Date.now(),
+						secrets: [],
+						endpoints: [],
+						userWritableCollections: null,
 					});
 					await ctx.db.insert("plugins_workspace_installations", {
 						serviceAccountId: await ctx.db.insert("access_control_service_accounts", {
@@ -17818,6 +17869,7 @@ describe("plugins admin hard delete", () => {
 				createdBy: membership.userId,
 				updatedBy: membership.userId,
 				updatedAt: now,
+				machineBytes: 0,
 			});
 			await ctx.db.insert("plugins_data_usage", {
 				organizationId: membership.organizationId,
@@ -17932,6 +17984,8 @@ describe("plugins admin hard delete", () => {
 				createdByUserId: membership.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 			await ctx.db.insert("plugins_data_released_scope_ranges", {
 				organizationId: membership.organizationId,
@@ -17962,6 +18016,8 @@ describe("plugins admin hard delete", () => {
 				createdByUserId: membership.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 			await ctx.db.insert("plugins_data_released_scope_ranges", {
 				organizationId: membership.organizationId,
@@ -18257,6 +18313,8 @@ describe("plugins admin hard delete", () => {
 					createdByUserId: membership.userId,
 					createdAt: now,
 					updatedAt: now,
+					lastAppend: null,
+					appendSequence: 0,
 				});
 				await ctx.db.insert("plugins_data_released_scope_ranges", {
 					organizationId: membership.organizationId,
@@ -18288,6 +18346,8 @@ describe("plugins admin hard delete", () => {
 				createdByUserId: membership.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 			await ctx.db.insert("plugins_data_released_scope_ranges", {
 				organizationId: membership.organizationId,

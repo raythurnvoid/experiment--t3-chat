@@ -48,6 +48,7 @@ async function fixture() {
 				workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, { organizationId, workspaceId, userId, role, now });
@@ -171,6 +172,7 @@ describe("get_channel", () => {
 				workspaceId: f.workspaceId,
 				userId: f.member.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 		});
@@ -315,6 +317,7 @@ describe("open_direct_channel", () => {
 				workspaceId: f.workspaceId,
 				userId: f.other.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 		});

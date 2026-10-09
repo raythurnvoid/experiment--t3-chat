@@ -748,51 +748,6 @@ export async function access_control_db_ensure_role_assignment(
 }
 
 /**
- * Give one membership the `member` organization role, when that membership needs one.
- *
- * A membership on its own gives no permission any more, so a membership written or reactivated
- * without an assignment would quietly see an empty file tree instead of an error. `member` is the
- * lowest role every invite writes.
- *
- * It does nothing in three cases: the user owns the organization (owners have no assignment doc),
- * the organization has no default workspace (logged, not thrown), and the membership is outside the
- * default workspace (the assignment there is already the organization role).
- *
- * Callers run during sign-in and during migrations, where one broken organization must not stop the
- * whole job, so this never throws.
- */
-export async function access_control_db_ensure_organization_member_role(
-	ctx: MutationCtx,
-	args: {
-		organization: Doc<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: Id<"users">;
-		now: number;
-	},
-) {
-	if (args.organization.ownerUserId === args.userId) {
-		return;
-	}
-
-	if (!args.organization.defaultWorkspaceId) {
-		console.error("organization.defaultWorkspaceId is not set", { organizationId: args.organization._id });
-		return;
-	}
-
-	if (args.workspaceId !== args.organization.defaultWorkspaceId) {
-		return;
-	}
-
-	await access_control_db_ensure_role_assignment(ctx, {
-		organizationId: args.organization._id,
-		workspaceId: args.workspaceId,
-		userId: args.userId,
-		role: "member",
-		now: args.now,
-	});
-}
-
-/**
  * Give the organization owner a membership in every workspace of the organization.
  *
  * The owner passes every permission check, but `organizations.list` and most doors start from a
@@ -835,6 +790,7 @@ export async function access_control_db_ensure_owner_memberships(
 				workspaceId: workspace._id,
 				userId: args.ownerUserId,
 				active,
+				pendingOrganizationRemoval: false,
 				updatedAt: args.now,
 			}),
 		);

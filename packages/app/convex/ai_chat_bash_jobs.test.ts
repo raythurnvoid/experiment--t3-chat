@@ -253,6 +253,7 @@ async function add_member(f: Awaited<ReturnType<typeof fixture>>, clerkUserId: s
 			workspaceId: f.db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
 		});
 		await access_control_db_ensure_role_assignment(ctx, {

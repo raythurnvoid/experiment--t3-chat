@@ -252,6 +252,7 @@ async function add_member(fixture: Awaited<ReturnType<typeof create_folder_fixtu
 			workspaceId: fixture.db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
 		});
 		await ctx.db.insert("access_control_role_assignments", {
@@ -2027,6 +2028,7 @@ describe("advance", () => {
 					workspaceId: db.workspaceId,
 					userId: member.userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
 				});
 				const membership = await ctx.db.get("organizations_workspaces_users", membershipId);

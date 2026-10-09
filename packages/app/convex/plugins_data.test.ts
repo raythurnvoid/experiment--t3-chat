@@ -113,6 +113,9 @@ async function seed_installation(
 			sourceLastError: null,
 			createdBy: membership.userId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const serviceAccountId = await seed_service_account(ctx, {
 			...membership,
@@ -736,6 +739,7 @@ async function join_member_with_role(args: {
 			workspaceId: fixture.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: now,
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
@@ -3516,6 +3520,7 @@ describe("list_documents", () => {
 					createdBy: fixture.userId,
 					updatedBy: fixture.userId,
 					updatedAt: now,
+					machineBytes: 0,
 				});
 			}
 		});
@@ -3566,6 +3571,7 @@ describe("list_documents", () => {
 					createdBy: fixture.userId,
 					updatedBy: fixture.userId,
 					updatedAt: now,
+					machineBytes: 0,
 				});
 			};
 			for (let index = 0; index < 120; index += 1) {
@@ -3626,6 +3632,7 @@ describe("list_documents", () => {
 					createdBy: fixture.userId,
 					updatedBy: fixture.userId,
 					updatedAt: now,
+					machineBytes: 0,
 				});
 			}
 		});
@@ -5859,7 +5866,6 @@ describe("user_append_document", () => {
 				workspaceId: fixture.workspaceId,
 				installationId: fixture.installationId,
 				userId: fixture.userId,
-				generation: "document_bound",
 				usedBytes: 20,
 				usedDocuments: 2,
 				machineBytes: 0,
@@ -5937,6 +5943,7 @@ describe("user_append_document", () => {
 				workspaceId: fixture.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -8736,41 +8743,7 @@ describe("per-member capacity", () => {
 		});
 		expect(written._nay).toBeUndefined();
 		const usage = await read_member_usage({ t, fixture, userId: fixture.userId });
-		expect(usage).toMatchObject({ generation: "document_bound", usedBytes: 50, usedDocuments: 1 });
-		const stored = (await read_documents(t, fixture))[0];
-		expect(stored.chargedToMemberUsageId).toBe(usage!._id);
-	});
-
-	test("replaces a legacy counter when an API key first writes its old document", async () => {
-		const t = test_convex();
-		const fixture = await seed_user_write_door(t, { clerkUserId: "legacy-api-generation-owner" });
-		const appended = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
-			collection: "messages",
-			value: value_of_bytes(100),
-			clientRequestId: "legacy-api-generation",
-		});
-		if (appended._nay) {
-			throw new Error(appended._nay.message);
-		}
-		const legacyUsage = await read_member_usage({ t, fixture, userId: fixture.userId });
-
-		// A pre-rollout counter has no generation marker. Replace it instead of treating it as current.
-		await t.run(async (ctx) => {
-			const document = await ctx.db.query("plugins_data").unique();
-			await ctx.db.patch("plugins_data", document!._id, { chargedToMemberUsageId: undefined });
-			await ctx.db.patch("plugins_data_member_usage", legacyUsage!._id, { generation: undefined });
-		});
-
-		const written = await t.mutation(internal.plugins_data.write_document, {
-			principal: await seed_store_principal({ t, fixture, kind: "user_api_key" }),
-			collection: "messages",
-			key: appended._yay.key,
-			value: value_of_bytes(50),
-		});
-		expect(written._nay).toBeUndefined();
-		const usage = await read_member_usage({ t, fixture, userId: fixture.userId });
-		expect(usage).toMatchObject({ generation: "document_bound", usedBytes: 50, usedDocuments: 1 });
-		expect(usage?._id).not.toBe(legacyUsage!._id);
+		expect(usage).toMatchObject({ usedBytes: 50, usedDocuments: 1 });
 		const stored = (await read_documents(t, fixture))[0];
 		expect(stored.chargedToMemberUsageId).toBe(usage!._id);
 	});
@@ -9377,6 +9350,7 @@ describe("plugins_data_db_drain_batch", () => {
 					createdBy: fixture.userId,
 					updatedBy: fixture.userId,
 					updatedAt: now,
+					machineBytes: 0,
 				});
 			}
 		});
@@ -9539,6 +9513,8 @@ describe("plugins_data_db_drain_batch", () => {
 					createdByUserId: fixture.userId,
 					createdAt: now,
 					updatedAt: now,
+					lastAppend: null,
+					appendSequence: 0,
 				});
 				await ctx.db.insert("plugins_data_released_scope_ranges", {
 					organizationId: fixture.organizationId,
@@ -9571,6 +9547,8 @@ describe("plugins_data_db_drain_batch", () => {
 				createdByUserId: fixture.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 			await ctx.db.insert("plugins_data_released_scope_ranges", {
 				organizationId: fixture.organizationId,
@@ -10158,6 +10136,8 @@ describe("plugins_data_db_count_installation_docs", () => {
 					createdByUserId: fixture.userId,
 					createdAt: now,
 					updatedAt: now,
+					lastAppend: null,
+					appendSequence: 0,
 				});
 				await ctx.db.insert("plugins_data_released_scope_ranges", {
 					organizationId: fixture.organizationId,
@@ -10190,6 +10170,8 @@ describe("plugins_data_db_count_installation_docs", () => {
 				createdByUserId: fixture.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 			await ctx.db.insert("plugins_data_released_scope_ranges", {
 				organizationId: fixture.organizationId,
@@ -10235,7 +10217,6 @@ describe("plugins_data_db_count_installation_docs", () => {
 
 describe("user_manage_scope", () => {
 	test.each([
-		{ list: undefined, allowed: true },
 		{ list: null, allowed: true },
 		{ list: ["channels"], allowed: true },
 		{ list: [], allowed: false },
@@ -10587,6 +10568,7 @@ describe("user_manage_scope", () => {
 					workspaceId: fixture.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				userIds.push(userId);
@@ -11099,6 +11081,7 @@ describe("user_manage_scope", () => {
 					workspaceId: fixture.workspaceId,
 					userId: filler,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				await ctx.db.insert("access_control_permission_grants", {
@@ -11571,6 +11554,8 @@ describe("user_manage_scope", () => {
 				createdByUserId: alice.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 			await ctx.db.insert("access_control_permission_grants", {
 				organizationId: fixture.organizationId,
@@ -12789,6 +12774,8 @@ describe("user_manage_scope", () => {
 				createdByUserId: fixture.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 		});
 
@@ -12819,6 +12806,8 @@ describe("user_manage_scope", () => {
 				createdByUserId: fixture.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 			await ctx.db.delete("plugins_workspace_installations", fixture.installationId);
 		});

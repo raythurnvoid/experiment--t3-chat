@@ -20,6 +20,7 @@ async function fixture(variant: "current" | "split" = "split") {
 			workspaceId: db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
 		});
 		await access_control_db_ensure_role_assignment(ctx, { ...db, userId, role: "member", now: Date.now() });

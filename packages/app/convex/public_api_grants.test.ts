@@ -97,6 +97,7 @@ async function seed_markdown_file(args: {
 					restrictedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
 					archiveOperationId: null,
+					newChildWritePolicy: null,
 				});
 			}
 		}
@@ -150,6 +151,7 @@ async function seed_markdown_file(args: {
 			restrictedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			archiveOperationId: null,
+			newChildWritePolicy: null,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 			organizationId: args.organizationId,

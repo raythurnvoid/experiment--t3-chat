@@ -397,6 +397,7 @@ async function seed_organization_billing_scope(
 			workspaceId: ownerMembership.workspaceId,
 			userId: memberId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: now,
 		});
 		await access_control_db_ensure_role_assignment(ctx, {

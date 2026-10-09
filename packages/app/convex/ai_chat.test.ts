@@ -434,6 +434,7 @@ describe("ai_chat thread state", () => {
 				workspaceId: owner.workspaceId,
 				userId: user.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {

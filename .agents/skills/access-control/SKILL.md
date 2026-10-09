@@ -1190,19 +1190,6 @@ exact access too. Assignment writers are few on purpose:
   that still has members, ownership moves to whichever member the index returns first, that member's
   assignments across every workspace are deleted, and `billingMode` is forced to `"user"`. Unconsented,
   and a second ownership-establishing path next to `transfer_organization_ownership`.
-- `migrations.backfill_access_control_member_assignments` — gives a `member` assignment to every active
-  default-workspace membership written before authority moved off membership. Skips owners outright.
-- `migrations.backfill_organization_home_memberships` — mainly inserts a *missing* default-workspace
-  membership for a user who only has a non-default one, then gives it a `member` assignment. Its owner
-  check guards only the assignment, so an owner can get a repaired membership but never a role.
-- Both backfills are safe to re-run, and both skip **inactive** memberships, so neither repairs an
-  account that was in retention when they ran; `users.resolve_user` covers that on the way back in.
-- `users.resolve_user` — reclaiming a deleted account reactivates its ordinary inactive memberships,
-  but skips memberships marked `pendingOrganizationRemoval` because that separate drain still owns
-  them. It ensures a `member` assignment on each membership it did reactivate, skipping owners. `ensure`
-  leaves a surviving assignment alone whatever its role, so this only fills a hole — and after the
-  `delete_role` demotion above, the only hole left is a legacy membership the backfill skipped, which
-  is exactly the case `member` is right for.
 
 Paths that deliberately write **none**:
 
@@ -1210,6 +1197,10 @@ Paths that deliberately write **none**:
   creator becomes the owner, and owners hold no assignment.
 - `organizations_db_create_workspace` — the creator's organization role already reaches the new
   workspace.
+- `users.resolve_user` — reclaiming a deleted account reactivates its ordinary inactive memberships,
+  but skips memberships marked `pendingOrganizationRemoval` because that separate drain still owns
+  them. The assignments survived retention, because `delete_role` lowers an inactive holder instead
+  of deleting it.
 
 `access_control_db_ensure_role_assignment` inserts when absent, so a repeat call is a no-op.
 `db_set_role_assignment` patches or inserts on the unique key — use it when changing an existing

@@ -36,6 +36,7 @@ async function add_member(f: Fixture) {
 			workspaceId: f.db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
 		});
 		await ctx.db.insert("access_control_role_assignments", {

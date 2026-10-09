@@ -101,6 +101,7 @@ async function register_version(args: {
 		backendEntrypointFile: null,
 		configuration: null,
 		mounts: [],
+		secrets: [],
 		events: [],
 		pages: [
 			{
@@ -127,6 +128,8 @@ async function register_version(args: {
 			},
 		],
 		createdBy: userId,
+		endpoints: [],
+		userWritableCollections: null,
 		sourceFiles: [{ path: "dist/frontend/index.html", rawText: "<!doctype html><title>Gallery</title>" }],
 	});
 	if (registered._nay) {

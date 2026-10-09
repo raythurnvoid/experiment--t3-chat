@@ -66,8 +66,7 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 - An assignment on `organization.defaultWorkspaceId` is the organization role. An assignment on any other workspace is allow-only workspace role there. How far a permission reaches is decided by its `scope` in the catalog: `organization`-scoped permissions bind **only** from the default-workspace assignment, so that is the only binding site rather than a fallback.
 - ACL grants support role, user, public and service-account principals. Resource kinds include
   `organization`, `workspace`, `file`, `plugin_scope` and `plugin_installation`. Run-as consent
-  accepts only a direct human grant. The schema also accepts `thread`, but nothing writes or
-  reads a thread grant and `access_control_Resource` cannot build one. Agent chats require their
+  accepts only a direct human grant. Agent chats require their
   creator, active membership and content permission; ownership does not bypass creator privacy.
   Writers load the resource and derive its tenant. A file grant names its restricted scope node.
 - Plugin setup and management check their exact access mode before ordinary role permissions.
@@ -131,7 +130,7 @@ does not revive a check from a previous membership lifetime.
 
 `plugins_service_connections` belongs to the installation, not the member who sponsors a Files grant. A valid page exchange pins its exact registration, version and account. A missing or retired installation can retain a connection to read terminal events, but it cannot read new profiles. Each separate plugin database owns its group and channel rules. Core tenancy code must not load or change them.
 
-- **Fields:** `organizations_workspaces_users.active` is required. `false` keeps a membership non-effective during account-deletion retention or a bounded organization-removal drain. `pendingOrganizationRemoval` is optional for rollout compatibility and is `true` only for the second case. Account recovery reactivates ordinary inactive rows and skips marked rows.
+- **Fields:** `organizations_workspaces_users.active` is required. `false` keeps a membership non-effective during account-deletion retention or a bounded organization-removal drain. `pendingOrganizationRemoval` is required and is `true` only for the second case. Account recovery reactivates ordinary inactive rows and skips marked rows.
 - **Indexes:** `by_workspace_user_active`, `by_user_organization_workspace_active`, `by_active_organization_workspace_user`, `by_active_user_organization_workspace` — prefix with `eq("active", true)` so hot paths avoid post-query filtering.
 
 # Creating extra workspaces
@@ -153,7 +152,7 @@ The owner passes every permission check, but `organizations.list` and most doors
 Each custom organization decides which plugins and which member-added MCP servers its members may use. Code: `convex/organizations_integration_policy.ts`.
 
 - **Data.** At most one `organizations_integration_policies` doc per custom organization, with two parts. `plugins` holds `mode` (`allow_all` or `allowlist`) and entries keyed by plugin name, publisher user, and source repository URL. Each entry stores a ceiling: capabilities, both origin lists, and the plugin's MCP servers pinned by `destinationFingerprint`. A plugin and its MCP servers are allowed together. `mcpServers` holds `mode` and entries for servers members add themselves, keyed by `destinationFingerprint` (the URL, the sign-in kind, and the sign-in server). Each list holds at most 50 entries. A member's server saved with no sign-in that later pins a sign-in server at its first Connect gets a new fingerprint, so an entry for the old one stops matching and a manager must allow the new one. The same URL can then show twice in the candidate list; the manager screen names its buttons `Allow <url>, <sign-in kind>` and `Remove <url>, <sign-in kind>`.
-- **Defaults.** No doc means nothing is allowed. The personal organization allows everything, never has a doc, and `update_policy` refuses it. The D18 migration `backfill_organizations_integration_policies` gave each existing custom organization a doc that allows its installed plugins.
+- **Defaults.** No doc means nothing is allowed. The personal organization allows everything, never has a doc, and `update_policy` refuses it.
 - **Who changes it.** `organization.integrations_policy.manage` ("Manage plugins and MCP servers"), organization scope. No system role holds it; the owner has it by ownership and can give it through a custom role, like billing. The UI is "Manage plugins and MCP servers" in the organization switcher row menu (hidden for the personal organization and without the permission).
 - **Reads.** `get_policy` returns the full doc to managers (`view: "manager"`) and a reduced view to other members (plugin names and modes only). `list_plugin_candidates` and the paginated `list_custom_server_candidates` feed the manager screen and return nothing to anyone else.
 - **Writes.** `update_policy({ organizationId, change })` takes one change: set a mode, allow, or remove, for either part. The server copies a plugin's ceiling from the chosen published version, so a client cannot send its own. A plugin change runs the disable pass (see `../plugin-system/SKILL.md`, "Organization plugin and MCP policy"). An MCP change needs no pass, because MCP servers are checked at every chat turn and tool call.

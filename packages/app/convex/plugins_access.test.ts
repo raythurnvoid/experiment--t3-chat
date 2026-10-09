@@ -76,6 +76,9 @@ async function version(args: {
 			sourceLastError: null,
 			createdBy: userId,
 			updatedAt: Date.now(),
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		}),
 	);
 }

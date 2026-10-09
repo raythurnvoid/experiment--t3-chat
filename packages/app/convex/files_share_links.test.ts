@@ -76,6 +76,7 @@ async function fixture(args: { memberRole?: "member" | "admin" } = {}) {
 			workspaceId: db.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: now,
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
@@ -173,6 +174,9 @@ async function insert_installation(f: Fixture) {
 				sourceLastError: null,
 				createdBy: f.db.userId,
 				updatedAt: Date.now(),
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			}),
 			pluginName: "chat",
 			status: "enabled",
@@ -201,6 +205,8 @@ async function insert_installation(f: Fixture) {
 			createdByUserId: f.db.userId,
 			createdAt: Date.now(),
 			updatedAt: Date.now(),
+			lastAppend: null,
+			appendSequence: 0,
 		}),
 	);
 	return installationId;
@@ -2365,6 +2371,7 @@ describe("list_workspace_links", () => {
 				workspaceId: f.db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			return { userId, membershipId };

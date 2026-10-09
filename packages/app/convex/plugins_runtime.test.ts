@@ -106,6 +106,8 @@ async function fixture(
 			sourceLastError: null,
 			createdBy: owner.userId,
 			updatedAt: Date.now(),
+			secrets: [],
+			userWritableCollections: null,
 		}),
 	);
 	await t.run((ctx) =>

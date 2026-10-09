@@ -138,6 +138,7 @@ async function access_control_test_seed_organization(
 			workspaceId: created._yay.defaultWorkspaceId,
 			userId: args.memberId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: now,
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
@@ -288,6 +289,9 @@ async function access_control_test_seed_activity(args: {
 			sourceLastError: null,
 			createdBy: fixture.ownerId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const installationId = await ctx.db.insert("plugins_workspace_installations", {
 			serviceAccountId: await ctx.db.insert("access_control_service_accounts", {
@@ -404,6 +408,9 @@ async function access_control_test_seed_plugin_installation(args: {
 			sourceLastError: null,
 			createdBy: fixture.ownerId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const serviceAccountId = await test_mocks_fill_db_with.plugin_service_account(ctx, {
 			organizationId: fixture.organizationId,
@@ -1681,6 +1688,7 @@ describe("plugin role grant ceilings", () => {
 				workspaceId: fixture.defaultWorkspaceId,
 				userId: guestId,
 				active: false,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -3334,6 +3342,7 @@ describe("system roles", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: strangerId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 
@@ -3886,6 +3895,7 @@ describe("custom roles", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: memberId,
 				active: false,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -3985,6 +3995,7 @@ describe("custom roles", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				userId: treasurerId,
 				active: false,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -4188,6 +4199,7 @@ describe("custom roles", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -4303,6 +4315,7 @@ describe("custom roles", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: holderId,
 				active: false,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -4371,6 +4384,7 @@ describe("custom roles", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				userId: holderId,
 				active: false,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -4397,105 +4411,6 @@ describe("custom roles", () => {
 				.first(),
 		);
 		expect(leftover?.role).toBe("viewer");
-	});
-
-	test("a member who returns from retention gets an organization role back", async () => {
-		const t = test_convex();
-		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-return-owner" });
-		const memberId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-return-member" });
-		const organization = await access_control_test_seed_organization(t, {
-			ownerId,
-			memberId,
-			name: "return-role-org",
-		});
-
-		// A second workspace that the member also belongs to. It must not get its own role assignment:
-		// the organization role lives on the default workspace, and a role written here would be a
-		// workspace role that nobody asked for.
-		await t.run(async (ctx) => {
-			const now = Date.now();
-			const workspace = await organizations_db_create_workspace(ctx, {
-				userId: ownerId,
-				organizationId: organization.organizationId,
-				name: "return-side",
-				description: "",
-				now,
-			});
-			if (workspace._nay) {
-				throw new Error(workspace._nay.message);
-			}
-			await test_mocks_cancel_pending_home_file_seeds(ctx);
-
-			await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: organization.organizationId,
-				workspaceId: workspace._yay.workspaceId,
-				userId: memberId,
-				active: true,
-				updatedAt: now,
-			});
-		});
-
-		// This is what account deletion leaves behind: the user doc is marked deleted and **every**
-		// membership is turned off, including the one in their own personal organization. The email
-		// stays, so the account can be taken back before it is fully deleted. The role assignment is
-		// missing here for the same reason `backfill_access_control_member_assignments` left it missing:
-		// that migration skipped inactive memberships, so a membership already waiting for deletion when
-		// it ran never got one.
-		await t.run(async (ctx) => {
-			const now = Date.now();
-			const anagraphicId = await ctx.db.insert("users_anagraphics", {
-				userId: memberId,
-				displayName: "Returning Member",
-				email: "returning-member@test.local",
-				updatedAt: now,
-			});
-			await ctx.db.patch("users", memberId, { anagraphic: anagraphicId, deletedAt: now });
-
-			const memberships = await ctx.db
-				.query("organizations_workspaces_users")
-				.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", memberId))
-				.collect();
-			for (const membership of memberships) {
-				await ctx.db.patch("organizations_workspaces_users", membership._id, { active: false });
-			}
-
-			const assignments = await ctx.db
-				.query("access_control_role_assignments")
-				.withIndex("by_user_organization_workspace", (q) => q.eq("userId", memberId))
-				.collect();
-			for (const assignment of assignments) {
-				await ctx.db.delete("access_control_role_assignments", assignment._id);
-			}
-		});
-
-		const restored = await t.run(async (ctx) => {
-			const result = await ctx.runMutation(internal.users.resolve_user, {
-				clerkUserId: "clerk-return-member-again",
-				email: "returning-member@test.local",
-				displayName: "Returning Member",
-			});
-			await test_mocks_cancel_pending_home_file_seeds(ctx);
-			return result;
-		});
-		expect(restored._nay).toBeUndefined();
-		expect(restored._yay!.restoredDeletedAccount).toBe(true);
-
-		// Exactly one assignment, on the default workspace of the shared organization. Without the
-		// repair the membership comes back with no role, which means an active member with no
-		// permissions: the file tree loads empty and the users page shows no role. The user's own
-		// personal organization gets no assignment either, because they own it, and owners have none.
-		const assignments = await t.run((ctx) =>
-			ctx.db
-				.query("access_control_role_assignments")
-				.withIndex("by_user_organization_workspace", (q) => q.eq("userId", memberId))
-				.collect(),
-		);
-		expect(assignments).toHaveLength(1);
-		expect(assignments[0]).toMatchObject({
-			organizationId: organization.organizationId,
-			workspaceId: organization.defaultWorkspaceId,
-			role: "member",
-		});
 	});
 
 	test("an admin cannot delete a role that grants more than the admin holds", async () => {
@@ -4567,6 +4482,7 @@ describe("custom roles", () => {
 					workspaceId: organization.defaultWorkspaceId,
 					userId: holderId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
@@ -4759,6 +4675,7 @@ describe("set_user_role", () => {
 					workspaceId: workspace._yay.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 			}
@@ -4848,6 +4765,7 @@ describe("set_user_role", () => {
 					workspaceId: workspace._yay.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 			}
@@ -4907,6 +4825,7 @@ describe("set_user_role", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: targetId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			const assignment = await ctx.db
@@ -5002,6 +4921,7 @@ describe("set_user_role", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: targetId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await ctx.db.insert("organizations_workspaces_users", {
@@ -5009,6 +4929,7 @@ describe("set_user_role", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				userId: targetId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 
@@ -5049,6 +4970,7 @@ describe("set_user_role", () => {
 				workspaceId,
 				userId: managerId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 		});
@@ -5106,6 +5028,7 @@ describe("set_user_role", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			return { workspaceId: workspace._yay.workspaceId, membershipId };
@@ -5226,6 +5149,7 @@ describe("set_user_role", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			return workspace._yay.workspaceId;
@@ -5282,6 +5206,7 @@ describe("set_user_role", () => {
 					workspaceId: workspace._yay.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				await ctx.db.insert("organizations_workspaces_users", {
@@ -5289,6 +5214,7 @@ describe("set_user_role", () => {
 					workspaceId: organization.defaultWorkspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 			}
@@ -5367,6 +5293,7 @@ describe("set_user_role", () => {
 					workspaceId: workspace._yay.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 			}
@@ -5375,6 +5302,7 @@ describe("set_user_role", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				userId: targetId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5482,6 +5410,7 @@ describe("role and permission queries", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: viewerId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5552,6 +5481,7 @@ describe("role and permission queries", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				userId: outsiderId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5579,6 +5509,7 @@ describe("role and permission queries", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			return workspace._yay.workspaceId;
@@ -5629,6 +5560,7 @@ describe("role and permission queries", () => {
 				workspaceId: organization.defaultWorkspaceId,
 				userId: strangerId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5790,6 +5722,7 @@ describe("file sharing", () => {
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			const textChunkIds = await Promise.all(
 				chunks._yay.map((chunk) =>
@@ -6254,6 +6187,7 @@ describe("file sharing", () => {
 				workspaceId: fixture.defaultWorkspaceId,
 				userId: eveId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -6402,6 +6336,7 @@ describe("file sharing", () => {
 				workspaceId: fixture.defaultWorkspaceId,
 				userId: charlieId,
 				active: false,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -6535,6 +6470,7 @@ describe("file sharing", () => {
 				workspaceId: fixture.defaultWorkspaceId,
 				userId: bobId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -6656,6 +6592,7 @@ describe("file sharing", () => {
 				workspaceId: fixture.defaultWorkspaceId,
 				userId: bobId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			// The inviter IS in the side workspace, so the refusal below is about the folder and not
@@ -6665,6 +6602,7 @@ describe("file sharing", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: fixture.memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await test_mocks_cancel_pending_home_file_seeds(ctx);
@@ -7039,6 +6977,7 @@ describe("file sharing", () => {
 				workspaceId: sideWorkspaceId,
 				userId: targetId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 		});
@@ -7310,6 +7249,7 @@ describe("file sharing", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: fixture.memberId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await test_mocks_cancel_pending_home_file_seeds(ctx);
@@ -7415,6 +7355,7 @@ describe("file sharing", () => {
 				workspaceId: fixture.defaultWorkspaceId,
 				userId: eveId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -7535,6 +7476,7 @@ describe("file sharing", () => {
 				workspaceId: fixture.defaultWorkspaceId,
 				userId: eveId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 		});
@@ -7609,6 +7551,7 @@ describe("file sharing", () => {
 					workspaceId: fixture.defaultWorkspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 			}
@@ -7618,6 +7561,7 @@ describe("file sharing", () => {
 				workspaceId: workspace._yay.workspaceId,
 				userId: bobId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			await test_mocks_cancel_pending_home_file_seeds(ctx);
@@ -7703,6 +7647,7 @@ describe("file sharing", () => {
 				workspaceId: sideWorkspaceId,
 				userId: aliceId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 		});
@@ -7929,6 +7874,7 @@ describe("file sharing", () => {
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				writePolicy: null,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 				organizationId: fixture.organizationId,
@@ -8496,6 +8442,7 @@ describe("file sharing", () => {
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				writePolicy: null,
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 				organizationId: fixture.organizationId,
@@ -10536,6 +10483,7 @@ describe("file sharing", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				writePolicy: null,
+				newChildWritePolicy: null,
 			});
 		});
 
@@ -10608,6 +10556,7 @@ describe("file sharing", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				writePolicy: null,
+				newChildWritePolicy: null,
 			});
 		});
 
@@ -10719,6 +10668,7 @@ describe("file sharing", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				writePolicy: null,
+				newChildWritePolicy: null,
 			});
 		});
 

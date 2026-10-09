@@ -394,6 +394,9 @@ async function install_upload_plugin(
 			},
 		],
 		createdBy: args.userId,
+		secrets: [],
+		endpoints: [],
+		userWritableCollections: null,
 		sourceFiles: [{ path: "dist/backend/worker.js", rawText: "export default { fetch: () => new Response('ok') };" }],
 	});
 	if (registered._nay) {

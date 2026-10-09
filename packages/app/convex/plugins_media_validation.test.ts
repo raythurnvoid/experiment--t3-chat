@@ -76,6 +76,8 @@ async function fixture() {
 			sourceLastError: null,
 			createdBy: membership.userId,
 			updatedAt: now,
+			secrets: [],
+			userWritableCollections: null,
 		});
 		await ctx.db.insert("plugins_service_account_bindings", {
 			organizationId: membership.organizationId,
@@ -129,6 +131,8 @@ async function fixture() {
 			workspaceId: membership.workspaceId,
 			userId: readerId,
 			active: true,
+			pendingOrganizationRemoval: false,
+			updatedAt: Date.now(),
 		});
 		await ctx.db.insert("organizations_membership_lifetimes", {
 			organizationId: membership.organizationId,

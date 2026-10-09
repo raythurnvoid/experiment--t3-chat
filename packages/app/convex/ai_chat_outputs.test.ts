@@ -241,6 +241,7 @@ describe("ai_chat_tool_output_keep", () => {
 				workspaceId: f.db.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {

@@ -209,6 +209,7 @@ async function db_create_default_organization_and_workspace_for_user(
 			workspaceId: defaultWorkspaceId,
 			userId: args.userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: args.now,
 		}),
 		ctx.db.patch("users", args.userId, {
@@ -939,18 +940,6 @@ async function db_purge_organization_workspace_content_batch(
 	if (chatRuns.length > 0) {
 		await Promise.all(chatRuns.map((doc) => ctx.db.delete("ai_chat_runs", doc._id)));
 		return { done: false, deletedCount: chatRuns.length };
-	}
-
-	// Delete chat removes the notice cursors of one chat. The workspace purge removes all of them.
-	const jobNoticeCursors = await ctx.db
-		.query("ai_chat_bash_job_notice_cursors")
-		.withIndex("by_organization_workspace_thread", (q) =>
-			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
-		)
-		.take(batchSize);
-	if (jobNoticeCursors.length > 0) {
-		await Promise.all(jobNoticeCursors.map((doc) => ctx.db.delete("ai_chat_bash_job_notice_cursors", doc._id)));
-		return { done: false, deletedCount: jobNoticeCursors.length };
 	}
 
 	// Browser sessions die with the workspace. Their draft captures keep their own short expiry and
@@ -2072,8 +2061,8 @@ async function db_drain_user_transfer_runs_batch(ctx: MutationCtx, args: { userI
 }
 
 /**
- * Stop and delete one background Bash job, then this user's finished-job note cursors, before
- * removing the user's memberships. The job's Activity is deleted with the row, not settled.
+ * Stop and delete one background Bash job before removing the user's memberships. The job's Activity
+ * is deleted with the row, not settled.
  */
 async function db_drain_user_bash_jobs_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
 	const job = await ctx.db
@@ -2086,13 +2075,7 @@ async function db_drain_user_bash_jobs_batch(ctx: MutationCtx, args: { userId: I
 		const deleted = await ai_chat_files_db_delete_job_batch(ctx, { invocationId: job._id, batchSize: args.batchSize });
 		return deleted.deletedCount;
 	}
-
-	const cursors = await ctx.db
-		.query("ai_chat_bash_job_notice_cursors")
-		.withIndex("by_user", (q) => q.eq("userId", args.userId))
-		.take(args.batchSize);
-	await Promise.all(cursors.map((cursor) => ctx.db.delete("ai_chat_bash_job_notice_cursors", cursor._id)));
-	return cursors.length;
+	return 0;
 }
 
 /**
@@ -2390,17 +2373,6 @@ async function db_drain_thread_batch(
 	if (shells.length > 0) {
 		await Promise.all(shells.map((doc) => ctx.db.delete("ai_chat_bash_shells", doc._id)));
 		return { done: false, deletedCount: shells.length };
-	}
-
-	const cursors = await ctx.db
-		.query("ai_chat_bash_job_notice_cursors")
-		.withIndex("by_organization_workspace_thread", (q) =>
-			q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
-		)
-		.take(args.batchSize);
-	if (cursors.length > 0) {
-		await Promise.all(cursors.map((doc) => ctx.db.delete("ai_chat_bash_job_notice_cursors", doc._id)));
-		return { done: false, deletedCount: cursors.length };
 	}
 
 	await ctx.db.delete("ai_chat_threads", thread._id);

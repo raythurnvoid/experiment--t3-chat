@@ -322,6 +322,7 @@ async function start_agent_copy(args: {
 			updatedBy: db.userId,
 			updatedAt: Date.now(),
 			newestNodeId: null,
+			starred: false,
 		}),
 	);
 	const started = await t.mutation(internal.files_transfer.start_for_agent, {
@@ -1625,6 +1626,7 @@ describe("copy_transfer_file", () => {
 					workspaceId: organization.defaultWorkspaceId,
 					userId: newOwner.userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
 				});
 				await ctx.db.patch("organizations", db.organizationId, { billingMode: "organization_owner" });
@@ -3086,6 +3088,8 @@ describe("restore_snapshot_r2", () => {
 					workspaceId: db.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
 					organizationId: db.organizationId,
@@ -3552,6 +3556,8 @@ describe("accept_file_pending_replacement", () => {
 					workspaceId: db.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
 					organizationId: db.organizationId,

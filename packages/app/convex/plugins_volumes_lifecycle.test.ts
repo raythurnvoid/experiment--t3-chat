@@ -62,6 +62,9 @@ async function fixture() {
 			sourceLastError: null,
 			createdBy: owner.userId,
 			updatedAt: Date.now(),
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		}),
 	);
 	const installed = await asOwner.mutation(api.plugins.install_version, {

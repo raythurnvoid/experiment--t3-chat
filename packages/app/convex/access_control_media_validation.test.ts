@@ -349,6 +349,9 @@ describe("media sharing clocks", () => {
 				sourceLastError: null,
 				createdBy: f.owner.userId,
 				updatedAt: Date.now(),
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			const serviceAccountId = await test_mocks_fill_db_with.plugin_service_account(ctx, {
 				...f.owner,

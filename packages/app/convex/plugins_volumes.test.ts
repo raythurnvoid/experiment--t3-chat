@@ -101,6 +101,9 @@ async function create_volume_fixture() {
 			sourceLastError: null,
 			createdBy: owner.userId,
 			updatedAt: now,
+			secrets: [],
+			endpoints: [],
+			userWritableCollections: null,
 		});
 		const serviceAccountId = await test_mocks_fill_db_with.plugin_service_account(ctx, {
 			...tenant,
@@ -172,6 +175,7 @@ async function create_volume_fixture() {
 			restrictedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
+			newChildWritePolicy: null,
 			archiveOperationId: null,
 			createdBy: users_SYSTEM_AUTHOR,
 			updatedBy: users_SYSTEM_AUTHOR,

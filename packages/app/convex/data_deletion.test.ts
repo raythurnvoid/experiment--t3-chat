@@ -137,6 +137,7 @@ async function data_deletion_test_seed_page(
 		writePolicy: null,
 
 		archiveOperationId: null,
+		newChildWritePolicy: null,
 	});
 
 	const markdown = `# ${args.tag}`;
@@ -228,6 +229,7 @@ async function data_deletion_test_seed_private_chat(
 		updatedBy: args.userId,
 		updatedAt: now,
 		newestNodeId: null,
+		starred: false,
 	});
 	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId, threadId };
 	const shellId = await ctx.db.insert("ai_chat_bash_shells", {
@@ -317,7 +319,6 @@ async function data_deletion_test_seed_private_chat(
 		endedAt: now,
 	});
 	await Promise.all([
-		ctx.db.insert("ai_chat_bash_job_notice_cursors", { ...scope, userId: args.userId, noticeAt: now }),
 		ctx.db.insert("ai_chat_run_steps", {
 			...scope,
 			messageId: messageIds[1]!,
@@ -596,6 +597,9 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		sourceLastError: null,
 		createdBy: args.userId,
 		updatedAt: now,
+		secrets: [],
+		endpoints: [],
+		userWritableCollections: null,
 	});
 	const installationId = await ctx.db.insert("plugins_workspace_installations", {
 		serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
@@ -693,6 +697,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			writePolicy: null,
 
 			archiveOperationId: null,
+			newChildWritePolicy: null,
 		});
 		const contentR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/markdown`;
 		const yjsR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/yjs`;
@@ -933,6 +938,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			updatedAt: Date.now(),
 			lastMessageAt: Date.now(),
 			newestNodeId: null,
+			starred: false,
 		});
 		const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 			organizationId: args.organizationId,
@@ -1005,13 +1011,6 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				seq: 0,
 				text: "$ printf hi",
 				bytes: 11,
-			}),
-			ctx.db.insert("ai_chat_bash_job_notice_cursors", {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				threadId,
-				userId: args.userId,
-				noticeAt: Date.now(),
 			}),
 			ctx.db.insert("ai_chat_run_steps", {
 				organizationId: apiOrganizationId,
@@ -1145,7 +1144,6 @@ async function data_deletion_test_count_workspace_content(
 		aiThreads,
 		aiShells,
 		aiShellTranscripts,
-		aiJobNoticeCursors,
 		aiRuns,
 		aiRunSteps,
 		aiToolReceipts,
@@ -1177,7 +1175,6 @@ async function data_deletion_test_count_workspace_content(
 		ctx.db.query("ai_chat_threads").collect(),
 		ctx.db.query("ai_chat_bash_shells").collect(),
 		ctx.db.query("ai_chat_bash_shell_transcripts").collect(),
-		ctx.db.query("ai_chat_bash_job_notice_cursors").collect(),
 		ctx.db.query("ai_chat_runs").collect(),
 		ctx.db.query("ai_chat_run_steps").collect(),
 		ctx.db.query("ai_chat_tool_receipts").collect(),
@@ -1216,7 +1213,6 @@ async function data_deletion_test_count_workspace_content(
 			aiThreads,
 			aiShells,
 			aiShellTranscripts,
-			aiJobNoticeCursors,
 			aiRuns,
 			aiRunSteps,
 			aiToolReceipts,
@@ -1706,6 +1702,8 @@ describe("init_user_deletion", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: deletedUser.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 
 			const extraWorkspace = await organizations_db_create_workspace(ctx, {
@@ -1724,6 +1722,8 @@ describe("init_user_deletion", () => {
 				workspaceId: extraWorkspace._yay.workspaceId,
 				userId: deletedUser.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 
 			return {
@@ -1904,6 +1904,8 @@ describe("init_user_deletion", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: collaborator.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 
 			return created._yay;
@@ -1989,6 +1991,8 @@ describe("init_user_deletion", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: collaborator.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			// Clear the saved tenant pointers to test cleanup recovery.
 			await ctx.db.patch("users", collaborator.userId, {
@@ -2304,6 +2308,8 @@ describe("creator-owned private chat deletion", () => {
 					...scope,
 					userId: deletedUser.userId,
 					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
 				});
 				await ctx.db.insert("access_control_role_assignments", {
 					...scope,
@@ -2384,7 +2390,6 @@ describe("creator-owned private chat deletion", () => {
 									"ai_chat_threads_messages_aisdk_5",
 									"ai_chat_bash_shell_transcripts",
 									"ai_chat_bash_shells",
-									"ai_chat_bash_job_notice_cursors",
 									"ai_chat_runs",
 									"ai_chat_run_steps",
 									"ai_chat_tool_receipts",
@@ -2518,7 +2523,6 @@ describe("drain_deleting_thread", () => {
 				"ai_chat_bash_shells",
 				"ai_chat_bash_shell_transcripts",
 				"ai_chat_bash_invocations",
-				"ai_chat_bash_job_notice_cursors",
 				"ai_chat_files",
 				"ai_chat_files_content",
 				"ai_chat_runs",
@@ -2578,7 +2582,7 @@ describe("drain_deleting_thread", () => {
 		}
 		expect(done).toBe(true);
 		expect(Object.values(await data_deletion_test_count_thread_docs(f.t, f.deletedThreadId))).toEqual(
-			Array(15).fill(0),
+			Array(14).fill(0),
 		);
 		expect(await data_deletion_test_count_thread_docs(f.t, f.keptThreadId)).toEqual(keptBefore);
 	});
@@ -2676,6 +2680,8 @@ describe("process_user_deletion_request", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: deletedUser.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 
 			await files_db_insert_pending_update(ctx, {
@@ -2758,6 +2764,9 @@ describe("process_user_deletion_request", () => {
 				sourceLastError: null,
 				createdBy: collaborator.userId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
 				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
@@ -3210,6 +3219,9 @@ describe("process_user_deletion_request", () => {
 				sourceLastError: null,
 				createdBy: survivingUser.userId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 
 			let survivingGrantId: Id<"access_control_permission_grants"> | null = null;
@@ -3266,6 +3278,8 @@ describe("process_user_deletion_request", () => {
 					createdByUserId: deletedUser.userId,
 					createdAt: now,
 					updatedAt: now,
+					lastAppend: null,
+					appendSequence: 0,
 				});
 
 				for (const permission of ["content.read", "content.write", "content.permissions.manage"] as const) {
@@ -3424,6 +3438,9 @@ describe("process_user_deletion_request", () => {
 				sourceLastError: null,
 				createdBy: deletedUser.userId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
 				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
@@ -3460,6 +3477,8 @@ describe("process_user_deletion_request", () => {
 				createdByUserId: deletedUser.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 			await Promise.all([
 				ctx.db.insert("access_control_permission_grants", {
@@ -3697,6 +3716,8 @@ describe("process_user_deletion_request", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: deletedUser.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			// Creating a workspace needs `workspace.create`, which comes from the member role.
 			await ctx.db.insert("access_control_role_assignments", {
@@ -4676,6 +4697,7 @@ describe("process_workspace_deletion_request", () => {
 				writePolicy: null,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			const pendingUpdateId = await files_db_insert_pending_update(ctx, {
 				organizationId: user.defaultOrganizationId,
@@ -4840,6 +4862,7 @@ describe("process_workspace_deletion_request", () => {
 				writePolicy: null,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			const requestId = await data_deletion_db_request(ctx, {
 				userId: user.userId,
@@ -4992,6 +5015,9 @@ describe("process_workspace_deletion_request", () => {
 				state: "pending",
 				createdBy: user.userId,
 				updatedAt: Date.now(),
+				readOnly: false,
+				nonCollaborative: false,
+				destinationEpoch: 1,
 			});
 			const receiptId = await ctx.db.insert("plugin_service_storage_attempts", {
 				...scope,
@@ -5165,6 +5191,7 @@ describe("process_workspace_deletion_request", () => {
 				writePolicy: null,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: "media",
@@ -5204,6 +5231,9 @@ describe("process_workspace_deletion_request", () => {
 				sourceLastError: null,
 				createdBy: user.userId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
 				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
@@ -5281,6 +5311,7 @@ describe("process_workspace_deletion_request", () => {
 				createdBy: user.userId,
 				updatedBy: user.userId,
 				updatedAt: now,
+				machineBytes: 0,
 			});
 			await ctx.db.insert("plugins_data_usage", {
 				organizationId: user.defaultOrganizationId,
@@ -5736,6 +5767,7 @@ describe("process_workspace_deletion_request", () => {
 				writePolicy: null,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			const jobDocId = await ctx.db.insert("files_content_materialization_jobs", {
 				organizationId: user.defaultOrganizationId,
@@ -5832,6 +5864,7 @@ describe("process_workspace_deletion_request", () => {
 				writePolicy: null,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: "media",
@@ -5871,6 +5904,9 @@ describe("process_workspace_deletion_request", () => {
 				sourceLastError: null,
 				createdBy: user.userId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
 				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
@@ -6010,6 +6046,7 @@ describe("process_workspace_deletion_request", () => {
 				writePolicy: null,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 			await ctx.db.patch("files_nodes", folderId, {
 				writePolicy: { mode: "read_only" },
@@ -6056,6 +6093,7 @@ describe("process_workspace_deletion_request", () => {
 				isRestrictedScopeRoot: false,
 
 				archiveOperationId: null,
+				newChildWritePolicy: null,
 			});
 
 			const requestId = await data_deletion_db_request(ctx, {
@@ -7520,6 +7558,7 @@ describe("hard_delete_user_data", () => {
 				workspaceId: organization._yay.defaultWorkspaceId,
 				userId: collaborator.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 
@@ -7710,6 +7749,7 @@ describe("hard_delete_user_data", () => {
 				workspaceId: organization._yay.defaultWorkspaceId,
 				userId: collaborator.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 
@@ -7739,6 +7779,7 @@ describe("hard_delete_user_data", () => {
 				workspaceId: sharedWorkspace._yay.workspaceId,
 				userId: collaborator.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
 			});
 
@@ -7931,6 +7972,8 @@ describe("finalize_user_deletion_data", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: survivor.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			return created._yay;
 		});
@@ -8133,7 +8176,7 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.membership).toBeNull();
 	});
 
-	test("drains a Bash job and the finished-job note cursors before memberships", async () => {
+	test("drains a Bash job before memberships", async () => {
 		const t = test_convex();
 		const victim = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -8180,40 +8223,26 @@ describe("finalize_user_deletion_data", () => {
 		});
 		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh call");
 		const shellId = begun._yay.shell._id;
-		const { job, cursorId } = await t.run(async (ctx) => {
+		const job = await t.run(async (ctx) => {
 			const parent = await ctx.db.get("ai_chat_bash_invocations", begun._yay.invocationId);
 			if (!parent) throw new Error("Expected the parent call");
-			const job = await data_deletion_test_seed_bash_job(ctx, { parent, shellId, jobNumber: 1 });
-			const cursorId = await ctx.db.insert("ai_chat_bash_job_notice_cursors", {
-				organizationId: victim.defaultOrganizationId,
-				workspaceId: victim.defaultWorkspaceId,
-				threadId: thread._yay.threadId,
-				userId: victim.userId,
-				noticeAt: Date.now(),
-			});
-			return { job, cursorId };
+			return await data_deletion_test_seed_bash_job(ctx, { parent, shellId, jobNumber: 1 });
 		});
 		const read = () =>
 			t.run(async (ctx) => ({
 				job: await ctx.db.get("ai_chat_bash_invocations", job.invocationId),
 				activity: await ctx.db.get("activities", job.activityId),
-				cursor: await ctx.db.get("ai_chat_bash_job_notice_cursors", cursorId),
 				membership: await ctx.db.get("organizations_workspaces_users", membership._id),
 			}));
 		const finalize = () =>
 			t.mutation(internal.data_deletion.finalize_user_deletion_data, { userId: victim.userId, _test_batchSize: 1 });
 
-		// Pass 1: the job and its Activity. Pass 2: the cursor. The membership waits for both.
+		// Pass 1: the job and its Activity. The membership waits for it.
 		expect(await finalize()).toBe(false);
 		const afterJob = await read();
 		expect(afterJob.job).toBeNull();
 		expect(afterJob.activity).toBeNull();
-		expect(afterJob.cursor).not.toBeNull();
 		expect(afterJob.membership).not.toBeNull();
-		expect(await finalize()).toBe(false);
-		const afterCursor = await read();
-		expect(afterCursor.cursor).toBeNull();
-		expect(afterCursor.membership).not.toBeNull();
 
 		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
 		expect((await read()).membership).toBeNull();
@@ -8379,6 +8408,7 @@ describe("finalize_user_deletion_data", () => {
 					writePolicy: null,
 
 					archiveOperationId: null,
+					newChildWritePolicy: null,
 				});
 				const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 					organizationId: user.defaultOrganizationId,
@@ -8472,7 +8502,6 @@ describe("finalize_user_deletion_data", () => {
 					workspaceId: user.defaultWorkspaceId,
 					installationId: installation.installationId,
 					userId: user.userId,
-					generation: "document_bound",
 					usedBytes: 40,
 					usedDocuments: 2,
 					machineBytes: 0,
@@ -8686,6 +8715,7 @@ describe("finalize_user_deletion_data", () => {
 				workspaceId: survivor.defaultWorkspaceId,
 				userId: victim.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
 				updatedAt: now,
 			});
 			const installation = await data_deletion_test_seed_plugin_ui_sessions(ctx, {
@@ -8707,6 +8737,8 @@ describe("finalize_user_deletion_data", () => {
 					createdByUserId: victim.userId,
 					createdAt: now,
 					updatedAt: now,
+					lastAppend: null,
+					appendSequence: 0,
 				});
 				await ctx.db.insert("access_control_permission_grants", {
 					organizationId: survivor.defaultOrganizationId,
@@ -8731,6 +8763,8 @@ describe("finalize_user_deletion_data", () => {
 				createdByUserId: victim.userId,
 				createdAt: now,
 				updatedAt: now,
+				lastAppend: null,
+				appendSequence: 0,
 			});
 			for (const userId of [victim.userId, survivor.userId]) {
 				await ctx.db.insert("access_control_permission_grants", {
@@ -8829,6 +8863,7 @@ describe("finalize_user_deletion_data", () => {
 					workspaceId: created._yay.defaultWorkspaceId,
 					userId: collaborator.userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				}),
 				ctx.db.insert("access_control_role_assignments", {
@@ -8844,6 +8879,7 @@ describe("finalize_user_deletion_data", () => {
 					workspaceId: extraWorkspace._yay.workspaceId,
 					userId: collaborator.userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				}),
 				ctx.db.insert("access_control_role_assignments", {
@@ -9029,6 +9065,7 @@ describe("finalize_user_deletion_data", () => {
 					workspaceId: created._yay.defaultWorkspaceId,
 					userId: collaborator.userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				}),
 				ctx.db.insert("access_control_role_assignments", {
@@ -9655,6 +9692,8 @@ describe("finalize_user_deletion_data", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: collaborator.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 
 			const extraWorkspace = await organizations_db_create_workspace(ctx, {
@@ -11252,6 +11291,9 @@ describe("prepare_user_for_hard_deletion", () => {
 				sourceLastError: null,
 				createdBy: unrelatedUser.userId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			const unrelatedRepositoryId = await ctx.db.insert("plugins_publisher_repositories", {
 				ownerUserId: unrelatedUser.userId,
@@ -11393,6 +11435,9 @@ describe("prepare_user_for_hard_deletion", () => {
 				skills: [],
 				files: [],
 				createdBy: unrelatedUser.userId,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			}),
 		).toEqual({ _nay: { message: "Plugin review changed during publishing; publish again" } });
 	});
@@ -11474,6 +11519,9 @@ describe("prepare_user_for_hard_deletion", () => {
 				sourceLastError: null,
 				createdBy: publisher.userId,
 				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
 			});
 			return { repositoryId, reviewId };
 		});
@@ -11812,7 +11860,13 @@ describe("mcp docs", () => {
 			});
 			if (created._nay) throw new Error(created._nay.message);
 			const tenant = { organizationId: created._yay.organizationId, workspaceId: created._yay.defaultWorkspaceId };
-			await ctx.db.insert("organizations_workspaces_users", { ...tenant, userId: user.userId, active: true });
+			await ctx.db.insert("organizations_workspaces_users", {
+				...tenant,
+				userId: user.userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
 			const threadId = await ctx.db.insert("ai_chat_threads", {
 				...tenant,
 				clientGeneratedId: "mcp-docs-thread",
@@ -11824,6 +11878,7 @@ describe("mcp docs", () => {
 				updatedAt: now,
 				lastMessageAt: now,
 				newestNodeId: null,
+				starred: false,
 			});
 			for (const userId of [user.userId, owner.userId]) {
 				const customServerId = await test_mocks_fill_db_with.mcp_custom_server(ctx, {

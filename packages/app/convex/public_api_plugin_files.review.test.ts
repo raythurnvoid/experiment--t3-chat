@@ -25,6 +25,7 @@ describe("ensure_plugin_folder", () => {
 					workspaceId: owner.workspaceId,
 					userId,
 					active: true,
+					pendingOrganizationRemoval: false,
 					updatedAt: now,
 				});
 				await ctx.db.insert("access_control_role_assignments", {
@@ -97,6 +98,8 @@ describe("ensure_plugin_folder", () => {
 					sourceLastError: null,
 					createdBy: owner.userId,
 					updatedAt: now,
+					secrets: [],
+					userWritableCollections: null,
 				});
 				const installationId = await ctx.db.insert("plugins_workspace_installations", {
 					serviceAccountId,
@@ -149,6 +152,7 @@ describe("ensure_plugin_folder", () => {
 					restrictedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
 					archiveOperationId: null,
+					newChildWritePolicy: null,
 				});
 				return { owner, userId, membershipId, pluginVersionId, installationId, parentId, serviceAccountId };
 			});

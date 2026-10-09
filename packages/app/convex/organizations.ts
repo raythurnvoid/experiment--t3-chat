@@ -225,6 +225,7 @@ export async function organizations_db_create(
 			workspaceId: defaultWorkspaceId,
 			userId: args.userId,
 			active: true,
+			pendingOrganizationRemoval: false,
 			updatedAt: args.now,
 		}),
 	];
@@ -378,6 +379,7 @@ export async function organizations_db_create_workspace(
 		workspaceId,
 		userId: args.userId,
 		active: true,
+		pendingOrganizationRemoval: false,
 		updatedAt: args.now,
 	});
 	await quotas_db_ensure(ctx, {
@@ -1210,6 +1212,7 @@ export const invite_user_to_organization_workspace = mutation({
 						workspaceId: defaultWorkspaceId,
 						userId: userIdToAdd,
 						active: true,
+						pendingOrganizationRemoval: false,
 						updatedAt: now,
 					}),
 			existingHomeMembership
@@ -1246,6 +1249,7 @@ export const invite_user_to_organization_workspace = mutation({
 						workspaceId: workspace._id,
 						userId: userIdToAdd,
 						active: true,
+						pendingOrganizationRemoval: false,
 						updatedAt: now,
 					}),
 			isDefaultWorkspace

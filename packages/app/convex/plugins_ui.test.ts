@@ -174,6 +174,9 @@ async function register_gallery_plugin(args: {
 			},
 		],
 		createdBy: userId,
+		secrets: [],
+		endpoints: [],
+		userWritableCollections: null,
 		sourceFiles: [{ path: "dist/frontend/index.html", rawText: "<!doctype html><title>Gallery</title>" }],
 	});
 	if (registered._nay) {
@@ -248,6 +251,8 @@ async function seed_reader_member(
 			workspaceId: fixture.membership.workspaceId,
 			userId,
 			active: true,
+			pendingOrganizationRemoval: false,
+			updatedAt: Date.now(),
 		});
 		const grantId = await ctx.db.insert("access_control_permission_grants", {
 			organizationId: fixture.membership.organizationId,
@@ -1083,6 +1088,7 @@ describe("plugin ui sessions", () => {
 					isRestrictedScopeRoot: false,
 					writePolicy: null,
 					archiveOperationId: null,
+					newChildWritePolicy: null,
 				});
 			}
 			for (const [name, contentType] of [
@@ -1120,6 +1126,7 @@ describe("plugin ui sessions", () => {
 					isRestrictedScopeRoot: false,
 					writePolicy: null,
 					archiveOperationId: null,
+					newChildWritePolicy: null,
 				});
 			}
 		});
@@ -1784,6 +1791,8 @@ describe("plugin ui file view sessions", () => {
 				workspaceId: fixture.membership.workspaceId,
 				userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.membership.organizationId,

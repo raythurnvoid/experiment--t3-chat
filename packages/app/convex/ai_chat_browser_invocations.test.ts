@@ -161,6 +161,8 @@ describe("begin_browser_invocation", () => {
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
 				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
 			});
 		});
 		expect((await f.begin())._nay).toBeDefined();
