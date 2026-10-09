@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import * as Y from "yjs";
 import { files_PresenceStore } from "./files.ts";
 import { files_yjs_Provider, type files_yjs_Provider_Args } from "./files-yjs-provider.ts";
+import { files_yjs_preload_snapshot } from "./files-yjs-snapshot-preload.ts";
 
 type PromiseConstructorWithTry = Omit<PromiseConstructor, "try"> & {
 	try?: <T>(callback: () => T | PromiseLike<T>) => Promise<Awaited<T>>;
@@ -76,6 +77,7 @@ const appConvexMock = vi.hoisted(() => {
 			files_nodes: {
 				yjs_prepare_doc_last_snapshot: "yjs_prepare_doc_last_snapshot",
 				yjs_get_incremental_updates: "yjs_get_incremental_updates",
+				get_file_last_yjs_sequence: "get_file_last_yjs_sequence",
 				yjs_push_update: "yjs_push_update",
 			},
 		},
@@ -244,6 +246,364 @@ afterAll(() => {
 });
 
 describe("files_yjs_Provider snapshot sync", () => {
+	test("starts snapshot loading before mount and uses that one read in the provider", async () => {
+		const snapshotDoc = new Y.Doc();
+		snapshotDoc.getText("content").insert(0, "Welcome");
+		const snapshotUpdate = appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(snapshotDoc));
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		appConvexMock.app_convex.query.mockResolvedValue({ yjsLastSequenceId: "last_sequence_id", lastSequence: 0 });
+		const fetchMock = vi.fn(async (_url: string, _options?: RequestInit) => new Response(snapshotUpdate));
+		vi.stubGlobal("fetch", fetchMock);
+		const args = {
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+		};
+		const cancel = files_yjs_preload_snapshot(args);
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledOnce();
+		await flushMicrotasks();
+		expect(fetchMock).toHaveBeenCalledOnce();
+
+		const provider = new files_yjs_Provider({
+			...args,
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		cancel();
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+		await flushMicrotasks();
+		expect(provider.getStatus()).toBe("synchronized");
+		expect(getRootDoc(provider).getText("content").toString()).toBe("Welcome");
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledOnce();
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+		expect(appConvexMock.app_convex.query).toHaveBeenCalledWith("get_file_last_yjs_sequence", args);
+		provider.destroy();
+
+		const replacement = new files_yjs_Provider({
+			...args,
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+		await flushMicrotasks();
+		expect(replacement.getStatus()).toBe("synchronized");
+		expect(getRootDoc(replacement)).not.toBe(getRootDoc(provider));
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		replacement.destroy();
+		snapshotDoc.destroy();
+	});
+
+	test.each(["membershipId", "nodeId"] as const)("does not use a preload for another %s", async (field) => {
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(createEmptySnapshotUpdate())),
+		);
+		const args = {
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+		};
+		const cancel = files_yjs_preload_snapshot(args);
+		const provider = new files_yjs_Provider({
+			...args,
+			[field]: "other" as (typeof args)[typeof field],
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+		await flushMicrotasks();
+		expect(provider.getStatus()).toBe("synchronized");
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
+		expect(appConvexMock.app_convex.query).not.toHaveBeenCalled();
+		provider.destroy();
+		cancel();
+	});
+
+	test("cancels an abandoned preload before its action starts a byte fetch", async () => {
+		const prepared = Promise.withResolvers<{
+			snapshot: { sequence: number };
+			snapshotUrl: string;
+			yjsLastSequenceId: string;
+		}>();
+		appConvexMock.app_convex.action.mockReturnValue(prepared.promise);
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		const cancel = files_yjs_preload_snapshot({
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+		});
+		cancel();
+		prepared.resolve({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		await flushMicrotasks();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	test.each(["action", "fetch", "sequence"] as const)("retries a preload after its %s fails", async (phase) => {
+		const prepared = {
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		};
+		appConvexMock.app_convex.action.mockResolvedValue(prepared);
+		if (phase === "action") appConvexMock.app_convex.action.mockRejectedValueOnce(new Error("Storage unavailable"));
+		appConvexMock.app_convex.query.mockResolvedValue({ yjsLastSequenceId: "last_sequence_id", lastSequence: 0 });
+		if (phase === "sequence") appConvexMock.app_convex.query.mockRejectedValueOnce(new Error("Disconnected"));
+		const fetchMock = vi.fn(async () => new Response(createEmptySnapshotUpdate()));
+		if (phase === "fetch") fetchMock.mockRejectedValueOnce(new Error("Storage unavailable"));
+		vi.stubGlobal("fetch", fetchMock);
+		const args = {
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+		};
+		files_yjs_preload_snapshot(args);
+		await flushMicrotasks();
+		const provider = new files_yjs_Provider({
+			...args,
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+		await advanceTimersByTime(500);
+		expect(provider.getStatus()).toBe("synchronized");
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
+		expect(fetchMock).toHaveBeenCalledTimes(phase === "action" ? 1 : 2);
+		provider.destroy();
+	});
+
+	test("keeps a null preloaded answer as a refused read", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		appConvexMock.app_convex.action.mockResolvedValue(null);
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		const args = {
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+		};
+		files_yjs_preload_snapshot(args);
+		const provider = new files_yjs_Provider({
+			...args,
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+		await advanceTimersByTime(6000);
+		expect(provider.getStatus()).toBe("loading");
+		expect(provider.loadFailed).toBe(true);
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledOnce();
+		expect(fetchMock).not.toHaveBeenCalled();
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		fetchMock.mockResolvedValue(new Response(createEmptySnapshotUpdate()));
+		provider.unpause();
+		await flushMicrotasks();
+		expect(provider.getStatus()).toBe("synchronized");
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
+		provider.destroy();
+	});
+
+	test("refuses a preload when read access is lost before its current sequence read", async () => {
+		const snapshotDoc = new Y.Doc();
+		snapshotDoc.getText("content").insert(0, "Private text");
+		const snapshotUpdate = appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(snapshotDoc));
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		appConvexMock.app_convex.query.mockResolvedValue(null);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(snapshotUpdate)),
+		);
+		const args = {
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+		};
+		files_yjs_preload_snapshot(args);
+		const provider = new files_yjs_Provider({
+			...args,
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+		await advanceTimersByTime(6000);
+		expect(provider.loadFailed).toBe(true);
+		expect(provider.getStatus()).toBe("loading");
+		expect(getRootDoc(provider).getText("content").toString()).toBe("");
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledOnce();
+		provider.destroy();
+		snapshotDoc.destroy();
+	});
+
+	test.each(["bytes", "head"] as const)(
+		"does not apply a preload after destruction during its %s read",
+		async (phase) => {
+			const snapshotDoc = new Y.Doc();
+			snapshotDoc.getText("content").insert(0, "Late text");
+			const snapshotUpdate = appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(snapshotDoc));
+			const bytes = Promise.withResolvers<ArrayBuffer>();
+			const head = Promise.withResolvers<{ yjsLastSequenceId: string; lastSequence: number }>();
+			appConvexMock.app_convex.action.mockResolvedValue({
+				snapshot: { sequence: 0 },
+				snapshotUrl: "https://r2.test/snapshot",
+				yjsLastSequenceId: "last_sequence_id",
+			});
+			appConvexMock.app_convex.query.mockReturnValue(head.promise);
+			const fetchMock = vi.fn(async (_url: string, _options?: RequestInit) => ({
+				ok: true,
+				arrayBuffer: () => bytes.promise,
+			}));
+			vi.stubGlobal("fetch", fetchMock);
+			const args = {
+				membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+				nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			};
+			files_yjs_preload_snapshot(args);
+			const provider = new files_yjs_Provider({
+				...args,
+				expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+				presenceStore: createPresenceStore(),
+				editable: true,
+			});
+			const rootDoc = getRootDoc(provider);
+			appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+			if (phase === "head") bytes.resolve(snapshotUpdate);
+			await flushMicrotasks();
+			expect(appConvexMock.app_convex.query).toHaveBeenCalledTimes(phase === "head" ? 1 : 0);
+			provider.destroy();
+			expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+			bytes.resolve(snapshotUpdate);
+			head.resolve({ yjsLastSequenceId: "last_sequence_id", lastSequence: 0 });
+			await flushMicrotasks();
+			expect(rootDoc.getText("content").toString()).toBe("");
+			expect(provider.getStatus()).not.toBe("synchronized");
+			expect(appConvexMock.app_convex.action).toHaveBeenCalledOnce();
+			snapshotDoc.destroy();
+		},
+	);
+
+	test.each(["compacted", "gap", "late compaction", "new lineage"] as const)(
+		"loads a fresh snapshot when the preload has %s",
+		async (change) => {
+			const latestDoc = new Y.Doc();
+			latestDoc.getText("content").insert(0, "Saved elsewhere");
+			const latestUpdate = appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(latestDoc));
+			const lastSequence = change === "gap" ? 2 : 1;
+			appConvexMock.app_convex.action
+				.mockResolvedValueOnce({
+					snapshot: { sequence: 0 },
+					snapshotUrl: "https://r2.test/old",
+					yjsLastSequenceId: "old_lineage",
+				})
+				.mockResolvedValue({
+					snapshot: { sequence: lastSequence },
+					snapshotUrl: "https://r2.test/current",
+					yjsLastSequenceId: change === "new lineage" ? "current_lineage" : "old_lineage",
+				});
+			const sequenceRead = Promise.withResolvers<{ yjsLastSequenceId: string; lastSequence: number }>();
+			appConvexMock.app_convex.query.mockReturnValue(sequenceRead.promise);
+			const fetchMock = vi.fn(
+				async (url: string) => new Response(url.endsWith("/old") ? createEmptySnapshotUpdate() : latestUpdate),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			const args = {
+				membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+				nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			};
+			files_yjs_preload_snapshot(args);
+			await flushMicrotasks();
+			const lineage = change === "new lineage" ? "current_lineage" : "old_lineage";
+			const provider = new files_yjs_Provider({
+				...args,
+				expectedYjsLastSequenceId: lineage as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+				presenceStore: createPresenceStore(),
+				editable: true,
+			});
+			const packet: MockIncrementalUpdate = {
+				sequence: lastSequence,
+				update: latestUpdate,
+				origin: { type: "USER_EDIT", sessionId: "other_session" },
+			};
+			appConvexMock.emitIncrementalUpdates({
+				yjsLastSequenceId: lineage,
+				updates: change === "gap" || change === "late compaction" ? [packet] : [],
+			});
+			await flushMicrotasks();
+			if (change === "late compaction") {
+				// Materialization removes the packet while the current sequence read waits.
+				appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: lineage, updates: [] });
+			}
+			sequenceRead.resolve({ yjsLastSequenceId: lineage, lastSequence });
+			await flushMicrotasks();
+			expect(provider.getStatus()).toBe("synchronized");
+			expect(getRootDoc(provider).getText("content").toString()).toBe("Saved elsewhere");
+			expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			provider.destroy();
+			latestDoc.destroy();
+		},
+	);
+
+	test("joins a preloaded snapshot with its complete update prefix", async () => {
+		const savedDoc = new Y.Doc();
+		savedDoc.getText("content").insert(0, "Welcome");
+		const snapshot = appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(savedDoc));
+		savedDoc.getText("content").insert(7, " remote");
+		const update = appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(savedDoc));
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		appConvexMock.app_convex.query.mockResolvedValue({ yjsLastSequenceId: "last_sequence_id", lastSequence: 1 });
+		const fetchMock = vi.fn(async () => new Response(snapshot));
+		vi.stubGlobal("fetch", fetchMock);
+		const args = {
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+		};
+		files_yjs_preload_snapshot(args);
+		const provider = new files_yjs_Provider({
+			...args,
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		appConvexMock.emitIncrementalUpdates({
+			yjsLastSequenceId: "last_sequence_id",
+			updates: [{ sequence: 1, update, origin: { type: "USER_EDIT", sessionId: "session_local" } }],
+		});
+		await flushMicrotasks();
+		expect(getRootDoc(provider).getText("content").toString()).toBe("Welcome remote");
+		expect(provider.getStatus()).toBe("synchronized");
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledOnce();
+		expect(fetchMock).toHaveBeenCalledOnce();
+		provider.destroy();
+		savedDoc.destroy();
+	});
+
 	test("retries failed R2 snapshot fetches before marking the provider synchronized", async () => {
 		const presenceStore = createPresenceStore();
 		const emptySnapshotUpdate = createEmptySnapshotUpdate();

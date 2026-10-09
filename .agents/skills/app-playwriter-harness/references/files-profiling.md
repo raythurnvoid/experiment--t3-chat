@@ -93,7 +93,10 @@ For a file, require the matching provider from `window.__qa.filesYjs()` to have 
 also says Welcome and can remain visible after the URL changes. Text alone gives an early result.
 
 For a folder, require the new row and `input[aria-label="Rename <name>"]` to have focus. Record the
-folder table's ready state separately. After rename, check the row, breadcrumb, and saved path.
+folder table's ready state separately. Wait for that state before saving the raw sample, so its
+later milestone is kept. Require the new route ID, `aria-busy="false"`, ready sort state, and the
+expected row IDs. A new empty folder must have zero rows; the previous root table can still be ready.
+After rename, check the row, breadcrumb, and saved path.
 No-op rename sends no mutation, so report it as a client-only case.
 
 Use `a[aria-label="Home"]` for the root breadcrumb. It is not always inside the path-list class.
@@ -103,8 +106,18 @@ inside a background runner. A missing Home link waited 60 seconds on Playwriter 
 If a locator click stalls at `performing click action`, inspect state before retrying. Use the current
 box and a hit test, then a real mouse click. Do not raise the timeout or force the click.
 
-Search suggestions can cover a result row. Close them with Escape and check the hit target before
-clicking. Start row timing on `.FilesSidebarTreeItem[data-file-id="<id>"]`, which includes its children.
+Root loading must check the expected first-page row IDs in order, on the same `Folder contents`
+table, plus `aria-busy="false"` and `data-sort-state="ready"`. The URL can change while the previous
+folder table still says ready. Before timing Home, check the source folder's exact row IDs too.
+
+Search suggestions can cover result rows and Clear search. Close them with Escape before clicking.
+Active search uses `[data-search-row-id="<id>"]`; the normal tree is hidden. Clear search before
+tree timing. A name query can return a ranked page, even when the typed name is complete. Compare
+the visible IDs with the current `files_nodes:search_saved` subscription page. Reuse its exact args
+from `window.__qa.convexSubscriptions()` with `app_convex.watchQuery(...).localQueryResult()`.
+Remove duplicate IDs in first-occurrence order and reject problem rows. Keep the current page size;
+do not load the whole workspace to verify search. Metadata equality can still have one result.
+Start normal tree timing on `.FilesSidebarTreeItem[data-file-id="<id>"]`, including its children.
 
 Properties must be scoped to `[data-files-properties-modal][data-open="true"]`. The current footer
 has one `Save` button for metadata and protection. It stays open after a successful save. Metadata
@@ -171,12 +184,10 @@ source, archive only new output IDs, and check all source paths and content agai
 
 Use the native Copy menu after checking the selection. Control+C can leave the old app clipboard
 when browser text is selected. Check source IDs in the returned run before timing its controls.
-A terminal Partial run is a failed copy result. Record its finished time separately from successful
-completion. Two small Markdown copies reproduced a media-version refusal in this run; the copy
-workers can invalidate each other's workspace version check. Trace that check before changing it.
-Three fresh retries on 2026-10-05 all ended Partial with the same media-validation error. Either
-source can fail. Stop and Retry passed, output bytes matched, and the sources stayed unchanged.
-Keep these retries separate from the earlier baseline. They do not add successful Copy timings.
+A terminal Partial run is a failed copy result. Record it separately from successful completion.
+The 2026-10-05 Markdown copy failure was fixed on 2026-10-07 in commit `6441de3b`. A later seven-run
+check passed Copy, Stop and Retry with exact output bytes and restored source paths. Keep the old
+failed runs outside successful Copy medians; they are failure evidence, not a speed baseline.
 
 ## Keep the report honest
 
@@ -186,9 +197,67 @@ timing validity separate from completion validity. A label or sample number alon
 receipt after a retry or reload. Keep duplicate reads and failures in raw data, outside success
 medians. A baseline covers its named scenario; it does not cover every scale or permission variant.
 
+Track a created ID before timing or content checks can fail. Failure cleanup must restore changed
+fixture metadata and archive only this run's new IDs. Save each raw sample once. Mark restoration
+only after its checks pass, and join a batch restoration receipt to exact sample IDs.
+
+Keep native creation timing separate from direct API comparisons. The native sidebar may still use
+`files_nodes_content:create_text_node` and `files_nodes:create_folder_node`. The candidate module is
+`files_nodes_create`; its file path also changes asset allocation and the final transaction. A direct
+comparison measures that full implementation, not module load alone. Keep normal cached queries
+separate. Alternate variant order and check stored text, parsed Yjs text, snapshots and asset state.
+
+To pin deployed code without a push, compare deployment module hashes with a local debug bundle.
+The installed Convex CLI supports `--debug-bundle-path`; require its `Skipping rest of push` result.
+Hash each module's source followed by its source map, or an empty string when absent. Source-only
+hashes give false differences. Keep credentials in memory and save only module paths and hashes.
+
+Do not edit harness Markdown during a timed batch. Vite can watch it for CSS changes and send HMR.
+Check long-running test workers too. Quiet animation frames do not prove the host CPU is quiet.
+If other tasks stay busy, keep UI results provisional and save host load beside each sample.
+Server timings can still compare full implementations. They do not prove the cause of module cost;
+context reuse can make one mutation warm while another pays for imports. Use separate noop import
+probes or phase timers before naming that cost as the cause.
+
 The extension may refuse CPU profiling and browser-level download commands. In that case, keep
 native download fetch timing separate from disk completion. Do not invent a completion time from
 an event, file modification date, or `download.saveAs` when no artifact exists.
+
+## New file snapshot preload checks
+
+Keep the native sidebar flow separate from direct creation calls. For the rich text view, record
+the successful create reply, snapshot action call and wire send, snapshot byte completion, new
+route, provider identity, new editor DOM, correct text and inline rename focus. Start timing on
+the real New file click. A synchronized provider alone does not prove the editor is ready.
+
+Use the final served code for both arms. An owned page route may disable
+`files_yjs_preload_snapshot` by returning a no-op at its first statement. Record the exact source
+anchor, replacement count, source hash and loaded variant marker. This natural baseline removes
+both the preload and its matching creation access wait. Label it as a comparison of the full
+feature. Catch route callback errors, return an explicit failed response, and reject that setup.
+Never pass through unpatched code after a failed source check.
+
+The assertion is that snapshot call and wire send happen after creation succeeds and before
+navigation. It must fail off and pass on. On must have one provider, one snapshot action and one
+byte fetch for the new ID. Keep off's normal provider replacements and extra requests in the data.
+Alternate seven pairs. Save each window's host CPU, raw attempts and exact cleanup receipt. Use
+ordinary medians; for an even count, average the two middle values. Keep provider-ready and
+editor-ready times separate. Do not mix samples from different runtime pins.
+
+Test the matching access wait separately. Keep preload on. Hold only the new file's existing
+write query answer as unknown while its real watch and cache keep running. Confirm the real
+cached answer is known before release. With the wait off, a temporary read-only provider must
+start, then be replaced. With the wait on, the skeleton must show with no provider until release,
+then one known-access provider must start. Name the one-provider assertion before this proof.
+Release held callbacks before cleanup. Ordinary opens without a pending preload keep their old
+startup path.
+
+Outside timing, check snapshot fetch failure/retry, navigation while bytes are pending, abandoned
+creation, known read-only sidebar name-modal creation, and separate document identities. Folder,
+Code/Markdown and Review creation must make zero unused preload calls. The file-view toolbar create modal
+does not open the created file, so it must skip preload too. Use owned items for policy checks;
+restore the child rule and folder default before archive. Keep difficult access-loss, lineage and
+snapshot compaction races in focused deterministic tests.
 
 ## Full action checklist
 

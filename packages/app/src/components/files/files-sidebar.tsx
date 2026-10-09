@@ -132,6 +132,7 @@ import { useFileNodeActivities } from "@/lib/activities.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesTreeProvider, files_tree_stream_args } from "@/lib/files-tree-context.tsx";
+import { files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
 import { path_extract_segments_from, path_name_of } from "@/lib/paths.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -4842,7 +4843,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		membershipId: typeof membershipId;
 		fromNodeId: string | null;
 		nodeId: string | null;
+		cancelSnapshotPreload: (() => void) | null;
 	} | null>(null);
+	const snapshotPreloadRequestRef = useRef<typeof createRequestRef.current>(null);
 	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
 	const [createModalParentId, setCreateModalParentId] = useState<typeof files_ROOT_ID | app_convex_Id<"files_nodes">>(
 		files_ROOT_ID,
@@ -6319,8 +6322,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				treeItems,
 			});
 
-			const createRequest = { membershipId, fromNodeId: selectedNodeId, nodeId: null as string | null };
+			snapshotPreloadRequestRef.current?.cancelSnapshotPreload?.();
+			const createRequest: NonNullable<typeof createRequestRef.current> = {
+				membershipId,
+				fromNodeId: selectedNodeId,
+				nodeId: null,
+				cancelSnapshotPreload: null,
+			};
 			createRequestRef.current = createRequest;
+			snapshotPreloadRequestRef.current = kind === "file" && view === "rich_text_editor" ? createRequest : null;
 			setIsCreatingFile(true);
 			const createNodePromise =
 				kind === "folder"
@@ -6362,6 +6372,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					}
 
 					createRequest.nodeId = result._yay.nodeId;
+					if (snapshotPreloadRequestRef.current === createRequest) {
+						createRequest.cancelSnapshotPreload = files_yjs_preload_snapshot({
+							membershipId,
+							nodeId: result._yay.nodeId,
+						});
+					}
 					return navigate({
 						to: "/w/$organizationName/$workspaceName/files",
 						params: { organizationName, workspaceName },
@@ -6369,6 +6385,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					});
 				})
 				.catch((error) => {
+					createRequest.cancelSnapshotPreload?.();
+					if (snapshotPreloadRequestRef.current === createRequest) snapshotPreloadRequestRef.current = null;
 					createRequest.nodeId = null;
 					console.error("[FilesSidebar.handleCreateNodeClick] Error creating node", { error });
 				})
@@ -6378,6 +6396,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						return;
 					}
 					createRequestRef.current = null;
+					if (snapshotPreloadRequestRef.current === createRequest) snapshotPreloadRequestRef.current = null;
 					setIsCreatingFile(false);
 				});
 		},
@@ -6437,6 +6456,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const handleCreateNodeModalSubmit = useFn((args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => {
 		const { kind, path } = args;
+		snapshotPreloadRequestRef.current?.cancelSnapshotPreload?.();
+		const snapshotPreloadRequest: NonNullable<typeof createRequestRef.current> = {
+			membershipId,
+			fromNodeId: selectedNodeId,
+			nodeId: null,
+			cancelSnapshotPreload: null,
+		};
+		snapshotPreloadRequestRef.current = kind === "file" && view === "rich_text_editor" ? snapshotPreloadRequest : null;
 		setIsCreatingFile(true);
 		const createNodePromise =
 			kind === "folder"
@@ -6466,6 +6493,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					return result._nay.message;
 				}
 
+				if (snapshotPreloadRequestRef.current === snapshotPreloadRequest) {
+					snapshotPreloadRequest.nodeId = result._yay.nodeId;
+					snapshotPreloadRequest.cancelSnapshotPreload = files_yjs_preload_snapshot({
+						membershipId,
+						nodeId: result._yay.nodeId,
+					});
+				}
 				return navigate({
 					to: "/w/$organizationName/$workspaceName/files",
 					params: { organizationName, workspaceName },
@@ -6473,6 +6507,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				}).then(() => null);
 			})
 			.catch((error: unknown) => {
+				snapshotPreloadRequest.cancelSnapshotPreload?.();
+				if (snapshotPreloadRequestRef.current === snapshotPreloadRequest) snapshotPreloadRequestRef.current = null;
 				console.error("[FilesSidebar.handleCreateNodeModalSubmit] Error creating node", {
 					error,
 					parentId: createModalParentId,
@@ -6481,6 +6517,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				return `Failed to create ${kind}.`;
 			})
 			.finally(() => {
+				if (!snapshotPreloadRequest.nodeId && snapshotPreloadRequestRef.current === snapshotPreloadRequest) {
+					snapshotPreloadRequestRef.current = null;
+				}
 				setIsCreatingFile(false);
 			});
 	});
@@ -6963,8 +7002,24 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	useLayoutEffect(() => {
 		return () => {
 			createRequestRef.current = null;
+			snapshotPreloadRequestRef.current?.cancelSnapshotPreload?.();
+			snapshotPreloadRequestRef.current = null;
 		};
 	}, []);
+
+	useLayoutEffect(() => {
+		const request = snapshotPreloadRequestRef.current;
+		if (!request) return;
+		if (
+			request.membershipId !== membershipId ||
+			(selectedNodeId !== request.fromNodeId && selectedNodeId !== request.nodeId)
+		) {
+			request.cancelSnapshotPreload?.();
+			snapshotPreloadRequestRef.current = null;
+		} else if (request.nodeId && selectedNodeId === request.nodeId) {
+			request.fromNodeId = selectedNodeId;
+		}
+	}, [membershipId, selectedNodeId]);
 
 	// Finish create selection and rename in the same commit once the new row is visible.
 	useLayoutEffect(() => {

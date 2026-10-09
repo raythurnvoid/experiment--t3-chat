@@ -34,6 +34,7 @@ import { CatchBoundary } from "@tanstack/react-router";
 import { FileEditorError } from "./file-editor-error.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import type { files_yjs_EditBlockReason } from "@/lib/files-yjs-provider.ts";
+import { files_yjs_has_preloaded_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
 
 // #region pending updates floating
 type FileEditorPendingUpdatesFloating_ClassNames =
@@ -804,6 +805,13 @@ function FileEditorInner(props: FileEditorInner_Props) {
 							*/}
 						{proposalWentAway ? (
 							<FileEditorDiffSkeleton />
+						) : target.kind === "saved" &&
+							!nonCollaborative &&
+							effectiveEditorMode === "rich_text_editor" &&
+							savedCanWrite === undefined &&
+							files_yjs_has_preloaded_snapshot({ membershipId, nodeId: target.id }) ? (
+							// Wait for the access answer so startup does not replace a temporary read-only provider.
+							<FileEditorRichTextSkeleton />
 						) : (
 							<FileEditorRender
 								previewRef={previewRef}

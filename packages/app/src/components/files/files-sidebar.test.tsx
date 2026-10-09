@@ -19,7 +19,17 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_tree_stream_args } from "@/lib/files-tree-context.tsx";
 import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 
-const { treeState, tenantState, linkState, savedState, createNode, queryCalls } = vi.hoisted(() => ({
+const {
+	treeState,
+	tenantState,
+	linkState,
+	savedState,
+	createNode,
+	creationPolicy,
+	preloadSnapshot,
+	cancelSnapshotPreload,
+	queryCalls,
+} = vi.hoisted(() => ({
 	// `sharedRoots` holds the rows of the "Shared with you" group, `sharedRootsStatus` its pager status.
 	// `sharedListeners` re-render the group after a change.
 	treeState: {
@@ -49,6 +59,9 @@ const { treeState, tenantState, linkState, savedState, createNode, queryCalls } 
 		listeners: new Set<() => void>(),
 	},
 	createNode: vi.fn(),
+	creationPolicy: vi.fn(),
+	preloadSnapshot: vi.fn(),
+	cancelSnapshotPreload: vi.fn(),
 	// Every query a component read, by function name and args, so a test can see which node a dialog reads.
 	queryCalls: [] as Array<[string, unknown]>,
 }));
@@ -91,7 +104,7 @@ vi.mock("convex/react", async (importOriginal) => {
 	};
 	return {
 		...original,
-		useConvex: () => ({ query: async () => [], mutation: createNode, action: createNode }),
+		useConvex: () => ({ query: creationPolicy, mutation: createNode, action: createNode }),
 		useQuery: (query: FunctionReference<"query">, args: unknown) => {
 			const links = useSyncExternalStore(subscribeLinks, () => linkState.links);
 			if (args === "skip") return undefined;
@@ -217,9 +230,13 @@ vi.mock("@/lib/files-tree-context.tsx", async (importOriginal) => {
 });
 
 vi.mock("@/lib/activities.ts", () => ({ useFileNodeActivities: () => [] }));
+vi.mock("@/lib/files-yjs-snapshot-preload.ts", () => ({ files_yjs_preload_snapshot: preloadSnapshot }));
 
 beforeEach(() => {
 	createNode.mockReset();
+	creationPolicy.mockReset().mockResolvedValue([]);
+	cancelSnapshotPreload.mockReset();
+	preloadSnapshot.mockReset().mockReturnValue(cancelSnapshotPreload);
 	queryCalls.length = 0;
 	tenantState.membershipId = "membership";
 	set_links([]);
@@ -262,6 +279,7 @@ describe("FilesSidebar", () => {
 	function CreateSidebar(props: {
 		router: AnyRouter;
 		selectedNodeId: string;
+		view?: "rich_text_editor" | "plain_text_editor" | "diff_editor";
 		onPrimaryAction?: (nodeId: string, kind: string) => void;
 	}) {
 		const handleAction = () => {};
@@ -278,7 +296,7 @@ describe("FilesSidebar", () => {
 					>
 						<FilesSidebar
 							selectedNodeId={props.selectedNodeId}
-							view="rich_text_editor"
+							view={props.view ?? "rich_text_editor"}
 							initialSearchQuery=""
 							onClose={handleAction}
 							onArchive={handleAction}
@@ -855,6 +873,86 @@ describe("FilesSidebar", () => {
 		fireEvent.keyUp(row, { key: "Escape", code: "Escape" });
 		expect(row.getAttribute("aria-label")).toBe("alpha");
 		expect(createNode).not.toHaveBeenCalled();
+	});
+
+	test("preloads a newly created file before navigating to its rich editor", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const navigate = vi.spyOn(router, "navigate").mockResolvedValue(undefined);
+		createNode.mockResolvedValue({ _yay: { nodeId: "created-node" } });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		fireEvent.click(view.getByRole("button", { name: "New file" }));
+		await waitFor(() => expect(navigate).toHaveBeenCalledOnce());
+		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "membership", nodeId: "created-node" });
+		expect(preloadSnapshot.mock.invocationCallOrder[0]).toBeLessThan(navigate.mock.invocationCallOrder[0]!);
+		view.rerender(<CreateSidebar router={router} selectedNodeId="created-node" />);
+		expect(cancelSnapshotPreload).not.toHaveBeenCalled();
+	});
+
+	test.each(["folder", "plain_text_editor", "diff_editor", "refused"] as const)(
+		"does not preload a %s creation",
+		async (mode) => {
+			const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+			vi.spyOn(router, "navigate").mockResolvedValue(undefined);
+			vi.spyOn(console, "error").mockImplementation(() => {});
+			createNode.mockResolvedValue(
+				mode === "refused" ? { _nay: { message: "Permission denied" } } : { _yay: { nodeId: "created-node" } },
+			);
+			const view = render(
+				<CreateSidebar
+					router={router}
+					selectedNodeId="alpha"
+					view={mode === "plain_text_editor" || mode === "diff_editor" ? mode : "rich_text_editor"}
+				/>,
+			);
+			fireEvent.click(view.getByRole("button", { name: mode === "folder" ? "New folder" : "New file" }));
+			await waitFor(() => expect(createNode).toHaveBeenCalledOnce());
+			await act(async () => {});
+			expect(preloadSnapshot).not.toHaveBeenCalled();
+		},
+	);
+
+	test.each(["route", "workspace", "unmount", "navigation failed"] as const)(
+		"cancels the created file's pending preload on %s",
+		async (stage) => {
+			const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+			const navigation = Promise.withResolvers<void>();
+			vi.spyOn(router, "navigate").mockReturnValue(navigation.promise);
+			vi.spyOn(console, "error").mockImplementation(() => {});
+			createNode.mockResolvedValue({ _yay: { nodeId: "created-node" } });
+			const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+			fireEvent.click(view.getByRole("button", { name: "New file" }));
+			await waitFor(() => expect(preloadSnapshot).toHaveBeenCalledOnce());
+			view.rerender(<CreateSidebar router={router} selectedNodeId="created-node" />);
+			expect(cancelSnapshotPreload).not.toHaveBeenCalled();
+			if (stage === "route") {
+				view.rerender(<CreateSidebar router={router} selectedNodeId="alpha" />);
+			} else if (stage === "workspace") {
+				act(() => {
+					tenantState.membershipId = "other-membership";
+					for (const listener of tenantState.listeners) listener();
+				});
+			} else if (stage === "unmount") {
+				view.unmount();
+			} else {
+				await act(async () => navigation.reject(new Error("Navigation failed")));
+			}
+			expect(cancelSnapshotPreload).toHaveBeenCalledOnce();
+			await act(async () => navigation.resolve());
+		},
+	);
+
+	test("preloads a file created through the sidebar's name modal before navigation", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const navigate = vi.spyOn(router, "navigate").mockResolvedValue(undefined);
+		creationPolicy.mockResolvedValue("read_only");
+		createNode.mockResolvedValue({ _yay: { nodeId: "created-node" } });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		fireEvent.click(await view.findByRole("button", { name: "Add file to alpha" }));
+		const submit = await view.findByRole("button", { name: "Create file" });
+		fireEvent.click(submit);
+		await waitFor(() => expect(navigate).toHaveBeenCalledOnce());
+		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "membership", nodeId: "created-node" });
+		expect(preloadSnapshot.mock.invocationCallOrder[0]).toBeLessThan(navigate.mock.invocationCallOrder[0]!);
 	});
 
 	test.each([
