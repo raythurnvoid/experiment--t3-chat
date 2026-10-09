@@ -1101,9 +1101,9 @@ describe("scalable Copy Save", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", copies[2]!._id))).toEqual(copies[2]);
 	});
 
-	// Keep this at 1,000 Copy outputs. Our Save reads a fixed number of docs per step, but convex-test scans
-	// every doc in its in-memory database for each query, even an indexed one. So the test time grows with
-	// the square of the size: 1,000 outputs take about 1.5 minutes, and 10,000 take more than 2 hours.
+	// Keep this at 1,000 Copy outputs. Our Save reads a fixed number of docs per step, but convex-test still
+	// scans the whole table for each query, even an indexed one (our patch only stops it from scanning every
+	// table). So the test time grows with the square of the size, and this is one of the slowest tests.
 	test(
 		"saves 1,000 Copy outputs beside one ordinary edit",
 		async () => {

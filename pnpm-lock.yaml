@@ -16,6 +16,11 @@ overrides:
   react-dom: 19.3.0
   yjs: 13.6.33
 
+patchedDependencies:
+  convex-test@0.0.60:
+    hash: cc3a91af234a43f10d298d050398b062b4d426c234058ed8efef817f0591bf99
+    path: patches/convex-test@0.0.60.patch
+
 importers:
 
   .:
@@ -443,7 +448,7 @@ importers:
         version: 1.0.0
       convex-test:
         specifier: ^0.0.60
-        version: 0.0.60(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))
+        version: 0.0.60(patch_hash=cc3a91af234a43f10d298d050398b062b4d426c234058ed8efef817f0591bf99)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))
       culori:
         specifier: ^4.0.2
         version: 4.0.2
@@ -32660,7 +32665,7 @@ snapshots:
     dependencies:
       convex: 1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0)
 
-  convex-test@0.0.60(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0)):
+  convex-test@0.0.60(patch_hash=cc3a91af234a43f10d298d050398b062b4d426c234058ed8efef817f0591bf99)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0)):
     dependencies:
       convex: 1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0)
 

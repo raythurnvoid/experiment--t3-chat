@@ -30,6 +30,12 @@ overrides:
   react-dom: "19.3.0"
   yjs: "13.6.33"
 
+# convex-test reads every document of every table for each query, so big tests slow down with the
+# square of the data size. The patch keeps the ids of each table, so a query reads only its own table.
+# Drop it when convex-test ships the same fix.
+patchedDependencies:
+  convex-test@0.0.60: patches/convex-test@0.0.60.patch
+
 onlyBuiltDependencies:
   - "@clerk/shared"
   - core-js
