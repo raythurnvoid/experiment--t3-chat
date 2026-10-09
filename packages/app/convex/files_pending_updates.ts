@@ -6899,6 +6899,11 @@ const pending_target_view_validator = v.object({
 	canEdit: v.boolean(),
 	canAccept: v.boolean(),
 	canAcceptWithParents: v.boolean(),
+	/**
+	 * A saved move into a folder the user can no longer read. The entry then shows at its saved place,
+	 * so its path is not the destination, and Accept would fail.
+	 */
+	moveDestinationUnreadable: v.boolean(),
 	requiredParents: required_parents_validator,
 	// The saved folder the pending chain hangs from, for the header's breadcrumb. `null` at the root.
 	savedParentId: v.union(v.id("files_nodes"), v.null()),
@@ -6962,6 +6967,7 @@ async function db_get_pending_target_view(
 				canEdit: false,
 				canAccept: false,
 				canAcceptWithParents: false,
+				moveDestinationUnreadable: false,
 				requiredParents,
 				savedParentId: savedParent._id,
 				recovery: {
@@ -7050,6 +7056,7 @@ async function db_get_pending_target_view(
 			canAccept: ready && canSave && parents.length === 0,
 			// Otherwise the user can save it together with the draft folders listed below.
 			canAcceptWithParents: ready && canSave && parentsReady,
+			moveDestinationUnreadable: false,
 			requiredParents,
 			savedParentId: savedParent?._id ?? null,
 		};
@@ -7082,7 +7089,13 @@ async function db_get_pending_target_view(
 		destination?.kind === "private" ? await ctx.db.get("files_pending_nodes", destination.id) : null;
 
 	const visibleEntry = await reader.resolveTarget(target);
+	// The reader shows a move into a folder the user can no longer read at its saved place. Check the
+	// destination like the reader does, so the row can say so and Accept stays off. `resolveParent`
+	// also follows a draft folder that was saved since the move.
+	const resolvedDestination = destination ? await reader.resolveParent(destination) : null;
 	if (reader.exhausted) throw convex_error({ message: files_PENDING_PATH_TOO_DEEP_MESSAGE });
+	const moveDestinationUnreadable =
+		resolvedDestination?.accessNode != null && !(await reader.canRead(resolvedDestination.accessNode));
 
 	return {
 		kind: "entry" as const,
@@ -7095,8 +7108,9 @@ async function db_get_pending_target_view(
 		},
 		readiness: "ready" as const,
 		canEdit,
-		canAccept: canEdit && destinationNode?.state !== "active",
-		canAcceptWithParents: canEdit && destinationNode?.state !== "active",
+		canAccept: canEdit && destinationNode?.state !== "active" && !moveDestinationUnreadable,
+		canAcceptWithParents: canEdit && destinationNode?.state !== "active" && !moveDestinationUnreadable,
+		moveDestinationUnreadable,
 		requiredParents: [],
 		savedParentId: null,
 	};
@@ -7169,6 +7183,7 @@ export const get_file_pending_target = query({
 			canEdit: v.boolean(),
 			canAccept: v.boolean(),
 			canAcceptWithParents: v.boolean(),
+			moveDestinationUnreadable: pending_target_view_validator.fields.moveDestinationUnreadable,
 			requiredParents: required_parents_validator,
 			// The saved folder the pending chain hangs from, for the header's breadcrumb. `null` at the root.
 			savedParentId: v.union(v.id("files_nodes"), v.null()),
@@ -7217,6 +7232,7 @@ export const get_file_pending_target = query({
 					canEdit: view.canEdit,
 					canAccept: view.canAccept,
 					canAcceptWithParents: view.canAcceptWithParents,
+					moveDestinationUnreadable: view.moveDestinationUnreadable,
 					requiredParents: view.requiredParents,
 					savedParentId: view.savedParentId,
 					...(view.recovery ? { recovery: view.recovery } : {}),

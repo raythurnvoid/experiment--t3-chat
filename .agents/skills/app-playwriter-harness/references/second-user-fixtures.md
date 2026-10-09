@@ -4,7 +4,7 @@ Use this when a check needs two identities at once: permission refusals, share g
 
 The org owner passes every permission check, so an owner-only run proves **no over-refusal** and never proves a refusal works. Do not report a permission fix as verified from owner flows alone.
 
-Use the seeded `qa.perm.owner` and `qa.perm.viewer` accounts in `qa-browser/home` for normal two-user checks. The app also mints an anonymous user for any visitor with no Clerk session. Use that identity only when the check needs it, because each one creates new data.
+Use the seeded `qa.perm.owner` and `qa.perm.viewer` accounts in `qa-browser/home` for normal two-user checks. They cannot use agent chat (402: no billing state). When the second user must drive agent chat, use `ray-test-1+clerk_test@gmail.com`, a member of `chitchat-qa/home` (see `clerk-test-accounts.md`). The app also mints an anonymous user for any visitor with no Clerk session. Use that identity only when the check needs it, because each one creates new data.
 
 ## When a check needs a specific Clerk account
 
@@ -27,10 +27,10 @@ vp env exec pnpx playwriter session new --browser headless
 
 That command worked on 2026-09-05 (Chrome headless, `state.page = await context.newPage()` then `goto`). Each headless session is its own profile, so two of them can hold two signed-in QA accounts at once.
 
-If headless startup is unavailable on the machine, launch the installed Chrome for Testing yourself and attach over direct CDP:
+If headless startup is unavailable on the machine, launch the installed Chrome for Testing yourself and attach over direct CDP. Put the profile in the task's personal AI folder (see AGENTS.md), never in the repo or `$env:TEMP`:
 
 ```powershell
-$prof = Join-Path $env:TEMP "qa-anon-profile"
+$prof = "<personal AI folder>\<topic>-<YYYY-MM-DD>\qa-anon-profile"
 $chrome = "C:\Users\rt0\.playwriter\browsers\chrome-<version>\chrome-win64\chrome.exe"
 Start-Process $chrome -ArgumentList @("--remote-debugging-port=9223", "--user-data-dir=$prof", "--no-first-run", "--no-default-browser-check", "http://localhost:5173/")
 ```

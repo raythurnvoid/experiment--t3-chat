@@ -1,5 +1,6 @@
 // The owner's draft view of one node, read from source tables only: saved nodes, drafts, private
-// nodes and publish receipts. It never checks access; `files_visible_db_create_reader` adds that.
+// nodes and publish receipts. It never checks access itself; `files_visible_db_create_reader` adds
+// that, and passes `canReadDestination` so a move into a folder the owner cannot read falls back.
 //
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules. The
 // mutation wrapper's flush uses this core, and a value import of an app module would pull most of
@@ -27,6 +28,12 @@ export function files_visible_resolve_db_create(
 		 * (a missing ancestor or the 256-node stop) is still null.
 		 */
 		includeHidden?: boolean;
+		/**
+		 * Whether the owner may still read a move destination's access node. A destination the owner
+		 * cannot read does not resolve, like a hidden one, so the moved node stays at its saved place
+		 * and no path names that folder. Without it (the overlay flush) every destination counts.
+		 */
+		canReadDestination?: (accessNode: Doc<"files_nodes">) => Promise<boolean>;
 	},
 ) {
 	const budget = { exhausted: false, readCount: 0, readLimit: args.readLimit ?? 512 };
@@ -110,12 +117,20 @@ export function files_visible_resolve_db_create(
 		return false;
 	}
 
+	type Resolved = {
+		entry: files_VisibleEntry;
+		accessNode: Doc<"files_nodes"> | null;
+		hidden: boolean;
+		/**
+		 * The access nodes of the move destinations the path goes through, nearest first. A place
+		 * stores them, so its reads can check them later.
+		 */
+		destinationAccessNodeIds: Id<"files_nodes">[];
+	};
+
 	// The keys being resolved, outermost first.
 	const resolving: string[] = [];
-	const resolved = new Map<
-		string,
-		{ entry: files_VisibleEntry; accessNode: Doc<"files_nodes"> | null; hidden: boolean } | null
-	>();
+	const resolved = new Map<string, Resolved | null>();
 	// A move cycle means the destination does not resolve. Its members fall back to their saved
 	// place, now and on every later resolve, so the answer does not depend on the read order.
 	const cycleMembers = new Set<string>();
@@ -127,8 +142,8 @@ export function files_visible_resolve_db_create(
 
 	async function resolve_parent(
 		parent: files_PendingParent,
-	): Promise<{ path: string; accessNode: Doc<"files_nodes"> | null; hidden: boolean } | null> {
-		if (parent.kind === "root") return { path: "", accessNode: null, hidden: false };
+	): Promise<(Omit<Resolved, "entry"> & { path: string }) | null> {
+		if (parent.kind === "root") return { path: "", accessNode: null, hidden: false, destinationAccessNodeIds: [] };
 		if (parent.kind === "private") {
 			const node = await read(() => db.get("files_pending_nodes", parent.id));
 			if (
@@ -150,12 +165,15 @@ export function files_visible_resolve_db_create(
 
 		const result = await resolve(parent);
 		if (!result || result.entry.node.kind !== "folder") return null;
-		return { path: result.entry.path, accessNode: result.accessNode, hidden: result.hidden };
+		return {
+			path: result.entry.path,
+			accessNode: result.accessNode,
+			hidden: result.hidden,
+			destinationAccessNodeIds: result.destinationAccessNodeIds,
+		};
 	}
 
-	async function resolve(
-		target: files_PendingTarget,
-	): Promise<{ entry: files_VisibleEntry; accessNode: Doc<"files_nodes"> | null; hidden: boolean } | null> {
+	async function resolve(target: files_PendingTarget): Promise<Resolved | null> {
 		const key = `${target.kind}:${target.id}`;
 		if (resolved.has(key)) return resolved.get(key)!;
 		const cycleIndex = resolving.indexOf(key);
@@ -184,7 +202,7 @@ export function files_visible_resolve_db_create(
 				.unique(),
 		);
 
-		let result: { entry: files_VisibleEntry; accessNode: Doc<"files_nodes"> | null; hidden: boolean } | null = null;
+		let result: Resolved | null = null;
 		const deleted = pending?.pendingArchive !== undefined && !args.reviewedArchiveIds?.has(pending._id);
 		if (!deleted || args.includeHidden) {
 			if (target.kind === "private") {
@@ -203,6 +221,7 @@ export function files_visible_resolve_db_create(
 							entry: { kind: "private", node, pendingUpdate: pending, path: `${parent.path}/${node.name}` },
 							accessNode: parent.accessNode,
 							hidden: deleted || node.state !== "active" || parent.hidden,
+							destinationAccessNodeIds: parent.destinationAccessNodeIds,
 						};
 				}
 			} else {
@@ -219,9 +238,17 @@ export function files_visible_resolve_db_create(
 						pending?.pendingMove && !cycleMembers.has(key)
 							? await resolve_parent(pending.pendingMove.destParent)
 							: null;
-					// A hidden destination, or a cycle found while resolving it, does not resolve. The node falls
-					// back to its saved place.
-					const movedParent = destination?.hidden === false && !cycleMembers.has(key) ? destination : null;
+					// A hidden destination, a cycle found while resolving it, or a destination the owner cannot
+					// read does not resolve. The node falls back to its saved place. A destination at the root,
+					// or in a private folder at the root, has no access node and names no saved folder.
+					const movedParent =
+						destination?.hidden === false &&
+						!cycleMembers.has(key) &&
+						(!destination.accessNode ||
+							!args.canReadDestination ||
+							(await args.canReadDestination(destination.accessNode)))
+							? destination
+							: null;
 					const parent = movedParent ?? (await resolve_parent(parentTarget));
 					if (parent) {
 						const name = movedParent && pending?.pendingMove ? pending.pendingMove.destName : node.name;
@@ -229,6 +256,12 @@ export function files_visible_resolve_db_create(
 							entry: { kind: "saved", node, pendingUpdate: pending, path: `${parent.path}/${name}` },
 							accessNode: node,
 							hidden: deleted || node.archiveOperationId !== null || parent.hidden,
+							destinationAccessNodeIds: movedParent
+								? [
+										...(movedParent.accessNode ? [movedParent.accessNode._id] : []),
+										...movedParent.destinationAccessNodeIds,
+									]
+								: parent.destinationAccessNodeIds,
 						};
 
 						if (!movedParent && (await is_claimed(node)))

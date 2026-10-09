@@ -8,6 +8,7 @@ import { PermanentUserData, mergeUpdates } from "yjs";
 
 import { files_yjs_Awareness } from "@/lib/files-yjs-awareness.ts";
 import { files_yjs_DocHandler } from "@/lib/files-yjs-doc.ts";
+import { files_yjs_take_preloaded_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
 import {
 	app_convex,
 	app_convex_api,
@@ -76,6 +77,7 @@ class FilesConvexYjsStream {
 	>;
 	private unsubscribe: () => void;
 	private disposed = false;
+	private snapshotPreload: ReturnType<typeof files_yjs_take_preloaded_snapshot>;
 
 	private pendingOutgoingBatches: FilesConvexYjsOutgoingBatch[] = [];
 	private outgoingUpdatesDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -87,6 +89,7 @@ class FilesConvexYjsStream {
 
 	constructor(args: FilesConvexYjsStream_Args) {
 		this.args = args;
+		this.snapshotPreload = files_yjs_take_preloaded_snapshot(args);
 		this.state = {
 			syncing: false,
 			ready: false,
@@ -340,6 +343,7 @@ class FilesConvexYjsStream {
 					this.onLoadFailedChange(true);
 				}
 				const retryDelayMs = iteration > 10 ? 5000 : 500;
+				const preload = iteration === 1 ? this.snapshotPreload : null;
 
 				let result: app_convex_FunctionReturnType<
 					typeof app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot
@@ -347,13 +351,15 @@ class FilesConvexYjsStream {
 
 				try {
 					[result] = await Promise.all([
-						app_convex.action(app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot, {
-							membershipId: this.args.membershipId,
-							nodeId: this.args.nodeId,
-						}),
+						preload?.snapshot ??
+							app_convex.action(app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot, {
+								membershipId: this.args.membershipId,
+								nodeId: this.args.nodeId,
+							}),
 						this.expectedLineageUpdatesReceived.promise,
 					]);
 				} catch (err) {
+					if (this.disposed) break;
 					console.warn("[FilesConvexYjsStream.sync] snapshot query failed, retrying", err);
 					// Backoff a bit before retrying to avoid hot-looping on transient errors.
 					await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
@@ -368,27 +374,48 @@ class FilesConvexYjsStream {
 				}
 
 				if (this.disposed) break;
-				// The file changed lineage after the caller read the node. This is not a load failure,
-				// so do not show the banner. Stop here and let the hook create a new provider for the
-				// new id.
 				if (result.yjsLastSequenceId !== this.args.expectedYjsLastSequenceId) {
+					if (preload) {
+						// An early read can have the old id. Ask again for this provider's current id.
+						preload.abortController.abort();
+						this.snapshotPreload = null;
+						continue;
+					}
+					// The file changed again. Let the hook replace the provider without a load banner.
 					break;
 				}
 
 				let resultSnapshotUpdate: ArrayBuffer;
+				let preloadLastSequence:
+					| app_convex_FunctionReturnType<typeof app_convex_api.files_nodes.get_file_last_yjs_sequence>
+					| undefined;
 				try {
 					if (!result.snapshotUrl) {
 						throw new Error("Yjs snapshot URL is not set");
 					}
 
-					resultSnapshotUpdate = await fetch(result.snapshotUrl).then((response) => {
-						if (!response.ok) {
-							throw new Error("Failed to fetch Yjs snapshot from R2");
-						}
+					const snapshotUpdate = preload
+						? await preload.update
+						: await fetch(result.snapshotUrl).then((response) => {
+								if (!response.ok) {
+									throw new Error("Failed to fetch Yjs snapshot from R2");
+								}
 
-						return response.arrayBuffer();
-					});
+								return response.arrayBuffer();
+							});
+					if (!snapshotUpdate) throw new Error("Yjs snapshot bytes are not set");
+					resultSnapshotUpdate = snapshotUpdate;
+					if (this.disposed) break;
+					// Materialization can delete updates without changing the document id. Reuse the
+					// route's current sequence query before trusting an earlier snapshot.
+					if (preload) {
+						preloadLastSequence = await app_convex.query(app_convex_api.files_nodes.get_file_last_yjs_sequence, {
+							membershipId: this.args.membershipId,
+							nodeId: this.args.nodeId,
+						});
+					}
 				} catch (err) {
+					if (this.disposed) break;
 					console.warn("[FilesConvexYjsStream.sync] snapshot fetch failed, retrying", err);
 					// Backoff a bit before retrying to avoid hot-looping on transient R2 errors.
 					await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
@@ -396,6 +423,13 @@ class FilesConvexYjsStream {
 				}
 
 				if (this.disposed) break;
+				if (preloadLastSequence === null) {
+					this.onLoadFailedChange(true);
+					break;
+				}
+				if (preloadLastSequence && preloadLastSequence.yjsLastSequenceId !== this.args.expectedYjsLastSequenceId) {
+					break;
+				}
 				// The snapshot comes from an action and the updates from a query, so a newer lineage
 				// can show up here after the expected one was already seen. That means the file
 				// changed again. Stop and let the hook create a new provider, for the same reason as
@@ -409,6 +443,7 @@ class FilesConvexYjsStream {
 
 				let lastSequence = result.snapshot.sequence;
 				let updatesAfterSnapshot;
+				let missingPreloadedUpdates = false;
 
 				if (incrementalUpdates.updates.length) {
 					updatesAfterSnapshot = [] as Uint8Array[];
@@ -420,6 +455,10 @@ class FilesConvexYjsStream {
 
 						if (updateData.sequence <= lastSequence) {
 							continue;
+						}
+						if (preload && updateData.sequence !== lastSequence + 1) {
+							missingPreloadedUpdates = true;
+							break;
 						}
 
 						// Only USER_EDIT with matching sessionId are treated as local (ack-only).
@@ -438,6 +477,11 @@ class FilesConvexYjsStream {
 						updatesAfterSnapshot.push(new Uint8Array(updateData.update));
 					}
 				}
+				if (preloadLastSequence && (missingPreloadedUpdates || lastSequence < preloadLastSequence.lastSequence)) {
+					preload?.abortController.abort();
+					this.snapshotPreload = null;
+					continue;
+				}
 
 				const currentStateUpdate = updatesAfterSnapshot
 					? mergeUpdates([snapshotUpdate, ...updatesAfterSnapshot])
@@ -452,10 +496,13 @@ class FilesConvexYjsStream {
 				this.state.ready = true;
 				this.state.appliedSeq = lastSequence;
 				this.onLoadFailedChange(false);
+				this.snapshotPreload = null;
 
 				break;
 			} while (true);
 		} finally {
+			this.snapshotPreload?.abortController.abort();
+			this.snapshotPreload = null;
 			this.state.syncing = false;
 		}
 	}
@@ -463,6 +510,8 @@ class FilesConvexYjsStream {
 	dispose() {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.snapshotPreload?.abortController.abort();
+		this.snapshotPreload = null;
 		if (this.outgoingUpdatesDebounceTimer) {
 			clearTimeout(this.outgoingUpdatesDebounceTimer);
 			this.outgoingUpdatesDebounceTimer = null;

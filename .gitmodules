@@ -4,6 +4,7 @@
 [submodule "references-submodules/liveblocks"]
 	path = references-submodules/liveblocks
 	url = https://github.com/liveblocks/liveblocks
+	ignore = dirty
 [submodule "references-submodules/opencode"]
 	path = references-submodules/opencode
 	url = https://github.com/sst/opencode

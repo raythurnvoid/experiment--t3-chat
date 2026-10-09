@@ -234,6 +234,8 @@ import { files_u8_to_array_buffer } from "@/lib/files.ts";
 const pendingStateBytesByStateId = new Map<string, ArrayBuffer>();
 const blockedTargetIds = new Set<string>();
 const unreadableTargetIds = new Set<string>();
+// Saved moves into a folder the user can no longer read. The server shows them at their saved place.
+const unreadableDestinationTargetIds = new Set<string>();
 // Rows whose own view query throws its read-limit error.
 const tooDeepPendingUpdateIds = new Set<string>();
 // The proposals of the loaded list rows, by id, so each row's view query can find its proposal.
@@ -450,6 +452,7 @@ function makeOwnerViewFixture(pendingUpdate: app_convex_Doc<"files_pending_updat
 			// be saved together with that folder, which is what canAcceptWithParents means.
 			canAccept: canAccept && !requiredParentsById.has(pendingUpdate.target.id),
 			canAcceptWithParents: canAccept,
+			moveDestinationUnreadable: false,
 			requiredParents: requiredParentsById.get(pendingUpdate.target.id) ?? [],
 			savedParentId: null,
 		};
@@ -459,13 +462,20 @@ function makeOwnerViewFixture(pendingUpdate: app_convex_Doc<"files_pending_updat
 	const move = pendingUpdate.pendingMove;
 	const parent = move?.destParent;
 	const parentPath = parent?.kind === "saved" ? nodes.find((node) => node._id === parent.id)?.path : "";
+	const moveDestinationUnreadable = unreadableDestinationTargetIds.has(pendingUpdate.target.id);
 	return {
-		entry: { kind: "saved", node, pendingUpdate, path: move ? `${parentPath}/${move.destName}` : node.path },
+		entry: {
+			kind: "saved",
+			node,
+			pendingUpdate,
+			path: move && !moveDestinationUnreadable ? `${parentPath}/${move.destName}` : node.path,
+		},
 		readiness: "ready",
 		// Like the server: the user can write the file.
 		canEdit: canAccept && (node as unknown as { canWrite: boolean }).canWrite,
-		canAccept,
-		canAcceptWithParents: canAccept,
+		canAccept: canAccept && !moveDestinationUnreadable,
+		canAcceptWithParents: canAccept && !moveDestinationUnreadable,
+		moveDestinationUnreadable,
 		requiredParents: [],
 		savedParentId: null,
 	};
@@ -538,6 +548,7 @@ beforeEach(() => {
 	blockedTargetIds.clear();
 	requiredParentsById.clear();
 	unreadableTargetIds.clear();
+	unreadableDestinationTargetIds.clear();
 	tooDeepPendingUpdateIds.clear();
 	listedUpdatesById.clear();
 	summary.override = undefined;
@@ -2203,6 +2214,29 @@ describe("FileEditorSidebarPending", () => {
 		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Moved");
 		expect(container.querySelector("details")).toBeNull();
 		expect(screen.getByText("Accept")).toBeTruthy();
+	});
+
+	test("move row into a folder the user can no longer read names no destination and keeps Accept off", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "node_secret", destName: "a.md", fromPath: "/a.md" },
+			}),
+		]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		unreadableDestinationTargetIds.add("node_a");
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		const link = screen.getByRole("link", { name: "/a.md, moved to a folder you can't open" });
+		expect(link.getAttribute("title")).toBe("/a.md, moved to a folder you can't open");
+		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-to")).toBeNull();
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe(
+			"Moved to a folder you can't open",
+		);
+		expect(screen.getByText("Accept").closest("button")?.hasAttribute("disabled")).toBe(true);
+		expect(screen.getByText("Discard").closest("button")?.hasAttribute("disabled")).toBe(false);
 	});
 
 	test("binary replacement shows only the old and new file sizes", () => {

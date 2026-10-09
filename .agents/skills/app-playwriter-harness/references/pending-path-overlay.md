@@ -19,9 +19,9 @@ Covers the user-facing flows around `files_pending_updates` move/copy proposals 
 ## Durable selectors
 
 - Files tree: container `role="tree"` named `Files`; rows are `[role="treeitem"]` buttons with `aria-label` = node name and `data-file-id` = the `files_nodes` id (use it to disambiguate duplicate names); rename input `.FilesSidebarTreeItemTitle-input` (F2 on a clicked row). One row always keeps `tabindex="0"`, so Tab reaches the tree and arrow keys rove.
-- Pending panel (stays in DOM even when its tab is hidden — readable always, clickable only when the tab is active): scope everything to `.FileEditorSidebarPending`; rows `.FileEditorSidebarPending-item`, caption `.FileEditorSidebarPending-item-caption`, per-row accept `button.FileEditorSidebarPending-accept`, per-row Discard button by text.
+- Pending panel (stays in DOM even when its tab is hidden — readable always, clickable only when the tab is active): scope everything to `.FileEditorSidebarPending`; rows `.FileEditorSidebarPending-item`, caption `.FileEditorSidebarPending-item-caption`, per-row accept `button.FileEditorSidebarPending-accept`, per-row Discard button by text. The row's main control (its path) is a link, not a button.
 - Row action buttons carry aria-labels derived from row data: `Accept move of /a.md to /b.md`, `Discard move of /a.md to /b.md`; content/replace-move rows use `Accept changes to <destPath>` / `Discard changes to <destPath>`. Prefer `getByRole("button", { name: ... })` with these over CSS + text filtering when targeting one row. The labels and row paths are LIVE — a UI rename/move of the source node re-derives them immediately, so always re-read the row right before clicking.
-- Settled signal: `.FileEditorSidebarPending-status` is an sr-only `role="status"` span inside the panel. On success it gets `Accepted <action>` / `Discarded <action>` / `Accepted N pending changes` / `Discarded N pending changes`. It KEEPS the last message — snapshot its textContent before clicking and treat a CHANGE as the settled signal, then stop polling immediately (typically well under 1s; no fixed waits). GOTCHA: the span does NOT exist before the first accept/discard of the browser session — `locator.textContent()` on it auto-waits 30s and hangs the script. Read it via `page.evaluate(() => document.querySelector(".FileEditorSidebarPending-status")?.textContent ?? null)` or pass `{ timeout: 500 }`.
+- Settled signal: Accept and Discard start a review run. The panel's sr-only `role="status"` span `.FileEditorSidebarPending-status` only says that the run started (`Started accepting <action>` / `Started discarding <action>` / `Started accepting N pending changes`); it does not report the result. The result is in the review dialog (heading `Save reviewed changes` or `Discard reviewed changes`): its `role="status"` description ends at `Changes saved.` / `Changes discarded.` (or `Some changes completed.` / `Review could not finish. Check the remaining changes.`), and a progress line reads `<n> saved, <n> need review, <n> failed, <n> skipped, <n> stopped.` (`discarded` for a discard). Poll the dialog status, then stop polling (no fixed waits). Below, "the status region fires" means the dialog reached its final text. GOTCHA: the panel span does NOT exist before the first accept/discard of the browser session — `locator.textContent()` on it auto-waits 30s and hangs the script. Read it via `page.evaluate(() => document.querySelector(".FileEditorSidebarPending-status")?.textContent ?? null)` or pass `{ timeout: 500 }`. Checked against the code 2026-10-08.
 - Row clearance can lag the status change by up to a few seconds (Convex reactivity) — after the status fires, poll row count instead of asserting immediately.
 - Archived files: archived nodes disappear from the tree; the reveal affordance is a `menuitemcheckbox` named `Show archived items` / `Hide archived items` inside the sidebar-header `More options` (ellipsis) menu (`unmountOnHide` — absent from DOM until the menu opens). While shown, archived rows get aria-label `<name> archived`. The checkbox does NOT close the menu on click — press Escape or click elsewhere before re-clicking `More options`, else the second trigger click just closes the menu and the item click hangs.
 - Sidebar tabs: `#app_file_editor_sidebar_tabs_pending` / `#app_file_editor_sidebar_tabs_agent` — click the tab before clicking inside its panel.
@@ -36,7 +36,9 @@ Covers the user-facing flows around `files_pending_updates` move/copy proposals 
 - Always prefix prompts with "The app files are in your current directory." and use cwd-relative paths (`mv a.md b.md`). Absolute `/a.md` paths are OUTSIDE the sandboxed app tree and fail with EROFS instead of creating proposals.
 - Keep prompts single-line (`keyboard.type` submits on `\n`). End with "Do not do anything else."
 - Start a fresh chat per scenario ("New chat" button in the Agent tab); follow-ups within a scenario can reuse the chat.
+- Put each command in backticks in the prompt (`` `mv a.md b.md` ``). Without them the model can copy a trailing period into the command.
 - Trust the bash tool-part terminal text over the model's prose summary.
+- To check whether a node is listed, use `ls <folder>`, `find <folder>`, or `ls -t` with no path. `find --prefix NAME` lists what is under the folder path `NAME/`; it does not match names that start with `NAME`, so 0 matches there proves nothing.
 
 ## Fixture helper (committed file/folder creation)
 
@@ -56,7 +58,7 @@ Covers the user-facing flows around `files_pending_updates` move/copy proposals 
 4. Pending panel: one row `/pwl-a.md → /pwl-b.md`, caption `Moved`.
 5. Chat follow-up: `cat pwl-b.md` then `cat pwl-a.md`.
 6. Expect: `cat pwl-b.md` exit 0 printing the file content (the overlay projects the file at its NEW path pre-accept); `cat pwl-a.md` exit 1 `No such file or directory`.
-7. Switch to the pending tab, click the row's Accept (aria-label `Accept move of /pwl-a.md to /pwl-b.md`). The status region flips to `Accepted move of /pwl-a.md to /pwl-b.md`, the row clears, zero toasts, tree shows `pwl-b.md` and no `pwl-a.md`.
+7. Switch to the pending tab, click the row's Accept (aria-label `Accept move of /pwl-a.md to /pwl-b.md`). The panel status says `Started accepting move of /pwl-a.md to /pwl-b.md` and the review dialog ends at `Changes saved.`; the row clears, zero toasts, tree shows `pwl-b.md` and no `pwl-a.md`.
 
 Expected result: overlay reads reflect the pending rename before accept; accept applies it without toasts.
 
@@ -78,7 +80,7 @@ Expected result: the whole subtree is projected at the new folder path pre-accep
 3. Click Accept on the DEPENDENT row (`/pwl-c.md → /pwl-d.md`) first.
 4. Expect: sonner toast exactly `Accept the pending move of "pwl-d.md" first`, and BOTH rows survive (poll rows + toasts; the toast shows within ~1s and the status region does NOT change — exit on the toast).
 5. Click the panel's Accept all button (filter panel buttons by `/accept all/i`).
-6. Expect: status region reports `Accepted 2 pending changes`, both rows clear, no toasts; tree shows `pwl-d.md` and `pwl-e.md`, no `pwl-c.md`.
+6. Expect: the review dialog ends at `Changes saved.` with `2 saved`, both rows clear, no toasts; tree shows `pwl-d.md` and `pwl-e.md`, no `pwl-c.md`.
 
 Expected result: single-accept enforces dependency order with the exact toast; Accept all resolves the whole dependency unit itself.
 
@@ -131,7 +133,7 @@ Expected result: moving a pending file back to its source cancels the proposal i
 2. Chat, one turn: `mv -f pwl-f.md pwl-g.md && mv -f pwl-g.md pwl-h.md`.
 3. Expect exit 0 with TWO stdout lines `pending move created: /pwl-f.md -> /pwl-g.md — replaces the existing file when accepted; review in Files` and `... /pwl-g.md -> /pwl-h.md ...`; panel shows two rows caption `Replaced` (`/pwl-f.md → /pwl-g.md`, `/pwl-g.md → /pwl-h.md`); replace-move rows use `Accept changes to <destPath>` labels.
 4. Accept the SECOND link FIRST (`Accept changes to /pwl-h.md`).
-5. Expect: status fires `Accepted changes to /pwl-h.md`, then BOTH rows clear (poll — clearance can lag the status by a few seconds), zero toasts; `pwl-h.md` content is "alpha" (the chain result); `pwl-f.md` AND `pwl-g.md` both leave the active tree and both show under `Show archived items` with aria-label `<name> archived`. The Versions entry for the new content may lag ~30s (async materialization) — do not wait for it.
+5. Expect: the review dialog ends at `Changes saved.`, then BOTH rows clear (poll — clearance can lag the status by a few seconds), zero toasts; `pwl-h.md` content is "alpha" (the chain result); `pwl-f.md` AND `pwl-g.md` both leave the active tree and both show under `Show archived items` with aria-label `<name> archived`. The Versions entry for the new content may lag ~30s (async materialization) — do not wait for it.
 
 Regression signature (old bug): accepting the second link left the first file active and silently lost its proposal (only one row consumed).
 

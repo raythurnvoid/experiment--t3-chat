@@ -15,6 +15,7 @@ Paths below are relative to the repository root. Open the files for the affected
 | Diff review and hunk widgets | `packages/app/src/components/files/file-editor/file-editor-diff/file-editor-diff.tsx` and its paired CSS |
 | Client loading, rebasing, Monaco models, and presence | `packages/app/src/lib/files.ts` |
 | Yjs provider and its hook | `packages/app/src/lib/files-yjs-provider.ts`, `packages/app/src/lib/files-yjs-doc.ts`, `packages/app/src/lib/files-yjs-awareness.ts`, `packages/app/src/hooks/files-hooks.ts` |
+| New file snapshot preload | `packages/app/src/lib/files-yjs-snapshot-preload.ts` and the creation handlers in `packages/app/src/components/files/files-sidebar.tsx` |
 | Text conversion and Yjs updates | `packages/app/shared/files-tiptap.ts`, `packages/app/shared/files-yjs.ts` |
 | Proposal text merge | `packages/app/shared/files-pending-text-merge.ts` |
 | Live updates and stored content | `packages/app/convex/files_nodes.ts`, `packages/app/convex/files_nodes_content.ts`, `packages/app/convex/schema.ts` |
@@ -82,6 +83,14 @@ The provider is app code adapted from Liveblocks. Convex stores and streams upda
 - The first sync must include matching-session updates too: a fresh provider has not applied them yet.
 - `sync()` merges the snapshot with later updates, applies the merged state, and advances `appliedSeq`. The backend returns updates in descending order; reconstruction applies them in ascending order and skips sequences already covered by the snapshot.
 - Snapshot, update, and sequence reads must agree on `yjsLastSequenceId`. Numeric sequence values alone cannot identify a document after collaboration is toggled or its history is rebuilt.
+
+The sidebar starts the normal snapshot action and R2 byte fetch after New file succeeds, before navigation, when it will open Rich text. This covers inline creation and the sidebar's name modal. Folder, Code, and Review creation do not preload. The file-view toolbar's name modal does not open the new file, so it does not preload either.
+
+The preload holds one pending read for an exact membership and node. The next provider takes it once and still creates its own document. Sidebar cleanup cancels an unclaimed read after leaving the expected route, changing membership, closing the sidebar, or failed navigation. After the provider takes it, the provider owns cleanup. StrictMode's existing deferred provider setup stays in place. A later provider or sync uses a fresh action.
+
+Saved collaborative Rich text with a matching pending New file preload waits for the existing write-permission query to answer before mounting its provider. The read-only preload accessor checks membership and node; render never takes the slot. Use the current rich-text skeleton while that answer is unknown. A known false answer still opens a read-only provider. Without this wait, startup can create a temporary read-only provider, cancel its claimed preload, and start a second snapshot read when write access loads. Later real access changes still replace the provider and drop queued edits after write access is lost. Ordinary opens, other views, private drafts, and stored text keep their current loading paths.
+
+An early snapshot can become stale when materialization deletes covered update packets. Before applying a preload, the provider reads the existing separate `get_file_last_yjs_sequence` query and checks the latest update log. It requires a full sequence from the snapshot through that head. A gap or an old preloaded document id starts a fresh snapshot read. A null result still means the read was refused. Ordinary snapshot reads keep their existing path. Measure this extra sequence wait when checking the preload's gain; do not assume that starting earlier makes the editor ready earlier.
 
 For a one-time client read, start at `files_fetch_file_yjs_state_and_text` in `packages/app/src/lib/files.ts`. It checks the document ids across the three reads, fetches the R2 snapshot, applies later updates, and extracts text using the stored shape.
 

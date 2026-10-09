@@ -130,7 +130,8 @@ Tree-item components:
 - `FilesTreeProvider` (`lib/files-tree-context.tsx`), mounted once inside `AppTenantProvider`, has these
   attached hooks:
   - `useFolders({ folderIds, archived, pinnedNodeIds })` loads the root and each listed folder. The
-    sidebar passes its expanded folders; the folder view passes the open folder. It returns `rows`
+    sidebar passes only the expanded folders its rendered rows have needed (see "Virtual Rows"); the
+    folder view passes the open folder. It returns `rows`
     (`undefined` until the root's pages answer), `statusByFolderId` (`loading`, `more`, `done`),
     `hoistedIds`, `loadMore(folderId)`, and `sharedRoots` (the "Shared with you" group below).
   - `usePickerFolder({ membershipId, folderId, withFiles, pageSize })` loads one folder for
@@ -915,6 +916,12 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 - The existing `FilesSidebar-content` is the scroll element. `scrollToItem` uses the virtualizer so
   keyboard navigation can reach rows that have not mounted yet. Opening a different node scrolls to
   its row after its ancestors expand; query updates and manual scrolling do not repeat that scroll.
+- Each open folder loads through 4 to 10 live queries, and Expand subtree, Expand root folders and
+  Ctrl+Shift+Plus can open thousands of loaded folders at once. So an expanded folder loads only after
+  the tree renders its row or a row inside it (`FilesSidebarTree_Props.onShowFolders`, kept in
+  `shownFolderIds`). Until then it stays expanded (`aria-expanded="true"`) and shows "Loading…". Once it
+  loads, it keeps loading until it closes, even when it scrolls away: dropping its rows would change the
+  height above the screen and make the visible rows jump. Closing a folder forgets it.
 - A normal row is 45 px. An expanded empty folder owns its extra 45 px placeholder in the same
   virtual row. Keep the row keys tied to the row model so changed
   placeholders refresh heights even when they are offscreen. The tree has 2 px padding at each end.

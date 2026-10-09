@@ -581,6 +581,9 @@ of a restricted folder has to be able to share what the grant gave them and noth
 - Discarding the caller's exact existing pending draft is a deliberate write exception. It gives
   nobody access, so content and structural discard remain available after `content.write` is taken
   away. General pending upserts and every accept/save path still require current write access.
+- A draft move into a folder the user can no longer read never shows that folder in the user's
+  paths. See `destinationAccessNodeIds` under "Pending Overlay" in
+  `../files-agent-pending-updates/SKILL.md`.
 - Nobody may hand out more than they hold. `create_role`, `update_role`, `delete_role`,
   `set_user_role` and `invite_user_to_organization_workspace` all compare the target role's
   permissions against the caller's own set. Without this an admin mints a custom role above itself.

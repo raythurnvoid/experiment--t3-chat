@@ -132,6 +132,7 @@ import { useFileNodeActivities } from "@/lib/activities.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesTreeProvider, files_tree_stream_args } from "@/lib/files-tree-context.tsx";
+import { files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
 import { path_extract_segments_from, path_name_of } from "@/lib/paths.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -2792,9 +2793,16 @@ type FilesSidebarTree_Props = {
 	 * only a hint.
 	 */
 	publicLinkNodeIds: ReadonlySet<string>;
-	/** How far each open folder has loaded. */
+	/**
+	 * How far each open folder has loaded. An open folder that is missing has not started to load.
+	 */
 	folderStatusById: ReadonlyMap<string, "loading" | "more" | "done">;
 	onLoadMore: (folderId: string) => void;
+	/**
+	 * The open folders the rendered rows need: each rendered open folder and every folder above a
+	 * rendered row. It never holds the root.
+	 */
+	onShowFolders: (folderIds: string[]) => void;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -2835,6 +2843,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		publicLinkNodeIds,
 		folderStatusById,
 		onLoadMore,
+		onShowFolders,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -3116,6 +3125,26 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		}
 	}, [loadMoreKey, folderStatusById, onLoadMore]);
 
+	// Each open folder loads through several live queries. "Expand subtree" can open thousands of loaded
+	// folders at once, so report only the open folders the rendered rows need, and only those load.
+	// A rendered row also needs every folder above it. A pinned row (the open node) can show before the
+	// folders above it load, and those folders must load to show its siblings.
+	const shownFolderKey = [
+		...new Set(
+			virtualizer.getVirtualItems().flatMap((virtualItem) => {
+				const item = renderedTreeItems[virtualItem.index];
+				const folderIds = item.isExpanded() ? [item.getId()] : [];
+				for (let parent = item.getParent(); parent && parent.getId() !== files_ROOT_ID; parent = parent.getParent()) {
+					folderIds.push(parent.getId());
+				}
+				return folderIds;
+			}),
+		),
+	].join(",");
+	useEffect(() => {
+		onShowFolders(shownFolderKey ? shownFolderKey.split(",") : []);
+	}, [shownFolderKey, onShowFolders]);
+
 	return (
 		<FilesSidebarTreeBusyContext.Provider value={isBusy}>
 			<div
@@ -3183,7 +3212,8 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										hasPublicLink={publicLinkNodeIds.has(itemId)}
 										isFolderLoading={
 											item.isExpanded() &&
-											(folderStatusById.get(itemId) === "loading" ||
+											// A folder with no status starts to load once this row reports it.
+											((folderStatusById.get(itemId) ?? "loading") === "loading" ||
 												(folderStatusById.get(itemId) === "more" && item.getChildren().length === 0))
 										}
 										onCreateNode={onCreateNode}
@@ -4777,11 +4807,18 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	 * the open node is pinned already.
 	 */
 	const [keptNodeIds, setKeptNodeIds] = useState<string[]>([]);
+	/**
+	 * Open folders whose rows the tree has rendered since they opened (see `FilesSidebarTree_Props.onShowFolders`).
+	 * Only these folders load, so opening thousands of folders at once loads only the ones on screen.
+	 * A folder keeps loading after it scrolls away. Dropping its rows would move every row below it,
+	 * and the rows on screen would jump when the folder is above them.
+	 */
+	const [shownFolderIds, setShownFolderIds] = useState<ReadonlySet<string>>(new Set());
 
 	// Load only the root and the open folders. The whole workspace can hold many thousands of nodes.
 	const treeFolders = FilesTreeProvider.useFolders({
-		// Expanded items are always tree rows, so every id except the root is a node id.
-		folderIds: expandedItems.filter((itemId) => itemId !== files_ROOT_ID) as app_convex_Id<"files_nodes">[],
+		// Expanded items are always tree rows, and the shown folders never hold the root, so every id is a node id.
+		folderIds: expandedItems.filter((itemId) => shownFolderIds.has(itemId)) as app_convex_Id<"files_nodes">[],
 		archived: showArchived,
 		// The open node is pinned, so a node opened from the search shows in the tree once the search
 		// closes, with the folders above it.
@@ -4806,7 +4843,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		membershipId: typeof membershipId;
 		fromNodeId: string | null;
 		nodeId: string | null;
+		cancelSnapshotPreload: (() => void) | null;
 	} | null>(null);
+	const snapshotPreloadRequestRef = useRef<typeof createRequestRef.current>(null);
 	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
 	const [createModalParentId, setCreateModalParentId] = useState<typeof files_ROOT_ID | app_convex_Id<"files_nodes">>(
 		files_ROOT_ID,
@@ -6283,8 +6322,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				treeItems,
 			});
 
-			const createRequest = { membershipId, fromNodeId: selectedNodeId, nodeId: null as string | null };
+			snapshotPreloadRequestRef.current?.cancelSnapshotPreload?.();
+			const createRequest: NonNullable<typeof createRequestRef.current> = {
+				membershipId,
+				fromNodeId: selectedNodeId,
+				nodeId: null,
+				cancelSnapshotPreload: null,
+			};
 			createRequestRef.current = createRequest;
+			snapshotPreloadRequestRef.current = kind === "file" && view === "rich_text_editor" ? createRequest : null;
 			setIsCreatingFile(true);
 			const createNodePromise =
 				kind === "folder"
@@ -6326,6 +6372,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					}
 
 					createRequest.nodeId = result._yay.nodeId;
+					if (snapshotPreloadRequestRef.current === createRequest) {
+						createRequest.cancelSnapshotPreload = files_yjs_preload_snapshot({
+							membershipId,
+							nodeId: result._yay.nodeId,
+						});
+					}
 					return navigate({
 						to: "/w/$organizationName/$workspaceName/files",
 						params: { organizationName, workspaceName },
@@ -6333,6 +6385,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					});
 				})
 				.catch((error) => {
+					createRequest.cancelSnapshotPreload?.();
+					if (snapshotPreloadRequestRef.current === createRequest) snapshotPreloadRequestRef.current = null;
 					createRequest.nodeId = null;
 					console.error("[FilesSidebar.handleCreateNodeClick] Error creating node", { error });
 				})
@@ -6342,6 +6396,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						return;
 					}
 					createRequestRef.current = null;
+					if (snapshotPreloadRequestRef.current === createRequest) snapshotPreloadRequestRef.current = null;
 					setIsCreatingFile(false);
 				});
 		},
@@ -6350,6 +6405,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const handleLoadMore = useFn<FilesSidebarTree_Props["onLoadMore"]>((folderId) => {
 		// Folder ids come from tree rows, so each one is the root or a node id.
 		treeFolders.loadMore(folderId as app_convex_Id<"files_nodes"> | typeof files_ROOT_ID);
+	});
+
+	const handleShowFolders = useFn<FilesSidebarTree_Props["onShowFolders"]>((folderIds) => {
+		setShownFolderIds((current) => {
+			// Forget the folders that closed, so a folder opened again waits for its row again.
+			const expandedItemIds = new Set(expandedItems);
+			const next = new Set([...current, ...folderIds].filter((folderId) => expandedItemIds.has(folderId)));
+			return next.symmetricDifference(current).size > 0 ? next : current;
+		});
 	});
 
 	const handleCreateNodeClick = useFn<FilesSidebarTree_Props["onCreateNode"]>((parentNodeId, kind) => {
@@ -6392,6 +6456,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const handleCreateNodeModalSubmit = useFn((args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => {
 		const { kind, path } = args;
+		snapshotPreloadRequestRef.current?.cancelSnapshotPreload?.();
+		const snapshotPreloadRequest: NonNullable<typeof createRequestRef.current> = {
+			membershipId,
+			fromNodeId: selectedNodeId,
+			nodeId: null,
+			cancelSnapshotPreload: null,
+		};
+		snapshotPreloadRequestRef.current = kind === "file" && view === "rich_text_editor" ? snapshotPreloadRequest : null;
 		setIsCreatingFile(true);
 		const createNodePromise =
 			kind === "folder"
@@ -6421,6 +6493,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					return result._nay.message;
 				}
 
+				if (snapshotPreloadRequestRef.current === snapshotPreloadRequest) {
+					snapshotPreloadRequest.nodeId = result._yay.nodeId;
+					snapshotPreloadRequest.cancelSnapshotPreload = files_yjs_preload_snapshot({
+						membershipId,
+						nodeId: result._yay.nodeId,
+					});
+				}
 				return navigate({
 					to: "/w/$organizationName/$workspaceName/files",
 					params: { organizationName, workspaceName },
@@ -6428,6 +6507,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				}).then(() => null);
 			})
 			.catch((error: unknown) => {
+				snapshotPreloadRequest.cancelSnapshotPreload?.();
+				if (snapshotPreloadRequestRef.current === snapshotPreloadRequest) snapshotPreloadRequestRef.current = null;
 				console.error("[FilesSidebar.handleCreateNodeModalSubmit] Error creating node", {
 					error,
 					parentId: createModalParentId,
@@ -6436,6 +6517,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				return `Failed to create ${kind}.`;
 			})
 			.finally(() => {
+				if (!snapshotPreloadRequest.nodeId && snapshotPreloadRequestRef.current === snapshotPreloadRequest) {
+					snapshotPreloadRequestRef.current = null;
+				}
 				setIsCreatingFile(false);
 			});
 	});
@@ -6918,8 +7002,24 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	useLayoutEffect(() => {
 		return () => {
 			createRequestRef.current = null;
+			snapshotPreloadRequestRef.current?.cancelSnapshotPreload?.();
+			snapshotPreloadRequestRef.current = null;
 		};
 	}, []);
+
+	useLayoutEffect(() => {
+		const request = snapshotPreloadRequestRef.current;
+		if (!request) return;
+		if (
+			request.membershipId !== membershipId ||
+			(selectedNodeId !== request.fromNodeId && selectedNodeId !== request.nodeId)
+		) {
+			request.cancelSnapshotPreload?.();
+			snapshotPreloadRequestRef.current = null;
+		} else if (request.nodeId && selectedNodeId === request.nodeId) {
+			request.fromNodeId = selectedNodeId;
+		}
+	}, [membershipId, selectedNodeId]);
 
 	// Finish create selection and rename in the same commit once the new row is visible.
 	useLayoutEffect(() => {
@@ -7161,6 +7261,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						publicLinkNodeIds={publicLinkNodeIds}
 						folderStatusById={treeFolders.statusByFolderId}
 						onLoadMore={handleLoadMore}
+						onShowFolders={handleShowFolders}
 						onCreateNode={handleCreateNodeClick}
 						onStartRename={handleStartRename}
 						onRenameErrorClear={clearRenameError}
@@ -8169,6 +8270,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 										publicLinkNodeIds={props.publicLinkNodeIds ?? new Set()}
 										folderStatusById={props.folderStatusById ?? noFolderStatus}
 										onLoadMore={handleLoadMore}
+										onShowFolders={handleAction}
 										onCreateNode={handleAction}
 										onStartRename={handleAction}
 										onRenameErrorClear={handleAction}
