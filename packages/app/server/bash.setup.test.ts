@@ -53,7 +53,7 @@ export const test_r2_objects = new Map<string, Uint8Array>();
 let test_runner_counter = 0;
 
 // Importing this file adds these hooks to every test of the importing file. They are added after
-// the hook in convex/setup.test.ts, so this afterEach runs first, like it did inside the describe.
+// the hook in convex/setup.test.ts, so this afterEach runs before that one.
 beforeEach(async () => {
 	test_r2_objects.clear();
 	// Billing enqueue and R2 metadata sync behavior are covered by their own suites; file

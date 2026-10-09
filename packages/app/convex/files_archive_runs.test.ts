@@ -103,8 +103,9 @@ describe("archive_nodes", () => {
 
 	test("has no Stop, and an item archived on its own keeps its operation through Archive and Restore", async () => {
 		const f = await fixture();
-		// 151 items: more than the request and one step stamp (2 * 75), so the job still runs at the Stop.
-		const tree = await seed_tree(f, { name: "stop", folderCount: 1, filesPerFolder: 149 });
+		// 153 items. One file is archived first, so 152 active items are left: more than the request and
+		// one step stamp (2 * 75), so the job still runs at the Stop.
+		const tree = await seed_tree(f, { name: "stop", folderCount: 1, filesPerFolder: 151 });
 		// Archived before the job, with its own operation. It must stay archived after the Restore.
 		expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 		const olderOperationId = (await read_node(f, tree.fileIds[0]!)).archiveOperationId;

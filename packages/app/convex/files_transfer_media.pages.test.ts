@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 // Tests whose media need more than one page of 50.
-describe("copy_transfer_file media pages", () => {
+describe("copy_transfer_file media", () => {
 	test("does not repin media replaced between validation pages", async () => {
 		const f = await fixture({ mediaCount: 51 });
 		const capture = await prepare_document_capture(f);

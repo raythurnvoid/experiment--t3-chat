@@ -312,7 +312,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - `convex/files_nodes_content.test.ts`: saved content, new assets, comments, billing, and races.
 - `convex/files_transfer_selection.test.ts` and `convex/files_transfer_holds.test.ts`: paged intake,
   large discovery, exact replay, long-running output, and retry retention.
-- `convex/files_transfer_media.test.ts` and `convex/files_pending_media_save.test.ts`: selected media,
+- `convex/files_transfer_media*.test.ts` and `convex/files_pending_media_save.test.ts`: selected media,
   exact versions, partial Save, and linked review units.
 - `convex/files_nodes.test.ts`: public Move and Rename permissions, scope and names.
 - `convex/files_move_cohorts.test.ts`: linked cycles, one group switch, Stop and cleanup.

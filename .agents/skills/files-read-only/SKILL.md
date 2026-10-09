@@ -558,7 +558,7 @@ control only because its save is running. Folder radio groups use unique names.
 - `convex/access_control.test.ts`: human/account permissions, management authority, and source privacy.
 - `convex/r2.test.ts`: accepted-upload completion and exact-key cleanup generations and tombstones.
 - `convex/data_deletion*.test.ts`: lifecycle deletion and durable asset ownership.
-- `convex/data_import.test.ts`, `server/bash.test.ts`: ordinary imports and human pending writes.
+- `convex/data_import.test.ts`, `server/bash.test.ts`, `server/bash.*.test.ts`: ordinary imports and human pending writes.
 - Frontend policy, pending sidebar, editor, and Yjs provider tests: safe state, actual write access,
   current-policy refusals, and retry behavior.
 

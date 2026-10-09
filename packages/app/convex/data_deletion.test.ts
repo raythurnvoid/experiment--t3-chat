@@ -1388,8 +1388,9 @@ async function data_deletion_test_run_worker_until_idle(
 ) {
 	for (let i = 0; i < 40; i += 1) {
 		const eligibleRequestCount = await data_deletion_test_count_eligible_requests(t, args);
+		// Return the number of worker runs it took.
 		if (eligibleRequestCount === 0) {
-			return;
+			return i;
 		}
 
 		await t.action(internal.data_deletion.enqueue_deletion_requests_processing, {
@@ -9802,7 +9803,7 @@ describe("enqueue_deletion_requests_processing", () => {
 		);
 
 		const { requestId, test_now } = await t.run(async (ctx) => {
-			// One file already needs more than the 25 steps of one worker run at batch size 5.
+			// One file already needs more than the 25 steps of one worker run at batch size 5; the run count below proves it.
 			await data_deletion_test_seed_workspace_content_bulk(ctx, {
 				userId: user.userId,
 				organizationId: user.defaultOrganizationId,
@@ -9827,10 +9828,11 @@ describe("enqueue_deletion_requests_processing", () => {
 			};
 		});
 
-		await data_deletion_test_run_worker_until_idle(t, {
+		const workerRuns = await data_deletion_test_run_worker_until_idle(t, {
 			testNow: test_now,
 			batchSize: 5,
 		});
+		expect(workerRuns).toBeGreaterThan(1);
 
 		const after = await t.run(async (ctx) => {
 			const [request, contentCount] = await Promise.all([
