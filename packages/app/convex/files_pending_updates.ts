@@ -7009,8 +7009,9 @@ const pending_target_view_validator = v.object({
 	canAccept: v.boolean(),
 	canAcceptWithParents: v.boolean(),
 	/**
-	 * A saved move into a folder the user can no longer read. The entry then shows at its saved place,
-	 * so its path is not the destination, and Accept would fail.
+	 * A saved move whose path goes through a folder the user can no longer read. Path reads hide the
+	 * node, but this entry shows it at its saved place, so its path is not the destination, and Accept
+	 * would fail.
 	 */
 	moveDestinationUnreadable: v.boolean(),
 	requiredParents: required_parents_validator,
@@ -7198,13 +7199,10 @@ export async function files_pending_updates_db_get_target_view(
 		destination?.kind === "private" ? await ctx.db.get("files_pending_nodes", destination.id) : null;
 
 	const visibleEntry = await reader.resolveTarget(target);
-	// The reader shows a move into a folder the user can no longer read at its saved place. Check the
-	// destination like the reader does, so the row can say so and Accept stays off. `resolveParent`
-	// also follows a draft folder that was saved since the move.
-	const resolvedDestination = destination ? await reader.resolveParent(destination) : null;
 	if (reader.exhausted) throw convex_error({ message: files_PENDING_PATH_TOO_DEEP_MESSAGE });
-	const moveDestinationUnreadable =
-		resolvedDestination?.accessNode != null && !(await reader.canRead(resolvedDestination.accessNode));
+	// The reader hides a move whose path goes through a folder the user can no longer read. The row
+	// still shows the node at its saved place, says so, and keeps Accept off.
+	const moveDestinationUnreadable = destination !== undefined && reader.isBlocked(target);
 
 	return {
 		kind: "entry" as const,
@@ -7212,7 +7210,7 @@ export async function files_pending_updates_db_get_target_view(
 			kind: "saved" as const,
 			node,
 			pendingUpdate,
-			// Review still names an archived or replaced source that the normal tree hides.
+			// Review still names an archived, replaced or blocked source that the normal tree hides.
 			path: visibleEntry?.path ?? node.path,
 		},
 		readiness: "ready" as const,

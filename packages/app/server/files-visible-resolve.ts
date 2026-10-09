@@ -1,6 +1,6 @@
 // The owner's draft view of one node, read from source tables only: saved nodes, drafts, private
 // nodes and publish receipts. It never checks access itself; `files_visible_db_create_reader` adds
-// that, and passes `canReadDestination` so a move into a folder the owner cannot read falls back.
+// that, and passes `canReadDestination` so a move into a folder the owner cannot read is hidden.
 //
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules. The
 // mutation wrapper's flush uses this core, and a value import of an app module would pull most of
@@ -40,9 +40,10 @@ export function files_visible_resolve_db_create(
 		 */
 		includeHidden?: boolean;
 		/**
-		 * Whether the owner may still read a move destination's access node. A destination the owner
-		 * cannot read does not resolve, like a hidden one, so the moved node stays at its saved place
-		 * and no path names that folder. Without it (the overlay flush) every destination counts.
+		 * Whether the owner may still read a move destination's access node. A moved node whose
+		 * destination the owner cannot read is hidden, and so is everything whose path goes through it.
+		 * Listings drop their places the same way, so no path names that folder. Without it (the overlay
+		 * flush) every destination counts.
 		 */
 		canReadDestination?: (accessNode: Doc<"files_nodes">) => Promise<boolean>;
 	},
@@ -167,6 +168,11 @@ export function files_visible_resolve_db_create(
 	// A move cycle means the destination does not resolve. Its members fall back to their saved
 	// place, now and on every later resolve, so the answer does not depend on the read order.
 	const cycleMembers = new Set<string>();
+	// The keys hidden because their path goes through a move destination the owner cannot read. A node
+	// whose parent or destination is one of them is hidden too. It never falls back to a saved place.
+	const blockedKeys = new Set<string>();
+	const is_blocked = (parent: files_PendingParent) =>
+		parent.kind !== "root" && blockedKeys.has(`${parent.kind}:${parent.id}`);
 	// The lowest stack index a cycle cut reached in the current work. A node above that index got a
 	// temporary null from the cut, so its result is not cached.
 	let cycleCutIndex = Infinity;
@@ -193,7 +199,12 @@ export function files_visible_resolve_db_create(
 						await get_view(),
 					),
 				);
-				if (receipt) return await resolve_parent({ kind: "saved", id: receipt.savedNodeId });
+				if (receipt) {
+					const saved = await resolve_parent({ kind: "saved", id: receipt.savedNodeId });
+					// The draft folder is blocked when the saved folder it became is.
+					if (blockedKeys.has(`saved:${receipt.savedNodeId}`)) blockedKeys.add(`private:${parent.id}`);
+					return saved;
+				}
 				if (node.state === "published") return null;
 			}
 		}
@@ -252,6 +263,7 @@ export function files_visible_resolve_db_create(
 			: sourcePending;
 
 		let result: Resolved | null = null;
+		let blocked = false;
 		const deleted = pending?.pendingArchive !== undefined &&
 			!args.reviewedArchiveIds?.has(pending._id) &&
 			!(args.isReviewedArchive && await args.isReviewedArchive(pending));
@@ -274,6 +286,7 @@ export function files_visible_resolve_db_create(
 							hidden: deleted || node.state !== "active" || parent.hidden,
 							destinationAccessNodeIds: parent.destinationAccessNodeIds,
 						};
+					else blocked = is_blocked(node.parent);
 				}
 			} else {
 				const node = await read(() => files_saved_placement_db_get_node(db, target.id, args.fixedView));
@@ -289,18 +302,22 @@ export function files_visible_resolve_db_create(
 						pending?.pendingMove && !cycleMembers.has(key)
 							? await resolve_parent(pending.pendingMove.destParent)
 							: null;
-					// A hidden destination, a cycle found while resolving it, or a destination the owner cannot
-					// read does not resolve. The node falls back to its saved place. A destination at the root,
-					// or in a private folder at the root, has no access node and names no saved folder.
-					const movedParent =
-						destination?.hidden === false &&
+					// A hidden destination, or a cycle found while resolving it, does not resolve. The node falls
+					// back to its saved place.
+					const movedParent = destination?.hidden === false && !cycleMembers.has(key) ? destination : null;
+					// A destination the owner cannot read, or one blocked for that reason, hides the node. It does
+					// not fall back, like listings drop its place. A destination at the root, or in a private
+					// folder at the root, has no access node and names no saved folder.
+					blocked =
+						pending?.pendingMove !== undefined &&
 						!cycleMembers.has(key) &&
-						(!destination.accessNode ||
-							!args.canReadDestination ||
-							(await args.canReadDestination(destination.accessNode)))
-							? destination
-							: null;
-					const parent = movedParent ?? (await resolve_parent(parentTarget));
+						(movedParent
+							? movedParent.accessNode !== null &&
+								args.canReadDestination !== undefined &&
+								!(await args.canReadDestination(movedParent.accessNode))
+							: is_blocked(pending.pendingMove.destParent));
+					const parent = blocked ? null : (movedParent ?? (await resolve_parent(parentTarget)));
+					if (!parent && !blocked) blocked = is_blocked(parentTarget);
 					if (parent) {
 						const name = movedParent && pending?.pendingMove ? pending.pendingMove.destName : node.name;
 						result = {
@@ -323,6 +340,7 @@ export function files_visible_resolve_db_create(
 		}
 
 		resolving.pop();
+		if (blocked) blockedKeys.add(key);
 		if (stopCount === stopCountBefore && cycleCutIndex >= index) resolved.set(key, result);
 		cycleCutIndex = Math.min(cycleCutIndexBefore, cycleCutIndex);
 		return result;
@@ -348,5 +366,10 @@ export function files_visible_resolve_db_create(
 		isClaimed: is_claimed,
 		/** Whether a resolve found this target in a move cycle. Ask after resolving it. */
 		isCycleMember: (target: files_PendingTarget) => cycleMembers.has(`${target.kind}:${target.id}`),
+		/**
+		 * Whether a resolve hid this target because its path goes through a move destination the owner
+		 * cannot read. Ask after resolving it.
+		 */
+		isBlocked: is_blocked,
 	};
 }

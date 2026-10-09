@@ -1093,13 +1093,13 @@ describe("files_pending_overlay flush", () => {
 		await f.expect_overlay_true();
 	});
 
-	test("a draft move into a folder the member can no longer read shows at its saved place", async () => {
+	test("a draft move into a folder the member can no longer read hides the moved nodes from path reads", async () => {
 		const f = await fixture();
 		const team = await f.saved(null, "team", "folder");
 		const hr = await f.saved(null, "hr", "folder");
 		const notes = await f.saved(null, "notes.md");
 		const proj = await f.saved(null, "proj", "folder");
-		await f.saved(proj, "plan.md");
+		const plan = await f.saved(proj, "plan.md");
 		// V may write in open /team: V drafts `mv /notes.md /team/` and `mv /proj /team/`, then a new file
 		// inside the moved folder, whose path goes through that move too.
 		await f.draft_move(target(notes), parent(team), "notes.md", f.v);
@@ -1113,7 +1113,8 @@ describe("files_pending_overlay flush", () => {
 			(await f.asV.query(api.files_nodes.get_visible_target_by_path, { membershipId, path }))?.target ?? null;
 		const pending_view = (pendingTarget: files_PendingTarget) =>
 			f.asV.query(api.files_pending_updates.get_file_pending_target, { membershipId, target: pendingTarget });
-		const pending_path = async (pendingTarget: files_PendingTarget) => (await pending_view(pendingTarget))?.entry.path;
+		const v_path_read = (path: string) =>
+			f.t.run(async (ctx) => (await (await files_visible_db_create_reader(ctx, f.v)).resolvePath(path))?.path ?? null);
 		expect((await f.v_find()).paths).toEqual([
 			"/hr",
 			"/team",
@@ -1157,26 +1158,35 @@ describe("files_pending_overlay flush", () => {
 		});
 		await f.expect_overlay_true();
 
-		// No read names the hidden folder. Path reads show the drafts at their saved place.
-		expect(await get_path(target(notes))).toBe("/notes.md");
-		expect(await get_path(draft)).toBe("/proj/new.md");
-		expect(await pending_path(target(notes))).toBe("/notes.md");
-		expect(await pending_path(draft)).toBe("/proj/new.md");
-		// Accept would fail, so it is off, and the Pending row knows the path is not the destination.
+		// No read names the hidden folder. Path reads hide the moved nodes, the saved file inside the moved
+		// folder, and the draft created there, like listings do. They do not fall back to a saved place.
+		expect(await get_path(target(notes))).toBe(null);
+		expect(await get_path(target(proj))).toBe(null);
+		expect(await get_path(target(plan))).toBe(null);
+		expect(await get_path(draft)).toBe(null);
+		expect(await target_at("/hr/secret/notes.md")).toBe(null);
+		expect(await target_at("/hr/secret/proj/new.md")).toBe(null);
+		expect(await target_at("/proj/new.md")).toBe(null);
+		// The agent's path read (`cat /notes.md`) finds nothing at the saved place either. The UI path
+		// lookup above still opens the saved rows there, since it reads saved rows first.
+		expect(await v_path_read("/notes.md")).toBe(null);
+		expect(await v_path_read("/proj/plan.md")).toBe(null);
+		expect(await target_at("/notes.md")).toEqual(target(notes));
+		// The Pending row still shows the saved node at its saved place. Accept would fail, so it is off,
+		// and the row knows the path is not the destination. The draft inside the moved folder has no
+		// view, so its row offers Discard only.
 		expect(await pending_view(target(notes))).toMatchObject({
+			entry: { path: "/notes.md" },
 			canAccept: false,
 			canAcceptWithParents: false,
 			moveDestinationUnreadable: true,
 		});
-		expect(await target_at("/hr/secret/notes.md")).toBe(null);
-		expect(await target_at("/hr/secret/proj/new.md")).toBe(null);
-		expect(await target_at("/notes.md")).toEqual(target(notes));
-		expect(await target_at("/proj/new.md")).toEqual(draft);
+		expect(await pending_view(draft)).toBe(null);
 		// Listings drop the places, and the hides still drop the saved rows, so `find` shows none of them.
 		expect((await f.v_find()).paths).toEqual([]);
 		expect((await f.v_find({ kind: "file" })).paths).toEqual([]);
-		// `cp -r /proj` needs every child. The draft inside it is denied, so the copy stops with a message
-		// that names no folder.
+		// `cp -r /proj` finds no folder to copy, since path reads hide /proj too. The refusal for a hidden
+		// child of a folder V can still open is in the next test.
 		expect(
 			await files_pending_overlay_list({ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">, {
 				organizationId: f.v.organizationId,
@@ -1190,12 +1200,7 @@ describe("files_pending_overlay flush", () => {
 				cursor: null,
 				numItems: 50,
 			}),
-		).toEqual({
-			_nay: {
-				message:
-					"A draft move here, or of a folder above it, goes into a folder you can no longer open. Discard that move and try again.",
-			},
-		});
+		).toEqual({ _yay: { items: [], continueCursor: null, isDone: true } });
 	});
 
 	test("a full listing refuses a saved node whose draft moves it into a folder the member can no longer read", async () => {
@@ -1221,18 +1226,51 @@ describe("files_pending_overlay flush", () => {
 			});
 		expect((await list_docs())._yay?.items.map((item) => item.path)).toEqual(["/docs/readme.md"]);
 
-		// The owner restricts /team. notes.md now shows at its saved place, /docs/notes.md, but its hide and
-		// its dropped place would leave it out of the copy, so the listing refuses.
+		// The owner restricts /team. Path reads now hide notes.md, and its hide and its dropped place would
+		// leave it out of the copy, so the listing refuses.
 		await f.restrict(team);
 		expect(
 			await f.asV.query(api.files_visible.get_path, { membershipId: f.vMember.membershipId, target: target(notes) }),
-		).toBe("/docs/notes.md");
+		).toBe(null);
 		expect(await list_docs()).toEqual({
 			_nay: {
 				message:
 					"A draft move here, or of a folder above it, goes into a folder you can no longer open. Discard that move and try again.",
 			},
 		});
+	});
+
+	test("a blocked draft move resolves at its destination again once the member can read it", async () => {
+		const f = await fixture();
+		const docs = await f.saved(null, "docs", "folder");
+		const team = await f.saved(null, "team", "folder");
+		const notes = await f.saved(docs, "notes.md");
+		await f.draft_move(target(notes), parent(team), "notes.md", f.v);
+		const membershipId = f.vMember.membershipId;
+		const get_path = (pendingTarget: files_PendingTarget) =>
+			f.asV.query(api.files_visible.get_path, { membershipId, target: pendingTarget });
+		// The agent's path read, like `cat`.
+		const v_path_read = (path: string) =>
+			f.t.run(async (ctx) => {
+				const entry = await (await files_visible_db_create_reader(ctx, f.v)).resolvePath(path);
+				return entry ? { kind: entry.kind, id: entry.node._id } : null;
+			});
+		expect(await get_path(target(notes))).toBe("/team/notes.md");
+		expect(await v_path_read("/team/notes.md")).toEqual(target(notes));
+
+		await f.restrict(team);
+		expect(await get_path(target(notes))).toBe(null);
+		expect(await v_path_read("/docs/notes.md")).toBe(null);
+		// Like any moved-away node, the saved path is free in V's view: the agent's write there makes a
+		// new draft.
+		const draft = await f.create_private("/docs/notes.md", "file", f.v);
+		expect(await v_path_read("/docs/notes.md")).toEqual(draft);
+
+		// The owner shares /team with V again.
+		await f.share(team, { kind: "user", userId: f.v.userId }, "read");
+		expect(await get_path(target(notes))).toBe("/team/notes.md");
+		expect(await v_path_read("/team/notes.md")).toEqual(target(notes));
+		expect(await v_path_read("/docs/notes.md")).toEqual(draft);
 	});
 
 	test("a draft move into a saved draft folder the member can no longer read cannot be accepted", async () => {
@@ -1277,13 +1315,23 @@ describe("files_pending_overlay flush", () => {
 		});
 		expect((await f.v_find()).paths).toEqual(["/pub", "/pub/team", "/pub/team/notes.md"]);
 
-		// The owner restricts /pub without sharing it with V. V can still read /team.
+		// The owner restricts /pub without sharing it with V. V can still read /team, but path reads hide
+		// both: the move of /team is blocked, and so is notes.md, whose path goes through it.
 		await f.restrict(pub);
 		await f.expect_overlay_true();
 		expect((await f.v_find()).paths).toEqual([]);
+		const get_path = (pendingTarget: files_PendingTarget) =>
+			f.asV.query(api.files_visible.get_path, { membershipId: f.vMember.membershipId, target: pendingTarget });
+		expect(await get_path(target(team))).toBe(null);
+		expect(await get_path(target(notes))).toBe(null);
+		// The Pending row of notes.md names its saved place, not /team/notes.md as if that were the
+		// destination.
 		expect(
-			await f.asV.query(api.files_visible.get_path, { membershipId: f.vMember.membershipId, target: target(notes) }),
-		).toBe("/team/notes.md");
+			await f.asV.query(api.files_pending_updates.get_file_pending_target, {
+				membershipId: f.vMember.membershipId,
+				target: target(notes),
+			}),
+		).toMatchObject({ entry: { path: "/notes.md" }, canAccept: false, moveDestinationUnreadable: true });
 	});
 
 	test("a moved-in folder's next page shows nothing once its destination is unreadable", async () => {

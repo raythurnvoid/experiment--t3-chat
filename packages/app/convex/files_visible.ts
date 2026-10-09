@@ -119,8 +119,8 @@ export async function files_visible_db_create_reader(
 		isReviewedArchive?: (proposal: Doc<"files_pending_updates">) => Promise<boolean>;
 	},
 ) {
-	// A draft move into a folder the user can no longer read resolves at its saved place, so a path
-	// never names that folder.
+	// A draft move into a folder the user can no longer read hides the node and everything under it,
+	// like listings do, so a path never names that folder.
 	const core = files_visible_resolve_db_create(ctx.db, { ...args, canReadDestination: can_read });
 
 	const membership = await core.read(() =>
@@ -241,6 +241,7 @@ export async function files_visible_db_create_reader(
 		fixedView: args.fixedView,
 		resolve: core.resolve,
 		resolveParent: core.resolveParent,
+		isBlocked: core.isBlocked,
 		findPath: find_path,
 		findChild: find_child,
 		parentAliases: parent_aliases,
