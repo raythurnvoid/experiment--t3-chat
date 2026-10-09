@@ -525,8 +525,9 @@ README is already an editor, so an editor selector alone does not prove the new 
 require a different editor element with the initial text. Match the exact created row id in a
 virtual tree. Keep Playwriter command time out of the results.
 
-Use the sidebar selector `.FilesSidebarTopSection-actions-icon-button[aria-label="New folder"]`
-when both the sidebar and root view have that button.
+To time the sidebar `New folder` button, use the selector
+`.FilesSidebarTopSection-actions-icon-button[aria-label="New folder"]`, because the root view has the
+same button. Match the returned node id and the enabled rename input.
 
 For module comparisons, run at least five calls per variant through the signed-in app client.
 Match CDP requests to backend execution logs and exclude cached queries. Report the first

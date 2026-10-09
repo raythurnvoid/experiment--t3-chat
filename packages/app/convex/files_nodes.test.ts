@@ -24005,7 +24005,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		expect(await read_deletion_jobs(t)).toEqual([]);
 	});
 
-	test("create_text_node refuses a locked destination before any upload", async () => {
+	test("a currently locked destination refuses the prepared create and the action refuses before any upload", async () => {
 		const t = test_convex();
 		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
 

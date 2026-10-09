@@ -51,7 +51,7 @@ async function create_saved(f: Awaited<ReturnType<typeof fixture>>, path: string
 
 /**
  * A member of the fixture's workspace, with the workspace role `admin` and the organization role
- * `member`, like the admin of the tree access fixture in `files_nodes.test.ts`.
+ * `member`, like the admin of the tree access fixture in `files_nodes.setup.test.ts`.
  */
 async function add_member(f: Awaited<ReturnType<typeof fixture>>) {
 	const member = await f.t.run(async (ctx) => {

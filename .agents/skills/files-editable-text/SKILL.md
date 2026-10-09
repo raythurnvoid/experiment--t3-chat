@@ -292,8 +292,8 @@ These six Convex functions serve both rich Markdown and plain-text files. Their 
 - `finalize_uploaded_text_file` (`r2.ts`)
 - `match_text_file_lines` (`files_nodes.ts`)
 
-General text and mount/import creation use `files_nodes_content.create_file_node`. It shares the
-database helpers in `files_nodes_create_db` with content publication.
+The sidebar `create_text_node` and mount/import creation end in `files_nodes_content.create_file_node`.
+It shares the database helpers in `files_nodes_create_db` with the public API.
 
 Exact content uses `files_text_chunks.textChunk` for both document shapes. Search rows link to those chunks through `files_plain_text_chunks.textChunkId`.
 
