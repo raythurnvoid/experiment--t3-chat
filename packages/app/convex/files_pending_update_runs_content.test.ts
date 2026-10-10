@@ -1130,7 +1130,9 @@ describe("review job content", () => {
 		expect((await finish_review({ f, runId: await start_review({ f, proposals: [draft] }) }))?.activity.status).toBe(
 			"succeeded",
 		);
-		const saved = (await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).find((node) => node.name === "a.txt")!;
+		const saved = (await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).find(
+			(node) => node.name === "a.txt",
+		)!;
 		const target = { kind: "saved", id: saved._id } as const;
 		const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 			membershipId: f.db.membershipId,
@@ -1139,7 +1141,8 @@ describe("review job content", () => {
 		if (batch._nay) throw new Error(batch._nay.message);
 		await stage_text({ f, target, operationBatchId: batch._yay.operationBatchId, text: "two\n" });
 		expect(
-			(await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...f.scope, target }))._nay,
+			(await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...f.scope, target }))
+				._nay,
 		).toBeUndefined();
 		const proposal = (await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).find(
 			(row) => row.target.id === saved._id,
