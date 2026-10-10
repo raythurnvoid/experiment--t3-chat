@@ -987,6 +987,80 @@ describe("Save copied rich-text media", () => {
 		});
 	});
 
+	// The Save media check reads each saved link again. It refuses media with a pending delete, and
+	// media whose saved file now holds another asset.
+	test.each(["delete", "replace"] as const)(
+		"the Save media check refuses a link to saved media after a %s",
+		async (change) => {
+			const f = await fixture();
+			const image = await media(f);
+			const saved = await save(f, image.pending);
+			if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved media");
+			const target = saved._yay.target;
+			const version = await f.t.run(async (ctx) => {
+				const entry = await (await files_visible_db_create_reader(ctx, f.scope)).resolveTarget(target);
+				if (!entry) throw new Error("Expected saved media");
+				return await files_transfer_db_get_entry_version(ctx, entry);
+			});
+			if (!version) throw new Error("Expected a media version");
+			const dependency = {
+				src: files_media_build_file_src(target.id),
+				target,
+				assetId: image.dependency.assetId,
+				version,
+			};
+			const pending = await attach_dependencies({
+				f,
+				pending: await private_text(f, { staged: `![Photo](${dependency.src})\n` }),
+				dependencies: [dependency],
+			});
+			if (change === "delete")
+				expect(
+					(await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...f.scope, target }))
+						._nay,
+				).toBeUndefined();
+			else {
+				const source = await media(f, "/new.png");
+				const replaced = await save(
+					f,
+					await copy_replacement({ f, source: source.pending.target, targetName: "photo.png" }),
+				);
+				if (replaced._nay) throw new Error(replaced._nay.message);
+				expect((await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))?.assetId).not.toBe(dependency.assetId);
+			}
+			// The review plan refuses this Save first. Call the media check itself to cover its own guard.
+			expect((await save(f, pending))._nay).toBeDefined();
+			const prepared = await f.t.action((ctx) =>
+				files_pending_updates_action_prepare_content(ctx, {
+					userId: f.scope.userId,
+					membershipId: f.membershipId,
+					target: pending.target,
+					pendingUpdateId: pending._id,
+					reviewedRevision: pending.revision,
+					reviewedPrivateParentIds: [],
+				}),
+			);
+			if (prepared._nay) throw new Error(prepared._nay.message);
+			const args = {
+				userId: f.scope.userId,
+				operationBatchId: prepared._yay.operationBatchIds[0]!,
+				reviewedPendingUpdateIds: [],
+			};
+			expect(
+				await f.t.mutation(internal.files_pending_media.start_validation, {
+					...args,
+					pendingUpdateId: pending._id,
+					reviewedRevision: pending.revision,
+				}),
+			).toEqual({ _yay: { isDone: false } });
+			expect(
+				await f.t.mutation(internal.files_pending_media.advance_validation, args),
+				`a ${change} of the linked media refuses the document`,
+			).toMatchObject({ _nay: { message: expect.stringContaining("Save the selected media") } });
+			expect(await proposal(f, pending.target)).toEqual(pending);
+		},
+	);
+
 	test.each([false, true])(
 		"a saved private alias joins the new media replacement (expects replacement: %s)",
 		async (expectsReplacement) => {

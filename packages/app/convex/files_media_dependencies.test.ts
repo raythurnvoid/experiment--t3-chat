@@ -140,6 +140,26 @@ describe("media dependency sets", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.node._id))).toEqual(f.node);
 	});
 
+	test("the recovery job restarts the cleanup of a retired set", async () => {
+		const f = await fixture(1);
+		expect(
+			await f.t.run((ctx) =>
+				files_media_dependencies_db_append(ctx, { setId: f.setId, generation: 0, offset: 0, mappings: f.mappings }),
+			),
+		).toEqual({ _yay: null });
+		// Retire without scheduling the cleanup, as if the scheduled cleanup was lost.
+		await f.t.run((ctx) =>
+			ctx.db.patch("files_media_dependency_sets", f.setId, { owner: { kind: "cleanup" }, generation: 1 }),
+		);
+		await f.t.mutation(internal.files_media_dependencies.recover_cleanup, {});
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(
+			await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", f.setId)),
+			"recovery finishes the lost cleanup",
+		).toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.query("files_media_dependencies").collect())).toEqual([]);
+	});
+
 	test("does not retire a newer generation or another owner's set", async () => {
 		const f = await fixture(0);
 		const other = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
