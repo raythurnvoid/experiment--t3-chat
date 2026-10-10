@@ -324,9 +324,10 @@ the same producer with private proposals. `files_pending_updates.ts` and
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.
 - `convex/files_pending_update_runs*.test.ts`: selected connected units, transaction bounds,
   preparation, retry, Stop, and cleanup.
-- The normal test commands omit only four checks: "saves 1,000 Copy outputs beside one ordinary
+- The normal test commands omit only five checks: "saves 1,000 Copy outputs beside one ordinary
   edit", "plans 10,001 unrelated saved Move proposals as 10,001 units", the 2,001-descendant Move
-  scale check and the 16-owner overlay budget check. Run them with
+  scale check, the 16-owner overlay budget check and the Copy that adopts 101 media files (the
+  normal run adopts 51). Run them with
   `vp env exec pnpm --dir packages/app run test:files:full-size`.
   This command keeps every input and assertion. It runs the files one at a time.
   These checks write a lot of docs, so they can take hours. The Copy and

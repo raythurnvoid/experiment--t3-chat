@@ -1466,7 +1466,7 @@ Consequences the UI has to carry, each of which is a server rule and not a style
 - `packages/app/convex/schema.ts`
 - `packages/app/convex/organizations.ts`
 - `packages/app/convex/data_deletion.ts`
-- `packages/app/convex/files_share_links.ts`, `packages/app/convex/files_share_links_db.ts` (+ `files_share_links.test.ts`)
+- `packages/app/convex/files_share_links.ts`, `packages/app/convex/files_share_links_db.ts` (+ `files_share_links*.test.ts`)
 - `packages/app/convex/access_control.test.ts`
 - `packages/app/convex/organizations.test.ts`
 - `packages/app/convex/data_deletion.test.ts`

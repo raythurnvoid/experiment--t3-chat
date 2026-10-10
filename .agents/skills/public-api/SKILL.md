@@ -481,7 +481,7 @@ A member can give one file an "Anyone with the link can view" link. The link doc
 - Images and videos that an in-place API or plugin write adds to a linked document publish on its public page when the embed rules allow them: the image has the same live audience as the document, and every service account with an exact write grant on an open document can read the image. Credential download limits do not apply to that page. A key with `files:write` but no `files:download`, a plugin run whose downloads are source-only, or a plugin service grant can add an eligible image, and the document's visitors then see it. This wider access is accepted, not a bug. The public view has no credential-scope filter.
 - Private API scope checks do not change. The same key still gets 403 from `/api/v1/files/download-urls`, and a file id alone never opens a file. The link token is a separate authority.
 - No `/api/v1` route and no API or plugin credential can turn a link on or off or read its token.
-- Coverage: `convex/files_share_links.test.ts`, test "publishes an image that an API key without download scope adds, and only that one".
+- Coverage: `convex/files_share_links.view.test.ts`, test "publishes an image that an API key without download scope adds, and only that one".
 
 # API-keys page quick-start
 
