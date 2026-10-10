@@ -26,6 +26,7 @@ import {
 	access_control_db_caller_cannot_share_with_role,
 	access_control_db_has_permission,
 	access_control_db_resolve_effective_permissions,
+	access_control_db_resolve_live_restricted_scope,
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
 import { files_nodes_db_set_restricted_scope, files_nodes_db_resolve_parent_restricted_scope } from "./files_nodes.ts";
@@ -723,15 +724,15 @@ export const get_node_share_state = query({
 			: null;
 		const link = linkDoc ? { token: linkDoc.token, createdBy: linkDoc.createdBy, createdAt: linkDoc.createdAt } : null;
 
-		// A pointer at a node that was deleted, or that is no longer restricted, means this node uses
-		// workspace access again. Reading the scope node here, instead of trusting the pointer, keeps the
-		// dialog saying the same thing the permission check does.
-		const scopeNode = node.restrictedScopeNodeId ? await ctx.db.get("files_nodes", node.restrictedScopeNodeId) : null;
-		const scopeIsLive =
-			scopeNode !== null &&
-			scopeNode.restrictedScopeNodeId === scopeNode._id &&
-			scopeNode.organizationId === organization._id &&
-			scopeNode.workspaceId === membership.workspaceId;
+		// The stored pointer can be out of date. Resolving it the same way the permission check does
+		// keeps the dialog saying the same thing that check does.
+		const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
+			organizationId: organization._id,
+			workspaceId: membership.workspaceId,
+			restrictedScopeNodeId: node.restrictedScopeNodeId,
+		});
+		const scopeNode = scopeNodeId ? await ctx.db.get("files_nodes", scopeNodeId) : null;
+		const scopeIsLive = scopeNode !== null && scopeNode.restrictedScopeNodeId === scopeNode._id;
 		const grants = await db_list_scope_grants(ctx, {
 			organizationId: organization._id,
 			workspaceId: membership.workspaceId,

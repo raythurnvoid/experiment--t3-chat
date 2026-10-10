@@ -894,6 +894,18 @@ The model:
   trust that stored scope. So a child moved into a restricted folder stays open to the workspace until
   the job rewrites it, and a child of a newly restricted folder stays open for that time too. This
   short window is accepted.
+- A child of an unrestricted folder is different: it still points at that folder, which is not its
+  own scope any more (a **dead pointer**). `unrestrict_node` gives the folder the scope stored on its
+  parent, so `access_control_db_resolve_live_restricted_scope` follows the dead folder's own pointer
+  to the next restricted folder above. So during the job a child of `/outer/closed` still answers to
+  `/outer`'s grants, not to workspace read. A folder above can be unrestricted too before its own
+  job reaches the dead folder, so the reader follows up to 8 dead folders. Past that it keeps the
+  stored scope, which stays closed: the unrestrict deleted its people and role grants. A pointer
+  chain that ends at `null`, at a deleted node, or in another workspace means open. Every reader of
+  the stored pointer uses this one helper: the permission check, the list filter,
+  `access_control_db_can_act_on_file_node`, the service account grant state, and
+  `get_node_share_state`. Writes that move items use `files_nodes_db_live_scope_reader` instead, which
+  reads the scope from the live parents while a scope or move job runs.
 - Grants are always written on the **scope node**, never on the node being opened. Sending a child's
   id to `set_node_share_grant` is refused; the dialog sends the folder's id for exactly this reason.
 - Three levels — `read`, `write`, `manage` — each a superset of the last, saved as one grant doc per

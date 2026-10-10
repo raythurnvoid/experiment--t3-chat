@@ -910,19 +910,35 @@ async function has_restricted_file_permission(
 }
 
 /**
+ * How many dead scope nodes `access_control_db_resolve_live_restricted_scope` follows. Each one is a
+ * restricted folder that was opened again while its scope job had not reached the node yet.
+ */
+const DEAD_SCOPE_MAX_HOPS = 8;
+
+/**
  * The restricted scope that is really in force for a node, or `null` when the node uses normal
  * workspace access.
  *
- * The pointer saved on a node can be out of date: the scope node may have been deleted, or made
- * open again. Such a pointer must not hide the files under it forever, so we follow it only when the
- * scope node is still really restricted. We also compare organization and workspace, so a pointer
- * that somehow crossed into another workspace is never answered with this workspace's grants.
+ * The pointer saved on a node can be out of date. A scope job rewrites the nodes inside a folder in
+ * later steps, so a node can still point at a folder that is not restricted any more. That folder
+ * now stores the scope it got from above when it was opened. So follow its pointer: to a restricted
+ * folder above it, or to `null` when nothing above is restricted. Reading a dead pointer as open
+ * would show the node to every member until the job reaches it.
  *
- * Both readers of `restrictedScopeNodeId` go through here, so the rule for "is this pointer real"
+ * A folder above can be opened too before its own job reaches the dead folder, so the chain can be
+ * longer than one hop. Past `DEAD_SCOPE_MAX_HOPS`, keep the node's stored scope. The unrestrict
+ * deleted the people and role grants of that folder, so only the owner and the service accounts it
+ * still names get in until the job rewrites the node.
+ *
+ * A pointer at a deleted node, or at a node of another organization or workspace, is open. We
+ * compare organization and workspace, so a pointer that somehow crossed into another workspace is
+ * never answered with this workspace's grants.
+ *
+ * Every reader of `restrictedScopeNodeId` goes through here, so the rule for "is this pointer real"
  * exists once. A second copy of it would let the permission check and the list filter drift apart,
  * and then a file would be hidden from a list but still open by id, or the other way round.
  */
-async function db_resolve_live_restricted_scope(
+export async function access_control_db_resolve_live_restricted_scope(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -930,21 +946,26 @@ async function db_resolve_live_restricted_scope(
 		restrictedScopeNodeId: Id<"files_nodes"> | null;
 	},
 ) {
-	if (!args.restrictedScopeNodeId) {
+	let scopeNodeId = args.restrictedScopeNodeId;
+	for (let hop = 0; scopeNodeId && hop < DEAD_SCOPE_MAX_HOPS; hop += 1) {
+		const scopeNode = await ctx.db.get("files_nodes", scopeNodeId);
+		if (!scopeNode || scopeNode.organizationId !== args.organizationId || scopeNode.workspaceId !== args.workspaceId) {
+			return null;
+		}
+		if (scopeNode.restrictedScopeNodeId === scopeNode._id) {
+			return scopeNode._id;
+		}
+
+		scopeNodeId = scopeNode.restrictedScopeNodeId;
+	}
+
+	// The chain ended at `null`, so nothing above is restricted.
+	if (!scopeNodeId) {
 		return null;
 	}
 
-	const scopeNode = await ctx.db.get("files_nodes", args.restrictedScopeNodeId);
-	if (
-		!scopeNode ||
-		scopeNode.restrictedScopeNodeId !== scopeNode._id ||
-		scopeNode.organizationId !== args.organizationId ||
-		scopeNode.workspaceId !== args.workspaceId
-	) {
-		return null;
-	}
-
-	return scopeNode._id;
+	// Too many hops. Stay closed.
+	return args.restrictedScopeNodeId;
 }
 
 /**
@@ -994,7 +1015,7 @@ export async function access_control_db_filter_readable_file_nodes<
 		const kept: T[] = [];
 
 		for (const node of args.nodes) {
-			const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+			const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
 				organizationId,
 				workspaceId,
 				restrictedScopeNodeId: node.restrictedScopeNodeId,
@@ -1075,7 +1096,7 @@ export async function access_control_db_filter_readable_file_nodes<
 
 		let readable = readableByScopeNodeId.get(pointer);
 		if (readable === undefined) {
-			const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+			const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
 				organizationId,
 				workspaceId,
 				restrictedScopeNodeId: pointer,
@@ -1089,9 +1110,9 @@ export async function access_control_db_filter_readable_file_nodes<
 						permission: "content.read",
 						userId: args.userId,
 					})
-				: // A dead pointer means this node is not really restricted, so it is an open node and the
-					// workspace-wide read decides. Caching that under the dead pointer is safe: every node
-					// carrying the same dead pointer gets the same answer.
+				: // No restricted folder is live on this pointer's chain, so it is an open node and the
+					// workspace-wide read decides. Caching each answer under the stored pointer is safe:
+					// every node carrying the same pointer resolves to the same scope.
 					hasWorkspaceRead;
 			readableByScopeNodeId.set(pointer, readable);
 		}
@@ -1147,7 +1168,7 @@ export async function access_control_db_can_act_on_file_node(
 	}
 
 	if (args.serviceAccountId) {
-		const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+		const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
 			organizationId,
 			workspaceId,
 			restrictedScopeNodeId: args.fileNode.restrictedScopeNodeId,
@@ -1181,13 +1202,13 @@ export async function access_control_db_can_act_on_file_node(
 		return true;
 	}
 
-	const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+	const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
 		organizationId,
 		workspaceId,
 		restrictedScopeNodeId: args.fileNode.restrictedScopeNodeId,
 	});
 	if (!scopeNodeId) {
-		// A dead pointer means this node is not really restricted, and the caller already holds the
+		// No restricted folder is live on this pointer's chain, and the caller already holds the
 		// workspace-wide permission.
 		return true;
 	}
@@ -1263,7 +1284,7 @@ export async function access_control_db_has_permission(
 
 		const scopeNodeId =
 			args.resource.kind === "file"
-				? await db_resolve_live_restricted_scope(ctx, {
+				? await access_control_db_resolve_live_restricted_scope(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
 						restrictedScopeNodeId: args.resource.restrictedScopeNodeId,
@@ -1371,7 +1392,7 @@ export async function access_control_db_has_permission(
 	}
 
 	if (resource.kind === "file") {
-		const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+		const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			restrictedScopeNodeId: resource.restrictedScopeNodeId,
@@ -2331,7 +2352,7 @@ export const get_service_account_grant_management_state = query({
 				return null;
 			}
 
-			const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+			const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				restrictedScopeNodeId: node.restrictedScopeNodeId,

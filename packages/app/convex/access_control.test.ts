@@ -9373,6 +9373,142 @@ describe("file sharing", () => {
 			});
 		});
 
+		test("after an unrestrict inside a restricted folder, only the outer folder's grantees read an item the job has not reached", async () => {
+			const t = test_convex();
+			const fixture = await access_control_test_seed_enforcement_fixture(t, {
+				name: "uj-nested-read-org",
+				suffix: "unrestrict-job-nested-read",
+			});
+			const outsiderId = await access_control_test_bootstrap_user(t, { clerkUserId: "unrestrict-job-nested-outsider" });
+			const invited = await fixture.asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userIdToAdd: outsiderId,
+			});
+			expect(invited._nay).toBeUndefined();
+			const outsiderMembershipId = await access_control_test_read_membership_id(t, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: outsiderId,
+			});
+			const { outerId, folderId, childId } = await seed_folder_job({
+				t,
+				fixture,
+				restricted: true,
+				outerRestricted: true,
+			});
+			const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: fixture.ownerMembershipId,
+				nodeId: outerId,
+				principal: { kind: "user", userId: fixture.memberId },
+				level: "read",
+			});
+			expect(shared._nay).toBeUndefined();
+
+			// The child still points at `closed`, which now points at `outer`. Reading the dead pointer as
+			// open would let every member with workspace read see the child until the job reaches it.
+			const readChild = (as: typeof fixture.asMember, membershipId: Id<"organizations_workspaces_users">) =>
+				as.query(api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId: String(childId) });
+			const filterChild = (userId: Id<"users">) =>
+				t.run(async (ctx) =>
+					(
+						await access_control_db_filter_readable_file_nodes(ctx, {
+							organizationId: fixture.organizationId,
+							workspaceId: fixture.defaultWorkspaceId,
+							userId,
+							nodes: [(await ctx.db.get("files_nodes", childId))!],
+						})
+					).map((node) => node._id),
+				);
+			expect((await t.run((ctx) => ctx.db.get("files_nodes", folderId)))?.restrictedScopeNodeId).toBe(outerId);
+			expect(await readChild(access_control_test_identity(t, outsiderId), outsiderMembershipId)).toBeNull();
+			expect(await filterChild(outsiderId)).toEqual([]);
+			expect((await readChild(fixture.asMember, fixture.memberMembershipId))?._id).toBe(childId);
+			expect(await filterChild(fixture.memberId)).toEqual([childId]);
+		});
+
+		test("after two nested unrestricts, the restricted folder above both decides who reads an item no job has reached", async () => {
+			const t = test_convex();
+			const fixture = await access_control_test_seed_enforcement_fixture(t, {
+				name: "uj-chain-org",
+				suffix: "unrestrict-job-chain",
+			});
+
+			// Unrestrict `/top/outer/closed`, then `/top/outer` before its job reaches `closed`. Each
+			// unrestrict stores the scope from above, so the child points at `closed`, `closed` at `outer`,
+			// and `outer` at `top`, the only folder still restricted.
+			const { topId, childId } = await t.run(async (ctx) => {
+				const base = {
+					...test_mocks.files.base(),
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					createdBy: fixture.ownerId,
+					updatedBy: fixture.ownerId,
+				};
+				const topId = await ctx.db.insert("files_nodes", {
+					...base,
+					name: "top",
+					sortName: files_sort_text_key("top"),
+					path: "/top",
+					treePath: "/top/",
+				});
+				await ctx.db.patch("files_nodes", topId, { isRestrictedScopeRoot: true, restrictedScopeNodeId: topId });
+				const outerId = await ctx.db.insert("files_nodes", {
+					...base,
+					parentId: topId,
+					name: "outer",
+					sortName: files_sort_text_key("outer"),
+					path: "/top/outer",
+					treePath: "/top/outer/",
+					pathDepth: 2,
+					restrictedScopeNodeId: topId,
+				});
+				const closedId = await ctx.db.insert("files_nodes", {
+					...base,
+					parentId: outerId,
+					name: "closed",
+					sortName: files_sort_text_key("closed"),
+					path: "/top/outer/closed",
+					treePath: "/top/outer/closed/",
+					pathDepth: 3,
+					restrictedScopeNodeId: outerId,
+				});
+				const childId = await ctx.db.insert("files_nodes", {
+					...base,
+					parentId: closedId,
+					name: "child",
+					sortName: files_sort_text_key("child"),
+					path: "/top/outer/closed/child",
+					treePath: "/top/outer/closed/child/",
+					pathDepth: 4,
+					restrictedScopeNodeId: closedId,
+				});
+				return { topId, childId };
+			});
+			const filterChild = () =>
+				t.run(async (ctx) =>
+					(
+						await access_control_db_filter_readable_file_nodes(ctx, {
+							organizationId: fixture.organizationId,
+							workspaceId: fixture.defaultWorkspaceId,
+							userId: fixture.memberId,
+							nodes: [(await ctx.db.get("files_nodes", childId))!],
+						})
+					).map((node) => node._id),
+				);
+
+			expect(await filterChild()).toEqual([]);
+
+			const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: fixture.ownerMembershipId,
+				nodeId: topId,
+				principal: { kind: "user", userId: fixture.memberId },
+				level: "read",
+			});
+			expect(shared._nay).toBeUndefined();
+			expect(await filterChild()).toEqual([childId]);
+		});
+
 		test("a member without a grant cannot move out an item that a move into a restricted folder has not reached", async () => {
 			const t = test_convex();
 			const fixture = await access_control_test_seed_enforcement_fixture(t, {
