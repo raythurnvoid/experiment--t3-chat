@@ -7200,12 +7200,17 @@ export async function public_api_http_download_urls(args: {
 		count: fileNodeIds.length,
 	});
 	if (batchRateLimit) {
+		// Settle like `fail` does, but keep the exact message type for the SDK.
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: 429,
+			errorCode: "rate_limited",
+			errorMessage: batchRateLimit.message,
+		});
 		return {
 			status: 429,
-			body: {
-				...(await fail({ status: 429, message: batchRateLimit.message, errorCode: "rate_limited" })),
-				retryAfterMs: batchRateLimit.retryAfterMs,
-			},
+			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
 		} as const;
 	}
 
