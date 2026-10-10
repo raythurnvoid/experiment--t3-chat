@@ -2109,6 +2109,71 @@ describe("files_pending_overlay jobs", () => {
 		await f.expect_overlay_true();
 	});
 
+	test("a saved node job stores no metadata key in its cursor when it repairs pending metadata scope", async () => {
+		const f = await fixture();
+		const x = await f.saved(null, "x.md");
+		// A Convex cursor holds the index key of its last doc. A real key can be 500k chars long, and
+		// a cursor with it is too large to store in the job doc.
+		const longKey = "k".repeat(2_000);
+		const docCount = 6;
+		await test_run_with_flush(f.t, async (ctx) => {
+			for (const scope of [f.u, f.v]) {
+				const pendingUpdateId = await ctx.db.insert("files_pending_updates", proposal_doc(scope, target(x), {}));
+				for (let index = 0; index < docCount; index++)
+					await ctx.db.insert("files_metadata_docs", {
+						organizationId: scope.organizationId,
+						workspaceId: scope.workspaceId,
+						sourceKind: "pending",
+						target: target(x),
+						userId: scope.userId,
+						pendingUpdateId,
+						proposalRevision: 1,
+						path: x.path,
+						treePath: x.treePath,
+						fieldPath: `frontmatter.${longKey}${index}`,
+						docKind: "field",
+					});
+			}
+		});
+		await f.settle();
+
+		// A saved write of a new path sends the scope repair to x's saved node job.
+		await test_run_with_flush(f.t, (ctx) =>
+			ctx.db.patch("files_nodes", x._id, { name: "y.md", sortName: files_sort_text_key("y.md"), path: "/y.md", treePath: "/y.md" }),
+		);
+		const cursors: string[] = [];
+		for (let run = 0; run < 50; run++) {
+			const job = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_kind_key", (q) => q.eq("kind", "saved_node").eq("key", x._id))
+					.unique(),
+			);
+			if (!job) break;
+			if (job.cursor) cursors.push(job.cursor);
+			await f.run_job("saved_node", x._id);
+		}
+		expect(cursors.some((cursor) => JSON.parse(cursor).phase === 5)).toBe(true);
+		expect(
+			cursors.filter((cursor) => cursor.includes(longKey)),
+			"no stored cursor holds the metadata key",
+		).toEqual([]);
+		const metadata = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
+					q
+						.eq("organizationId", f.u.organizationId)
+						.eq("workspaceId", f.u.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", x._id),
+				)
+				.collect(),
+		);
+		expect(metadata).toHaveLength(2 * docCount);
+		expect(metadata.every((doc) => doc.path === "/y.md" && doc.treePath === "/y.md")).toBe(true);
+	});
+
 	test("an owner path job walks a folder that moved behind the place it reached", async () => {
 		const f = await fixture();
 		const j = await f.saved(null, "j", "folder");

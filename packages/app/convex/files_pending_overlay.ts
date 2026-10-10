@@ -116,6 +116,8 @@ type PagedJob = Exclude<Doc<"files_pending_overlay_jobs">, { kind: "place_fields
  * Where a paged job goes on: the stream it walks, the Convex cursor of the next page, and the docs
  * of the last page it did not reach. `rerun` asks for one more pass after this one. `lastPath` is
  * the last place an owner path job marked, and `range` the spot of the saved node job's last page.
+ * `proposalId` is the proposal whose metadata docs the saved node job walks, and `proposalPage` the
+ * Convex cursor after it.
  */
 type JobCursor = {
 	phase: number;
@@ -125,6 +127,8 @@ type JobCursor = {
 	rerun?: boolean;
 	lastPath?: string | null;
 	range?: string;
+	proposalId?: Id<"files_pending_updates"> | null;
+	proposalPage?: string | null;
 };
 
 /**
@@ -168,19 +172,33 @@ async function db_job_page(ctx: MutationCtx, job: PagedJob, cursor: JobCursor) {
 						.eq("moveView.view", undefined),
 				)
 				.paginate({ cursor: cursor.page, numItems: SCOPE_PAGE_SIZE });
-		if (cursor.phase === 5)
-			return await ctx.db
+		// Walk the metadata docs one proposal at a time, on an index without `fieldPath`. A Convex cursor
+		// holds the whole index key of its last doc. So with a very long field key, a cursor on a
+		// `fieldPath` index is too large to store in the job doc, and the job would fail forever.
+		if (cursor.phase === 5) {
+			// Convex allows one `.paginate()` per function run. So a run that picks the next proposal
+			// reads none of its docs.
+			const proposalId = cursor.proposalId;
+			if (!proposalId) {
+				const proposals = await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", savedNodeId))
+					.paginate({ cursor: cursor.proposalPage ?? null, numItems: 1 });
+				cursor.proposalId = proposals.page[0]?._id ?? null;
+				cursor.proposalPage = proposals.continueCursor;
+				return { page: [], continueCursor: null, isDone: proposals.isDone && !cursor.proposalId };
+			}
+			const page = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
-					q
-						.eq("organizationId", job.organizationId)
-						.eq("workspaceId", job.workspaceId)
-						.eq("target.kind", "saved")
-						.eq("target.id", savedNodeId)
-						.eq("moveView.cohortId", undefined)
-						.eq("moveView.view", undefined),
+				.withIndex("by_pendingUpdate", (q) =>
+					q.eq("pendingUpdateId", proposalId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 				)
 				.paginate({ cursor: cursor.page, numItems: SCOPE_PAGE_SIZE });
+			if (!page.isDone) return page;
+			// This proposal is done. The next run picks the next one.
+			cursor.proposalId = null;
+			return { ...page, isDone: false };
+		}
 		if (cursor.phase === 0)
 			return await ctx.db
 				.query("files_pending_updates")
