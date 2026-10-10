@@ -194,7 +194,8 @@ const FilesClipboardProvider = Object.assign(
 				}
 				if (request.storedMove && (await retireAcceptedMove(request))) return;
 				let refusal: string | undefined;
-				if (!request.stopRequested || !request.runId) {
+				// A discarded Move that the server never accepted has no run to stop. Only delete its saved input.
+				if (!request.stopRequested) {
 					// Replay the original selection and pages after a lost reply, even if the clipboard changed.
 					const started = await convex.mutation(app_convex_api.files_transfer.start, {
 						membershipId,
@@ -294,6 +295,12 @@ const FilesClipboardProvider = Object.assign(
 					)
 						return;
 					console.error("[FilesClipboardProvider.paste] Failed to send paste request", { error });
+					// A Move without saved input sent nothing to the server. Drop it so Copy and later Moves still work.
+					if (request.kind === "move" && !request.storedMove) {
+						startRequestRef.current = null;
+						toast.error("Could not save the Move selection in this browser. Try again later.");
+						return;
+					}
 					setStartError({
 						message: request.stopRequested
 							? "Stop was not confirmed. Retry to stop this request."
@@ -336,11 +343,8 @@ const FilesClipboardProvider = Object.assign(
 				})
 				.catch((error) => {
 					console.error("[FilesClipboardProvider.recoverMove] Failed to load Move selection", { error });
-					if (mountedRef.current)
-						setStartError({
-							message: "Could not load the saved Move. Retry when browser storage is available.",
-							stopRequested: false,
-						});
+					// Do not block Paste here. Copy does not need browser storage, and a new Move refuses when it cannot save.
+					if (mountedRef.current) toast.error("Could not load the saved Move. Reload the page to try again.");
 				})
 				.finally(() => {
 					if (mountedRef.current) setIsRecovering(false);

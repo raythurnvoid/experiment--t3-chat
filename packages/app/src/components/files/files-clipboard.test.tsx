@@ -855,7 +855,7 @@ describe("FilesClipboardProvider", () => {
 		});
 	});
 
-	test("discards unstarted input through a confirmed Stop without sealing", async () => {
+	test("discards unstarted input without starting a run", async () => {
 		intakeState.request = {
 			userId: "user",
 			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
@@ -869,12 +869,34 @@ describe("FilesClipboardProvider", () => {
 		intakeState.sourceIds = MANY_SOURCE_IDS;
 		render(<TestClipboard />);
 		fireEvent.click(await screen.findByRole("button", { name: "Discard saved Move" }));
-		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
-		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
-			"files_transfer:start",
-			"files_transfer:stop",
-		]);
+		await waitFor(() => expect(intakeState.request, "Discard deletes the saved input").toBeNull());
+		expect(intakeQueryMock).toHaveBeenCalledOnce();
+		expect(
+			mutationMock.mock.calls.map(([reference]) => getFunctionName(reference)),
+			"Discard starts no server run",
+		).toEqual([]);
 		expect(intakeUpdateMock.mock.calls[0]![0]).toMatchObject({ stopRequested: true });
+		expect(screen.getByLabelText("Paste busy").textContent).toBe("false");
+	});
+
+	test("keeps Copy working when browser storage fails", async () => {
+		const storageError = new Error("Move storage could not be opened.");
+		intakeLoadMock.mockRejectedValue(storageError);
+		intakeSaveMock.mockRejectedValue(storageError);
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		render(<TestClipboard />);
+		await waitFor(() =>
+			expect(screen.getByLabelText("Paste busy").textContent, "a failed load does not block Paste").toBe("false"),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Drag many sources" }));
+		await waitFor(() => expect(intakeSaveMock).toHaveBeenCalledOnce());
+		await waitFor(() =>
+			expect(screen.getByLabelText("Paste busy").textContent, "a failed Move save does not block Paste").toBe("false"),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
+		await press_paste();
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		expect(mutationMock.mock.calls[0]![1]).toMatchObject({ kind: "copy", sourceIds: [SOURCE_ID] });
 	});
 
 	test("resumes only an unconfirmed Move Stop after reload", async () => {

@@ -699,7 +699,9 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
 - Drag a file row onto a folder row; verify it leaves the source table and appears in the target folder.
 - Drag a folder row onto another folder row; verify the moved folder appears inside the target.
 - Drag onto a file row; verify no move and no `.FileNodeViewFolderExplorer-row-drop-target`.
-- While a move is pending, verify the row cannot start another drag and its more-actions button is disabled.
+- While a move is running, rows can still drag and their more-actions button stays enabled. Drop a
+  row onto a folder; verify no second move starts and the toast says
+  `Wait for the current file operation to finish.`
 
 ### Folder Table Filter And Sort Bar
 
