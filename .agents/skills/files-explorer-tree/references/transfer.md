@@ -323,12 +323,13 @@ the same producer with private proposals. `files_pending_updates.ts` and
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.
 - `convex/files_pending_update_runs*.test.ts`: selected connected units, transaction bounds,
   preparation, retry, Stop, and cleanup.
-- The normal test commands omit only two Save checks: "saves 1,000 Copy outputs beside one
-  ordinary edit" and "plans 10,001 unrelated saved Move proposals as 10,001 units". Run both with
+- The normal test commands omit only three checks: "saves 1,000 Copy outputs beside one ordinary
+  edit", "plans 10,001 unrelated saved Move proposals as 10,001 units" and the 2,001-descendant Move
+  scale check. Run them with
   `vp env exec pnpm --dir packages/app run test:files:full-size`.
-  This command keeps every input and assertion. It runs the two files one at a time.
-  The test database scans stored docs, so these checks can take many hours. They have no
-  test time limit. All other checks keep their time limits.
+  This command keeps every input and assertion. It runs the files one at a time.
+  The test database scans stored docs, so these checks can take many hours. The Copy and
+  planner checks have no test time limit. All other checks keep their time limits.
 - `server/bash*.test.ts`: foreground and background-job transfer commands, invocation replay, cwd identity,
   mixed operations, exit status, and deadlines.
 - `convex/activities.test.ts` and `convex/data_deletion.test.ts`: private controls and bounded cleanup.

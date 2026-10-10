@@ -27,7 +27,7 @@ export default defineConfig({
 		testTimeout: 30_000,
 		// Run these slow full-size checks with test:files:full-size.
 		testNamePattern:
-			/^(?!.*(?:saves 1,000 Copy outputs beside one ordinary edit|plans 10,001 unrelated saved Move proposals as 10,001 units)$)/,
+			/^(?!.*(?:saves 1,000 Copy outputs beside one ordinary edit|plans 10,001 unrelated saved Move proposals as 10,001 units|moves one folder with 2001 descendants and keeps every metadata value)$)/,
 		hookTimeout: 30_000,
 		teardownTimeout: 30_000,
 		projects: [

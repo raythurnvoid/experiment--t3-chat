@@ -138,6 +138,13 @@ function measure_move(
 		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
 		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
 		const phase = cohort?.step === step ? cohort.workPhase : "stale";
+		// A release step frees at most 8 reservations. Note the first one, to see if the step leaves the rest.
+		const firstReservation = () =>
+			ctx.db
+				.query("files_move_source_reservations")
+				.withIndex("by_cohort", (q) => q.eq("cohortId", cohortId))
+				.first();
+		const releaseFirst = phase === "release" ? await firstReservation() : null;
 		const result = await handler(ctx, args);
 		if (owner && phase === "owners_stage") {
 			const work = await ctx.db
@@ -164,6 +171,8 @@ function measure_move(
 		}
 		// The registered handler includes its overlay flush. The extra header read is counted too.
 		await record(`cohort/${phase}`, ctx);
+		const releaseNext = releaseFirst && (await firstReservation());
+		if (releaseNext && releaseNext._id !== releaseFirst._id) await record("cohort/release (paged)", ctx);
 		return result;
 	});
 	return peaks;
@@ -370,7 +379,13 @@ describe("public Move scale", () => {
 		console.info("Move scale selected files", JSON.stringify(Object.fromEntries(peaks)));
 	}, 7_200_000);
 
-	test("moves one folder with 2001 descendants and keeps every metadata value", async () => {
+	test.each([
+		// Move reserves the folder, each descendant and the target. 7 descendants make 9 reservations,
+		// one past the 8 that a release step frees.
+		7,
+		// 2001 was just past the old 2000-doc Move cap, which is gone. Run it with test:files:full-size.
+		2001,
+	])("moves one folder with %i descendants and keeps every metadata value", async (count) => {
 		const fixture = await create_fixture();
 		const { t } = fixture;
 		const target = await create_folder(fixture, "target");
@@ -379,10 +394,10 @@ describe("public Move scale", () => {
 		const descendants = [seed._id];
 		const { _id: _seedId, _creationTime: _seedTime, ...fields } = seed;
 		// Bulk setup copies a real folder doc. Move still enters through the public door.
-		for (let offset = 1; offset < 2001; offset += 100) {
+		for (let offset = 1; offset < count; offset += 100) {
 			const ids = await t.run(async (ctx) => {
 				const ids: Id<"files_nodes">[] = [];
-				for (let index = offset; index < Math.min(offset + 100, 2001); index++) {
+				for (let index = offset; index < Math.min(offset + 100, count); index++) {
 					const name = `child-${index.toString().padStart(4, "0")}`;
 					const path = `/source/${name}`;
 					ids.push(
@@ -399,7 +414,7 @@ describe("public Move scale", () => {
 			});
 			descendants.push(...ids);
 		}
-		expect(new Set(descendants).size, "the folder has more than 2000 distinct descendants").toBe(2001);
+		expect(new Set(descendants).size, "every descendant is distinct").toBe(count);
 		await write_markers(fixture, [source._id, ...descendants]);
 		await t.finishAllScheduledFunctions(vi.runAllTimers, 10_000);
 		const peaks = measure_move();
@@ -407,6 +422,7 @@ describe("public Move scale", () => {
 		await expect_moved_markers(fixture, [source._id, ...descendants], (node) =>
 			node._id === source._id ? "/target/source" : `/target/source/${node.name}`,
 		);
+		expect(peaks.get("cohort/release (paged)")?.calls, "the folder needs two release pages").toBeGreaterThan(0);
 		console.info("Move scale descendants", JSON.stringify(Object.fromEntries(peaks)));
 	}, 7_200_000);
 
