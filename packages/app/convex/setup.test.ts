@@ -142,6 +142,22 @@ export async function test_run_with_flush<T>(t: TestConvexRoot<DataModel>, fn: (
 }
 
 /**
+ * Run each metadata catalog marker's compactor until no marker is left, so the suggestion doors see
+ * every save before this call. The clock moves past the compactor's cutoff first. The scheduled
+ * runs never fire on their own: `setSystemTime` moves no timer.
+ */
+export async function test_compact_metadata_catalog(t: TestConvexRoot<DataModel>) {
+	for (let pass = 0; pass < 100; pass++) {
+		vi.setSystemTime(Date.now() + 5001);
+		const markers = await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").collect());
+		if (markers.length === 0) return;
+		for (const marker of markers)
+			await t.mutation(internal.files_pending_overlay.compact_metadata_catalog, { markerId: marker._id });
+	}
+	throw new Error("The metadata catalog compactor did not drain");
+}
+
+/**
  * Return the real worker result after public paged Move intake.
  */
 export async function test_move_nodes(
@@ -152,6 +168,8 @@ export async function test_move_nodes(
 		itemIds: Id<"files_nodes">[];
 		targetParentId: Doc<"files_nodes">["parentId"];
 		replaceNodeId?: Id<"files_nodes">;
+		/** Runs before each step of the run, for checks while it moves. */
+		onStep?: () => Promise<void>;
 	},
 ) {
 	const hadFakeTimers = vi.isFakeTimers();
@@ -175,7 +193,7 @@ export async function test_move_nodes(
 		}
 		const sealed = await asUser.mutation(api.files_transfer.seal, { membershipId: args.membershipId, runId });
 		if (sealed._nay) return Result({ _nay: sealed._nay });
-		await test_finish_transfer_run(asUser, runId);
+		await test_finish_transfer_run(asUser, runId, args.onStep);
 		if (args.replaceNodeId) {
 			const view = await asUser.query(api.files_transfer.get, { membershipId: args.membershipId, runId });
 			const items = await asUser.query(api.files_transfer.list_items, {
@@ -215,8 +233,10 @@ export async function test_move_nodes(
 export async function test_finish_transfer_run(
 	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
 	runId: Id<"files_transfer_runs">,
+	onStep?: () => Promise<void>,
 ) {
 	for (let pass = 0; pass < 50_000; pass++) {
+		await onStep?.();
 		const run = await asUser.run(ctx => ctx.db.get("files_transfer_runs", runId));
 		if (!run) throw new Error("Missing transfer run");
 		const activity = await asUser.run(ctx => activities_db_require_by_source_id(ctx, runId));

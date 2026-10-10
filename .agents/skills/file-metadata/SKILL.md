@@ -463,8 +463,8 @@ with a user key: a frontmatter key literally named `file` is written `frontmatte
 key must match `files_metadata_METADATA_KEY_REGEX` and a frontmatter path
 `files_metadata_FIELD_SEGMENT_REGEX`. Both are exported from `shared/files-metadata.ts` and imported
 by the parser and by `meta search`, so a key a user can write stays a key that can be searched for.
-`files_search_query_field_path_is_valid` is that grammar as one check on a qualified field.
-The doors use it through `search_field_path_is_valid`, which adds the length cap. A key must start
+`files_search_query_field_path_is_valid` is that grammar as one check on a qualified field, with the
+`files_search_query_FIELD_PATH_MAX_LENGTH` (160) cap. A key must start
 with its namespace (`file.`, `frontmatter.` or `metadata.`). A token like `status:open` has no
 namespace, so it is free text and never a filter. The sidebar's key catalog lists qualified keys only.
 
@@ -516,6 +516,61 @@ answers its empty shape for a membership that is not the caller's.
 - Archiving a file removes it from every door: `search_saved` and both catalogs read
   `archiveOperationId: undefined` docs only, so an archived file's keys and values disappear with
   it. `search_saved` reads saved, active rows only, so the search box never lists an archived file.
+
+# Catalog
+
+`files_metadata_catalog` counts the saved metadata keys and short string values of each workspace, so a
+suggestion read can be one index range at any size. Convex has no "distinct values" or prefix search. The
+leaf module `server/files-metadata-catalog.ts` holds the rules; its header is the full description.
+
+- **Families.** `key`: one row per field path, with `count` (field docs) and `kindCounts` (value docs per
+  kind). `value`: one row per field path and string value. `parent`: one row per folder (or `"root"`) and
+  field path of its children's field docs, for the folder Columns menu. Each row also keeps
+  `fieldPathLower`, so a key prefix matches without case.
+- **What counts.** Saved (`committed`), active (no `archiveOperationId`) docs of real workspaces, whose path
+  passes `files_search_query_field_path_is_valid` (the grammar and at most 160 characters). Only string
+  values whose encoded payload is at most 1,024 bytes get a value row (UTF-8 bytes plus one byte per
+  U+0000, `files_metadata_catalog_value_is_short`): longer index keys share a buffered prefix group in
+  Convex, so a page of them is not a real read bound. A long value still counts in its key's string kind.
+  Drafts, global and plugin volume workspaces never count. Restriction is not part of any row, so a
+  restrict writes nothing here, and Columns shows keys of restricted children to every member too.
+- **Move views.** A doc tagged with a Move cohort's `moveView` counts in the rows of that view, like share
+  rows. Readers merge the normal rows with the visible view's rows, so a key never disappears or doubles
+  while a Move stages, publishes, cleans up or aborts. Publication writes nothing here.
+- **Writes.** The overlay wrapper adds every committed metadata insert, patch and delete to a change map,
+  tagged Move and materializing writes too; a patch of none of `files_metadata_catalog_SOURCE_FIELDS` needs
+  no old doc. Every flush call inserts one delta per changed row (`files_metadata_catalog_deltas`) and
+  clears the map, so a walk that flushes before each child counts each change once. A save that keeps
+  every contribution writes nothing. Savers only insert deltas and read the workspace marker
+  (`files_metadata_catalog_compactors`); the first saver inserts the marker and schedules the compactor.
+  No saver patches a shared doc, so parallel saves of the same key do not conflict.
+- **Compactor** (`compact_metadata_catalog` in `convex/files_pending_overlay.ts`). Each run gets its marker
+  by id (a missing marker ends the chain), applies up to 500 deltas older than 5 seconds to their rows,
+  deletes them, and schedules itself again while any delta is left; otherwise it deletes the marker. Drift
+  (a count below 0) never throws: it clamps to 0 and logs one `files_metadata_catalog drift` line per run,
+  with no value. A new key shows after about 5 to 15 seconds. The `recover metadata catalog compactors`
+  cron (every 15 minutes) starts a run for a marker whose oldest delta waited more than 10 minutes.
+- **Rebuild and check** (`rebuild_metadata_catalog`, `check_metadata_catalog` in
+  `convex/files_pending_overlay.ts`). Run them only in a quiet window: every source writer stopped, also
+  scheduled jobs, until the check ends. Both refuse while a Move cohort holds the workspace. A rebuild puts
+  a new `clearing` marker in place of the old one (older rebuild jobs and compactor runs then stop), deletes
+  100 docs per job, sets the marker to `seeding`, and pages the saved docs on
+  `by_organization_workspace_source_fileNode` (100 docs or 1 MiB per page). A file's key deltas wait for
+  its last doc, so no key delta has kinds without its field count. The compactor runs between pages and
+  keeps a `seeding` marker; the last page sets it to `draining`. Mode `catalog` replaces every row and
+  fixes drift. Mode `check` counts into the shadow families `check_key`, `check_value` and
+  `check_parent`; then page `check_metadata_catalog` to the end (it compares each row with its shadow
+  and each shadow with its row, and names ids, paths and counts, never a value), and run mode
+  `clear_check` to delete the shadows. Suggestion reads never read the `check_*` families.
+- **Cost.** About one delta insert per changed row, then one row write per distinct row per compactor
+  batch. At the largest node (896 docs, 160-character keys, 1,024-byte values) a full replacement in one
+  transaction measured 4,097 writes and 3.7 MB written, and a compactor run 2,002 docs read and 1,000
+  writes (`files_pending_overlay_limits.test.ts`, "metadata catalog").
+- **Accepted leak until a search engine arrives (user, 2026-10-08).** Any member, guests included, will see
+  every catalog row of the workspace, also keys and values of files they cannot open. Search results,
+  opening a file and the folder gate stay access-checked. A search engine must fix this: it counts keys
+  and values over only the files the caller can read. Then delete the catalog tables, the leaf module, the
+  overlay hook, the compactor, its cron and the data deletion pass.
 
 # Dialog Reconciliation
 

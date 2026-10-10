@@ -332,6 +332,11 @@ describe("files_search_query_field_path_is_valid", () => {
 		expect(files_search_query_field_path_is_valid("status")).toBe(false);
 		expect(files_search_query_field_path_is_valid("frontmatter.")).toBe(false);
 	});
+
+	test("accepts 160 characters and refuses 161", () => {
+		expect(files_search_query_field_path_is_valid(`metadata.${"a".repeat(151)}`)).toBe(true);
+		expect(files_search_query_field_path_is_valid(`metadata.${"a".repeat(152)}`)).toBe(false);
+	});
 });
 
 describe("files_search_query_folder_path", () => {

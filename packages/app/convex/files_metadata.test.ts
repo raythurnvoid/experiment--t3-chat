@@ -9,7 +9,13 @@ import {
 	files_metadata_db_write_entries,
 } from "./files_metadata.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_compact_metadata_catalog,
+	test_convex,
+	test_mocks,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_metadata_Entry } from "../shared/files-metadata.ts";
 
@@ -38,7 +44,7 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 	const child = (args: { name: string; entries?: files_metadata_Entry[]; folderId?: Id<"files_nodes"> }) => {
 		const { name, entries = [], folderId = parentId } = args;
 
-		return t.run(async (ctx) => {
+		return test_run_with_flush(t, async (ctx) => {
 			const parent = await ctx.db.get("files_nodes", folderId);
 			if (!parent) throw new Error("Expected parent");
 			const path = `${parent.path}/${name}`;
@@ -63,7 +69,7 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 		});
 	};
 	const frontmatter = (nodeId: Id<"files_nodes">, yaml: string) =>
-		t.run((ctx) =>
+		test_run_with_flush(t, (ctx) =>
 			files_metadata_db_insert_committed(ctx, { ...owner, nodeId, markdownContent: `---\n${yaml}\n---\n` }),
 		);
 	const private_folder = (entries: files_metadata_Entry[] = []) =>
@@ -88,8 +94,15 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 			});
 			return { ...created._yay, target: { kind: "private" as const, id: created._yay.privateNodeId } };
 		});
-	const catalog = (afterField: string | null = null) =>
-		asOwner.query(api.files_metadata.list_folder_fields, { membershipId: scope.membershipId, parentId, afterField });
+	const catalog = async (prefix = "", cursor: string | null = null) => {
+		await test_compact_metadata_catalog(t);
+		return await asOwner.query(api.files_metadata.list_folder_fields, {
+			membershipId: scope.membershipId,
+			parentId,
+			prefix,
+			paginationOpts: { numItems: 50, cursor },
+		});
+	};
 	return {
 		t,
 		scope,
@@ -120,7 +133,8 @@ describe("table metadata caller", () => {
 					asCaller.query(api.files_metadata.list_folder_fields, {
 						membershipId: scope.membershipId,
 						parentId,
-						afterField: null,
+						prefix: "",
+						paginationOpts: { numItems: 50, cursor: null },
 					}),
 				).rejects.toThrow("Unauthenticated");
 				await expect(
@@ -155,7 +169,8 @@ describe("table metadata caller", () => {
 				asAnonymous.query(api.files_metadata.list_folder_fields, {
 					membershipId: scope.membershipId,
 					parentId,
-					afterField: null,
+					prefix: "",
+					paginationOpts: { numItems: 50, cursor: null },
 				}),
 			).rejects.toThrow("Unauthenticated");
 			await expect(
@@ -178,8 +193,10 @@ describe("table metadata caller", () => {
 });
 
 describe("list_folder_fields", () => {
+	const refused = { page: [], isDone: true, continueCursor: "" };
+
 	test("lists direct children beyond row 50 and excludes a sibling and descendants", async () => {
-		const { t, owner, parentId, child, catalog } = await fixture();
+		const { t, owner, child, catalog } = await fixture();
 		for (let i = 0; i < 51; i++)
 			await child({ name: `child-${i}.md`, entries: i === 50 ? [{ key: "late", value: true }] : [] });
 		for (const path of ["/other", "/table/nested"]) {
@@ -191,105 +208,90 @@ describe("list_folder_fields", () => {
 				folderId: created._yay.nodeId,
 			});
 		}
-		expect(parentId).toBeTruthy();
-		expect(await catalog()).toEqual({ fields: ["metadata.late"], afterField: "metadata.late", isDone: true });
+		expect((await catalog()).page).toEqual(["metadata.late"]);
 	});
 
-	test("does not expose a hidden child's key or let it change a member's page", async () => {
-		const { scope, asOwner, viewer, asViewer, parentId, child } = await fixture();
+	test("lists the keys of restricted children to every member (user, 2026-10-08)", async () => {
+		const { scope, asOwner, viewer, asViewer, parentId, child, catalog } = await fixture();
 		await child({ name: "public.md", entries: [{ key: "public", value: true }] });
-		const args = { membershipId: viewer.membershipId, parentId, afterField: null };
-		const before = await asViewer.query(api.files_metadata.list_folder_fields, args);
 		const hidden = await child({ name: "hidden.md", entries: [{ key: "hidden", value: "secret" }] });
 		expect(
 			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId: hidden }))
 				._nay,
 		).toBeUndefined();
-		const after = await asViewer.query(api.files_metadata.list_folder_fields, args);
-		expect(JSON.stringify(after)).not.toContain("metadata.hidden");
-		expect(after).toEqual(before);
-		expect(
-			(await asOwner.query(api.files_metadata.list_folder_fields, { ...args, membershipId: scope.membershipId }))
-				?.fields,
-		).toEqual(["metadata.hidden", "metadata.public"]);
-	});
-
-	test("merges the owner's restricted children with the open ones in key order", async () => {
-		const { scope, asOwner, viewer, asViewer, parentId, child, catalog } = await fixture();
-		await child({
-			name: "open.md",
-			entries: [
-				{ key: "a", value: 1 },
-				{ key: "c", value: 1 },
-				{ key: "shared", value: 1 },
-			],
-		});
-		const hidden = await child({
-			name: "hidden.md",
-			entries: [
-				{ key: "b", value: 2 },
-				{ key: "d", value: 2 },
-				{ key: "shared", value: 2 },
-			],
-		});
-		expect(
-			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId: hidden }))
-				._nay,
-		).toBeUndefined();
-		expect(await catalog()).toEqual({
-			fields: ["metadata.a", "metadata.b", "metadata.c", "metadata.d", "metadata.shared"],
-			afterField: "metadata.shared",
-			isDone: true,
-		});
-		expect((await catalog("metadata.b"))?.fields).toEqual(["metadata.c", "metadata.d", "metadata.shared"]);
+		expect((await catalog()).page).toEqual(["metadata.hidden", "metadata.public"]);
 		expect(
 			(
 				await asViewer.query(api.files_metadata.list_folder_fields, {
 					membershipId: viewer.membershipId,
 					parentId,
-					afterField: null,
+					prefix: "",
+					paginationOpts: { numItems: 50, cursor: null },
 				})
-			)?.fields,
-		).toEqual(["metadata.a", "metadata.c", "metadata.shared"]);
+			).page,
+		).toEqual(["metadata.hidden", "metadata.public"]);
 	});
 
-	test("merges the two ranges in index order, not JS string order", async () => {
-		const { scope, asOwner, child, catalog } = await fixture();
+	test("a prefix ignores case, keeps index order, and pages", async () => {
+		const { child, catalog } = await fixture();
 		// U+FF58 comes before U+1D465 in the index, but JS `<` compares UTF-16 units and puts the
-		// surrogate pair of U+1D465 first. Then the open key would be skipped.
-		await child({ name: "open.md", entries: [{ key: "\u{FF58}", value: 1 }] });
-		const hidden = await child({ name: "hidden.md", entries: [{ key: "\u{1D465}", value: 2 }] });
-		expect(
-			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId: hidden }))
-				._nay,
-		).toBeUndefined();
-		expect((await catalog())?.fields).toEqual(["metadata.\u{FF58}", "metadata.\u{1D465}"]);
-	});
-
-	test("fails on a stale field restriction flag instead of exposing the key", async () => {
-		const { t, scope, asOwner, child, catalog } = await fixture();
-		const nodeId = await child({ name: "hidden.md", entries: [{ key: "hidden", value: true }] });
-		await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId });
-		await t.run(async (ctx) => {
-			const field = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-					q
-						.eq("organizationId", scope.organizationId)
-						.eq("workspaceId", scope.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", nodeId),
-				)
-				.filter((q) => q.eq(q.field("docKind"), "field"))
-				.first();
-			if (!field) throw new Error("Expected field");
-			await ctx.db.patch("files_metadata_docs", field._id, { isRestrictedScopeRoot: false });
+		// surrogate pair of U+1D465 first.
+		await child({
+			name: "keys.md",
+			entries: [
+				{ key: "Bravo", value: 1 },
+				{ key: "alpha", value: 1 },
+				{ key: "\u{FF58}", value: 1 },
+				{ key: "\u{1D465}", value: 1 },
+				...Array.from({ length: 60 }, (_, i) => ({ key: `field_${String(i).padStart(2, "0")}`, value: i })),
+			],
 		});
-		await expect(catalog()).rejects.toThrow("metadataDoc folder scope is mismatched");
+		expect((await catalog("METADATA.b")).page).toEqual(["metadata.Bravo"]);
+		expect((await catalog("metadata.\u{FF58}")).page).toEqual(["metadata.\u{FF58}"]);
+		const first = await catalog("metadata.");
+		expect(first.page).toHaveLength(50);
+		const second = await catalog("metadata.", first.continueCursor);
+		expect([...first.page, ...second.page]).toEqual([
+			"metadata.alpha",
+			"metadata.Bravo",
+			...Array.from({ length: 60 }, (_, i) => `metadata.field_${String(i).padStart(2, "0")}`),
+			"metadata.\u{FF58}",
+			"metadata.\u{1D465}",
+		]);
+		expect(second.isDone).toBe(true);
+		// No key is longer than 160 characters.
+		expect(await catalog("m".repeat(161))).toEqual(refused);
 	});
 
-	test("returns an empty root for a grant-only member and null for an unreadable folder", async () => {
-		const { t, viewer, asViewer, parentId } = await fixture();
+	test("gives one empty page to every folder it refuses", async () => {
+		const { t, scope, viewer, asViewer, parentId, child } = await fixture();
+		const fileId = await child({ name: "file.md", entries: [{ key: "status", value: "open" }] });
+		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other-org" }));
+		const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: other.organizationId,
+			workspaceId: other.workspaceId,
+			userId: other.userId,
+			path: "/foreign",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const read = (membershipId: Id<"organizations_workspaces_users">, folderId: Id<"files_nodes"> | "root") =>
+			asViewer.query(api.files_metadata.list_folder_fields, {
+				membershipId,
+				parentId: folderId,
+				prefix: "",
+				paginationOpts: { numItems: 50, cursor: null },
+			});
+		const deletedId = await t.run(async (ctx) => {
+			const { _id, _creationTime, ...folder } = (await ctx.db.get("files_nodes", parentId))!;
+			const id = await ctx.db.insert("files_nodes", folder);
+			await ctx.db.delete("files_nodes", id);
+			return id;
+		});
+		for (const folderId of [fileId, created._yay.nodeId, deletedId]) expect(await read(viewer.membershipId, folderId)).toEqual(refused);
+		// Somebody else's membership.
+		expect(await read(scope.membershipId, parentId)).toEqual(refused);
+
+		// A grant-only member reads neither the root nor an unshared folder.
 		await t.run(async (ctx) => {
 			const role = await ctx.db
 				.query("access_control_role_assignments")
@@ -297,27 +299,15 @@ describe("list_folder_fields", () => {
 				.first();
 			if (role) await ctx.db.delete("access_control_role_assignments", role._id);
 		});
-		expect(
-			await asViewer.query(api.files_metadata.list_folder_fields, {
-				membershipId: viewer.membershipId,
-				parentId: "root",
-				afterField: null,
-			}),
-		).toEqual({ fields: [], afterField: null, isDone: true });
-		expect(
-			await asViewer.query(api.files_metadata.list_folder_fields, {
-				membershipId: viewer.membershipId,
-				parentId,
-				afterField: null,
-			}),
-		).toBeNull();
+		expect(await read(viewer.membershipId, "root")).toEqual(refused);
+		expect(await read(viewer.membershipId, parentId)).toEqual(refused);
 	});
 
 	test("returns empty for a readable archived folder and ignores the caller's draft delete", async () => {
 		const { t, owner, parentId, child, catalog } = await fixture();
 		await child({ name: "value.md", entries: [{ key: "status", value: "open" }] });
 		await t.run((ctx) => ctx.db.patch("files_nodes", parentId, { archiveOperationId: "archived" }));
-		expect(await catalog()).toEqual({ fields: [], afterField: null, isDone: true });
+		expect(await catalog()).toEqual(refused);
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", parentId, { archiveOperationId: null });
 			await ctx.db.insert("files_pending_updates", {
@@ -330,33 +320,30 @@ describe("list_folder_fields", () => {
 				pendingArchive: { fromPath: "/table" },
 			});
 		});
-		expect(await catalog()).toEqual({ fields: ["metadata.status"], afterField: "metadata.status", isDone: true });
+		expect((await catalog()).page).toEqual(["metadata.status"]);
 	});
 
-	test("pages distinct keys and advances across invalid keys", async () => {
+	test("leaves out keys the search grammar cannot name", async () => {
 		const { child, frontmatter, catalog } = await fixture();
-		const node = await child({
-			name: "fields.md",
-			entries: Array.from({ length: 60 }, (_, i) => ({ key: `field_${String(i).padStart(2, "0")}`, value: i })),
-		});
+		const node = await child({ name: "fields.md", entries: [{ key: "status", value: 1 }] });
 		await frontmatter(node, Array.from({ length: 50 }, (_, i) => `${"a".repeat(300)}${i}: true`).join("\n"));
-		const first = await catalog();
-		expect(first).toMatchObject({ fields: [], isDone: false });
-		expect(first?.afterField).toContain("frontmatter.");
-		const second = await catalog(first!.afterField);
-		expect(second?.fields).toHaveLength(50);
-		expect(second?.isDone).toBe(false);
-		const last = await catalog(second!.afterField);
-		expect(last?.fields).toHaveLength(10);
-		expect(last?.isDone).toBe(true);
+		expect(await catalog()).toMatchObject({ page: ["metadata.status"], isDone: true });
 	});
 });
 
 describe("list_node_fields", () => {
 	test("skips all 400 list items with one distinct key seek", async () => {
-		const { child, frontmatter, asOwner, scope } = await fixture({ transactionLimits: { databaseQueries: 60 } });
+		const { t, owner, child, asOwner, scope } = await fixture({ transactionLimits: { databaseQueries: 60 } });
 		const nodeId = await child({ name: "list.md" });
-		await frontmatter(nodeId, `items: [${Array.from({ length: 400 }, (_, i) => `item${i}`).join(", ")}]`);
+		// The cap is for the query below. A raw write keeps the setup out of the write wrappers, and this
+		// door reads the docs, not the catalog.
+		await t.run((ctx) =>
+			files_metadata_db_insert_committed(ctx, {
+				...owner,
+				nodeId,
+				markdownContent: `---\nitems: [${Array.from({ length: 400 }, (_, i) => `item${i}`).join(", ")}]\n---\n`,
+			}),
+		);
 		expect(
 			await asOwner.query(api.files_metadata.list_node_fields, {
 				membershipId: scope.membershipId,
@@ -595,17 +582,7 @@ describe("get_field_values", () => {
 		expect(pages).toBeGreaterThan(0);
 		expect(values).toEqual(fields.map((field, i) => ({ field, value: i })));
 
-		const folderFields: string[] = [];
-		afterField = null;
-		for (let page = 0; page < 7; page++) {
-			const result = await catalog(afterField);
-			expect(result?.fields.length).toBeGreaterThan(0);
-			expect(result?.afterField).not.toBe(afterField);
-			folderFields.push(...result!.fields);
-			afterField = result!.afterField;
-			if (result!.isDone) break;
-		}
-		expect(folderFields).toEqual(fields);
+		expect((await catalog()).page).toEqual(fields);
 
 		const nodeFields: string[] = [];
 		let cursor: string | null = null;
@@ -624,7 +601,7 @@ describe("get_field_values", () => {
 	});
 
 	test("fails clearly when auth leaves no headroom for the first field", async () => {
-		const { scope, asOwner, child, parentId } = await fixture({ transactionLimits: { bytesRead: 800_000 } });
+		const { scope, asOwner, child } = await fixture({ transactionLimits: { bytesRead: 800_000 } });
 		const nodeId = await child({ name: "budget.md", entries: [{ key: "status", value: true }] });
 		const target = { kind: "saved" as const, id: nodeId };
 		await expect(
@@ -637,13 +614,6 @@ describe("get_field_values", () => {
 		).rejects.toThrow("Metadata read exceeded its work limit");
 		await expect(
 			asOwner.query(api.files_metadata.list_node_fields, { membershipId: scope.membershipId, target, cursor: null }),
-		).rejects.toThrow("Metadata read exceeded its work limit");
-		await expect(
-			asOwner.query(api.files_metadata.list_folder_fields, {
-				membershipId: scope.membershipId,
-				parentId,
-				afterField: null,
-			}),
 		).rejects.toThrow("Metadata read exceeded its work limit");
 	});
 });
