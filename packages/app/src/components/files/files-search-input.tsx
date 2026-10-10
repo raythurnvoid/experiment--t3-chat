@@ -1,7 +1,8 @@
 import "./files-search-input.css";
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Search, SlidersHorizontal, X } from "lucide-react";
-import { useConvex, useQueries } from "convex/react";
+import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
+import { useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -32,8 +33,13 @@ import {
 	MyInputIcon,
 	type MyInputArea_Props,
 } from "@/components/my-input.tsx";
+import {
+	files_metadata_catalog_key_order,
+	files_metadata_catalog_key_prefixes,
+	useFilesMetadataCatalogPages,
+} from "@/hooks/files-metadata-catalog-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn } from "@/lib/utils.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX, type files_metadata_Value } from "../../../shared/files-metadata.ts";
@@ -113,6 +119,251 @@ const FilesSearchInputFilterChip = memo(function FilesSearchInputFilterChip(prop
 });
 // #endregion search filter chip
 
+// #region search suggestions
+/**
+ * A row that only tells something. It is disabled, so it cannot be picked.
+ */
+const FilesSearchInputSuggestionsMessage = memo(function FilesSearchInputSuggestionsMessage(props: { children: string }) {
+	return (
+		<MyComboboxItem
+			value={`message:${props.children}`}
+			disabled
+			className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
+		>
+			{props.children}
+		</MyComboboxItem>
+	);
+});
+
+/**
+ * Show more for a paged list. It stays active while its page loads, and the caller ignores that
+ * click.
+ */
+const FilesSearchInputSuggestionsMore = memo(function FilesSearchInputSuggestionsMore(props: {
+	label: string;
+	disabled: boolean;
+	loading: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<MyComboboxItem
+			value={`more:${props.label}`}
+			aria-label={props.label}
+			aria-busy={props.loading}
+			disabled={props.disabled}
+			hideOnClick={false}
+			setValueOnClick={false}
+			className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
+			onClick={props.onClick}
+		>
+			Show more
+		</MyComboboxItem>
+	);
+});
+
+const FilesSearchInputSuggestionsError = memo(function FilesSearchInputSuggestionsError(props: ErrorComponentProps) {
+	return (
+		<MyComboboxGroup heading="Suggestions">
+			<FilesSearchInputSuggestionsMessage>Could not load suggestions.</FilesSearchInputSuggestionsMessage>
+			<MyComboboxItem
+				value="retry"
+				hideOnClick={false}
+				setValueOnClick={false}
+				className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
+				onClick={props.reset}
+			>
+				Retry
+			</MyComboboxItem>
+		</MyComboboxGroup>
+	);
+});
+
+/**
+ * Saved keys that start with the typed text, in pages. Rows from an older text stay, disabled,
+ * until the new first page arrives.
+ */
+const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	prefix: string;
+	/**
+	 * The typed text is newer than `prefix`.
+	 */
+	stale: boolean;
+	onPick: (fieldPath: string) => void;
+	/**
+	 * Called with a prefix that starts no saved key.
+	 */
+	onUnmatched: (prefix: string) => void;
+}) {
+	const { membershipId, prefix, stale, onPick, onUnmatched } = props;
+
+	const keys = useFilesMetadataCatalogPages({
+		query: app_convex_api.files_metadata.list_search_fields,
+		membershipId,
+		requests: files_metadata_catalog_key_prefixes(prefix).map((keyPrefix) => ({ membershipId, prefix: keyPrefix })),
+		scope: membershipId,
+		order: (row) => files_metadata_catalog_key_order(row.fieldPath),
+		rowKey: (row) => row.fieldPath,
+	});
+	const isDisabled = stale || keys.updating;
+	const isUnmatched = !isDisabled && keys.status === "Exhausted" && keys.rows.length === 0 && prefix !== "";
+
+	useEffect(() => {
+		if (isUnmatched) {
+			onUnmatched(prefix);
+		}
+	}, [isUnmatched, prefix]);
+
+	// A key in the normal and the Move view stream can have other kinds in each.
+	const kindsByKey = new Map<string, Set<files_metadata_Value["valueKind"]>>();
+	for (const row of keys.loadedRows) {
+		const kinds = kindsByKey.get(row.fieldPath) ?? new Set();
+		for (const kind of row.valueKinds) {
+			kinds.add(kind);
+		}
+		kindsByKey.set(row.fieldPath, kinds);
+	}
+
+	return (
+		<MyComboboxGroup heading="Properties">
+			{keys.rows.map((key) => {
+				const kinds = [...(kindsByKey.get(key.fieldPath) ?? [])]
+					.map((kind) => FilesSearchInput_VALUE_KIND_LABELS[kind])
+					.join(", ");
+				const metadataKind = key.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX) ? "frontmatter" : "metadata";
+				return (
+					<MyComboboxItem
+						key={key.fieldPath}
+						value={key.fieldPath}
+						disabled={isDisabled}
+						hideOnClick={false}
+						setValueOnClick={false}
+						className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
+						title={`${kinds} · ${metadataKind}`}
+						onClick={() => {
+							if (!isDisabled) {
+								onPick(key.fieldPath);
+							}
+						}}
+					>
+						<span className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}>
+							{key.fieldPath}
+						</span>
+						<span className={cn("FilesSearchInput-suggestion-hint" satisfies FilesSearchInput_ClassNames)}>
+							{kinds}
+						</span>
+					</MyComboboxItem>
+				);
+			})}
+			{isDisabled ? (
+				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
+			) : keys.rows.length === 0 ? (
+				<FilesSearchInputSuggestionsMessage>
+					{prefix === "" ? "No saved keys yet" : `No keys start with ${prefix}`}
+				</FilesSearchInputSuggestionsMessage>
+			) : null}
+			{keys.status === "CanLoadMore" || keys.status === "LoadingMore" ? (
+				<FilesSearchInputSuggestionsMore
+					label="Show more keys"
+					disabled={isDisabled}
+					loading={keys.status === "LoadingMore"}
+					onClick={() => {
+						if (!isDisabled && keys.status === "CanLoadMore") {
+							keys.loadMore();
+						}
+					}}
+				/>
+			) : null}
+		</MyComboboxGroup>
+	);
+});
+
+/**
+ * Saved values of one key that start with the typed text, exact case, in pages. `*` and
+ * `true`/`false` come first.
+ */
+const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	fieldPath: string;
+	prefix: string;
+	/**
+	 * The value text as typed, newer than `prefix` while `stale`.
+	 */
+	typed: string;
+	stale: boolean;
+	onPick: (value: string) => void;
+}) {
+	const { membershipId, fieldPath, prefix, typed, stale, onPick } = props;
+
+	const values = useFilesMetadataCatalogPages({
+		query: app_convex_api.files_metadata.list_search_values,
+		membershipId,
+		requests: [{ membershipId, fieldPath, prefix }],
+		scope: `${membershipId}\n${fieldPath}`,
+		order: (value) => value,
+		rowKey: (value) => value,
+	});
+	// The exact key's kinds, not a prefix page, decide the boolean hint.
+	const field = useQuery(app_convex_api.files_metadata.get_search_field, { membershipId, fieldPath });
+	const isDisabled = stale || values.updating;
+
+	const rows: Array<{ value: string; label: string }> = [];
+	const push = (value: string, label = value) => {
+		// A saved value matches exact case, on the server and here, so a row never shows for a prefix
+		// the server will not confirm.
+		if (value.startsWith(typed) && !rows.some((row) => row.value === value)) {
+			rows.push({ value, label });
+		}
+	};
+	if (typed.length === 0) {
+		push("*", "* (any value)");
+	}
+	if (field?.valueKinds.includes("boolean")) {
+		push("true");
+		push("false");
+	}
+	for (const value of values.rows) {
+		push(value);
+	}
+
+	return (
+		<MyComboboxGroup heading={`Values for ${fieldPath}`}>
+			{rows.map((row) => (
+				<MyComboboxItem
+					key={row.value}
+					value={row.value}
+					disabled={isDisabled}
+					setValueOnClick={false}
+					className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
+					onClick={() => {
+						if (!isDisabled) {
+							onPick(row.value);
+						}
+					}}
+				>
+					<span className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}>
+						{row.label}
+					</span>
+				</MyComboboxItem>
+			))}
+			{isDisabled ? <FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage> : null}
+			{values.status === "CanLoadMore" || values.status === "LoadingMore" ? (
+				<FilesSearchInputSuggestionsMore
+					label="Show more values"
+					disabled={isDisabled}
+					loading={values.status === "LoadingMore"}
+					onClick={() => {
+						if (!isDisabled && values.status === "CanLoadMore") {
+							values.loadMore();
+						}
+					}}
+				/>
+			) : null}
+		</MyComboboxGroup>
+	);
+});
+// #endregion search suggestions
+
 // #region search
 type FilesSearchInput_ClassNames =
 	| "FilesSearchInput"
@@ -153,7 +404,10 @@ export type FilesSearchInput_Props = {
 	onSubmit: (searchQuery: string) => boolean;
 };
 
-const FilesSearchInput_SUGGESTIONS_MAX_ROWS = 40;
+/**
+ * The folders a `file.path` value lists. Saved keys and values have no cut: they show in pages.
+ */
+const FilesSearchInput_FOLDER_MAX_ROWS = 40;
 
 const FilesSearchInput_VALUE_KIND_LABELS = {
 	string: "text",
@@ -183,7 +437,6 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
-	const convex = useConvex();
 
 	const [filters, setFilters] = useState(() => files_search_query_parse(initialQuery).filters);
 	const [text, setText] = useState(() => files_search_query_parse(initialQuery).text);
@@ -191,9 +444,8 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	const [isFocused, setIsFocused] = useState(false);
 	const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
 	const [previousQuery, setPreviousQuery] = useState(initialQuery);
-	const [searchFields, setSearchFields] = useState<FunctionReturnType<
-		typeof app_convex_api.files_metadata.list_search_fields
-	> | null>(null);
+	// The last typed key that starts no saved key, as the key rows found on their first page.
+	const [unmatchedKey, setUnmatchedKey] = useState<string | null>(null);
 
 	const localInputRef = useRef<HTMLInputElement>(null);
 	const inputRef = props.inputRef ?? localInputRef;
@@ -217,61 +469,34 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	// The token being typed decides the suggestions: keys while it has no colon, values after it.
 	const typing = files_search_query_typing_token(text);
 	const typingFilter = files_search_query_parse(typing.token).filters[0] ?? null;
-	const typedKey = typing.token.replace(/^!/u, "").toLowerCase();
+	// Saved keys ignore case on the server, so the typed key keeps its case.
+	const typedKey = typing.token.replace(/^!/u, "");
+	const typedKeyDebounced = useDebounce(typedKey, 150);
 	const typedValue =
 		typingFilter === null || typingFilter.match.op === "exists" || typingFilter.match.op === "range"
 			? ""
 			: typingFilter.match.value;
 	const typedValueDebounced = useDebounce(typedValue, 150);
 
-	// One row per qualified field, so the row text is the key the user must type.
-	const catalogKeys = (searchFields ?? []).map((field) => ({
-		fieldPath: field.fieldPath,
-		metadataKind: field.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX) ? "frontmatter" : "metadata",
-		valueKinds: new Set(field.valueKinds),
-	}));
-
-	const matchingKeys = catalogKeys
-		.filter((key) => key.fieldPath.toLowerCase().includes(typedKey))
-		.slice(0, FilesSearchInput_SUGGESTIONS_MAX_ROWS);
 	const matchingFileFields =
 		typingFilter === null
-			? files_search_query_FILE_FIELDS.map((field) => `file.${field}`).filter((field) => field.includes(typedKey))
+			? files_search_query_FILE_FIELDS.map((field) => `file.${field}`).filter((field) =>
+					field.includes(typedKey.toLowerCase()),
+				)
 			: [];
-	// A plain search word stays in the query when the user adds a filter.
-	const isNewFilter = typingFilter === null && matchingKeys.length === 0 && matchingFileFields.length === 0;
-	const keyRows = isNewFilter ? catalogKeys.slice(0, FilesSearchInput_SUGGESTIONS_MAX_ROWS) : matchingKeys;
+	// A plain search word stays in the query when the user adds a filter. A word is plain when it
+	// starts no saved key and no file field. Then every key and file field shows.
+	const isNewFilter = typingFilter === null && matchingFileFields.length === 0 && unmatchedKey === typedKey;
 	const fileFieldRows = isNewFilter
 		? files_search_query_FILE_FIELDS.map((field) => `file.${field}`)
 		: matchingFileFields;
+	const keyPrefix = isNewFilter ? "" : typedKeyDebounced;
 
-	// A range value (`>2`) has nothing to complete. A `file.*` key completes from its own query below.
-	// The fields are joined into one string so the memo below depends on plain strings only. The
-	// template literal makes the React Compiler see a plain string. With a bare `.join()` result
-	// the compiler cannot preserve the manual `useMemo` below and the
-	// `react-hooks/preserve-manual-memoization` lint fails.
-	const valueQueryFields =
-		isFocused && typingFilter !== null && typingFilter.match.op !== "range"
-			? `${files_search_query_field_paths(typingFilter.key).join("\n")}`
-			: "";
-
-	// Keep manual `useMemo` here. Convex `useQueries` re-subscribes with a render-phase setState
-	// whenever the queries object identity changes, so an inline object loops the render until
-	// React throws. Build the object once per typed token.
-	const valueQueries = useMemo(
-		() =>
-			Object.fromEntries(
-				(valueQueryFields === "" ? [] : valueQueryFields.split("\n")).map((fieldPath) => [
-					fieldPath,
-					{
-						query: app_convex_api.files_metadata.list_search_values,
-						args: { membershipId, fieldPath, prefix: typedValueDebounced },
-					},
-				]),
-			),
-		[membershipId, valueQueryFields, typedValueDebounced],
-	);
-	const valueResults = useQueries(valueQueries);
+	// A range value (`>2`) has nothing to complete. A `file.*` key completes from the rows below.
+	const valueFieldPath =
+		typingFilter !== null && typingFilter.match.op !== "range"
+			? (files_search_query_field_paths(typingFilter.key)[0] ?? null)
+			: null;
 
 	// A `file.path` value completes from the saved folders the user can read, found by the words of
 	// the last part of the typed path. The rows below keep the folders whose path holds the whole text.
@@ -279,7 +504,9 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		isFocused && typingFilter?.key.namespace === "file" && typingFilter.key.name === "path"
 			? (typedValueDebounced.split("/").findLast((part) => part.length > 0) ?? "")
 			: "";
-	// Keep manual `useMemo` for the same reason as `valueQueries` above.
+	// Keep manual `useMemo` here. Convex `useQueries` re-subscribes with a render-phase setState
+	// whenever the queries object identity changes, so an inline object loops the render until
+	// React throws. Build the object once per typed text.
 	const folderQueries = useMemo(
 		() =>
 			Object.fromEntries(
@@ -293,7 +520,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 									args: {
 										membershipId,
 										clause: { kind: "name", text: folderQueryText, nodeKind: "folder" },
-										paginationOpts: { numItems: FilesSearchInput_SUGGESTIONS_MAX_ROWS, cursor: null },
+										paginationOpts: { numItems: FilesSearchInput_FOLDER_MAX_ROWS, cursor: null },
 									},
 								},
 							],
@@ -304,79 +531,41 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	const folderResult: FunctionReturnType<typeof app_convex_api.files_nodes.search_saved> | Error | undefined =
 		useQueries(folderQueries).folders;
 
-	const valueRows = ((/* iife */) => {
-		if (typingFilter === null || typingFilter.match.op === "range") {
+	// A `file.*` value completes here. Saved values show in `FilesSearchInputValueRows`.
+	const fileValueRows = ((/* iife */) => {
+		if (typingFilter === null || typingFilter.match.op === "range" || typingFilter.key.namespace !== "file") {
 			return [];
 		}
 
 		// A typed path is read the way the filter will read it, so `tasks` still lists `/tasks`.
 		const typedFileValue =
-			typingFilter.key.namespace !== "file" || typedValue.length === 0
-				? typedValue
-				: typingFilter.key.name === "path"
-					? files_search_query_folder_path(typedValue)
-					: typedValue;
+			typedValue.length > 0 && typingFilter.key.name === "path" ? files_search_query_folder_path(typedValue) : typedValue;
 		const typedValueLower = typedFileValue.toLowerCase();
-		const rows: Array<{ value: string; label: string }> = [];
-		const push = (value: string, label = value) => {
-			// A metadata value matches exact case, on the server and here, so a row never shows for a
-			// prefix the server will not confirm. File values ignore case here, and a row writes the
-			// stored value, so a picked path has the exact case the filter needs. A folder
-			// is listed when its path contains the typed text, without the leading slash the filter
-			// adds, so `tasks` lists `/projects/tasks` and `arch` lists `/tasks-archive`.
+		const rows: string[] = [];
+		const push = (value: string) => {
+			// File values ignore case here, and a row writes the stored value, so a picked path has the
+			// exact case the filter needs. A folder is listed when its path contains the typed text,
+			// without the leading slash the filter adds, so `tasks` lists `/projects/tasks` and `arch`
+			// lists `/tasks-archive`.
 			const matchesTyped =
-				typingFilter.key.namespace === "file"
-					? typingFilter.key.name === "path"
-						? value.toLowerCase().includes(typedValueLower.replace(/^\//u, ""))
-						: value.toLowerCase().startsWith(typedValueLower)
-					: value.startsWith(typedFileValue);
-			if (matchesTyped && !rows.some((row) => row.value === value)) {
-				rows.push({ value, label });
+				typingFilter.key.name === "path"
+					? value.toLowerCase().includes(typedValueLower.replace(/^\//u, ""))
+					: value.toLowerCase().startsWith(typedValueLower);
+			if (matchesTyped && !rows.includes(value)) {
+				rows.push(value);
 			}
 		};
 
-		if (typingFilter.key.namespace === "file") {
-			if (typingFilter.key.name === "link") {
-				push("public");
-			} else if (typingFilter.key.name === "path" && folderResult && !(folderResult instanceof Error)) {
-				const folderPaths = folderResult.page.flatMap((row) => (row.kind === "folder" ? [row.path] : [])).sort();
-				for (const path of folderPaths) {
-					push(path);
-				}
-			}
-
-			return rows.slice(0, FilesSearchInput_SUGGESTIONS_MAX_ROWS);
-		}
-
-		if (typedValue.length === 0) {
-			push("*", "* (any value)");
-		}
-		if (
-			catalogKeys
-				.find((key) => key.fieldPath === `${typingFilter.key.namespace}.${typingFilter.key.name}`)
-				?.valueKinds.has("boolean")
-		) {
-			push("true");
-			push("false");
-		}
-
-		const serverValues = new Set<string>();
-		for (const fieldPath of Object.keys(valueQueries)) {
-			const values = valueResults[fieldPath];
-			if (!Array.isArray(values)) {
-				continue;
-			}
-			for (const value of values) {
-				if (typeof value === "string") {
-					serverValues.add(value);
-				}
+		if (typingFilter.key.name === "link") {
+			push("public");
+		} else if (typingFilter.key.name === "path" && folderResult && !(folderResult instanceof Error)) {
+			const folderPaths = folderResult.page.flatMap((row) => (row.kind === "folder" ? [row.path] : [])).sort();
+			for (const path of folderPaths) {
+				push(path);
 			}
 		}
-		for (const value of [...serverValues].sort()) {
-			push(value);
-		}
 
-		return rows.slice(0, FilesSearchInput_SUGGESTIONS_MAX_ROWS);
+		return rows;
 	})();
 
 	const matchStatus = isSearchLoading
@@ -516,19 +705,11 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		) {
 			setIsSuggestionsOpen(true);
 		}
-
-		// Read the key catalog once per focus instead of subscribing to it. A subscription would
-		// walk every key again after each metadata write in the workspace while the box is focused.
-		convex
-			.query(app_convex_api.files_metadata.list_search_fields, { membershipId })
-			.then(setSearchFields)
-			.catch((error: unknown) => {
-				console.error("[FilesSearchInput.handleInputFocus] Failed to load the search key catalog", {
-					error,
-					membershipId,
-				});
-			});
 	});
+
+	const handleSuggestionsError = useFn((error: unknown) =>
+		console.error("[FilesSearchInput] Failed to load search suggestions", { error, membershipId }),
+	);
 
 	const handleInputBlur = useFn<NonNullable<MyComboboxInputControl_Props["onBlur"]>>(() => {
 		setIsFocused(false);
@@ -673,30 +854,23 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 				>
 					<MyComboboxList aria-label="Search suggestions">
 						<MyComboboxPopoverContent>
-							{keyRows.length > 0 ? (
-								<MyComboboxGroup heading="Properties">
-									{keyRows.map((key) => (
-										<MyComboboxItem
-											key={key.fieldPath}
-											value={key.fieldPath}
-											hideOnClick={false}
-											setValueOnClick={false}
-											className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
-											title={`${[...key.valueKinds].map((kind) => FilesSearchInput_VALUE_KIND_LABELS[kind]).join(", ")} · ${key.metadataKind}`}
-											onClick={() => pickKey(key.fieldPath)}
-										>
-											<span className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}>
-												{key.fieldPath}
-											</span>
-											<span className={cn("FilesSearchInput-suggestion-hint" satisfies FilesSearchInput_ClassNames)}>
-												{[...key.valueKinds].map((kind) => FilesSearchInput_VALUE_KIND_LABELS[kind]).join(", ")}
-											</span>
-										</MyComboboxItem>
-									))}
-								</MyComboboxGroup>
+							{typingFilter === null ? (
+								<CatchBoundary
+									getResetKey={() => `${membershipId}\n${keyPrefix}`}
+									onCatch={handleSuggestionsError}
+									errorComponent={FilesSearchInputSuggestionsError}
+								>
+									<FilesSearchInputKeyRows
+										membershipId={membershipId}
+										prefix={keyPrefix}
+										stale={!isNewFilter && typedKey !== typedKeyDebounced}
+										onPick={pickKey}
+										onUnmatched={setUnmatchedKey}
+									/>
+								</CatchBoundary>
 							) : null}
 							{fileFieldRows.length > 0 ? (
-								<MyComboboxGroup heading="File details" separator={keyRows.length > 0}>
+								<MyComboboxGroup heading="File details" separator={typingFilter === null}>
 									{fileFieldRows.map((field) => (
 										<MyComboboxItem
 											key={field}
@@ -713,22 +887,38 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 									))}
 								</MyComboboxGroup>
 							) : null}
-							{valueRows.length > 0 ? (
+							{fileValueRows.length > 0 ? (
 								<MyComboboxGroup heading={`Values for ${typingFilter?.key.namespace}.${typingFilter?.key.name}`}>
-									{valueRows.map((row) => (
+									{fileValueRows.map((value) => (
 										<MyComboboxItem
-											key={row.value}
-											value={row.value}
+											key={value}
+											value={value}
 											setValueOnClick={false}
 											className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
-											onClick={() => pickValue(row.value)}
+											onClick={() => pickValue(value)}
 										>
 											<span className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}>
-												{row.label}
+												{value}
 											</span>
 										</MyComboboxItem>
 									))}
 								</MyComboboxGroup>
+							) : null}
+							{valueFieldPath !== null ? (
+								<CatchBoundary
+									getResetKey={() => `${membershipId}\n${valueFieldPath}\n${typedValueDebounced}`}
+									onCatch={handleSuggestionsError}
+									errorComponent={FilesSearchInputSuggestionsError}
+								>
+									<FilesSearchInputValueRows
+										membershipId={membershipId}
+										fieldPath={valueFieldPath}
+										prefix={typedValueDebounced}
+										typed={typedValue}
+										stale={typedValue !== typedValueDebounced}
+										onPick={pickValue}
+									/>
+								</CatchBoundary>
 							) : null}
 						</MyComboboxPopoverContent>
 					</MyComboboxList>

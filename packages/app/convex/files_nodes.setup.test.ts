@@ -236,7 +236,7 @@ export async function seed_tree_access_fixture(t: ReturnType<typeof test_convex>
 	};
 }
 
-export type Page = FunctionReturnType<typeof api.files_nodes.list_tree_children_sorted>;
+type Page = FunctionReturnType<typeof api.files_nodes.list_tree_children_sorted>;
 
 /**
  * A folder `/table` for the folder table queries, with helpers that add children and read its sorted pages.

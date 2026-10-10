@@ -393,6 +393,15 @@ type PendingViewFixture =
 	  };
 let savedPendingUpdate: unknown;
 let pendingListStatus: "CanLoadMore" | "LoadingMore" | "Exhausted";
+
+/**
+ * A page of folder keys: the keys that start with the request's prefix, without case.
+ */
+function test_folder_keys(fields: string[], args: unknown) {
+	if (args === "skip") return [];
+	const prefix = (args as { prefix: string }).prefix.toLowerCase();
+	return fields.filter((field) => field.toLowerCase().startsWith(prefix));
+}
 // Restricted children shared with this member, on their own share stream.
 let sharedRows: (typeof NODE)[];
 // What `has_tree_children_shared` answers.
@@ -614,7 +623,7 @@ beforeEach(() => {
 			case "files_metadata:list_search_fields":
 				return [{ fieldPath: "metadata.status", valueKinds: ["string"] }];
 			case "files_metadata:list_folder_fields":
-				return { fields: ["metadata.status"], afterField: "metadata.status", isDone: true };
+				return test_folder_keys(["metadata.status"], args);
 			case "files_metadata:get_field_values": {
 				const { fields } = args as { fields: string[] };
 				return {
@@ -2257,7 +2266,7 @@ describe("FileNodeView folder columns", () => {
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) =>
 			getFunctionName(reference) === "files_metadata:list_folder_fields"
-				? { fields: ["metadata.alpha", "metadata.beta", "metadata.zeta"], afterField: "metadata.zeta", isDone: true }
+				? test_folder_keys(["metadata.alpha", "metadata.beta", "metadata.zeta"], args)
 				: previousQuery(reference, args),
 		);
 		const view = renderFileView({ nodeId: node._id });
@@ -2330,7 +2339,7 @@ describe("FileNodeView folder columns", () => {
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) =>
 			getFunctionName(reference) === "files_metadata:list_folder_fields"
-				? { fields: [], afterField: null, isDone: true }
+				? []
 				: previousQuery(reference, args),
 		);
 		renderFileView({ nodeId: node._id });
@@ -2348,52 +2357,48 @@ describe("FileNodeView folder columns", () => {
 		expect(document.activeElement).toBe(trigger);
 	});
 
-	test("loads another catalog page only on Show more fields and retries a failed page from the start", async () => {
+	test("searches folder keys on the server, pages them on Show more fields, and retries a failed read", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node];
-		let failed = true;
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		let failed = false;
+		const prefixes: string[] = [];
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) => {
 			if (getFunctionName(reference) !== "files_metadata:list_folder_fields") return previousQuery(reference, args);
-			if (args.afterField === null) return { fields: ["metadata.alpha"], afterField: "metadata.alpha", isDone: false };
-			return failed
-				? new Error("Read failed")
-				: { fields: ["metadata.beta"], afterField: "metadata.beta", isDone: true };
+			if (args === "skip") return [];
+			prefixes.push(args.prefix);
+			if (failed) throw new Error("Read failed");
+			const keys = test_folder_keys(["metadata.alpha", "metadata.beta"], args);
+			return { results: keys.slice(0, 1), status: keys.length > 1 ? "CanLoadMore" : "Exhausted" };
 		});
 		renderFileView({ nodeId: node._id });
 		fireEvent.click(await screen.findByRole("button", { name: "Columns" }));
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
 		expect(within(chooser).getByRole("checkbox", { name: "metadata.alpha" })).toBeTruthy();
-		expect(
-			queryMock.mock.calls.some(
-				([reference, args]) =>
-					getFunctionName(reference) === "files_metadata:list_folder_fields" && args.afterField !== null,
-			),
-		).toBe(false);
-		fireEvent.change(within(chooser).getByRole("textbox", { name: "Search columns" }), { target: { value: "beta" } });
-		expect(within(chooser).getByText("No loaded fields match")).toBeTruthy();
-		fireEvent.change(within(chooser).getByRole("textbox", { name: "Search columns" }), { target: { value: "" } });
+		expect(within(chooser).queryByRole("checkbox", { name: "metadata.beta" })).toBeNull();
 		fireEvent.click(within(chooser).getByRole("button", { name: "Show more fields" }));
-		expect(await within(chooser).findByText("Fields could not be loaded")).toBeTruthy();
+		expect(loadMorePendingMock).toHaveBeenCalledWith(50);
+
+		// The search asks the server, so a key after the loaded page shows at once.
+		const search = within(chooser).getByRole("textbox", { name: "Search columns" });
+		fireEvent.change(search, { target: { value: "BETA" } });
+		expect(await within(chooser).findByRole("checkbox", { name: "metadata.beta" })).toBeTruthy();
 		expect(within(chooser).queryByRole("checkbox", { name: "metadata.alpha" })).toBeNull();
-		const callsAtFailure = queryMock.mock.calls.filter(
-			([reference]) => getFunctionName(reference) === "files_metadata:list_folder_fields",
-		).length;
-		await act(async () => {});
-		expect(
-			queryMock.mock.calls.filter(([reference]) => getFunctionName(reference) === "files_metadata:list_folder_fields"),
-		).toHaveLength(callsAtFailure);
-		const hookId = querySetsMock.mock.calls.findLast(([, queries]) =>
-			Object.values(queries).some((query) => getFunctionName(query.query) === "files_metadata:list_folder_fields"),
-		)![0];
-		querySetsMock.mockClear();
+		expect(prefixes).toContain("metadata.BETA");
+
+		// A failed read stays in the menu and keeps the search text.
+		failed = true;
+		fireEvent.change(search, { target: { value: "alp" } });
+		// Wait for the debounced text, so only Retry can bring the list back.
+		await waitFor(() => expect(prefixes).toContain("frontmatter.alp"));
+		expect(await within(chooser).findByText("Fields could not be loaded")).toBeTruthy();
+		expect(search).toHaveProperty("value", "alp");
 		failed = false;
 		fireEvent.click(within(chooser).getByRole("button", { name: "Retry" }));
-		expect(await within(chooser).findByRole("checkbox", { name: "metadata.beta" })).toBeTruthy();
-		expect(querySetsMock.mock.calls.some(([id, queries]) => id === hookId && Object.keys(queries).length === 0)).toBe(
-			true,
-		);
+		expect(await within(chooser).findByRole("checkbox", { name: "metadata.alpha" })).toBeTruthy();
 		expect(within(chooser).queryByText("Fields could not be loaded")).toBeNull();
+		consoleError.mockRestore();
 	});
 
 	test("shows the updater's name, Loading… while it loads, and Unknown when no name is found", async () => {
@@ -2763,6 +2768,68 @@ describe("FileNodeView folder filter", () => {
 			"Use one filter, or 'name starts with' plus one 'is' filter",
 		);
 		expect(input).toHaveProperty("value", "file.name:starts_with:xyz");
+	});
+
+	test("the bar pages the folder's keys and saved values from the server, and retries a failed list", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		let failed = false;
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			const name = getFunctionName(reference);
+			if (name === "files_metadata:list_folder_fields") {
+				return test_folder_keys(["metadata.status", "metadata.stage", "frontmatter.title"], args);
+			}
+			if (name !== "files_metadata:list_search_values") return previousQuery(reference, args);
+			if (args === "skip") return [];
+			if (failed) throw new Error("Read failed");
+			const values = ["open", "opened", "fixed"].filter((value) => value.startsWith(args.prefix));
+			return { results: values, status: args.prefix === "" ? "CanLoadMore" : "Exhausted" };
+		});
+		// Render by hand: the debounce writes from an effect, and the harness would rerender inside it.
+		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
+			wrapper: ({ children }) => (
+				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
+					<FilesClipboardProvider membershipId={tenantContextMock().membershipId}>{children}</FilesClipboardProvider>
+				</AppActivitiesProvider>
+			),
+		});
+		const input = await screen.findByRole("combobox", { name: "Filter and sort this folder" });
+		act(() => input.focus());
+		const labels = (heading: string) =>
+			within(screen.getByRole("group", { name: heading }))
+				.getAllByRole("option")
+				.map((option) => option.querySelector(".FileNodeViewFolderFilterBar-suggestion-label")?.textContent ?? option.textContent);
+
+		// A key prefix asks the server, one prefix per namespace, without case.
+		fireEvent.change(input, { target: { value: "ST" } });
+		await waitFor(() => expect(labels("Filter by")).toEqual(["metadata.stage", "metadata.status"]));
+		expect(queryMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ prefix: "frontmatter.ST" }));
+		fireEvent.change(input, { target: { value: "sort_by:tit" } });
+		await waitFor(() => expect(labels("Sort by")).toEqual(["frontmatter.title"]));
+		fireEvent.change(input, { target: { value: "zzz" } });
+		expect(await screen.findByRole("option", { name: "No keys start with zzz" })).toBeTruthy();
+
+		// Values page with Show more, and keep exact case.
+		fireEvent.change(input, { target: { value: "metadata.status:is:" } });
+		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["fixed", "open", "opened", "Show more"]));
+		fireEvent.click(screen.getByRole("option", { name: "Show more values" }));
+		expect(loadMorePendingMock).toHaveBeenCalledWith(50);
+		fireEvent.change(input, { target: { value: "metadata.status:is:op" } });
+		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["open", "opened"]));
+
+		// A failed list stays in its group, keeps the text, and retries.
+		failed = true;
+		fireEvent.change(input, { target: { value: "metadata.status:is:f" } });
+		// Wait for the debounced text, so only Retry can bring the list back.
+		await waitFor(() =>
+			expect(queryMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ prefix: "f" })),
+		);
+		expect(await screen.findByRole("option", { name: "Could not load suggestions." })).toBeTruthy();
+		expect(input).toHaveProperty("value", "metadata.status:is:f");
+		failed = false;
+		fireEvent.click(screen.getByRole("option", { name: "Retry" }));
+		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["fixed"]));
+		consoleError.mockRestore();
 	});
 
 	test("the bar suggests only the filters that can join the committed one", async () => {

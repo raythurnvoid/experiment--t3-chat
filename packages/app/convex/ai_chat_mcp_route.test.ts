@@ -640,23 +640,6 @@ describe("/api/chat MCP tool calls", () => {
 		},
 	);
 
-	test("refuses a call over the per-member server rate limit", async () => {
-		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
-		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
-
-		// The bucket holds 60 calls and refills 2 per second. Freeze the clock so nothing refills, and
-		// the 61st call is refused before any request.
-		vi.useFakeTimers({ toFake: ["Date"] });
-		for (let index = 0; index < 60; index++) {
-			expect((await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } })).error).toBeNull();
-		}
-		const refused = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } });
-
-		expect(refused.error).toBe("Rate limit exceeded");
-		expect(tools_calls()).toHaveLength(60);
-	});
-
 	test("gives each server of one plugin its own rate limit bucket", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const installed = await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
@@ -679,6 +662,8 @@ describe("/api/chat MCP tool calls", () => {
 		});
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
+		// The bucket holds 60 calls and refills 2 per second. Freeze the clock so nothing refills, and
+		// the 61st call is refused before any request.
 		vi.useFakeTimers({ toFake: ["Date"] });
 		for (let index = 0; index < 60; index++) {
 			expect((await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } })).error).toBeNull();

@@ -7,6 +7,7 @@ import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { test_convex, test_rename_node, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 // Scheduled steps never run on their own under fake timers. Each test drives `advance` itself.
 // Move the clock with `vi.setSystemTime`. `vi.advanceTimersByTime` would also run the scheduled step.
@@ -76,6 +77,42 @@ async function hide(f: Fixture, nodeId: Id<"files_nodes">) {
 			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		}),
 	);
+}
+
+/**
+ * Insert empty folders in `/box` in one transaction, each its own restricted scope, like `folder()`
+ * then `hide()` for each name. A step reads only these nodes and their access.
+ */
+async function hidden_folders(f: Fixture, box: Id<"files_nodes">, names: string[]) {
+	return await f.t.run(async (ctx) => {
+		const ids: Id<"files_nodes">[] = [];
+		for (const name of names) {
+			const nodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId: box,
+				name,
+				sortName: files_sort_text_key(name),
+				path: `/box/${name}`,
+				treePath: `/box/${name}/`,
+				pathDepth: 2,
+				ancestor1: box,
+			});
+			await files_nodes_db_set_restricted_scope({
+				ctx,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				nodeId,
+				restrictedScopeNodeId: nodeId,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			});
+			ids.push(nodeId);
+		}
+		return ids;
+	});
 }
 
 async function restrict(f: Fixture, nodeId: Id<"files_nodes">) {
@@ -407,7 +444,11 @@ describe("advance", () => {
 		// This read limit fits one read of each node, but not those repeated pages.
 		const f = await fixture({ documentsRead: 4_000 });
 		const box = await folder(f, "/box");
-		for (let index = 0; index < 200; index++) await hide(f, await folder(f, `/box/h${String(index).padStart(3, "0")}`));
+		await hidden_folders(
+			f,
+			box,
+			Array.from({ length: 200 }, (_, index) => `h${String(index).padStart(3, "0")}`),
+		);
 		const after = await folder(f, "/box/z");
 
 		const finished = await run_to_end(f, await start_as_member(f, box));
@@ -438,7 +479,11 @@ describe("advance", () => {
 		// passed exactly 199 hidden items. Step 2 checks only hidden folders, and its 200th check is the
 		// hidden folder `i`. Step 3 must start after everything inside `i`.
 		await folder(f, "/box/a");
-		for (let index = 0; index < 398; index++) await hide(f, await folder(f, `/box/h${String(index).padStart(3, "0")}`));
+		await hidden_folders(
+			f,
+			box,
+			Array.from({ length: 398 }, (_, index) => `h${String(index).padStart(3, "0")}`),
+		);
 		const hidden = await folder(f, "/box/i");
 		const inner = await folder(f, "/box/i/g");
 		const after = await folder(f, "/box/z");
@@ -473,11 +518,33 @@ describe("advance", () => {
 		const box = await folder(f, "/box");
 		// Each page holds one hidden folder and its 49 items. Only the folder is checked, so 20 pages
 		// make 1,000 reads but only 20 checks.
-		for (let index = 0; index < 21; index++) {
-			const hidden = `/box/h${String(index).padStart(2, "0")}`;
-			await hide(f, await folder(f, hidden));
-			for (let child = 0; child < 49; child++) await folder(f, `${hidden}/c${String(child).padStart(2, "0")}`);
-		}
+		const names = Array.from({ length: 21 }, (_, index) => `h${String(index).padStart(2, "0")}`);
+		const hiddenIds = await hidden_folders(f, box, names);
+		// The step only reads the items of a hidden folder and never checks them.
+		await f.t.run(async (ctx) => {
+			for (const [index, hiddenId] of hiddenIds.entries()) {
+				for (let child = 0; child < 49; child++) {
+					const name = `c${String(child).padStart(2, "0")}`;
+					const path = `/box/${names[index]}/${name}`;
+					await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						createdBy: f.db.userId,
+						updatedBy: f.db.userId,
+						parentId: hiddenId,
+						name,
+						sortName: files_sort_text_key(name),
+						path,
+						treePath: `${path}/`,
+						pathDepth: 3,
+						ancestor1: box,
+						ancestor2: hiddenId,
+						restrictedScopeNodeId: hiddenId,
+					});
+				}
+			}
+		});
 
 		const activityId = await start_as_member(f, box);
 		const first = await step(f, activityId);
@@ -616,7 +683,11 @@ describe("advance", () => {
 		const box = await folder(f, "/box");
 		// Step 1 updates `a`, then stops at the check limit on the hidden folders and shows nothing yet.
 		const a = await folder(f, "/box/a");
-		for (let index = 0; index < 199; index++) await hide(f, await folder(f, `/box/h${String(index).padStart(3, "0")}`));
+		await hidden_folders(
+			f,
+			box,
+			Array.from({ length: 199 }, (_, index) => `h${String(index).padStart(3, "0")}`),
+		);
 		await folder(f, "/box/z");
 
 		const activityId = await start_as_member(f, box);

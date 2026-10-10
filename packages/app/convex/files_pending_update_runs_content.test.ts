@@ -806,12 +806,14 @@ describe("review job content", () => {
 	);
 
 	// The mock database makes these large cases slow.
-	test("saves more than 200 Copy media before its document and keeps one unit per output", async () => {
+	test("saves more than 100 Copy media before its document and keeps one unit per output", async () => {
 		const f = await fixture();
 		const source = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...f.scope, path: "/source" });
 		if (source._nay) throw new Error(source._nay.message);
 		const images = [];
-		for (let index = 0; index < 201; index++)
+		// 101 media and the document need 2 selection pages of 100, 3 dependency pages of 50, 5 media
+		// validation pages of 25, and 13 plan pages of 8.
+		for (let index = 0; index < 101; index++)
 			images.push(await private_media({ f, path: `/image-${index}.png`, sourceId: source._yay.nodeId }));
 		const text = images.map(({ dependency }) => `![Image](${dependency.src})`).join("\n\n") + "\n";
 		const document = await attach_media({
@@ -822,19 +824,19 @@ describe("review job content", () => {
 		});
 		const runId = await start_review({ f, proposals: [document, ...images.map(({ pending }) => pending)] });
 		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
-		expect(units).toHaveLength(202);
+		expect(units).toHaveLength(102);
 		expect(units.every((unit) => unit.kind === "cohort" && unit.itemCount === 1)).toBe(true);
 		expect(units.find((unit) => unit.order === 0)).toMatchObject({
 			status: "waiting",
-			remainingPrerequisiteCount: 201,
+			remainingPrerequisiteCount: 101,
 		});
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_dependencies").collect())).toHaveLength(201);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_dependencies").collect())).toHaveLength(101);
 		const result = await finish_review({ f, runId, stepMs: 1_200 });
-		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 202 } });
+		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 102 } });
 		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-		expect(saved).toHaveLength(203);
+		expect(saved).toHaveLength(103);
 		expect(await saved_text(f, saved.find((node) => node.path === "/document.md")!._id)).toBe(text);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(202);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(102);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 		const documentUnit = await f.t.run((ctx) =>
 			ctx.db.get("files_pending_update_run_units", units.find((unit) => unit.order === 0)!._id),
@@ -851,8 +853,8 @@ describe("review job content", () => {
 		expect(content?.mediaProof).toMatchObject({
 			reviewedRevision: document.revision,
 			selectedContentStateId: document.content?.unstagedStateId,
-			expectedCount: 201,
-			validatedCount: 201,
+			expectedCount: 101,
+			validatedCount: 101,
 			sealed: true,
 		});
 	}, 10_800_000);

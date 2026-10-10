@@ -362,9 +362,10 @@ async function seed_history(
 }
 
 describe("plugins_volumes_db_schedule_volume_drain", () => {
-	test("self-continues until all six file scope tables of a 500-file volume are empty", async () => {
+	test("self-continues until all six file scope tables of a 34-file volume are empty", async () => {
 		const f = await fixture();
-		await f.t.run((ctx) => seed_generation(ctx, { ...f, status: "published", fileCount: 500 }));
+		// A file has 6 scope rows and DRAIN_BATCH_SIZE is 200, so 34 files (205 rows with the folder) need two batches.
+		await f.t.run((ctx) => seed_generation(ctx, { ...f, status: "published", fileCount: 34 }));
 		await f.t.run((ctx) => plugins_volumes_db_schedule_volume_drain(ctx, { volumeId: f.volumeId }));
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 		expect(await read_scope_counts(f.t, f.volumeId), "volume drain must empty all six scope tables").toEqual(
@@ -376,7 +377,7 @@ describe("plugins_volumes_db_schedule_volume_drain", () => {
 			fileCount: 0,
 			bytes: 0,
 		});
-		expect(deleteObjectSpy).toHaveBeenCalledTimes(500);
+		expect(deleteObjectSpy).toHaveBeenCalledTimes(34);
 	});
 
 	test("two cron ticks keep one leased loop and an expired lease gets a new owner", async () => {

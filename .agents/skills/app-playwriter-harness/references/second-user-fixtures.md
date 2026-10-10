@@ -116,7 +116,7 @@ A freshly minted anonymous user now gets an auto-seeded `billing_usage_snapshots
 Owner-side fixture calls:
 
 - `files_nodes.create_folder_node({ membershipId, parentId: "root", path })`
-- `files_nodes_content.create_text_node({ membershipId, parentId, path })` (an action, not a mutation)
+- `files_nodes_content.create_text_node({ membershipId, parentId, path })` (an action, not a mutation). It makes an empty file. `replace_file_content` answers `Not found` on a collaborative file, so to give a fixture one line of text, turn collaboration off for that file first (seen 2026-10-10).
 - `files_sharing.restrict_node({ membershipId, nodeId })`
 - `files_sharing.set_node_share_grant({ membershipId, nodeId, principal: { kind: "user", userId }, level: "read" | "write" | "manage" })` — `nodeId` must be the restricted node itself
 - `files_transfer.start({ membershipId, requestId, kind: "move", expectedSourceCount, sourceIds, targetParentId })` — append further input pages with `append_sources`, then call `seal`. Wait for `get` to report the final Activity and read the item results with `list_items`.

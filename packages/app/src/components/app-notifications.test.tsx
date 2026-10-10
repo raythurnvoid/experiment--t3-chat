@@ -32,8 +32,8 @@ vi.mock("@/components/files/files-clipboard.tsx", () => ({
 
 // The provider owns visibility. The modal has its own query and control tests.
 vi.mock("@/components/files/files-pending-review.tsx", () => ({
-	FilesPendingReviewModal: (props: { runId: string; onClose: () => void }) => (
-		<div role="dialog" aria-label={`Review ${props.runId}`}>
+	FilesPendingReviewModal: (props: { runId: string; kind?: string; onClose: () => void }) => (
+		<div role="dialog" aria-label={`Review ${props.runId}`} data-kind={props.kind}>
 			<button onClick={props.onClose}>Hide review</button>
 		</div>
 	),
@@ -399,7 +399,8 @@ describe("AppNotifications", () => {
 		expect(screen.queryByRole("progressbar")).toBeNull();
 		expect(screen.queryByRole("button", { name: "Stop and keep completed changes" })).toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "Open" }));
-		expect(screen.getByRole("dialog", { name: "Review review_1" })).toBeTruthy();
+		// The card passes the run kind, so the dialog heading is right before the run loads.
+		expect(screen.getByRole("dialog", { name: "Review review_1" }).getAttribute("data-kind")).toBe("accept");
 		fireEvent.click(screen.getByRole("button", { name: "Hide review" }));
 		fireEvent.click(screen.getByRole("button", { name: "Open" }));
 		expect(screen.getByRole("dialog", { name: "Review review_1" })).toBeTruthy();

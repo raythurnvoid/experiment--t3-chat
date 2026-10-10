@@ -997,7 +997,8 @@ describe("files_pending_nodes_db_discard", () => {
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 		const startedAt = Date.now();
-		for (let index = 0; index < 256; index++) {
+		// The parent and its 24 children need 4 expiry runs of 8.
+		for (let index = 0; index < 24; index++) {
 			const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 				...scope,
 				path: `/parent/child-${index}`,
@@ -1006,7 +1007,7 @@ describe("files_pending_nodes_db_discard", () => {
 			expect(created._nay).toBeUndefined();
 		}
 		const oldProposals = await t.run((ctx) => ctx.db.query("files_pending_updates").collect());
-		expect(oldProposals).toHaveLength(257);
+		expect(oldProposals).toHaveLength(25);
 		const parent = await t.run((ctx) =>
 			ctx.db
 				.query("files_pending_nodes")
@@ -1037,11 +1038,14 @@ describe("files_pending_nodes_db_discard", () => {
 
 		// The old children expire in runs of 8. The parent waits while the newer child is live.
 		vi.setSystemTime(startedAt + 4 * 60 * 60 * 1000);
+		// The first run takes the parent and 7 children, and discards only the children.
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope);
+		expect(await t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect())).toHaveLength(7);
 		await expire_drafts(t, scope);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", parent._id))).toEqual(parent);
-		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(258);
+		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(26);
 		const cleanupTasks = await t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect());
-		expect(cleanupTasks).toHaveLength(256);
+		expect(cleanupTasks).toHaveLength(24);
 		for (const task of cleanupTasks)
 			await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: task.privateNodeId });
 		vi.setSystemTime(Date.now() + 60_000);
@@ -1068,7 +1072,7 @@ describe("files_pending_nodes_db_discard", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 		const reservations = await t.run((ctx) => ctx.db.query("files_private_storage_reservations").collect());
-		expect(reservations).toHaveLength(258);
+		expect(reservations).toHaveLength(26);
 		expect(reservations.every((reservation) => reservation.settlement.kind === "deleted")).toBe(true);
 		expect(await t.run((ctx) => ctx.db.get("quotas", reservations[0]!.userQuotaId))).toMatchObject({ usedCount: 0 });
 

@@ -1138,7 +1138,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							tooltip={isStale ? files_PENDING_UPDATE_STALE_BASE_MESSAGE : undefined}
 							aria-busy={isBusy}
 							disabled={!canAccept}
-							aria-disabled={isBusy || disabled}
+							aria-disabled={isBusy || disabled || !canAccept}
 							onClick={handleAccept}
 						>
 							Accept
@@ -1263,7 +1263,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							tooltip={isStale ? files_PENDING_UPDATE_STALE_BASE_MESSAGE : undefined}
 							aria-busy={isBusy}
 							disabled={!canAccept}
-							aria-disabled={isBusy || disabled}
+							aria-disabled={isBusy || disabled || !canAccept}
 							onClick={handleAccept}
 						>
 							Accept
@@ -1872,7 +1872,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							tooltip={rows.some((row) => row.isStale) ? PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE : undefined}
 							aria-busy={isBulkBusy}
 							disabled={!canAcceptAllShownRows}
-							aria-disabled={isBulkBusy}
+							aria-disabled={isBulkBusy || !canAcceptAllShownRows}
 							onClick={handleAcceptAll}
 						>
 							<MyButtonIcon

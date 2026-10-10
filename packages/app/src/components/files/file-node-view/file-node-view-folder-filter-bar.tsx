@@ -1,7 +1,7 @@
 import "./file-node-view-folder-filter-bar.css";
 import { ListFilter, SlidersHorizontal, X } from "lucide-react";
-import { memo, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
-import { useQueries } from "convex/react";
+import { memo, useEffect, useId, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import {
 	MyChip,
 	MyChipLabel,
@@ -30,8 +30,9 @@ import {
 	MyInputIcon,
 	type MyInputArea_Props,
 } from "@/components/my-input.tsx";
+import { useFilesMetadataCatalogPages, useFilesMetadataFolderKeys } from "@/hooks/files-metadata-catalog-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn } from "@/lib/utils.ts";
 import {
@@ -54,6 +55,7 @@ import {
 	files_search_query_split_tokens,
 	files_search_query_typing_token,
 } from "../../../../shared/files-search-query.ts";
+import { files_sort_field_is_valid } from "../../../../shared/files-sort.ts";
 
 // #region folder filter bar chip
 type FileNodeViewFolderFilterBarChip_ClassNames =
@@ -101,6 +103,219 @@ const FileNodeViewFolderFilterBarChip = memo(function FileNodeViewFolderFilterBa
 });
 // #endregion folder filter bar chip
 
+// #region folder filter bar suggestions
+/**
+ * A row that only tells something. It is disabled, so it cannot be picked.
+ */
+const FileNodeViewFolderFilterBarSuggestionsMessage = memo(function FileNodeViewFolderFilterBarSuggestionsMessage(props: {
+	children: string;
+}) {
+	return (
+		<MyComboboxItem
+			value={`message:${props.children}`}
+			disabled
+			className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+		>
+			{props.children}
+		</MyComboboxItem>
+	);
+});
+
+/**
+ * Show more for a paged list. It stays active while its page loads, and the caller ignores that
+ * click.
+ */
+const FileNodeViewFolderFilterBarSuggestionsMore = memo(function FileNodeViewFolderFilterBarSuggestionsMore(props: {
+	label: string;
+	disabled: boolean;
+	loading: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<MyComboboxItem
+			value={`more:${props.label}`}
+			aria-label={props.label}
+			aria-busy={props.loading}
+			disabled={props.disabled}
+			hideOnClick={false}
+			setValueOnClick={false}
+			className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+			onClick={props.onClick}
+		>
+			Show more
+		</MyComboboxItem>
+	);
+});
+
+const FileNodeViewFolderFilterBarSuggestionsError = memo(function FileNodeViewFolderFilterBarSuggestionsError(
+	props: ErrorComponentProps,
+) {
+	return (
+		<>
+			<FileNodeViewFolderFilterBarSuggestionsMessage>Could not load suggestions.</FileNodeViewFolderFilterBarSuggestionsMessage>
+			<MyComboboxItem
+				value="retry"
+				hideOnClick={false}
+				setValueOnClick={false}
+				className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+				onClick={props.reset}
+			>
+				Retry
+			</MyComboboxItem>
+		</>
+	);
+});
+
+/**
+ * The keys on the folder's children that start with the typed text, in pages, inside a stage's
+ * group. Rows from an older text stay, disabled, until the new first page arrives.
+ */
+const FileNodeViewFolderFilterBarKeyRows = memo(function FileNodeViewFolderFilterBarKeyRows(props: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	folderId: app_convex_Doc<"files_nodes">["parentId"];
+	prefix: string;
+	/**
+	 * The typed text is newer than `prefix`.
+	 */
+	stale: boolean;
+	/**
+	 * No other row of the group matches, so an empty page says so.
+	 */
+	showNoMatch: boolean;
+	canPick: (field: string) => boolean;
+	onPick: (field: string) => void;
+}) {
+	const { membershipId, folderId, prefix, stale, showNoMatch, canPick, onPick } = props;
+
+	const keys = useFilesMetadataFolderKeys({ membershipId, folderId, prefix });
+	const isDisabled = stale || keys.updating;
+	const rows = keys.rows.filter(canPick);
+
+	return (
+		<>
+			{rows.map((field) => (
+				<MyComboboxItem
+					key={field}
+					value={field}
+					disabled={isDisabled}
+					hideOnClick={false}
+					setValueOnClick={false}
+					className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+					onClick={() => {
+						if (!isDisabled) {
+							onPick(field);
+						}
+					}}
+				>
+					<span
+						className={cn("FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+					>
+						{field}
+					</span>
+					<span
+						className={cn("FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+					>
+						{field.startsWith("metadata.") ? "metadata" : "frontmatter"}
+					</span>
+				</MyComboboxItem>
+			))}
+			{isDisabled ? (
+				<FileNodeViewFolderFilterBarSuggestionsMessage>Updating suggestions…</FileNodeViewFolderFilterBarSuggestionsMessage>
+			) : showNoMatch && rows.length === 0 && keys.status === "Exhausted" ? (
+				<FileNodeViewFolderFilterBarSuggestionsMessage>
+					{prefix === "" ? "No folder keys yet" : `No keys start with ${prefix}`}
+				</FileNodeViewFolderFilterBarSuggestionsMessage>
+			) : null}
+			{keys.status === "CanLoadMore" || keys.status === "LoadingMore" ? (
+				<FileNodeViewFolderFilterBarSuggestionsMore
+					label="Show more keys"
+					disabled={isDisabled}
+					loading={keys.status === "LoadingMore"}
+					onClick={() => {
+						if (!isDisabled && keys.status === "CanLoadMore") {
+							keys.loadMore();
+						}
+					}}
+				/>
+			) : null}
+		</>
+	);
+});
+
+/**
+ * Saved values of one folder key that start with the typed text, exact case, in pages.
+ */
+const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFilterBarValueRows(props: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	fieldPath: string;
+	prefix: string;
+	/**
+	 * The value text as typed, newer than `prefix` while `stale`.
+	 */
+	typed: string;
+	stale: boolean;
+	onPick: (value: string) => void;
+}) {
+	const { membershipId, fieldPath, prefix, typed, stale, onPick } = props;
+
+	const values = useFilesMetadataCatalogPages({
+		query: app_convex_api.files_metadata.list_search_values,
+		membershipId,
+		requests: [{ membershipId, fieldPath, prefix }],
+		scope: `${membershipId}\n${fieldPath}`,
+		order: (value) => value,
+		rowKey: (value) => value,
+	});
+	const isDisabled = stale || values.updating;
+	// A held row of an older text may not start with the typed text any more.
+	const rows = values.rows.filter((value) => value.startsWith(typed));
+
+	return (
+		<>
+			{rows.map((value) => (
+				<MyComboboxItem
+					key={value}
+					value={value}
+					disabled={isDisabled}
+					setValueOnClick={false}
+					className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+					onClick={() => {
+						if (!isDisabled) {
+							onPick(value);
+						}
+					}}
+				>
+					<span
+						className={cn("FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+					>
+						{value}
+					</span>
+				</MyComboboxItem>
+			))}
+			{isDisabled ? (
+				<FileNodeViewFolderFilterBarSuggestionsMessage>Updating suggestions…</FileNodeViewFolderFilterBarSuggestionsMessage>
+			) : rows.length === 0 && values.status === "Exhausted" ? (
+				<FileNodeViewFolderFilterBarSuggestionsMessage>
+					{prefix === "" ? "No saved values" : `No saved values start with ${prefix}`}
+				</FileNodeViewFolderFilterBarSuggestionsMessage>
+			) : null}
+			{values.status === "CanLoadMore" || values.status === "LoadingMore" ? (
+				<FileNodeViewFolderFilterBarSuggestionsMore
+					label="Show more values"
+					disabled={isDisabled}
+					loading={values.status === "LoadingMore"}
+					onClick={() => {
+						if (!isDisabled && values.status === "CanLoadMore") {
+							values.loadMore();
+						}
+					}}
+				/>
+			) : null}
+		</>
+	);
+});
+// #endregion folder filter bar suggestions
+
 // #region folder filter bar
 type FileNodeViewFolderFilterBar_ClassNames =
 	| "FileNodeViewFolderFilterBar"
@@ -134,21 +349,14 @@ export type FileNodeViewFolderFilterBar_Props = {
 	 */
 	viewQuery: string;
 	/**
-	 * The `metadata.` and `frontmatter.` fields the folder has, for the suggestions.
+	 * The folder whose children's keys the suggestions list.
 	 */
-	fields: string[];
-	fieldsState: "loading" | "failed" | "ready";
-	/**
-	 * True while the user works in the bar, so the parent loads the fields only then.
-	 */
-	onActiveChange: (active: boolean) => void;
+	folderId: app_convex_Doc<"files_nodes">["parentId"];
 	/**
 	 * Write a new `committedQuery`, a new `viewQuery`, or both. A missing key stays as it is.
 	 */
 	onChange: (change: { committedQuery?: string; viewQuery?: string }) => void;
 };
-
-const FileNodeViewFolderFilterBar_SUGGESTIONS_MAX_ROWS = 40;
 
 const FileNodeViewFolderFilterBar_FILE_FIELD_HINTS = {
 	name: "text",
@@ -250,7 +458,7 @@ function read_text_tokens(text: string) {
 export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilterBar(
 	props: FileNodeViewFolderFilterBar_Props,
 ) {
-	const { ref, committedQuery, viewQuery, fields, fieldsState, onActiveChange, onChange } = props;
+	const { ref, committedQuery, viewQuery, folderId, onChange } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -280,18 +488,17 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 	const typing = files_search_query_typing_token(text);
 	const stage = get_typing_stage(typing.token);
 	const typedLower = stage.typed.toLowerCase();
+	const typedKeyDebounced = useDebounce(stage.kind === "key" || stage.kind === "sort_field" ? stage.typed : "", 150);
 	const typedValueDebounced = useDebounce(stage.kind === "value" ? stage.typed : "", 150);
 
 	const canAddSort = parsed.sorts.length === 0;
 
-	// A field the user can sort by or filter by: the file details, then the folder fields.
-	const allFieldRows = [
-		...files_folder_table_query_FILE_FIELDS.map((name) => ({
-			field: `file.${name}`,
-			hint: FileNodeViewFolderFilterBar_FILE_FIELD_HINTS[name],
-		})),
-		...fields.map((field) => ({ field, hint: field.startsWith("metadata.") ? "metadata" : "frontmatter" })),
-	];
+	// The file details the user can sort by or filter by. The folder's own keys show after them, from
+	// `FileNodeViewFolderFilterBarKeyRows`.
+	const allFieldRows = files_folder_table_query_FILE_FIELDS.map((name) => ({
+		field: `file.${name}`,
+		hint: FileNodeViewFolderFilterBar_FILE_FIELD_HINTS[name],
+	}));
 	const fieldRows = allFieldRows.filter((row) => row.field.toLowerCase().includes(typedLower));
 
 	// The table runs one filter, or `file.name:starts_with` plus one "is" filter. A field shows when one
@@ -309,12 +516,12 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 	const canAddFilter = stage.kind !== "key" || allFieldRows.some((row) => canAddFilterOn(row.field));
 	const showSortKey = stage.kind === "key" && canAddSort && "sort_by".includes(typedLower);
 	// While a filter is on, only the filter's order field can sort.
-	const sortFieldRows =
-		stage.kind === "sort_field"
-			? fieldRows.filter(
-					(row) => files_folder_table_query_get_add_problem(committedQuery, `sort_by:${row.field}:asc`) === null,
-				)
-			: [];
+	const canSortBy = (fieldText: string) =>
+		files_folder_table_query_get_add_problem(committedQuery, `sort_by:${fieldText}:asc`) === null;
+	const sortFieldRows = stage.kind === "sort_field" ? fieldRows.filter((row) => canSortBy(row.field)) : [];
+	// A folder key also needs a name the table can sort and filter by.
+	const canFilterByKey = (field: string) => files_sort_field_is_valid(field) && canAddFilterOn(field);
+	const canSortByKey = (field: string) => files_sort_field_is_valid(field) && canSortBy(field);
 	const sortDirectionRows =
 		stage.kind === "sort_direction" ? ["asc", "desc"].filter((direction) => direction.startsWith(typedLower)) : [];
 
@@ -332,44 +539,13 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 				);
 	})();
 
-	// Only the folder fields have values to suggest. File details have no value list. The template
-	// literal makes the React Compiler see a plain string, so the manual `useMemo` below is kept.
+	// Only the folder fields have values to suggest. File details have no value list.
 	const valueFieldPath =
-		isFocused &&
 		stage.kind === "value" &&
 		(stage.field.startsWith("metadata.") || stage.field.startsWith("frontmatter.")) &&
 		files_folder_table_query_parse_field(stage.field).field !== null
-			? `${stage.field}`
-			: "";
-
-	// Keep manual `useMemo` here. Convex `useQueries` re-subscribes with a render-phase setState
-	// whenever the queries object identity changes, so an inline object loops the render until
-	// React throws. Build the object once per typed value.
-	const valueQueries = useMemo(
-		() =>
-			valueFieldPath === ""
-				? {}
-				: {
-						[valueFieldPath]: {
-							query: app_convex_api.files_metadata.list_search_values,
-							args: { membershipId, fieldPath: valueFieldPath, prefix: typedValueDebounced },
-						},
-					},
-		[membershipId, valueFieldPath, typedValueDebounced],
-	);
-	const valueResults = useQueries(valueQueries);
-
-	const valueRows = ((/* iife */) => {
-		const values = valueFieldPath === "" ? undefined : valueResults[valueFieldPath];
-		if (!Array.isArray(values)) {
-			return [];
-		}
-
-		return values
-			.filter((value): value is string => typeof value === "string" && value.startsWith(stage.typed))
-			.sort()
-			.slice(0, FileNodeViewFolderFilterBar_SUGGESTIONS_MAX_ROWS);
-	})();
+			? stage.field
+			: null;
 
 	const hasContent = parsed.tokens.length > 0 || text.length > 0;
 
@@ -466,7 +642,6 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 
 	const handleInputFocus = useFn<NonNullable<MyComboboxInputControl_Props["onFocus"]>>((event) => {
 		setIsFocused(true);
-		onActiveChange(true);
 		// Returning from chips or suggestions keeps the current menu state.
 		if (!rootRef.current?.contains(event.relatedTarget) && !suggestionsRef.current?.contains(event.relatedTarget)) {
 			setIsSuggestionsOpen(true);
@@ -475,8 +650,11 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 
 	const handleInputBlur = useFn<NonNullable<MyComboboxInputControl_Props["onBlur"]>>(() => {
 		setIsFocused(false);
-		onActiveChange(false);
 	});
+
+	const handleSuggestionsError = useFn((error: unknown) =>
+		console.error("[FileNodeViewFolderFilterBar] Failed to load suggestions", { error, membershipId, folderId }),
+	);
 
 	// The combobox input does not use the `MyInput` label id, so forward clicks on the area by hand.
 	const handleFocusForward = useFn<NonNullable<MyInputArea_Props["onFocusForward"]>>((event) => {
@@ -657,9 +835,9 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 									</MyComboboxItem>
 								</MyComboboxGroup>
 							) : null}
-							{keyRows.length > 0 ? (
+							{stage.kind === "key" && canAddFilter ? (
 								<MyComboboxGroup heading="Filter by" separator={showSortKey}>
-									{keyRows.slice(0, FileNodeViewFolderFilterBar_SUGGESTIONS_MAX_ROWS).map((row) => (
+									{keyRows.map((row) => (
 										<MyComboboxItem
 											key={row.field}
 											value={row.field}
@@ -686,11 +864,26 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 											</span>
 										</MyComboboxItem>
 									))}
+									<CatchBoundary
+										getResetKey={() => `${membershipId}\n${folderId}\nkey\n${typedKeyDebounced}`}
+										onCatch={handleSuggestionsError}
+										errorComponent={FileNodeViewFolderFilterBarSuggestionsError}
+									>
+										<FileNodeViewFolderFilterBarKeyRows
+											membershipId={membershipId}
+											folderId={folderId}
+											prefix={typedKeyDebounced}
+											stale={stage.typed !== typedKeyDebounced}
+											showNoMatch={keyRows.length === 0}
+											canPick={canFilterByKey}
+											onPick={(field) => pickPart(`${field}:`)}
+										/>
+									</CatchBoundary>
 								</MyComboboxGroup>
 							) : null}
-							{sortFieldRows.length > 0 ? (
+							{stage.kind === "sort_field" ? (
 								<MyComboboxGroup heading="Sort by">
-									{sortFieldRows.slice(0, FileNodeViewFolderFilterBar_SUGGESTIONS_MAX_ROWS).map((row) => (
+									{sortFieldRows.map((row) => (
 										<MyComboboxItem
 											key={row.field}
 											value={row.field}
@@ -717,6 +910,21 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 											</span>
 										</MyComboboxItem>
 									))}
+									<CatchBoundary
+										getResetKey={() => `${membershipId}\n${folderId}\nsort\n${typedKeyDebounced}`}
+										onCatch={handleSuggestionsError}
+										errorComponent={FileNodeViewFolderFilterBarSuggestionsError}
+									>
+										<FileNodeViewFolderFilterBarKeyRows
+											membershipId={membershipId}
+											folderId={folderId}
+											prefix={typedKeyDebounced}
+											stale={stage.typed !== typedKeyDebounced}
+											showNoMatch={sortFieldRows.length === 0}
+											canPick={canSortByKey}
+											onPick={(field) => pickPart(`sort_by:${field}:`)}
+										/>
+									</CatchBoundary>
 								</MyComboboxGroup>
 							) : null}
 							{sortDirectionRows.length > 0 && stage.kind === "sort_direction" ? (
@@ -778,36 +986,29 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 									))}
 								</MyComboboxGroup>
 							) : null}
-							{valueRows.length > 0 && stage.kind === "value" ? (
+							{valueFieldPath !== null && stage.kind === "value" ? (
 								<MyComboboxGroup heading={`Values for ${stage.field}`}>
-									{valueRows.map((value) => (
-										<MyComboboxItem
-											key={value}
-											value={value}
-											setValueOnClick={false}
-											className={cn(
-												"FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames,
-											)}
-											onClick={() =>
+									<CatchBoundary
+										getResetKey={() => `${membershipId}\n${valueFieldPath}\n${typedValueDebounced}`}
+										onCatch={handleSuggestionsError}
+										errorComponent={FileNodeViewFolderFilterBarSuggestionsError}
+									>
+										<FileNodeViewFolderFilterBarValueRows
+											membershipId={membershipId}
+											fieldPath={valueFieldPath}
+											prefix={typedValueDebounced}
+											typed={stage.typed}
+											stale={stage.typed !== typedValueDebounced}
+											onPick={(value) =>
 												pickToken(`${stage.field}:${stage.operation}:${files_folder_table_query_format_value(value)}`)
 											}
-										>
-											<span
-												className={cn(
-													"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
-												)}
-											>
-												{value}
-											</span>
-										</MyComboboxItem>
-									))}
+										/>
+									</CatchBoundary>
 								</MyComboboxGroup>
 							) : null}
 						</MyComboboxPopoverContent>
 					</MyComboboxList>
 					<div className={cn("FileNodeViewFolderFilterBar-notes" satisfies FileNodeViewFolderFilterBar_ClassNames)}>
-						{fieldsState === "loading" ? <p role="status">Loading fields…</p> : null}
-						{fieldsState === "failed" ? <p role="status">Fields could not be loaded</p> : null}
 						{stage.kind === "key" && !canAddFilter ? (
 							<p>Use one filter, or 'name starts with' plus one 'is' filter</p>
 						) : null}

@@ -19,7 +19,7 @@ Covers the user-facing flows around `files_pending_updates` move/copy proposals 
 ## Durable selectors
 
 - Files tree: container `role="tree"` named `Files`; rows are `[role="treeitem"]` buttons with `aria-label` = node name and `data-file-id` = the `files_nodes` id (use it to disambiguate duplicate names); rename input `.FilesSidebarTreeItemTitle-input` (F2 on a clicked row). One row always keeps `tabindex="0"`, so Tab reaches the tree and arrow keys rove.
-- Pending panel (stays in DOM even when its tab is hidden — readable always, clickable only when the tab is active): scope everything to `.FileEditorSidebarPending`; rows `.FileEditorSidebarPending-item`, caption `.FileEditorSidebarPending-item-caption`, per-row accept `button.FileEditorSidebarPending-accept`, per-row Discard button by text. The row's main control (its path) is a link, not a button.
+- Pending panel (open its tab with `#app_file_editor_sidebar_tabs_pending` before reading rows: seen 2026-10-08, 0 rows were readable while the Agent tab was active and the count was 3): scope everything to `.FileEditorSidebarPending`; rows `.FileEditorSidebarPending-item`, caption `.FileEditorSidebarPending-item-caption`, per-row accept `button.FileEditorSidebarPending-accept`, per-row Discard button by text. The row's main control (its path) is a link, not a button.
 - Row action buttons carry aria-labels derived from row data: `Accept move of /a.md to /b.md`, `Discard move of /a.md to /b.md`; content/replace-move rows use `Accept changes to <destPath>` / `Discard changes to <destPath>`. Prefer `getByRole("button", { name: ... })` with these over CSS + text filtering when targeting one row. The labels and row paths are LIVE — a UI rename/move of the source node re-derives them immediately, so always re-read the row right before clicking.
 - Settled signal: Accept and Discard start a review run. The panel's sr-only `role="status"` span `.FileEditorSidebarPending-status` only says that the run started (`Started accepting <action>` / `Started discarding <action>` / `Started accepting N pending changes`); it does not report the result. The result is in the review dialog (heading `Save reviewed changes` or `Discard reviewed changes`): its `role="status"` description ends at `Changes saved.` / `Changes discarded.` (or `Some changes completed.` / `Review could not finish. Check the remaining changes.`), and a progress line reads `<n> saved, <n> need review, <n> failed, <n> skipped, <n> stopped.` (`discarded` for a discard). Poll the dialog status, then stop polling (no fixed waits). Below, "the status region fires" means the dialog reached its final text. GOTCHA: the panel span does NOT exist before the first accept/discard of the browser session — `locator.textContent()` on it auto-waits 30s and hangs the script. Read it via `page.evaluate(() => document.querySelector(".FileEditorSidebarPending-status")?.textContent ?? null)` or pass `{ timeout: 500 }`. Checked against the code 2026-10-08.
 - Row clearance can lag the status change by up to a few seconds (Convex reactivity) — after the status fires, poll row count instead of asserting immediately.
@@ -142,15 +142,15 @@ Regression signature (old bug): accepting the second link left the first file ac
 The pending overlay's derived docs (`files_pending_hides`, `files_pending_places` and the rest) must match the drafts. After each scenario, and again after Cleanup, check them for the test user. This is a read-only internal query; run it only on the dev deployment.
 
 1. Get the ids: `vp env exec pnpm --dir packages/app exec convex data files_pending_updates --limit 20 --order desc` prints each draft's `organizationId`, `workspaceId` and `userId`. After a full cleanup there are no drafts; reuse the ids from before.
-2. Run `vp env exec pnpm --dir packages/app exec convex run files_pending_overlay:check_user '{"organizationId":"<org>","workspaceId":"<ws>","userId":"<user>","cursor":null}'`. Put the JSON in a file if PowerShell mangles the quotes.
-3. If `moveInProgress` is true, wait for the workspace Move to finish and restart with `cursor: null`. That result is not a clean audit. Otherwise expect `moveInProgress: false` and `differences: []`. While `cursor` is not null, run it again with that cursor; every page must have no differences and no active Move.
+2. Run `vp env exec pnpm --dir packages/app exec convex run files_pending_overlay:check_user '{"organizationId":"<org>","workspaceId":"<ws>","userId":"<user>","cursor":null}'`. Run it from Git Bash: PowerShell breaks the JSON argument (`JSON5: invalid character`).
+3. If `moveInProgress` is true, wait for the workspace Move to finish and restart with `cursor: null`. That result is not a clean audit. Otherwise expect `moveInProgress: false` and `differences: []`. While `cursor` is not null, run it again with that cursor; every page must have no differences and no active Move. The cursor walks several phases (seen 7), not only pages of one table, so loop until it is null.
 4. A difference is a bug. Note it with the scenario step, and do not fix data by hand. Overlay jobs may lag a few seconds after a write, so check again once before you report it. `files_pending_overlay:repair_user` (same args) rebuilds the user's docs, but run it only to unblock QA after the bug is noted.
 
 ## Cleanup
 
 1. Discard any leftover pending rows (scope to `.FileEditorSidebarPending`, filter rows by the FULL `"/x.md → /y.md"` text — swap cycles produce mirrored rows where a single file name matches both).
 2. Archive every test-prefixed tree row: `role=button[name="More actions for <name>"]` → menuitem `Archive`.
-3. Verify: pending panel `.FileEditorSidebarPending-empty` present, zero test-prefixed `[role="treeitem"]`, no error toasts, `getLatestLogs` clean.
+3. Verify: pending panel `.FileEditorSidebarPending-empty` present (the class sits on the panel root itself, so query it from the page, not inside `.FileEditorSidebarPending`), zero test-prefixed `[role="treeitem"]`, no error toasts, `getLatestLogs` clean.
 
 ## Live-session stability (critical gotcha)
 
@@ -164,6 +164,8 @@ Rules: batch any repo-file writes to BEFORE or AFTER the browser-driving phase; 
 ## Failure Triage
 
 - Accept clicked but row survives + toast `Accept the pending move of "..." first`: dependency-ordering guard fired — this is EXPECTED when accepting a move whose destination is vacated by another pending move (see scenario 3); it is a BUG only for swap cycles (file or folder), which must clear atomically.
-- Click timeouts on pending rows: the pending tab is probably not active — panels stay mounted but hidden; click `#app_file_editor_sidebar_tabs_pending` first.
+- Click timeouts on pending rows: the pending tab is probably not active — its panel is hidden or not mounted; click `#app_file_editor_sidebar_tabs_pending` first.
 - `EROFS: read-only file system`: the prompt used absolute paths; re-send with cwd-relative paths.
+- Agent `find` prints at most 10 results and then a "Next page" line, so `find . -name "*.md" | grep <prefix>` can print nothing and prove nothing. To show a file is absent, use `find <folder>` or `find . -name <exact name>` (seen 2026-10-10).
+- Run the accessibility audit while Pending rows exist; on an empty panel it finds 0 controls.
 - Turn never goes idle: read `[data-ai-chat-state]` directly (`streaming` vs `tool-running` tells you where it is stuck), then check `.AiChatMessagePartToolStatus-state-loading` and the send/stop button; cold Convex deployments can make the first turn take 30s+.

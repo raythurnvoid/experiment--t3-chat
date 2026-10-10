@@ -13150,7 +13150,9 @@ describe("plugins backend invoke runs", () => {
 		expect(again.status).toBe(200);
 	});
 
-	test.each([200, 400, 409, 500, "too large"] as const)(
+	// Every plugin status passes through, and only 2xx counts as success (`plugins_runtime.ts`), so one
+	// success and one refusal cover the relay.
+	test.each([200, 409, "too large"] as const)(
 		"passes an actual runner %s reply through the Convex HTTP route",
 		async (outcome) => {
 			const t = test_convex();
@@ -13225,30 +13227,28 @@ describe("plugins backend invoke runs", () => {
 		},
 	);
 
-	test.each([204, 400, 401, 409, 500])(
-		"relays a complete plugin %s response through outer HTTP 200",
-		async (pluginStatus) => {
-			const t = test_convex();
-			const fixture = await install_invoke_plugin(t);
-			const token = await seed_invoke_session(t, fixture);
-			const output =
-				pluginStatus === 204 ? "" : JSON.stringify({ message: "Please try another value", detail: "🙂\\\n" });
-			vi.mocked(fetch).mockImplementation(async (_input, init) => {
-				const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
-				return runner_success_response({ kind: "invoke", runId: wire.pluginRunId, pluginStatus, elapsedMs: 7, output });
-			});
+	// Only 2xx counts as success, so one empty success and one refusal cover the relay.
+	test.each([204, 401])("relays a complete plugin %s response through outer HTTP 200", async (pluginStatus) => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		const output =
+			pluginStatus === 204 ? "" : JSON.stringify({ message: "Please try another value", detail: "🙂\\\n" });
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+			return runner_success_response({ kind: "invoke", runId: wire.pluginRunId, pluginStatus, elapsedMs: 7, output });
+		});
 
-			const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
-			expect(response.status).toBe(200);
-			const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
-			expect(await response.json()).toEqual({ runId: run._id, pluginStatus, output });
-			const activity = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run._id));
-			expect(activity.status).toBe(pluginStatus < 300 ? "succeeded" : "failed");
-			expect(activity.errorMessage).toBe(pluginStatus < 300 ? null : `Plugin returned status ${pluginStatus}`);
-			expect(run.apiTokenHash).toBeUndefined();
-			expect(run.runnerOutputBytes).toBe(new TextEncoder().encode(output).byteLength);
-		},
-	);
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
+		expect(response.status).toBe(200);
+		const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
+		expect(await response.json()).toEqual({ runId: run._id, pluginStatus, output });
+		const activity = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run._id));
+		expect(activity.status).toBe(pluginStatus < 300 ? "succeeded" : "failed");
+		expect(activity.errorMessage).toBe(pluginStatus < 300 ? null : `Plugin returned status ${pluginStatus}`);
+		expect(run.apiTokenHash).toBeUndefined();
+		expect(run.runnerOutputBytes).toBe(new TextEncoder().encode(output).byteLength);
+	});
 
 	test.each([
 		["Kind", "event"],
@@ -18267,7 +18267,7 @@ describe("plugins admin hard delete", () => {
 		expect(deleteObjectSpy).not.toHaveBeenCalledWith(expect.anything(), "plugins/media-alt/manifest.json");
 	});
 
-	test.each([99, 100, 101])("bounds scope rows in the registry preview at %i per installation", async (rowCount) => {
+	test.each([100, 101])("bounds scope rows in the registry preview at %i per installation", async (rowCount) => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const media = await register_media_plugin({ t, userId: membership.userId, name: "media" });

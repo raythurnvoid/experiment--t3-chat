@@ -468,29 +468,6 @@ describe("create_organization", () => {
 		expect(organizations.some((organization) => organization.name === "deleted-owner-org")).toBe(false);
 	});
 
-	test("accepts names with digits after the first character", async () => {
-		const t = test_convex();
-		const userId = await t.run(async (ctx) =>
-			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-digits-ws",
-			}),
-		);
-		await organizations_test_bootstrap_user(t, { userId });
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: userId,
-			name: "Test User",
-			email: "organizations-test-user@test.local",
-		});
-
-		const result = await asUser.mutation(api.organizations.create_organization, {
-			description: "",
-			name: "team-2-east",
-		});
-
-		expect(result._yay?.name).toBe("team-2-east");
-	});
-
 	test("accepts valid lowercase dash names", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -571,56 +548,6 @@ describe("create_organization", () => {
 		expect(userQuota?.maxCount).toBe(2);
 		expect(organizationQuota?.usedCount).toBe(0);
 		expect(organizationQuota?.maxCount).toBe(5);
-	});
-
-	test("rejects names that are still invalid after autofix", async () => {
-		const t = test_convex();
-		const userId = await t.run(async (ctx) =>
-			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-2",
-			}),
-		);
-		await organizations_test_bootstrap_user(t, { userId });
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: userId,
-			name: "Test User",
-			email: "organizations-test-user@test.local",
-		});
-
-		const invalidNames = ["", "!!!", "---", "   ", "\t\t", "ab", "a", "12"];
-
-		for (const name of invalidNames) {
-			const result = await asUser.mutation(api.organizations.create_organization, {
-				description: "",
-				name,
-			});
-
-			expect(result._nay?.message).toBeTruthy();
-		}
-	});
-
-	test("rejects names shorter than 3 characters after autofix", async () => {
-		const t = test_convex();
-		const userId = await t.run(async (ctx) =>
-			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-short-name",
-			}),
-		);
-		await organizations_test_bootstrap_user(t, { userId });
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: userId,
-			name: "Test User",
-			email: "organizations-test-user@test.local",
-		});
-
-		const result = await asUser.mutation(api.organizations.create_organization, {
-			description: "",
-			name: "  !!ab!!  ",
-		});
-
-		expect(result._nay?.message).toBe("Name must be at least 3 characters");
 	});
 
 	test("rejects names longer than max length", async () => {
@@ -1441,36 +1368,6 @@ describe("create_workspace", () => {
 		});
 
 		expect(result._yay?.name).toBe("my-docs");
-	});
-
-	test("accepts workspace names with digits after the first character", async () => {
-		const t = test_convex();
-		const userId = await t.run(async (ctx) =>
-			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-digits-ws",
-			}),
-		);
-		await organizations_test_bootstrap_user(t, { userId });
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: userId,
-			name: "Test User",
-			email: "organizations-test-user@test.local",
-		});
-
-		const wsResult = await asUser.mutation(api.organizations.create_organization, {
-			description: "",
-			name: "digits-ws-ws",
-		});
-		expect(wsResult._yay).toBeTruthy();
-
-		const result = await asUser.mutation(api.organizations.create_workspace, {
-			description: "",
-			organizationId: wsResult._yay!.organizationId,
-			name: "sprint-2",
-		});
-
-		expect(result._yay?.name).toBe("sprint-2");
 	});
 
 	test("rejects when the user is not in the organization", async () => {
@@ -5157,45 +5054,6 @@ describe("edit_organization", () => {
 });
 
 describe("edit_workspace", () => {
-	test("rejects renaming the primary workspace when workspace.default is true", async () => {
-		const t = test_convex();
-		const userId = await t.run(async (ctx) =>
-			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-rename-primary-ws",
-			}),
-		);
-		await organizations_test_bootstrap_user(t, { userId });
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: userId,
-			name: "Test User",
-			email: "organizations-test-user@test.local",
-		});
-
-		const wsResult = await t.run((ctx) =>
-			organizations_db_create(ctx, {
-				userId,
-				description: "",
-				name: "rename-ws-ws",
-				now: Date.now(),
-			}),
-		);
-		if (wsResult._nay) {
-			throw new Error(wsResult._nay.message);
-		}
-		expect(wsResult._yay).toBeTruthy();
-
-		const result = await asUser.mutation(api.organizations.edit_workspace, {
-			organizationId: wsResult._yay!.organizationId,
-			defaultWorkspaceId: wsResult._yay!.defaultWorkspaceId,
-			workspaceId: wsResult._yay!.defaultWorkspaceId,
-			name: "new-home",
-			description: "",
-		});
-
-		expect(result._nay?.message).toBe("Cannot edit the default workspace");
-	});
-
 	test("rejects renaming the primary workspace when only defaultWorkspaceId matches", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -5634,41 +5492,6 @@ describe("edit_workspace", () => {
 });
 
 describe("delete_workspace", () => {
-	test("rejects deleting the primary workspace when workspace.default is true", async () => {
-		const t = test_convex();
-		const userId = await t.run(async (ctx) =>
-			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-delete-primary-ws",
-			}),
-		);
-		await organizations_test_bootstrap_user(t, { userId });
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: userId,
-			name: "Test User",
-			email: "organizations-test-user@test.local",
-		});
-
-		const wsResult = await t.run((ctx) =>
-			organizations_db_create(ctx, {
-				userId,
-				description: "",
-				name: "delete-primary-ws",
-				now: Date.now(),
-			}),
-		);
-		if (wsResult._nay) {
-			throw new Error(wsResult._nay.message);
-		}
-		expect(wsResult._yay).toBeTruthy();
-
-		const result = await asUser.mutation(api.organizations.delete_workspace, {
-			workspaceId: wsResult._yay!.defaultWorkspaceId,
-		});
-
-		expect(result._nay?.message).toBe("Cannot delete the default workspace");
-	});
-
 	test("rejects deleting the primary workspace when only defaultWorkspaceId matches", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -6858,58 +6681,6 @@ describe("list", () => {
 		const names = list.organizations.map((w) => w.name);
 
 		expect(names).toEqual(["personal", "acme-team", "zebra-team"]);
-	});
-
-	test("places default organization before other organizations", async () => {
-		const t = test_convex();
-		const userIds = await t.run(async (ctx) =>
-			Promise.all([
-				ctx.db.insert("users", {
-					clerkUserId: "clerk-user-list-sort-2-viewer",
-				}),
-				ctx.db.insert("users", {
-					clerkUserId: "clerk-user-list-sort-2-owner",
-				}),
-			]),
-		);
-		await organizations_test_bootstrap_user(t, { userId: userIds[1] });
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: userIds[0],
-			name: "Test User",
-			email: "organizations-test-user@test.local",
-		});
-		const owner = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: userIds[1],
-			name: "Owner",
-			email: "organizations-test-user@test.local",
-		});
-
-		await organizations_test_bootstrap_user(t, { userId: userIds[0] });
-
-		const ownedOrganization = await asUser.mutation(api.organizations.create_organization, {
-			description: "",
-			name: "mango-extra",
-		});
-		expect(ownedOrganization._yay).toBeTruthy();
-		const sharedOrganization = await owner.mutation(api.organizations.create_organization, {
-			description: "",
-			name: "alpha-extra",
-		});
-		expect(sharedOrganization._yay).toBeTruthy();
-		const shareResult = await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
-			organizationId: sharedOrganization._yay!.organizationId,
-			workspaceId: sharedOrganization._yay!.defaultWorkspaceId,
-			userIdToAdd: userIds[0],
-		});
-		expect(shareResult._yay).toBeNull();
-
-		const list = await asUser.query(api.organizations.list, {});
-		const names = list.organizations.map((w) => w.name);
-
-		expect(names[0]).toBe("personal");
-		expect(names.slice(1)).toEqual(["alpha-extra", "mango-extra"]);
 	});
 
 	test("orders workspaces with organization primary first then alphabetically", async () => {

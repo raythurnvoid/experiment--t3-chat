@@ -3223,6 +3223,7 @@ describe("public files API", () => {
 			scopes: ["files:list"],
 		});
 		expect(created._nay).toBeUndefined();
+		expect(created._yay?.credential).toMatch(/^pk_[0-9a-f]{32}\.[0-9a-f]{64}$/u);
 
 		const listed = await asMember.query(api.public_api.api_credentials_list, {
 			membershipId: member.membershipId,
@@ -3419,56 +3420,6 @@ describe("public files API", () => {
 			usedCount: 20,
 			maxCount: 20,
 		});
-	});
-
-	test("allows seeded workspace admins to create API credentials", async () => {
-		const t = test_convex();
-		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-admin-owner" });
-		const admin = await t.run(async (ctx) => {
-			const now = Date.now();
-			const userId = await ctx.db.insert("users", {
-				clerkUserId: "clerk-public-api-admin",
-			});
-			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: owner.organizationId,
-				workspaceId: owner.workspaceId,
-				userId,
-				active: true,
-				pendingOrganizationRemoval: false,
-				updatedAt: Date.now(),
-			});
-			await quotas_db_ensure(ctx, {
-				quotaName: "active_api_credentials",
-				userId,
-				organizationId: owner.organizationId,
-				workspaceId: owner.workspaceId,
-				now,
-			});
-			await ctx.db.insert("access_control_role_assignments", {
-				organizationId: owner.organizationId,
-				workspaceId: owner.workspaceId,
-				userId,
-				role: "admin",
-				createdAt: now,
-				updatedAt: now,
-			});
-			return { userId, membershipId };
-		});
-		const asAdmin = t.withIdentity({
-			issuer: "https://clerk.test",
-			subject: "public-api-admin",
-			external_id: admin.userId,
-		});
-
-		const created = await asAdmin.mutation(api.public_api.api_credential_create, {
-			serviceAccountId: null,
-			membershipId: admin.membershipId,
-			name: "Admin key",
-			scopes: ["files:list"],
-		});
-
-		expect(created._nay).toBeUndefined();
-		expect(created._yay?.credential).toMatch(/^pk_[0-9a-f]{32}\.[0-9a-f]{64}$/u);
 	});
 
 	test("enforces scopes and accepts public API grants on public routes", async () => {

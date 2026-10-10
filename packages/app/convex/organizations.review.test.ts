@@ -10,9 +10,13 @@ afterEach(() => {
 
 describe("tenant deletion with many direct file grants", () => {
 	for (const scope of ["workspace", "organization"] as const) {
-		test(`delete_${scope} accepts a tenant with 16,200 valid file grants`, async () => {
+		test(`delete_${scope} accepts a tenant with more file grants than one transaction can write`, async () => {
 			vi.useFakeTimers();
-			const t = test_convex({ transactionLimits: true });
+			// Convex allows 16,000 written docs and 4,096 index ranges per transaction. Lower both limits,
+			// so 1,200 grants cross them the same way 16,200 grants cross the real ones, without a slow fixture.
+			// The range limit stays above the overlay flush, which needs a few hundred ranges at any size, so
+			// only a read per grant goes over it.
+			const t = test_convex({ transactionLimits: { documentsWritten: 250, databaseQueries: 800 } });
 			const fixture = await t.run(async (ctx) => {
 				const ownerId = await ctx.db.insert("users", { clerkUserId: `review-${scope}-owner` });
 				const membership = await test_mocks_fill_db_with.membership(ctx, {
@@ -45,9 +49,9 @@ describe("tenant deletion with many direct file grants", () => {
 
 			// Each folder has one direct member share. The 50-file role cap does not apply.
 			// Seed in small transactions, with the same three docs as a real Can manage share.
-			for (let start = 0; start < 5400; start += 100) {
+			for (let start = 0; start < 400; start += 25) {
 				await t.run(async (ctx) => {
-					for (let index = start; index < start + 100; index += 1) {
+					for (let index = start; index < start + 25; index += 1) {
 						const name = `shared-${index}`;
 						const nodeId = await ctx.db.insert("files_nodes", {
 							organizationId: fixture.organizationId,
@@ -109,7 +113,21 @@ describe("tenant deletion with many direct file grants", () => {
 					.collect();
 				return { grantCount: grants.length, firstGrant: grants[0]! };
 			});
-			expect(grantCount).toBe(16_200);
+			expect(grantCount).toBe(1200);
+			// Deleting every grant in one transaction, like phase 1 once did, goes over the limit.
+			await expect(
+				t.run(async (ctx) => {
+					const grants = await ctx.db.query("access_control_permission_grants").collect();
+					for (const grant of grants) await ctx.db.delete("access_control_permission_grants", grant._id);
+				}),
+			).rejects.toThrow("Wrote too many documents");
+			// Reading every grant one by one in one transaction goes over the lowered range limit too.
+			await expect(
+				t.run(async (ctx) => {
+					const grants = await ctx.db.query("access_control_permission_grants").collect();
+					for (const grant of grants) await ctx.db.get("access_control_permission_grants", grant._id);
+				}),
+			).rejects.toThrow("Too many index ranges");
 
 			// The public sharing door accepts this exact seeded shape.
 			const nodeId = await t.run(async (ctx) => ctx.db.normalizeId("files_nodes", firstGrant.resourceId));
@@ -187,7 +205,6 @@ describe("tenant deletion with many direct file grants", () => {
 					workspaceId: fixture.personalMembership.workspaceId,
 				}),
 			).toMatchObject({ _id: fixture.personalMembership.membershipId, active: true });
-			// Updating every in-memory file index makes this large fixture slow in a full run.
-		}, 600_000);
+		});
 	}
 });

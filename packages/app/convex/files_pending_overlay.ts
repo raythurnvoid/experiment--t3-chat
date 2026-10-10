@@ -8,6 +8,9 @@
 // found too. QA runs `check_user` after each phase, and `repair_user` fixes what it reports.
 // `check_share_rows` does the same check for one workspace's share rows, and `check_ancestors`
 // for the saved nodes' `ancestor1..12`.
+//
+// The metadata catalog's compactor (`compact_metadata_catalog`), its recover cron, its rebuild
+// (`rebuild_metadata_catalog`) and its check (`check_metadata_catalog`) live here too.
 
 import { compareValues, v } from "convex/values";
 import { internal } from "./_generated/api.js";
@@ -30,6 +33,12 @@ import {
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
+import {
+	files_metadata_catalog_db_check,
+	files_metadata_catalog_db_compact,
+	files_metadata_catalog_db_rebuild,
+	files_metadata_catalog_db_rebuild_step,
+} from "../server/files-metadata-catalog.ts";
 import {
 	files_share_rows_db_compute_for_grant,
 	files_share_rows_db_compute_all_for_grant,
@@ -74,6 +83,12 @@ const RECOVERY_BATCH_SIZE = 32;
 const RECOVERY_MAX_ATTEMPTS = 5;
 
 const RECOVERY_SLOW_MS = 60 * 60 * 1000;
+
+/**
+ * A catalog delta older than this means its compactor chain stopped: a healthy chain applies it
+ * within seconds.
+ */
+const CATALOG_RECOVERY_MS = 10 * 60 * 1000;
 
 /**
  * Docs per page of the user walk of `check_user` and `repair_user`. Checking or repairing one place
@@ -726,6 +741,52 @@ export const recover_jobs = internalMutation({
 	},
 });
 
+/**
+ * One run of a workspace's metadata catalog compactor (`server/files-metadata-catalog.ts`).
+ */
+export const compact_metadata_catalog = internalMutation({
+	args: { markerId: v.id("files_metadata_catalog_compactors") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await files_metadata_catalog_db_compact(ctx, args);
+		return null;
+	},
+});
+
+/**
+ * 15-minute cron. A marker whose oldest delta waits longer than this lost its compactor chain, for
+ * example after a run that threw. Start one run for it. When the old chain still runs, both runs
+ * read the same deltas, so one conflicts and Convex runs it again on the new state.
+ */
+export const recover_metadata_catalog = internalMutation({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const markers = await ctx.db
+			.query("files_metadata_catalog_compactors")
+			.paginate({ cursor: args.cursor, numItems: RECOVERY_BATCH_SIZE });
+		for (const marker of markers.page) {
+			if (marker.phase === "clearing") continue;
+			const oldest = await ctx.db
+				.query("files_metadata_catalog_deltas")
+				.withIndex("by_org_ws", (q) =>
+					q.eq("organizationId", marker.organizationId).eq("workspaceId", marker.workspaceId),
+				)
+				.first();
+			if (oldest && oldest._creationTime < now - CATALOG_RECOVERY_MS)
+				await ctx.scheduler.runAfter(0, internal.files_pending_overlay.compact_metadata_catalog, {
+					markerId: marker._id,
+				});
+		}
+		if (!markers.isDone)
+			await ctx.scheduler.runAfter(0, internal.files_pending_overlay.recover_metadata_catalog, {
+				cursor: markers.continueCursor,
+			});
+		return null;
+	},
+});
+
 // #region check and repair
 
 /**
@@ -1115,6 +1176,60 @@ export const check_share_rows = internalQuery({
 			? { phase: position.phase + 1, page: null }
 			: { ...position, page: result.continueCursor };
 		return { differences, cursor: next.phase < SHARE_CHECK_PHASES.length ? JSON.stringify(next) : null };
+	},
+});
+
+const catalog_rebuild_mode_validator = v.union(v.literal("catalog"), v.literal("check"), v.literal("clear_check"));
+
+/**
+ * Count one workspace's metadata catalog again from its saved docs, in a quiet window. To audit it:
+ * run mode `check`, wait for its marker to go, page `check_metadata_catalog` to the end, then run
+ * mode `clear_check`. Mode `catalog` replaces the rows and fixes drift.
+ * `server/files-metadata-catalog.ts` explains each mode.
+ */
+export const rebuild_metadata_catalog = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		mode: catalog_rebuild_mode_validator,
+	},
+	returns: v.id("files_metadata_catalog_compactors"),
+	handler: async (ctx, args) => {
+		return await files_metadata_catalog_db_rebuild(ctx, args);
+	},
+});
+
+/**
+ * One job of `rebuild_metadata_catalog`.
+ */
+export const rebuild_metadata_catalog_step = internalMutation({
+	args: {
+		markerId: v.id("files_metadata_catalog_compactors"),
+		mode: catalog_rebuild_mode_validator,
+		cursor: v.union(v.string(), v.null()),
+		fileNodeId: v.union(v.id("files_nodes"), v.null()),
+		keys: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await files_metadata_catalog_db_rebuild_step(ctx, args);
+		return null;
+	},
+});
+
+/**
+ * Compare one page of a workspace's metadata catalog with the shadow rows of a `check` rebuild, and
+ * return the differences. Call again with the returned cursor until it is null.
+ */
+export const check_metadata_catalog = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v.object({ differences: v.array(v.string()), cursor: v.union(v.string(), v.null()) }),
+	handler: async (ctx, args) => {
+		return await files_metadata_catalog_db_check(ctx, args);
 	},
 });
 

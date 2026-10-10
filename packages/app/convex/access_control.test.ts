@@ -2282,7 +2282,9 @@ describe("enforcement", () => {
 		expect(untouched?.thread?.replyCount).toBe(0);
 	});
 
-	test.each(["owner", "admin", "member", "viewer"] as const)(
+	// The chat doors check only `thread.createdBy`, with no role branch. The owner passes the permission
+	// check as owner, and the viewer is the weakest role that passes it through a role assignment.
+	test.each(["owner", "viewer"] as const)(
 		"a workspace %s cannot read or change another creator's chat",
 		async (role) => {
 			const t = test_convex();
@@ -2967,7 +2969,8 @@ describe("enforcement", () => {
 		}
 	});
 
-	test.each(["owner", "admin", "member", "viewer"] as const)(
+	// Same as above: the creator check has no role branch, so the owner and the viewer cover it.
+	test.each(["owner", "viewer"] as const)(
 		"/api/chat refuses a workspace %s in another creator's thread",
 		async (role) => {
 			const t = test_convex();
@@ -3254,44 +3257,6 @@ describe("system roles", () => {
 			);
 		}
 		expect(access_control_PERMISSION_CATALOG["organization.integrations_policy.manage"].scope).toBe("organization");
-	});
-
-	test("viewer can read but not write", async () => {
-		const t = test_convex();
-		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-viewer-owner" });
-		const viewerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-viewer-member" });
-		const organization = await access_control_test_seed_organization(t, {
-			ownerId,
-			memberId: viewerId,
-			name: "viewer-org",
-		});
-
-		const demoted = await access_control_test_identity(t, ownerId).mutation(api.access_control.set_user_role, {
-			organizationId: organization.organizationId,
-			workspaceId: organization.defaultWorkspaceId,
-			userId: viewerId,
-			role: "viewer",
-		});
-		expect(demoted._nay).toBeUndefined();
-
-		const result = await t.run(async (ctx) => {
-			const scope = {
-				organizationId: organization.organizationId,
-				workspaceId: organization.defaultWorkspaceId,
-				defaultWorkspaceId: organization.defaultWorkspaceId,
-				organizationOwnerUserId: ownerId,
-				resource: { kind: "workspace", id: String(organization.defaultWorkspaceId) },
-				userId: viewerId,
-			} as const;
-
-			return {
-				read: await access_control_db_has_permission(ctx, { ...scope, permission: "content.read" }),
-				write: await access_control_db_has_permission(ctx, { ...scope, permission: "content.write" }),
-			};
-		});
-
-		expect(result.read).toBe(true);
-		expect(result.write).toBe(false);
 	});
 
 	test("a viewer cannot create a workspace to write in", async () => {

@@ -308,7 +308,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 		: reviewRun
 			? {
 					verbs: reviewRun.operationKind === "accept" ? ["Saving", "Saved"] : ["Discarding", "Discarded"],
-					onOpen: () => openReviewRun(reviewRun.id),
+					onOpen: () => openReviewRun(reviewRun.id, reviewRun.operationKind),
 				}
 			: archiveRun
 				? {

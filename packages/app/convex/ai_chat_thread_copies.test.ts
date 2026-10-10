@@ -105,16 +105,26 @@ async function copy_docs(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("thread_branch", () => {
-	test("copies a branch of more than 8,192 messages in order", async () => {
+	test("copies a branch of more than two id pages in order", async () => {
 		const f = await fixture();
-		const ids = await seed_chain(f, 8_300);
-
-		const branched = await f.asUser.action(api.ai_chat.thread_branch, {
+		// A page holds 1,000 ids (`PAGE_MAX_IDS`), so 2,050 messages fill 2 pages and part of a third.
+		// Pages keep each id list far below the Convex array cap of 8,192.
+		const ids = await seed_chain(f, 2_050);
+		const begun = await f.t.mutation(internal.ai_chat_thread_copies.begin, {
+			userId: f.seeded.userId,
 			membershipId: f.seeded.membershipId,
 			threadId: f.sourceThreadId,
 		});
+		const { copyId, threadId } = begun._yay!;
 
-		const threadId = branched._yay!.threadId;
+		let pageCount = 0;
+		let step = "running";
+		while (step === "running") {
+			step = await f.t.mutation(internal.ai_chat_thread_copies.step, { copyId });
+			pageCount = Math.max(pageCount, (await copy_docs(f)).pages.length);
+		}
+		expect(step).toBe("published");
+		expect(pageCount).toBe(3);
 		const copied = await read_branch(f, threadId);
 		expect(copied.count).toBe(ids.length);
 		expect(copied.texts).toEqual(ids.map((_, index) => `m${index}`));

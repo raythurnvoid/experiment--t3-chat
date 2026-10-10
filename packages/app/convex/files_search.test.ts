@@ -89,15 +89,24 @@ describe("private search", () => {
 			expect(metadata.items).toMatchObject([{ target: f.target, path: "/draft/note.md" }]);
 			// The search box is saved-only: no suggestion and no row from a draft.
 			expect(
-				await f.asUser.query(api.files_metadata.list_search_values, {
-					membershipId: f.db.membershipId,
-					fieldPath,
-					prefix: "",
-				}),
+				(
+					await f.asUser.query(api.files_metadata.list_search_values, {
+						membershipId: f.db.membershipId,
+						fieldPath,
+						prefix: "",
+						paginationOpts: { numItems: 50, cursor: null },
+					})
+				).page,
 			).toEqual([]);
 		}
-		const fields = await f.asUser.query(api.files_metadata.list_search_fields, { membershipId: f.db.membershipId });
-		expect(fields).toEqual([]);
+		// Pending docs write no catalog delta, so there is nothing for the compactor to apply.
+		expect(await f.t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_deltas").collect())).toEqual([]);
+		const fields = await f.asUser.query(api.files_metadata.list_search_fields, {
+			membershipId: f.db.membershipId,
+			prefix: "",
+			paginationOpts: { numItems: 50, cursor: null },
+		});
+		expect(fields.page).toEqual([]);
 		for (const clause of [
 			{ kind: "name", text: "note" },
 			{ kind: "content", text: "privateneedle" },

@@ -3,7 +3,14 @@ import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "../convex/setup.test.ts";
+import {
+	test_compact_metadata_catalog,
+	test_convex,
+	test_create_saved_text_file,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "../convex/setup.test.ts";
+import type { files_SavedStream } from "../shared/files.ts";
 import { test_create_saved_placement_fixture } from "./files-saved-placement.test-fixtures.ts";
 import { files_pending_overlay_list } from "./files-pending-overlay.ts";
 
@@ -82,8 +89,9 @@ test("metadata reads merge normal and selected facts before and after the switch
 		).toEqual({ _yay: null });
 	}
 	await f.stageNode(nodeId);
-	// Pause the reader fixture while owned-file facts sit in both views.
-	await f.t.run(async (ctx) => {
+	// Pause the reader fixture while owned-file facts sit in both views. The wrapper moves the
+	// metadata catalog rows with the docs.
+	await test_run_with_flush(f.t, async (ctx) => {
 		const docs = await ctx.db
 			.query("files_metadata_docs")
 			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
@@ -106,18 +114,55 @@ test("metadata reads merge normal and selected facts before and after the switch
 			});
 		}
 	});
+	// The browser reads the normal stream and the visible Move view's stream of each door, and merges
+	// them. The clock goes back after the compactor, so Move leases see no time pass.
+	const read_streams = async (read: (savedStream: files_SavedStream) => Promise<string[]>) => {
+		const now = Date.now();
+		await test_compact_metadata_catalog(f.t);
+		vi.setSystemTime(now);
+		const view = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		if (!view) throw new Error("Expected the workspace view");
+		const streams: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
+		if (view.cohortId && view.view)
+			streams.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
+		return [...new Set((await Promise.all(streams.map(read))).flat())].sort();
+	};
+	const paginationOpts = { numItems: 50, cursor: null };
 	const fields = () =>
-		f.asUser.query(api.files_metadata.list_folder_fields, {
-			membershipId: f.db.membershipId,
-			parentId: "root",
-			afterField: null,
-		});
+		read_streams(async (savedStream) =>
+			(
+				await f.asUser.query(api.files_metadata.list_folder_fields, {
+					membershipId: f.db.membershipId,
+					savedStream,
+					parentId: "root",
+					prefix: "",
+					paginationOpts,
+				})
+			).page,
+		);
 	const values = () =>
-		f.asUser.query(api.files_metadata.list_search_values, {
-			membershipId: f.db.membershipId,
-			fieldPath: "metadata.status",
-			prefix: "",
-		});
+		read_streams(async (savedStream) =>
+			(
+				await f.asUser.query(api.files_metadata.list_search_values, {
+					membershipId: f.db.membershipId,
+					savedStream,
+					fieldPath: "metadata.status",
+					prefix: "",
+					paginationOpts,
+				})
+			).page,
+		);
+	const keys = () =>
+		read_streams(async (savedStream) =>
+			(
+				await f.asUser.query(api.files_metadata.list_search_fields, {
+					membershipId: f.db.membershipId,
+					savedStream,
+					prefix: "",
+					paginationOpts,
+				})
+			).page.map((field) => field.fieldPath),
+		);
 	const byPath = () =>
 		f.t.query(internal.files_metadata.get_by_path, {
 			organizationId: f.db.organizationId,
@@ -128,16 +173,12 @@ test("metadata reads merge normal and selected facts before and after the switch
 	expect((await byPath())?.values, "Bash metadata keeps selected before docs").toEqual([
 		{ fieldPath: "metadata.status", valueKind: "string", stringValue: "old" },
 	]);
-	expect((await fields())?.fields, "selected metadata remains in the folder fields").toEqual([
+	expect(await fields(), "selected metadata remains in the folder fields").toEqual([
 		"metadata.normal",
 		"metadata.status",
 	]);
 	expect(await values()).toEqual(["old"]);
-	expect(
-		(await f.asUser.query(api.files_metadata.list_search_fields, { membershipId: f.db.membershipId })).map(
-			(field) => field.fieldPath,
-		),
-	).toEqual(["metadata.normal", "metadata.status"]);
+	expect(await keys()).toEqual(["metadata.normal", "metadata.status"]);
 	expect(
 		(
 			await f.asUser.query(api.files_metadata.list_node_fields, {
@@ -151,7 +192,7 @@ test("metadata reads merge normal and selected facts before and after the switch
 	expect((await byPath())?.values, "Bash metadata selects after docs at publication").toEqual([
 		{ fieldPath: "metadata.status", valueKind: "string", stringValue: "new" },
 	]);
-	await f.t.run(async (ctx) => {
+	await test_run_with_flush(f.t, async (ctx) => {
 		const doc = await ctx.db
 			.query("files_metadata_docs")
 			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
@@ -168,7 +209,7 @@ test("metadata reads merge normal and selected facts before and after the switch
 		await ctx.db.patch("files_metadata_docs", doc._id, { moveView: undefined });
 	});
 	expect((await byPath())?.fields, "Bash metadata merges a partly cleaned selected view").toEqual(["metadata.status"]);
-	expect((await fields())?.fields).toEqual(["metadata.normal", "metadata.status"]);
+	expect(await fields()).toEqual(["metadata.normal", "metadata.status"]);
 	expect(await values(), "after metadata wins at the shared switch").toEqual(["new"]);
 });
 

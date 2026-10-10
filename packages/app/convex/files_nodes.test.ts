@@ -40,6 +40,7 @@ import { files_metadata_db_insert_committed } from "./files_metadata.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
 	test_apply_file_pending_move,
+	test_compact_metadata_catalog,
 	test_convex,
 	test_finish_pending_update_run,
 	test_rename_node,
@@ -97,7 +98,7 @@ import { files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_table_filter_order_field, type files_table_Filter } from "../shared/files-table.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
-import { insert_tree_node, seed_tree_access_fixture, seed_folder_table, type Page } from "./files_nodes.setup.test.ts";
+import { insert_tree_node, seed_tree_access_fixture, seed_folder_table } from "./files_nodes.setup.test.ts";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
 const streamTextMock = vi.hoisted(() => vi.fn());
@@ -647,11 +648,11 @@ describe("list_tree_children", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read.
-	test("an owner restricted page whose end cursor holds more than 1,000 rows asks for a split and reads no row", async () => {
+	// runs before any row read, not the 1,000 guard: a page asks for at most 200 rows.
+	test("an owner restricted page whose end cursor holds more rows than it asks for asks for a split and reads no row", async () => {
 		const { t, db, asOwner, parentId, insert_children } = await seed_folder_table();
 		const ids = await insert_children(
-			Array.from({ length: 1003 }, (_, index) => ({
+			Array.from({ length: 103 }, (_, index) => ({
 				name: `r-${String(index).padStart(4, "0")}`,
 				kind: "folder" as const,
 				updatedAt: 1,
@@ -668,14 +669,12 @@ describe("list_tree_children", () => {
 				paginationOpts,
 			});
 
-		// Pages hold at most 200 rows, so 5 pages and 2 more rows put the end cursor after row 1,002.
-		let cursor: string | null = null;
-		for (let index = 0; index < 5; index++) cursor = (await read({ numItems: 200, cursor })).continueCursor;
-		const endCursor = (await read({ numItems: 2, cursor })).continueCursor;
+		// 100 rows and 2 more put the end cursor after row 102: one more than `numItems` + 1.
 		const first = await read({ numItems: 100, cursor: null });
+		const endCursor = (await read({ numItems: 2, cursor: first.continueCursor })).continueCursor;
 
 		// A SYSTEM author makes the tree rows throw, so this page proves the guard runs before any row read.
-		await t.run((ctx) => ctx.db.patch("files_nodes", ids[125]!, { createdBy: users_SYSTEM_AUTHOR }));
+		await t.run((ctx) => ctx.db.patch("files_nodes", ids[101]!, { createdBy: users_SYSTEM_AUTHOR }));
 		expect(await read({ numItems: 100, cursor: null, endCursor })).toEqual({
 			page: [],
 			isDone: false,
@@ -1019,14 +1018,15 @@ describe("list_tree_shared_roots", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read. A cost test under `list_tree_children_shared` checks the guard number.
-	test("a page whose end cursor holds more than 187 rows asks for a split and reads no row", async () => {
+	// runs before any row read, not the 187 guard. A cost test under `list_tree_children_shared`
+	// checks the guard number.
+	test("a page whose end cursor holds more rows than it asks for asks for a split and reads no row", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const ids = await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			const nodeIds: Array<Id<"files_nodes">> = [];
-			for (let index = 0; index < 252; index++) {
+			for (let index = 0; index < 102; index++) {
 				const nodeId = await insert_tree_node({
 					ctx,
 					owner: f.owner,
@@ -1058,14 +1058,13 @@ describe("list_tree_shared_roots", () => {
 				paginationOpts,
 			});
 
-		// The member's shares by name: `granted`, the 252 new ones, then `shared`. Read 252 rows to get
-		// the cursor right after the last new one.
+		// The member's shares by name: `granted`, the 102 new ones, then `shared`. Read 100 rows and 2
+		// more to get the cursor right after row 102: one more than `numItems` + 1.
 		const first = await read_page({ numItems: 100, cursor: null });
-		const second = await read_page({ numItems: 100, cursor: first.continueCursor });
-		const endCursor = (await read_page({ numItems: 52, cursor: second.continueCursor })).continueCursor;
+		const endCursor = (await read_page({ numItems: 2, cursor: first.continueCursor })).continueCursor;
 
 		// A SYSTEM author makes the tree rows throw, so this page proves the guard runs before any row read.
-		await t.run((ctx) => ctx.db.patch("files_nodes", ids[125]!, { createdBy: users_SYSTEM_AUTHOR }));
+		await t.run((ctx) => ctx.db.patch("files_nodes", ids[100]!, { createdBy: users_SYSTEM_AUTHOR }));
 		expect(await read_page({ numItems: 100, cursor: null, endCursor })).toEqual({
 			page: [],
 			isDone: false,
@@ -12732,13 +12731,23 @@ describe("folder metadata", () => {
 			)._nay,
 		).toBeUndefined();
 		await assertScope(["/destination/renamed", "/destination/renamed/inner"], true);
-		expect(await asOwner.query(api.files_metadata.list_search_fields, { membershipId: db.membershipId })).toEqual([]);
-		expect(
-			await asOwner.query(api.files_metadata.list_search_values, {
+		await test_compact_metadata_catalog(t);
+		expect((
+			await asOwner.query(api.files_metadata.list_search_fields, {
 				membershipId: db.membershipId,
-				fieldPath: "metadata.folder-key",
 				prefix: "",
-			}),
+				paginationOpts: { numItems: 50, cursor: null },
+			})
+		).page).toEqual([]);
+		expect(
+			(
+				await asOwner.query(api.files_metadata.list_search_values, {
+					membershipId: db.membershipId,
+					fieldPath: "metadata.folder-key",
+					prefix: "",
+					paginationOpts: { numItems: 50, cursor: null },
+				})
+			).page,
 		).toEqual([]);
 
 		expect(
@@ -12760,15 +12769,25 @@ describe("folder metadata", () => {
 		).toBeUndefined();
 		await assertScope(["/restored-parent/renamed", "/restored-parent/renamed/inner"], false);
 		expect((await search("/destination")).items).toEqual([]);
-		expect(await asOwner.query(api.files_metadata.list_search_fields, { membershipId: db.membershipId })).toEqual([
+		await test_compact_metadata_catalog(t);
+		expect((
+			await asOwner.query(api.files_metadata.list_search_fields, {
+				membershipId: db.membershipId,
+				prefix: "",
+				paginationOpts: { numItems: 50, cursor: null },
+			})
+		).page).toEqual([
 			{ fieldPath: "metadata.folder-key", valueKinds: ["string"] },
 		]);
 		expect(
-			await asOwner.query(api.files_metadata.list_search_values, {
-				membershipId: db.membershipId,
-				fieldPath: "metadata.folder-key",
-				prefix: "",
-			}),
+			(
+				await asOwner.query(api.files_metadata.list_search_values, {
+					membershipId: db.membershipId,
+					fieldPath: "metadata.folder-key",
+					prefix: "",
+					paginationOpts: { numItems: 50, cursor: null },
+				})
+			).page,
 		).toEqual(["shared"]);
 	});
 
@@ -13486,45 +13505,46 @@ describe("list_tree_children_sorted", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read, not the guard number. The cost test below checks the guard numbers.
+	// runs before any row read, not the guard number. A page asks for at most 200 rows, under every
+	// guard, so only that mark can trip the split here. The cost test below checks the guard numbers.
 	test.each([
-		{ restricted: false, field: "metadata.status", guard: 1800 },
-		{ restricted: true, field: "metadata.status", guard: 700 },
-		{ restricted: true, field: "name", guard: 1000 },
+		{ restricted: false, field: "metadata.status" },
+		{ restricted: true, field: "metadata.status" },
+		{ restricted: true, field: "name" },
 	])(
-		"a page whose end cursor holds more than $guard rows asks for a split and reads no row ($field, restricted $restricted)",
-		async ({ restricted, field, guard }) => {
+		"a page whose end cursor holds more rows than it asks for asks for a split and reads no row ($field, restricted $restricted)",
+		async ({ restricted, field }) => {
 			const { t, insert_children, set_metadata, read_page } = await seed_folder_table();
-			const names = Array.from({ length: guard + 2 }, (_, index) => `n-${String(index).padStart(4, "0")}.md`);
+			const names = Array.from({ length: 103 }, (_, index) => `n-${String(index).padStart(4, "0")}.md`);
 			const ids = await insert_children(
 				names.map((name) => ({ name, kind: "file" as const, updatedAt: 1, restricted })),
 			);
 			if (field !== "name") await set_metadata(ids.map((id) => [id, [{ key: "status", value: "open" }]]));
 			const sort = { field, direction: "asc" as const };
 
-			// Read `guard` rows, then one more, to get the cursor right after row `guard + 1`.
-			let cursor: string | null = null;
-			let firstCursor: string | null = null;
-			for (let read = 0; read < guard; read += 100) {
-				const page: Page = await read_page({
+			// Read 100 rows, then 2 more, to get the cursor right after row 102: one more than `numItems` + 1.
+			const first = await read_page({
+				kind: "file",
+				sort,
+				restricted,
+				paginationOpts: { numItems: 100, cursor: null },
+			});
+			expect(first.page).toHaveLength(100);
+			const endCursor = (
+				await read_page({
 					kind: "file",
 					sort,
 					restricted,
-					paginationOpts: { numItems: 100, cursor },
-				});
-				expect(page.page).toHaveLength(100);
-				cursor = page.continueCursor;
-				firstCursor ??= cursor;
-			}
-			const endCursor = (await read_page({ kind: "file", sort, restricted, paginationOpts: { numItems: 1, cursor } }))
-				.continueCursor;
+					paginationOpts: { numItems: 2, cursor: first.continueCursor },
+				})
+			).continueCursor;
 
 			// A field doc whose node is gone makes a node read throw, and a SYSTEM author makes the tree
 			// rows throw. So this page proves the guard runs before any row read.
 			await t.run((ctx) =>
 				field === "name"
-					? ctx.db.patch("files_nodes", ids[guard / 2]!, { createdBy: users_SYSTEM_AUTHOR })
-					: ctx.db.delete("files_nodes", ids[guard / 2]!),
+					? ctx.db.patch("files_nodes", ids[101]!, { createdBy: users_SYSTEM_AUTHOR })
+					: ctx.db.delete("files_nodes", ids[101]!),
 			);
 			expect(
 				await read_page({ kind: "file", sort, restricted, paginationOpts: { numItems: 100, cursor: null, endCursor } }),
@@ -13540,7 +13560,7 @@ describe("list_tree_children_sorted", () => {
 				kind: "file",
 				sort,
 				restricted,
-				paginationOpts: { numItems: 200, cursor: null, endCursor: firstCursor! },
+				paginationOpts: { numItems: 200, cursor: null, endCursor: first.continueCursor },
 			});
 			expect(small.page.map((row) => row.name)).toEqual(names.slice(0, 100));
 		},
@@ -14237,6 +14257,45 @@ describe("search box doors", () => {
 		};
 	}
 
+	/**
+	 * The first page of saved keys that start with `prefix`, once the catalog compactor applied every
+	 * save.
+	 */
+	async function list_keys(args: {
+		t: ReturnType<typeof test_convex>;
+		asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+		membershipId: Id<"organizations_workspaces_users">;
+		prefix?: string;
+	}) {
+		await test_compact_metadata_catalog(args.t);
+		const result = await args.asWho.query(api.files_metadata.list_search_fields, {
+			membershipId: args.membershipId,
+			prefix: args.prefix ?? "",
+			paginationOpts: { numItems: 50, cursor: null },
+		});
+		return result.page;
+	}
+
+	/**
+	 * The first page of saved string values of `fieldPath` that start with `prefix`, like `list_keys`.
+	 */
+	async function list_values(args: {
+		t: ReturnType<typeof test_convex>;
+		asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+		membershipId: Id<"organizations_workspaces_users">;
+		fieldPath: string;
+		prefix: string;
+	}) {
+		await test_compact_metadata_catalog(args.t);
+		const result = await args.asWho.query(api.files_metadata.list_search_values, {
+			membershipId: args.membershipId,
+			fieldPath: args.fieldPath,
+			prefix: args.prefix,
+			paginationOpts: { numItems: 50, cursor: null },
+		});
+		return result.page;
+	}
+
 	const statusOpenPlans: files_metadata_SearchPlan[] = [
 		{ op: "eq", fieldPath: "frontmatter.status", value: "open" },
 		{ op: "eq", fieldPath: "metadata.status", value: "open" },
@@ -14396,16 +14455,22 @@ describe("search box doors", () => {
 				paginationOpts: { numItems: 50, cursor: null },
 			}),
 		).toEqual({ page: [], isDone: true, continueCursor: "" });
+		expect(await list_keys({ t, asWho: seeded.asOwner, membershipId: member.membershipId })).toEqual([]);
 		expect(
-			await seeded.asOwner.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId }),
-		).toEqual([]);
-		expect(
-			await seeded.asOwner.query(api.files_metadata.list_search_values, {
+			await list_values({
+				t,
+				asWho: seeded.asOwner,
 				membershipId: member.membershipId,
 				fieldPath: "frontmatter.status",
 				prefix: "",
 			}),
 		).toEqual([]);
+		expect(
+			await seeded.asOwner.query(api.files_metadata.get_search_field, {
+				membershipId: member.membershipId,
+				fieldPath: "frontmatter.status",
+			}),
+		).toBeNull();
 	});
 
 	test("search_saved hides a restricted folder from a member until they are given it", async () => {
@@ -14482,10 +14547,11 @@ describe("search box doors", () => {
 				path: "/tasks",
 			});
 		const search = () => search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans });
-		const fields = () =>
-			member.asMember.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId });
+		const fields = () => list_keys({ t, asWho: member.asMember, membershipId: member.membershipId });
 		const values = () =>
-			member.asMember.query(api.files_metadata.list_search_values, {
+			list_values({
+				t,
+				asWho: member.asMember,
 				membershipId: member.membershipId,
 				fieldPath: "metadata.folder-secret",
 				prefix: "",
@@ -14508,8 +14574,9 @@ describe("search box doors", () => {
 		expect(await entries()).toEqual([]);
 		expect(await byPath()).toBeNull();
 		expect(await search()).toEqual(new Set());
-		expect(await fields()).toEqual([]);
-		expect(await values()).toEqual([]);
+		// Accepted leak until a search engine arrives: suggestions name every saved key and value.
+		expect(await fields()).toContainEqual({ fieldPath: "metadata.folder-secret", valueKinds: ["string"] });
+		expect(await values()).toEqual(["visible-with-grant"]);
 		expect((await set())._nay).toBeDefined();
 		expect((await update())._nay).toBeDefined();
 
@@ -14552,13 +14619,11 @@ describe("search box doors", () => {
 		expect(await entries()).toEqual([{ key: "folder-secret", value: "agent-edit" }]);
 	});
 
-	test("list_search_fields lists keys with the kinds the caller can read", async () => {
+	test("list_search_fields lists every saved key with its kinds, to every member", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 
-		const ownerFields = await seeded.asOwner.query(api.files_metadata.list_search_fields, {
-			membershipId: seeded.db.membershipId,
-		});
+		const ownerFields = await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId });
 		expect(ownerFields).toEqual([
 			{ fieldPath: "frontmatter.legacy", valueKinds: ["string"] },
 			{ fieldPath: "frontmatter.priority", valueKinds: ["number"] },
@@ -14571,6 +14636,28 @@ describe("search box doors", () => {
 			{ fieldPath: "metadata.slack-message-id", valueKinds: ["string"] },
 			{ fieldPath: "metadata.status", valueKinds: ["string"] },
 		]);
+		// A prefix ignores case, and a namespace prefix lists its whole namespace.
+		expect(
+			(await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "Frontmatter.S" })).map(
+				(field) => field.fieldPath,
+			),
+		).toEqual(["frontmatter.source", "frontmatter.source.channel", "frontmatter.status"]);
+		expect(
+			await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "metadata." }),
+		).toHaveLength(2);
+		expect(await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "x" })).toEqual([]);
+		expect(
+			await seeded.asOwner.query(api.files_metadata.get_search_field, {
+				membershipId: seeded.db.membershipId,
+				fieldPath: "frontmatter.regression",
+			}),
+		).toEqual({ valueKinds: ["boolean"] });
+		expect(
+			await seeded.asOwner.query(api.files_metadata.get_search_field, {
+				membershipId: seeded.db.membershipId,
+				fieldPath: "frontmatter.Regression",
+			}),
+		).toBeNull();
 
 		// Suggestions are saved-only: a key that only exists in the owner's draft is not suggested, not
 		// even to the owner.
@@ -14582,121 +14669,90 @@ describe("search box doors", () => {
 			unstagedMarkdown: ["---", "status: open", "draft-key: x", "---", "Body"].join("\n"),
 		});
 		if (pending._nay) throw new Error(pending._nay.message);
-		const ownerFieldsWithDraft = await seeded.asOwner.query(api.files_metadata.list_search_fields, {
-			membershipId: seeded.db.membershipId,
-		});
+		const ownerFieldsWithDraft = await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId });
 		expect(ownerFieldsWithDraft.map((field) => field.fieldPath)).not.toContain("frontmatter.draft-key");
 		expect(ownerFieldsWithDraft.map((field) => field.fieldPath)).toContain("frontmatter.regression");
 
-		// A member who was given `/tasks` sees its keys, not the archive's `legacy` and not the
-		// owner's draft key.
+		// Accepted leak until a search engine arrives: a member with no role and no grant gets the same
+		// saved keys, also from files they cannot open. The draft key stays out.
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "fields" });
+		expect(await list_keys({ t, asWho: member.asMember, membershipId: member.membershipId })).toEqual(ownerFields);
 		expect(
-			await member.asMember.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId }),
-		).toEqual([]);
-
-		await reset_file_write_rate_limits(t, seeded.db.userId);
-		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: seeded.db.membershipId,
-			nodeId: seeded.tasksFolderId,
-		});
-		if (restricted._nay) throw new Error(restricted._nay.message);
-		await reset_file_write_rate_limits(t, seeded.db.userId);
-		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-			membershipId: seeded.db.membershipId,
-			nodeId: seeded.tasksFolderId,
-			principal: { kind: "user", userId: member.userId },
-			level: "read",
-		});
-		if (granted._nay) throw new Error(granted._nay.message);
-
-		const memberFields = await member.asMember.query(api.files_metadata.list_search_fields, {
-			membershipId: member.membershipId,
-		});
-		const memberKeys = memberFields.map((field) => field.fieldPath);
-		expect(memberKeys).toContain("frontmatter.status");
-		expect(memberKeys).toContain("metadata.status");
-		expect(memberKeys).not.toContain("frontmatter.legacy");
-		expect(memberKeys).not.toContain("frontmatter.draft-key");
+			await member.asMember.query(api.files_metadata.get_search_field, {
+				membershipId: member.membershipId,
+				fieldPath: "frontmatter.legacy",
+			}),
+		).toEqual({ valueKinds: ["string"] });
 	});
 
-	test("list_search_fields stops early on many hidden keys instead of running out of reads", async () => {
+	test("the key and value doors page through every row, one range per page", async () => {
 		const t = test_convex({ transactionLimits: true });
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const openId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path: "/pub/open.md" });
-		await reset_file_write_rate_limits(t, db.userId);
-		const secretId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path: "/hr/secret.md" });
-		for (const [fileNodeId, metadataYaml] of [
-			[openId, "a-open: v"],
-			[secretId, "k0: v"],
-		] as const) {
-			await reset_file_write_rate_limits(t, db.userId);
-			const written = await asOwner.mutation(api.files_metadata.set_entries, {
-				membershipId: db.membershipId,
-				fileNodeId,
-				metadataYaml,
-			});
-			if (written._nay) throw new Error(written._nay.message);
-		}
-		const secret = (await t.run((ctx) => ctx.db.get("files_nodes", secretId)))!;
-		const restricted = await asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: db.membershipId,
-			nodeId: secret.parentId as Id<"files_nodes">,
-		});
-		if (restricted._nay) throw new Error(restricted._nay.message);
-
-		// 400 more files in the restricted folder, each with its own key, copied from the first one.
-		await t.run(async (ctx) => {
-			const docs = (await ctx.db.query("files_metadata_docs").collect()).flatMap((doc) =>
-				doc.sourceKind === "committed" && doc.fileNodeId === secretId && doc.fieldPath === "metadata.k0" ? [doc] : [],
-			);
-			// Read the node again: the restrict changed it.
-			const { _id, _creationTime, ...nodeFields } = (await ctx.db.get("files_nodes", secretId))!;
-			for (let index = 1; index <= 400; index++) {
-				const path = `/hr/secret-${index}.md`;
-				const cloneId = await ctx.db.insert("files_nodes", {
-					...nodeFields,
-					name: `secret-${index}.md`,
-					path,
-					treePath: path,
-				});
-				for (const { _id: _docId, _creationTime: _docCreationTime, ...docFields } of docs)
-					await ctx.db.insert("files_metadata_docs", {
-						...docFields,
-						fileNodeId: cloneId,
-						fieldPath: `metadata.k${index}`,
-						path,
-						treePath: path,
-					});
+		const seeded = await seed_search_box_fixture(t);
+		// 120 more keys with one value each, and 450 values of one key, on the open task.
+		await test_run_with_flush(t, async (ctx) => {
+			const openTask = (await ctx.db.get("files_nodes", seeded.openTaskId))!;
+			const doc = {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				fileNodeId: seeded.openTaskId,
+				sourceKind: "committed" as const,
+				path: openTask.path,
+				treePath: openTask.treePath,
+			};
+			for (let index = 0; index < 120; index += 1) {
+				const fieldPath = `frontmatter.page-${String(index).padStart(3, "0")}`;
+				await ctx.db.insert("files_metadata_docs", { ...doc, fieldPath, docKind: "field", parentId: openTask.parentId });
 			}
+			for (let index = 0; index < 450; index += 1)
+				await ctx.db.insert("files_metadata_docs", {
+					...doc,
+					fieldPath: "frontmatter.status",
+					docKind: "value",
+					valueKind: "string",
+					stringValue: `v${String(index).padStart(3, "0")}`,
+				});
 		});
+		await test_compact_metadata_catalog(t);
 
-		const member = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_search_box_hidden_keys" });
-			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId,
-				active: true,
-				pendingOrganizationRemoval: false,
-				updatedAt: Date.now(),
-			});
-			await access_control_db_ensure_role_assignment(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId,
-				role: "member",
-				now: Date.now(),
-			});
-			return { userId, membershipId };
-		});
-		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+		const read_all = async <Row,>(read: (cursor: string | null) => Promise<{ page: Row[]; isDone: boolean; continueCursor: string }>) => {
+			const rows: Row[] = [];
+			const sizes: number[] = [];
+			let cursor: string | null = null;
+			for (;;) {
+				const result = await read(cursor);
+				rows.push(...result.page);
+				sizes.push(result.page.length);
+				if (result.isDone) return { rows, sizes };
+				cursor = result.continueCursor;
+			}
+		};
+		// A client asking for more than a page gets 50 rows.
+		const keys = await read_all((cursor) =>
+			seeded.asOwner.query(api.files_metadata.list_search_fields, {
+				membershipId: seeded.db.membershipId,
+				prefix: "frontmatter.page-",
+				paginationOpts: { numItems: 500, cursor },
+			}),
+		);
+		expect(keys.sizes.slice(0, 2)).toEqual([50, 50]);
+		expect(keys.rows.map((row) => row.fieldPath)).toEqual(
+			Array.from({ length: 120 }, (_, index) => `frontmatter.page-${String(index).padStart(3, "0")}`),
+		);
+		// A sparse prefix after many other keys finds its key on the first page.
+		expect(
+			await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "frontmatter.sta" }),
+		).toEqual([{ fieldPath: "frontmatter.status", valueKinds: ["string"] }]);
 
-		// Each hidden key costs access checks. The walk stops on the read budget and returns the keys it
-		// found so far.
-		const fields = await asMember.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId });
-		expect(fields.map((field) => field.fieldPath)).toEqual(["metadata.a-open"]);
+		const values = await read_all((cursor) =>
+			seeded.asOwner.query(api.files_metadata.list_search_values, {
+				membershipId: seeded.db.membershipId,
+				fieldPath: "frontmatter.status",
+				prefix: "v",
+				paginationOpts: { numItems: 50, cursor },
+			}),
+		);
+		expect(values.sizes[0]).toBe(50);
+		expect(values.rows).toEqual(Array.from({ length: 450 }, (_, index) => `v${String(index).padStart(3, "0")}`));
 	});
 
 	test("archiving a folder drops its keys and values from the catalog", async () => {
@@ -14712,11 +14768,13 @@ describe("search box doors", () => {
 		});
 		const archiveFolderId = rootFolders.find((fileNode) => fileNode.path === "/tasks-archive")!._id;
 		const keys = () =>
-			seeded.asOwner
-				.query(api.files_metadata.list_search_fields, { membershipId: seeded.db.membershipId })
-				.then((fields) => fields.map((field) => field.fieldPath));
+			list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId }).then((fields) =>
+				fields.map((field) => field.fieldPath),
+			);
 		const legacyValues = () =>
-			seeded.asOwner.query(api.files_metadata.list_search_values, {
+			list_values({
+				t,
+				asWho: seeded.asOwner,
 				membershipId: seeded.db.membershipId,
 				fieldPath: "frontmatter.legacy",
 				prefix: "",
@@ -14749,11 +14807,11 @@ describe("search box doors", () => {
 		const seeded = await seed_search_box_fixture(t);
 		// Frontmatter has no cap on a key path's length, so a stored field can be longer than the
 		// doors accept. The control sits exactly at the cap and proves the inserted docs are what the
-		// doors read. `frontmatter.a..b` is a field the key grammar refuses.
+		// doors read. `frontmatter.a..b` is a field the key grammar refuses. The catalog counts neither.
 		const longField = `frontmatter.${"a".repeat(160)}`;
 		const badField = "frontmatter.a..b";
 		const controlField = `frontmatter.${"b".repeat(148)}`;
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			const openTask = (await ctx.db.get("files_nodes", seeded.openTaskId))!;
 			for (const fieldPath of [longField, badField, controlField]) {
 				const doc = {
@@ -14782,9 +14840,9 @@ describe("search box doors", () => {
 				stringValue: "o".repeat(201),
 			});
 		});
-		const keys = await seeded.asOwner
-			.query(api.files_metadata.list_search_fields, { membershipId: seeded.db.membershipId })
-			.then((fields) => fields.map((field) => field.fieldPath));
+		const keys = (await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId })).map(
+			(field) => field.fieldPath,
+		);
 		const nodeIds = (fieldPath: string) =>
 			search_saved_plans({
 				asWho: seeded.asOwner,
@@ -14792,11 +14850,7 @@ describe("search box doors", () => {
 				plans: [{ op: "exists", fieldPath }],
 			}).then((found) => [...found]);
 		const values = (fieldPath: string, prefix: string) =>
-			seeded.asOwner.query(api.files_metadata.list_search_values, {
-				membershipId: seeded.db.membershipId,
-				fieldPath,
-				prefix,
-			});
+			list_values({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, fieldPath, prefix });
 
 		expect(keys).toContain(controlField);
 		expect(await nodeIds(controlField)).toEqual([seeded.openTaskId]);
@@ -14808,22 +14862,27 @@ describe("search box doors", () => {
 		}
 		expect(await values("frontmatter.status", "o".repeat(200))).toEqual(["o".repeat(201)]);
 		expect(await values("frontmatter.status", "o".repeat(201))).toEqual([]);
+		// A key prefix longer than any key is refused too.
+		expect(
+			await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: `${controlField}b` }),
+		).toEqual([]);
+		expect(
+			await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "f".repeat(161) }),
+		).toEqual([]);
 	});
 
-	test("list_search_values lists distinct readable values that start with the prefix", async () => {
+	test("list_search_values lists distinct saved values that start with the prefix, to every member", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		const values = (fieldPath: string, prefix: string) =>
-			seeded.asOwner.query(api.files_metadata.list_search_values, {
-				membershipId: seeded.db.membershipId,
-				fieldPath,
-				prefix,
-			});
+			list_values({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, fieldPath, prefix });
 
 		expect(await values("frontmatter.status", "")).toEqual(["fixed", "open"]);
 		expect(await values("frontmatter.status", "o")).toEqual(["open"]);
-		// The first read starts at the prefix itself, so a fully typed value still lists its row.
+		// The range starts at the prefix itself, so a fully typed value still lists its row.
 		expect(await values("frontmatter.status", "open")).toEqual(["open"]);
+		// Values keep their case.
+		expect(await values("frontmatter.status", "O")).toEqual([]);
 		expect(await values("frontmatter.status", "z")).toEqual([]);
 		expect(await values("metadata.status", "")).toEqual(["open"]);
 		expect(await values("frontmatter.tags", "")).toEqual(["macos", "teams"]);
@@ -14832,111 +14891,18 @@ describe("search box doors", () => {
 		expect(await values(`frontmatter.${"a".repeat(160)}`, "")).toEqual([]);
 		expect(await values("frontmatter.status", "o".repeat(201))).toEqual([]);
 
+		// Accepted leak until a search engine arrives: a member with no role and no grant gets every
+		// saved value too.
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "values" });
-		const memberValues = () =>
-			member.asMember.query(api.files_metadata.list_search_values, {
-				membershipId: member.membershipId,
-				fieldPath: "frontmatter.status",
-				prefix: "",
-			});
-		expect(await memberValues()).toEqual([]);
-
-		await reset_file_write_rate_limits(t, seeded.db.userId);
-		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: seeded.db.membershipId,
-			nodeId: seeded.tasksFolderId,
-		});
-		if (restricted._nay) throw new Error(restricted._nay.message);
-		await reset_file_write_rate_limits(t, seeded.db.userId);
-		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-			membershipId: seeded.db.membershipId,
-			nodeId: seeded.tasksFolderId,
-			principal: { kind: "user", userId: member.userId },
-			level: "read",
-		});
-		if (granted._nay) throw new Error(granted._nay.message);
-		expect(await memberValues()).toEqual(["fixed", "open"]);
-		// A value the member cannot read is stepped over, and the walk goes on to the readable ones.
-		await t.run(async (ctx) => {
-			await ctx.db.insert("files_metadata_docs", {
-				organizationId: seeded.db.organizationId,
-				workspaceId: seeded.db.workspaceId,
-				fileNodeId: seeded.archivedTaskId,
-				sourceKind: "committed",
-				path: "/tasks-archive/2026-07-01-old.md",
-				treePath: "/tasks-archive/2026-07-01-old.md",
-				fieldPath: "frontmatter.status",
-				docKind: "value",
-				valueKind: "string",
-				stringValue: "aaa",
-			});
-		});
-		expect(await memberValues()).toEqual(["fixed", "open"]);
-		expect(await values("frontmatter.status", "")).toEqual(["aaa", "fixed", "open"]);
-		// The archive's `legacy` value stays out of reach: the grant covers `/tasks` only.
 		expect(
-			await member.asMember.query(api.files_metadata.list_search_values, {
+			await list_values({
+				t,
+				asWho: member.asMember,
 				membershipId: member.membershipId,
 				fieldPath: "frontmatter.legacy",
 				prefix: "",
 			}),
-		).toEqual([]);
-	});
-
-	test("list_search_values stops at its cap", async () => {
-		const t = test_convex();
-		const seeded = await seed_search_box_fixture(t);
-		await t.run(async (ctx) => {
-			const openTask = (await ctx.db.get("files_nodes", seeded.openTaskId))!;
-			for (let index = 0; index < 26; index += 1) {
-				await ctx.db.insert("files_metadata_docs", {
-					organizationId: seeded.db.organizationId,
-					workspaceId: seeded.db.workspaceId,
-					fileNodeId: seeded.openTaskId,
-					sourceKind: "committed",
-					path: openTask.path,
-					treePath: openTask.treePath,
-					fieldPath: "frontmatter.cap",
-					docKind: "value",
-					valueKind: "string",
-					stringValue: `v${String(index).padStart(2, "0")}`,
-				});
-			}
-		});
-
-		const values = await seeded.asOwner.query(api.files_metadata.list_search_values, {
-			membershipId: seeded.db.membershipId,
-			fieldPath: "frontmatter.cap",
-			prefix: "",
-		});
-		expect(values).toHaveLength(25);
-		expect(values[0]).toBe("v00");
-		expect(values[24]).toBe("v24");
-	});
-
-	test("list_search_fields stops at its cap", async () => {
-		const t = test_convex();
-		const seeded = await seed_search_box_fixture(t);
-		await t.run(async (ctx) => {
-			const openTask = (await ctx.db.get("files_nodes", seeded.openTaskId))!;
-			for (let index = 0; index < 201; index += 1) {
-				await ctx.db.insert("files_metadata_docs", {
-					organizationId: seeded.db.organizationId,
-					workspaceId: seeded.db.workspaceId,
-					fileNodeId: seeded.openTaskId,
-					sourceKind: "committed",
-					path: openTask.path,
-					treePath: openTask.treePath,
-					fieldPath: `frontmatter.cap-${String(index).padStart(3, "0")}`,
-					docKind: "field",
-				});
-			}
-		});
-
-		const fields = await seeded.asOwner.query(api.files_metadata.list_search_fields, {
-			membershipId: seeded.db.membershipId,
-		});
-		expect(fields).toHaveLength(200);
+		).toEqual(["yes"]);
 	});
 
 	test("search_saved finds the saved value, never a draft, for the member and the author", async () => {
@@ -14974,7 +14940,9 @@ describe("search box doors", () => {
 		expect(await searchAsMember([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(new Set());
 		expect(await searchAsMember(statusOpenPlans)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 		expect(
-			await member.asMember.query(api.files_metadata.list_search_values, {
+			await list_values({
+				t,
+				asWho: member.asMember,
 				membershipId: member.membershipId,
 				fieldPath: "frontmatter.status",
 				prefix: "t",
@@ -15013,12 +14981,23 @@ describe("search box doors", () => {
 			}),
 		).toEqual(new Set([seeded.openTaskId, seeded.archivedTaskId, emojiTaskId]));
 		expect(
-			await seeded.asOwner.query(api.files_metadata.list_search_values, {
+			await list_values({
+				t,
+				asWho: seeded.asOwner,
 				membershipId: seeded.db.membershipId,
 				fieldPath: "frontmatter.status",
 				prefix: "op",
 			}),
 		).toEqual(["open", "op😀"]);
+		expect(
+			await list_values({
+				t,
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				fieldPath: "frontmatter.status",
+				prefix: "op😀",
+			}),
+		).toEqual(["op😀"]);
 	});
 
 	test("a member with workspace read still needs the grant for a restricted folder", async () => {
@@ -15044,24 +15023,27 @@ describe("search box doors", () => {
 		const search = () =>
 			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans: statusOpenPlans });
 		const keys = () =>
-			member.asMember
-				.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId })
-				.then((fields) => fields.map((field) => field.fieldPath));
+			list_keys({ t, asWho: member.asMember, membershipId: member.membershipId }).then((fields) =>
+				fields.map((field) => field.fieldPath),
+			);
 		const statusValues = () =>
-			member.asMember.query(api.files_metadata.list_search_values, {
+			list_values({
+				t,
+				asWho: member.asMember,
 				membershipId: member.membershipId,
 				fieldPath: "frontmatter.status",
 				prefix: "",
 			});
 
-		// The role reads the whole workspace except the restricted `/tasks`: the archive file is
-		// found, and the catalog names only what the archive holds.
+		// The role reads the whole workspace except the restricted `/tasks`: only the archive file is
+		// found. Accepted leak until a search engine arrives: suggestions still name the keys and
+		// values of `/tasks`.
 		expect(await search()).toEqual(new Set([seeded.archivedTaskId]));
-		expect(await statusValues()).toEqual(["open"]);
+		expect(await statusValues()).toEqual(["fixed", "open"]);
 		const keysBefore = await keys();
 		expect(keysBefore).toContain("frontmatter.legacy");
-		expect(keysBefore).not.toContain("frontmatter.regression");
-		expect(keysBefore).not.toContain("metadata.status");
+		expect(keysBefore).toContain("frontmatter.regression");
+		expect(keysBefore).toContain("metadata.status");
 
 		await reset_file_write_rate_limits(t, seeded.db.userId);
 		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
@@ -15081,11 +15063,7 @@ describe("search box doors", () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		const statusValues = (prefix: string) =>
-			seeded.asOwner.query(api.files_metadata.list_search_values, {
-				membershipId: seeded.db.membershipId,
-				fieldPath: "frontmatter.status",
-				prefix,
-			});
+			list_values({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, fieldPath: "frontmatter.status", prefix });
 
 		// Suggestions and search rows are saved-only.
 		const pending = await upsert_pending_update_internal_for_test(t, {

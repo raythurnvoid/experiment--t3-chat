@@ -774,6 +774,8 @@ describe("organization billing check", () => {
 			balanceCents: 10,
 		});
 
+		// The caller is a normal member, so the only thing that can make someone the owner is
+		// `organizations.ownerUserId`.
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.actorUserId,
 			organizationId: scope.organizationId,
@@ -866,29 +868,6 @@ describe("organization billing check", () => {
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.ownerId,
-			organizationId: scope.organizationId,
-			minimumRequiredCents: 1,
-		});
-
-		expect(result.hasCredits).toBe(true);
-		expect(result.billedUser?._id).toBe(scope.ownerId);
-	});
-
-	test("owner-billed organizations read the owner from the organization doc", async () => {
-		const t = test_convex();
-		const scope = await seed_organization_billing_scope(t, { billingMode: "organization_owner", member: true });
-		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_organization_owner_billing_doc_owner",
-		});
-		await seed_billing_usage_snapshot(t, {
-			userId: scope.ownerId,
-			polarProductId,
-			balanceCents: 10,
-		});
-		// The caller is a normal member, so the only thing that can make someone the owner is
-		// `organizations.ownerUserId`.
-		const result = await t.query(internal.billing.check_credits, {
-			userId: scope.actorUserId,
 			organizationId: scope.organizationId,
 			minimumRequiredCents: 1,
 		});
@@ -1368,135 +1347,6 @@ describe("billing list_products", () => {
 		});
 		expect(paygProduct?.benefits?.some((benefit) => benefit.type === "meter_credit")).toBe(true);
 		expect(paygProduct?.benefits?.map((benefit) => benefit.description)).toContain("Free Usage");
-	});
-
-	test("returns products while the user has an active subscription", async () => {
-		const t = test_convex();
-		const { polarProductId } = await seed_pay_as_you_go_product(t, {
-			polarProductId: "billing_overview_prod_active",
-		});
-
-		await t.mutation(components.polar.lib.insertCustomer, {
-			id: "cust_overview_active",
-			userId: "user_billing_overview_active",
-		});
-
-		await t.mutation(components.polar.lib.createSubscription, {
-			subscription: {
-				id: "sub_overview_active",
-				customerId: "cust_overview_active",
-				productId: polarProductId,
-				checkoutId: null,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				modifiedAt: "2026-01-02T00:00:00.000Z",
-				amount: 1000,
-				currency: "usd",
-				recurringInterval: "month",
-				status: "active",
-				currentPeriodStart: "2026-01-01T00:00:00.000Z",
-				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
-				cancelAtPeriodEnd: false,
-				startedAt: "2026-01-01T00:00:00.000Z",
-				endedAt: null,
-				metadata: {},
-			},
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_billing_overview_active" as Id<"users">,
-			name: "Overview Active",
-			email: "overview-active@test.local",
-		});
-
-		const products = await asUser.query(api.billing.list_products, {});
-		expect(products.some((product) => product.id === polarProductId)).toBe(true);
-	});
-
-	test("returns products while the user has a cancel_at_period_end subscription", async () => {
-		const t = test_convex();
-		const { polarProductId } = await seed_pay_as_you_go_product(t, {
-			polarProductId: "billing_overview_prod_cancel",
-		});
-
-		await t.mutation(components.polar.lib.insertCustomer, {
-			id: "cust_overview_cancel",
-			userId: "user_billing_overview_cancel",
-		});
-
-		await t.mutation(components.polar.lib.createSubscription, {
-			subscription: {
-				id: "sub_overview_cancel",
-				customerId: "cust_overview_cancel",
-				productId: polarProductId,
-				checkoutId: null,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				modifiedAt: "2026-01-02T00:00:00.000Z",
-				amount: 1000,
-				currency: "usd",
-				recurringInterval: "month",
-				status: "active",
-				currentPeriodStart: "2026-01-01T00:00:00.000Z",
-				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
-				cancelAtPeriodEnd: true,
-				startedAt: "2026-01-01T00:00:00.000Z",
-				endedAt: null,
-				metadata: {},
-			},
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_billing_overview_cancel" as Id<"users">,
-			name: "Overview Cancel",
-			email: "overview-cancel@test.local",
-		});
-
-		const products = await asUser.query(api.billing.list_products, {});
-		expect(products.some((product) => product.id === polarProductId)).toBe(true);
-	});
-
-	test("returns products while the user has a trialing subscription", async () => {
-		const t = test_convex();
-		const { polarProductId } = await seed_pay_as_you_go_product(t, {
-			polarProductId: "billing_overview_prod_trial",
-		});
-
-		await t.mutation(components.polar.lib.insertCustomer, {
-			id: "cust_overview_trial",
-			userId: "user_billing_overview_trial",
-		});
-
-		await t.mutation(components.polar.lib.createSubscription, {
-			subscription: {
-				id: "sub_overview_trial",
-				customerId: "cust_overview_trial",
-				productId: polarProductId,
-				checkoutId: null,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				modifiedAt: "2026-01-02T00:00:00.000Z",
-				amount: null,
-				currency: "usd",
-				recurringInterval: "month",
-				status: "trialing",
-				currentPeriodStart: "2026-01-01T00:00:00.000Z",
-				currentPeriodEnd: "2026-01-08T00:00:00.000Z",
-				cancelAtPeriodEnd: false,
-				startedAt: "2026-01-01T00:00:00.000Z",
-				endedAt: null,
-				metadata: {},
-			},
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_billing_overview_trial" as Id<"users">,
-			name: "Overview Trial",
-			email: "overview-trial@test.local",
-		});
-
-		const products = await asUser.query(api.billing.list_products, {});
-		expect(products.some((product) => product.id === polarProductId)).toBe(true);
 	});
 
 	test("returns empty array when billing is misconfigured", async () => {

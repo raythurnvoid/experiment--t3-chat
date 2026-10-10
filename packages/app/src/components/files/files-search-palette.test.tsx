@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
+import { getFunctionName, type FunctionArgs, type FunctionReference, type FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import type { app_convex_api } from "@/lib/app-convex-client.ts";
@@ -19,7 +19,10 @@ const { savedArgsSeen, savedPages, queryPushListeners, navigateMock } = vi.hoist
 
 const saved_key = (clause: SavedArgs["clause"], folderPath?: string) => JSON.stringify([clause, folderPath ?? null]);
 
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigateMock }));
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@tanstack/react-router")>()),
+	useNavigate: () => navigateMock,
+}));
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
 		useContext: () => ({ membershipId: "membership_1", organizationName: "team", workspaceName: "home" }),
@@ -32,9 +35,19 @@ vi.mock("convex/react", async (importOriginal) => {
 	return {
 		...(await importOriginal<typeof import("convex/react")>()),
 		useConvex: () => ({ query: async () => [] }),
-		// Only the input's suggestions use `useQueries` here. They stay empty.
+		// Only the input's suggestions use `useQueries` and `useQuery` here. They stay empty.
 		useQueries: (queries: Record<string, unknown>) => Object.fromEntries(Object.keys(queries).map((key) => [key, []])),
-		usePaginatedQuery: (_query: FunctionReference<"query">, args: SavedArgs | "skip") => {
+		useQuery: (query: FunctionReference<"query">, args: unknown) =>
+			args === "skip"
+				? undefined
+				: getFunctionName(query) === "files_nodes:get_workspace_move_view"
+					? { generation: 1, cohortId: null, view: null, searchGeneration: 1 }
+					: null,
+		usePaginatedQuery: (query: FunctionReference<"query">, args: SavedArgs | "skip") => {
+			// The input's key and value suggestions page the metadata catalog. They stay empty.
+			if (getFunctionName(query).startsWith("files_metadata:")) {
+				return { results: [], status: "Exhausted", isLoading: false, loadMore: () => {} };
+			}
 			const [, forceRender] = useState(0);
 			useEffect(() => {
 				const listener = () => forceRender((count) => count + 1);

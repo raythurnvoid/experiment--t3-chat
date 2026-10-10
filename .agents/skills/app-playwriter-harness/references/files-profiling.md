@@ -17,6 +17,12 @@ personal AI folder for runners, raw samples, logs, and the progress table. Keep 
 6. Attach `getCDPSession({ page })` and enable `Network`. Check `Profiler.enable` separately. If it is
    unavailable, use long tasks and app state; do not claim CPU function attribution.
 
+Treat `Could not find public function` as a setup failure. Save the exact called function and prove
+the browser's loaded source. Check deployed function/schema metadata and any active migration
+handoff before a push. A clean HEAD can still roll back another task or reject retained data.
+If a migration is active, wait for its data audit and final strict deployment. Do not hide the
+missing query. Then recheck the real app and loaded source before collecting samples.
+
 Use at least seven samples per scenario. Keep first open and cached reopen separate. Record each
 failure. Do not report p95 from seven samples. Pace Yjs pushes and snapshot restores by at least five
 seconds, including restoration writes. Push and snapshot writes use separate limiter buckets with

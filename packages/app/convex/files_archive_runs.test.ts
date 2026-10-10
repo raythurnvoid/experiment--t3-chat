@@ -103,7 +103,9 @@ describe("archive_nodes", () => {
 
 	test("has no Stop, and an item archived on its own keeps its operation through Archive and Restore", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "stop", folderCount: 6, filesPerFolder: 100 });
+		// 153 items. One file is archived first, so 152 active items are left: more than the request and
+		// one step stamp (2 * 75), so the job still runs at the Stop.
+		const tree = await seed_tree(f, { name: "stop", folderCount: 1, filesPerFolder: 151 });
 		// Archived before the job, with its own operation. It must stay archived after the Restore.
 		expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 		const olderOperationId = (await read_node(f, tree.fileIds[0]!)).archiveOperationId;
@@ -134,9 +136,9 @@ describe("archive_nodes", () => {
 
 	test("a lock set after the check does not stop the archive", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "lock", folderCount: 4, filesPerFolder: 100 });
+		const tree = await seed_tree(f, { name: "lock", folderCount: 1, filesPerFolder: 74 });
 
-		// The check of 405 nodes fits in the request, and the stamps begin there too.
+		// The check of 76 nodes fits in the request, and the stamps begin there too. They stop after 75.
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;
 		expect((await read_node(f, tree.fileIds.at(-1)!)).archiveOperationId).toBeNull();
@@ -337,19 +339,20 @@ describe("archive_nodes", () => {
 
 	test("items somebody else deletes before the apply reaches them count as skipped", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "shrink", folderCount: 6, filesPerFolder: 100 });
+		const tree = await seed_tree(f, { name: "shrink", folderCount: 3, filesPerFolder: 100 });
 		// An empty folder, so deleting it leaves no child without a parent.
-		const emptyId = await folder(f, "/shrink/d5/empty");
+		const emptyId = await folder(f, "/shrink/d2/empty");
 
 		const archived = await archive(f, [tree.topId]);
 		await step(f, archived._yay!.runId);
-		// The first step finished the check and stamped only the start of the tree.
+		// The request and the first step stamped 150 nodes. The walk reaches `d2` after 204, so the empty
+		// folder is still active.
 		expect((await read_node(f, emptyId)).archiveOperationId).toBeNull();
 		await f.t.run((ctx) => ctx.db.delete("files_nodes", emptyId));
 		const ended = await run_to_end(f, archived._yay!);
 
 		expect(ended.activity.status).toBe("succeeded");
-		expect(ended.activity.progress).toMatchObject({ total: 608, completed: 607, skipped: 1, blocked: 0 });
+		expect(ended.activity.progress).toMatchObject({ total: 305, completed: 304, skipped: 1, blocked: 0 });
 	});
 
 	test("a missing or foreign named id is listed as not found, and the other named items are archived", async () => {
@@ -464,8 +467,10 @@ describe("archive_nodes", () => {
 
 	test("stamps every named item before it walks inside one, and walks the first one's folder first", async () => {
 		const f = await fixture();
+		// The first tree has 601 items in 100 folders, so its check and its walk take several steps. The
+		// second only needs items inside it.
 		const first = await seed_tree(f, { name: "first", folderCount: 100, filesPerFolder: 5 });
-		const second = await seed_tree(f, { name: "second", folderCount: 6, filesPerFolder: 100 });
+		const second = await seed_tree(f, { name: "second", folderCount: 1, filesPerFolder: 5 });
 		const insideFirst = new Set<Id<"files_nodes">>([...first.folderIds, ...first.fileIds]);
 		const insideSecond = new Set<Id<"files_nodes">>([...second.folderIds, ...second.fileIds]);
 
@@ -491,12 +496,19 @@ describe("archive_nodes", () => {
 	}, 120_000);
 
 	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
-		const f = await fixture();
-		const tree = await seed_tree(f, { name: "drain", folderCount: 6, filesPerFolder: 100 });
+		// With a limit of 1,000 queries, clearing 200 + 200 folders needs more than one step. 70 + 70 fit in one.
+		const f = await fixture({ transactionLimits: { databaseQueries: 1000 } });
+		// 76 items, more than one step of 75, so the archive is still a job after the request.
+		const tree = await seed_tree(f, { name: "drain", folderCount: 1, filesPerFolder: 74 });
 		const job = (await archive(f, [tree.topId]))._yay!;
 		let run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
 		while (run.phase !== "apply") run = (await step(f, job.runId))!;
-		const opId = await queue_empty_folders_first({ f, runId: job.runId, archiveOperationId: run.archiveOperationId });
+		const opId = await queue_empty_folders_first({
+			f,
+			runId: job.runId,
+			archiveOperationId: run.archiveOperationId,
+			count: 200,
+		});
 
 		await expect(step(f, job.runId)).resolves.toMatchObject({ active: true });
 		expect(await count_queue(f, opId)).toBeGreaterThan(0);
@@ -509,7 +521,8 @@ describe("archive_nodes", () => {
 describe("apply_file_pending_archive", () => {
 	test("a big agent delete runs as a job and removes each proposal when its node is archived", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "agent", folderCount: 4, filesPerFolder: 100 });
+		// 76 items: the check fits in the request, and the stamps need more than one step of 75.
+		const tree = await seed_tree(f, { name: "agent", folderCount: 1, filesPerFolder: 74 });
 		const proposal = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
@@ -614,7 +627,8 @@ describe("apply_file_pending_archive", () => {
 describe("files_archive_runs_db_delete_run_batch", () => {
 	test("history cleanup deletes the run with its Activity", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "history", folderCount: 4, filesPerFolder: 100 });
+		// 76 items, more than one step of 75, so the archive runs as a job.
+		const tree = await seed_tree(f, { name: "history", folderCount: 1, filesPerFolder: 74 });
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;
 		await run_to_end(f, job);

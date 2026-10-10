@@ -27,6 +27,8 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 
 - **The Vite dev server can stop answering while its port still listens.** Seen 2026-09-27: after about three days of uptime the Vite process held 2.1 GB, used 0 CPU over 5 seconds, and `curl http://[::1]:5173/` timed out. Every headless page then hung before `window.Clerk` existed, and `page.evaluate` timed out too, which looks like a Playwriter problem. Probe Vite with `curl` before debugging the browser. It is the user's server: ask before you restart it. A restart (stop the `vite.js` process and its `pnpm run dev` parent, then `vp env exec pnpm --dir packages/app run dev`) answered again in about 10 seconds.
 
+- **The owner profile can show as `(not signed in)` in `browser list`, under a new key.** Seen 2026-10-08: the QA Edge profile was listed only as `install:Edge:<new id>` with profile `(not signed in)`, while old sessions in `session list` still showed the real profile name with the old key, and `session new` on the old key failed with `Browser not found`. The app tab in that browser was still signed in as the owner. Confirm the owner with a read-only check of the signed-in account in the app tab (its membership or email), not by the profile column. If no listed browser holds the owner tab, the extension in that profile is off: ask the user to turn it on.
+- The first `browser list` call after the relay starts can wait from about 60 s to more than 3 minutes on `Waiting for extension to connect...`; later calls take a few seconds (seen 2026-10-08 and 2026-10-10). Wait for it instead of restarting the relay.
 - Playwriter accepts `--timeout 5000` on code execution calls, but rejects it on metadata commands such as `skill`, `browser list`, `session new`, and `session list`. Run those without the flag; keep the explicit timeout on every `-e` or `-f` call.
 - `playwriter session reset <id>` clears `state`. Run `install-harness.js` again, then bind the page before using `state.appPlaywriterHarness`. A successful reconnect does not restore the helper namespace.
 - Vitest 4.1.10 ignores the unsupported `--browser.screenshotFailures=false` CLI option and can still write failure images into the repo. For expected failures, use a temporary config in the personal task folder that imports the app config and sets `test.browser.screenshotFailures: false` on the browser project. Set its `root` to `packages/app` and pass its absolute path with `--config`. This prevented screenshots during a failing check. Capture needed images with Playwriter; a screenshot directory outside the repo can be refused by Vite's file allowlist.
@@ -1085,10 +1087,12 @@ The browser and relay can work while nothing listens on 5173. Check the app sepa
 The current `AGENTS.md` allows starting a missing dev server for implementation or QA. The older
 rule that made this a user-only blocker no longer applies.
 
-- Probe the app before you spend a call on Playwriter: `Invoke-WebRequest http://localhost:5173/
--TimeoutSec 5 -UseBasicParsing`, or list the listening ports
+- Probe the app before you spend a call on Playwriter: `Invoke-WebRequest http://[::1]:5173/
+-TimeoutSec 20 -UseBasicParsing`, or list the listening ports
   (`Get-NetTCPConnection -State Listen | Where-Object LocalPort -in 5173,4173,3000,8787`). A refused
   connection means no server, which is a different problem from the wrong-checkout one below.
+  Vite binds IPv6 only here, and a healthy root page can take about 5 s to answer, so a 5 s probe of
+  `localhost` can time out while the server is fine (seen 2026-10-08).
 - Check both ports and process command lines. Reuse a running server. Do not stop it or start a
   second copy on another port. When no server is running, use
   `vp env exec pnpm --dir packages/app run dev`. Follow `AGENTS.md` for the Convex dev target too.

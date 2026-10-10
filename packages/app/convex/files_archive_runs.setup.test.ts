@@ -6,8 +6,8 @@ import { activities_is_active } from "./activities_db.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
-export async function fixture() {
-	const t = test_convex({ transactionLimits: true });
+export async function fixture(options: Parameters<typeof test_convex>[0] = { transactionLimits: true }) {
+	const t = test_convex(options);
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 	return { t, db, asOwner };
@@ -365,16 +365,17 @@ export async function add_metadata_docs(args: { f: Fixture; fileNodeId: Id<"file
 }
 
 /**
- * Put 1,200 deleted folders and 1,200 empty folders at the front of the job's queue, before the rows
- * the job queued itself. The empty folders get `archiveOperationId`. Clearing all of them needs more
- * reads than one mutation may do.
+ * Put `count` deleted folders and `count` empty folders at the front of the job's queue, before the
+ * rows the job queued itself. The empty folders get `archiveOperationId`. The caller picks a count
+ * whose clearing needs more reads than one mutation may do.
  */
 export async function queue_empty_folders_first(args: {
 	f: Fixture;
 	runId: Id<"files_archive_runs">;
 	archiveOperationId: string | null;
+	count: number;
 }) {
-	const { f, runId, archiveOperationId } = args;
+	const { f, runId, archiveOperationId, count } = args;
 
 	const opId = await f.t.run(
 		async (ctx) =>
@@ -385,7 +386,7 @@ export async function queue_empty_folders_first(args: {
 	);
 	for (const isDeleted of [true, false]) {
 		await f.t.run(async (ctx) => {
-			for (let index = 0; index < 1200; index++) {
+			for (let index = 0; index < count; index++) {
 				const name = `${isDeleted ? "deleted" : "empty"}-${index}`;
 				const nodeId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
@@ -405,7 +406,7 @@ export async function queue_empty_folders_first(args: {
 				await ctx.db.insert("files_subtree_op_nodes", {
 					opId,
 					// Take these rows before the job's own rows, which get small numbers.
-					sequence: 1_000_000 + (isDeleted ? 0 : 1200) + index,
+					sequence: 1_000_000 + (isDeleted ? 0 : count) + index,
 					nodeId,
 					nodeDone: true,
 					cursor: null,
