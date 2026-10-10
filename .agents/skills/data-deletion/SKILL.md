@@ -239,7 +239,8 @@ Current purge coverage includes:
   and proposal owners handle assets first. Both user and workspace finalization reach this drain.
 - Relevant access changes advance the organization or workspace media-validation version in the
   same transaction. The workspace purge fence invalidates earlier proofs. Delete its version row
-  only after content and quotas are gone; final organization deletion also removes its version row.
+  only after content and quotas are gone, together with its `files_content_versions` row; final
+  organization deletion also removes its version row.
 - `files_pending_update_yjs_state_pages`, `files_pending_update_yjs_states`, `files_pending_update_state_cleanup_tasks`, `files_pending_update_text_inputs`, `files_pending_update_operation_batches`, `files_yjs_trusted_update_stages` — the paged pending-state family and its operation scaffolding, child docs first (pages before states, text inputs before batches), all before the pending-update docs they belong to
 - `files_pending_update_expiry_checks`, then `files_pending_updates`. Delete the checks first, so no
   expiry job works on drafts during the purge. A job whose check is gone does nothing.

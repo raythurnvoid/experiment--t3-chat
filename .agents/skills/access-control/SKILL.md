@@ -81,6 +81,10 @@ not permission caches. Final publication still checks current access.
   policy changes advance the workspace version. Unchanged or refused writes do not advance it.
 - Plugin mirrored human readers follow the same rule, including rollback and empty-reader root
   restriction. Store-only changes and independent service-account grants are not human media access.
+- New saved files and replaced content advance a separate content version (`files_content_versions`),
+  not the workspace version. Copy and Save pin it too. A Move group pins only the organization,
+  workspace and review versions, so a new file elsewhere does not stop it. Data deletion removes it
+  with the workspace.
 - Purge fencing invalidates proofs before docs are removed. A removed version doc also invalidates
   its proof. Never recreate a missing doc while checking an old proof.
 
@@ -435,6 +439,8 @@ Rules that are easy to miss, all of which were real holes:
   exposing its name. Ordinary protected descendants travel with their rules unchanged.
   Replacement checks every descendant it hides. Existing Move and scope repairs finish before
   new planning uses stored scopes. Access changes advance the clocks that each group checks.
+  Restrict, folder protection and Archive wait while any Move holds the workspace. Their walk reads
+  only nodes no Move holds, so waiting is how it reaches every node.
   A move that keeps the same parent and path does not change descendants. A
   name-only rename in the same saved parent carries nested shares without asking for write access to
   each one. Reparenting through Rename uses the same nested-scope checks as other moves.

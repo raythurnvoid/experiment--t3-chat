@@ -175,7 +175,12 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   checks current access and the exact asset version. Selected private media uses its exact after
   receipt. Private embed URLs keep their existing form after Save. The switch checks sealed proof
   for the current text digest, proposal revision, selection and group attempt.
-- Real planning and preparation progress refresh the idle deadline. Waiting alone does not.
+- Real planning and preparation progress refresh the idle deadline. Waiting for another Move or a
+  folder-wide job (Restrict, folder protection, Archive) refreshes it too, because that job can run
+  longer than the deadline. Other waits do not. Repair after the switch and abort repair also keep
+  the Activity alive. A deadline that already passed is never moved.
+- A duplicate run of one group step can take over its content preparation. The older run then gets
+  `stopped` and does nothing; the newer run continues the group.
 - Stop aborts an unpublished group. A published group keeps its after view and completes physical
   repair before releasing reservations. Recovery resumes the exact fenced step. User and workspace
   purge wait for that repair before removing the run or its holds.

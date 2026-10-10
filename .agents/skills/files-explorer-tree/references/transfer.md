@@ -60,7 +60,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
   local write rules and version pins. A moved folder carries protected children unchanged.
   Reparenting checks nested restricted roots. Replacement checks every removed descendant.
   Source, subtree and name reservations block competing writes. Security changes can revoke access;
-  their clocks prevent a later publication from using stale permission.
+  their clocks prevent a later publication from using stale permission. New files elsewhere in the
+  workspace do not stop a Move. Restrict, folder protection and Archive wait while a Move holds
+  the workspace, so they never skip the nodes it holds.
 - Move and Accept have no total selection cap. The limits test measures native worker transactions
   with room for future catalog work. Transaction page sizes never refuse a large selection.
   These path moves stay within one workspace. Cross-workspace Move is refused before output.
