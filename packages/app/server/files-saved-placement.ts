@@ -111,6 +111,8 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		ancestor11: place.ancestor11,
 		ancestor12: place.ancestor12,
 		contentType: place.contentType,
+		contentTypeEssence: place.contentTypeEssence,
+		contentTypeFamily: place.contentTypeFamily,
 		assetId: place.assetId,
 		contentByteSize: place.contentByteSize,
 		textKind: place.textKind,

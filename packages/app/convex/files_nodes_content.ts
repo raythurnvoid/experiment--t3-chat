@@ -51,7 +51,7 @@ import {
 	type files_SpecialFileName,
 	type files_YjsRootKind,
 } from "../server/files.ts";
-import { files_pending_update_content_of, files_ROOT_ID } from "../shared/files.ts";
+import { files_content_type_index_fields, files_pending_update_content_of, files_ROOT_ID } from "../shared/files.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_proposal, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
 import { files_saved_content_collect, files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
 import {
@@ -6568,6 +6568,7 @@ async function db_install_file_content_replacement(
 		assetId: args.contentAssetId,
 		contentByteSize: args.contentSize,
 		contentType: args.contentType,
+		...files_content_type_index_fields(args.contentType),
 		textKind: args.yjsRootKind ?? null,
 		collaborationEnabled: args.yjsRootKind === undefined ? null : args.nonCollaborative !== true,
 		yjsSnapshotId: nextYjsSnapshotId,
@@ -7274,6 +7275,7 @@ export const restore_snapshot = internalMutation({
 				assetId: args.restoredSnapshotAssetId,
 				contentByteSize: args.restoredSnapshotSize,
 				contentType: restoredContentType,
+				...files_content_type_index_fields(restoredContentType),
 				updatedBy: userId,
 				updatedAt: now,
 			}),

@@ -628,12 +628,8 @@ describe("RouteApiKeys", () => {
 
 		const curl = screen.getByLabelText("curl API example").textContent ?? "";
 		const node = screen.getByLabelText("Node.js API example").textContent ?? "";
-		// files/list keeps `contentTypePrefixes` only until the plugins send `extension` instead, so the
-		// samples use `extension`.
 		expect(curl).toContain('"extension":"md"');
-		expect(curl).not.toContain("contentTypePrefixes");
 		expect(node).toContain('extension: "md"');
-		expect(node).not.toContain("contentTypePrefixes");
 		expect(node).toContain("No Markdown files found");
 	});
 });

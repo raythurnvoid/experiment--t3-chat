@@ -214,6 +214,22 @@ export async function files_saved_stream_db_create(
 				: db.query("files_nodes").withIndex("by_organization_workspace_archive_kind_lowercaseExtension_tree", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
+		by_archive_content_type_family_tree: (range: (q: SavedRange<["archiveOperationId", "contentTypeFamily", "treePath"]>) => IndexRange) =>
+			fixedView
+				? db.query("files_saved_places").withIndex("by_view_archive_contentTypeFamily_tree", (q) =>
+						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
+					)
+				: db.query("files_nodes").withIndex("by_org_ws_archive_contentTypeFamily_tree", (q) =>
+						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
+					),
+		by_archive_content_type_essence_tree: (range: (q: SavedRange<["archiveOperationId", "contentTypeEssence", "treePath"]>) => IndexRange) =>
+			fixedView
+				? db.query("files_saved_places").withIndex("by_view_archive_contentTypeEssence_tree", (q) =>
+						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
+					)
+				: db.query("files_nodes").withIndex("by_org_ws_archive_contentTypeEssence_tree", (q) =>
+						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
+					),
 		by_archive_updated: (range: (q: SavedRange<["archiveOperationId", "updatedAt"]>) => IndexRange) =>
 			fixedView
 				? db.query("files_saved_places").withIndex("by_view_archive_updated", (q) =>

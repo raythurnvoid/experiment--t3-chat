@@ -19,7 +19,7 @@ const tiles = await frame.evaluate(() => document.querySelectorAll(".tile").leng
 
 - Grid: `.gallery-grid` containing `.tile` wrappers; each tile has an `<a class="tile-link" href="#/file/<nodeId>">` and reveals `.tile-name` on hover or `:focus-visible`.
 - Failed tile: `.tile-placeholder.is-failed` plus a sibling real button `.tile-retry` (aria-label `Retry <name>`).
-- Load more: `.button` with text `Load more`. It stays visible while buffered/pending work remains — including after a capped scan that found nothing yet (no false empty state).
+- Load more: `.button` with text `Load more`. It stays visible while buffered/pending work remains — including after a short page that found nothing yet, which only the access check can cause (no false empty state).
 - Item count: text `N items`; empty state text `No images or videos yet.` appears only at visible completion.
 - Detail view (`#/file/<nodeId>`): `.viewer` with `.viewer-back` link, full-size `<img>` or `<video>`, `role="alert"` error + Retry button on media failure.
 - Loading regions use `role="status"` / `aria-live="polite"`; all errors use `role="alert"`.

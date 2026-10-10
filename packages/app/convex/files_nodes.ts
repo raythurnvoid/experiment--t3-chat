@@ -139,6 +139,7 @@ import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_ANCESTOR_FIELD_COUNT,
+	files_content_type_index_fields,
 	files_derive_tree_path_for_file_node,
 	files_is_ancestor_field,
 	files_lowercase_extension,
@@ -148,6 +149,7 @@ import {
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
+	files_parse_content_type_prefix,
 	files_pending_update_content_is_stale,
 	files_TEXT_SEARCH_MAX_RESULTS,
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
@@ -1925,6 +1927,7 @@ function node_insert_fields(args: {
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
 		contentType: args.contentType ?? null,
+		...files_content_type_index_fields(args.contentType ?? null),
 		assetId: args.assetId ?? null,
 		contentByteSize: args.contentByteSize ?? null,
 		textKind: null,
@@ -5072,7 +5075,8 @@ const files_node_public_doc_fields = {
 		.contentFrontmatterTooLargeIndexDocumentCount,
 	restrictedScopeNodeId: doc(app_convex_schema, "files_nodes").fields.restrictedScopeNodeId,
 	// Leave writePolicy and newChildWritePolicy out. They name accounts a reader may not see.
-	// Leave sortName, isRestrictedScopeRoot and ancestor1..12 out too. Only the server indexes read them.
+	// Leave sortName, isRestrictedScopeRoot, contentTypeEssence, contentTypeFamily and ancestor1..12 out too.
+	// Only the server indexes read them.
 	archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
 	createdBy: doc(app_convex_schema, "files_nodes").fields.createdBy,
 	updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
@@ -5095,6 +5099,8 @@ function get_public_node_fields(fileNode: Doc<"files_nodes">, writeBlockedReason
 		sortName: _sortName,
 		isRestrictedScopeRoot: _isRestrictedScopeRoot,
 		moveCohortId: _moveCohortId,
+		contentTypeEssence: _contentTypeEssence,
+		contentTypeFamily: _contentTypeFamily,
 		...fields
 	} = fileNode;
 	// Leave `ancestor1..12` out too. Only the name search index reads them.
@@ -6995,7 +7001,8 @@ export const list_subtree = internalQuery({
 		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
 		kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
 		lowercaseExtension: v.optional(v.string()),
-		contentTypePrefixes: v.optional(v.array(v.string())),
+		/** One `contentTypePrefixes` value of the public files list, like `image/` or `image/png`. */
+		contentTypePrefix: v.optional(v.string()),
 		minDepth: v.optional(v.number()),
 		maxDepth: v.optional(v.number()),
 		maximumRowsRead: v.optional(v.number()),
@@ -7012,8 +7019,18 @@ export const list_subtree = internalQuery({
 		const saved = await files_saved_stream_db_create(ctx.db, args, args.savedStream);
 		const lowercaseExtension = args.lowercaseExtension;
 		const kind = args.kind;
+		const contentTypeMatch =
+			args.contentTypePrefix === undefined ? null : files_parse_content_type_prefix(args.contentTypePrefix);
+		// The type indexes cover the whole subtree only. The public route refuses the other shapes first.
+		if (
+			args.contentTypePrefix !== undefined &&
+			(contentTypeMatch === null || lowercaseExtension != null || args.maxDepth !== undefined)
+		)
+			throw convex_error({
+				message: "list_subtree takes one content type family or exact type, on a whole subtree, without an extension.",
+			});
 
-		if (lowercaseExtension != null && kind === "folder") {
+		if ((lowercaseExtension != null || contentTypeMatch !== null) && kind === "folder") {
 			return { page: [], continueCursor: args.cursor ?? "", isDone: true };
 		}
 
@@ -7126,39 +7143,30 @@ export const list_subtree = internalQuery({
 					? saved.queries.by_archive_kind_ext_tree((q) =>
 							range(q.eq("archiveOperationId", null).eq("kind", "file").eq("lowercaseExtension", lowercaseExtension)),
 						)
-					: kind == null
-						? saved.queries.by_archive_tree((q) => range(q.eq("archiveOperationId", null)))
-						: saved.queries.by_archive_kind_tree((q) => range(q.eq("archiveOperationId", null).eq("kind", kind)))
+					: contentTypeMatch?.field === "contentTypeFamily"
+						? saved.queries.by_archive_content_type_family_tree((q) =>
+								range(q.eq("archiveOperationId", null).eq("contentTypeFamily", contentTypeMatch.value)),
+							)
+						: contentTypeMatch?.field === "contentTypeEssence"
+							? saved.queries.by_archive_content_type_essence_tree((q) =>
+									range(q.eq("archiveOperationId", null).eq("contentTypeEssence", contentTypeMatch.value)),
+								)
+							: kind == null
+								? saved.queries.by_archive_tree((q) => range(q.eq("archiveOperationId", null)))
+								: saved.queries.by_archive_kind_tree((q) => range(q.eq("archiveOperationId", null).eq("kind", kind)))
 		).order(args.order ?? "asc");
-
-		let filteredQuery = query;
-		const contentTypePrefixes = args.contentTypePrefixes;
-		// Kept for the public files/list `contentTypePrefixes` and `scanLimit` until the plugins send
-		// `extension` instead.
-		if (contentTypePrefixes != null && seek === undefined) {
-			// Use string ranges because Convex filters have no startsWith. The pagination scan cap below
-			// still bounds sparse matches.
-			filteredQuery = filteredQuery.filter((q) =>
-				q.or(
-					...contentTypePrefixes.map((prefix) => {
-						const lower = q.gte(q.field("contentType"), prefix);
-						const upperBound = string_prefix_upper_bound(prefix);
-						return upperBound === null ? lower : q.and(lower, q.lt(q.field("contentType"), upperBound));
-					}),
-				),
-			);
-		}
 
 		// The first page of direct children starts with the root row (the last page, in desc order). With
 		// `numItems` 1 that page holds the root row and one child: a page of only the root row would need
 		// a cursor for the start of the children, and Convex has no such cursor.
 		const rootFirst = directChildren && rootRow !== null && args.cursor === null && args.order !== "desc";
-		const result = await filteredQuery.paginate({
+		const result = await query.paginate({
 			cursor: args.cursor,
 			numItems: rootFirst ? Math.max(1, args.numItems - 1) : args.numItems,
-			// The scan cap applies to content type filters and to subtree listings with `minDepth` (the
-			// public `files/list` always sends it). Other depth shapes read whole pages.
-			...(seek !== undefined || (contentTypePrefixes == null && (directChildren || args.minDepth === undefined))
+			// The read cap only splits subtree pages with `minDepth` (bash `find` and `tree`). Every row
+			// it reads is returned, so it never hides a match. Saved list seeks and other depth shapes read
+			// whole pages.
+			...(seek !== undefined || directChildren || args.minDepth === undefined
 				? {}
 				: {
 						maximumRowsRead: Math.min(
@@ -7174,8 +7182,8 @@ export const list_subtree = internalQuery({
 			...(rootLast && rootRow ? [rootRow] : []),
 		];
 
-		// A bounded query filter or the access check can make a page shorter. The cursor still walks
-		// the whole subtree; only the page size varies.
+		// The access check can make a page shorter. The cursor still walks the whole subtree; only the
+		// page size varies.
 		const last = result.page.at(-1);
 		const frontier = last
 			? {
@@ -7184,14 +7192,9 @@ export const list_subtree = internalQuery({
 					nodeId: "nodeId" in last ? last.nodeId : last._id,
 				}
 			: null;
-		// The old sparse content-type filter needs the raw frontier when streams can migrate.
-		const matchingNodes =
-			seek && contentTypePrefixes
-				? nodes.filter((node) => contentTypePrefixes.some((prefix) => node.contentType?.startsWith(prefix)))
-				: nodes;
 		return {
 			...result,
-			page: await filter_readable(matchingNodes),
+			page: await filter_readable(nodes),
 			frontier,
 			...(seek ? { phaseCount: phases.length } : {}),
 		};

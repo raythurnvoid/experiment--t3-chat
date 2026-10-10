@@ -15,6 +15,7 @@ import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_content_type_index_fields } from "../shared/files.ts";
 
 const r2Objects = new Map<string, BodyInit>();
 
@@ -1050,51 +1051,19 @@ describe("plugin ui sessions", () => {
 		expect(separateRoute.status).not.toBe(429);
 	});
 
-	test("uses the caller scan limit to return a sparse content-type page", async () => {
+	test("pages a sparse content type filter from its index", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
+		// 40 non-matching files sort first. A scan of 8 rounds of `limit` (2) rows reads only 16 rows here,
+		// so it would return an empty page.
+		const files = [
+			...Array.from({ length: 40 }, (_, index) => [`a-${String(index).padStart(2, "0")}.md`, "text/markdown"] as const),
+			["z-photo.png", "image/png"] as const,
+			["z-video.mp4", "video/mp4"] as const,
+		];
 		await t.run(async (ctx) => {
 			const now = Date.now();
-			for (let index = 0; index < 2005; index += 1) {
-				const name = `a-${String(index).padStart(4, "0")}.md`;
-				await ctx.db.insert("files_nodes", {
-					organizationId: fixture.membership.organizationId,
-					workspaceId: fixture.membership.workspaceId,
-					path: `/${name}`,
-					treePath: `/${name}`,
-					pathDepth: 1,
-					lowercaseExtension: "md",
-					name,
-					sortName: files_sort_text_key(name),
-					kind: "file",
-					contentType: "text/markdown",
-					parentId: "root",
-					createdBy: fixture.membership.userId,
-					updatedBy: fixture.membership.userId,
-					updatedAt: now,
-					assetId: null,
-					contentByteSize: null,
-					textKind: null,
-					collaborationEnabled: null,
-					yjsSnapshotId: null,
-					yjsLastSequenceId: null,
-					statsId: null,
-					contentTooLargeByteSize: null,
-					contentShapeMismatchAt: null,
-					contentYjsStateTooLargeByteSize: null,
-					contentFrontmatterTooLargeFieldCount: null,
-					contentFrontmatterTooLargeIndexDocumentCount: null,
-					restrictedScopeNodeId: null,
-					isRestrictedScopeRoot: false,
-					writePolicy: null,
-					archiveOperationId: null,
-					newChildWritePolicy: null,
-				});
-			}
-			for (const [name, contentType] of [
-				["z-photo.png", "image/png"],
-				["z-video.mp4", "video/mp4"],
-			] as const) {
+			for (const [name, contentType] of files) {
 				await ctx.db.insert("files_nodes", {
 					organizationId: fixture.membership.organizationId,
 					workspaceId: fixture.membership.workspaceId,
@@ -1106,6 +1075,7 @@ describe("plugin ui sessions", () => {
 					sortName: files_sort_text_key(name),
 					kind: "file",
 					contentType,
+					...files_content_type_index_fields(contentType),
 					parentId: "root",
 					createdBy: fixture.membership.userId,
 					updatedBy: fixture.membership.userId,
@@ -1135,18 +1105,22 @@ describe("plugin ui sessions", () => {
 		const response = await t.fetch("/api/v1/files/list", {
 			method: "POST",
 			headers: auth_headers(session.token),
+			// Both index kinds. " IMAGE/png" is cleaned up, and its row also matches "image/" but is listed once.
 			body: JSON.stringify({
 				recursive: true,
-				limit: 100,
-				scanLimit: 10_000,
-				contentTypePrefixes: ["image/", "video/"],
+				kind: "file",
+				limit: 2,
+				contentTypePrefixes: ["image/", " IMAGE/png", "video/mp4"],
 			}),
 		});
 		expect(response.status).toBe(200);
 		const body = await response.json();
 
-		expect(body.isDone).toBe(true);
-		expect(body.items.map((item: { name: string }) => item.name)).toEqual(["z-photo.png", "z-video.mp4"]);
+		expect(
+			body.items.map((item: { name: string }) => item.name),
+			"the first page holds both media files past 40 non-matching files",
+		).toEqual(["z-photo.png", "z-video.mp4"]);
+		expect(body.isDone, "both type streams end on the first page").toBe(true);
 	});
 
 	test("issues download urls whose ttl is clamped to the session expiry", async () => {
