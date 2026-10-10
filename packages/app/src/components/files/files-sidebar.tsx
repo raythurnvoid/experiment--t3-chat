@@ -168,7 +168,7 @@ import { format_relative_time } from "@/lib/date.ts";
 import { objects_equal_shallow } from "@/lib/object.ts";
 import { files_search_query_parse } from "../../../shared/files-search-query.ts";
 import { files_sort_text_key } from "../../../shared/files-sort.ts";
-import { async_all_settled_with_limit } from "@/lib/async.ts";
+import { async_all_settled_with_limit } from "../../../shared/async-utils.ts";
 import { files_prepare_image_upload_file } from "@/lib/files-image-compression.ts";
 
 // Only the DOM controls subscribe, so global busy updates leave row menus and tooltips cached.

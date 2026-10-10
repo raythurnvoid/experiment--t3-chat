@@ -28,6 +28,7 @@ import {
 } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { async_all_settled_with_limit } from "../shared/async-utils.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import {
 	files_normalize_file_rename_name,
@@ -162,6 +163,11 @@ const FILES_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
 // <= capacity / shards = 25, because the first charge on an unused shard reads only that shard. A
 // bigger batch on a fresh key is refused forever.
 const FILES_WRITE_MANY_MAX_ITEMS = 20;
+// Files of one batch that are written at the same time. Saves no longer share one hot doc per
+// workspace or key, so parallel publishes meet only when they create the same missing folder.
+// Each file keeps two mutations and two R2 PUTs in flight. A basic Convex plan runs 16
+// mutations at once, so keep this small.
+const FILES_WRITE_MANY_CONCURRENCY = 4;
 // Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
 const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
 const INVALID_WRITE_FILE_NAME_MESSAGE = "Path must end in a valid file name.";
@@ -6579,17 +6585,27 @@ export async function public_api_http_write_many(args: {
 		nonCollaborative: boolean;
 	}> = [];
 	const seenPaths = new Set<string>();
-	for (const file of body.data.files) {
-		if (!file.path.startsWith("/")) {
+	// Resolve every path at once. The loop below still checks items in request order, so the first
+	// bad item decides the 400.
+	const requestedPaths = await Promise.all(
+		body.data.files.map(async (file) => {
+			if (!file.path.startsWith("/")) {
+				return null;
+			}
+			const literalPath = server_path_normalize(file.path);
+			return await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				path: literalPath,
+				normalizedPath: files_normalize_special_node_path("file", literalPath),
+			});
+		}),
+	);
+	for (const [index, file] of body.data.files.entries()) {
+		const requestedPath = requestedPaths[index];
+		if (requestedPath === null) {
 			return { status: 400, body: { message: "Path must be absolute.", path: file.path } } as const;
 		}
-		const literalPath = server_path_normalize(file.path);
-		const requestedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
-			organizationId: principal.organizationId,
-			workspaceId: principal.workspaceId,
-			path: literalPath,
-			normalizedPath: files_normalize_special_node_path("file", literalPath),
-		});
 		if (requestedPath === "/") {
 			return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
 		}
@@ -6681,8 +6697,67 @@ export async function public_api_http_write_many(args: {
 		credentialId: principal.credentialId,
 	};
 
-	// Sequential on purpose: writes into one workspace share ancestor folders, and
-	// concurrent publishes would conflict on creating them.
+	// Write in two waves. Wave 1 writes the first file of each parent folder, so two files never
+	// race to create the same parent. Wave 2 writes the rest, once their parents exist.
+	const firstWave: number[] = [];
+	const secondWave: number[] = [];
+	const seenParents = new Set<string>();
+	for (const [index, file] of validatedFiles.entries()) {
+		const parentPath = server_path_parent_of(file.path);
+		(seenParents.has(parentPath) ? secondWave : firstWave).push(index);
+		seenParents.add(parentPath);
+	}
+	const results: Array<Awaited<ReturnType<typeof public_api_write_one_text_file>> | undefined> = [];
+	// A dead credential or a bad item stops the batch. Files already in flight finish; files not
+	// started yet are skipped.
+	let stopped = false;
+	for (const wave of [firstWave, secondWave]) {
+		const settled = await async_all_settled_with_limit({
+			items: wave,
+			limit: FILES_WRITE_MANY_CONCURRENCY,
+			run: async (index) => {
+				if (stopped) {
+					return;
+				}
+				const file = validatedFiles[index]!;
+				try {
+					const result = await public_api_write_one_text_file(ctx, {
+						organizationId: principal.organizationId,
+						workspaceId: principal.workspaceId,
+						userId: principal.userId,
+						visibilityUserId: public_api_visibility_user_id(principal),
+						serviceAccountId: principal.serviceAccountId,
+						principalRef,
+						path: file.path,
+						content: file.content,
+						contentBytes: file.contentBytes,
+						overwrite: file.overwrite,
+						skipIfUnchanged: body.data.skipIfUnchanged ?? false,
+						shape: file.shape,
+						nonCollaborative: file.nonCollaborative ?? false,
+						// Write-many stays a user-key route, and the lock option is a plugin feature.
+						requestReadOnly: false,
+					});
+					if (
+						result._nay &&
+						(result._nay.data.errorCode === "unauthenticated" || result._nay.data.errorCode === "invalid_input")
+					) {
+						stopped = true;
+					}
+					results[index] = result;
+				} catch (error) {
+					stopped = true;
+					throw error;
+				}
+			},
+		});
+		for (const outcome of settled) {
+			if (outcome.status === "rejected") {
+				throw outcome.reason;
+			}
+		}
+	}
+
 	const written: Array<{
 		path: string;
 		nodeId: Id<"files_nodes">;
@@ -6694,24 +6769,12 @@ export async function public_api_http_write_many(args: {
 		message: string;
 		errorCode: "permission_denied" | "conflict" | "storage_failure";
 	}> = [];
-	for (const file of validatedFiles) {
-		const result = await public_api_write_one_text_file(ctx, {
-			organizationId: principal.organizationId,
-			workspaceId: principal.workspaceId,
-			userId: principal.userId,
-			visibilityUserId: public_api_visibility_user_id(principal),
-			serviceAccountId: principal.serviceAccountId,
-			principalRef,
-			path: file.path,
-			content: file.content,
-			contentBytes: file.contentBytes,
-			overwrite: file.overwrite,
-			skipIfUnchanged: body.data.skipIfUnchanged ?? false,
-			shape: file.shape,
-			nonCollaborative: file.nonCollaborative ?? false,
-			// Write-many stays a user-key route, and the lock option is a plugin feature.
-			requestReadOnly: false,
-		});
+	// Report in request order. Skipped files have no result.
+	for (const [index, file] of validatedFiles.entries()) {
+		const result = results[index];
+		if (!result) {
+			continue;
+		}
 		if (result._nay) {
 			// The credential died mid-batch (expired or revoked); every remaining item
 			// would fail the same way, so abort the whole request.

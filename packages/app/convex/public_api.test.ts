@@ -5088,6 +5088,66 @@ describe("files write-many", () => {
 		}
 	});
 
+	test("writes files of different folders at the same time, one per folder first", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-waves" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-waves" });
+		const files = [
+			{ path: "/a/1.md", content: "# a1\n" },
+			{ path: "/a/2.md", content: "# a2\n" },
+			{ path: "/b/1.md", content: "# b1\n" },
+			{ path: "/b/2.md", content: "# b2\n" },
+		];
+		const pathByContent = new Map(files.map((file) => [file.content, file.path]));
+
+		// Hold each file content PUT until a second file is in flight too, or a short while passed.
+		// Record which files were in flight when each PUT started.
+		const inFlight = new Set<string>();
+		const startedWith: string[][] = [];
+		let release = Promise.withResolvers<void>();
+		const stubbedFetch = globalThis.fetch;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			const path = typeof init?.body === "string" ? pathByContent.get(init.body) : undefined;
+			if (init?.method !== "PUT" || path === undefined) {
+				return await stubbedFetch(url, init);
+			}
+			inFlight.add(path);
+			startedWith.push([...inFlight].sort());
+			if (inFlight.size >= 2) {
+				release.resolve();
+			}
+			await Promise.race([release.promise, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+			try {
+				return await stubbedFetch(url, init);
+			} finally {
+				inFlight.delete(path);
+				if (inFlight.size === 0) {
+					release = Promise.withResolvers<void>();
+				}
+			}
+		});
+
+		const response = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ files }),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { written: Array<{ path: string }>; errors: unknown[] };
+		expect(body.errors).toEqual([]);
+		expect(body.written.map((item) => item.path)).toEqual(files.map((file) => file.path));
+		// Wave 1 writes one file per folder, both at once. Wave 2 writes the rest.
+		expect(startedWith).toHaveLength(4);
+		expect(startedWith[1]).toEqual(["/a/1.md", "/b/1.md"]);
+		expect(startedWith[3]).toEqual(["/a/2.md", "/b/2.md"]);
+		// Each new folder was created once.
+		const folders = await t.run(async (ctx) =>
+			(await ctx.db.query("files_nodes").collect()).filter((node) => node.kind === "folder" && !node.archiveOperationId),
+		);
+		expect(folders.map((folder) => folder.path).sort()).toEqual(["/a", "/b"]);
+	});
+
 	test("refuses an oversized or overfull batch", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-limits" });
