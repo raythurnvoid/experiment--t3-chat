@@ -178,7 +178,7 @@ Store refusals map to status by the name the store tagged, so rewording a refusa
 - A file whose stored type does not parse never matches.
 - `scanLimit` is accepted and ignored, so older plugin builds that still send it keep working.
 
-`limit` counts returned items. A page can still be short with `isDone: false` when the access check drops rows the caller may not read, so callers keep following the cursor. Every writer of `contentType` on `files_nodes` and `files_saved_places` sets both type fields with `files_content_type_index_fields` (`shared/files.ts`). A rename keeps the stored type, so it keeps the fields too.
+`limit` counts returned items. A page can still be short, or even empty, with `isDone: false` when the access check drops rows the caller may not read: rows in a restricted folder without a grant, and for a service account every row it has no grant on. One request reads at most 8 × `limit` rows per stream and then returns what it kept, so callers keep following the cursor, and a caller that may not read most of a big subtree needs many requests. This is a known open problem: the indexes cannot skip hidden rows by range. Every writer of `contentType` on `files_nodes` and `files_saved_places` sets both type fields with `files_content_type_index_fields` (`shared/files.ts`). A rename keeps the stored type, so it keeps the fields too.
 
 ## Service upload routes
 

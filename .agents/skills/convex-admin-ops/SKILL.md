@@ -55,6 +55,16 @@ door fits. Fix the table name in its code, verify the empty table, then remove t
 
 For a one-shot push in this repo, run `convex dev --once` with `--typecheck disable` after the normal repo lint/type check has passed. There is no `convex/tsconfig.json`; `--typecheck enable` prints that it skipped type checking and can exit successfully before it pushes anything. Require the final `Convex functions ready!` message, then verify the new schema or function with a readback.
 
+# Push Only A Pushed Commit
+
+`convex dev --once` and the `convex dev` watcher push the whole working tree, not a commit. In the shared checkout that includes other agents' uncommitted work. On 2026-10-10 a push from the shared checkout shipped another agent's half-done change. It put a new index reader live before its backfill, so Gallery showed "No images or videos yet". A later backfill then broke public node reads (`get_folder_readme` failed with "Unexpected field") until a fixed push landed.
+
+- Push only from a tree that equals a pushed commit: `git status` is clean, and after `git fetch`, `HEAD` equals `origin/main` or the pushed branch you mean.
+- One exception, for local QA of your own edits (a one-shot push or the watcher): every uncommitted change in `git status` must be yours. Check before each push, and stop the watcher as soon as another agent's change shows up.
+- Never push while another agent has uncommitted work in the same checkout.
+- When a schema change adds a field that a return validator must accept or strip, the validator or strip fix must be live before any backfill writes that field. Otherwise every read that returns those docs fails with "Unexpected field".
+- Run a backfill of new fields only after the code that reads or strips them is live. A reader whose results depend on the backfilled data (for example a new index query) goes live only after the backfill has finished, or it shows empty results.
+
 # Fresh Read Timing
 
 Convex and the local machine can have different clocks. For a short read-before-write guard,

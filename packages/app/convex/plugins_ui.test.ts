@@ -1038,6 +1038,9 @@ describe("plugin ui sessions", () => {
 				body: JSON.stringify({ recursive: true }),
 			});
 
+		// The bucket holds 20 calls and refills 2 per second. Freeze the clock so nothing refills on a
+		// slow machine, and the 21st call is refused.
+		vi.useFakeTimers({ toFake: ["Date"] });
 		for (let call = 0; call < 20; call += 1) {
 			expect((await list_with(call % 2 === 0 ? first.token : second.token)).status).toBe(200);
 		}

@@ -5234,9 +5234,6 @@ export const get_authorized_by_path = query({
 	},
 });
 
-const SUBTREE_FILTER_DEFAULT_MAX_ROWS_READ = 1000;
-const SUBTREE_FILTER_MAX_ROWS_READ = 10_000;
-
 // #region list
 
 /**
@@ -7005,7 +7002,6 @@ export const list_subtree = internalQuery({
 		contentTypePrefix: v.optional(v.string()),
 		minDepth: v.optional(v.number()),
 		maxDepth: v.optional(v.number()),
-		maximumRowsRead: v.optional(v.number()),
 	},
 	returns: v.object({
 		...paginationResultValidator(doc(app_convex_schema, "files_nodes")).fields,
@@ -7163,17 +7159,6 @@ export const list_subtree = internalQuery({
 		const result = await query.paginate({
 			cursor: args.cursor,
 			numItems: rootFirst ? Math.max(1, args.numItems - 1) : args.numItems,
-			// The read cap only splits subtree pages with `minDepth` (bash `find` and `tree`). Every row
-			// it reads is returned, so it never hides a match. Saved list seeks and other depth shapes read
-			// whole pages.
-			...(seek !== undefined || directChildren || args.minDepth === undefined
-				? {}
-				: {
-						maximumRowsRead: Math.min(
-							args.maximumRowsRead ?? SUBTREE_FILTER_DEFAULT_MAX_ROWS_READ,
-							SUBTREE_FILTER_MAX_ROWS_READ,
-						),
-					}),
 		});
 		const rootLast = directChildren && rootRow !== null && result.isDone && args.order === "desc";
 		const nodes = [

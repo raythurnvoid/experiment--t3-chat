@@ -116,7 +116,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - **Mouse clicks can hang while keys still work.** On 2026-09-30 every `locator.click()` stopped at `performing click action` until its timeout, in the Edge extension tab, in direct-CDP scratch Chrome, and on a clean hit test. `locator.focus()` followed by `keyboard.press("Enter")` worked every time, and so did typing. When a click hangs on a target that `hitTest` shows on top, switch to focus plus keys instead of raising the timeout. Clerk's sign-in form submits with Enter in `#identifier-field`.
 - **A second tab can hang on the app's Convex client import.** `await import("/src/lib/app-convex-client.ts")` from a second tab in the same context sometimes waits past 5 s (seen twice on 2026-09-30). Race it against a 3 s timer, or read DOM state, or run the call from the first tab.
 - Editing a runner does not replace a route callback already stored on `state`. Remove the old handler and register the edited one. A variant marker can read the new label from `state` while the old callback still serves baseline code. Check the actual served change too. Observed in a Files performance comparison on 2026-09-13.
-- The CLI's `--timeout` defaults to 10000ms per execute, and a timed-out runner KEEPS RUNNING to completion inside the relay (the CLI just stops waiting). Always pass `--timeout <ms>` sized to the runner, and never assume a timed-out run performed no actions — verify state before re-running, or the retry doubles clicks/mutations. Pointer moves count too: a timed-out `page.mouse.move(x, y, { steps })` keeps moving the pointer. On its way it can hover a submenu open again after your next Escape, so a menu looks like it needs an extra Escape (seen 2026-09-25 on the block Color menu). Keep a stepped move in its own short call, and read the state after it finished. A cleanup step at the end of a timed-out call runs late too: a closing `await page.close()` shut the tab in the middle of the next call (seen 2026-09-29). Keep `page.close()` in its own call.
+- The CLI's `--timeout` defaults to 10000ms per execute, and a timed-out runner KEEPS RUNNING to completion inside the relay (the CLI just stops waiting). Always pass `--timeout <ms>` sized to the runner, and never assume a timed-out run performed no actions — verify state before re-running, or the retry doubles clicks/mutations. Pointer moves count too: a timed-out `page.mouse.move(x, y, { steps })` keeps moving the pointer. On its way it can hover a submenu open again after your next Escape, so a menu looks like it needs an extra Escape (seen 2026-09-25 on the block Color menu). Keep a stepped move in its own short call, and read the state after it finished. A cleanup step at the end of a timed-out call runs late too: a closing `await page.close()` shut the tab in the middle of the next call (seen 2026-09-29). Keep `page.close()` in its own call. The next call can also start while the timed-out one still runs, and the two then overlap. On 2026-10-10 an overlap doubled a page of results and skipped probes. Guard a runner that may outlive its call with a busy flag on `state`: at the start, `if (state.busy) { console.log("BUSY"); return; } state.busy = true;`, and clear it when the work ends, also when it throws. Refuse to start while it is set.
 - To run work that genuinely takes longer than the 5000ms budget (an axe scan, a Tab-order sweep, a poll for a slow state change), do not raise `--timeout`. Start the work without `await`, park the result on `state`, and read it in a later call: `state.done = false; state.page.evaluate(...).then(r => { state.out = r; state.done = true }).catch(e => { state.out = { err: e.message }; state.done = true }); console.log("STARTED")`, then a second runner prints `state.done` / `state.out`. The relay keeps the runner alive after the CLI returns, so this is reliable and each call stays well under budget.
 - A `-f` runner, or a `-e` script with more than one statement, prints `Code executed successfully (no output)` even when its last line is an expression. Only a one-expression `-e` prints `[return value] …`. Park the result on `state` (`state.out = out`) and read it with a one-expression `-e "JSON.stringify(state.out)"` afterwards. Verified 2026-09-05 on playwriter 0.5.0.
 - A fire-and-forget runner's **wall-clock** numbers are worthless. Once the CLI stops waiting, the relay keeps running it but the many small CDP round trips it makes are starved: the same 95-step `mouse.move` sweep took 672ms in the foreground call and 55s after the CLI returned. Measure with `performance.now()` **inside** `page.evaluate` (per-event or per-loop timings stay valid), and never derive an event rate from the runner's own elapsed time. Verified 2026-08-13 while timing a `pointerover` handler.
@@ -1699,6 +1699,10 @@ viewports, where every shot after the first is taken on a page nothing has touch
 (`Extension request timeout after 30000ms: forwardCDPCommand`), and on the attempts that did return,
 the sampled pixels were internally inconsistent with the element box measured in the same page.
 
+Screenshots on that transport are still flaky on a fronted tab (seen again 2026-10-10). Give the
+screenshot call alone a longer timeout of about 15 s, because the capture itself is the slow step.
+Retry once. Never delete an older good screenshot to make room for a retry that may fail.
+
 So do not try to prove a colour claim with a screenshot on that transport. Read `getComputedStyle`
 values out of the page and do the compositing arithmetic yourself — that is reproducible and a
 reviewer can check it. Keep screenshots for the things a person looks at. Two arithmetic traps when
@@ -2455,6 +2459,12 @@ working tree, so a break-on-purpose push also deploys another agent's half-done 
 push from a clean HEAD worktree is not safe either: it rolls back whatever that agent already
 pushed, for example a new schema index its code now reads.
 
+The push rule now lives in
+[Push Only A Pushed Commit](../../convex-admin-ops/SKILL.md#push-only-a-pushed-commit), and it
+wins over the recipe below. Step 4 ships another agent's unfinished files, so do not use this recipe
+while that agent still has uncommitted Convex work. A 2026-10-10 push of such work broke Gallery and
+public node reads.
+
 When `git status` shows someone else's `packages/app/convex` edits, push from a worktree outside the
 repo instead (verified 2026-09-24):
 
@@ -2577,6 +2587,13 @@ Two more things to handle in that loop. A row has only stored fields, so read id
 review run takes at most 100 items in `start`; send the rest with
 `files_pending_update_runs.append_items({membershipId, runId, offset, items})` before `seal`. A ready-made runner lives in the task folder as `qa-discard-all.js`;
 the recipe is in `files.md`.
+
+## A full page can say `isDone: false`, so a check must follow the cursor
+
+A Convex page that holds exactly `numItems` rows can answer `isDone: false` even when no rows are
+left. The next page is then empty with `isDone: true`. A check that fails on `isDone: false` after
+one full page reports a bug that is not there. Follow `continueCursor` until `isDone` (the loop
+above), then check the total. Hit 2026-10-10.
 
 ## `activities.list_page` requires `section`
 
@@ -2843,7 +2860,7 @@ that code. Before a long run, search the tree for `QA_TEMP` and list the `localS
 tab. Do not remove another agent's switch. Reload the route after its HMR update and check
 `data-app-ready` on `<html>` before the next step. Hit 2026-09-23 on the web browser route.
 
-## The app stops at "Preparing organization" when the host cannot reach Clerk or Convex
+## The app stops at "Preparing organization" when the host cannot reach Clerk or Convex, or the CPU is overloaded
 
 When the host network to Cloudflare-hosted services is slow, the app can stay on the loading screen
 with `failed_to_load_clerk_js_timeout` in the console. This is not an app bug. Check the host first:
@@ -2851,6 +2868,25 @@ with `failed_to_load_clerk_js_timeout` in the console. This is not an app bug. C
 Wait until they answer, then reload. The same outage makes `vp env exec pnpx ...` fail with
 `ENOTFOUND registry.npmjs.org`; setting `npm_config_offline=true` does not stop that lookup, so wait
 and retry instead. Hit 2026-09-23.
+
+Heavy CPU load gives the same symptoms. When other agents run big test suites, the app can fail to
+boot: `failed_to_load_clerk_js_timeout`, the loading screen stuck on "Preparing organization" even
+after Clerk has loaded, and a plugin page that says "The plugin page did not start in time". This is
+not an app bug either. Check the CPU with `Get-CimInstance Win32_Processor | Select-Object
+LoadPercentage`, wait until it is below about 70 %, then reload. Hit 2026-10-10.
+
+Under that load, a page read during boot can hang until the CLI timeout. Race each read against a
+short timer, so the call still answers:
+
+```js
+const ready = await Promise.race([
+	page.evaluate(() => document.documentElement.hasAttribute("data-app-ready")),
+	new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 3000)),
+]);
+```
+
+`"TIMEOUT"` means the page is still busy, not that the value is missing. The lost read keeps running
+in the page, so race only reads, never writes.
 
 ## The `convex dev` watcher can hang at "Preparing Convex functions"
 
