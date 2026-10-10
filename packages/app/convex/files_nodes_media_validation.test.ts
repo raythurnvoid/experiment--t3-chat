@@ -10,6 +10,8 @@ import { files_media_validation_db_advance_version, files_media_validation_db_ca
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { files_nodes_db_archive_nodes, files_nodes_db_get_content_version } from "./files_nodes.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -170,28 +172,25 @@ async function proposal(f: Awaited<ReturnType<typeof fixture>>, nodeId: Id<"file
 }
 
 describe("saved file media validation clocks", () => {
-	test.each(["folder", "branch/child"])(
-		"advances only the content clock when a saved folder is created: %s",
-		async (path) => {
-			const f = await fixture();
-			const before = await snapshot(f);
-			const nodeId = await folder({ f, path });
-			const saved = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-			expect(saved).toMatchObject({ path: `/${path}`, kind: "folder", archiveOperationId: null });
-			expect((await snapshot(f)).nodes).toHaveLength(path.split("/").length);
-			// A Move pins the access clock. A new folder elsewhere must not stop it.
-			await expect_clock({ f, before, changed: false, contentChanged: true });
-		},
-	);
+	test.each(["folder", "branch/child"])("keeps both clocks when a saved folder is created: %s", async (path) => {
+		const f = await fixture();
+		const before = await snapshot(f);
+		const nodeId = await folder({ f, path });
+		const saved = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+		expect(saved).toMatchObject({ path: `/${path}`, kind: "folder", archiveOperationId: null });
+		expect((await snapshot(f)).nodes).toHaveLength(path.split("/").length);
+		// A new node has a new ID, so no checked proof names it.
+		await expect_clock({ f, before, changed: false, contentChanged: false });
+	});
 
-	test.each([false, true])("advances only the content clock for a new stored upload (bulk: %s)", async (bulk) => {
+	test.each([false, true])("keeps both clocks for a new stored upload (bulk: %s)", async (bulk) => {
 		const f = await fixture();
 		const before = await snapshot(f);
 		const nodeId = await upload({ f, bulk });
 		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 		expect(node).toMatchObject({ path: "/photo.png", contentType: "image/png", archiveOperationId: null });
 		expect(node?.assetId).toBeTruthy();
-		await expect_clock({ f, before, changed: false, contentChanged: true });
+		await expect_clock({ f, before, changed: false, contentChanged: false });
 	});
 
 	test("advances the workspace clock when a private text file is saved", async () => {
@@ -442,6 +441,62 @@ describe("saved file media validation clocks", () => {
 			await expect_clock({ f, before, changed: true });
 		},
 	);
+
+	test.each([
+		{ kind: "folder", advances: true },
+		{ kind: "image", advances: true },
+		{ kind: "plain file", advances: false },
+		{ kind: "plain file with a pending replacement", advances: true },
+	] as const)("archive advances the workspace clock only when the node can hide media: $kind", async (row) => {
+		const f = await fixture();
+		let nodeId: Id<"files_nodes">;
+		if (row.kind === "folder") nodeId = await folder({ f, path: "archive" });
+		else if (row.kind === "image") nodeId = await upload({ f, bulk: false });
+		else {
+			const created = await f.asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: f.db.membershipId,
+				parentId: "root",
+				filename: "notes.pdf",
+				contentType: "application/pdf",
+				size: 1,
+				onConflict: "fail",
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			nodeId = created._yay.nodeId;
+		}
+		// A member's proof can check a saved file through their pending image replacement.
+		if (row.kind === "plain file with a pending replacement")
+			await f.t.run(async (ctx) => {
+				const node = (await ctx.db.get("files_nodes", nodeId))!;
+				await ctx.db.insert("files_pending_updates", {
+					...f.scope,
+					target: { kind: "saved", id: nodeId },
+					revision: 1,
+					size: 1,
+					updatedAt: Date.now(),
+					expiresAt: Date.now() + 60 * 60 * 1000,
+					pendingReplacement: {
+						assetId: node.assetId!,
+						size: 1,
+						contentType: "image/png",
+						baseAssetId: node.assetId!,
+						baseContentVersion: (await files_nodes_db_get_content_version(ctx, node))!,
+					},
+				});
+			});
+		const before = await snapshot(f);
+		await f.t.run((ctx) =>
+			files_nodes_db_archive_nodes({
+				ctx,
+				nodeIds: [nodeId],
+				updatedBy: f.db.userId,
+				now: Date.now(),
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			}),
+		);
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.archiveOperationId).toBeTruthy();
+		await expect_clock({ f, before, changed: row.advances });
+	});
 
 	test("advances the workspace clock when a pending Archive is saved", async () => {
 		const f = await fixture();

@@ -108,8 +108,8 @@ import {
 } from "../server/files-move-reservations.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import {
-	files_media_validation_db_advance_content_version,
 	files_media_validation_db_advance_version,
+	files_media_validation_db_can_back_media,
 } from "./files_media_validation.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
 import { components, internal } from "./_generated/api.js";
@@ -2017,7 +2017,8 @@ async function db_insert_node(
 					: null,
 		}),
 	);
-	await files_media_validation_db_advance_content_version(ctx, args);
+	// No media validation advance: a new node has a new ID, so no checked proof names it. It starts in
+	// its parent's scope and is never a restricted root. Move reservations block creation inside a moving folder.
 	await files_updated_by_db_sync_node(ctx, { nodeId });
 
 	if (args.kind === "folder") {
@@ -4597,7 +4598,7 @@ export async function files_nodes_db_rebuild_node(
 // #region archive nodes
 /**
  * Archive one node and its side docs under `archiveOperationId`, in the same mutation.
- * The caller advances the media validation version once after its writes.
+ * The caller decides whether to advance the media validation version (see `files_nodes_db_archive_nodes`).
  *
  * It also deletes the node's own public link. A folder's links below it are the caller's job, because
  * this archives only the one node.
@@ -4705,6 +4706,15 @@ export async function files_nodes_db_archive_nodes(args: {
 		archivedWorkspaces.set(fileNode.workspaceId, fileNode.organizationId);
 	}
 
+	// Archiving a file that cannot back media cannot break a media proof, so it skips the advance. A
+	// folder hides everything below it.
+	const proofWorkspaces = new Set<Doc<"files_nodes">["workspaceId"]>();
+	for (const fileNode of fileNodes) {
+		if (proofWorkspaces.has(fileNode.workspaceId)) continue;
+		if (fileNode.kind === "folder" || (await files_media_validation_db_can_back_media(ctx, fileNode)))
+			proofWorkspaces.add(fileNode.workspaceId);
+	}
+
 	// Archive stamps only the named nodes. Delete the public links below them too, once per workspace.
 	for (const [workspaceId, organizationId] of archivedWorkspaces) {
 		await files_share_links_db_delete_for_roots({
@@ -4729,7 +4739,8 @@ export async function files_nodes_db_archive_nodes(args: {
 
 	// Advance each workspace once, after its parallel Archive writes finish.
 	for (const [workspaceId, organizationId] of archivedWorkspaces)
-		await files_media_validation_db_advance_version(ctx, { organizationId, workspaceId });
+		if (proofWorkspaces.has(workspaceId))
+			await files_media_validation_db_advance_version(ctx, { organizationId, workspaceId });
 }
 
 /**

@@ -10,6 +10,7 @@ import {
 import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_media_dependencies_PAGE_SIZE } from "./files_media_dependencies.ts";
+import { files_media_validation_is_media_version } from "./files_media_validation.ts";
 import {
 	files_transfer_db_get_entry_version,
 	files_transfer_source_versions_equal,
@@ -45,12 +46,7 @@ export async function files_transfer_media_db_get_ready_media(args: {
 
 	if (entry.node.kind !== "file" || entry.pendingUpdate?.preparation) return null;
 	const version = await files_transfer_db_get_entry_version(ctx, entry);
-	if (
-		!version ||
-		version.textKind !== null ||
-		(!version.contentType.startsWith("image/") && !version.contentType.startsWith("video/"))
-	)
-		return null;
+	if (!version || !files_media_validation_is_media_version(version)) return null;
 
 	const intent = entry.pendingUpdate?.createIntent;
 	const stored =

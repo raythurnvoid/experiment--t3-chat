@@ -11,6 +11,19 @@ import {
 
 type Scope = Pick<Doc<"files_pending_updates">, "organizationId" | "workspaceId" | "userId">;
 
+/**
+ * How long a review plan's pin on the structure clock lasts. The plan producer renews it on its
+ * steps, so it lapses only when no plan is being built in this workspace.
+ */
+const STRUCTURE_PIN_MS = 10 * 60 * 1000;
+
+/**
+ * Each mutation reads the time once, when it starts. A create that starts just after the pin ends
+ * skips the clock, and a renewal that started just before the end can still commit after it. So a
+ * pin that ends within this margin counts as lapsed, and the renewal moves the clock.
+ */
+const STRUCTURE_PIN_SKEW_MS = 60 * 1000;
+
 export async function files_pending_review_facts_db_get_state(
 	db: QueryCtx["db"],
 	scope: Pick<Scope, "organizationId" | "workspaceId">,
@@ -27,14 +40,54 @@ export async function files_pending_review_facts_db_change_state(
 	change: { structural?: boolean; jobs?: number },
 ) {
 	const state = await files_pending_review_facts_db_get_state(db, scope);
+	// A saved-tree change matters only to a review plan that pinned this clock. Without a live pin,
+	// write nothing, so parallel file creates in one workspace do not all write this doc. The next
+	// pin moves the clock first, so a skipped change can never match an older plan.
+	const structural = change.structural === true && (state?.structurePinnedUntil ?? 0) > Date.now();
 	const pendingJobCount = (state?.pendingJobCount ?? 0) + (change.jobs ?? 0);
 	if (pendingJobCount < 0) throw should_never_happen("Review facts job count is negative", { ...scope, change });
 	const fields = {
-		structureRevision: (state?.structureRevision ?? 0) + (change.structural ? 1 : 0),
+		structureRevision: (state?.structureRevision ?? 0) + (structural ? 1 : 0),
 		pendingJobCount,
 	};
+	if (!structural && !change.jobs) return fields;
 	if (state) await db.patch("files_pending_review_fact_state", state._id, fields);
-	else await db.insert("files_pending_review_fact_state", { ...scope, ...fields });
+	else
+		await db.insert("files_pending_review_fact_state", {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			...fields,
+		});
+	return fields;
+}
+
+/**
+ * Pin the structure clock for a review plan, then return the state the plan reads.
+ */
+export async function files_pending_review_facts_db_pin_structure(
+	db: MutationCtx["db"],
+	scope: Pick<Scope, "organizationId" | "workspaceId">,
+) {
+	const now = Date.now();
+	const state = await files_pending_review_facts_db_get_state(db, scope);
+	const pinnedUntil = state?.structurePinnedUntil ?? 0;
+	// Still pinned for a while: renew only in the second half, so plan steps do not write every time.
+	if (state && pinnedUntil - now > STRUCTURE_PIN_MS / 2) return state;
+
+	// After a gap, saved-tree changes may have skipped the clock. Move it, so no older plan can match.
+	const lapsed = pinnedUntil <= now + STRUCTURE_PIN_SKEW_MS;
+	const fields = {
+		structureRevision: (state?.structureRevision ?? 0) + (lapsed ? 1 : 0),
+		pendingJobCount: state?.pendingJobCount ?? 0,
+		structurePinnedUntil: now + STRUCTURE_PIN_MS,
+	};
+	if (state) await db.patch("files_pending_review_fact_state", state._id, fields);
+	else
+		await db.insert("files_pending_review_fact_state", {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			...fields,
+		});
 	return fields;
 }
 

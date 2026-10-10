@@ -2950,6 +2950,11 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		structureRevision: v.number(),
 		pendingJobCount: v.number(),
+		/**
+		 * When a review plan's pin on `structureRevision` ends. Saved-tree changes advance the revision
+		 * only while a pin is live. Missing means no plan has pinned it yet.
+		 */
+		structurePinnedUntil: v.optional(v.number()),
 	}).index("by_workspace", ["organizationId", "workspaceId"]),
 
 	files_pending_holds: defineTable({

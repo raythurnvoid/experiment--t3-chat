@@ -5,6 +5,7 @@ import {
 	files_media_validation_db_advance_version,
 	files_media_validation_db_capture_versions,
 	files_media_validation_db_versions_match,
+	files_media_validation_is_media_version,
 } from "./files_media_validation.ts";
 import { files_db_advance_pending_review_version } from "../server/files.ts";
 
@@ -101,5 +102,16 @@ describe("media validation versions", () => {
 		expect(await t.run((ctx) => files_media_validation_db_versions_match(ctx, pins))).toBe(true);
 		const clocks = await t.run((ctx) => ctx.db.query("files_media_validation_versions").collect());
 		expect(clocks.filter((clock) => clock.workspaceId === other.workspaceId)).toHaveLength(1);
+	});
+
+	test.each([
+		{ contentType: "image/png", textKind: null, isMedia: true },
+		{ contentType: "video/mp4", textKind: null, isMedia: true },
+		{ contentType: "image/png", textKind: "plain_text", isMedia: false },
+		{ contentType: "text/markdown", textKind: null, isMedia: false },
+		{ contentType: null, textKind: null, isMedia: false },
+		{ contentType: "Image/PNG", textKind: null, isMedia: false },
+	] as const)("media version rule: $contentType $textKind", ({ isMedia, ...version }) => {
+		expect(files_media_validation_is_media_version(version)).toBe(isMedia);
 	});
 });

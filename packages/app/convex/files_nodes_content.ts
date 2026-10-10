@@ -181,6 +181,7 @@ import {
 } from "./files_pending_media.ts";
 import {
 	files_media_validation_db_advance_content_version,
+	files_media_validation_db_can_back_media,
 	files_media_validation_db_capture_versions,
 	files_media_validation_db_versions_match,
 } from "./files_media_validation.ts";
@@ -2602,7 +2603,8 @@ export const finalize_transfer_file_copy = internalMutation({
 				proof.textDigest !== (await crypto_sha256_hex(args.text))
 			)
 				return Result({ _nay: { message: "The copied document's media has not been prepared" } });
-			if (!(await files_media_validation_db_versions_match(ctx, proof)))
+			// A proof with no media refs has nothing a later Files or access change can break.
+			if (mediaSet.count > 0 && !(await files_media_validation_db_versions_match(ctx, proof)))
 				return Result({ _nay: { message: "Media access changed during validation. Try again." } });
 		}
 
@@ -6267,6 +6269,8 @@ async function db_delete_committed_text_docs(
  * current text (a collaborative file, whose newest edits may live only in its document) passes
  * it as `backup`, and that copy becomes the backup row instead. Then the new content gets its
  * own row, so restore can bring either side back with its own type.
+ *
+ * It advances the content clock only when the old file can back media.
  */
 async function db_install_file_content_replacement(
 	ctx: MutationCtx,
@@ -6366,6 +6370,9 @@ async function db_install_file_content_replacement(
 			_nay: { message: "The old collaboration history is still being removed. Please try again later." },
 		});
 	}
+
+	// Read this before the proposals change below. Only a file that can back media can break a proof.
+	const canBreakMediaProof = await files_media_validation_db_can_back_media(ctx, fileNode);
 
 	const now = Date.now();
 	const publish_asset = (assetId: Id<"files_r2_assets">, size: number) =>
@@ -6582,7 +6589,7 @@ async function db_install_file_content_replacement(
 		updatedAt: now,
 	});
 	await files_updated_by_db_sync_node(ctx, { nodeId });
-	await files_media_validation_db_advance_content_version(ctx, membership);
+	if (canBreakMediaProof) await files_media_validation_db_advance_content_version(ctx, membership);
 
 	// The committed text docs follow the node's new shape (the chunk helper reads it back).
 	if (args.text !== undefined) {

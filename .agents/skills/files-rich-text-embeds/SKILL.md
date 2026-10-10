@@ -46,7 +46,9 @@ New media copies have destination-owned assets and use destination access.
 
 Mappings are sealed paged sets, not arrays on the document. A rich-text Copy gets a set even with
 no embeds, so an embed added before Save still gets checked. Copy adoption and Save pin exact
-accepted text and current media/access versions. Removing an embed removes its Save requirement.
+accepted text and current media/access versions. Only changes that can break a checked embed
+advance those versions. A proof with no embeds skips the version check. Removing an embed removes
+its Save requirement.
 Adding or changing one needs a fresh check. Large Copy review saves selected media first; it never
 silently selects it. Partial Save keeps the mappings needed by the remaining proposal.
 

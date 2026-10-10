@@ -2020,6 +2020,7 @@ export const advance = internalMutation({
 			}
 			({ membership, organization } = authorized._yay);
 			const pins = cohort.clockPins;
+			// Keep this check even with no media: the same pins catch write policy and access changes while staging.
 			if (
 				!(await files_media_validation_db_versions_match(ctx, {
 					versions: [pins.organization, pins.workspace],

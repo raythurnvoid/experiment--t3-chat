@@ -17,7 +17,7 @@ import {
 import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
 import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
-import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
+import { files_pending_review_facts_db_pin_structure } from "../server/files-pending-review-facts.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import {
 	files_saved_placement_db_get_node,
@@ -469,14 +469,14 @@ export const advance = internalMutation({
 		if (run.planEpoch !== args.planEpoch)
 			return Result({ _nay: { name: "stopped", message: "The review plan changed." } });
 		if (plan.producerPhase === "sealed") return Result({ _yay: { plan, media: null, waiting: false } });
-		const state = await files_pending_review_facts_db_get_state(ctx.db, run);
+		const state = await files_pending_review_facts_db_pin_structure(ctx.db, run);
 		const subtree = await files_subtree_ops_db_find_repair(ctx, run);
 		// Check the Move first. Overlay jobs parked behind it count as pending until it ends.
 		const parked = await files_move_reservations_db_pause_worker(ctx, {
 			worker: { kind: "review", id: run._id, fence: args.fence },
 			check: { wholeWorkspace: run },
 		});
-		if (parked || subtree || (state?.pendingJobCount ?? 0) > 0) {
+		if (parked || subtree || state.pendingJobCount > 0) {
 			// Another Move or folder-wide job can run past the review deadline. Keep the review alive while it waits.
 			if (parked || subtree) {
 				const activity = await activities_db_require_by_source_id(ctx, run._id);
@@ -492,7 +492,7 @@ export const advance = internalMutation({
 				q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId).eq("userId", run.userId),
 			)
 			.unique();
-		const structureRevision = state?.structureRevision ?? 0;
+		const structureRevision = state.structureRevision;
 		const reviewVersion = review?.revision ?? 0;
 		if (
 			plan.factsStructureRevision !== null &&

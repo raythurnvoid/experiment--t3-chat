@@ -500,6 +500,64 @@ describe("paged Save media proof", () => {
 		});
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
 	});
+
+	test("accepts a no-media Save proof after an unrelated clock change", async () => {
+		const f = await fixture();
+		const text = "No media\n";
+		let pending = await private_text(f, { staged: text });
+		// Without a media set, Save skips the proof. Give it an empty one, like a copy with no embeds.
+		await f.t.run(async (ctx) => {
+			const set = await files_media_dependencies_db_create(ctx, {
+				...f.scope,
+				owner: { kind: "proposal", pendingUpdateId: pending._id },
+				expectedCount: 0,
+			});
+			if (set._nay) throw new Error(set._nay.message);
+			await files_media_dependencies_db_seal(ctx, { setId: set._yay, generation: 0 });
+			await ctx.db.patch("files_pending_updates", pending._id, { mediaDependencySetId: set._yay });
+		});
+		pending = await proposal(f, pending.target);
+		const prepared = await f.t.action((ctx) =>
+			files_pending_updates_action_prepare_content(ctx, {
+				userId: f.scope.userId,
+				membershipId: f.membershipId,
+				target: pending.target,
+				pendingUpdateId: pending._id,
+				reviewedRevision: pending.revision,
+				reviewedPrivateParentIds: [],
+			}),
+		);
+		if (prepared._nay) throw new Error(prepared._nay.message);
+		const operationBatchId = prepared._yay.operationBatchIds[0]!;
+		expect(
+			await f.t.mutation(internal.files_pending_media.start_validation, {
+				userId: f.scope.userId,
+				operationBatchId,
+				reviewedPendingUpdateIds: [],
+				pendingUpdateId: pending._id,
+				reviewedRevision: pending.revision,
+			}),
+		).toEqual({ _yay: { isDone: true } });
+		// A proof with no media refs has nothing a later Files or access change can break.
+		await f.t.run(async (ctx) => {
+			for (const clock of await ctx.db.query("files_media_validation_versions").collect())
+				await ctx.db.patch("files_media_validation_versions", clock._id, { revision: clock.revision + 1 });
+			for (const clock of await ctx.db.query("files_content_versions").collect())
+				await ctx.db.patch("files_content_versions", clock._id, { revision: clock.revision + 1 });
+			for (const clock of await ctx.db.query("files_pending_review_versions").collect())
+				await ctx.db.patch("files_pending_review_versions", clock._id, { revision: clock.revision + 1 });
+		});
+		expect(
+			await f.t.run((ctx) =>
+				files_pending_media_db_require_validation(ctx, {
+					pendingUpdate: pending,
+					text,
+					operationBatchId,
+					reviewedPendingUpdateIds: new Set(),
+				}),
+			),
+		).toEqual({ _yay: null });
+	});
 });
 
 async function document_proposal(args: {

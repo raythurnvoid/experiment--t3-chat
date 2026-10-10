@@ -482,7 +482,7 @@ describe("plugin file media validation clocks", () => {
 		await expect_clock({ f, before, changed: false });
 	});
 
-	test("initial external leaf restriction advances the workspace clock beyond the ordinary create", async () => {
+	test("initial external leaf restriction advances the workspace clock, the ordinary create does not", async () => {
 		const deltas = [];
 		for (const privateRoot of [false, true]) {
 			const f = await fixture();
@@ -503,13 +503,13 @@ describe("plugin file media validation clocks", () => {
 				[],
 			);
 			expect(after.externalBindings).toHaveLength(privateRoot ? 1 : 0);
-			await expect_clock({ f, before, changed: true });
+			await expect_clock({ f, before, changed: privateRoot });
 			deltas.push(
 				after.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision -
 					before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision,
 			);
 		}
-		// Creation already advances the workspace clock. The root restriction needs its own writer hook.
+		// Creation never advances the workspace clock. The root restriction needs its own writer hook.
 		expect(deltas[1]).toBeGreaterThan(deltas[0]!);
 	});
 

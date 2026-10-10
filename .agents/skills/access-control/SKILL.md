@@ -81,14 +81,19 @@ not permission caches. Final publication still checks current access.
   policy changes advance the workspace version. Unchanged or refused writes do not advance it.
 - Plugin mirrored human readers follow the same rule, including rollback and empty-reader root
   restriction. Store-only changes and independent service-account grants are not human media access.
-- New saved files and replaced content advance a separate content version (`files_content_versions`),
-  not the workspace version. Copy and Save pin it too. A Move group pins only the organization,
-  workspace and review versions, so a new file elsewhere does not stop it. Data deletion removes it
-  with the workspace.
+- Replaced content advances a separate content version (`files_content_versions`), not the
+  workspace version. Copy and Save pin it too. A Move group pins only the organization, workspace
+  and review versions. Data deletion removes it with the workspace.
+- Only `files_nodes_db_archive_nodes` and `db_install_file_content_replacement` skip the advance,
+  for plain files with no pending replacement. A plain file is not a stored image or video. Creating
+  a node never advances. Move cohorts, archive runs and subtree jobs always advance.
+- A Copy or Save proof with no media refs skips the version check. The folder Move check and the
+  Move cohort keep their pins, because the same pins catch write policy and access changes.
 - Purge fencing invalidates proofs before docs are removed. A removed version doc also invalidates
   its proof. Never recreate a missing doc while checking an old proof.
 
-When adding a writer, check both Copy adoption and final Save. See the pending and transfer specs.
+Advance only for a change that can turn a passing proof into a failing one. Check all four readers:
+Copy, pending Save, folder Move check, and Move cohort. See the pending and transfer specs.
 
 ## Service accounts
 
