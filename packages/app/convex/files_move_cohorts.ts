@@ -204,10 +204,10 @@ async function db_begin(
 		affectedNodeCount: 0,
 		materializedNodeCount: 0,
 		proofEpoch: 1,
-		// A Move skips the content clock, so new files elsewhere do not stop it.
+		// The first two pins are the access clocks. A Move skips the content clock, so new files elsewhere do not stop it.
 		clockPins: {
-			organization: pins.accessVersions[0]!,
-			workspace: pins.accessVersions[1]!,
+			organization: pins.versions[0] as Doc<"files_move_cohorts">["clockPins"]["organization"],
+			workspace: pins.versions[1] as Doc<"files_move_cohorts">["clockPins"]["workspace"],
 			review: pins.pendingVersions[0]!,
 		},
 		billedUserId: billing_pick_billed_user_id({ userId: args.userId, organization: authorized._yay.organization }),
