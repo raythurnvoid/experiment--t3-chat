@@ -207,3 +207,7 @@
 [submodule "plugins/bonobo-plugin-gmail"]
 	path = plugins/bonobo-plugin-gmail
 	url = https://github.com/raythurnvoid/bonobo-plugin-gmail.git
+[submodule "packages/app/vendor/convex-test"]
+	path = packages/app/vendor/convex-test
+	url = https://github.com/raythurnvoid/convex-test
+	branch = rt0-updates

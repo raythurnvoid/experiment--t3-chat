@@ -16,6 +16,9 @@ packages:
   - "packages/app/vendor/presence"
   - "packages/app/vendor/rate-limiter"
   - "packages/app/vendor/r2"
+  # Our convex-test fork. Stock convex-test reads the whole table for each query, even with an index,
+  # so big tests slow down with the square of the data size. The fork reads only the index range.
+  - "packages/app/vendor/convex-test"
   - "packages/app/vendor/just-bash/packages/just-bash"
 
 overrides:
@@ -29,12 +32,6 @@ overrides:
   react: "19.3.0"
   react-dom: "19.3.0"
   yjs: "13.6.33"
-
-# convex-test reads every document of every table for each query, so big tests slow down with the
-# square of the data size. The patch keeps the ids of each table, so a query reads only its own table.
-# A query still reads its whole table, even with an index. Drop it when convex-test ships the same fix.
-patchedDependencies:
-  convex-test@0.0.60: patches/convex-test@0.0.60.patch
 
 onlyBuiltDependencies:
   - "@clerk/shared"

@@ -348,6 +348,7 @@ export default crons;
 # Testing Guidelines
 
 - Use the repo-pinned `convex-test`, `vitest`, and `@edge-runtime/vm` versions. Configure Vitest with `environment: "edge-runtime"`. Add a missing dependency through Vite Plus and `pnpm`; do not upgrade test tooling as part of an unrelated test change.
+- `convex-test` is our fork, vendored at `packages/app/vendor/convex-test` (branch `rt0-updates`). It reads an index range from a sorted index instead of the whole table. Change it in the fork, not with a pnpm patch. Set `CONVEX_TEST_CHECK_INDEX=1` to also run every index read as a full table scan and throw on any difference.
 
 Test files go inside the `convex/` directory. You must pass a module map from `import.meta.glob` to `convexTest`:
 
