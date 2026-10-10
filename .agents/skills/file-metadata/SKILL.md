@@ -691,7 +691,7 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 # Tests
 
 - `packages/app/shared/files-metadata.test.ts` — parse, stringify, validate, apply-changes, index docs.
-- `packages/app/convex/files_nodes.test.ts` — the `metadata` tests: search next to frontmatter,
+- `packages/app/convex/files_nodes.search_metadata.test.ts` — the `metadata` tests: search next to frontmatter,
   surviving a content save, the pending-overlay exemption, refusals, and the agent door on an upload.
   The `create-time metadata` describe covers the create-flow stamps: an upload's keys, a
   folder import's relative path with empty folders, the plugin source

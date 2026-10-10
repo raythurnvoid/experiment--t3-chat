@@ -5,7 +5,7 @@ Use this reference when adding, moving, or reviewing tests.
 ## Anchors
 
 - Prefer a module-owned test file when a feature has a natural Convex module owner, such as `organizations.test.ts` for `convex/organizations.ts`.
-- Keep tests beside established fixtures when moving would duplicate large setup. Metadata integration tests currently live in `files_nodes.test.ts` because they reuse its file-tree fixtures; record such placement as an intentional tradeoff.
+- Keep tests beside established fixtures when moving would duplicate large setup. Metadata integration tests currently live in `files_nodes.search_metadata.test.ts` because they reuse the file-tree fixtures in `files_nodes.setup.test.ts`; record such placement as an intentional tradeoff.
 - Shared utility tests should use top-level `describe("<public_function>")` groups.
 - Script CLI tests live beside the script and run in the `scripts` Vitest project with Node. Keep filesystem fixtures and caches in the personal sibling folder. `scripts/typecheck.test.ts` is the example.
 - `server/bash.test.ts` and `server/bash.*.test.ts` command tests should stay under the existing `bash_run_command` group and use behavior-first test names. `server/bash.ts` keeps in-source tests only for its private helpers.
