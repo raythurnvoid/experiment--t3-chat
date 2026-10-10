@@ -4258,19 +4258,6 @@ const app_convex_schema = defineSchema({
 			"booleanValue",
 			"treePath",
 		])
-		// Distinct fields on direct children, split by `isRestrictedScopeRoot`. Committed field docs only.
-		.index("by_org_ws_source_archive_docKind_parent_restricted_field", [
-			"organizationId",
-			"workspaceId",
-			"sourceKind",
-			"moveView.cohortId",
-			"moveView.view",
-			"archiveOperationId",
-			"docKind",
-			"parentId",
-			"isRestrictedScopeRoot",
-			"fieldPath",
-		])
 		// The children of one folder that have one key, by value. Committed field docs only.
 		.index("by_org_ws_source_archive_docKind_field_parent_restricted_sort", [
 			"organizationId",
