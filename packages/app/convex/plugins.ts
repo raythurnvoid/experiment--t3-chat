@@ -41,6 +41,7 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { ai_chat_skills_LIMITS, ai_chat_skills_parse } from "../server/ai-chat-skills.ts";
 import { github_fetch_repo_head, github_fetch_with_retry, github_raw_url } from "../server/github.ts";
 import { path_tree_prefix_upper_bound, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
@@ -5453,7 +5454,7 @@ export const list_run_history = query({
 			}),
 		);
 		const nodes = await Promise.all(
-			runs.map(async (run) => (run.fileNodeId ? ctx.db.get("files_nodes", run.fileNodeId) : null)),
+			runs.map(async (run) => (run.fileNodeId ? files_saved_placement_db_get_node(ctx.db, run.fileNodeId) : null)),
 		);
 		const canReadContent = await access_control_db_has_permission(ctx, {
 			organizationId: organization._id,
@@ -5700,7 +5701,9 @@ export const list_recent_runs = query({
 		// a way to read what is inside a folder you were never given. Asked once for the whole page,
 		// because the filter answers once per restricted scope and these runs usually share one.
 		const runFileNodes = await Promise.all(
-			runs.map(async ({ run }) => (run.fileNodeId ? await ctx.db.get("files_nodes", run.fileNodeId) : null)),
+			runs.map(async ({ run }) =>
+				run.fileNodeId ? await files_saved_placement_db_get_node(ctx.db, run.fileNodeId) : null,
+			),
 		);
 		const readableNodeIds = new Set(
 			(

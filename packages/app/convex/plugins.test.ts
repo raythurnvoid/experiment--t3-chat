@@ -31,6 +31,7 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
 
 type ReviewVerdict = {
 	verdict: "passed" | "rejected" | "flagged" | "incomplete";
@@ -5205,6 +5206,199 @@ describe("plugins Phase 0", () => {
 			installationId: fixture.installationId,
 		});
 		expect(grantedRuns[0]!.file).toMatchObject({ name: "expired.png" });
+	});
+
+	// A published Move shows its after view before cleanup moves the raw node. Run history must follow it.
+	test("hides run file details after a published Move into a folder the manager cannot read", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		await insert_event_run({
+			t,
+			fixture,
+			eventId: "plugin:run-file-cohort",
+			status: "succeeded",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		const reader = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "plugin-reader-cohort" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: now,
+			});
+			const roleId = await ctx.db.insert("access_control_roles", {
+				organizationId: fixture.membership.organizationId,
+				name: "reader-cohort",
+				normalizedName: "reader-cohort",
+				description: "",
+				permissions: ["workspace.members.manage", "content.read"],
+				createdBy: fixture.membership.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				role: roleId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			return { userId, membershipId };
+		});
+		const asOwner = t.withIdentity(user_identity(fixture.membership.userId));
+		expect(
+			(
+				await asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: fixture.membership.membershipId,
+					installationId: fixture.installationId,
+					mode: "selected",
+					principals: [{ kind: "user", userId: reader.userId }],
+				})
+			)._nay,
+		).toBeUndefined();
+		const asReader = t.withIdentity(user_identity(reader.userId));
+		const readRecent = () =>
+			asReader.query(api.plugins.list_recent_runs, {
+				membershipId: reader.membershipId,
+				installationId: fixture.installationId,
+			});
+		const readHistory = () =>
+			asReader.query(api.plugins.list_run_history, {
+				membershipId: reader.membershipId,
+				installationId: fixture.installationId,
+				paginationOpts: { numItems: 10, cursor: null },
+			});
+		// Control: before any Move the reader sees the file.
+		expect((await readRecent())[0]!.file).toMatchObject({ name: "expired.png", path: "/expired.png" });
+
+		// A restricted folder the reader holds no grant on.
+		const locked = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.membership.membershipId,
+			parentId: "root",
+			path: "/locked",
+		});
+		if (locked._nay) throw new Error(locked._nay.message);
+		const lockedId = locked._yay.nodeId;
+		await t.run((ctx) =>
+			ctx.db.patch("files_nodes", lockedId, { restrictedScopeNodeId: lockedId, isRestrictedScopeRoot: true }),
+		);
+
+		// Seed a Move cohort that is published (visible view = after) but not finished: the raw node
+		// still holds its before header, like files_move_cohorts.ts db_publish -> db_cleanup_nodes.
+		await t.run(async (ctx) => {
+			const node = (await ctx.db.get("files_nodes", fixture.upload.nodeId))!;
+			const pins = await files_media_validation_db_capture_versions(ctx, {
+				userId: fixture.membership.userId,
+				scopes: [fixture.membership],
+			});
+			const cohortId = await ctx.db.insert("files_move_cohorts", {
+				...fixture.membership,
+				membershipLifetime: 0,
+				// Placement reads never load the origin, so these IDs only need the right table.
+				origin: {
+					kind: "transfer",
+					runId: "999999files_transfer_runs" as Id<"files_transfer_runs">,
+					itemId: "999999files_transfer_items" as Id<"files_transfer_items">,
+				},
+				slotGeneration: 1,
+				fence: 1,
+				attemptFence: 1,
+				workId: null,
+				deadlineAt: Date.now() + 60_000,
+				reviewDeadlineAt: Date.now() + 60_000,
+				phase: "published",
+				visibleView: "after",
+				step: 0,
+				workPhase: "items",
+				operationTime: Date.now(),
+				publishedAt: Date.now(),
+				itemCount: 1,
+				stagedItemCount: 1,
+				validatedItemCount: 1,
+				pendingWorkCount: 0,
+				affectedNodeCount: 1,
+				materializedNodeCount: 0,
+				proofEpoch: 1,
+				clockPins: {
+					organization: pins.versions[0] as Doc<"files_move_cohorts">["clockPins"]["organization"],
+					workspace: pins.versions[1] as Doc<"files_move_cohorts">["clockPins"]["workspace"],
+					review: pins.pendingVersions[0]!,
+				},
+				billedUserId: fixture.membership.userId,
+				contentCostCents: 0,
+				storedByteDelta: 0,
+				storedFileCount: 0,
+				privateByteDelta: 0,
+				privateNodeDelta: 0,
+				privateAccountingApplied: false,
+				billingApplied: true,
+				planningCursor: null,
+				stagingCursor: null,
+				validationCursor: null,
+				cleanupCursor: null,
+				errorCode: null,
+				errorMessage: null,
+				conflictItemId: null,
+			});
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", fixture.membership.organizationId).eq("workspaceId", fixture.membership.workspaceId),
+				)
+				.unique();
+			if (slot) await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId, generation: 1 });
+			else
+				await ctx.db.insert("files_move_workspace_slots", {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					cohortId,
+					generation: 1,
+					searchGeneration: 1,
+				});
+			const {
+				_id: _nodeId,
+				_creationTime: _nodeCreationTime,
+				organizationId: _org,
+				workspaceId: _ws,
+				createdBy: _createdBy,
+				writePolicy: _writePolicy,
+				newChildWritePolicy: _newChildWritePolicy,
+				moveCohortId: _moveCohortId,
+				...header
+			} = node;
+			const before = {
+				cohortId,
+				view: "before" as const,
+				nodeId: node._id,
+				nodeCreationTime: node._creationTime,
+				organizationId: node.organizationId,
+				workspaceId: node.workspaceId,
+				...header,
+				contentId: null,
+			};
+			await ctx.db.insert("files_saved_places", before);
+			await ctx.db.insert("files_saved_places", {
+				...before,
+				view: "after",
+				parentId: lockedId,
+				path: "/locked/expired.png",
+				treePath: "/locked/expired.png",
+				pathDepth: 2,
+				ancestor1: lockedId,
+				restrictedScopeNodeId: lockedId,
+			});
+			await ctx.db.patch("files_nodes", node._id, { moveCohortId: cohortId });
+		});
+
+		// After publish the file sits in /locked for everyone. The reader has no grant there.
+		const recent = await readRecent();
+		const history = await readHistory();
+		expect({ recent: recent[0]!.file, history: history.page[0]!.file }).toEqual({ recent: null, history: null });
 	});
 
 	test("does not hand the publisher's source and storage keys to an installer", async () => {
