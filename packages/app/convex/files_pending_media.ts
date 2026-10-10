@@ -102,7 +102,7 @@ async function db_get_publication_text(
 		.first();
 	if (!membership) return null;
 	const reader = await files_visible_db_create_reader(ctx, pending);
-	const entry = await reader.resolveTarget(pending.target);
+	const entry = await reader.resolveTargetForSave(pending.target);
 	if (entry?.pendingUpdate?._id !== pending._id) return null;
 	return { batch, input, pending, set, membership };
 }
@@ -202,7 +202,7 @@ export const advance_validation = internalMutation({
 			const target = original
 				? await files_pending_nodes_db_resolve_read_target(ctx, { ...data.pending, target: original })
 				: null;
-			const entry = target ? await reader.resolveTarget(target) : null;
+			const entry = target ? await reader.resolveTargetForSave(target) : null;
 			const refusal = Result({
 				_nay: {
 					message: "Save the selected media with this document, or save it first. Changed media must be copied again.",

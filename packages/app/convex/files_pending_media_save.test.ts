@@ -10,6 +10,7 @@ import {
 	test_convex,
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
 import { files_pending_updates_action_prepare_content } from "./files_pending_updates.ts";
@@ -24,7 +25,7 @@ import {
 	files_media_dependencies_db_seal,
 } from "./files_media_dependencies.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
-import { files_media_build_private_src } from "../shared/files-media.ts";
+import { files_media_build_file_src, files_media_build_private_src } from "../shared/files-media.ts";
 import {
 	files_yjs_doc_clone,
 	files_yjs_doc_create_from_array_buffer_update,
@@ -1585,4 +1586,137 @@ describe("cross-workspace Copy from public Save", () => {
 		expect(accepted._yay).toContain("Second");
 		after.destroy();
 	});
+});
+
+describe("Save near a draft move into a folder the member can no longer read", () => {
+	/**
+	 * A second member of the workspace, with the member role. The fixture user is the owner.
+	 */
+	async function member(f: Awaited<ReturnType<typeof fixture>>) {
+		const v = await f.t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "media-save-member" });
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: f.scope.organizationId,
+				workspaceId: f.scope.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, { ...f.scope, userId, role: "member", now: Date.now() });
+			return { userId, membershipId };
+		});
+		return {
+			...f,
+			membershipId: v.membershipId,
+			scope: { ...f.scope, userId: v.userId },
+			asUser: f.t.withIdentity({ issuer: "https://clerk.test", external_id: v.userId }),
+		};
+	}
+
+	async function saved_folder(f: Awaited<ReturnType<typeof fixture>>, path: string) {
+		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...f.scope,
+			path,
+			kind: "folder",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const saved = await save(f, await proposal(f, created._yay.target));
+		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected a saved folder");
+		return saved._yay.target;
+	}
+
+	/**
+	 * The owner saves an image. The member links to the saved file.
+	 */
+	async function saved_media(
+		f: Awaited<ReturnType<typeof fixture>>,
+		v: Awaited<ReturnType<typeof member>>,
+		path: string,
+	) {
+		const image = await media(f, path);
+		const saved = await save(f, image.pending);
+		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved media");
+		const target = saved._yay.target;
+		const version = await f.t.run(async (ctx) => {
+			const entry = await (await files_visible_db_create_reader(ctx, v.scope)).resolveTarget(target);
+			if (!entry) throw new Error("Expected readable media");
+			return await files_transfer_db_get_entry_version(ctx, entry);
+		});
+		if (!version) throw new Error("Expected a media version");
+		return { src: files_media_build_file_src(target.id), target, assetId: image.dependency.assetId, version };
+	}
+
+	/**
+	 * The member drafts `mv /proj /team/`, then the owner restricts /team without sharing it.
+	 */
+	async function block_proj(
+		f: Awaited<ReturnType<typeof fixture>>,
+		v: Awaited<ReturnType<typeof member>>,
+		folders: { proj: { id: Id<"files_nodes"> }; team: { id: Id<"files_nodes"> } },
+	) {
+		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...v.scope,
+			target: { kind: "saved", id: folders.proj.id },
+			destParent: { kind: "saved", id: folders.team.id },
+			destName: "proj",
+		});
+		if (moved._nay) throw new Error(moved._nay.message);
+		const restricted = await f.asUser.mutation(api.files_sharing.restrict_node, {
+			membershipId: f.membershipId,
+			nodeId: folders.team.id,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+	}
+
+	test("a document inside the blocked moved folder still saves its media links", async () => {
+		const f = await fixture();
+		const v = await member(f);
+		const proj = await saved_folder(f, "/proj");
+		const team = await saved_folder(f, "/team");
+		const doc = await save(f, await private_text(f, { path: "/proj/plan.md", staged: "Plan\n" }));
+		if (doc._nay) throw new Error(doc._nay.message);
+		const image = await saved_media(f, v, "/photo.png");
+		const pending = await attach_dependencies({
+			f: v,
+			pending: await saved_proposal({ f: v, target: doc._yay.target, staged: `Plan\n\n![Photo](${image.src})\n` }),
+			dependencies: [image],
+		});
+		await block_proj(f, v, { proj, team });
+
+		// The document has no move of its own, so its row keeps Accept on.
+		expect(
+			await v.asUser.query(api.files_pending_updates.get_file_pending_target, {
+				membershipId: v.membershipId,
+				target: pending.target,
+			}),
+		).toMatchObject({ entry: { path: "/proj/plan.md" }, canAccept: true, moveDestinationUnreadable: false });
+		expect((await save(v, pending))._nay).toBeUndefined();
+	});
+
+	// A private document goes through the review plan's media check. A saved document's content Save
+	// also checks each link again.
+	test.each(["private", "saved"] as const)(
+		"a %s document elsewhere still saves a link to media inside the blocked moved folder",
+		async (kind) => {
+			const f = await fixture();
+			const v = await member(f);
+			const proj = await saved_folder(f, "/proj");
+			const team = await saved_folder(f, "/team");
+			const image = await saved_media(f, v, "/proj/photo.png");
+			const text = `![Photo](${image.src})\n`;
+			let document: Doc<"files_pending_updates">;
+			if (kind === "private") document = await private_text(v, { staged: text });
+			else {
+				const saved = await save(f, await private_text(f, { staged: "Doc\n" }));
+				if (saved._nay) throw new Error(saved._nay.message);
+				document = await saved_proposal({ f: v, target: saved._yay.target, staged: text });
+			}
+			const pending = await attach_dependencies({ f: v, pending: document, dependencies: [image] });
+			await block_proj(f, v, { proj, team });
+
+			expect((await save(v, pending))._nay).toBeUndefined();
+		},
+	);
 });

@@ -619,7 +619,7 @@ export const stage_media = internalMutation({
 			let selected = target ? await db_selected(ctx, plan, target) : null;
 			if (selected?.structuralKind === "archive")
 				reviewedArchiveIds.add((await db_input(ctx, selected)).pendingUpdateId);
-			const visible = target ? await reader.resolveTarget(target) : null;
+			const visible = target ? await reader.resolveTargetForSave(target) : null;
 			if (!visible || !original) {
 				await db_error(ctx, vertex, "The reviewed media is no longer available.");
 				continue;

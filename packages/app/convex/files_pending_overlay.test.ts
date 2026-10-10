@@ -20,6 +20,7 @@ import {
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 	test_spy_handler,
+	test_meta_search,
 } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import {
@@ -27,6 +28,7 @@ import {
 	files_pending_overlay_db_mark_target,
 	files_pending_overlay_db_set_acting_user,
 	files_pending_overlay_list,
+	files_pending_overlay_search_name,
 } from "../server/files-pending-overlay.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_ancestor_ids, type files_PendingParent, type files_PendingTarget } from "../shared/files.ts";
@@ -1172,6 +1174,25 @@ describe("files_pending_overlay flush", () => {
 		expect(await v_path_read("/notes.md")).toBe(null);
 		expect(await v_path_read("/proj/plan.md")).toBe(null);
 		expect(await target_at("/notes.md")).toEqual(target(notes));
+		// The blocked answer does not depend on the read order: a child read first still knows.
+		const blocked_in_order = (targets: files_PendingTarget[]) =>
+			f.t.run(async (ctx) => {
+				const reader = await files_visible_db_create_reader(ctx, f.v);
+				const answers: boolean[] = [];
+				for (const pendingTarget of targets) {
+					await reader.resolve(pendingTarget);
+					answers.push(reader.isBlocked(pendingTarget));
+				}
+				return answers;
+			});
+		expect(await blocked_in_order([draft, target(plan), target(proj), target(notes), target(hr)])).toEqual([
+			true,
+			true,
+			true,
+			true,
+			false,
+		]);
+		expect(await blocked_in_order([target(proj), target(plan), draft])).toEqual([true, true, true]);
 		// The Pending row still shows the saved node at its saved place. Accept would fail, so it is off,
 		// and the row knows the path is not the destination. The draft inside the moved folder has no
 		// view, so its row offers Discard only.
@@ -1271,6 +1292,93 @@ describe("files_pending_overlay flush", () => {
 		expect(await get_path(target(notes))).toBe("/team/notes.md");
 		expect(await v_path_read("/team/notes.md")).toEqual(target(notes));
 		expect(await v_path_read("/docs/notes.md")).toEqual(draft);
+	});
+
+	test("a draft move into a saved draft folder that is itself blocked is hidden too", async () => {
+		const f = await fixture();
+		const team = await f.saved(null, "team", "folder");
+		const notes = await f.saved(null, "notes.md");
+		// V drafts a folder /new and `mv /notes.md /new/`, then saves the folder first. The move still
+		// points at the draft folder. V then drafts `mv /new /team/`.
+		const folder = await f.create_private("/new", "folder", f.v);
+		await f.draft_move(target(notes), { kind: "private", id: folder.id as Id<"files_pending_nodes"> }, "notes.md", f.v);
+		await f.review("accept", [await f.proposal_of(folder, f.v)], "v");
+		const published = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_node_publish_receipts")
+				.withIndex("by_privateNode", (q) => q.eq("privateNodeId", folder.id as Id<"files_pending_nodes">))
+				.unique(),
+		);
+		await f.draft_move({ kind: "saved", id: published!.savedNodeId }, parent(team), "new", f.v);
+		const membershipId = f.vMember.membershipId;
+		const get_path = () => f.asV.query(api.files_visible.get_path, { membershipId, target: target(notes) });
+		expect(await get_path()).toBe("/team/new/notes.md");
+
+		// The owner restricts /team. The saved folder's move is blocked, so the draft folder it came from
+		// is blocked too, and so is notes.md.
+		await f.restrict(team);
+		expect(await get_path()).toBe(null);
+		expect(
+			await f.asV.query(api.files_pending_updates.get_file_pending_target, { membershipId, target: target(notes) }),
+		).toMatchObject({ entry: { path: "/notes.md" }, canAccept: false, moveDestinationUnreadable: true });
+	});
+
+	test("ls -t, find -name and meta search leave out the saved children of a blocked moved folder", async () => {
+		const f = await fixture();
+		const team = await f.saved(null, "team", "folder");
+		const proj = await f.saved(null, "proj", "folder");
+		await f.saved(proj, "plan.md");
+		await f.set_metadata("/proj/plan.md", [{ key: "status", value: "open" }], f.v);
+		await f.draft_move(target(proj), parent(team), "proj", f.v);
+		await f.expect_overlay_true();
+		const ls_t = async () => {
+			const result = await files_pending_overlay_list(
+				{ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">,
+				{
+					organizationId: f.v.organizationId,
+					workspaceId: f.v.workspaceId,
+					visibilityUserId: f.v.userId,
+					overlayUserId: f.v.userId,
+					folderPath: "/",
+					mode: "recent",
+					order: "desc",
+					numItems: 50,
+					cursor: null,
+				},
+			);
+			if (result._nay) throw new Error(result._nay.message);
+			return result._yay.items.map((item) => item.path).filter((path) => path.endsWith("plan.md"));
+		};
+		const find_name = async () => {
+			const result = await files_pending_overlay_search_name(
+				{ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">,
+				{
+					organizationId: f.v.organizationId,
+					workspaceId: f.v.workspaceId,
+					visibilityUserId: f.v.userId,
+					overlayUserId: f.v.userId,
+					folderPath: "/",
+					query: "plan",
+					numItems: 10,
+					cursor: null,
+				},
+			);
+			if (result._nay) throw new Error(result._nay.message);
+			return result._yay.items.map((item) => item.path);
+		};
+		const meta_search = async () =>
+			(await test_meta_search(f.t, { ...f.v, plan: { op: "exists", fieldPath: "metadata.status" } })).items.map(
+				(item) => item.path,
+			);
+		expect(await ls_t()).toEqual(["/team/proj/plan.md"]);
+		expect(await find_name()).toEqual(["/team/proj/plan.md"]);
+		expect(await meta_search()).toEqual(["/team/proj/plan.md"]);
+
+		// The owner restricts /team. No listing shows plan.md, at the destination or at its saved place.
+		await f.restrict(team);
+		expect(await ls_t()).toEqual([]);
+		expect(await find_name()).toEqual([]);
+		expect(await meta_search()).toEqual([]);
 	});
 
 	test("a draft move into a saved draft folder the member can no longer read cannot be accepted", async () => {

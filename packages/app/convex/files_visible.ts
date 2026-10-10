@@ -251,6 +251,18 @@ export async function files_visible_db_create_reader(
 			const result = await core.resolve(target);
 			return result && (await can_read(result.accessNode)) ? result.entry : null;
 		},
+		/**
+		 * Like `resolveTarget`, but a readable saved node that a blocked draft move hides still counts, at
+		 * its saved place. Save checks use it: a document inside that moved folder, or one that only links
+		 * to media there, must still save as before.
+		 */
+		async resolveTargetForSave(target: files_PendingTarget) {
+			if (!membership) return null;
+			const result = await core.resolve(target);
+			if (result) return (await can_read(result.accessNode)) ? result.entry : null;
+			const saved = core.getBlockedSavedEntry(target);
+			return saved?.kind === "saved" && (await can_read(saved.node)) ? saved : null;
+		},
 		async resolvePath(path: string) {
 			if (!membership) return null;
 			const result = await find_path(path);

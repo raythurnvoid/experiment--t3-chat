@@ -170,7 +170,8 @@ export function files_visible_resolve_db_create(
 	const cycleMembers = new Set<string>();
 	// The keys hidden because their path goes through a move destination the owner cannot read. A node
 	// whose parent or destination is one of them is hidden too. It never falls back to a saved place.
-	const blockedKeys = new Set<string>();
+	// A saved key keeps its entry at the saved place, for checks that need only the saved node.
+	const blockedKeys = new Map<string, files_VisibleEntry | null>();
 	const is_blocked = (parent: files_PendingParent) =>
 		parent.kind !== "root" && blockedKeys.has(`${parent.kind}:${parent.id}`);
 	// The lowest stack index a cycle cut reached in the current work. A node above that index got a
@@ -202,7 +203,7 @@ export function files_visible_resolve_db_create(
 				if (receipt) {
 					const saved = await resolve_parent({ kind: "saved", id: receipt.savedNodeId });
 					// The draft folder is blocked when the saved folder it became is.
-					if (blockedKeys.has(`saved:${receipt.savedNodeId}`)) blockedKeys.add(`private:${parent.id}`);
+					if (blockedKeys.has(`saved:${receipt.savedNodeId}`)) blockedKeys.set(`private:${parent.id}`, null);
 					return saved;
 				}
 				if (node.state === "published") return null;
@@ -264,6 +265,7 @@ export function files_visible_resolve_db_create(
 
 		let result: Resolved | null = null;
 		let blocked = false;
+		let savedPlace: files_VisibleEntry | null = null;
 		const deleted = pending?.pendingArchive !== undefined &&
 			!args.reviewedArchiveIds?.has(pending._id) &&
 			!(args.isReviewedArchive && await args.isReviewedArchive(pending));
@@ -318,6 +320,7 @@ export function files_visible_resolve_db_create(
 							: is_blocked(pending.pendingMove.destParent));
 					const parent = blocked ? null : (movedParent ?? (await resolve_parent(parentTarget)));
 					if (!parent && !blocked) blocked = is_blocked(parentTarget);
+					if (blocked) savedPlace = { kind: "saved", node, pendingUpdate: pending, path: node.path };
 					if (parent) {
 						const name = movedParent && pending?.pendingMove ? pending.pendingMove.destName : node.name;
 						result = {
@@ -340,7 +343,7 @@ export function files_visible_resolve_db_create(
 		}
 
 		resolving.pop();
-		if (blocked) blockedKeys.add(key);
+		if (blocked) blockedKeys.set(key, savedPlace);
 		if (stopCount === stopCountBefore && cycleCutIndex >= index) resolved.set(key, result);
 		cycleCutIndex = Math.min(cycleCutIndexBefore, cycleCutIndex);
 		return result;
@@ -371,5 +374,10 @@ export function files_visible_resolve_db_create(
 		 * cannot read. Ask after resolving it.
 		 */
 		isBlocked: is_blocked,
+		/**
+		 * The saved entry, at its saved place, of a saved target that a resolve found blocked. Null for
+		 * any other target. Ask after resolving it.
+		 */
+		getBlockedSavedEntry: (target: files_PendingTarget) => blockedKeys.get(`${target.kind}:${target.id}`) ?? null,
 	};
 }
