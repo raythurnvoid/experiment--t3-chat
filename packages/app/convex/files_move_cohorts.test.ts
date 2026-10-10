@@ -8,7 +8,8 @@ import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_saved_placement_db_get_slot } from "../server/files-saved-placement.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import { activities_db_require_by_source_id } from "./activities_db.ts";
+import { activities_db_require_by_source_id, activities_get_controls } from "./activities_db.ts";
+import { files_pending_update_runs_db_request_stop } from "./files_pending_update_runs.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -320,6 +321,47 @@ describe("Move cohort publication", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_move_source_reservations").collect())).toEqual([]);
 	}, 120_000);
 
+	test("history cleanup waits for a stopped review's published repair without a busy loop", async () => {
+		const f = await native_rotation(3);
+		for (let pass = 0; ; pass++) {
+			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+			if (cohort.publishedAt !== null) break;
+			if (pass === 1_000) throw new Error("The group did not publish");
+			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+		}
+		// A timeout ends the Activity at once. The run cannot go while its group still repairs.
+		await f.t.run((ctx) =>
+			files_pending_update_runs_db_request_stop(ctx, { runId: f.runId, reason: "timeout", now: Date.now() }),
+		);
+		expect(
+			await f.t.mutation(internal.activities.cleanup_history, { _test_now: Date.now() + 8 * 24 * 60 * 60 * 1000 }),
+		).toEqual({ deletedCount: 0, done: false });
+		const retries = (await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+			.filter((job) => job.name.endsWith("activities:cleanup_history") && job.state.kind === "pending")
+			.map((job) => job.scheduledTime - Date.now());
+		expect(retries, "a pass that deleted nothing retries later, not at once").toEqual([5 * 60_000]);
+	}, 120_000);
+
+	test("Stop keeps the review Activity until its saved group ends repair", async () => {
+		const f = await native_rotation(3);
+		for (let pass = 0; ; pass++) {
+			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+			if (cohort.publishedAt !== null) break;
+			if (pass === 1_000) throw new Error("The group did not publish");
+			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+		}
+		const activity = () => f.t.run((ctx) => activities_db_require_by_source_id(ctx, f.runId));
+		expect(
+			await f.asUser.mutation(api.activities.request_stop, {
+				membershipId: f.db.membershipId,
+				activityId: (await activity())._id,
+			}),
+		).toEqual({ _yay: null });
+		expect((await activity()).status, "Stop waits while the saved group repairs").toBe("stopping");
+		await finish_cohort(f);
+		expect((await activity()).status, "the Activity ends with the repair").toBe("canceled");
+	}, 120_000);
+
 	test("a new folder elsewhere does not stop publication", async () => {
 		const f = await native_rotation(3);
 		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: 0 });
@@ -376,6 +418,16 @@ describe("Move cohort publication", () => {
 			if (!(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", f.runId)))) break;
 		}
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", f.runId))).toBeNull();
+		const pending = async (name: string) =>
+			(await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+				.filter((job) => job.name.endsWith(name) && job.state.kind === "pending")
+				.map((job) => job.args[0]);
+		const origins = await pending("files_move_cohorts:cleanup_origin");
+		expect(origins, "deleting the parent starts its groups' cleanup").toEqual([
+			{ origin: { kind: "review", runId: f.runId }, cursor: null },
+		]);
+		await f.t.mutation(internal.files_move_cohorts.cleanup_origin, origins[0]);
+		expect(await pending("files_move_cohorts:cleanup")).toContainEqual({ cohortId: f.cohortId });
 		for (let pass = 0; pass < 50; pass++) {
 			await f.t.mutation(internal.files_move_cohorts.cleanup, { cohortId: f.cohortId });
 			if (!(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))) break;
@@ -386,6 +438,29 @@ describe("Move cohort publication", () => {
 		).toBeNull();
 		expect(await f.t.run((ctx) => ctx.db.query("files_move_cohort_nodes").collect())).toEqual([]);
 		expect((await f.readNames()).map((node) => node?._id)).toEqual([f.nodes[2], f.nodes[0], f.nodes[1]]);
+	}, 120_000);
+
+	test("one recover chain starts cleanup for every due group whose parent is gone", async () => {
+		const f = await native_rotation(3);
+		const finished = await finish_cohort(f);
+		await f.t.run(async (ctx) => {
+			// Copies of the finished group have no child rows, so each cleanup ends in one step.
+			const { _id, _creationTime, ...fields } = finished;
+			for (let copy = 0; copy < 20; copy++) await ctx.db.insert("files_move_cohorts", fields);
+			await ctx.db.delete("files_pending_update_runs", f.runId);
+			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
+				if (job.state.kind === "pending") await ctx.scheduler.cancel(job._id);
+		});
+		vi.setSystemTime(Date.now() + 31 * 60_000);
+		await f.t.mutation(internal.files_move_cohorts.recover, {});
+		for (let pass = 0; pass < 100; pass++) {
+			vi.advanceTimersByTime(1_000);
+			await f.t.finishInProgressScheduledFunctions();
+		}
+		expect(
+			await f.t.run(async (ctx) => (await ctx.db.query("files_move_cohorts").collect()).length),
+			"every due group is cleaned, not only the first page",
+		).toBe(0);
 	}, 120_000);
 });
 
@@ -510,6 +585,53 @@ describe("Move cohort and folder-wide jobs", () => {
 		expect((await w.node(deep))?.writePolicy).toEqual({ mode: "read_only" });
 	});
 
+	test("folder protection resumes at the Activity sweep when the Move wake was lost", async () => {
+		const w = await transfer_workspace();
+		const P = await w.folder("/P");
+		const sub = await w.folder("/P/sub");
+		const src = await w.folder("/src");
+		const cohortId = await w.move(src, sub, async () => !!(await w.node(sub))?.moveCohortId);
+		const started = await w.asUser.mutation(api.files_write_policy_runs.start, {
+			membershipId: w.db.membershipId,
+			nodeId: P,
+			writePolicy: { mode: "read_only" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = (await w.t.run((ctx) => ctx.db.query("files_write_policy_runs").first()))!._id;
+		await w.t.mutation(internal.files_write_policy_runs.advance, { runId });
+		const cancel = (name: string) =>
+			w.t.run(async (ctx) => {
+				let count = 0;
+				for (const job of await ctx.db.system.query("_scheduled_functions").collect())
+					if (job.name.endsWith(name) && job.state.kind === "pending") {
+						await ctx.scheduler.cancel(job._id);
+						count++;
+					}
+				return count;
+			});
+		// This test ran that step by hand. Drop its scheduled copy.
+		await cancel("files_write_policy_runs:advance");
+		const cohort = async () => (await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
+		for (let pass = 0; (await cohort()).phase !== "complete"; pass++) {
+			if (pass === 100) throw new Error("The Move did not finish");
+			await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+		}
+		// Drop the Move's wake, like a wake mutation that threw.
+		expect(await cancel("files_move_cohorts:wake_waiters")).toBe(1);
+		vi.setSystemTime(Date.now() + 31 * 60_000);
+		await w.t.mutation(internal.activities.recover_expired, { _test_disableReschedule: true });
+		for (let pass = 0; pass < 20; pass++) {
+			vi.advanceTimersByTime(1_000);
+			await w.t.finishInProgressScheduledFunctions();
+		}
+		expect(
+			(await w.t.run((ctx) => ctx.db.get("activities", started._yay.activityId)))?.status,
+			"the sweep resumes a run whose Move already ended",
+		).toBe("succeeded");
+		expect((await w.node(sub))?.writePolicy).toEqual({ mode: "read_only" });
+		expect(await w.t.run((ctx) => ctx.db.query("files_move_waiters").collect())).toEqual([]);
+	});
+
 	test("Archive leaves no active item under an archived folder", async () => {
 		const w = await transfer_workspace();
 		const P = await w.folder("/P");
@@ -555,6 +677,193 @@ describe("Move cohort Activity deadline", () => {
 		vi.setSystemTime(Date.now() + 60_000);
 		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
 		expect((await activity()).deadlineAt, "a repair step keeps a fixed deadline").toBe(refreshed);
+	});
+});
+
+describe("Move cohort repair retries", () => {
+	test("a repeated repair failure waits longer each time and keeps the workspace held", async () => {
+		const w = await transfer_workspace();
+		const a = await w.folder("/a");
+		await w.folder("/a/c1");
+		const target = await w.folder("/target");
+		const cohort = async () => (await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first()))!;
+		const cohortId = await w.move(a, target, async () => (await cohort()).publishedAt != null);
+		const nextRunDelays = async () => {
+			const { step } = await cohort();
+			return (await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+				.filter(
+					(job) =>
+						job.name.endsWith("files_move_cohorts:run") &&
+						job.state.kind === "pending" &&
+						(job.args[0] as { step: number }).step === step,
+				)
+				.map((job) => job.scheduledTime - Date.now());
+		};
+		const cause = { name: "should_never_happen", message: "[should_never_happen] Move content cleanup failed" };
+		const error = { name: "move_step_failed", message: "This Move step failed. Review it again.", cause };
+		const delays: number[] = [];
+		for (let failure = 0; failure < 4; failure++) {
+			await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error });
+			delays.push(...(await nextRunDelays()));
+		}
+		expect(delays, "each repeated failure doubles the wait").toEqual([30_000, 60_000, 120_000, 240_000]);
+		const slot = await w.t.run((ctx) =>
+			ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", w.db.organizationId).eq("workspaceId", w.db.workspaceId),
+				)
+				.unique(),
+		);
+		expect(slot?.cohortId, "published repair keeps the workspace").toBe(cohortId);
+		expect(await cohort(), "the group keeps the real error").toMatchObject({
+			repairFailureCount: 4,
+			repairLastError: cause,
+		});
+		await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error: null });
+		expect(await nextRunDelays(), "a good step resets the wait").toEqual([0]);
+		const reset = await cohort();
+		expect([reset.repairFailureCount, reset.repairNextRetryAt, reset.repairLastError]).toEqual([
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
+
+	test("a waiting repair is not tried early and its Activity does not time out", async () => {
+		const w = await transfer_workspace();
+		const a = await w.folder("/a");
+		await w.folder("/a/c1");
+		const target = await w.folder("/target");
+		const cohort = async () => (await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first()))!;
+		const cohortId = await w.move(a, target, async () => (await cohort()).publishedAt != null);
+		const runId = (await cohort()).origin.runId as Id<"files_transfer_runs">;
+		const activity = () => w.t.run((ctx) => activities_db_require_by_source_id(ctx, runId));
+		// Seven tries already failed. The next failure waits the longest.
+		await w.t.run((ctx) => ctx.db.patch("files_move_cohorts", cohortId, { repairFailureCount: 7 }));
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+		const error = { name: "move_step_failed", message: "This Move step failed. Review it again." };
+		await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error });
+		expect(errorLog.mock.calls.filter(([text]) => text === "Move repair stuck")).toHaveLength(1);
+		errorLog.mockRestore();
+		const retryAt = Date.now() + 60 * 60_000;
+		const waiting = await cohort();
+		expect(waiting.repairNextRetryAt, "the wait stops growing at one hour").toBe(retryAt);
+		const status = (await activity()).status;
+		// Past the 30 minute run deadline, but before the next try.
+		vi.setSystemTime(Date.now() + 45 * 60_000);
+		await w.t.mutation(internal.files_transfer.advance, { runId });
+		await w.t.mutation(internal.files_move_cohorts.recover, {});
+		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: waiting.step });
+		expect(await cohort(), "a wake does not try a waiting repair early").toMatchObject({
+			step: waiting.step,
+			repairFailureCount: 8,
+		});
+		await w.t.mutation(internal.activities.recover_expired, { _test_disableReschedule: true });
+		expect((await activity()).status, "a waiting repair does not time out").toBe(status);
+		vi.setSystemTime(retryAt);
+		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: waiting.step });
+		expect((await cohort()).step, "the delayed try runs on time").toBe(waiting.step + 1);
+	});
+
+	// Publish a Move, then fail its repair three times in a row.
+	async function stuck_move() {
+		const w = await transfer_workspace();
+		const a = await w.folder("/a");
+		await w.folder("/a/c1");
+		const target = await w.folder("/target");
+		const cohort = async () => (await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first()))!;
+		const cohortId = await w.move(a, target, async () => (await cohort()).publishedAt != null);
+		const runId = (await cohort()).origin.runId;
+		const activity = () => w.t.run((ctx) => activities_db_require_by_source_id(ctx, runId));
+		const fail = async () =>
+			await w.t.mutation(internal.files_move_cohorts.resume, {
+				cohortId,
+				step: (await cohort()).step,
+				error: { name: "move_step_failed", message: "This Move step failed. Review it again." },
+			});
+		await fail();
+		await fail();
+		expect((await activity()).errorCode, "two failures do not ask for help yet").toBeUndefined();
+		await fail();
+		return { w, cohortId, cohort, activity };
+	}
+
+	test("a repair that keeps failing asks the starter for help, and a good step clears it", async () => {
+		const { w, cohortId, cohort, activity } = await stuck_move();
+		const stuck = await activity();
+		expect(stuck, "the third failure asks for help").toMatchObject({
+			status: "running",
+			errorCode: "move_repair_stuck",
+			errorMessage: expect.stringContaining("Your files are already in their new place."),
+		});
+		expect(activities_get_controls(stuck, w.db.userId).canStop, "Stop is hidden after the files moved").toBe(false);
+		await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error: null });
+		const fixed = await activity();
+		expect([fixed.status, fixed.errorCode, fixed.errorMessage], "a good step clears the notice").toEqual([
+			"running",
+			undefined,
+			null,
+		]);
+	});
+
+	test("Try again now is refused for another user and tries at once for the starter", async () => {
+		const { w, cohortId, cohort, activity } = await stuck_move();
+		const activityId = (await activity())._id;
+		const pendingRunDelays = async () => {
+			const { step } = await cohort();
+			return (await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+				.filter(
+					(job) =>
+						job.name.endsWith("files_move_cohorts:run") &&
+						job.state.kind === "pending" &&
+						(job.args[0] as { step: number }).step === step,
+				)
+				.map((job) => job.scheduledTime - Date.now())
+				.sort((a, b) => a - b);
+		};
+		const other = await w.t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "repair-other-member" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: w.db.organizationId,
+				workspaceId: w.db.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const asOther = w.t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
+		expect(
+			await asOther.mutation(api.activities.retry_move_repair, { membershipId: other.membershipId, activityId }),
+			"another user cannot try again",
+		).toEqual({ _nay: { message: "Activity not found" } });
+		expect(await pendingRunDelays(), "a refused try changes nothing").toEqual([120_000]);
+		const retry = () =>
+			w.asUser.mutation(api.activities.retry_move_repair, { membershipId: w.db.membershipId, activityId });
+		expect(await retry()).toEqual({ _yay: null });
+		expect(await retry()).toEqual({ _yay: null });
+		expect(await pendingRunDelays(), "the starter's try runs at once, and a second click adds nothing").toEqual([
+			0, 120_000,
+		]);
+		await w.t.action(internal.files_move_cohorts.run, { cohortId, step: (await cohort()).step });
+		expect((await activity()).errorCode, "a try that works clears the notice").toBeUndefined();
+	});
+
+	test("ops find a stuck group and retry_now finishes it once the fault is gone", async () => {
+		const { w, cohortId, cohort, activity } = await stuck_move();
+		expect(
+			(await w.t.query(internal.files_move_cohorts.list_stuck, {})).map((stuck) => stuck._id),
+			"ops see the stuck group",
+		).toEqual([cohortId]);
+		await w.t.mutation(internal.files_move_cohorts.retry_now, { cohortId });
+		for (let pass = 0; (await cohort()).phase !== "complete" && pass < 100; pass++)
+			await w.t.action(internal.files_move_cohorts.run, { cohortId, step: (await cohort()).step });
+		expect((await cohort()).phase, "retry_now finishes the stuck group").toBe("complete");
+		await w.finish();
+		expect((await activity()).status).toBe("succeeded");
+		expect(await w.t.query(internal.files_move_cohorts.list_stuck, {})).toEqual([]);
 	});
 });
 

@@ -123,6 +123,8 @@ const ATTEMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const CHOICE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const STOP_BATCH_SIZE = 50;
+/** The Activity code while this run waits for another Move in the workspace. */
+const MOVE_WAIT_CODE = "waiting_for_move";
 
 const files_transfer_workpool = new Workpool(components.files_transfer_workpool, {
 	maxParallelism: MAX_IN_FLIGHT,
@@ -756,10 +758,16 @@ export async function files_transfer_db_request_stop(
 		}
 	}
 
+	const activity = await db_require_activity(ctx, run._id);
 	await db_stop_run({
 		ctx,
 		run,
-		errorMessage: args.reason === "timeout" ? "Paste timed out" : null,
+		errorMessage:
+			args.reason !== "timeout"
+				? null
+				: activity.errorCode === MOVE_WAIT_CODE
+					? `Another Move in this workspace did not finish in time.${activity.progress?.completed ? "" : " Nothing was moved."} Try again later.`
+					: "Paste timed out",
 		now: args.now,
 		errorCode: args.reason === "timeout" ? "timed_out" : "canceled",
 	});
@@ -3746,10 +3754,13 @@ export const advance = internalMutation({
 			await ctx.db.patch("activities", activity._id, {
 				updatedAt: Date.now(),
 				deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
+				// The card says why nothing moves. It never names the other Move or its files.
+				errorCode: MOVE_WAIT_CODE,
 			});
 			await ctx.scheduler.runAfter(1000, internal.files_transfer.advance, { runId: run._id });
 			return null;
 		}
+		if (activity.errorCode === MOVE_WAIT_CODE) await ctx.db.patch("activities", activity._id, { errorCode: undefined });
 
 		// Finish an owned group first. Rename then gets the next free boundary.
 		let waitingForRename = false;
@@ -4255,6 +4266,11 @@ export async function files_transfer_db_delete_run_batch(
 	if (!deletedActivity.done) return { done: false, deletedCount: items.length + deletedActivity.deletedCount };
 
 	await ctx.db.delete("files_transfer_runs", runId);
+	if (run.kind === "move")
+		await ctx.scheduler.runAfter(0, internal.files_move_cohorts.cleanup_origin, {
+			origin: { kind: "transfer", runId },
+			cursor: null,
+		});
 	return { done: true, deletedCount: items.length + 1 + deletedActivity.deletedCount };
 }
 

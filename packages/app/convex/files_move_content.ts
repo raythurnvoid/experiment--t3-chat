@@ -1318,11 +1318,16 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: Conte
 		await ctx.db.patch("files_move_cohort_content", content._id, { [receipt]: id });
 	}
 	const item = (await ctx.db.get("files_move_cohort_items", content.itemId))!;
-	if (content.costCents > 0 && item.billingState !== "sent") {
+	if (content.costCents > 0 && item.billingState !== "sent" && item.billingState !== "payer_missing") {
 		const billedUser = await ctx.db.get("users", cohort.billedUserId);
-		if (!billedUser) throw should_never_happen("Published Move lost its payer", { cohortId: cohort._id });
+		// A payer doc deleted after publication cannot be billed. Repair must still finish, or the Move keeps the slot.
+		if (!billedUser)
+			console.error("Published Move lost its payer. Skipping its billing event.", {
+				cohortId: cohort._id,
+				itemId: item._id,
+			});
 		// Anonymous usage was debited at the switch. Signed-in usage goes to the normal billing queue.
-		if (billedUser.clerkUserId) {
+		else if (billedUser.clerkUserId) {
 			if (content.storedUpload)
 				await billing_db_emit_file_upload(ctx, {
 					billedUser,
@@ -1347,7 +1352,7 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: Conte
 						: content.afterAssetId!,
 				});
 		}
-		await ctx.db.patch("files_move_cohort_items", item._id, { billingState: "sent" });
+		await ctx.db.patch("files_move_cohort_items", item._id, { billingState: billedUser ? "sent" : "payer_missing" });
 	}
 	await db_finish_resources(ctx, content, "finish");
 	await ctx.db.patch("files_move_cohort_content", content._id, { phaseCursor: "finish:done" });

@@ -495,10 +495,9 @@ describe("review job content", () => {
 				activityId: current.activity._id,
 			}),
 		).toEqual({ _yay: null });
+		// Stop keeps the Activity until repair ends, so the review deadline is not fixed yet.
 		const stopped = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		const outputReviewUntil = stopped?.outputReviewUntil;
-		if (outputReviewUntil === undefined) throw new Error("Expected the fixed review deadline");
-		expect(outputReviewUntil).toBeGreaterThan(partial.expiresAt);
+		expect(stopped?.outputReviewUntil).toBeUndefined();
 		const producer = { kind: "files_pending_update_run" as const, id: runId };
 		const getHold = () =>
 			f.t.run((ctx) =>
@@ -539,6 +538,10 @@ describe("review job content", () => {
 			if (pass === 49_999) throw new Error("Stopped partial Save did not finish repair");
 		}
 		await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
+		const outputReviewUntil = (await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))
+			?.outputReviewUntil;
+		if (outputReviewUntil === undefined) throw new Error("Expected the fixed review deadline");
+		expect(outputReviewUntil).toBeGreaterThan(partial.expiresAt);
 		await f.t.mutation(internal.files_move_cohorts.wake_waiters, { cohortId });
 		expect(await f.t.mutation(internal.files_pending_holds.release_producer, { producer })).toBeNull();
 		expect(await getHold()).toBeNull();
@@ -571,6 +574,44 @@ describe("review job content", () => {
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))?.outputReviewUntil).toBe(
 			outputReviewUntil,
 		);
+	});
+
+	test("finishes published repair when the payer doc is gone", async () => {
+		const f = await fixture();
+		const draft = await private_node({ f, path: "/note.txt", text: "hello\n" });
+		const runId = await start_review({ f, proposals: [draft] });
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const unit = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.first(),
+		);
+		if (!unit?.cohortId) throw new Error("Expected the Save group");
+		const cohortId = unit.cohortId;
+		const cohort = async () => (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
+		for (let pass = 0; (await cohort()).publishedAt === null; pass++) {
+			if (pass === 5_000) throw new Error("The Save did not publish");
+			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: (await cohort()).step });
+		}
+		// An organization owner can pay for this group. Their user doc can be deleted after publication.
+		await f.t.run(async (ctx) => {
+			const ownerId = await ctx.db.insert("users", { clerkUserId: "clerk_deleted_owner" });
+			await ctx.db.patch("files_move_cohorts", cohortId, { billedUserId: ownerId });
+			await ctx.db.delete("users", ownerId);
+		});
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		for (let pass = 0; (await cohort()).phase !== "complete"; pass++) {
+			if (pass === 100) break;
+			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: (await cohort()).step });
+		}
+		expect((await cohort()).phase, "published repair finishes without its payer").toBe("complete");
+		expect(errors.mock.calls.map((call) => call[0])).toEqual([
+			"Published Move lost its payer. Skipping its billing event.",
+		]);
+		expect(
+			(await f.t.run((ctx) => ctx.db.query("files_move_cohort_items").collect())).map((item) => item.billingState),
+		).toEqual(["payer_missing"]);
 	});
 
 	test("saves independent Copy replacements separately with exact target IDs and one charge each", async () => {

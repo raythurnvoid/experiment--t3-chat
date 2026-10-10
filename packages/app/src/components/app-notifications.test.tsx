@@ -85,6 +85,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			archive_all_activities: "activities.archive_all_activities",
 			list_page: "activities.list_page",
 			request_stop: "activities.request_stop",
+			retry_move_repair: "activities.retry_move_repair",
 		},
 		notifications: {
 			archive_all_notifications: "notifications.archive_all_notifications",
@@ -360,6 +361,58 @@ describe("AppNotifications", () => {
 		expect(screen.getByRole("progressbar", { name: "Copy files progress" }).getAttribute("aria-valuenow")).toBe("40");
 		fireEvent.click(screen.getByRole("button", { name: "View progress" }));
 		expect(openRunMock).toHaveBeenCalledWith("copy_run");
+	});
+
+	test.each([
+		["move_repair_stuck", "running"],
+		["waiting_for_move", "queued"],
+	] as const)("tells the person why a Move does not go on (%s)", (errorCode, status) => {
+		usePaginatedQueryMock.mockImplementation((_query: unknown, args: { section: string }) => ({
+			results:
+				args.section !== "active"
+					? []
+					: [
+							{
+								_id: "move_activity",
+								_creationTime: 1,
+								status,
+								resultKind: "saved",
+								source: { kind: "files_transfer_run", id: "move_run", transferKind: "move", isRename: false },
+								title: "Move files",
+								errorCode,
+								errorMessage: errorCode === "move_repair_stuck" ? "Your files are already in their new place." : null,
+								targets: [],
+								progress: {
+									unit: "files",
+									discovered: 1,
+									total: errorCode === "move_repair_stuck" ? 1 : null,
+									completed: errorCode === "move_repair_stuck" ? 1 : 0,
+									blocked: 0,
+									failed: 0,
+									skipped: 0,
+									canceled: 0,
+								},
+								controls: { canStop: errorCode !== "move_repair_stuck", canRetry: false, canDismiss: false },
+							},
+						],
+			status: "Exhausted",
+			loadMore: vi.fn(),
+		}));
+		render(<TestNotifications />);
+		if (errorCode === "waiting_for_move") {
+			expect(screen.getByText("Waiting for another Move in this workspace to finish.")).toBeTruthy();
+			expect(screen.queryByRole("button", { name: "Try again now" })).toBeNull();
+			return;
+		}
+		expect(screen.getByText(/^Needs help/)).toBeTruthy();
+		expect(screen.getByText("Your files are already in their new place.")).toBeTruthy();
+		expect(screen.queryByRole("progressbar"), "a stuck Move shows no bar").toBeNull();
+		expect(screen.queryByRole("button", { name: /^Stop/ })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Try again now" }));
+		expect(mutationMock).toHaveBeenCalledWith("activities.retry_move_repair", {
+			membershipId: "membership_1",
+			activityId: "move_activity",
+		});
 	});
 
 	test("reopens review progress and shows the saved count", async () => {

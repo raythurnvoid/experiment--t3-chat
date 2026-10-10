@@ -269,6 +269,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	props: AppNotificationsActivityItem_Props,
 ) {
 	const { activity, onOpenFile, onArchive } = props;
+	const { membershipId } = AppTenantProvider.useContext();
 	const { openRun } = FilesClipboardProvider.useContext();
 	const { stop, pendingStopSourceIds, openReviewRun, openArchiveRun } = AppActivitiesProvider.useContext();
 	const transferRun = activity.source.kind === "files_transfer_run" ? activity.source : null;
@@ -278,6 +279,9 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	const isStopPending = pendingStopSourceIds.has(activity.source.id);
 	const progress = activity.progress;
 	const isActive = activity.finishedAt === undefined;
+	// The files already moved, but a cleanup step keeps failing. The server keeps trying.
+	const isRepairStuck = isActive && activity.errorCode === "move_repair_stuck";
+	const isWaitingForMove = isActive && activity.errorCode === "waiting_for_move";
 	const [now, setNow] = useState(Date.now);
 	useEffect(() => {
 		if (!isActive || activity.expectedFinishAt === undefined) return;
@@ -296,6 +300,18 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 			.catch((error) => {
 				console.error("[AppNotificationsActivityItem.handleStop] Failed to stop activity", { error });
 				toast.error("Stop was not confirmed. Reconnect and try again.");
+			});
+	});
+
+	const handleRetryRepair = useFn(() => {
+		app_convex
+			.mutation(app_convex_api.activities.retry_move_repair, { membershipId, activityId: activity._id })
+			.then((result) => {
+				if (result._nay) toast.error(result._nay.message);
+			})
+			.catch((error) => {
+				console.error("[AppNotificationsActivityItem.handleRetryRepair] Failed to retry the Move cleanup", { error });
+				toast.error("Could not try again. Reconnect and try again.");
 			});
 	});
 
@@ -331,25 +347,27 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	const statusLabel =
 		isStopPending && isActive && activity.status !== "stopping"
 			? "Stop requested. Waiting for the server…"
-			: {
-					queued: "Queued",
-					running: activity.expectedFinishAt !== undefined && activity.expectedFinishAt < now ? "Overdue" : "Running",
-					awaiting_input: "Action needed",
-					stopping: "Stopping",
-					succeeded: job
-						? "Completed"
-						: {
-								saved: "Saved",
-								ready_for_review: "Ready for review",
-								discarded: "Discarded",
-								plugin_result: "Completed",
-								bash_result: "Command finished",
-							}[activity.resultKind],
-					partial: "Partly completed",
-					failed: "Failed",
-					canceled: "Stopped",
-					timed_out: "Timed out",
-				}[displayStatus];
+			: isRepairStuck
+				? "Needs help"
+				: {
+						queued: "Queued",
+						running: activity.expectedFinishAt !== undefined && activity.expectedFinishAt < now ? "Overdue" : "Running",
+						awaiting_input: "Action needed",
+						stopping: "Stopping",
+						succeeded: job
+							? "Completed"
+							: {
+									saved: "Saved",
+									ready_for_review: "Ready for review",
+									discarded: "Discarded",
+									plugin_result: "Completed",
+									bash_result: "Command finished",
+								}[activity.resultKind],
+						partial: "Partly completed",
+						failed: "Failed",
+						canceled: "Stopped",
+						timed_out: "Timed out",
+					}[displayStatus];
 	const stopLabel = reviewRun
 		? "Stop and keep completed changes"
 		: transferRun && (progress?.completed ?? 0) > 0
@@ -370,13 +388,15 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 			: isAwaitingInput
 				? // Only name clashes pause a job. A restore asks about one clash at a time and counts none.
 					`${Math.max(1, progress.blocked)} name ${progress.blocked > 1 ? "conflicts need" : "conflict needs"} your choice.`
-				: isActive
-					? progress.total === null
-						? `${job.verbs[0]}…`
-						: `${job.verbs[0]} ${handledCount} of ${count_label(progress.total, progress.unit)}…`
-					: missedCount > 0
-						? `${job.verbs[1]} ${progress.completed} of ${count_label(progress.completed + missedCount, progress.unit)}.`
-						: `${job.verbs[1]} ${count_label(progress.completed, progress.unit)}.`;
+				: isWaitingForMove
+					? "Waiting for another Move in this workspace to finish."
+					: isActive
+						? progress.total === null
+							? `${job.verbs[0]}…`
+							: `${job.verbs[0]} ${handledCount} of ${count_label(progress.total, progress.unit)}…`
+						: missedCount > 0
+							? `${job.verbs[1]} ${progress.completed} of ${count_label(progress.completed + missedCount, progress.unit)}.`
+							: `${job.verbs[1]} ${count_label(progress.completed, progress.unit)}.`;
 
 	return (
 		<article className={"AppNotificationsActivityItem" satisfies AppNotificationsActivityItem_ClassNames}>
@@ -388,7 +408,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 					)}
 					aria-hidden
 				>
-					{isAwaitingInput ? (
+					{isAwaitingInput || isRepairStuck ? (
 						<CircleAlert />
 					) : isActive ? (
 						<LoaderCircle />
@@ -436,7 +456,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 			{job && progress ? (
 				<div className={"AppNotificationsActivityItem-job" satisfies AppNotificationsActivityItem_ClassNames}>
 					{/* `total` stays null until the job has found every item, so the bar moves without a value. */}
-					{isActive && !isAwaitingInput ? (
+					{isActive && !isAwaitingInput && !isRepairStuck ? (
 						<MyProgressBar
 							className={"AppNotificationsActivityItem-job-bar" satisfies AppNotificationsActivityItem_ClassNames}
 							aria-label={`${activity.title} progress`}
@@ -459,6 +479,11 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 						</MyButton>
 					) : null}
 				</div>
+			) : null}
+			{isRepairStuck ? (
+				<MyButton variant="secondary" onClick={handleRetryRepair}>
+					Try again now
+				</MyButton>
 			) : null}
 			{activity.controls.canStop ? (
 				<MyButton

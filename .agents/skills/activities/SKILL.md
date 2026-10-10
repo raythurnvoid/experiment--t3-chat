@@ -94,7 +94,8 @@ continuation and follow `isDone`; an empty visible page does not prove the feed 
   exhaustive source switch. A folder guest may stop their own work without workspace write.
   Repeated Stop is harmless. Plugin Stop stays unavailable until its producer supports it.
   `activities_get_controls` gives no Stop to a move or scope job, to an archive job, or to a restore
-  job unless it is `awaiting_input` on a name clash. `request_stop` refuses when `canStop` is false.
+  job unless it is `awaiting_input` on a name clash, or to a Move whose repair is stuck
+  (`errorCode: "move_repair_stuck"`). `request_stop` refuses when `canStop` is false.
 - Dismiss applies only to finished work. `activities_user_states` stores one dismissal per viewer
   and Activity. It does not change another viewer's feed or stop execution. Bulk dismiss is paged.
 - `AppActivitiesProvider` keeps pending Stop requests across dialog and bell changes. Different
@@ -122,6 +123,13 @@ progress (transfer, review, protection, archive, and restore) the same way:
   `N name conflicts need your choice.`, and a `Resolve` button. It shows no bar.
 - The button is `View progress` while the job runs and `Open` when it ends, both `ghost-highlightable`.
   A protection job has no dialog, so it has no button.
+- A Move whose repair failed 3 times in a row keeps status `running` with `errorCode:
+  "move_repair_stuck"`. The card shows `Needs help`, the error message, no bar, no Stop, and a
+  `Try again now` button (`activities.retry_move_repair`, starter only, rate limited). The Move
+  dialog says `Files moved. Cleanup needs help.` A later good step clears the code.
+- A Move or Paste that waits for another Move has `errorCode: "waiting_for_move"`. The card line and
+  the dialog say `Waiting for another Move in this workspace to finish.` They never name the other
+  Move or its files.
 - The bell count adds each active Activity in `awaiting_input` to the unread notifications. It drops
   when the person answers the clash or the job ends.
 

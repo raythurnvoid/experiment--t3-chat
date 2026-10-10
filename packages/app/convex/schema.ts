@@ -2101,9 +2101,16 @@ const app_convex_schema = defineSchema({
 		errorCode: v.union(v.string(), v.null()),
 		errorMessage: v.union(v.string(), v.null()),
 		conflictItemId: v.union(v.id("files_move_cohort_items"), v.null()),
+		/** Repair steps that failed in a row. Each one doubles the wait before the next try. */
+		repairFailureCount: v.optional(v.number()),
+		/** A failed repair does not try again before this time. */
+		repairNextRetryAt: v.optional(v.number()),
+		/** The error of the last failed repair step. */
+		repairLastError: v.optional(v.object({ name: v.string(), message: v.string() })),
 	})
 		.index("by_workspace_phase", ["organizationId", "workspaceId", "phase"])
 		.index("by_origin_run", ["origin.kind", "origin.runId"])
+		.index("by_repair_failure_count", ["repairFailureCount"])
 		.index("by_origin_item", ["origin.kind", "origin.itemId"])
 		.index("by_origin_unit", ["origin.kind", "origin.unitId"])
 		.index("by_deadline", ["phase", "deadlineAt"])
@@ -2246,7 +2253,7 @@ const app_convex_schema = defineSchema({
 		replacementItemId: v.union(v.id("files_move_cohort_items"), v.null()),
 		status: v.union(v.literal("planned"), v.literal("staged"), v.literal("validated"), v.literal("materialized")),
 		validatedEpoch: v.union(v.number(), v.null()),
-		billingState: v.union(v.literal("none"), v.literal("pending"), v.literal("sent")),
+		billingState: v.union(v.literal("none"), v.literal("pending"), v.literal("sent"), v.literal("payer_missing")),
 	})
 		.index("by_cohort_order", ["cohortId", "order"])
 		.index("by_cohort_proposal", ["cohortId", "pendingUpdateId"])
