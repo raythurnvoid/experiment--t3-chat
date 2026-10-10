@@ -63,6 +63,14 @@ jobs:
           VITE_APP_BASE_URL: ${{ vars.CF_VITE_APP_BASE_URL }}
         run: pnpm exec vite build --base /
 
+      # Keep the exact CI files for the served asset check.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflare-dist
+          path: packages/app/dist
+          if-no-files-found: error
+
       - name: Deploy to Cloudflare
         working-directory: packages/app
         env:
