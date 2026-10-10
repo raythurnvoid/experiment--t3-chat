@@ -296,7 +296,7 @@ describe("Move owner views", () => {
 		let cursor: string | null = null;
 		let done = false;
 		let pages = 0;
-		while (!done && pages < 10) {
+		while (!done && pages < 40) {
 			const result = await f.t.run((ctx) =>
 				files_pending_overlay_db_stage_owner_fields(ctx, {
 					cohortId: f.cohortId,
@@ -312,7 +312,8 @@ describe("Move owner views", () => {
 			pages++;
 		}
 		expect(done).toBe(true);
-		expect(pages).toBeGreaterThan(2);
+		// Each page reads at most 8 metadata docs, so 151 fields need at least 19 pages.
+		expect(pages).toBeGreaterThanOrEqual(Math.ceil(151 / 8));
 		const fields = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_place_fields")

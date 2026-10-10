@@ -309,8 +309,25 @@ async function db_destination(ctx: MutationCtx, run: Run, plan: Plan, item: Item
 				plan = await db_link(ctx, plan, item, selected, "structure");
 			else if ((!replaced || replaced.kind !== "saved" || replaced.id !== occupant._id) && item.errorCode === null) {
 				const current = (await ctx.db.get("files_pending_update_plan_items", item._id))!;
+				const proposal = await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_organization_workspace_user_target", (q) =>
+						q
+							.eq("organizationId", run.organizationId)
+							.eq("workspaceId", run.workspaceId)
+							.eq("userId", run.userId)
+							.eq("target.kind", "saved")
+							.eq("target.id", occupant._id),
+					)
+					.unique();
+				// The owner's unselected move or delete of the occupant would free this name. Ask for both.
+				if (proposal?.pendingMove || proposal?.pendingArchive)
+					await db_error(ctx, current, "This action also affects an unselected change. Review them together.", {
+						runId: run._id,
+						pendingUpdateId: proposal._id,
+					});
 				// Keep an earlier error found while checking this destination.
-				if (current.errorCode === null)
+				else if (current.errorCode === null)
 					await ctx.db.patch("files_pending_update_plan_items", item._id, {
 						errorCode: "destination_changed",
 						errorMessage: "The destination name is already used. Review it again.",
