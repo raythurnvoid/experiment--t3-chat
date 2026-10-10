@@ -2543,6 +2543,33 @@ describe("bash_run_command", () => {
 		expect((await runner.run({ command: `cat ${test_db_files_mount}${racedPath}` })).stdout).toBe("raced\n");
 	});
 
+	test("cp prints only the error when the copy stops before any item", async () => {
+		const runner = await create_bash_runner();
+		const baseImpl = runner.runQuery.getMockImplementation()!;
+		runner.runQuery.mockImplementation(async (ref, queryArgs) => {
+			const view = await baseImpl(ref, queryArgs);
+			if (function_name_of(ref) !== "files_transfer:get_for_agent" || !view) return view;
+			// The run stopped while listing its sources, so no item ran.
+			const { activity } = view as { activity: { progress: object | null } };
+			return {
+				...view,
+				activity: {
+					...activity,
+					status: "failed",
+					errorMessage: "Permission denied",
+					progress: { ...activity.progress, completed: 0, skipped: 0, failed: 0 },
+				},
+			};
+		});
+
+		const copied = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/stopped-copy.md`,
+		});
+		expect(copied.metadata.exitCode).toBe(1);
+		expect(copied.stderr).toBe("cp: Permission denied\n");
+		expect(copied.stdout).toBe("");
+	});
+
 	test.each(["throw", "http"] as const)("cp closes its private output after an upload %s failure", async (failure) => {
 		const runner = await create_bash_runner();
 		const fetchMock = vi.mocked(globalThis.fetch);

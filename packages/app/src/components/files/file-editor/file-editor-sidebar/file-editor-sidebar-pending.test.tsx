@@ -2288,6 +2288,11 @@ describe("FileEditorSidebarPending", () => {
 			"Moved to a folder you can't open",
 		);
 		expect(screen.getByText("Accept").closest("button")?.hasAttribute("disabled")).toBe(true);
+		// Assistive tech hears the same state as the disabled attribute.
+		expect(screen.getByText("Accept").closest("button")?.getAttribute("aria-disabled")).toBe("true");
+		const acceptAll = screen.getByRole("button", { name: "Accept all shown pending changes" });
+		expect(acceptAll.hasAttribute("disabled")).toBe(true);
+		expect(acceptAll.getAttribute("aria-disabled")).toBe("true");
 		expect(screen.getByText("Discard").closest("button")?.hasAttribute("disabled")).toBe(false);
 	});
 

@@ -80,6 +80,8 @@ const FilesPendingReviewItem = memo(function FilesPendingReviewItem(props: {
 export const FilesPendingReviewModal = memo(function FilesPendingReviewModal(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	runId: app_convex_Id<"files_pending_update_runs">;
+	/** The run kind when the opener knows it, for the heading before the run loads. */
+	kind?: "accept" | "discard";
 	onClose: () => void;
 }) {
 	const { membershipId, runId, onClose } = props;
@@ -179,7 +181,7 @@ export const FilesPendingReviewModal = memo(function FilesPendingReviewModal(pro
 			>
 				<MyModalHeader>
 					<MyModalHeading>
-						{run?.run.kind === "discard" ? "Discard reviewed changes" : "Save reviewed changes"}
+						{(run?.run.kind ?? props.kind) === "discard" ? "Discard reviewed changes" : "Save reviewed changes"}
 					</MyModalHeading>
 					<MyModalDescription role="status">{statusLabel}</MyModalDescription>
 				</MyModalHeader>

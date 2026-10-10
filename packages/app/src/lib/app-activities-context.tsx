@@ -23,7 +23,8 @@ const AppActivitiesContext = createContext<{
 	stop: (args: { activityId: app_convex_Id<"activities">; sourceId: ActivitySourceId }) => Promise<StopResult>;
 	isStartingReview: boolean;
 	startReview: (selection: ReviewSelection) => Promise<void>;
-	openReviewRun: (runId: app_convex_Id<"files_pending_update_runs">) => void;
+	/** `kind` names the run before it loads, so the dialog heading does not flip. */
+	openReviewRun: (runId: app_convex_Id<"files_pending_update_runs">, kind?: ReviewSelection["kind"]) => void;
 	openArchiveRun: (runId: app_convex_Id<"files_archive_runs">) => void;
 } | null>(null);
 
@@ -35,7 +36,10 @@ const AppActivitiesProvider = Object.assign(
 		const { membershipId, children } = props;
 		const [pendingStopSourceIds, setPendingStopSourceIds] = useState<ReadonlySet<ActivitySourceId>>(new Set());
 		const pendingStops = useRef(new Map<ActivitySourceId, Promise<StopResult>>());
-		const [reviewRunId, setReviewRunId] = useState<app_convex_Id<"files_pending_update_runs"> | null>(null);
+		const [reviewRun, setReviewRun] = useState<{
+			id: app_convex_Id<"files_pending_update_runs">;
+			kind: ReviewSelection["kind"] | undefined;
+		} | null>(null);
 		const [archiveRunId, setArchiveRunId] = useState<app_convex_Id<"files_archive_runs"> | null>(null);
 		const [isStartingReview, setIsStartingReview] = useState(false);
 		const reviewPending = useRef(false);
@@ -70,7 +74,9 @@ const AppActivitiesProvider = Object.assign(
 			return request;
 		});
 
-		const openReviewRun = useFn((runId: app_convex_Id<"files_pending_update_runs">) => setReviewRunId(runId));
+		const openReviewRun = useFn((runId: app_convex_Id<"files_pending_update_runs">, kind?: ReviewSelection["kind"]) =>
+			setReviewRun({ id: runId, kind }),
+		);
 
 		const openArchiveRun = useFn((runId: app_convex_Id<"files_archive_runs">) => setArchiveRunId(runId));
 
@@ -101,7 +107,7 @@ const AppActivitiesProvider = Object.assign(
 				}
 				const runId = started._yay.runId;
 				request.runId = runId;
-				openReviewRun(runId);
+				openReviewRun(runId, selection.kind);
 				for (let offset = 100; offset < selection.items.length; offset += 100) {
 					const appended = await app_convex.mutation(app_convex_api.files_pending_update_runs.append_items, {
 						membershipId,
@@ -134,12 +140,13 @@ const AppActivitiesProvider = Object.assign(
 				value={{ pendingStopSourceIds, stop, isStartingReview, startReview, openReviewRun, openArchiveRun }}
 			>
 				{children}
-				{reviewRunId ? (
+				{reviewRun ? (
 					<FilesPendingReviewModal
-						key={reviewRunId}
+						key={reviewRun.id}
 						membershipId={membershipId}
-						runId={reviewRunId}
-						onClose={() => setReviewRunId(null)}
+						runId={reviewRun.id}
+						kind={reviewRun.kind}
+						onClose={() => setReviewRun(null)}
 					/>
 				) : null}
 				{archiveRunId ? (

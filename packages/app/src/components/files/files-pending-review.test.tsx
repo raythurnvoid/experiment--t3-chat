@@ -86,6 +86,7 @@ let status = "running";
 let kind = "accept";
 let step = "applying";
 let runUnavailable = false;
+let runLoading = false;
 let targetReadable = true;
 
 function pushQueries() {
@@ -101,6 +102,7 @@ beforeEach(() => {
 	kind = "accept";
 	step = "applying";
 	runUnavailable = false;
+	runLoading = false;
 	targetReadable = true;
 	state.revision = 0;
 	state.pendingStops.clear();
@@ -112,6 +114,7 @@ beforeEach(() => {
 		const name = getFunctionName(ref);
 		if (name === "files_pending_update_runs:get") {
 			if (runUnavailable) return null;
+			if (runLoading) return undefined;
 			const finished = ["succeeded", "partial", "failed", "canceled", "timed_out"].includes(status);
 			return {
 				run: { kind, step, needsReviewIds: status === "failed" ? ["hidden_proposal"] : [] },
@@ -287,6 +290,14 @@ describe("FilesPendingReviewModal", () => {
 		expect(screen.getByRole("alert").textContent).toBe("Review linked changes together.");
 		expect(screen.getByRole("link", { name: "Review remaining changes" })).toBeTruthy();
 		expect(screen.getByText("Close").closest("button")).toBeTruthy();
+	});
+
+	test("names a Discard in the heading before the run loads", () => {
+		runLoading = true;
+		render(<FilesPendingReviewModal membershipId={membershipId} runId={runId} kind="discard" onClose={vi.fn()} />);
+		expect(screen.getByText("Loading review…")).toBeTruthy();
+		expect(screen.getByText("Discard reviewed changes")).toBeTruthy();
+		expect(screen.queryByText("Save reviewed changes")).toBeNull();
 	});
 
 	test("labels a completed Discard and handles unavailable history", () => {
