@@ -115,6 +115,115 @@ export async function crypto_decrypt_secret_value(args: {
 	return text_decoder.decode(plaintext);
 }
 
+if (!process.env.LIST_CURSOR_SECRET) {
+	throw convex_error({ message: "LIST_CURSOR_SECRET is not set in Convex env" });
+}
+const LIST_CURSOR_SECRET = process.env.LIST_CURSOR_SECRET;
+/**
+ * Optional. After a rotation, keep the old secret here for a while, so cursors sealed with it still open.
+ */
+const LIST_CURSOR_SECRET_PREVIOUS = process.env.LIST_CURSOR_SECRET_PREVIOUS || null;
+
+/**
+ * Each cursor kind gets its own key, so a cursor of one kind never opens as another kind.
+ */
+type CursorPurpose = "files_list";
+
+const cursor_crypto_keys = ((/* iife */) => {
+	async function derive(purpose: CursorPurpose, secret: string) {
+		const [kidDigest, keyDigest] = await Promise.all([
+			crypto.subtle.digest("SHA-256", text_encoder.encode(`cursor_kid\0${secret}`)),
+			crypto.subtle.digest("SHA-256", text_encoder.encode(`cursor\0${purpose}\0${secret}`)),
+		]);
+		return {
+			// The first 4 bytes tell which secret sealed a cursor.
+			kid: new Uint8Array(kidDigest).slice(0, 4),
+			key: await crypto.subtle.importKey("raw", keyDigest, "AES-GCM", false, ["encrypt", "decrypt"]),
+		};
+	}
+
+	async function value(purpose: CursorPurpose) {
+		return {
+			current: await derive(purpose, LIST_CURSOR_SECRET),
+			previous: LIST_CURSOR_SECRET_PREVIOUS ? await derive(purpose, LIST_CURSOR_SECRET_PREVIOUS) : null,
+		};
+	}
+
+	const cache = new Map<CursorPurpose, ReturnType<typeof value>>();
+
+	return function cursor_crypto_keys(purpose: CursorPurpose) {
+		if (cache.has(purpose)) {
+			return cache.get(purpose)!;
+		}
+
+		const result = value(purpose);
+		cache.set(purpose, result);
+		return result;
+	};
+})();
+
+/**
+ * Seal a page cursor with AES-GCM, so the caller can neither read nor change it. A cursor can point
+ * at a doc the caller may not read, so its key must never leave the server as plain text. The scope
+ * is bound as additional data: the cursor opens only for the same caller and the same request.
+ */
+export async function crypto_seal_cursor(args: { purpose: CursorPurpose; scope: string; payload: unknown }) {
+	const { purpose, scope, payload } = args;
+
+	const { current } = await cursor_crypto_keys(purpose);
+	const json = text_encoder.encode(JSON.stringify(payload));
+	// Pad with spaces to a multiple of 256 bytes. Then the cursor length does not tell how long a hidden path is.
+	const plaintext = new Uint8Array(Math.ceil(json.length / 256) * 256).fill(0x20);
+	plaintext.set(json);
+	const nonce = crypto.getRandomValues(new Uint8Array(12));
+	const ciphertext = await crypto.subtle.encrypt(
+		{ name: "AES-GCM", iv: nonce, additionalData: text_encoder.encode(`${purpose}\0${scope}`) },
+		current.key,
+		plaintext,
+	);
+
+	const bytes = new Uint8Array(4 + 12 + ciphertext.byteLength);
+	bytes.set(current.kid);
+	bytes.set(nonce, 4);
+	bytes.set(new Uint8Array(ciphertext), 16);
+	const base64url = btoa(String.fromCharCode(...bytes))
+		.replaceAll("+", "-")
+		.replaceAll("/", "_")
+		.replaceAll("=", "");
+	return `c1.${base64url}`;
+}
+
+/**
+ * Open a cursor from `crypto_seal_cursor`. Answer `null` for any cursor we did not seal for this
+ * purpose and scope: an edited or cut cursor, an old plain JSON cursor, or one sealed with a secret
+ * we no longer have.
+ */
+export async function crypto_open_cursor(args: { purpose: CursorPurpose; scope: string; cursor: string }) {
+	const { purpose, scope, cursor } = args;
+
+	if (!/^c1\.[A-Za-z0-9_-]+$/.test(cursor)) return null;
+	const keys = await cursor_crypto_keys(purpose);
+	try {
+		const base64 = cursor.slice(3).replaceAll("-", "+").replaceAll("_", "/");
+		const bytes = Uint8Array.from(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")), (char) =>
+			char.charCodeAt(0),
+		);
+		const kid = bytes.subarray(0, 4);
+		const sealer = [keys.current, keys.previous].find((item) => item?.kid.every((byte, index) => byte === kid[index]));
+		if (!sealer) return null;
+
+		const plaintext = await crypto.subtle.decrypt(
+			{ name: "AES-GCM", iv: bytes.subarray(4, 16), additionalData: text_encoder.encode(`${purpose}\0${scope}`) },
+			sealer.key,
+			bytes.subarray(16),
+		);
+		return JSON.parse(text_decoder.decode(plaintext)) as unknown;
+	} catch {
+		// Bad base64, a short cursor, or a failed GCM tag check.
+		return null;
+	}
+}
+
 /**
  * Keep link fingerprints separate from encryption and other HMAC uses.
  */

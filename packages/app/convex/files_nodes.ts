@@ -7206,6 +7206,8 @@ export const list_subtree = internalQuery({
 
 		// The access check can make a page shorter. The cursor still walks the whole subtree; only the
 		// page size varies.
+		// The frontier is read before the access check, so it can be a hidden doc. It must never reach a
+		// caller as plain text: `files_saved_list_page` seals it inside the public cursor.
 		const last = result.page.at(-1);
 		const frontier = last
 			? {

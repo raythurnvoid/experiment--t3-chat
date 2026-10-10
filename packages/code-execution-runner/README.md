@@ -48,6 +48,8 @@ const listed = await fetch(api + "/api/v1/files/list", {
 	headers,
 	body: JSON.stringify({ path: "/payments", recursive: true, kind: "file", extension: "md" }),
 }).then((response) => response.json());
+// A missing or hidden folder answers 404 { message: "Folder not found: /payments" }.
+if (!listed.items) throw new Error(listed.message);
 const read = await fetch(api + "/api/v1/files/read-many", {
 	method: "POST",
 	headers,

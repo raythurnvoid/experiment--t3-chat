@@ -124,9 +124,9 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 								} as const;
 							}
 							const numItems = Math.min(body._yay.limit ?? FILES_LIST_MAX_ITEMS, FILES_LIST_MAX_ITEMS);
-							let result: Awaited<ReturnType<typeof files_saved_list_page>>;
+							let listed: Awaited<ReturnType<typeof files_saved_list_page>>;
 							try {
-								result = await files_saved_list_page(ctx, {
+								listed = await files_saved_list_page(ctx, {
 									cursorScope: JSON.stringify([
 										principal.principalKey,
 										public_api_visibility_user_id(principal),
@@ -161,6 +161,29 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									}),
 								} as const;
 							}
+							if (listed._nay) {
+								// A code grant that lost its source gets the same answer as on the success path below.
+								if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
+									const current = await public_api_resolve_live_principal(ctx, {
+										presented: auth._yay.presentedToken,
+										now: Date.now(),
+										requiredScope: "files:list",
+									});
+									if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
+								}
+								// A readable file is 400, not 404: a 404 would tell an agent that the path is free.
+								if (listed._nay.name === "not_a_folder") {
+									return {
+										status: 400,
+										body: await fail({ status: 400, message: listed._nay.message, errorCode: "invalid_input" }),
+									} as const;
+								}
+								return {
+									status: 404,
+									body: await fail({ status: 404, message: listed._nay.message, errorCode: "not_found" }),
+								} as const;
+							}
+							const result = listed._yay;
 
 							// Keep readiness separate so finalization patches do not invalidate the node-list cache entry.
 							const pageAssetIds = result.page.flatMap((item) =>

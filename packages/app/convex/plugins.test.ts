@@ -14755,6 +14755,9 @@ describe("plugins metadata file doors", () => {
 			(await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe", limit: 0 } }))
 				.status,
 		).toBe(400);
+		expect(
+			(await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/missing" } })).status,
+		).toBe(404);
 
 		// Same slot accounting as the read door above. The list door admits plugin_run, so authorizing
 		// consumes a slot here too, and the door owns settling it on the success path as well.
@@ -14768,8 +14771,14 @@ describe("plugins metadata file doors", () => {
 			"/api/v1/files/plugin-folders/ensure",
 			"/api/v1/files/list",
 			"/api/v1/files/list",
+			"/api/v1/files/list",
 		]);
-		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded", "failed"]);
+		expect(calls.map((call) => [call.status, call.errorCode])).toEqual([
+			["succeeded", undefined],
+			["succeeded", undefined],
+			["failed", "invalid_input"],
+			["failed", "not_found"],
+		]);
 	});
 
 	test("a run without workspace.files.read is refused the read doors it just wrote through", async () => {

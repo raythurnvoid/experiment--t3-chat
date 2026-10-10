@@ -771,7 +771,10 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
   restricted twin as `list_tree_children_sorted` below. A missing, foreign, or hidden parent gets the
   same empty, done page as any other refusal, so the answer does not tell the caller that a hidden
   folder exists. A grant-only member gets nothing for the root: their root rows come from
-  `list_tree_children_shared` and `list_tree_shared_roots`.
+  `list_tree_children_shared` and `list_tree_shared_roots`. The public `files/list` route keeps the
+  same rule with a different answer: a missing, archived, or hidden folder gets one 404 `Folder not
+  found: <path>` (see the public-api skill). A member who can read only `/Clients/Acme` gets that 404
+  for `/Clients` too.
 - `get_tree_ancestors` takes a raw id string, so a bad `?nodeId=` returns `null` instead of an argument
   error. It walks up from the node and stops at the first folder the caller cannot read, because the
   tree cannot show a row under a hidden folder. This hides no names: every tree row carries its

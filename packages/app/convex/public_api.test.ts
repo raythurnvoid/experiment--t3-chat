@@ -3186,9 +3186,8 @@ describe("public files API", () => {
 				headers: auth_headers(token),
 				body: JSON.stringify({ path, recursive: true }),
 			});
-			expect(listMount.status).toBe(200);
-			const listMountBody = (await listMount.json()) as { items: Array<{ path: string }> };
-			expect(listMountBody.items).toEqual([]);
+			expect(listMount.status).toBe(404);
+			expect(await listMount.json()).toEqual({ message: `Folder not found: ${path}` });
 		}
 
 		for (const path of ["/t3-chat/README.md", "/.mounts/t3-chat/README.md"]) {
@@ -3875,6 +3874,236 @@ describe("public files API", () => {
 			});
 			expect(response.status).toBe(404);
 		}
+	});
+});
+
+describe("files list hidden paths", () => {
+	/**
+	 * `/secret` is a restricted folder with 12 files the member cannot read, and `/hidden.md` is a
+	 * restricted file. The member can read `/b.md`, the empty `/notes`, and `/secret/shared`, which
+	 * has its own grant. The owner passes every node check, so only the member proves a refusal.
+	 */
+	async function seed_hidden_folder(t: ReturnType<typeof test_convex>) {
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_list_hidden" as never);
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-list-hidden-owner" });
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "list-hidden-owner",
+			external_id: db.userId,
+		});
+		const create_folder = async (path: string) => {
+			const created = await asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				path,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.nodeId;
+		};
+		const create_file = (path: string) => seed_markdown_file({ t, ...db, path, committedMarkdown: `# ${path}` });
+
+		const secretId = await create_folder("/secret");
+		const sharedId = await create_folder("/secret/shared");
+		await create_folder("/notes");
+		await create_file("/b.md");
+		const hiddenFileId = await create_file("/hidden.md");
+		const hiddenIds = [secretId, hiddenFileId];
+		for (let index = 1; index <= 12; index++) {
+			hiddenIds.push(await create_file(`/secret/h${String(index).padStart(2, "0")}.md`));
+		}
+		const sharedFileId = await create_file("/secret/shared/ok.md");
+
+		const member = await t.run(async (ctx) => {
+			const now = Date.now();
+			// Every node in a subtree carries the scope, the way `restrict_node` stamps it.
+			for (const nodeId of hiddenIds) {
+				const scopeId = nodeId === hiddenFileId ? hiddenFileId : secretId;
+				await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: scopeId });
+			}
+			for (const nodeId of [sharedId, sharedFileId]) {
+				await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: sharedId });
+			}
+
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-list-hidden-member" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				resourceKind: "file",
+				resourceId: String(sharedId),
+				principalKind: "user",
+				userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				now,
+			});
+			return { userId, membershipId };
+		});
+
+		const create_key = async (asUser: typeof asOwner, membershipId: Id<"organizations_workspaces_users">) => {
+			const created = await asUser.mutation(api.public_api.api_credential_create, {
+				serviceAccountId: null,
+				membershipId,
+				name: "List reader",
+				scopes: ["files:list"],
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.credential;
+		};
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "list-hidden-member",
+			external_id: member.userId,
+		});
+		return {
+			asOwner,
+			db,
+			secretId,
+			hiddenIds,
+			ownerCredential: await create_key(asOwner, db.membershipId),
+			memberCredential: await create_key(asMember, member.membershipId),
+		};
+	}
+
+	async function list(t: ReturnType<typeof test_convex>, credential: string, body: Record<string, unknown>) {
+		const response = await t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify(body),
+		});
+		return {
+			status: response.status,
+			body: (await response.json()) as {
+				message?: string;
+				items: Array<{ path: string }>;
+				cursor: string;
+				isDone: boolean;
+			},
+		};
+	}
+
+	test("seals the cursor, so it never shows a hidden path or id", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const walk = async (credential: string) => {
+			const paths: string[] = [];
+			const cursors: string[] = [];
+			for (let cursor: string | null = null; ;) {
+				const page = await list(t, credential, { path: "/", recursive: true, limit: 1, cursor });
+				expect(page.status).toBe(200);
+				paths.push(...page.body.items.map((item) => item.path));
+				if (page.body.isDone) return { paths, cursors };
+				cursors.push(page.body.cursor);
+				cursor = page.body.cursor;
+			}
+		};
+
+		const member = await walk(f.memberCredential);
+		expect(member.paths).toEqual(["/b.md", "/notes", "/secret/shared", "/secret/shared/ok.md"]);
+		// One request reads at most 8 docs per stream, so some pages end inside the hidden block.
+		const cursors = member.cursors.join("\n");
+		expect(cursors, "no cursor shows a hidden path").not.toContain("/secret/h");
+		for (const id of f.hiddenIds) expect(cursors, "no cursor shows a hidden id").not.toContain(id);
+		for (const cursor of member.cursors) expect(() => JSON.parse(cursor)).toThrow();
+		// Control: the owner walks the same tree and reads every doc.
+		expect((await walk(f.ownerCredential)).paths).toHaveLength(18);
+
+		const cursor = member.cursors[0]!;
+		const edited = `${cursor.slice(0, 10)}${cursor[10] === "A" ? "B" : "A"}${cursor.slice(11)}`;
+		expect(await list(t, f.memberCredential, { path: "/", recursive: true, limit: 1, cursor: edited })).toEqual({
+			status: 400,
+			body: { message: "This list cursor changed. Start a new page." },
+		});
+	});
+
+	test("answers 404 for a missing or hidden folder and 400 for a readable file", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+
+		for (const recursive of [false, true]) {
+			// Git Bash turns `/c/...` arguments into Windows paths. The 404 shows the path the server read.
+			expect(await list(t, f.memberCredential, { path: "C:/Program Files/Git/", recursive })).toEqual({
+				status: 404,
+				body: { message: "Folder not found: /C:/Program Files/Git" },
+			});
+			// A hidden folder or file answers exactly like a missing folder, and names no child.
+			for (const path of ["/secret", "/hidden.md"]) {
+				expect(await list(t, f.memberCredential, { path, recursive })).toEqual({
+					status: 404,
+					body: { message: `Folder not found: ${path}` },
+				});
+			}
+			expect(await list(t, f.memberCredential, { path: "/b.md", recursive })).toEqual({
+				status: 400,
+				body: { message: "Path must point to a folder: /b.md" },
+			});
+		}
+
+		// Controls: the owner lists `/secret`, and the member lists the shared folder inside it, an
+		// empty folder, and the root in every spelling.
+		expect((await list(t, f.ownerCredential, { path: "/secret" })).status).toBe(200);
+		expect(await list(t, f.memberCredential, { path: "/secret/shared" })).toMatchObject({
+			status: 200,
+			body: { items: [{ path: "/secret/shared/ok.md" }] },
+		});
+		expect(await list(t, f.memberCredential, { path: "/notes" })).toMatchObject({
+			status: 200,
+			body: { items: [], isDone: true },
+		});
+		for (const body of [{}, { path: "" }, { path: "/" }]) {
+			expect((await list(t, f.memberCredential, body)).status).toBe(200);
+		}
+	});
+
+	test("answers 404 when the folder is archived between pages, and 400 when it is replaced", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const first = await list(t, f.ownerCredential, { path: "/secret", limit: 1 });
+		expect(first.body.isDone).toBe(false);
+		const next = { path: "/secret", limit: 1, cursor: first.body.cursor };
+
+		const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: f.db.membershipId,
+			nodeIds: [f.secretId],
+		});
+		expect(archived._nay).toBeUndefined();
+		expect(await list(t, f.ownerCredential, next)).toEqual({
+			status: 404,
+			body: { message: "Folder not found: /secret" },
+		});
+
+		// A new folder at the same path is a different list, so the old cursor must not continue in it.
+		const recreated = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: f.db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "/secret",
+		});
+		expect(recreated._nay).toBeUndefined();
+		expect(await list(t, f.ownerCredential, next)).toEqual({
+			status: 400,
+			body: { message: "This list cursor changed. Start a new page." },
+		});
 	});
 });
 
