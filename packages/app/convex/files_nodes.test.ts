@@ -51,7 +51,10 @@ import {
 	test_meta_search,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
+	test_spy_handler,
 } from "./setup.test.ts";
+import { advance as advance_move_cohort } from "./files_move_cohorts.ts";
+import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import {
 	files_MAX_UPLOADS_BYTES,
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -3116,10 +3119,41 @@ describe("paged folder moves and scope jobs", () => {
 		});
 	}
 
+	/**
+	 * Move reserves the folder, each child and the target, plus the proposal in a review. 7 children
+	 * make at least 9 reservations, one past the 8 rows that a Move release step frees.
+	 */
+	const BIG_FOLDER_CHILDREN = 7;
+
+	/**
+	 * Count the Move release steps that free some reservations and leave the rest for the next step.
+	 * A release step frees at most 8 (`db_release` in files_move_cohorts.ts). 8 rows is the biggest page
+	 * in a Move cohort step, so a count above 0 means the folder needs more than one page in each phase.
+	 */
+	function count_paged_releases() {
+		const paged = { count: 0 };
+		test_spy_handler(advance_move_cohort, async (handler, ctx, args) => {
+			const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
+			const cohort = await ctx.db.get("files_move_cohorts", cohortId);
+			const reservations = () =>
+				ctx.db
+					.query("files_move_source_reservations")
+					.withIndex("by_cohort", (q) => q.eq("cohortId", cohortId))
+					.collect();
+			const before = cohort?.step === step && cohort.workPhase === "release" ? (await reservations()).length : 0;
+			const result = await handler(ctx, args);
+			const after = before ? (await reservations()).length : 0;
+			if (after > 0 && after < before) paged.count++;
+			return result;
+		});
+		return paged;
+	}
+
 	test("reviews a big folder and repairs every descendant's metadata", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const { source, target } = await seed_wide_source({ t, db, childCount: 600, metadataPerNode: 3 });
+		const { source, target } = await seed_wide_source({ t, db, childCount: BIG_FOLDER_CHILDREN, metadataPerNode: 3 });
+		const pagedReleases = count_paged_releases();
 		const move = await propose_move_for_test(t, {
 			...db,
 			nodeId: source._id,
@@ -3133,25 +3167,27 @@ describe("paged folder moves and scope jobs", () => {
 		await t.run(async (ctx) => {
 			const nodes = await ctx.db.query("files_nodes").collect();
 			const children = nodes.filter((node) => node.parentId === source._id);
-			expect(children).toHaveLength(600);
+			expect(children).toHaveLength(BIG_FOLDER_CHILDREN);
 			expect(children.every((node) => node.path.startsWith("/target/source/"))).toBe(true);
 			expect(children.filter((node) => node.archiveOperationId !== null).map((node) => node.name)).toEqual([
-				"child-599",
+				`child-${BIG_FOLDER_CHILDREN - 1}`,
 			]);
 			const paths = new Map(nodes.map((node) => [node._id, node.path]));
 			const metadata = await ctx.db.query("files_metadata_docs").collect();
-			expect(metadata).toHaveLength(1803);
+			expect(metadata).toHaveLength((BIG_FOLDER_CHILDREN + 1) * 3);
 			expect(metadata.every((doc) => doc.sourceKind === "committed" && doc.path === paths.get(doc.fileNodeId))).toBe(
 				true,
 			);
 		});
-	}, 7_200_000);
+		expect(pagedReleases.count, "the folder needs more than one Move page").toBeGreaterThan(0);
+	});
 
 	test("a public Move finishes every child path in a big folder", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const { source, target } = await seed_wide_source({ t, db, childCount: 600, metadataPerNode: 1 });
+		const { source, target } = await seed_wide_source({ t, db, childCount: BIG_FOLDER_CHILDREN, metadataPerNode: 1 });
+		const pagedReleases = count_paged_releases();
 
 		expect(
 			await test_move_nodes(t, asUser, {
@@ -3177,37 +3213,40 @@ describe("paged folder moves and scope jobs", () => {
 					)?.name ?? null,
 			);
 		const child = await t.run(async (ctx) =>
-			(await ctx.db.query("files_nodes").collect()).find((node) => node.name === "child-500"),
+			(await ctx.db.query("files_nodes").collect()).find((node) => node.name === "child-1"),
 		);
-		expect(child?.path).toBe("/target/source/child-500");
-		expect(await lookup("/target/source/child-500")).toBe("child-500");
-		expect(await lookup("/source/child-500")).toBeNull();
+		expect(child?.path).toBe("/target/source/child-1");
+		expect(await lookup("/target/source/child-1")).toBe("child-1");
+		expect(await lookup("/source/child-1")).toBeNull();
 		expect(
 			await asUser.query(api.files_nodes.get_authorized_by_path, {
 				membershipId: db.membershipId,
-				path: "/target/source/child-500",
+				path: "/target/source/child-1",
 			}),
 		).toMatchObject({ nodeId: child!._id });
 		expect(
 			await asUser.query(api.files_nodes.get_authorized_by_path, {
 				membershipId: db.membershipId,
-				path: "/source/child-500",
+				path: "/source/child-1",
 			}),
 		).toBeNull();
 
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
 		const nodes = await t.run((ctx) => ctx.db.query("files_nodes").collect());
 		const children = nodes.filter((node) => node.parentId === source._id);
-		expect(children).toHaveLength(600);
+		expect(children).toHaveLength(BIG_FOLDER_CHILDREN);
 		expect(children.filter((node) => !node.path.startsWith("/target/source/child-"))).toEqual([]);
 		// The walk writes paths, never the archive stamp.
-		expect(children.filter((node) => node.archiveOperationId !== null).map((node) => node.name)).toEqual(["child-599"]);
+		expect(children.filter((node) => node.archiveOperationId !== null).map((node) => node.name)).toEqual([
+			`child-${BIG_FOLDER_CHILDREN - 1}`,
+		]);
 		const metadata = await t.run((ctx) => ctx.db.query("files_metadata_docs").collect());
 		const pathById = new Map(nodes.map((node) => [node._id, node.path]));
 		expect(
 			metadata.filter((doc) => doc.sourceKind !== "committed" || doc.path !== pathById.get(doc.fileNodeId)),
 		).toEqual([]);
-	}, 600_000);
+		expect(pagedReleases.count, "the folder needs more than one Move page").toBeGreaterThan(0);
+	});
 
 	test("a public Move finishes a big group of archived items with one name", async () => {
 		const t = test_convex();
@@ -3216,7 +3255,7 @@ describe("paged folder moves and scope jobs", () => {
 		const { source, target } = await seed_wide_source({ t, db, childCount: 0, metadataPerNode: 0 });
 		// Each replace of `report.md` archives the old one, so a folder can collect many items with one name.
 		await t.run(async (ctx) => {
-			for (let index = 0; index < 400; index += 1) {
+			for (let index = 0; index < BIG_FOLDER_CHILDREN; index += 1) {
 				await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: db.organizationId,
@@ -3238,6 +3277,7 @@ describe("paged folder moves and scope jobs", () => {
 			(await t.run((ctx) => ctx.db.query("files_nodes").collect())).filter(
 				(node) => node.path === "/target/source/report.md",
 			).length;
+		const pagedReleases = count_paged_releases();
 
 		expect(
 			await test_move_nodes(t, asUser, {
@@ -3246,15 +3286,19 @@ describe("paged folder moves and scope jobs", () => {
 				targetParentId: target._id,
 			}),
 		).toEqual({ _yay: null });
-		expect(await moved()).toBe(400);
+		expect(await moved()).toBe(BIG_FOLDER_CHILDREN);
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
-	}, 600_000);
+		expect(pagedReleases.count, "the group needs more than one Move page").toBeGreaterThan(0);
+	});
 
 	test("a restrict of a big folder commits now and a job gives every child the new scope", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const { source } = await seed_wide_source({ t, db, childCount: 600, metadataPerNode: 0 });
+		// `child-0` below keeps its own scope, so the step writes the other children. One more than
+		// a step writes leaves work for the job.
+		const childCount = files_subtree_ops_STEP_MAX_NODES + 2;
+		const { source } = await seed_wide_source({ t, db, childCount, metadataPerNode: 0 });
 		// A restricted child keeps its own scope. The walk still goes inside it.
 		const nested = await t.run(async (ctx) => {
 			const node = (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/source/child-0")!;
@@ -3281,11 +3325,15 @@ describe("paged folder moves and scope jobs", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").first())).toMatchObject({ kind: "scope" });
 		const activity = await t.run((ctx) => ctx.db.query("activities").first());
 		expect(activity).toMatchObject({ source: { kind: "files_subtree_op", opKind: "scope" }, feedVisible: false });
+		expect(
+			[...(await scopes())].filter(([name, scope]) => name !== "child-0" && scope !== source._id),
+			"the first step leaves one child for the job",
+		).toHaveLength(1);
 
 		await drain();
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
 		const restricted = await scopes();
-		expect(restricted.size).toBe(600);
+		expect(restricted.size).toBe(childCount);
 		expect([...restricted].filter(([name, scope]) => name !== "child-0" && scope !== source._id)).toEqual([]);
 		expect(restricted.get("child-0")).toBe(nested._id);
 

@@ -321,25 +321,29 @@ function metadata_payload(doc: Metadata) {
 }
 
 describe("public Move scale", () => {
-	test("moves 1000 selected files and keeps every metadata value", async () => {
+	// The Move view reads at most 200 moved roots (`MAX_SELECTED_NODES` in files_transfer.ts). 201 roots
+	// go past it and use 3 input pages of `files_TRANSFER_SELECTION_PAGE_SIZE`.
+	test("moves 201 selected files and keeps every metadata value", async () => {
 		const fixture = await create_fixture();
 		const { t, db, asUser } = fixture;
 		const target = await create_folder(fixture, "target");
+		const total = 201;
 		const sourceIds: Id<"files_nodes">[] = [];
-		for (let offset = 0; offset < 1000; offset += 50) {
+		for (let offset = 0; offset < total; offset += 50) {
+			const length = Math.min(50, total - offset);
 			vi.setSystemTime(Date.now() + 60_000);
 			const uploaded = await asUser.mutation(api.files_nodes.create_upload_nodes, {
 				membershipId: db.membershipId,
 				parentId: files_ROOT_ID,
 				onConflict: "skip",
-				items: Array.from({ length: 50 }, (_, index) => ({
+				items: Array.from({ length }, (_, index) => ({
 					relativePath: `file-${(offset + index).toString().padStart(4, "0")}.bin`,
 					size: 1,
 					contentType: "application/octet-stream",
 				})),
 			});
 			if (uploaded._nay) throw new Error(uploaded._nay.message);
-			expect(uploaded._yay.created).toHaveLength(50);
+			expect(uploaded._yay.created).toHaveLength(length);
 			expect(uploaded._yay.skipped).toHaveLength(0);
 			for (const item of uploaded._yay.created) {
 				expect(await fetch(item.url, { method: "PUT", body: "x" })).toHaveProperty("status", 200);
@@ -354,11 +358,14 @@ describe("public Move scale", () => {
 				sourceIds.push(item.nodeId);
 			}
 		}
-		expect(new Set(sourceIds).size, "all 1000 selected files are distinct").toBe(1000);
+		expect(new Set(sourceIds).size, "all selected files are distinct").toBe(total);
 		await write_markers(fixture, sourceIds);
 		await t.finishAllScheduledFunctions(vi.runAllTimers, 10_000);
 		const peaks = measure_move();
-		await finish_move(fixture, await start_move(fixture, sourceIds, target._id), 1000);
+		const run = await start_move(fixture, sourceIds, target._id);
+		await finish_move(fixture, run, total);
+		const view = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: run.runId });
+		expect(view?.movedNodeIds.length, "the selection is bigger than the view's moved roots").toBeLessThan(total);
 		await expect_moved_markers(fixture, sourceIds, (node) => `/target/${node.name}`);
 		console.info("Move scale selected files", JSON.stringify(Object.fromEntries(peaks)));
 	}, 7_200_000);
