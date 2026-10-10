@@ -156,5 +156,6 @@ await state.page.waitForFunction(() => window.Clerk?.user == null, { timeout: 15
 
 ## Clean up
 
-- Sign out, close the scratch Chrome, remove its `--user-data-dir` folder, and delete the Playwriter session.
+- Do not sign out at the end: sign-out mints a new anonymous user that stays in the database. Close the scratch Chrome, remove its `--user-data-dir` folder, and delete the Playwriter session instead. The test account stays signed in only inside that deleted profile.
+- `users.delete_current_user_account` is a soft delete: the `users` row stays with `deletedAt` set.
 - Sign-in and sign-out themselves need no server-side cleanup. Clean up only the content fixtures the run created, as their owning account.
