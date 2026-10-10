@@ -253,6 +253,11 @@ Current purge coverage includes:
 - `files_share_rows`, right after the overlay docs and for the same reason. The flush deletes a row with
   its grant or node; this pass deletes rows no flush reaches again, for example after a dashboard edit.
   The organization purge reaches it through each workspace purge.
+- The metadata catalog, right after the share rows: `files_metadata_catalog_compactors`, then
+  `files_metadata_catalog_deltas`, then `files_metadata_catalog`. The metadata docs are gone by then, so no
+  flush adds deltas. The marker goes first: a scheduled compactor or rebuild job gets the marker by id and
+  does nothing when it is gone (`server/files-metadata-catalog.ts`). The rows pass also deletes the audit's
+  `check_*` shadow rows.
 - `ai_chat_bash_invocation_transfers` before `ai_chat_bash_invocations`, both before the thread. Results expire after seven days; the small terminal call identity stays until this purge. Delete at most eight invocation docs per pass because retained results can use 700 KiB each. A job row (one with a `job` field) owns an Activity and receipts, so a pass that finds one deletes that job through `ai_chat_files_db_delete_job_batch` instead of the plain batch. Missing records make late deadline and expiry callbacks no-ops.
 - `ai_chat_files_content`, `ai_chat_files`
 - `ai_chat_run_steps` (at most 8 per pass, because a step can be close to 1 MiB), `ai_chat_run_inbox`, `ai_chat_tool_receipts`, `ai_chat_compactions`, after the chat files and before the messages

@@ -9,7 +9,8 @@
 // and flushes once at the end (`convex/functions.ts`). The flush recomputes derived docs from the
 // source tables and the owner's reader. Derived docs only tell it what to recompute, never facts.
 // The same flush also keeps two other copies in sync: the share docs in `files_share_rows`
-// (`server/files-share-rows.ts`) and the `ancestor1..12` fields of saved `files_nodes`.
+// (`server/files-share-rows.ts`) and the `ancestor1..12` fields of saved `files_nodes`. And it
+// inserts the metadata catalog's deltas (`server/files-metadata-catalog.ts`).
 //
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`).
@@ -48,6 +49,12 @@ import {
 	files_share_rows_NODE_FIELDS,
 } from "./files-share-rows.ts";
 import { files_visible_resolve_db_create } from "./files-visible-resolve.ts";
+import {
+	files_metadata_catalog_add_write,
+	files_metadata_catalog_db_insert_deltas,
+	files_metadata_catalog_SOURCE_FIELDS,
+	type files_metadata_catalog_Changes,
+} from "./files-metadata-catalog.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_proposal,
@@ -94,6 +101,9 @@ export const files_pending_overlay_DERIVED_TABLES = new Set<string>([
 	"files_pending_list_keys",
 	"files_pending_overlay_jobs",
 	"files_share_rows",
+	"files_metadata_catalog",
+	"files_metadata_catalog_deltas",
+	"files_metadata_catalog_compactors",
 ]);
 
 /**
@@ -122,6 +132,13 @@ const SOURCE_FIELDS: Record<string, string[]> = {
 		"userId",
 		"pendingUpdateId",
 		"moveView",
+		// The metadata catalog's fields.
+		"archiveOperationId",
+		"parentId",
+		"docKind",
+		"fieldPath",
+		"valueKind",
+		"stringValue",
 	],
 };
 
@@ -311,6 +328,11 @@ type FlushMarks = {
 	 */
 	committedMetadataNodeIds: Set<Id<"files_nodes">>;
 	/**
+	 * Metadata catalog row changes of the writes since the last flush. Every flush inserts them as
+	 * deltas and clears them (`server/files-metadata-catalog.ts`).
+	 */
+	catalogChanges: files_metadata_catalog_Changes;
+	/**
 	 * Written file grants. The flush syncs their share rows.
 	 */
 	grantIds: Set<Id<"access_control_permission_grants">>;
@@ -443,6 +465,7 @@ function new_state(): FlushMarks {
 		unknownProposalIds: new Set(),
 		unknownMetadataIds: new Set(),
 		committedMetadataNodeIds: new Set(),
+		catalogChanges: new Map(),
 		grantIds: new Set(),
 		ownerPathRequests: [],
 		placeFieldIds: new Map(),
@@ -818,6 +841,12 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 			if (property === "insert")
 				return async (table: TableNames, value: SourceFields) => {
 					const id = await target.insert(table, value as never);
+					// The catalog counts tagged Move docs too, in their own view.
+					if (table === "files_metadata_docs") {
+						const next = pick_source_fields(table, value);
+						state.lastKnown.set(id, next);
+						files_metadata_catalog_add_write(state.catalogChanges, null, next);
+					}
 					// Tagged source docs belong to preparation, not the live normal overlay.
 					if (value.moveView) return id;
 					if (
@@ -874,6 +903,42 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 							old: knownScope as Pick<Doc<"files_nodes">, "organizationId" | "workspaceId">,
 						});
 					if (!SOURCE_TABLES.has(table)) return await Reflect.apply(write, target, args);
+
+					// The catalog counts every metadata doc write, also the tagged Move and materializing
+					// writes that change no normal overlay doc, so metadata docs take this branch first.
+					if (table === "files_metadata_docs") {
+						const valueChanged = property !== "patch" || METADATA_VALUE_FIELDS.some((field) => field in value!);
+						const overlay =
+							!value?.moveView &&
+							!(
+								state.materializingCohortId &&
+								(await is_materializing(table, id, value ?? (await read_old(table, id))))
+							);
+						// A patch of no catalog field needs no old doc. The flush reads the doc for its owner.
+						if (
+							property === "patch" &&
+							!state.lastKnown.has(id) &&
+							!files_metadata_catalog_SOURCE_FIELDS.some((field) => field in value!)
+						) {
+							await Reflect.apply(write, target, args);
+							if (overlay && valueChanged) state.unknownMetadataIds.add(id as Id<"files_metadata_docs">);
+							return;
+						}
+						const old = await read_old(table, id);
+						await Reflect.apply(write, target, args);
+						// A same-id write in `Promise.all` may have ended first: build on its doc.
+						const known = state.lastKnown.get(id) ?? old;
+						const next =
+							property === "delete"
+								? null
+								: pick_source_fields(table, property === "replace" ? value! : { ...known, ...value });
+						if (next) state.lastKnown.set(id, next);
+						else state.lastKnown.delete(id);
+						files_metadata_catalog_add_write(state.catalogChanges, known, next);
+						if (overlay && valueChanged) mark_source_write(state, table, id, old, next);
+						return;
+					}
+
 					if (value?.moveView) return await Reflect.apply(write, target, args);
 					if (
 						property === "patch" &&
@@ -940,17 +1005,14 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 
 					// A proposal patch keeps its owner and target, and the doc is still there at flush time.
 					// So it needs no old doc. A private node patch does: its old parent and state matter.
-					const fields = table === "files_metadata_docs" ? METADATA_VALUE_FIELDS : PROPOSAL_FIELDS;
 					const valueChanged =
 						property !== "patch" ||
-						(table !== "files_metadata_docs" && table !== "files_pending_updates") ||
-						fields.some((field) => field in value!);
+						table !== "files_pending_updates" ||
+						PROPOSAL_FIELDS.some((field) => field in value!);
 					if (property === "patch" && !state.lastKnown.has(id) && table !== "files_pending_nodes") {
 						await Reflect.apply(write, target, args);
 						if (table === "files_pending_updates" && valueChanged)
 							state.unknownProposalIds.add(id as Id<"files_pending_updates">);
-						if (table === "files_metadata_docs" && valueChanged)
-							state.unknownMetadataIds.add(id as Id<"files_metadata_docs">);
 						return;
 					}
 					const old = await read_old(table, id);
@@ -2452,6 +2514,9 @@ export async function files_pending_overlay_db_flush(ctx: MutationCtx) {
 			await db_flush_owner_paths(flush, requests);
 		}
 	}
+
+	// After the rounds, so a metadata-only write that marks nothing still inserts its deltas.
+	await files_metadata_catalog_db_insert_deltas(ctx, state.catalogChanges);
 
 	// Every place fields sync goes to the job, one job doc per workspace and JOB_LIST_ITEMS places.
 	const byWorkspace = new Map<string, { scope: Omit<Scope, "userId">; placeIds: Id<"files_pending_places">[] }>();

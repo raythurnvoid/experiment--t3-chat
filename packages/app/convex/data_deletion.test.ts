@@ -6290,6 +6290,64 @@ describe("process_workspace_deletion_request", () => {
 		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
 		expect(await count_rows()).toBe(0);
 	});
+
+	test("deletes the metadata catalog, and a compactor run of its old marker does nothing", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-metadata-catalog",
+				displayName: "Metadata Catalog Workspace",
+			}),
+		);
+		const scope = {
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			userId: user.userId,
+		};
+		const folder = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/catalog" });
+		if (folder._nay) throw new Error(folder._nay.message);
+		const written = await t.mutation(internal.files_metadata.update_entries_by_path, {
+			...scope,
+			path: "/catalog",
+			set: [{ key: "status", value: "open" }],
+			remove: [],
+		});
+		if (written._nay) throw new Error(written._nay.message);
+		const marker = await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").first());
+		vi.setSystemTime(Date.now() + 5001);
+		await t.mutation(internal.files_pending_overlay.compact_metadata_catalog, { markerId: marker!._id });
+		// Rows, and a new delta with its marker.
+		await t.mutation(internal.files_metadata.update_entries_by_path, {
+			...scope,
+			path: "/catalog",
+			set: [{ key: "owner", value: "me" }],
+			remove: [],
+		});
+		const count_docs = () =>
+			t.run(async (ctx) =>
+				(
+					await Promise.all(
+						(
+							["files_metadata_catalog", "files_metadata_catalog_deltas", "files_metadata_catalog_compactors"] as const
+						).map(async (table) => (await ctx.db.query(table).collect()).filter((doc) => doc.workspaceId === scope.workspaceId).length),
+					)
+				),
+			);
+		const [rows, deltas, markers] = await count_docs();
+		expect(rows).toBeGreaterThan(0);
+		expect(deltas).toBeGreaterThan(0);
+		expect(markers).toBe(1);
+		const lastMarker = await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").first());
+
+		const requestId = await t.run((ctx) =>
+			data_deletion_db_request(ctx, { ...scope, scope: "workspace", eligibleAt: 0 }),
+		);
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
+		expect(await count_docs()).toEqual([0, 0, 0]);
+		vi.setSystemTime(Date.now() + 5001);
+		await t.mutation(internal.files_pending_overlay.compact_metadata_catalog, { markerId: lastMarker!._id });
+		expect(await count_docs()).toEqual([0, 0, 0]);
+	});
 });
 
 describe("process_organization_deletion_request", () => {

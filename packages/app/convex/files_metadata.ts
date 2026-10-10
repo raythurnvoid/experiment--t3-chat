@@ -1,4 +1,4 @@
-import type { RegisteredQuery, WithoutSystemFields } from "convex/server";
+import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery, type WithoutSystemFields } from "convex/server";
 import { compareValues, v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
@@ -8,11 +8,11 @@ import { internalQuery, query } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
 import app_convex_schema, {
 	files_pending_target_validator,
+	files_saved_stream_validator,
 	files_metadata_entries_validator,
 	ai_chat_workspaces_source_validator,
 } from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
-import { files_search_db_create_reader } from "./files_search.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
@@ -21,7 +21,7 @@ import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
-import { files_nodes_db_require_user_writable } from "./files_nodes.ts";
+import { files_nodes_db_get_tree_reader, files_nodes_db_require_user_writable } from "./files_nodes.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -32,14 +32,15 @@ import {
 	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { files_pending_overlay_list_over_budget } from "../server/files-pending-overlay.ts";
 import { files_index_range_apply } from "../server/files-index-range.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_saved_content_db_get_tags } from "../server/files-saved-content.ts";
+import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import {
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_frontmatter_exceeds_index_caps,
 	files_metadata_apply_set_and_remove,
+	files_metadata_catalog_lower,
 	files_metadata_extract_entries,
 	files_metadata_METADATA_FIELD_PREFIX,
 	files_metadata_parse_entries_yaml,
@@ -483,19 +484,9 @@ export async function files_metadata_db_patch_file_scope(
 // #region search box
 
 /**
- * Catalog caps. A key, kind, or value is listed only when one of its first few docs in index
- * order sits on a file the caller can read. A member who was given one folder deep inside a big
- * restricted tree can miss a key that way. Typing the key still works.
- *
- * The read budgets count index reads, not docs. Convex allows 4096 `db.get` and `db.query` calls
- * per query, and a permission check for one restricted scope costs several of them. The walk
- * stops early instead of throwing.
+ * Rows per suggestion page. Each page is one range of the metadata catalog, so this bounds its read.
  */
-const SEARCH_CATALOG_SAMPLE_DOCS = 11;
-const SEARCH_FIELDS_MAX_FIELDS = 200;
-const SEARCH_FIELDS_READ_BUDGET = 3000;
-const SEARCH_VALUES_MAX_VALUES = 25;
-const SEARCH_VALUES_READ_BUDGET = 400;
+const SEARCH_PAGE_MAX_ITEMS = 50;
 const SEARCH_VALUE_PREFIX_MAX_LENGTH = 200;
 const SEARCH_VALUE_KINDS = ["string", "number", "boolean", "maybe_date"] as const;
 
@@ -540,47 +531,6 @@ async function db_get_search_caller(ctx: QueryCtx, args: { membershipId: Id<"org
 		permission: "content.read",
 	});
 	return { userAuth, membership, hasWorkspaceRead: !authorized._nay };
-}
-
-/**
- * Keep one saved-only reader across keys and values. Count catalog range reads separately.
- */
-type SearchSampleCache = {
-	reader: Awaited<ReturnType<typeof files_search_db_create_reader>>;
-	reads: number;
-	/**
-	 * Set once the query used the read budget of agent listings. The samples' access checks read
-	 * more than `reads` counts, so the walk checks what the query really read and stops early.
-	 */
-	overBudget: boolean;
-};
-
-/**
- * A suggestion must belong to a current readable saved file.
- */
-async function db_search_sample_is_readable(args: {
-	ctx: QueryCtx;
-	docs: Doc<"files_metadata_docs">[];
-	mut_cache: SearchSampleCache;
-}) {
-	for (const metadataDoc of args.docs) {
-		args.mut_cache.overBudget ||= files_pending_overlay_list_over_budget(await args.ctx.meta.getTransactionMetrics());
-		if (args.mut_cache.overBudget || args.mut_cache.reader.exhausted) return false;
-		if (await args.mut_cache.reader.resolveDocument(metadataDoc)) return true;
-	}
-	return false;
-}
-
-function merge_search_samples(pages: Doc<"files_metadata_docs">[][]) {
-	return pages
-		.flat()
-		.sort((a, b) =>
-			compareValues(
-				[a.stringValue ?? null, a.treePath, a._creationTime, a._id],
-				[b.stringValue ?? null, b.treePath, b._creationTime, b._id],
-			),
-		)
-		.slice(0, SEARCH_CATALOG_SAMPLE_DOCS);
 }
 
 /**
@@ -747,16 +697,21 @@ export function files_metadata_db_query_saved_plan(
 }
 
 /**
- * The qualified fields the search box suggests as keys, with the value kinds each one holds
- * somewhere the caller can read. They come back in index order, which is alphabetical.
+ * One page of the saved metadata keys whose path starts with `prefix`, ignoring case, with the value
+ * kinds each one holds. The page is one range of the metadata catalog (`server/files-metadata-catalog.ts`),
+ * in key order. It reads one stream: the normal rows, or the rows of one Move view (`savedStream`).
+ * The browser merges the normal stream with the visible view's stream.
  *
  * Saved docs only, like the search box rows: a key that exists only in a draft is not suggested.
  */
 export const list_search_fields = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		savedStream: v.optional(files_saved_stream_validator),
+		prefix: v.string(),
+		paginationOpts: paginationOptsValidator,
 	},
-	returns: v.array(
+	returns: paginationResultValidator(
 		v.object({
 			fieldPath: v.string(),
 			valueKinds: v.array(
@@ -765,258 +720,153 @@ export const list_search_fields = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const caller = await db_get_search_caller(ctx, { membershipId: args.membershipId });
-		if (!caller) {
-			return [];
+		// Accepted leak until a search engine arrives: any member sees every eligible saved key and value of the
+		// workspace, also from files they cannot open. See the file-metadata skill, "Suggestions".
+		const refused = { page: [], isDone: true, continueCursor: "" };
+		const reader = await files_nodes_db_get_tree_reader(ctx, args);
+		// No key is longer than this, so a longer prefix matches nothing.
+		if (!reader || args.prefix.length > files_search_query_FIELD_PATH_MAX_LENGTH) {
+			return refused;
 		}
 
-		const { organizationId, workspaceId } = caller.membership;
-		const moveView = await files_saved_placement_db_get_view(ctx.db, caller.membership);
-		const views = [
-			undefined,
-			...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }]),
-		];
-		const mut_cache: SearchSampleCache = {
-			reader: await files_search_db_create_reader(ctx, {
-				organizationId,
-				workspaceId,
-				userId: caller.userAuth.id,
-				hasWorkspaceRead: caller.hasWorkspaceRead,
-				savedOnly: true,
-			}),
-			reads: 0,
-			overBudget: false,
+		const { membership } = reader;
+		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const lower = files_metadata_catalog_lower(args.prefix);
+		const upperBound = string_prefix_upper_bound(lower);
+		const result = await ctx.db
+			.query("files_metadata_catalog")
+			.withIndex("by_org_ws_family_parent_lower_field_value", (q) => {
+				const keys = q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view)
+					.eq("family", "key")
+					.eq("parentId", undefined)
+					.gte("fieldPathLower", lower);
+				return upperBound === null ? keys : keys.lt("fieldPathLower", upperBound);
+			})
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(args.paginationOpts.numItems, SEARCH_PAGE_MAX_ITEMS),
+			});
+		return {
+			...result,
+			page: result.page.map((row) => ({
+				fieldPath: row.fieldPath,
+				valueKinds: SEARCH_VALUE_KINDS.filter((kind) => (row.kindCounts?.[kind] ?? 0) > 0),
+			})),
 		};
-		const fields: Array<{ fieldPath: string; valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> }> = [];
-		let lastFieldPath = "";
-
-		// Walk the distinct qualified fields with one index read per field: the first field doc above
-		// the last one seen. Each field then reads a few docs per kind to decide whether the caller
-		// may see it.
-		while (
-			fields.length < SEARCH_FIELDS_MAX_FIELDS &&
-			mut_cache.reads < SEARCH_FIELDS_READ_BUDGET &&
-			!mut_cache.reader.exhausted &&
-			!mut_cache.overBudget
-		) {
-			const after = lastFieldPath;
-			const nextFields = await Promise.all(
-				views.map((view) =>
-					ctx.db
-						.query("files_metadata_docs")
-						.withIndex("by_org_ws_source_archive_docKind_field_tree", (q) =>
-							q
-								.eq("organizationId", organizationId)
-								.eq("workspaceId", workspaceId)
-								.eq("sourceKind", "committed")
-								.eq("moveView.cohortId", view?.cohortId)
-								.eq("moveView.view", view?.view)
-								.eq("archiveOperationId", undefined)
-								.eq("docKind", "field")
-								.gt("fieldPath", after),
-						)
-						.first(),
-				),
-			);
-			const nextFieldDoc = nextFields.reduce<Doc<"files_metadata_docs"> | null>(
-				(first, doc) => (doc && (!first || compareValues(doc.fieldPath, first.fieldPath) < 0) ? doc : first),
-				null,
-			);
-			mut_cache.reads += views.length;
-			if (!nextFieldDoc) {
-				break;
-			}
-			const fieldPath = nextFieldDoc.fieldPath;
-			lastFieldPath = fieldPath;
-			// The other doors refuse a field this long, so the catalog must not offer it.
-			if (!search_field_path_is_valid(fieldPath)) {
-				continue;
-			}
-
-			// The samples are read raw, so one index read is one read.
-			const fieldDocs = merge_search_samples(
-				await Promise.all(
-					views.map((view) =>
-						ctx.db
-							.query("files_metadata_docs")
-							.withIndex("by_org_ws_source_archive_docKind_field_tree", (q) =>
-								q
-									.eq("organizationId", organizationId)
-									.eq("workspaceId", workspaceId)
-									.eq("sourceKind", "committed")
-									.eq("moveView.cohortId", view?.cohortId)
-									.eq("moveView.view", view?.view)
-									.eq("archiveOperationId", undefined)
-									.eq("docKind", "field")
-									.eq("fieldPath", fieldPath),
-							)
-							.take(SEARCH_CATALOG_SAMPLE_DOCS),
-					),
-				),
-			);
-			mut_cache.reads += views.length;
-			let readable = await db_search_sample_is_readable({ ctx, docs: fieldDocs, mut_cache });
-
-			// Every value index has `valueKind` right after the key, so the string index serves all
-			// four kinds. A kind is listed only when the caller can read a file that holds it.
-			const valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> = [];
-			for (const valueKind of SEARCH_VALUE_KINDS) {
-				const valueDocs = merge_search_samples(
-					await Promise.all(
-						views.map((view) =>
-							ctx.db
-								.query("files_metadata_docs")
-								.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) =>
-									q
-										.eq("organizationId", organizationId)
-										.eq("workspaceId", workspaceId)
-										.eq("sourceKind", "committed")
-										.eq("moveView.cohortId", view?.cohortId)
-										.eq("moveView.view", view?.view)
-										.eq("archiveOperationId", undefined)
-										.eq("docKind", "value")
-										.eq("fieldPath", fieldPath)
-										.eq("valueKind", valueKind),
-								)
-								.take(SEARCH_CATALOG_SAMPLE_DOCS),
-						),
-					),
-				);
-				mut_cache.reads += views.length;
-				if (valueDocs.length > 0 && (await db_search_sample_is_readable({ ctx, docs: valueDocs, mut_cache }))) {
-					valueKinds.push(valueKind);
-					readable = true;
-				}
-			}
-
-			if (readable) {
-				fields.push({ fieldPath, valueKinds });
-			}
-		}
-
-		return fields;
 	},
 });
 
 /**
- * The string values of one key that start with `prefix`, for the search box's value suggestions.
- * Saved docs only, like `list_search_fields`.
+ * The value kinds of one saved key, or null when no saved doc has it. It reads the key's exact
+ * catalog row in the normal stream and in the visible Move view, so a page of case variants can
+ * never hide it. The search box uses it to offer `true` and `false`.
+ */
+export const get_search_field = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		fieldPath: v.string(),
+	},
+	returns: v.union(
+		v.object({
+			valueKinds: v.array(
+				v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),
+			),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		// Accepted leak until a search engine arrives: any member sees every eligible saved key and value of the
+		// workspace, also from files they cannot open. See the file-metadata skill, "Suggestions".
+		const reader = await files_nodes_db_get_tree_reader(ctx, args);
+		if (!reader || !search_field_path_is_valid(args.fieldPath)) {
+			return null;
+		}
+
+		const { membership } = reader;
+		const moveView = await files_saved_placement_db_get_view(ctx.db, membership);
+		const rows = await Promise.all(
+			[undefined, ...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }])].map(
+				(view) =>
+					ctx.db
+						.query("files_metadata_catalog")
+						.withIndex("by_org_ws_family_parent_lower_field_value", (q) =>
+							q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("moveView.cohortId", view?.cohortId)
+								.eq("moveView.view", view?.view)
+								.eq("family", "key")
+								.eq("parentId", undefined)
+								.eq("fieldPathLower", files_metadata_catalog_lower(args.fieldPath))
+								.eq("fieldPath", args.fieldPath)
+								.eq("stringValue", undefined),
+						)
+						.first(),
+			),
+		);
+		if (rows.every((row) => row === null)) {
+			return null;
+		}
+		return {
+			valueKinds: SEARCH_VALUE_KINDS.filter((kind) => rows.some((row) => (row?.kindCounts?.[kind] ?? 0) > 0)),
+		};
+	},
+});
+
+/**
+ * One page of the saved string values of one key that start with `prefix`, in exact case. Like
+ * `list_search_fields`, it is one catalog range of one stream. Only values of at most 1,024 encoded
+ * bytes have a row (`files_metadata_catalog_value_is_short`).
  */
 export const list_search_values = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		savedStream: v.optional(files_saved_stream_validator),
 		fieldPath: v.string(),
 		prefix: v.string(),
+		paginationOpts: paginationOptsValidator,
 	},
-	returns: v.array(v.string()),
+	returns: paginationResultValidator(v.string()),
 	handler: async (ctx, args) => {
-		const caller = await db_get_search_caller(ctx, { membershipId: args.membershipId });
-		if (!caller) {
-			return [];
-		}
-		if (!search_field_path_is_valid(args.fieldPath) || args.prefix.length > SEARCH_VALUE_PREFIX_MAX_LENGTH) {
-			return [];
-		}
-
-		const { organizationId, workspaceId } = caller.membership;
-		const moveView = await files_saved_placement_db_get_view(ctx.db, caller.membership);
-		const views = [
-			undefined,
-			...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }]),
-		];
-		const mut_cache: SearchSampleCache = {
-			reader: await files_search_db_create_reader(ctx, {
-				organizationId,
-				workspaceId,
-				userId: caller.userAuth.id,
-				hasWorkspaceRead: caller.hasWorkspaceRead,
-				savedOnly: true,
-			}),
-			reads: 0,
-			overBudget: false,
-		};
-		const values: string[] = [];
-		let lastValue: string | null = null;
-
-		// Walk the distinct values with one index read per value. The index is sorted by value, so
-		// the first value that does not start with the prefix ends the walk. No upper bound is needed.
-		// The first read starts at the prefix itself, every later read starts above the last value.
-		while (
-			values.length < SEARCH_VALUES_MAX_VALUES &&
-			mut_cache.reads < SEARCH_VALUES_READ_BUDGET &&
-			!mut_cache.reader.exhausted &&
-			!mut_cache.overBudget
+		// Accepted leak until a search engine arrives: any member sees every eligible saved key and value of the
+		// workspace, also from files they cannot open. See the file-metadata skill, "Suggestions".
+		const refused = { page: [], isDone: true, continueCursor: "" };
+		const reader = await files_nodes_db_get_tree_reader(ctx, args);
+		if (
+			!reader ||
+			!search_field_path_is_valid(args.fieldPath) ||
+			args.prefix.length > SEARCH_VALUE_PREFIX_MAX_LENGTH
 		) {
-			const lowerBound: { gte: string } | { gt: string } =
-				lastValue === null ? { gte: args.prefix } : { gt: lastValue };
-			const nextValues = await Promise.all(
-				views.map((view) =>
-					ctx.db
-						.query("files_metadata_docs")
-						.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) => {
-							const base = q
-								.eq("organizationId", organizationId)
-								.eq("workspaceId", workspaceId)
-								.eq("sourceKind", "committed")
-								.eq("moveView.cohortId", view?.cohortId)
-								.eq("moveView.view", view?.view)
-								.eq("archiveOperationId", undefined)
-								.eq("docKind", "value")
-								.eq("fieldPath", args.fieldPath)
-								.eq("valueKind", "string");
-							return "gte" in lowerBound
-								? base.gte("stringValue", lowerBound.gte)
-								: base.gt("stringValue", lowerBound.gt);
-						})
-						.first(),
-				),
-			);
-			const nextValueDoc = nextValues.reduce<Doc<"files_metadata_docs"> | null>(
-				(first, doc) => (doc && (!first || compareValues(doc.stringValue, first.stringValue) < 0) ? doc : first),
-				null,
-			);
-			mut_cache.reads += views.length;
-			if (
-				!nextValueDoc ||
-				nextValueDoc.stringValue === undefined ||
-				!nextValueDoc.stringValue.startsWith(args.prefix)
-			) {
-				break;
-			}
-			// The annotation breaks an inference cycle: `lastValue` feeds the query that yields this value.
-			const value: string = nextValueDoc.stringValue;
-			lastValue = value;
-
-			// Read raw for the same reason as in `list_search_fields`: one index read is one read.
-			const valueDocs = merge_search_samples(
-				await Promise.all(
-					views.map((view) =>
-						ctx.db
-							.query("files_metadata_docs")
-							.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) =>
-								q
-									.eq("organizationId", organizationId)
-									.eq("workspaceId", workspaceId)
-									.eq("sourceKind", "committed")
-									.eq("moveView.cohortId", view?.cohortId)
-									.eq("moveView.view", view?.view)
-									.eq("archiveOperationId", undefined)
-									.eq("docKind", "value")
-									.eq("fieldPath", args.fieldPath)
-									.eq("valueKind", "string")
-									.eq("stringValue", value),
-							)
-							.take(SEARCH_CATALOG_SAMPLE_DOCS),
-					),
-				),
-			);
-			mut_cache.reads += views.length;
-			if (await db_search_sample_is_readable({ ctx, docs: valueDocs, mut_cache })) {
-				values.push(value);
-			}
+			return refused;
 		}
 
-		return values;
+		const { membership } = reader;
+		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const upperBound = string_prefix_upper_bound(args.prefix);
+		const result = await ctx.db
+			.query("files_metadata_catalog")
+			.withIndex("by_org_ws_family_parent_lower_field_value", (q) => {
+				const values = q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view)
+					.eq("family", "value")
+					.eq("parentId", undefined)
+					.eq("fieldPathLower", files_metadata_catalog_lower(args.fieldPath))
+					.eq("fieldPath", args.fieldPath)
+					.gte("stringValue", args.prefix);
+				return upperBound === null ? values : values.lt("stringValue", upperBound);
+			})
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(args.paginationOpts.numItems, SEARCH_PAGE_MAX_ITEMS),
+			});
+		return { ...result, page: result.page.map((row) => row.stringValue!) };
 	},
 });
 
@@ -1133,131 +983,76 @@ export async function files_metadata_db_get_table_field(
 	return metadataDoc;
 }
 
+/**
+ * One page of the keys on a folder's saved children whose path starts with `prefix`, ignoring case,
+ * for the folder's Columns menu and filter bar. The page is one range of the catalog's `parent`
+ * family, in one stream (`savedStream`). Keys of restricted children count for every member too
+ * (user, 2026-10-08).
+ */
 export const list_folder_fields = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		savedStream: v.optional(files_saved_stream_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
-		afterField: v.union(v.string(), v.null()),
+		prefix: v.string(),
+		paginationOpts: paginationOptsValidator,
 	},
-	returns: v.union(
-		v.object({ fields: v.array(v.string()), afterField: v.union(v.string(), v.null()), isDone: v.boolean() }),
-		v.null(),
-	),
+	returns: paginationResultValidator(v.string()),
 	handler: async (ctx, args) => {
-		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
-		// (files-explorer-tree skill, "Saved-only lists").
-		const caller = await db_get_search_caller(ctx, args);
-		if (!caller) return null;
-		const { membership, userAuth, hasWorkspaceRead } = caller;
-		const moveView = await files_saved_placement_db_get_view(ctx.db, membership);
-		const views = [
-			undefined,
-			...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }]),
-		];
-		const empty = { fields: [], afterField: null, isDone: true };
+		// Accepted leak until a search engine arrives: any member sees every eligible saved key and value of the
+		// workspace, also from files they cannot open. See the file-metadata skill, "Suggestions".
+
+		// Every refusal gives this one answer, like `list_tree_children`. A different answer for a
+		// missing, foreign, or hidden folder would tell the caller that a hidden folder exists.
+		const refused = { page: [], isDone: true, continueCursor: "" };
+		const reader = await files_nodes_db_get_tree_reader(ctx, args);
+		// No key is longer than this, so a longer prefix matches nothing.
+		if (!reader || args.prefix.length > files_search_query_FIELD_PATH_MAX_LENGTH) {
+			return refused;
+		}
+		const { membership, userAuth } = reader;
 		if (args.parentId === "root") {
-			if (!hasWorkspaceRead) return empty;
+			if (!reader.hasWorkspaceRead) return refused;
 		} else {
 			const folder = await files_saved_placement_db_get_node(ctx.db, args.parentId);
 			if (
 				!folder ||
 				folder.kind !== "folder" ||
 				folder.organizationId !== membership.organizationId ||
-				folder.workspaceId !== membership.workspaceId
+				folder.workspaceId !== membership.workspaceId ||
+				folder.archiveOperationId !== null
 			)
-				return null;
+				return refused;
 			const readable = await access_control_db_authorize_membership(ctx, {
 				userAuth,
 				membership,
 				permission: "content.read",
 				fileNode: folder,
 			});
-			if (readable._nay) return null;
-			if (folder.archiveOperationId !== null) return empty;
+			if (readable._nay) return refused;
 		}
 
-		// The owner can read every restricted child, so the owner walks the open and the restricted
-		// children together. Other callers read the open children only.
-		const organization = await ctx.db.get("organizations", membership.organizationId);
-		const isOwner = organization?.ownerUserId === userAuth.id;
-		const read_next_field = async (isRestrictedScopeRoot: boolean, after: string | null) => {
-			const candidates = await Promise.all(
-				views.map((view) =>
-					ctx.db
-						.query("files_metadata_docs")
-						.withIndex("by_org_ws_source_archive_docKind_parent_restricted_field", (q) => {
-							const prefix = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
-								.eq("sourceKind", "committed")
-								.eq("moveView.cohortId", view?.cohortId)
-								.eq("moveView.view", view?.view)
-								.eq("archiveOperationId", undefined)
-								.eq("docKind", "field")
-								.eq("parentId", args.parentId)
-								.eq("isRestrictedScopeRoot", isRestrictedScopeRoot);
-							return after === null ? prefix : prefix.gt("fieldPath", after);
-						})
-						.first(),
-				),
-			);
-			return candidates.reduce<Doc<"files_metadata_docs"> | null>(
-				(first, doc) => (doc && (!first || compareValues(doc.fieldPath, first.fieldPath) < 0) ? doc : first),
-				null,
-			);
-		};
-
-		const budget = { readBytes: 0 };
-		const fields: string[] = [];
-		let afterField = args.afterField;
-		let completed = 0;
-		let isDone = false;
-		for (let count = 0; count < TABLE_FIELDS_MAX_CANDIDATES; count++) {
-			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
-			const openDoc = await read_next_field(false, afterField);
-			count_table_doc(budget, openDoc);
-			if (isOwner && !(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
-			const restrictedDoc = isOwner ? await read_next_field(true, afterField) : null;
-			count_table_doc(budget, restrictedDoc);
-			// Take the smaller next key in index order. A key that both ranges have shows once. JS `<`
-			// compares UTF-16 units, but the index compares code points, so use `compareValues`.
-			const metadataDoc =
-				restrictedDoc && (!openDoc || compareValues(restrictedDoc.fieldPath, openDoc.fieldPath) < 0)
-					? restrictedDoc
-					: openDoc;
-			if (!metadataDoc) {
-				isDone = true;
-				break;
-			}
-			const isRestrictedScopeRoot = metadataDoc === restrictedDoc;
-			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
-			const node =
-				metadataDoc.sourceKind === "committed"
-					? await files_saved_placement_db_get_node(ctx.db, metadataDoc.fileNodeId)
-					: null;
-			count_table_doc(budget, node);
-			if (!(await fits_table_read_budget({ ctx, budget }))) break;
-			// Each range is readable only while its copied scope flag matches the real node.
-			if (
-				!node ||
-				node.organizationId !== membership.organizationId ||
-				node.workspaceId !== membership.workspaceId ||
-				node.parentId !== args.parentId ||
-				node.archiveOperationId !== null ||
-				node.isRestrictedScopeRoot !== isRestrictedScopeRoot ||
-				(node.restrictedScopeNodeId === node._id) !== isRestrictedScopeRoot
-			) {
-				const errorMessage = "metadataDoc folder scope is mismatched";
-				const errorData = { metadataDocId: metadataDoc._id, parentId: args.parentId };
-				console.error(errorMessage, errorData);
-				throw should_never_happen(errorMessage, errorData);
-			}
-			afterField = metadataDoc.fieldPath;
-			completed++;
-			if (search_field_path_is_valid(afterField)) fields.push(afterField);
-		}
-		if (!isDone && completed === 0) throw convex_error({ message: "Metadata read exceeded its work limit." });
-		return { fields, afterField, isDone };
+		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const lower = files_metadata_catalog_lower(args.prefix);
+		const upperBound = string_prefix_upper_bound(lower);
+		const result = await ctx.db
+			.query("files_metadata_catalog")
+			.withIndex("by_org_ws_family_parent_lower_field_value", (q) => {
+				const keys = q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view)
+					.eq("family", "parent")
+					.eq("parentId", args.parentId)
+					.gte("fieldPathLower", lower);
+				return upperBound === null ? keys : keys.lt("fieldPathLower", upperBound);
+			})
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(args.paginationOpts.numItems, SEARCH_PAGE_MAX_ITEMS),
+			});
+		return { ...result, page: result.page.map((row) => row.fieldPath) };
 	},
 });
 

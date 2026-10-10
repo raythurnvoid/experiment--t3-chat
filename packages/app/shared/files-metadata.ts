@@ -20,6 +20,15 @@ export const files_metadata_FRONTMATTER_FIELD_PREFIX = "frontmatter.";
 export const files_metadata_METADATA_FIELD_PREFIX = "metadata.";
 
 /**
+ * The lowercase copy of a key (`fieldPathLower`), for prefix search without case. It lowers one
+ * character at a time, so the copy of a prefix is always a prefix of the key's copy. A whole-string
+ * `toLowerCase` depends on context: a Greek sigma at the end lowers to `ς`, inside a word to `σ`.
+ */
+export function files_metadata_catalog_lower(text: string) {
+	return [...text].map((char) => char.toLowerCase()).join("");
+}
+
+/**
  * Product cap on how many frontmatter fields one file can index. Each field becomes one metadata
  * doc insert in the save transaction, and the 900 KB content cap alone would allow thousands.
  *

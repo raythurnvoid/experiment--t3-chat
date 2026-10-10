@@ -193,6 +193,14 @@ crons.cron(
 // Every 15 minutes — restart pending overlay jobs whose run failed.
 crons.cron("recover pending overlay jobs", "*/15 * * * *", internal.files_pending_overlay.recover_jobs, {});
 
+// Every 15 minutes — restart metadata catalog compactors whose chain stopped.
+crons.cron(
+	"recover metadata catalog compactors",
+	"*/15 * * * *",
+	internal.files_pending_overlay.recover_metadata_catalog,
+	{ cursor: null },
+);
+
 // Every 15 minutes — resume Yjs cleanup left by a failed scheduled continuation.
 crons.cron(
 	"recover file yjs cleanup tasks",

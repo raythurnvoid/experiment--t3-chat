@@ -233,9 +233,12 @@ function metadata_name_is_valid(name: string) {
 
 /**
  * True when a stored qualified field (`frontmatter.<path>` or `metadata.<key>`) is one this
- * grammar can name. The search doors refuse any other field, because the app never sends one.
+ * grammar can name, in at most `files_search_query_FIELD_PATH_MAX_LENGTH` characters. The search
+ * doors refuse any other field, because the app never sends one. The metadata catalog
+ * (`server/files-metadata-catalog.ts`) counts only these fields.
  */
 export function files_search_query_field_path_is_valid(fieldPath: string) {
+	if (fieldPath.length > files_search_query_FIELD_PATH_MAX_LENGTH) return false;
 	if (fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)) {
 		return frontmatter_name_is_valid(fieldPath.slice(files_metadata_FRONTMATTER_FIELD_PREFIX.length));
 	}

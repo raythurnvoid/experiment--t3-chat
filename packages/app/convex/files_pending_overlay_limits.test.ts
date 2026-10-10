@@ -20,7 +20,7 @@ import {
 	seal as seal_transfer,
 } from "./files_transfer.ts";
 import { advance as advance_subtree } from "./files_subtree_ops.ts";
-import { run_job as run_overlay_job } from "./files_pending_overlay.ts";
+import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
@@ -113,21 +113,20 @@ function expect_under_convex_limits(cost: ReturnType<typeof transaction_cost>) {
 	expect(cost.functionsScheduled, "functionsScheduled").toBeLessThan(1000);
 }
 
+/**
+ * Peak cost per phase. A measured transaction includes the overlay flush, so also the metadata
+ * catalog's deltas and marker.
+ */
 function budget_recorder() {
-	const peaks = new Map<string, { measured: Cost; reserve: Cost; combined: Cost; calls: number }>();
-	const record = (phase: string, measured: Cost, extra: Cost = zero) => {
-		const combined = { ...zero };
-		const peak = peaks.get(phase) ?? { measured: { ...zero }, reserve: { ...zero }, combined: { ...zero }, calls: 0 };
-		for (const key of Object.keys(zero) as Array<keyof Cost>) {
-			combined[key] = measured[key] + extra[key];
+	const peaks = new Map<string, { measured: Cost; calls: number }>();
+	const record = (phase: string, measured: Cost) => {
+		const peak = peaks.get(phase) ?? { measured: { ...zero }, calls: 0 };
+		for (const key of Object.keys(zero) as Array<keyof Cost>)
 			peak.measured[key] = Math.max(peak.measured[key], measured[key]);
-			peak.reserve[key] = Math.max(peak.reserve[key], extra[key]);
-			peak.combined[key] = Math.max(peak.combined[key], combined[key]);
-		}
 		peak.calls++;
 		peaks.set(phase, peak);
 		if (peak.calls === 1 || peak.calls % 500 === 0) console.info("Move budget phase", phase, peak.calls);
-		expect_under_convex_limits(combined);
+		expect_under_convex_limits(measured);
 		for (const [key, limit] of Object.entries({
 			databaseQueries: 4096,
 			documentsRead: 32_000,
@@ -136,12 +135,12 @@ function budget_recorder() {
 			bytesWritten: 16 * 1024 * 1024,
 			functionsScheduled: 1000,
 		}) as Array<[keyof Cost, number]>)
-			expect(combined[key], `${phase}: ${key}, including catalog reserve`).toBeLessThan(limit * 0.75);
+			expect(measured[key], `${phase}: ${key}`).toBeLessThan(limit * 0.75);
 	};
 	return { peaks, record };
 }
 
-function measure_cohort(record: ReturnType<typeof budget_recorder>["record"], reserve: Cost = zero) {
+function measure_cohort(record: ReturnType<typeof budget_recorder>["record"]) {
 	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
 		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
 		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
@@ -150,8 +149,7 @@ function measure_cohort(record: ReturnType<typeof budget_recorder>["record"], re
 		const result = await handler(ctx, args);
 		// The registered handler includes the mutation wrapper and its overlay flush.
 		const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
-		const addsCatalog = ["sides", "finish_sides", "finish_nodes"].includes(phase);
-		record(`cohort/${phase}`, cost, addsCatalog ? reserve : zero);
+		record(`cohort/${phase}`, cost);
 		return result;
 	});
 }
@@ -410,44 +408,15 @@ describe("paged Move transaction budgets", () => {
 			expect(await ctx.db.query("files_share_links").collect()).toHaveLength(500);
 		});
 
-		// The catalog is not built yet. Reserve JSON bytes plus space for ids and timestamps.
-		const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength + 128;
-		const fields = seeded.metadata.filter((doc) => doc.docKind === "field");
-		expect(fields).toHaveLength(256);
-		// Catalog plan 4.3/4.6: Move reads all committed docs, but changes only parent slots.
-		const deltas = fields.flatMap((doc) =>
-			[seeded.project._id, seeded.target._id].map((parentId, index) => ({
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				family: "parent",
-				parentId,
-				fieldPathLower: doc.fieldPath.toLowerCase(),
-				fieldPath: doc.fieldPath,
-				count: index === 0 ? -1 : 1,
-			})),
-		);
-		const markerBytes = bytes({ organizationId: db.organizationId, workspaceId: db.workspaceId });
-		const reserve: Cost = {
-			databaseQueries: 2,
-			documentsRead: seeded.metadata.length + 1,
-			bytesRead: seeded.metadata.reduce((sum, doc) => sum + bytes(doc), 0) + markerBytes,
-			documentsWritten: deltas.length + 1,
-			bytesWritten: deltas.reduce((sum, delta) => sum + bytes(delta), 0) + markerBytes,
-			functionsScheduled: 1,
-		};
-		// The catalog compactor runs in its own transaction, with up to 500 distinct doc changes.
-		const compacted = deltas.slice(0, 500);
-		const compactorReserve: Cost = {
-			databaseQueries: compacted.length + 3,
-			documentsRead: compacted.length * 2 + 2,
-			bytesRead: compacted.reduce((sum, delta) => sum + bytes(delta) * 2, 0) + markerBytes + bytes(deltas[500]),
-			documentsWritten: compacted.length * 2 + 1,
-			bytesWritten: compacted.reduce((sum, delta) => sum + bytes(delta) * 2, 0) + markerBytes,
-			functionsScheduled: 1,
-		};
 		const { peaks, record } = budget_recorder();
-		record("catalog/compactor", zero, compactorReserve);
-		measure_cohort(record, reserve);
+		measure_cohort(record);
+		// The metadata catalog's compactor runs in its own transactions while the Move goes on.
+		test_spy_handler(compact_metadata_catalog, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			record("catalog/compactor", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
 		for (const [phase, registered] of [
 			["start", start_transfer],
 			["append", append_transfer_sources],
@@ -456,7 +425,7 @@ describe("paged Move transaction budgets", () => {
 			test_spy_handler(registered, async (handler, ctx, args) => {
 				const before = await ctx.meta.getTransactionMetrics();
 				const result = await handler(ctx, args);
-				record(phase, transaction_cost(before, await ctx.meta.getTransactionMetrics()), zero);
+				record(phase, transaction_cost(before, await ctx.meta.getTransactionMetrics()));
 				return result;
 			});
 		}
@@ -483,13 +452,13 @@ describe("paged Move transaction budgets", () => {
 		test_spy_handler(advance_subtree, async (handler, ctx, args) => {
 			const before = await ctx.meta.getTransactionMetrics();
 			const result = await handler(ctx, args);
-			record("subtree", transaction_cost(before, await ctx.meta.getTransactionMetrics()), zero);
+			record("subtree", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
 			return result;
 		});
 		test_spy_handler(run_overlay_job, async (handler, ctx, args) => {
 			const before = await ctx.meta.getTransactionMetrics();
 			const result = await handler(ctx, args);
-			record("overlay", transaction_cost(before, await ctx.meta.getTransactionMetrics()), zero);
+			record("overlay", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
 			return result;
 		});
 		expect(
@@ -506,15 +475,14 @@ describe("paged Move transaction budgets", () => {
 		await finish_scheduled(t, async () =>
 			(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !== undefined);
 		console.info(
-			"paged Move phase peaks, measured and projected catalog reserve",
-			JSON.stringify({ phases: Object.fromEntries(peaks), compactorReserve }),
+			"paged Move phase peaks, with the metadata catalog",
+			JSON.stringify({ phases: Object.fromEntries(peaks) }),
 		);
 		expect(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: { status: "succeeded", progress: { completed: 3, failed: 0, canceled: 0 } },
 		});
 		expect(peaks.get("cohort/publish")?.calls, "every saved Move root reaches cohort publication").toBe(sources.length);
-		expect(peaks.get("cohort/sides")?.reserve.documentsRead).toBe(897);
-		expect(peaks.get("cohort/finish_nodes")?.reserve.documentsWritten).toBe(513);
+		expect(peaks.get("catalog/compactor")?.calls, "the Move's catalog deltas reach the compactor").toBeGreaterThan(0);
 		expect(peaks.get("cohort/descendants")?.calls).toBeGreaterThan(0);
 		expect(peaks.get("cohort/finish_owners")?.calls).toBeGreaterThan(0);
 	}, 7_200_000);
@@ -671,16 +639,7 @@ describe("cohort Accept transaction budgets", () => {
 			),
 		);
 		const { peaks, record } = budget_recorder();
-		// Full per-node catalog allowance. Four KiB per row is a conservative projection.
-		const reserve: Cost = {
-			databaseQueries: 2,
-			documentsRead: 897,
-			bytesRead: 897 * 4096,
-			documentsWritten: 513,
-			bytesWritten: 513 * 4096,
-			functionsScheduled: 1,
-		};
-		measure_cohort(record, reserve);
+		measure_cohort(record);
 		test_spy_handler(advance_review, async (handler, ctx, args) => {
 			const before = await ctx.meta.getTransactionMetrics();
 			const result = await handler(ctx, args);
@@ -711,12 +670,11 @@ describe("cohort Accept transaction budgets", () => {
 		).toMatchObject({ status: "succeeded", progress: { completed: 3 } });
 		expect(peaks.get("cohort/publish")?.calls, "linked Accept uses one cohort switch").toBe(1);
 		expect(peaks.get("cohort/finish_nodes")?.calls).toBeGreaterThan(0);
-		expect(peaks.get("cohort/finish_nodes")?.reserve.documentsRead).toBe(897);
 		const saved = await t.run((ctx) => Promise.all(nodes.map((nodeId) => ctx.db.get("files_nodes", nodeId))));
 		expect(saved.map((node) => node?.name)).toEqual(["note-1.md", "note-2.md", "note-0.md"]);
 		expect(saved.every((node) => node?.moveCohortId === undefined)).toBe(true);
 		console.info(
-			"linked public Accept phase peaks, including catalog reserve",
+			"linked public Accept phase peaks, with the metadata catalog",
 			JSON.stringify(Object.fromEntries(peaks)),
 		);
 	}, 180_000);
@@ -864,6 +822,110 @@ describe("hard delete", () => {
 		const many = await hard_delete_cost(20);
 		expect(many.databaseQueries).toBe(few.databaseQueries);
 	}, 120_000);
+});
+
+describe("metadata catalog", () => {
+	// The most catalog work one node can cause: 896 committed metadata docs (128 frontmatter keys with
+	// 3 values, 128 metadata keys with 2 values), each key 160 characters and each value 1,024 bytes,
+	// the longest that still count. Every doc makes its own delta, so this is also the byte peak.
+	test("measures create, full replacement, archive, restore and the compactor at maximum delta sizes", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const node = await t.run((ctx) => insert_saved_node(ctx, db, { parent: null, name: "max", kind: "folder" }));
+		const docs = (round: number) =>
+			(["frontmatter", "metadata"] as const).flatMap((namespace) =>
+				Array.from({ length: 128 }, (_, key) => {
+					const prefix = `${namespace}.r${round}k${key}-`;
+					const fieldPath = prefix + "x".repeat(160 - prefix.length);
+					const base = {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						sourceKind: "committed" as const,
+						fileNodeId: node._id,
+						path: node.path,
+						treePath: node.treePath,
+						fieldPath,
+					};
+					return [
+						{ ...base, docKind: "field" as const, parentId: files_ROOT_ID },
+						...Array.from({ length: namespace === "frontmatter" ? 3 : 2 }, (_, value) => {
+							const head = `r${round}k${key}v${value}-`;
+							return {
+								...base,
+								docKind: "value" as const,
+								valueKind: "string" as const,
+								stringValue: head + "v".repeat(1024 - head.length),
+							};
+						}),
+					];
+				}).flat(),
+			);
+		expect(docs(0)).toHaveLength(896);
+		const { peaks, record } = budget_recorder();
+		const measure = async (phase: string, write: (ctx: MutationCtx) => Promise<void>) =>
+			await test_run_with_flush(t, async (ctx) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				await write(ctx);
+				await files_pending_overlay_db_flush(ctx);
+				record(phase, transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			});
+		const all_docs = (ctx: MutationCtx) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_source_fileNode", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", node._id),
+				)
+				.collect();
+		test_spy_handler(compact_metadata_catalog, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			record("catalog/compactor", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
+		const compact = async () => {
+			for (let run = 0; run < 100; run++) {
+				vi.setSystemTime(Date.now() + 5001);
+				const marker = await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").first());
+				if (!marker) return;
+				await t.mutation(internal.files_pending_overlay.compact_metadata_catalog, { markerId: marker._id });
+			}
+			throw new Error("The catalog compactor did not drain");
+		};
+		const count = (table: "files_metadata_catalog" | "files_metadata_catalog_deltas") =>
+			t.run(async (ctx) => (await ctx.db.query(table).collect()).length);
+
+		await measure("catalog/create", async (ctx) => {
+			for (const doc of docs(0)) await ctx.db.insert("files_metadata_docs", doc);
+		});
+		expect(await count("files_metadata_catalog_deltas")).toBe(1152);
+		await compact();
+		expect(await count("files_metadata_catalog")).toBe(1152);
+		await measure("catalog/replace", async (ctx) => {
+			for (const doc of await all_docs(ctx)) await ctx.db.delete("files_metadata_docs", doc._id);
+			for (const doc of docs(1)) await ctx.db.insert("files_metadata_docs", doc);
+		});
+		expect(await count("files_metadata_catalog_deltas")).toBe(2304);
+		await compact();
+		// Each archive or restore patch reads its doc first, like the scope helper's own query.
+		await measure("catalog/archive", async (ctx) => {
+			for (const doc of await all_docs(ctx))
+				await ctx.db.patch("files_metadata_docs", doc._id, { archiveOperationId: "archive-op" });
+		});
+		await compact();
+		expect(await count("files_metadata_catalog")).toBe(0);
+		await measure("catalog/restore", async (ctx) => {
+			for (const doc of await all_docs(ctx))
+				await ctx.db.patch("files_metadata_docs", doc._id, { archiveOperationId: undefined });
+		});
+		await compact();
+		expect(await count("files_metadata_catalog")).toBe(1152);
+		console.info("metadata catalog peaks at maximum delta sizes", JSON.stringify(Object.fromEntries(peaks)));
+		expect(peaks.get("catalog/compactor")?.measured.documentsRead).toBeGreaterThan(1000);
+	}, 600_000);
 });
 
 describe("content save", () => {

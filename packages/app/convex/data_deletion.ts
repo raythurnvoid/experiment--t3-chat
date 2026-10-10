@@ -1492,6 +1492,28 @@ async function db_purge_organization_workspace_content_batch(
 		await Promise.all(shareRows.map((doc) => ctx.db.delete("files_share_rows", doc._id)));
 		return { done: false, deletedCount: shareRows.length };
 	}
+	// The metadata docs above are gone, so no saver adds catalog deltas now. Delete the marker first:
+	// its scheduled compactor and rebuild jobs then do nothing.
+	for (const table of ["files_metadata_catalog_compactors", "files_metadata_catalog_deltas"] as const) {
+		const docs = await ctx.db
+			.query(table)
+			.withIndex("by_org_ws", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
+			.take(batchSize);
+		if (docs.length > 0) {
+			await Promise.all(docs.map((doc) => ctx.db.delete(table, doc._id)));
+			return { done: false, deletedCount: docs.length };
+		}
+	}
+	const catalogRows = await ctx.db
+		.query("files_metadata_catalog")
+		.withIndex("by_org_ws_family_parent_lower_field_value", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (catalogRows.length > 0) {
+		await Promise.all(catalogRows.map((doc) => ctx.db.delete("files_metadata_catalog", doc._id)));
+		return { done: false, deletedCount: catalogRows.length };
+	}
 	const releasedPrivateCount = await files_private_storage_db_release_purged_resources(ctx, args);
 	if (releasedPrivateCount > 0) return { done: false, deletedCount: releasedPrivateCount };
 	const pendingReviewVersions = await ctx.db

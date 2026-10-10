@@ -681,6 +681,41 @@ const files_metadata_committed_sort_fields = {
 	sortDisplayValue: v.optional(v.union(v.string(), v.number(), v.boolean())),
 };
 
+/**
+ * One row of `files_metadata_catalog`, and the change a delta makes to it. `server/files-metadata-catalog.ts`
+ * explains the families and counts.
+ */
+const files_metadata_catalog_row_fields = {
+	moveView: v.optional(files_move_view_tag_validator),
+	organizationId: v.id("organizations"),
+	workspaceId: v.id("organizations_workspaces"),
+	/**
+	 * The `check_*` families are shadow copies that only the audit writes and reads
+	 * (`check_metadata_catalog`); suggestion reads never read them.
+	 */
+	family: v.union(
+		v.literal("key"),
+		v.literal("value"),
+		v.literal("parent"),
+		v.literal("check_key"),
+		v.literal("check_value"),
+		v.literal("check_parent"),
+	),
+	/** Family `parent` only: the folder whose children have the key. */
+	parentId: v.optional(v.union(v.id("files_nodes"), v.literal("root"))),
+	/** `fieldPath` lowered one character at a time (`files_metadata_catalog_lower`), so a key prefix matches without case. */
+	fieldPathLower: v.string(),
+	fieldPath: v.string(),
+	/** Family `value` (and `check_value`) only. */
+	stringValue: v.optional(v.string()),
+	/** Field docs (`key`, `parent`) or string value docs (`value`). */
+	count: v.number(),
+	/** Family `key` (and `check_key`) only: value docs of each kind. */
+	kindCounts: v.optional(
+		v.object({ string: v.number(), number: v.number(), boolean: v.number(), maybe_date: v.number() }),
+	),
+};
+
 const files_text_chunk_fields = {
 	chunkIndex: v.number(),
 	textChunk: v.string(),
@@ -3981,6 +4016,51 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_node", ["nodeId", "moveView.cohortId", "moveView.view"])
 		.index("by_grant", ["grantId", "moveView.cohortId", "moveView.view"]),
+
+	/**
+	 * The metadata catalog: saved metadata keys and short string values of one workspace, counted, so
+	 * suggestion reads are one index range. Families: `key` (one row per key, with its kinds), `value`
+	 * (one row per key and string value) and `parent` (one row per folder and key of its children).
+	 * Rows of a Move cohort's view carry its `moveView`, like share rows.
+	 *
+	 * Derived docs: only the compactor writes them. Savers insert deltas instead. Any member sees
+	 * every row of the workspace, also from files they cannot open: an accepted leak until a search
+	 * engine arrives. See `server/files-metadata-catalog.ts`.
+	 */
+	files_metadata_catalog: defineTable(files_metadata_catalog_row_fields).index(
+		"by_org_ws_family_parent_lower_field_value",
+		[
+			"organizationId",
+			"workspaceId",
+			"moveView.cohortId",
+			"moveView.view",
+			"family",
+			"parentId",
+			"fieldPathLower",
+			"fieldPath",
+			"stringValue",
+		],
+	),
+
+	/**
+	 * Changes to `files_metadata_catalog` rows that the compactor has not applied yet. Savers only
+	 * insert them, so parallel saves of the same key never write the same doc.
+	 */
+	files_metadata_catalog_deltas: defineTable(files_metadata_catalog_row_fields).index("by_org_ws", [
+		"organizationId",
+		"workspaceId",
+	]),
+
+	/**
+	 * One marker per workspace while its compactor chain runs. Every compactor run gets the marker's
+	 * id, so deleting the marker stops the chain. Savers insert a `draining` marker and never patch
+	 * it. Only the rebuild uses `clearing` and `seeding`.
+	 */
+	files_metadata_catalog_compactors: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		phase: v.union(v.literal("clearing"), v.literal("seeding"), v.literal("draining")),
+	}).index("by_org_ws", ["organizationId", "workspaceId"]),
 
 	/**
 	 * Indexed metadata docs for a file. Field docs support existence search for presence-only
