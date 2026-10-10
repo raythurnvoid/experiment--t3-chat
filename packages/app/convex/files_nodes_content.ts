@@ -6686,60 +6686,6 @@ async function db_install_file_content_replacement(
 	return Result({ _yay: null });
 }
 
-/**
- * Accept a whole-file replacement (`cp` onto an app file): install the staged content as the
- * file's new content state, then consume the proposal.
- */
-export const finalize_file_pending_replacement = internalMutation({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		nodeId: v.id("files_nodes"),
-		pendingUpdateId: v.id("files_pending_updates"),
-		expectedRevision: v.number(),
-		stagedAssetId: v.id("files_r2_assets"),
-		/**
-		 * The document's last-sequence token the action read. Present for a collaborative file.
-		 */
-		expectedYjsLastSequence: v.optional(
-			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number() }),
-		),
-		/**
-		 * The latest text of a collaborative file, kept as a version. See `db_install_file_content_replacement`.
-		 */
-		backup: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
-		contentAssetId: v.id("files_r2_assets"),
-		contentSize: v.number(),
-		contentType: v.string(),
-		/**
-		 * Absent for stored bytes. Then `text` and `yjsSnapshot` are absent too.
-		 */
-		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
-		nonCollaborative: v.optional(v.boolean()),
-		/**
-		 * The new document. Present only for a collaborative text result.
-		 */
-		yjsSnapshot: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
-		/**
-		 * The committed text of a text result.
-		 */
-		text: v.optional(v.string()),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const organization = await ctx.db.get("organizations", args.organizationId);
-		if (!organization) return Result({ _nay: { message: "Not found" } });
-		return await files_nodes_content_db_finalize_pending_replacement({
-			ctx,
-			...args,
-			actor: {
-				billedUserId: billing_pick_billed_user_id({ userId: args.userId, organization }),
-			},
-		});
-	},
-});
-
 export async function files_nodes_content_db_finalize_pending_replacement(args: {
 	ctx: MutationCtx;
 	organizationId: Id<"organizations">;

@@ -2102,10 +2102,7 @@ const app_convex_schema = defineSchema({
 		errorMessage: v.union(v.string(), v.null()),
 		conflictItemId: v.union(v.id("files_move_cohort_items"), v.null()),
 	})
-		.index("by_workspace_phase", ["organizationId", "workspaceId", "phase"])
 		.index("by_origin_run", ["origin.kind", "origin.runId"])
-		.index("by_origin_item", ["origin.kind", "origin.itemId"])
-		.index("by_origin_unit", ["origin.kind", "origin.unitId"])
 		.index("by_deadline", ["phase", "deadlineAt"])
 		.index("by_user", ["userId"]),
 
@@ -2251,8 +2248,7 @@ const app_convex_schema = defineSchema({
 		.index("by_cohort_order", ["cohortId", "order"])
 		.index("by_cohort_proposal", ["cohortId", "pendingUpdateId"])
 		.index("by_cohort_target", ["cohortId", "target.kind", "target.id"])
-		.index("by_cohort_status_order", ["cohortId", "status", "order"])
-		.index("by_cohort_billing_order", ["cohortId", "billingState", "order"]),
+		.index("by_cohort_status_order", ["cohortId", "status", "order"]),
 
 	files_move_cohort_content: defineTable({
 		cohortId: v.id("files_move_cohorts"),
@@ -2353,8 +2349,7 @@ const app_convex_schema = defineSchema({
 		preparedMediaSet: files_move_dependency_set_validator,
 	})
 		.index("by_cohort_node", ["cohortId", "nodeId"])
-		.index("by_cohort_proposal", ["cohortId", "pendingUpdateId"])
-		.index("by_cohort_sealed_node", ["cohortId", "sealed", "nodeId"]),
+		.index("by_cohort_proposal", ["cohortId", "pendingUpdateId"]),
 
 	files_move_owner_work: defineTable({
 		cohortId: v.id("files_move_cohorts"),
@@ -2440,8 +2435,7 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_cohort_key", ["cohortId", "key"])
 		.index("by_cohort_phase_status_order", ["cohortId", "phase", "status", "order"])
-		.index("by_cohort_order", ["cohortId", "order"])
-		.index("by_status_nextAttemptAt", ["status", "nextAttemptAt"]),
+		.index("by_cohort_order", ["cohortId", "order"]),
 
 	files_move_owner_list_keys: defineTable({
 		cohortId: v.id("files_move_cohorts"),
@@ -2711,7 +2705,6 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_owner_kind", ["owner.kind"])
 		.index("by_owner_pendingUpdate", ["owner.pendingUpdateId"])
-		.index("by_owner_cohortContent", ["owner.contentId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_user", ["userId"]),
 
@@ -2907,8 +2900,7 @@ const app_convex_schema = defineSchema({
 			"order",
 		])
 		.index("by_plan_order", ["planId", "order"])
-		.index("by_plan_visited_order", ["planId", "visited", "order"])
-		.index("by_plan_unit_order", ["planId", "unitId", "order"]),
+		.index("by_plan_visited_order", ["planId", "visited", "order"]),
 
 	files_pending_update_plan_relations: defineTable({
 		planId: v.id("files_pending_update_plans"),
@@ -2928,7 +2920,6 @@ const app_convex_schema = defineSchema({
 		kind: files_pending_update_plan_relation_kind_validator,
 	})
 		.index("by_plan_from_to_kind", ["planId", "fromItemId", "toItemId", "kind"])
-		.index("by_plan_from", ["planId", "fromItemId"])
 		.index("by_plan_from_order", ["planId", "fromItemId", "order"])
 		.index("by_plan", ["planId"]),
 
