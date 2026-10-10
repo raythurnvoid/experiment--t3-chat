@@ -698,6 +698,7 @@ async function db_items(
 	let origin: Doc<"files_move_cohort_items">["origin"];
 	let proposal: Doc<"files_pending_updates"> | null = null;
 	let input: Doc<"files_pending_update_run_items"> | null = null;
+	let settlementOnly = false;
 	if (cohort.origin.kind === "review") {
 		input = await ctx.db
 			.query("files_pending_update_run_items")
@@ -717,6 +718,12 @@ async function db_items(
 			return Result({ _nay: { name: "needs_review", message: "A reviewed change was revised. Review it again." } });
 		target = proposal.target;
 		origin = { kind: "review", itemId: input._id };
+		const run = (await ctx.db.get("files_pending_update_runs", cohort.origin.runId))!;
+		const vertex = await ctx.db
+			.query("files_pending_update_plan_items")
+			.withIndex("by_plan_runItem", (q) => q.eq("planId", run.graphPlanId!).eq("runItemId", input!._id))
+			.unique();
+		settlementOnly = target.kind === "saved" && vertex?.settlementOnly === true;
 	} else {
 		if (order !== 0) return Result({ _yay: { done: true } });
 		const transfer = await ctx.db.get("files_transfer_items", cohort.origin.itemId);
@@ -764,8 +771,9 @@ async function db_items(
 	}
 	if (reserved._nay) return reserved;
 	// Accepting a delete ignores the content changes and removes the draft with its pending index docs.
+	// A replaced occupant does the same: its selected change only settles when the occupant is archived.
 	const afterProposal =
-		!proposal?.pendingArchive && (proposal?.content || proposal?.pendingReplacement)
+		!settlementOnly && !proposal?.pendingArchive && (proposal?.content || proposal?.pendingReplacement)
 			? (() => {
 					const { _id: _id, _creationTime: _time, moveCohortId: _marker, ...header } = proposal;
 					return { ...header, pendingMove: undefined, pendingArchive: undefined, revision: proposal.revision + 1 };
@@ -791,7 +799,7 @@ async function db_items(
 	});
 	await ctx.db.patch("files_move_cohort_nodes", reserved._yay, {
 		itemId,
-		role: target.kind === "private" ? "allocated" : "selected",
+		role: target.kind === "private" ? "allocated" : settlementOnly ? "replacement" : "selected",
 	});
 	if (proposal) await ctx.db.patch("files_pending_updates", proposal._id, { moveCohortId: cohort._id });
 	await ctx.db.patch("files_move_cohorts", cohort._id, { stagedItemCount: order + 1 });
@@ -1266,7 +1274,13 @@ async function db_headers(
 				.query("files_move_cohort_nodes")
 				.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).eq("nodeId", occupant._id))
 				.unique();
-			if (!occupantRecord || occupantRecord.role === "anchor" || occupantRecord.role === "descendant") {
+			// A replacement record here is the occupant's own selected change. The source still checks the occupant.
+			if (
+				!occupantRecord ||
+				occupantRecord.role === "anchor" ||
+				occupantRecord.role === "descendant" ||
+				occupantRecord.role === "replacement"
+			) {
 				let replacement = proposal?.pendingMove?.replacesTarget;
 				let version = proposal?.pendingMove?.replacesContentVersion ?? null;
 				if (item?.origin.kind === "transfer") {
@@ -1825,8 +1839,9 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 							});
 					}
 				} else {
-					// An accepted delete skips the content step. Drop the text it ignored, with its untagged index docs.
-					if (proposal.pendingArchive && proposal.content) {
+					// An accepted delete or replaced occupant skips the content step. Drop the text it ignored,
+					// with its untagged index docs.
+					if ((proposal.pendingArchive || record.role === "replacement") && proposal.content) {
 						await files_db_retire_pending_update_yjs_states(ctx, {
 							organizationId: proposal.organizationId,
 							workspaceId: proposal.workspaceId,
@@ -2117,6 +2132,7 @@ export const advance = internalMutation({
 				if (
 					proposal &&
 					!proposal.pendingArchive &&
+					record.role !== "replacement" &&
 					(proposal.content || proposal.pendingReplacement || item.target.kind === "private")
 				) {
 					const created = await files_move_content_db_create(ctx, { ...call, itemId: item._id, nodeId: record.nodeId });

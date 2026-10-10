@@ -1827,30 +1827,13 @@ describe("private pending text", () => {
 			}
 			const savedBefore = await t.run((ctx) => ctx.db.query("files_nodes").collect());
 			const threadId = await t.run((ctx) => seed_chat_thread({ ctx, ...scope }));
-			const started = await t.mutation(internal.files_transfer.start_for_agent, {
-				membershipId,
-				sourceWorkspace: "current",
-				destinationWorkspace: "current",
+			// The helper seals the source page. An unsealed run stays queued.
+			const finished = await run_agent_move_for_test(draft, {
+				target: sourceTarget,
+				destName: "destination.txt",
 				threadId,
-				requestId: "private-replacement",
-				kind: "move",
-				sources: [sourceTarget],
-				targetParent: { kind: "root" },
-				targetPath: "/",
-				targetName: "destination.txt",
-				missingParentNames: [],
-				conflictPolicy: { file: "replace", folder: "merge" },
 			});
-			if (started._nay) throw new Error(started._nay.message);
-			const runId = started._yay.runId;
-			for (let step = 0; step < 20; step += 1) {
-				const view = await asUser.query(api.files_transfer.get, { membershipId, runId });
-				if (!view) throw new Error("Expected the transfer");
-				if (view.activity.status !== "queued" && view.activity.status !== "running") break;
-				await t.mutation(internal.files_transfer.advance, { runId });
-			}
-			const finished = await asUser.query(api.files_transfer.get, { membershipId, runId });
-			expect(finished?.activity, finished?.activity.errorMessage ?? "Expected a completed move").toMatchObject({
+			expect(finished.activity, finished.activity.errorMessage ?? "Expected a completed move").toMatchObject({
 				status: "succeeded",
 				progress: { completed: 1, failed: 0 },
 			});
@@ -1959,6 +1942,10 @@ describe("private pending text", () => {
 			} else {
 				vi.useFakeTimers();
 				try {
+					// The Move job keeps the draft until its four-hour review window ends, a little after
+					// the edit window. The first expiry run releases that hold and retries later.
+					await expire_pending_update_for_test(t, proposal._id);
+					expect(await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).not.toBeNull();
 					await expire_pending_update_for_test(t, proposal._id);
 				} finally {
 					vi.useRealTimers();
@@ -2056,7 +2043,10 @@ describe("private pending text", () => {
 		expect(
 			await t.run((ctx) => read_file_markdown_from_yjs({ ctx, ...draft, nodeId: occupantId, rootKind: "plain_text" })),
 		).toBe(savedText);
-		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual(proposal);
+		// The finished Save job only moves expiry later, to its four-hour review window.
+		const kept = await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id));
+		expect(kept).toEqual({ ...proposal, expiresAt: kept?.expiresAt });
+		expect(kept?.expiresAt).toBeGreaterThanOrEqual(proposal.expiresAt);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", draft.target.id))).toMatchObject({
 			state: "active",
 			name: "destination.txt",
@@ -2253,9 +2243,10 @@ describe("private pending text", () => {
 			expect(proposal.threadIds).toEqual(expect.arrayContaining([firstThread, secondThread]));
 			expect(proposal.threadIds).toHaveLength(2);
 			// The discarded occupant's proposal stays until cleanup. It must not mask the surviving source.
-			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", occupant.pendingUpdateId))).toEqual(
-				occupantProposal,
-			);
+			// The finished Move job only moves its expiry later, to the four-hour review window.
+			const keptOccupant = await t.run((ctx) => ctx.db.get("files_pending_updates", occupant.pendingUpdateId));
+			expect(keptOccupant).toEqual({ ...occupantProposal, expiresAt: keptOccupant?.expiresAt });
+			expect(keptOccupant?.expiresAt).toBeGreaterThanOrEqual(occupantProposal!.expiresAt);
 			const visible = await list_root_for_test(t, { membershipId });
 			expect(visible._yay?.items.map(({ target, path }) => ({ target, path }))).toEqual([
 				{ target: sourceTarget, path: "/destination.txt" },
@@ -2525,13 +2516,16 @@ describe("private pending text", () => {
 							pendingUpdateId: proposal._id,
 							reviewedRevision: proposal.revision,
 						})
-					)._nay?.message,
-				).toBe("Directory not empty");
+					)._nay,
+				).toEqual({ name: "needs_review", message: "Cannot replace a non-empty folder." });
 			} else {
 				expect((await save_pending_review_for_test(draft, [proposal]))?.activity.status).toBe("failed");
 			}
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
-			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual(proposal);
+			// The finished Save job only moves expiry later, to its four-hour review window.
+			const kept = await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id));
+			expect(kept).toEqual({ ...proposal, expiresAt: kept?.expiresAt });
+			expect(kept?.expiresAt).toBeGreaterThanOrEqual(proposal.expiresAt);
 		},
 	);
 
@@ -2839,18 +2833,20 @@ describe("private pending text", () => {
 				}),
 			),
 		).toBe("accepted\n");
-		const stale = await test_save_file_pending_update(asUser, {
+		// The same Save request replays its finished attempt. It does not save the old review again.
+		const replayed = await test_save_file_pending_update(asUser, {
 			membershipId,
 			target,
 			pendingUpdateId,
 			reviewedRevision: proposal.revision,
 		});
-		expect(stale._nay).toBeDefined();
+		expect(replayed._yay?.target).toEqual(savedTarget);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId))).toEqual(remaining);
 	});
 
 	test("allows Save but refuses more draft bytes when private storage is full", async () => {
-		const draft = await create_private_text_for_test({ staged: "accepted\n", unstaged: "remaining\n" });
+		// A full Save frees private bytes. A partial Save that grows private storage still needs quota.
+		const draft = await create_private_text_for_test({ staged: "accepted\n" });
 		const { t, asUser, membershipId, target, pendingUpdateId, proposal } = draft;
 		await t.run(async (ctx) => {
 			for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes"] as const) {
@@ -2889,6 +2885,7 @@ describe("private pending text", () => {
 		});
 		if (saved._nay) throw new Error(saved._nay.message);
 		expect(saved._yay.target.kind).toBe("saved");
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId))).toBeNull();
 	});
 
 	test("refuses an old review after the owner renames the draft", async () => {
@@ -3041,13 +3038,14 @@ describe.each(["saved", "private"] as const)("%s Copy action replies", (kind) =>
 			expect(visible.copiedFrom?.path).toBe("/source.md");
 			const before = await t.run((ctx) => ctx.db.get("files_pending_updates", visible._id));
 			if (!before?.content) throw new Error("Expected the stored Copy");
+			// Rename runs as a Move job. The helper finishes it before the next step.
 			expect(
 				await test_rename_node(t, asUser, {
 					membershipId: source.membershipId,
 					nodeId: source.nodeId,
 					path: "renamed.md",
 				}),
-			).toEqual({ _yay: null });
+			).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 			let returned: Doc<"files_pending_updates"> | null;
 			if (operation === "prepare") {
 				const result = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, {
@@ -14410,7 +14408,7 @@ describe("apply_file_pending_move", () => {
 				target: { kind: "saved", id: seeded.nodeId },
 			})),
 		});
-		expect(refused._nay?.name).toBe("needs_review");
+		expect(refused._nay?.name).toBe("destination_changed");
 		expect(await read_pending_review_state_for_test(t)).toEqual(beforeReview);
 	});
 
@@ -14725,7 +14723,7 @@ describe("apply_file_pending_move", () => {
 				target: { kind: "saved", id: seeded.nodeId },
 			})),
 		});
-		expect(refused._nay?.name).toBe("needs_review");
+		expect(refused._nay?.name).toBe("destination_changed");
 		expect(await read_pending_review_state_for_test(t)).toEqual(beforeReview);
 	});
 
@@ -16187,7 +16185,7 @@ describe("apply_file_pending_move", () => {
 				target: { kind: "saved", id: folderId },
 			})),
 		});
-		expect(refused._nay?.name).toBe("needs_review");
+		expect(refused._nay?.name).toBe("destination_changed");
 		expect(await read_pending_review_state_for_test(t)).toEqual(beforeReview);
 	});
 
@@ -16262,7 +16260,7 @@ describe("apply_file_pending_move", () => {
 				target: { kind: "saved", id: folderId },
 			})),
 		});
-		expect(applied._nay?.name).toBe("needs_review");
+		expect(applied._nay?.name).toBe("destination_changed");
 		expect(await read_pending_review_state_for_test(t)).toEqual(beforeReview);
 	});
 
@@ -16327,7 +16325,7 @@ describe("apply_file_pending_move", () => {
 				target: { kind: "saved", id: folderId },
 			})),
 		});
-		expect(refused._nay?.name).toBe("needs_review");
+		expect(refused._nay?.name).toBe("destination_changed");
 		expect(await read_pending_review_state_for_test(t)).toEqual(beforeReview);
 	});
 
@@ -17810,7 +17808,7 @@ describe("discard_file_pending_structural", () => {
 				target: { kind: "saved", id: folderAId },
 			})),
 		});
-		expect(refused._nay?.name).toBe("needs_review");
+		expect(refused._nay?.name).toBe("destination_changed");
 		expect(await read_pending_review_state_for_test(t)).toEqual(beforeReview);
 	});
 
