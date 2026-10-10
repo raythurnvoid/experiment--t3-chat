@@ -43,9 +43,9 @@ import {
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { convex_error } from "./convex-utils.ts";
 import {
+	files_share_rows_db_node_changed,
 	files_share_rows_db_sync_grant,
 	files_share_rows_db_sync_node,
-	files_share_rows_node_changed,
 	files_share_rows_NODE_FIELDS,
 } from "./files-share-rows.ts";
 import { files_visible_resolve_db_create } from "./files-visible-resolve.ts";
@@ -2153,9 +2153,9 @@ async function db_flush_saved_node(
 			if (Object.keys(patch).length > 0) await ctx.db.patch("files_pending_places", place._id, patch);
 		}
 
-	// Only a node that is or was a restricted scope root has share rows. An ancestor's move, rename or
-	// archive changes no copied field: an archive or restore writes the node itself too.
-	if (files_share_rows_node_changed(nodeId, old, node))
+	// An ancestor's move or rename changes the copied `treePath`, and its Move cohort syncs each node it
+	// writes. An archive or restore writes the node itself too.
+	if (await files_share_rows_db_node_changed(ctx.db, nodeId, old, node))
 		await files_share_rows_db_sync_node(ctx.db, { ...scope, nodeId, node });
 
 	const changed =

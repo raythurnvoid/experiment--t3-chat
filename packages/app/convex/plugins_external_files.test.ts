@@ -2809,7 +2809,9 @@ describe("external file readers", () => {
 				.map((row) => ({ principalKey: row.principalKey, lifetime: row.externalPluginMembershipLifetime }))
 				.sort((a, b) => (a.principalKey < b.principalKey ? -1 : 1));
 		const keys = readers.map((reader) => `user:${reader.userId}`).sort();
-		expect(await rows()).toEqual(keys.map((principalKey) => ({ principalKey, lifetime: 1 })));
+		// The plugin's service account reads the folder too, with no membership lifetime.
+		const plugin = { principalKey: expect.stringMatching(/^service_account:/), lifetime: null };
+		expect(await rows()).toEqual([plugin, ...keys.map((principalKey) => ({ principalKey, lifetime: 1 }))]);
 
 		// A manual share detaches the folder: the grants lose their lifetime, and so do the rows.
 		expect(
@@ -2822,7 +2824,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		expect(await rows()).toEqual(keys.map((principalKey) => ({ principalKey, lifetime: null })));
+		expect(await rows()).toEqual([plugin, ...keys.map((principalKey) => ({ principalKey, lifetime: null }))]);
 		const differences: string[] = [];
 		let cursor: string | null = null;
 		do {

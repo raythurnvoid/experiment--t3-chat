@@ -938,22 +938,31 @@ Five rules that look like details and are not:
 ### Share rows
 
 `files_share_rows` holds one row per share, so a member's shared items can be paged with indexes like
-the folder table. Code: `packages/app/server/files-share-rows.ts`.
+the folder table, and a reader can list the restricted folders it may read in path order (see
+"Readable scopes" below). Code: `packages/app/server/files-share-rows.ts`.
 
-- A share is a file `content.read` grant to a user or a role. Its row lives while the grant lives and
-  its node is a restricted scope root in the grant's organization and workspace, active or archived.
-  Service account and public grants have no row.
-- `principalKey` is `user:<userId>` or `role:<role>`. A role share is one row, not one row per member.
-- A row copies the node's list fields (parent, kind, archive, names, `updatedAt`, extension, size,
-  creation time) and the grant's `externalPluginMembershipLifetime` (`null` when missing).
+- A share is a file `content.read` grant to a user, a role or a service account. Its row lives while
+  the grant lives and its node is a restricted scope root in the grant's organization and workspace,
+  active or archived. A service account grant also has a row while its node is open, because an
+  account reads one open node through its own grant. A public grant has no row.
+- `principalKey` is `user:<userId>`, `role:<role>` or `service_account:<serviceAccountId>`. A role
+  share is one row, not one row per member.
+- A row copies the node's list fields (parent, kind, archive, names, `treePath`, `updatedAt`,
+  extension, size, creation time) and the grant's `externalPluginMembershipLifetime` (`null` when
+  missing).
 - Nothing writes rows by hand. The pending overlay flush keeps them true in the writer's transaction
   (grants are one of its source tables): a file grant insert, patch or delete syncs that grant's row,
-  and a write to a node that is or was a restricted root syncs the node's rows. A move, rename or
-  archive of an ancestor changes no copied field.
+  and a write to a node that is or was a restricted root syncs the node's rows. Another node syncs
+  when it opens or closes, or when it has rows and a copied field changed (one `by_node` range). A
+  move or rename of an ancestor changes `treePath`, and its Move cohort syncs each node it writes.
 - A node sync reads the node's `content.read` grants in the node's own workspace with one range
   (`by_resource_permission`). The share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people and roles, in
-  `files_sharing.ts`, and `MAX_READERS`, 50 plugin readers, in `plugins_external_files.ts`) bound it
-  to about 100 rows.
+  `files_sharing.ts`, the same 50 with service accounts in
+  `access_control_db_set_service_account_grant`, and `MAX_READERS`, 50 plugin readers, in
+  `plugins_external_files.ts`) bound it to about 100 rows.
+- `treePath` is optional only until `migrations:run_backfill_files_share_rows_tree_path` has run and
+  `check_share_rows` finds no difference. Until then the share streams accept a row with no
+  `treePath`.
 - Move stages share docs in pages before the group switch. Ordinary selections and connected
   Pending Save groups use the same worker. Share docs count in each transaction's measured
   budget. They do not create a total selection cap.
@@ -962,6 +971,29 @@ the folder table. Code: `packages/app/server/files-share-rows.ts`.
   There is no repair door. To fix drift, write a one-time mutation that calls
   `files_share_rows_db_sync_grant` (`server/files-share-rows.ts`) for each reported grant.
 - Data deletion: see `../data-deletion/SKILL.md`.
+
+### Readable scopes
+
+`server/files-readable-scopes.ts` tells a file list which rows it may read, so a list never reads a
+hidden row only to drop it. Rows are split by their stored `restrictedScopeNodeId`: open content
+(null) and one partition per restricted folder. No list reads it yet.
+
+- `files_readable_scopes_db_reader` is the one flat-mode decision. The owner without a service
+  account, plugin volumes and GLOBAL reserved workspaces read flat. A member acting through a service
+  account reads flat too for now, with the per-row filter: an intersection of the account's and the
+  member's folders has no bounded read yet. Everyone else is `scoped`, with the share row principals
+  to read (the member and their roles, or the account when the owner acts through it).
+- `files_readable_scopes_db_enumerate_by_path` pages one principal's rows on
+  `by_org_ws_principal_archive_treePath` under a folder, after a `treePath`, and checks each row
+  again like the share streams. It gives `scope` items (restricted folders) and `node` items (open
+  nodes an account reads by its own grant). The caller merges the principals by `treePath`. Folder
+  `/` walks the whole workspace.
+- `files_readable_scopes_db_plan` gives the partitions open at a list's last key: open content, the
+  folder's own stored scope, the readable restricted folders that hold the key, and the
+  **transitional partitions** of running unrestrict jobs. A child of an unrestricted folder keeps the
+  dead pointer until its job writes it, so the plan opens that pointer's partition, readable like its
+  live scope. It reads at most 500 scope ops of the workspace. Past that, the children of the other
+  jobs stay hidden until their job runs (closed, never open).
 
 ## Public file links
 

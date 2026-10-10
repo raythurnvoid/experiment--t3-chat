@@ -1,12 +1,15 @@
-// Share rows (`files_share_rows`): one copy of a restricted node per share, so a member's shared items
-// can be paged with indexes like the folder table. A share is a file `content.read` grant to a user or
-// a role. The copy lives while the grant lives and its node is a restricted scope root in the grant's
-// workspace, active or archived.
+// Share rows (`files_share_rows`): one copy of a node per file `content.read` grant, so a member's
+// shared items can be paged with indexes like the folder table, and a reader can list the restricted
+// folders it may read in path order (`server/files-readable-scopes.ts`). A user or role grant has a
+// copy while its node is a restricted scope root in the grant's workspace, active or archived. A
+// service account grant has one on a restricted scope root too, and also on an open node: an account
+// may read one open node through its own grant.
 //
 // The overlay flush (`server/files-pending-overlay.ts`) keeps them true in the writer's transaction: a
-// grant write syncs its row, and a write to a node that is or was a restricted scope root syncs the
-// node's rows. Shares per node are bounded by the share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people
-// and roles, in `convex/files_sharing.ts`, and `MAX_READERS`, 50 plugin readers, in
+// grant write syncs its row, and a write to a node that has or may get a row syncs the node's rows.
+// Shares per node are bounded by the share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people and roles, in
+// `convex/files_sharing.ts`, the same 50 with service accounts in
+// `access_control_db_set_service_account_grant`, and `MAX_READERS`, 50 plugin readers, in
 // `convex/plugins_external_files.ts`). A reserved node has at most two copies per grant.
 //
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
@@ -29,15 +32,17 @@ export const files_share_rows_NODE_FIELDS = [
 	"archiveOperationId",
 	"sortName",
 	"name",
+	"treePath",
 	"updatedAt",
 	"lowercaseExtension",
 	"contentByteSize",
 ] as const;
 
 /**
- * The `principalKey` of a user or a role. The writes and the member reads build it here, so they match.
+ * The `principalKey` of a user, a role or a service account. The writes and the reads build it here,
+ * so they match.
  */
-export function files_share_rows_principal_key(kind: "user" | "role", id: string) {
+export function files_share_rows_principal_key(kind: "user" | "role" | "service_account", id: string) {
 	return `${kind}:${id}`;
 }
 
@@ -51,19 +56,23 @@ function share_row_of(
 ): ShareRow | null {
 	if (grant.resourceKind !== "file" || grant.permission !== "content.read" || grant.resourceId !== node._id)
 		return null;
-	// Service account and public grants are not shares.
+	// Public grants are not shares.
 	const principalKey =
 		grant.principalKind === "user" && grant.userId
 			? files_share_rows_principal_key("user", grant.userId)
 			: grant.principalKind === "role" && grant.role
 				? files_share_rows_principal_key("role", grant.role)
-				: null;
+				: grant.principalKind === "service_account" && grant.serviceAccountId
+					? files_share_rows_principal_key("service_account", grant.serviceAccountId)
+					: null;
 	if (!principalKey) return null;
 	// A grant may name a node id of another workspace. Never copy such a node.
+	if (node.organizationId !== grant.organizationId || node.workspaceId !== grant.workspaceId) return null;
+	// A grant reads a restricted node only on its scope root. A service account grant on an open node
+	// reads that one node (`access_control_db_has_permission`).
 	if (
-		node.organizationId !== grant.organizationId ||
-		node.workspaceId !== grant.workspaceId ||
-		node.restrictedScopeNodeId !== node._id
+		node.restrictedScopeNodeId !== node._id &&
+		(grant.principalKind !== "service_account" || node.restrictedScopeNodeId !== null)
 	)
 		return null;
 
@@ -79,6 +88,7 @@ function share_row_of(
 		archiveOperationId: node.archiveOperationId,
 		sortName: node.sortName,
 		name: node.name,
+		treePath: node.treePath,
 		updatedAt: node.updatedAt,
 		lowercaseExtension: node.lowercaseExtension ?? null,
 		contentByteSize: node.contentByteSize ?? null,
@@ -194,24 +204,40 @@ export async function files_share_rows_db_sync_grant(
 }
 
 /**
- * Whether a node write changes its share rows: the node is or was a restricted scope root, and a
- * copied field, its workspace or its scope changed. `old` holds the node's fields before the write
- * (null for an insert) and `node` the doc after it (null for a delete).
+ * Whether a node write changes its share rows. `old` holds the node's fields before the write (null
+ * for an insert) and `node` the doc after it (null for a delete).
+ *
+ * A node that is or was a restricted scope root changes when a copied field, its workspace or its
+ * scope changed. Another node has rows only from service account grants, and only while it is open.
+ * So it changes when it opens or closes, or when it has rows and a copied field changed: one range.
  */
-export function files_share_rows_node_changed(
+export async function files_share_rows_db_node_changed(
+	db: QueryCtx["db"],
 	nodeId: Id<"files_nodes">,
 	old: Record<string, unknown> | null,
 	node: Doc<"files_nodes"> | null,
 ) {
 	const wasRoot = old?.restrictedScopeNodeId === nodeId;
 	const isRoot = node?.restrictedScopeNodeId === nodeId;
-	if (!wasRoot && !isRoot) return false;
-	if (!old || !node || wasRoot !== isRoot) return true;
-	return (
+	if ((wasRoot || isRoot) && (!old || !node || wasRoot !== isRoot)) return true;
+	const fieldsChanged =
+		!old ||
+		!node ||
 		old.moveCohortId !== node.moveCohortId ||
 		old.organizationId !== node.organizationId ||
 		old.workspaceId !== node.workspaceId ||
-		files_share_rows_NODE_FIELDS.some((field) => old[field] !== node[field])
+		files_share_rows_NODE_FIELDS.some((field) => old[field] !== node[field]);
+	if (wasRoot || isRoot) return fieldsChanged;
+
+	// A new node has no grant yet.
+	if (!old) return false;
+	if (node && (old.restrictedScopeNodeId === null) !== (node.restrictedScopeNodeId === null)) return true;
+	return (
+		fieldsChanged &&
+		(await db
+			.query("files_share_rows")
+			.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+			.first()) !== null
 	);
 }
 
@@ -230,8 +256,11 @@ export async function files_share_rows_db_sync_node(
 ) {
 	const { node } = args;
 	const desiredByGrant = new Map<string, ShareRow>();
-	if (node && (node.restrictedScopeNodeId === node._id || node.moveCohortId)) {
-		// Service account and public `content.read` grants are in this range too, but have no row.
+	if (
+		node &&
+		(node.restrictedScopeNodeId === node._id || node.restrictedScopeNodeId === null || node.moveCohortId)
+	) {
+		// Public `content.read` grants are in this range too, but have no row.
 		const grants = await db
 			.query("access_control_permission_grants")
 			.withIndex("by_resource_permission", (q) =>

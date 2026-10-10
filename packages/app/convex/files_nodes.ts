@@ -5571,10 +5571,14 @@ async function db_get_share_tree_rows(
 			return false;
 		}
 		// The overlay flush keeps the copy in step with the node. A copy out of step is a bug, and its
-		// row would show in the wrong folder, segment or order.
+		// row would show in the wrong folder, segment or order. A row written before `treePath` existed
+		// has none until `backfill_files_share_rows_tree_path` runs.
 		if (
 			shareRow.nodeCreationTime !== node._creationTime ||
-			files_share_rows_NODE_FIELDS.some((field) => shareRow[field] !== (node[field] ?? null))
+			files_share_rows_NODE_FIELDS.some(
+				(field) =>
+					!(field === "treePath" && shareRow.treePath === undefined) && shareRow[field] !== (node[field] ?? null),
+			)
 		) {
 			console.error("files_share_rows copy is mismatched", { shareRowId: shareRow._id, nodeId: node._id });
 			return false;

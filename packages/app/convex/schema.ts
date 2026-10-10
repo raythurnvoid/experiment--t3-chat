@@ -3957,10 +3957,11 @@ const app_convex_schema = defineSchema({
 		.index("by_user", ["userId"]),
 
 	/**
-	 * One doc per share: a file `content.read` grant to a user or a role, while its node is a restricted
-	 * scope root in the grant's workspace, active or archived. The other fields copy the node, so each
-	 * index mirrors a folder table sort index for one principal. A role share is one doc, not one per
-	 * member, so a role membership change writes nothing.
+	 * One doc per share: a file `content.read` grant to a user, a role or a service account, while its
+	 * node is a restricted scope root in the grant's workspace, active or archived. A service account
+	 * grant also has a doc while its node is open. The other fields copy the node, so each index mirrors
+	 * a folder table sort index for one principal. A role share is one doc, not one per member, so a
+	 * role membership change writes nothing.
 	 *
 	 * Derived docs: only the overlay flush (`server/files-pending-overlay.ts`, with the helpers in
 	 * `server/files-share-rows.ts`) and data deletion write them.
@@ -3970,7 +3971,8 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		/**
-		 * `"user:<userId>"` or `"role:<role ref>"`, so one index serves both principals.
+		 * `"user:<userId>"`, `"role:<role ref>"` or `"service_account:<serviceAccountId>"`, so one index
+		 * serves every principal.
 		 */
 		principalKey: v.string(),
 		grantId: v.id("access_control_permission_grants"),
@@ -3980,6 +3982,11 @@ const app_convex_schema = defineSchema({
 		archiveOperationId: v.union(v.string(), v.null()),
 		sortName: v.string(),
 		name: v.string(),
+		/**
+		 * The node's `treePath`. Optional only until `backfill_files_share_rows_tree_path` has run;
+		 * every write sets it.
+		 */
+		treePath: v.optional(v.string()),
 		updatedAt: v.number(),
 		lowercaseExtension: v.union(v.string(), v.null()),
 		contentByteSize: v.union(v.number(), v.null()),
@@ -4067,6 +4074,17 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"sortName",
 			"name",
+		])
+		// The restricted folders and service account nodes one principal may read, in path order
+		// (`server/files-readable-scopes.ts`).
+		.index("by_org_ws_principal_archive_treePath", [
+			"organizationId",
+			"workspaceId",
+			"principalKey",
+			"moveView.cohortId",
+			"moveView.view",
+			"archiveOperationId",
+			"treePath",
 		])
 		.index("by_node", ["nodeId", "moveView.cohortId", "moveView.view"])
 		.index("by_grant", ["grantId", "moveView.cohortId", "moveView.view"]),
