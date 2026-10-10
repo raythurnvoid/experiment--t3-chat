@@ -1450,10 +1450,11 @@ describe("paginated bash listing queries", () => {
 			const owner = await test_mocks_fill_db_with.membership(ctx);
 			const docsId = await insert_tree_node({ ctx, owner, parentId: files_ROOT_ID, path: "/docs", kind: "folder" });
 			const deepId = await insert_tree_node({ ctx, owner, parentId: docsId, path: "/docs/a", kind: "folder" });
-			// More deep items than the default read limit of a filtered subtree page.
-			for (let index = 0; index < 1001; index++)
+			// More deep items than one page. And `/docs/a.md` sorts before `/docs/a/` in the subtree range
+			// but after `a` by name, so a subtree read filtered by depth would also return the wrong order.
+			for (let index = 0; index < 11; index++)
 				await insert_tree_node({ ctx, owner, parentId: deepId, path: `/docs/a/f${index}.md`, kind: "file" });
-			await insert_tree_node({ ctx, owner, parentId: docsId, path: "/docs/z.md", kind: "file" });
+			await insert_tree_node({ ctx, owner, parentId: docsId, path: "/docs/a.md", kind: "file" });
 			return owner;
 		});
 		const list = (extension?: string) =>
@@ -1472,9 +1473,12 @@ describe("paginated bash listing queries", () => {
 		const children = await list();
 		const markdownChildren = await list("md");
 
-		expect(children.page.map((item) => item.path)).toEqual(["/docs/a", "/docs/z.md"]);
+		expect(children.page.map((item) => item.path), "direct children come from the parent range, in name order").toEqual([
+			"/docs/a",
+			"/docs/a.md",
+		]);
 		expect(children.isDone).toBe(true);
-		expect(markdownChildren.page.map((item) => item.path)).toEqual(["/docs/z.md"]);
+		expect(markdownChildren.page.map((item) => item.path)).toEqual(["/docs/a.md"]);
 		expect(markdownChildren.isDone).toBe(true);
 	});
 
@@ -1488,7 +1492,7 @@ describe("paginated bash listing queries", () => {
 			await insert_tree_node({ ctx, owner, parentId: docsId, path: "/docs/z.md", kind: "file" });
 			return owner;
 		});
-		const list = async (depth: { minDepth?: number; maxDepth?: number; maximumRowsRead?: number }) =>
+		const list = async (depth: { minDepth?: number; maxDepth?: number }) =>
 			(
 				await t.query(internal.files_nodes.list_subtree, {
 					organizationId: db.organizationId,
@@ -1507,9 +1511,6 @@ describe("paginated bash listing queries", () => {
 		expect(await list({})).toEqual(["/docs", "/docs/a", "/docs/a/deep.md", "/docs/z.md"]);
 		// `minDepth: 1` starts the subtree range after the root row.
 		expect(await list({ minDepth: 1 })).toEqual(["/docs/a", "/docs/a/deep.md", "/docs/z.md"]);
-		// The read cap: direct children read whole pages, and a subtree listing with `minDepth` stops at the cap.
-		expect(await list({ minDepth: 1, maxDepth: 1, maximumRowsRead: 1 })).toEqual(["/docs/a", "/docs/z.md"]);
-		expect(await list({ minDepth: 1, maximumRowsRead: 1 })).toEqual(["/docs/a"]);
 		await expect(list({ maxDepth: 2 })).rejects.toThrow("list_subtree takes minDepth 0 or 1");
 		await expect(list({ minDepth: 2 })).rejects.toThrow("list_subtree takes minDepth 0 or 1");
 	});

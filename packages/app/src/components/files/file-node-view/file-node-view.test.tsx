@@ -2387,6 +2387,14 @@ describe("FileNodeView folder columns", () => {
 		expect(within(chooser).queryByRole("checkbox", { name: "metadata.alpha" })).toBeNull();
 		expect(prefixes).toContain("metadata.BETA");
 
+		// New search text clears a failed read, without Retry.
+		failed = true;
+		fireEvent.change(search, { target: { value: "al" } });
+		expect(await within(chooser).findByText("Fields could not be loaded")).toBeTruthy();
+		failed = false;
+		fireEvent.change(search, { target: { value: "alph" } });
+		expect(await within(chooser).findByRole("checkbox", { name: "metadata.alpha" })).toBeTruthy();
+
 		// A failed read stays in the menu and keeps the search text.
 		failed = true;
 		fireEvent.change(search, { target: { value: "alp" } });
@@ -2782,6 +2790,8 @@ describe("FileNodeView folder filter", () => {
 			if (name !== "files_metadata:list_search_values") return previousQuery(reference, args);
 			if (args === "skip") return [];
 			if (failed) throw new Error("Read failed");
+			// The values of metadata.stage never load.
+			if (args.fieldPath === "metadata.stage") return { results: [], status: "LoadingFirstPage" };
 			const values = ["open", "opened", "fixed"].filter((value) => value.startsWith(args.prefix));
 			return { results: values, status: args.prefix === "" ? "CanLoadMore" : "Exhausted" };
 		});
@@ -2816,6 +2826,9 @@ describe("FileNodeView folder filter", () => {
 		expect(loadMorePendingMock).toHaveBeenCalledWith(50);
 		fireEvent.change(input, { target: { value: "metadata.status:is:op" } });
 		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["open", "opened"]));
+		// While another key's values load, the held values of this key do not show.
+		fireEvent.change(input, { target: { value: "metadata.stage:is:op" } });
+		expect(labels("Values for metadata.stage")).toEqual(["Updating suggestions…"]);
 
 		// New typed text clears a failed list, without Retry.
 		failed = true;

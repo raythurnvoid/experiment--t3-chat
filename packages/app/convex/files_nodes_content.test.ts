@@ -7,6 +7,7 @@ import { api, components, internal } from "./_generated/api.js";
 import {
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_pending_update_run,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
 	test_save_file_pending_update,
@@ -366,14 +367,14 @@ async function prepare_agent_replacement(
 }
 
 /**
- * Accept one proposal the way the sidebar does: a review run, not the direct action. The run's
- * commit counts every database read, so it refuses code paths the direct action accepts.
+ * Accept one proposal the way the sidebar does: a review run, not the direct action. An accept
+ * run applies the change through the Move cohort steps, which is a different code path.
  */
 async function accept_through_review_run(
 	fixture: Awaited<ReturnType<typeof create_file_fixture>>,
 	pendingUpdate: Doc<"files_pending_updates">,
 ) {
-	const { t, db, asUser } = fixture;
+	const { db, asUser } = fixture;
 	const started = await asUser.mutation(api.files_pending_update_runs.start, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
@@ -393,28 +394,12 @@ async function accept_through_review_run(
 	const runId = started._yay.runId;
 	const sealed = await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId });
 	if (sealed._nay) throw new Error(sealed._nay.message);
-	await t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
-	for (let pass = 0; pass < 20; pass++) {
-		await t.mutation(internal.files_pending_update_runs.advance, { runId });
-		const run = await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		if (!run) throw new Error("Expected the review run");
-		if (run.step === "finished")
-			return await asUser.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId });
-		const unit = await t.run((ctx) =>
-			ctx.db
-				.query("files_pending_update_run_units")
-				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-				.first(),
-		);
-		if (!unit) throw new Error("Expected a review worker");
-		await t.action(internal.files_pending_update_runs.prepare_unit, {
-			runId,
-			fence: run.fence,
-			unitId: unit._id,
-			attemptFence: unit.attemptFence,
-		});
-	}
-	throw new Error("Review did not finish");
+	// `prepare_unit` skips a cohort unit, so use the shared driver that runs the cohort steps. Fake
+	// timers stop scheduled jobs, such as R2 deletes, from running on their own during the run.
+	vi.useFakeTimers();
+	await test_finish_pending_update_run(asUser, runId);
+	vi.useRealTimers();
+	return await asUser.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId });
 }
 
 async function create_private_copy_source(
@@ -3732,32 +3717,55 @@ describe("accept_file_pending_replacement", () => {
 
 	test("accepts the replacement through a review run and keeps the replaced bytes in history", async () => {
 		const fixture = await create_file_fixture();
-		const { t, db, scope, nodeId } = fixture;
-		const sourceId = await test_create_saved_text_file(t, {
-			membershipId: db.membershipId,
-			path: "/source.txt",
-			textContent: "Copied text\n",
+		const { t, db, asUser } = fixture;
+		// Use stored files on both sides. A text file already has a version row for its current
+		// asset from its first save, so only a stored destination proves the run adds the row.
+		const upload = async (filename: string, bytes: Uint8Array) => {
+			const created = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				filename,
+				contentType: "application/pdf",
+				size: bytes.byteLength,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const key = `test/${filename}`;
+			objects.set(key, bytes);
+			await t.run((ctx) => ctx.db.patch("files_r2_assets", created._yay.assetId, { r2Key: key }));
+			return created._yay;
+		};
+		const destination = await upload("replaced.pdf", new Uint8Array([1, 2, 3]));
+		const sourceBytes = new Uint8Array([0, 255, 10, 13, 128]);
+		const source = await upload("source.pdf", sourceBytes);
+		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+			objects.set(args.destinationKey, objects.get(args.sourceKey)!);
+			return { outcome: "copied", size: sourceBytes.byteLength, etag: "copied" };
 		});
-		const staged = await prepare_agent_replacement(fixture, sourceId);
+		const nodeId = destination.nodeId;
+		const staged = await prepare_agent_replacement({ ...fixture, nodeId }, source.nodeId);
 		const previousAssetId = staged.pendingReplacement!.baseAssetId;
+		expect(previousAssetId).toBe(destination.assetId);
+		const read_history = () =>
+			t.run((ctx) =>
+				ctx.db
+					.query("files_snapshots")
+					.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+					)
+					.collect(),
+			);
+		expect(await read_history(), "the stored destination has no version row before the run").toEqual([]);
 
 		const finished = await accept_through_review_run(fixture, staged);
 
 		expect(finished?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", staged._id))).toBeNull();
-		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-			...scope,
-			path: "/restore.txt",
-		});
-		expect(read?.content).toBe("Copied text\n");
-		const history = await t.run((ctx) =>
-			ctx.db
-				.query("files_snapshots")
-				.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
-				)
-				.collect(),
-		);
-		expect(history.map((version) => version.assetId)).toContain(previousAssetId);
+		const after = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+		const afterAsset = await t.run((ctx) => ctx.db.get("files_r2_assets", after!.assetId!));
+		expect(new Uint8Array(await new Response(objects.get(afterAsset!.r2Key!)).arrayBuffer())).toEqual(sourceBytes);
+		expect(
+			(await read_history()).map((version) => version.assetId),
+			"the run adds a version row for the replaced bytes",
+		).toContain(previousAssetId);
 	});
 });
