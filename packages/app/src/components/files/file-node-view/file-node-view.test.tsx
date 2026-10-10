@@ -82,7 +82,7 @@ vi.mock("@/hooks/files-search-hooks.ts", async (importOriginal) => {
 
 // Push query changes into memoized children, as the live Convex subscriptions do.
 vi.mock("convex/react", async () => {
-	const { useEffect, useId, useState } = await import("react");
+	const { useEffect, useId, useMemo, useState } = await import("react");
 	return {
 		useConvex: () => ({
 			query: (...args: unknown[]) => Promise.resolve(queryMock(...args)),
@@ -106,7 +106,7 @@ vi.mock("convex/react", async () => {
 		},
 		useQueries: (queries: Record<string, { query: never; args: unknown }>) => {
 			querySetsMock(useId(), queries);
-			const [, forceRender] = useState(0);
+			const [revision, forceRender] = useState(0);
 			useEffect(() => {
 				const listener = () => forceRender((revision) => revision + 1);
 				queryPushListeners.add(listener);
@@ -114,8 +114,13 @@ vi.mock("convex/react", async () => {
 					queryPushListeners.delete(listener);
 				};
 			}, []);
-			return Object.fromEntries(
-				Object.entries(queries).map(([key, request]) => [key, queryMock(request.query, request.args)]),
+			// Convex keeps the same result until the queries or a server answer change.
+			return useMemo(
+				() =>
+					Object.fromEntries(
+						Object.entries(queries).map(([key, request]) => [key, queryMock(request.query, request.args)]),
+					),
+				[queries, revision],
 			);
 		},
 		useQuery: (...args: unknown[]) => {

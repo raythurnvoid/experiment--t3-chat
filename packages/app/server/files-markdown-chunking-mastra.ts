@@ -183,9 +183,12 @@ function set_chunk_bitmask_flags(args: {
 	return chunkFlags;
 }
 
-export async function files_chunk_markdown(markdown: string, options?: { maxChunkSize?: number }) {
+async function chunk_markdown(
+	markdown: string,
+	options?: { maxChunkSize?: number; page?: { startChunkIndex: number; chunkCount: number } },
+) {
 	if (markdown.length === 0) {
-		return Result({ _yay: [] });
+		return Result({ _yay: { chunks: [], totalChunkCount: 0 } });
 	}
 
 	let chunkDocs;
@@ -222,9 +225,9 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 		lineEnd: number;
 		chunkFlags: number;
 	}> = [];
+	let totalChunkCount = 0;
 
-	for (let chunkIndex = 0; chunkIndex < chunkDocs.length; chunkIndex++) {
-		const chunkDoc = chunkDocs[chunkIndex]!;
+	for (const chunkDoc of chunkDocs) {
 		const textChunk = chunkDoc.text;
 		if (textChunk.length === 0) {
 			continue;
@@ -240,6 +243,16 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 			throw should_never_happen("Failed to resolve chunk start index from Mastra metadata", {
 				chunkDoc,
 			});
+		}
+
+		const chunkIndex = totalChunkCount++;
+		// Save converts only this page. Indexes and flags still describe the whole file.
+		if (
+			options?.page &&
+			(chunkIndex < options.page.startChunkIndex ||
+				chunkIndex >= options.page.startChunkIndex + options.page.chunkCount)
+		) {
+			continue;
 		}
 
 		const endIndex = startIndex + textChunk.length;
@@ -274,7 +287,7 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 		});
 
 		chunks.push({
-			chunkIndex: chunks.length,
+			chunkIndex,
 			textChunk,
 			plainTextChunk,
 			startIndex,
@@ -285,7 +298,20 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 		});
 	}
 
-	return Result({ _yay: chunks });
+	return Result({ _yay: { chunks, totalChunkCount } });
+}
+
+export async function files_chunk_markdown(markdown: string, options?: { maxChunkSize?: number }) {
+	const result = await chunk_markdown(markdown, options);
+	if (result._nay) return result;
+	return Result({ _yay: result._yay.chunks });
+}
+
+export async function files_chunk_markdown_page(
+	markdown: string,
+	options: { startChunkIndex: number; chunkCount: number; maxChunkSize?: number },
+) {
+	return await chunk_markdown(markdown, { maxChunkSize: options.maxChunkSize, page: options });
 }
 
 export function files_chunk_has_bitmask_flag(chunkFlags: number, flag: number) {

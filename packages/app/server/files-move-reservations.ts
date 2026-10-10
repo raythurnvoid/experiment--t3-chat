@@ -183,7 +183,7 @@ export function files_move_reservations_db_enter_security(ctx: MutationCtx, args
 }
 
 /**
- * Reuse a known scope for the next exact write. Active workspace guards still apply.
+ * Reuse a known scope while its fields stay unchanged. Active workspace guards still apply.
  */
 export function files_move_reservations_db_note_source(
 	db: MutationCtx["db"],
@@ -341,7 +341,7 @@ export async function files_move_reservations_db_is_rename_allocation(
 export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 	const raw = ctx.db;
 	const state: State = { capability: null, securityNodes: new Set(), knownScopes: new Map() };
-	const activeScopes = new Map<string, boolean>();
+	const activeScopes = new Map<string, Promise<boolean>>();
 	const reservationTables = new Set([
 		"files_move_workspace_slots",
 		"files_move_source_reservations",
@@ -354,14 +354,15 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 		const key = `${organizationId}:${workspaceId}`;
 		let active = activeScopes.get(key);
 		if (active === undefined) {
-			const slot = await raw
+			// Concurrent writes share the pending workspace read.
+			active = raw
 				.query("files_move_workspace_slots")
 				.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
-				.unique();
-			active = slot?.cohortId != null;
+				.unique()
+				.then((slot) => slot?.cohortId != null);
 			activeScopes.set(key, active);
 		}
-		return active;
+		return await active;
 	}
 	async function guard(
 		table: string,
@@ -569,7 +570,9 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 						const value = property === "delete" ? null : (args[tableFirst ? 2 : 1] as Fields);
 						const key = `${table}:${id}`;
 						const known = state.knownScopes.get(key);
-						state.knownScopes.delete(key);
+						const keepsScope =
+							property === "patch" && value && !("organizationId" in value) && !("workspaceId" in value);
+						if (!keepsScope) state.knownScopes.delete(key);
 						const nextScope = property === "replace" ? (value as Scope) : ({ ...known, ...value } as Scope);
 						if (
 							known &&

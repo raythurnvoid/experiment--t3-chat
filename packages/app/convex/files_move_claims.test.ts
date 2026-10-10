@@ -2,9 +2,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import { advance as advance_transfer } from "./files_transfer.ts";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { run_job as run_overlay_job } from "./files_pending_overlay.ts";
-import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
+import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { bash_DbFilesFs } from "../server/bash-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 
@@ -27,7 +27,7 @@ function transaction_cost(before: Metrics, after: Metrics) {
 	};
 }
 
-test("saved Moves refresh more than 32 native private name claims in one flush", async () => {
+test("saved Moves refresh more than 32 native private name claims in pages", async () => {
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -72,28 +72,61 @@ test("saved Moves refresh more than 32 native private name claims in one flush",
 				.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", nodeId))
 				.collect(),
 		);
-	const costs: Array<{ owners: number; cost: ReturnType<typeof transaction_cost> }> = [];
+	const costs: Array<{
+		owners: number;
+		phase: string;
+		ownersAdded: number;
+		cost: ReturnType<typeof transaction_cost>;
+	}> = [];
+	const publications: number[] = [];
 	const overlayCosts: Array<ReturnType<typeof transaction_cost>> = [];
 	let ownerCount = 0;
 	let measuring = false;
-	test_spy_handler(advance_transfer, async (handler, ctx, args) => {
-		const oldNode = (await ctx.db.get("files_nodes", nodeId))!;
+	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
+		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
+		const collecting = measuring && cohort?.step === step && cohort.workPhase === "owners_collect";
+		// This fixture has at most two owner targets for each of its 80 users.
+		const ownersBefore = collecting
+			? (await ctx.db
+				.query("files_move_owner_work")
+				.withIndex("by_cohort_owner_target", (q) => q.eq("cohortId", cohortId))
+				.collect()).length
+			: 0;
 		const before = await ctx.meta.getTransactionMetrics();
 		// The registered handler includes the mutation wrapper's full overlay flush.
 		const result = await handler(ctx, args);
 		const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
-		const node = (await ctx.db.get("files_nodes", nodeId))!;
-		if (measuring && oldNode.parentId !== node.parentId) {
+		if (measuring && cohort?.step === step) {
+			const ownersAdded = collecting
+				? (await ctx.db
+					.query("files_move_owner_work")
+					.withIndex("by_cohort_owner_target", (q) => q.eq("cohortId", cohortId))
+					.collect()).length - ownersBefore
+				: 0;
+			costs.push({ owners: ownerCount, phase: cohort.workPhase, ownersAdded, cost });
+		}
+		if (measuring && cohort?.step === step && cohort.workPhase === "publish") {
+			expect(
+				(await ctx.db.get("files_move_cohorts", cohortId))?.publishedAt,
+				"the Move publishes its owner views",
+			).not.toBeNull();
 			const refreshed = await ctx.db
 				.query("files_pending_hides")
 				.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", nodeId))
 				.collect();
-			expect(refreshed, "the writing transaction still holds every owner's claim hide").toHaveLength(ownerCount);
+			expect(refreshed, "publication keeps every old owner hide until physical cleanup").toHaveLength(ownerCount);
 			expect(
-				refreshed.every((hide) => hide.parentId === otherId && hide.treePath === "/other/shared/"),
-				"the full Move flush updates every hide before its background claim cleanup",
+				refreshed.every(
+					(hide) =>
+						hide.parentId === destinationId &&
+						hide.treePath === "/dest/shared/" &&
+						hide.moveView?.cohortId === cohortId &&
+						hide.moveView.view === "before",
+				),
+				"the after view removes every claim on the name the saved item left",
 			).toBe(true);
-			costs.push({ owners: ownerCount, cost });
+			publications.push(ownerCount);
 		}
 		return result;
 	});
@@ -119,16 +152,15 @@ test("saved Moves refresh more than 32 native private name claims in one flush",
 		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
 			_yay: null,
 		});
-		for (let step = 0; step < 50; step++) {
-			await settle();
-			const receipt = await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
-			if (receipt?.activity.status === "succeeded") return;
-			expect(receipt?.activity.status).not.toBe("failed");
-			expect(receipt?.activity.status).not.toBe("awaiting_input");
-			vi.setSystemTime(Date.now() + 1_000);
-			vi.advanceTimersByTime(1_000);
-		}
-		throw new Error("Move did not finish");
+		// Check outside the worker so this assertion fails the test right away.
+		await test_finish_transfer_run(asOwner, runId, async () => {
+			const entry = costs.at(-1);
+			if (entry?.phase === "owners_collect")
+				expect(entry.ownersAdded, "A claim collection step adds at most eight owners").toBeLessThanOrEqual(8);
+		});
+		expect((await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
+			"succeeded",
+		);
 	};
 
 	for (const total of [40, 80]) {
@@ -203,14 +235,39 @@ test("saved Moves refresh more than 32 native private name claims in one flush",
 		expect(await hides(), "the claim ends after the saved node moves away").toHaveLength(0);
 	}
 
-	expect(costs.map((entry) => entry.owners)).toEqual([40, 80]);
-	const small = costs[0]!.cost;
-	const large = costs[1]!.cost;
-	expect(large.documentsRead - small.documentsRead, "one-root reads grow with owner hide copies").toBeGreaterThanOrEqual(40);
-	expect(large.documentsWritten - small.documentsWritten, "one-root writes grow with owner hide copies").toBeGreaterThanOrEqual(40);
-	expect(overlayCosts.length, "the real saved-node overlay jobs ran").toBeGreaterThan(0);
+	expect(publications, "both crowded Moves publish every owner view").toEqual([40, 80]);
+	const movePeaks = [];
+	for (const owners of [40, 80]) {
+		const steps = costs.filter((entry) => entry.owners === owners);
+		const collectionSteps = steps.filter((entry) => entry.phase === "owners_collect");
+		// Hide owners are known before each slot doc adds its one new private target.
+		for (const entry of collectionSteps)
+			expect(entry.ownersAdded, "A claim collection step adds at most eight owners").toBeLessThanOrEqual(8);
+		expect(
+			collectionSteps.filter((entry) => entry.ownersAdded > 0).length,
+			`${owners} claim owners need several hide pages`,
+		).toBeGreaterThanOrEqual(Math.ceil(owners / 8));
+		expect(collectionSteps.reduce((total, entry) => total + entry.ownersAdded, 0), "Every claim owner is collected")
+			.toBeGreaterThanOrEqual(owners);
+		for (const phase of ["owners_stage", "finish_owners"])
+			expect(
+				steps.filter((entry) => entry.phase === phase).length,
+				`${owners} owners use several ${phase} steps`,
+			).toBeGreaterThan(1);
+		const peak = { ...steps[0]!.cost };
+		for (const { cost } of steps)
+			for (const key of Object.keys(cost) as Array<keyof typeof cost>) peak[key] = Math.max(peak[key], cost[key]);
+		expect(peak.databaseQueries, "Move range budget").toBeLessThan(4096 * 0.75);
+		expect(peak.documentsRead, "Move read budget").toBeLessThan(32_000 * 0.75);
+		expect(peak.documentsWritten, "Move write budget").toBeLessThan(16_000 * 0.75);
+		expect(peak.bytesRead, "Move byte read budget").toBeLessThan(16 * 1024 * 1024 * 0.75);
+		expect(peak.bytesWritten, "Move byte write budget").toBeLessThan(16 * 1024 * 1024 * 0.75);
+		expect(peak.functionsScheduled, "Move schedule budget").toBeLessThan(1000 * 0.75);
+		movePeaks.push({ owners, steps: steps.length, peak });
+	}
+	expect(overlayCosts.length, "the real pending overlay jobs ran").toBeGreaterThan(0);
 	const overlayPeak = { ...overlayCosts[0]! };
 	for (const cost of overlayCosts)
 		for (const key of Object.keys(cost) as Array<keyof typeof cost>) overlayPeak[key] = Math.max(overlayPeak[key], cost[key]);
-	console.info("crowded saved Move costs", JSON.stringify({ moves: costs, overlayCalls: overlayCosts.length, overlayPeak }));
+	console.info("crowded saved Move costs", JSON.stringify({ moves: movePeaks, overlayCalls: overlayCosts.length, overlayPeak }));
 }, 120_000);

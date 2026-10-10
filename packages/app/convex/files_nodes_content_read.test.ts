@@ -2,7 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_save_file_pending_update, test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { files_nodes_db_create_private_node_by_path, files_nodes_db_get_content_version } from "./files_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { r2_create_asset_key } from "./r2_client.ts";
@@ -39,7 +39,7 @@ async function create_fixture() {
 		membershipId: db.membershipId,
 	});
 	if (captured._nay) throw new Error(captured._nay.message);
-	const file = await t.run(async (ctx) => {
+	const file = await test_run_with_flush(t, async (ctx) => {
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,

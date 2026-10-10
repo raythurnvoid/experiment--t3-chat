@@ -1,7 +1,8 @@
+import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_move_nodes } from "./setup.test.ts";
+import { test_finish_transfer_run, test_move_nodes } from "./setup.test.ts";
 import {
 	fixture,
 	type Fixture,
@@ -24,9 +25,14 @@ import {
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.
 beforeEach(() => {
 	vi.useFakeTimers();
+	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key = "") => ({
+		key,
+		url: "https://r2.test/upload",
+	}));
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
 
@@ -101,7 +107,7 @@ describe("unarchive_nodes", () => {
 
 		/**
 		 * Archive `/inside` with two folders of 100 files and restore it until `/inside/d1` is back, before
-		 * its files. Then move new files with the names in `names` into d1. The restore waits on the first
+		 * its files. Then create new files with the names in `names` in d1. The restore waits on the first
 		 * clash inside d1.
 		 */
 		async function seed_clash_inside(f: Fixture, names: string[]) {
@@ -111,15 +117,20 @@ describe("unarchive_nodes", () => {
 			await step_until_restored({ f, runId: job.runId, nodeId: tree.folderIds[1]! });
 			expect((await read_node(f, tree.fileIds[100]!)).archiveOperationId).not.toBeNull();
 
-			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 100 });
-			const occupantIds = names.map((name) => occupants.fileIds[Number(name.slice(1, 4))]!);
-			expect(
-				await test_move_nodes(f.t, f.asOwner, {
+			const occupantIds: Id<"files_nodes">[] = [];
+			// Move waits for Restore. Create can still write into the folder already back.
+			for (const filename of names) {
+				const created = await f.asOwner.mutation(api.files_nodes.create_upload_node, {
 					membershipId: f.db.membershipId,
-					itemIds: occupantIds,
-					targetParentId: tree.folderIds[1]!,
-				}),
-			).toEqual({ _yay: null });
+					parentId: tree.folderIds[1]!,
+					filename,
+					contentType: "text/markdown",
+					size: 0,
+					onConflict: "fail",
+				});
+				if (created._nay) throw new Error(created._nay.message);
+				occupantIds.push(created._yay.nodeId);
+			}
 			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
 			return { tree, occupantIds, job };
 		}
@@ -433,14 +444,15 @@ describe("unarchive_nodes", () => {
 			});
 			const queuedFileId = tree.fileIds[tree.folderIds.indexOf(queuedId)]!;
 			expect((await read_node(f, queuedFileId)).archiveOperationId).not.toBeNull();
-			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 1 });
-			expect(
-				await test_move_nodes(f.t, f.asOwner, {
-					membershipId: f.db.membershipId,
-					itemIds: occupants.fileIds,
-					targetParentId: queuedId,
-				}),
-			).toEqual({ _yay: null });
+			const created = await f.asOwner.mutation(api.files_nodes.create_upload_node, {
+				membershipId: f.db.membershipId,
+				parentId: queuedId,
+				filename: "f000.md",
+				contentType: "text/markdown",
+				size: 0,
+				onConflict: "fail",
+			});
+			expect(created._nay).toBeUndefined();
 
 			// A choice counts only until the next clash. So `d50` must come back before that clash asks.
 			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
@@ -452,6 +464,56 @@ describe("unarchive_nodes", () => {
 			const ended = await run_to_end(f, job);
 			expect(ended.activity.status).toBe("succeeded");
 			expect(ended.activity.progress).toMatchObject({ total: 401, completed: 401, skipped: 0 });
+		});
+
+		test("Move waits for a running Restore without advancing it", async () => {
+			const f = await fixture();
+			const tree = await seed_tree(f, { name: "inside", folderCount: 2, filesPerFolder: 100 });
+			const source = await seed_tree(f, { name: "source", folderCount: 1, filesPerFolder: 1 });
+			const nodeId = source.fileIds[0]!;
+			await archive_to_end(f, tree.topId);
+			const job = (await restore(f, [tree.topId]))._yay!;
+			await step_until_restored({ f, runId: job.runId, nodeId: tree.folderIds[1]! });
+			expect((await read_node(f, tree.fileIds[100]!)).archiveOperationId).not.toBeNull();
+			const restoreActivity = await read_activity(f, job.activityId);
+			const started = await f.asOwner.mutation(api.files_transfer.start, {
+				membershipId: f.db.membershipId,
+				requestId: "move-waits-for-restore",
+				kind: "move",
+				expectedSourceCount: 1,
+				sourceIds: [nodeId],
+				targetParentId: "root",
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			const { runId } = started._yay;
+			expect(await f.asOwner.mutation(api.files_transfer.seal, {
+				membershipId: f.db.membershipId,
+				runId,
+			})).toEqual({ _yay: null });
+			await f.t.mutation(internal.files_transfer.advance, { runId });
+			expect(
+				(await f.t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))?.step,
+				"Restore blocks Move planning",
+			).toBe("select");
+			expect((await f.asOwner.query(api.files_transfer.get, {
+				membershipId: f.db.membershipId,
+				runId,
+			}))?.activity, "Move waits while Restore is still running").toMatchObject({
+				status: "running",
+				progress: { completed: 0, blocked: 0 },
+			});
+			expect(await read_node(f, nodeId), "a waiting Move keeps its source in place").toMatchObject({
+				parentId: source.folderIds[0],
+				path: "/source/d0/f000.md",
+			});
+			expect(await read_activity(f, job.activityId), "Move does not advance Restore").toEqual(restoreActivity);
+			expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+			await test_finish_transfer_run(f.asOwner, runId);
+			expect((await f.asOwner.query(api.files_transfer.get, {
+				membershipId: f.db.membershipId,
+				runId,
+			}))?.activity.status).toBe("succeeded");
+			expect(await read_node(f, nodeId)).toMatchObject({ parentId: "root", path: "/f000.md" });
 		});
 
 		test("archived items with one name inside a restored folder ask when the second comes back", async () => {

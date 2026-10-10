@@ -29,7 +29,7 @@ import { r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_enter } from "../server/files-move-reservations.ts";
 import { files_pending_overlay_db_set_cohort_materialization } from "../server/files-pending-overlay.ts";
-import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
+import { files_chunk_markdown_page } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { files_yjs_scan_client_update } from "../shared/files-yjs.ts";
 import {
@@ -356,12 +356,21 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 	if (content.phase === "text" || content.phase === "plain_text") {
 		const input = await db_input(ctx, content, "staged");
 		if (input && shape.rootKind) {
+			const plainChunks = shape.rootKind === "plain_text" ? files_chunk_plain_text(input.text) : [];
 			const chunks =
 				shape.rootKind === "rich_text"
-					? await files_chunk_markdown(input.text)
-					: Result({ _yay: files_chunk_plain_text(input.text) });
+					? await files_chunk_markdown_page(input.text, {
+							startChunkIndex: content.nextChunkIndex,
+							chunkCount: PAGE_SIZE,
+						})
+					: Result({
+							_yay: {
+								chunks: plainChunks.slice(content.nextChunkIndex, content.nextChunkIndex + PAGE_SIZE),
+								totalChunkCount: plainChunks.length,
+							},
+						});
 			if (chunks._nay) return chunks;
-			const page = chunks._yay.slice(content.nextChunkIndex, content.nextChunkIndex + PAGE_SIZE);
+			const page = chunks._yay.chunks;
 			await files_nodes_db_insert_committed_text_chunks(ctx, {
 				...scope,
 				nodeId: content.nodeId,
@@ -370,9 +379,9 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 				yjsSequence: shape.collaborationEnabled ? nextSequence : undefined,
 				chunks: page,
 				moveView: tag,
-				chunkCount: chunks._yay.length,
+				chunkCount: chunks._yay.totalChunkCount,
 			});
-			if (content.nextChunkIndex + page.length < chunks._yay.length)
+			if (content.nextChunkIndex + page.length < chunks._yay.totalChunkCount)
 				return await db_progress(ctx, content, "text", 0, null, content.nextChunkIndex + page.length);
 		}
 		return await db_progress(ctx, content, "updates", 0, null);
@@ -441,12 +450,21 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 		}
 		const input = await db_input(ctx, content, "unstaged");
 		if (input && shape.rootKind) {
+			const plainChunks = shape.rootKind === "plain_text" ? files_chunk_plain_text(input.text) : [];
 			const chunks =
 				shape.rootKind === "rich_text"
-					? await files_chunk_markdown(input.text)
-					: Result({ _yay: files_chunk_plain_text(input.text) });
+					? await files_chunk_markdown_page(input.text, {
+							startChunkIndex: content.nextChunkIndex,
+							chunkCount: PAGE_SIZE,
+						})
+					: Result({
+							_yay: {
+								chunks: plainChunks.slice(content.nextChunkIndex, content.nextChunkIndex + PAGE_SIZE),
+								totalChunkCount: plainChunks.length,
+							},
+						});
 			if (chunks._nay) return chunks;
-			for (const chunk of chunks._yay.slice(content.nextChunkIndex, content.nextChunkIndex + PAGE_SIZE)) {
+			for (const chunk of chunks._yay.chunks) {
 				const shared = {
 					...scope,
 					sourceKind: "pending" as const,
@@ -471,10 +489,10 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 					path: node.path,
 					archiveOperationId: node.archiveOperationId ?? undefined,
 					hasChunkAbove: chunk.chunkIndex > 0,
-					hasChunkBelow: chunk.chunkIndex < chunks._yay.length - 1,
+					hasChunkBelow: chunk.chunkIndex < chunks._yay.totalChunkCount - 1,
 				});
 			}
-			if (content.nextChunkIndex + PAGE_SIZE < chunks._yay.length)
+			if (content.nextChunkIndex + PAGE_SIZE < chunks._yay.totalChunkCount)
 				return await db_progress(ctx, content, "pending_text", part, null, content.nextChunkIndex + PAGE_SIZE);
 		}
 		return await db_progress(ctx, content, "metadata", 0, null);
@@ -977,7 +995,8 @@ export async function files_move_content_db_publish_accounting(ctx: MutationCtx,
 		const delta = quotaName === "files_private_nodes" ? cohort.privateNodeDelta : cohort.privateByteDelta;
 		if (quota.usedCount + delta < 0)
 			throw should_never_happen("Invalid Move private balance", { cohortId: cohort._id, quotaName });
-		if (delta > 0 && quota.usedCount + delta > quota.maxCount)
+		// Reviewed Save can grow its retained state family even when byte storage is full.
+		if (quotaName === "files_private_nodes" && delta > 0 && quota.usedCount + delta > quota.maxCount)
 			return Result({ _nay: { name: "storage_full", message: quotas[quotaName].disabledReason } });
 		balances.push({ quota, delta });
 	}

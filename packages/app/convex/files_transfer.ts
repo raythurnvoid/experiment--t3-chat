@@ -68,7 +68,7 @@ import {
 	files_pending_holds_db_finish,
 	files_pending_holds_db_release_producer_batch,
 } from "./files_pending_holds.ts";
-import { files_db_patch_pending_update, files_db_get_pending_update } from "../server/files.ts";
+import { files_db_patch_pending_update, files_db_get_pending_update, files_db_get_visible_node_by_path } from "../server/files.ts";
 import type { upsert_file_pending_move_in_db_Result } from "./files_pending_updates.ts";
 import { files_metadata_db_read_entries } from "./files_metadata.ts";
 import {
@@ -832,12 +832,19 @@ async function db_resolve_name(
 
 		const savedOccupant =
 			args.run.sourceView === "saved" && args.parent.kind !== "private"
-				? await files_saved_placement_db_get_slot(ctx.db, {
-						organizationId: scope.organizationId,
-						workspaceId: scope.workspaceId,
-						parentId: args.parent.kind === "saved" ? args.parent.id : files_ROOT_ID,
-						name,
-					})
+				? args.item.parentItemId !== null
+					// A copied child's planned parent may not exist yet. Use its full destination path.
+					? await files_db_get_visible_node_by_path(ctx, {
+							organizationId: scope.organizationId,
+							workspaceId: scope.workspaceId,
+							path,
+						})
+					: await files_saved_placement_db_get_slot(ctx.db, {
+							organizationId: scope.organizationId,
+							workspaceId: scope.workspaceId,
+							parentId: args.parent.kind === "saved" ? args.parent.id : files_ROOT_ID,
+							name,
+						})
 				: null;
 		const occupant: files_VisibleEntry | null =
 			args.run.sourceView === "draft"

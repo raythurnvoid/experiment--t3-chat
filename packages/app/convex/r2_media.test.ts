@@ -135,6 +135,11 @@ describe("get_media_by_reference", () => {
 		}
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(Date.now() + 8 * 24 * 60 * 60 * 1000);
+		// Review history holds its private targets until its own cleanup finishes.
+		let historyDone = false;
+		for (let step = 0; !historyDone && step < 100; step++)
+			historyDone = (await f.t.mutation(internal.activities.cleanup_history, { _test_disableReschedule: true })).done;
+		expect(historyDone).toBe(true);
 		await f.t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
 		await f.t.mutation(internal.files_ingestion.cleanup_expired_receipts, {});
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_nodes", f.target.id))).toBeNull();

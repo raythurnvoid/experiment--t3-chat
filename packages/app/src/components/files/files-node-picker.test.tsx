@@ -317,6 +317,105 @@ describe("FilesNodePicker", () => {
 		await waitFor(() => expect(option_names()).toEqual(["notes.md/", "notes-2.md/moved/"]));
 	});
 
+	test.each(["before", "after"] as const)("searches both saved Move streams in the %s view and pages each one", async (view) => {
+		const folderPath = view === "before" ? "/source" : "/destination";
+		results.set(
+			watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+			{ cohortId: "cohort_1", view, generation: 7, searchGeneration: 11 },
+		);
+		const searchArgs = {
+			membershipId: MEMBERSHIP_ID,
+			clause: { kind: "name", text: "note" },
+			folderPath,
+			searchGeneration: 11,
+		};
+		const normal = { kind: "normal", generation: 7 };
+		const cohort = { kind: "cohort", cohortId: "cohort_1", view, generation: 7 };
+		const normalRow = {
+			kind: "file",
+			nodeId: "normal",
+			path: `${folderPath}/note-normal.md`,
+			contentType: "text/markdown",
+		};
+		for (const [savedStream, rows, cursor, nextRow] of [
+			[
+				normal,
+				[normalRow],
+				"normal-next",
+				{ ...normalRow, nodeId: "normal-next", path: `${folderPath}/note-normal-next.md` },
+			],
+			[
+				cohort,
+				[normalRow, { ...normalRow, nodeId: "moving", path: `${folderPath}/note-moving.md` }],
+				"cohort-next",
+				{ ...normalRow, nodeId: "moving-next", path: `${folderPath}/note-moving-next.md` },
+			],
+		] as const) {
+			results.set(
+				watch_key(getFunctionName(app_convex_api.files_nodes.search_saved), {
+					...searchArgs,
+					savedStream,
+					paginationOpts: { cursor: null },
+				}),
+				{ page: rows, isDone: false, continueCursor: cursor },
+			);
+			results.set(
+				watch_key(getFunctionName(app_convex_api.files_nodes.search_saved), {
+					...searchArgs,
+					savedStream,
+					paginationOpts: { cursor },
+				}),
+				{ ...EMPTY_PAGE, page: [nextRow] },
+			);
+		}
+		render(<PickerHarness initialQuery={`${folderPath}/note`} />);
+
+		await waitFor(() =>
+			expect(option_names(), "the selected Move row appears once in the current view").toEqual([
+				`note-normal.md${folderPath}/`,
+				`note-moving.md${folderPath}/`,
+				"Show more",
+			]),
+		);
+		fireEvent.click(screen.getByRole("option", { name: "Show more" }));
+		await waitFor(() =>
+			expect(option_names(), "Show more loads the next page of both saved streams").toEqual([
+				`note-normal.md${folderPath}/`,
+				`note-normal-next.md${folderPath}/`,
+				`note-moving.md${folderPath}/`,
+				`note-moving-next.md${folderPath}/`,
+			]),
+		);
+		const searches = vi.mocked(client).watchQuery.mock.calls
+			.filter(([query]) => getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.search_saved))
+			.map(([, args]) => args);
+		for (const [savedStream, cursor] of [
+			[normal, "normal-next"],
+			[cohort, "cohort-next"],
+		] as const) {
+			expect(searches, "each pager uses the current Move and search generations").toContainEqual({
+				...searchArgs,
+				savedStream,
+				paginationOpts: expect.objectContaining({ cursor, numItems: 50 }),
+			});
+		}
+	});
+
+	test("waits for the Move view before starting a saved search", () => {
+		results.delete(
+			watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+		);
+		render(<PickerHarness initialQuery="note" />);
+
+		expect(screen.getByText("Loading…")).toBeTruthy();
+		expect(
+			vi.mocked(client).watchQuery.mock.calls.some(([query]) =>
+				getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.search_saved),
+			),
+			"both saved search pagers wait for their source",
+		).toBe(false);
+	});
+
 	test("reaches a disabled row by keyboard and announces its reason on Enter", async () => {
 		set_folder({
 			parentId: "root",

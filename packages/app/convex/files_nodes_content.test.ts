@@ -367,8 +367,7 @@ async function prepare_agent_replacement(
 }
 
 /**
- * Accept one proposal the way the sidebar does: a review run, not the direct action. An accept
- * run applies the change through the Move cohort steps, which is a different code path.
+ * Accept one proposal through the sidebar's real Review workers.
  */
 async function accept_through_review_run(
 	fixture: Awaited<ReturnType<typeof create_file_fixture>>,
@@ -394,11 +393,14 @@ async function accept_through_review_run(
 	const runId = started._yay.runId;
 	const sealed = await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId });
 	if (sealed._nay) throw new Error(sealed._nay.message);
-	// `prepare_unit` skips a cohort unit, so use the shared driver that runs the cohort steps. Fake
-	// timers stop scheduled jobs, such as R2 deletes, from running on their own during the run.
+	// Keep scheduled deletes paused while the Review driver runs.
+	const hadFakeTimers = vi.isFakeTimers();
 	vi.useFakeTimers();
-	await test_finish_pending_update_run(asUser, runId);
-	vi.useRealTimers();
+	try {
+		await test_finish_pending_update_run(asUser, runId);
+	} finally {
+		if (!hadFakeTimers) vi.useRealTimers();
+	}
 	return await asUser.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId });
 }
 
@@ -3686,7 +3688,7 @@ describe("accept_file_pending_replacement", () => {
 			});
 			if (created._nay) throw new Error(created._nay.message);
 			const key = `test/${filename}`;
-			objects.set(key, bytes);
+			objects.set(key, files_u8_to_array_buffer(bytes));
 			await t.run((ctx) => ctx.db.patch("files_r2_assets", created._yay.assetId, { r2Key: key }));
 			return created._yay;
 		};
@@ -3714,7 +3716,10 @@ describe("accept_file_pending_replacement", () => {
 
 		const finished = await accept_through_review_run(fixture, staged);
 
-		expect(finished?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
+		expect(finished?.activity, "Reviewed replacement completes through its background steps").toMatchObject({
+			status: "succeeded",
+			progress: { completed: 1 },
+		});
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", staged._id))).toBeNull();
 		const after = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 		const afterAsset = await t.run((ctx) => ctx.db.get("files_r2_assets", after!.assetId!));

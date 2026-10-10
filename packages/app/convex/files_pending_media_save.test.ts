@@ -34,6 +34,7 @@ import {
 } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
+import { files_saved_placement_db_resolve_read_target } from "../server/files-saved-placement.ts";
 
 const objects = new Map<string, BodyInit>();
 
@@ -803,6 +804,122 @@ async function cross_workspace_copy(args: {
 	}
 	throw new Error("Copy did not finish");
 }
+
+describe("Save ordinary rich-text media", () => {
+	test.each([false, true])(
+		"ordinary Save keeps broken and unselected links (selected media: %s)",
+		async (selectMedia) => {
+			const f = await fixture();
+			const unselected = await media(f, "/unselected.png");
+			const image = await media(f, "/selected.png");
+			// Put ignored links before the selected one, across more than one media page.
+			const refs = [
+				...Array.from({ length: 9 }, (_, index) => files_media_build_file_src(`missing-${index}`)),
+				unselected.dependency.src,
+				image.dependency.src,
+			];
+			const text = `Intro\n\n${refs.map((src) => `![Photo](${src})`).join("\n\n")}\n`;
+			const pending = await private_text(f, { staged: text });
+			expect(pending.mediaDependencySetId).toBeUndefined();
+			const result = await bulk_save({ f, selected: [pending, ...(selectMedia ? [image.pending] : [])] });
+			expect(result?.activity, "ordinary Save keeps broken and unselected links as text").toMatchObject({
+				status: "succeeded",
+				progress: { completed: selectMedia ? 2 : 1, blocked: 0 },
+			});
+			const target = await f.t.run((ctx) =>
+				files_saved_placement_db_resolve_read_target(ctx.db, { ...f.scope, target: pending.target }),
+			);
+			if (target?.kind !== "saved") throw new Error("Expected saved document");
+			const after = await saved_doc(f, target.id);
+			expect(files_yjs_doc_get_text({ yjsDoc: after, rootKind: "rich_text" })._yay).toBe(text);
+			after.destroy();
+			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toBeNull();
+			expect(await proposal(f, unselected.pending.target)).toEqual(unselected.pending);
+			if (selectMedia)
+				expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", image.pending._id))).toBeNull();
+			else expect(await proposal(f, image.pending.target)).toEqual(image.pending);
+		},
+	);
+
+	test.each([true, false])(
+		"ordinary Save checks a live embed added after planning (media selected: %s)",
+		async (selectMedia) => {
+			const f = await fixture();
+			const text = "Intro\n\nFooter\n";
+			const saved = await save(f, await private_text(f, { staged: text, collaborative: true }));
+			if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved document");
+			const nodeId = saved._yay.target.id;
+			const accepted = "Changed\n\nFooter\n";
+			const pending = await saved_proposal({ f, target: saved._yay.target, staged: accepted });
+			expect(pending.mediaDependencySetId).toBeUndefined();
+			const image = await media(f);
+			const liveAppend = `\n![Live](${image.dependency.src})\n`;
+			const result = await bulk_save({
+				f,
+				selected: [pending, ...(selectMedia ? [image.pending] : [])],
+				afterPlan: async () => {
+					// This link is absent from the graph. The document still has a one-item group.
+					const before = await saved_doc(f, nodeId);
+					const edited = files_yjs_doc_clone({ yjsDoc: before });
+					expect(
+						files_yjs_doc_update_from_text({ mut_yjsDoc: edited, rootKind: "rich_text", text: text + liveAppend })._nay,
+					).toBeUndefined();
+					const update = files_yjs_compute_diff_update_from_yjs_doc({ yjsDoc: edited, yjsBeforeDoc: before });
+					if (!update) throw new Error("Expected live append");
+					const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+					expect(
+						(
+							await f.asUser.mutation(api.files_nodes.yjs_push_update, {
+								membershipId: f.membershipId,
+								nodeId,
+								expectedYjsLastSequenceId: node!.yjsLastSequenceId!,
+								update: files_u8_to_array_buffer(update),
+								sessionId: "ordinary-live-media-after-plan",
+							})
+						)._nay,
+					).toBeUndefined();
+					before.destroy();
+					edited.destroy();
+					expect(await proposal(f, pending.target)).toEqual(pending);
+				},
+			});
+			const after = await saved_doc(f, nodeId);
+			const finalText = files_yjs_doc_get_text({ yjsDoc: after, rootKind: "rich_text" })._yay;
+			after.destroy();
+			if (selectMedia) {
+				expect(
+					result?.activity.progress?.completed,
+					"late selected ordinary media keeps the document unpublished",
+				).toBeLessThan(2);
+				const unit = await f.t.run(async (ctx) => {
+					const item = await ctx.db
+						.query("files_pending_update_run_items")
+						.withIndex("by_run_pendingUpdate", (q) =>
+							q.eq("runId", result!.run._id).eq("pendingUpdateId", pending._id),
+						)
+						.unique();
+					return await ctx.db.get("files_pending_update_run_units", item!.unitId!);
+				});
+				expect(unit, "late selected ordinary media reaches the strict media check").toMatchObject({
+					status: "blocked",
+					itemCount: 1,
+					errorCode: "needs_review",
+					errorMessage: "A linked media file changed. Review this document again.",
+				});
+				expect(await proposal(f, pending.target)).toEqual(pending);
+				expect(finalText).toBe(text + liveAppend);
+			} else {
+				expect(result?.activity, "ordinary Save keeps a live unselected media link as text").toMatchObject({
+					status: "succeeded",
+					progress: { completed: 1, blocked: 0 },
+				});
+				expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toBeNull();
+				expect(finalText).toBe(accepted + liveAppend);
+				expect(await proposal(f, image.pending.target)).toEqual(image.pending);
+			}
+		},
+	);
+});
 
 describe("Save copied rich-text media", () => {
 	test.each(["private", "yjs", "asset"] as const)(

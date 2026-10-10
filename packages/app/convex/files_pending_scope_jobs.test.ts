@@ -1,7 +1,16 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_rename_node, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import type { Id } from "./_generated/dataModel.js";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
+import {
+	test_convex,
+	test_rename_node,
+	test_create_saved_text_file,
+	test_finish_transfer_run,
+	test_mocks_fill_db_with,
+	test_spy_handler,
+} from "./setup.test.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 
@@ -92,6 +101,50 @@ test("pending scope pages follow the latest saved path and archive state without
 	});
 	expect(initial.proposal).not.toBeNull();
 	expect(initial.proposal?.pendingMove).toBeUndefined();
+	const stagedCounts = { chunks: 0, metadata: 0 };
+	const scopePages = { chunks: 0, metadata: 0 };
+	let moveRunId: Id<"files_transfer_runs"> | null = null;
+	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
+		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
+		const result = await handler(ctx, args);
+		if (
+			cohort?.step !== step ||
+			cohort.origin.kind !== "transfer" ||
+			cohort.origin.runId !== moveRunId ||
+			cohort.workPhase !== "owners_stage"
+		)
+			return result;
+		const chunks = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+				q.eq("pendingUpdateId", initial.proposal!._id).eq("moveView.cohortId", cohortId).eq("moveView.view", "after"),
+			)
+			.collect();
+		const metadata = await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_pendingUpdate_fieldPath", (q) =>
+				q.eq("pendingUpdateId", initial.proposal!._id).eq("moveView.cohortId", cohortId).eq("moveView.view", "after"),
+			)
+			.collect();
+		for (const [key, count] of [
+			["chunks", chunks.length],
+			["metadata", metadata.length],
+		] as const) {
+			if (count > stagedCounts[key]) {
+				expect(count - stagedCounts[key], `${key} stage in native pages`).toBeLessThanOrEqual(8);
+				scopePages[key]++;
+				stagedCounts[key] = count;
+			}
+		}
+		expect(cohort.publishedAt, "pending scope pages stage before publication").toBeNull();
+		expect(
+			(await ctx.db.get("files_nodes", nodeId))?.path,
+			"the saved path stays visible while scope pages stage",
+		).toBe("/project/note.md");
+		expect([...chunks, ...metadata].every((doc) => doc.path === "/destination/project/note.md")).toBe(true);
+		return result;
+	});
 	const started = await asUser.mutation(api.files_transfer.start, {
 		membershipId: db.membershipId,
 		requestId: "pending-scope-parent-move",
@@ -102,47 +155,17 @@ test("pending scope pages follow the latest saved path and archive state without
 	});
 	if (started._nay) throw new Error(started._nay.message);
 	const { runId } = started._yay;
+	moveRunId = runId;
 	expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
 		_yay: null,
 	});
-	for (let step = 0; step < 24; step++) {
-		await t.mutation(internal.files_transfer.advance, { runId });
-		const receipt = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
-		if (receipt?.activity.status === "succeeded") break;
-	}
-	// Finish the real subtree walk before driving the pending side-doc pages.
-	for (let step = 0; step < 10; step++) {
-		const walks = await t.run((ctx) => ctx.db.query("files_subtree_op_walks").collect());
-		if (walks.length === 0) break;
-		for (const walk of walks)
-			await t.mutation(internal.files_subtree_ops.advance, { opId: walk.opId, step: walk.step });
-	}
+	await test_finish_transfer_run(asUser, runId);
+	expect((await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
+		"succeeded",
+	);
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/destination/project/note.md");
-	const readJob = async () =>
-		await t.run((ctx) =>
-			ctx.db
-				.query("files_pending_overlay_jobs")
-				.withIndex("by_kind_key", (q) => q.eq("kind", "saved_node").eq("key", nodeId))
-				.unique(),
-		);
-	expect(await readJob(), "file path-only changes queue pending scope repair").not.toBeNull();
-	let reachedScopePage = false;
-	for (let step = 0; step < 10; step++) {
-		const currentJob = await readJob();
-		if (!currentJob) break;
-		await t.mutation(internal.files_pending_overlay.run_job, {
-			kind: currentJob.kind,
-			key: currentJob.key,
-			nextAttemptAt: currentJob.nextAttemptAt,
-		});
-		const job = await readJob();
-		const cursor = job?.cursor ? (JSON.parse(job.cursor) as { phase: number; page: string | null }) : null;
-		if (cursor?.phase === 4 && cursor.page) {
-			reachedScopePage = true;
-			break;
-		}
-	}
-	expect(reachedScopePage, "pending search docs span several scope pages").toBe(true);
+	expect(scopePages.chunks, "pending search docs span several scope pages").toBeGreaterThan(1);
+	expect(scopePages.metadata, "pending metadata docs span several scope pages").toBeGreaterThan(1);
 	expect(
 		await test_rename_node(t, asUser, {
 			membershipId: db.membershipId,

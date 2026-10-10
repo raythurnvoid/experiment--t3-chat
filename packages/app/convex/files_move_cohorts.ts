@@ -79,7 +79,10 @@ import {
 	files_db_advance_pending_review_version,
 	files_db_retire_pending_update_yjs_states,
 } from "../server/files.ts";
-import { files_pending_update_db_delete_chunks } from "./files_pending_updates.ts";
+import {
+	files_pending_update_db_delete_chunks,
+	files_pending_update_db_release_replacement_asset,
+} from "./files_pending_updates.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 const WAKE_PAGE_SIZE = 8;
@@ -698,6 +701,7 @@ async function db_items(
 	let origin: Doc<"files_move_cohort_items">["origin"];
 	let proposal: Doc<"files_pending_updates"> | null = null;
 	let input: Doc<"files_pending_update_run_items"> | null = null;
+	let settlementOnly = false;
 	if (cohort.origin.kind === "review") {
 		input = await ctx.db
 			.query("files_pending_update_run_items")
@@ -712,6 +716,22 @@ async function db_items(
 				return page.item;
 			});
 		if (!input) return Result({ _yay: { done: true } });
+		const { runId, planEpoch, unitId } = cohort.origin;
+		const runItemId = input._id;
+		const plan = await ctx.db
+			.query("files_pending_update_plans")
+			.withIndex("by_run_epoch", (q) => q.eq("runId", runId).eq("epoch", planEpoch))
+			.unique();
+		if (!plan || plan.phase !== "ready")
+			throw should_never_happen("Review item has no ready graph", { cohortId: cohort._id, itemId: input._id });
+		const planned = await ctx.db
+			.query("files_pending_update_plan_items")
+			.withIndex("by_plan_runItem", (q) => q.eq("planId", plan._id).eq("runItemId", runItemId))
+			.unique();
+		if (!planned || planned.unitId !== unitId)
+			throw should_never_happen("Review item is missing from its unit graph", { cohortId: cohort._id, itemId: input._id });
+		// The graph marks a selected occupant that this group replaces.
+		settlementOnly = planned.settlementOnly;
 		proposal = await ctx.db.get("files_pending_updates", input.pendingUpdateId);
 		if (!proposal || proposal.revision !== input.reviewedRevision || proposal.userId !== cohort.userId)
 			return Result({ _nay: { name: "needs_review", message: "A reviewed change was revised. Review it again." } });
@@ -750,7 +770,7 @@ async function db_items(
 		}
 		const authorized = await db_authorize_node(ctx, cohort, membership, node);
 		if (authorized._nay) return authorized;
-		reserved = await db_reserve_saved(ctx, cohort, { node, role: "selected" });
+		reserved = await db_reserve_saved(ctx, cohort, { node, role: settlementOnly ? "replacement" : "selected" });
 	} else {
 		const node = await ctx.db.get("files_pending_nodes", target.id);
 		if (
@@ -763,9 +783,9 @@ async function db_items(
 		reserved = await db_allocate_private(ctx, cohort, node, proposal);
 	}
 	if (reserved._nay) return reserved;
-	// Accepting a delete ignores the content changes and removes the draft with its pending index docs.
+	// Delete and replacement consume the proposal without saving its draft text.
 	const afterProposal =
-		!proposal?.pendingArchive && (proposal?.content || proposal?.pendingReplacement)
+		!settlementOnly && !proposal?.pendingArchive && (proposal?.content || proposal?.pendingReplacement)
 			? (() => {
 					const { _id: _id, _creationTime: _time, moveCohortId: _marker, ...header } = proposal;
 					return { ...header, pendingMove: undefined, pendingArchive: undefined, revision: proposal.revision + 1 };
@@ -791,7 +811,7 @@ async function db_items(
 	});
 	await ctx.db.patch("files_move_cohort_nodes", reserved._yay, {
 		itemId,
-		role: target.kind === "private" ? "allocated" : "selected",
+		role: target.kind === "private" ? "allocated" : settlementOnly ? "replacement" : "selected",
 	});
 	if (proposal) await ctx.db.patch("files_pending_updates", proposal._id, { moveCohortId: cohort._id });
 	await ctx.db.patch("files_move_cohorts", cohort._id, { stagedItemCount: order + 1 });
@@ -1045,45 +1065,78 @@ async function db_descendants(
 	}
 	const cursor = JSON.parse(range.cursor!) as { source: "before" | "normal"; cursor: string | null };
 	const parentId = range.range.nodeId;
-	const page =
-		cursor.source === "before"
-			? await ctx.db
-					.query("files_saved_places")
-					.withIndex("by_view_parent_name", (q) =>
-						q.eq("cohortId", cohort._id).eq("view", "before").eq("parentId", parentId),
-					)
-					.paginate({ cursor: cursor.cursor, numItems: 1 })
-			: await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-						q
-							.eq("organizationId", cohort.organizationId)
-							.eq("workspaceId", cohort.workspaceId)
-							.eq("moveCohortId", undefined)
-							.eq("parentId", parentId),
-					)
-					.paginate({ cursor: cursor.cursor, numItems: 1 });
-	for (const entry of page.page) {
-		const nodeId = "nodeId" in entry ? entry.nodeId : entry._id;
-		const child = (await files_saved_placement_db_get_node(ctx.db, nodeId, {
-			cohortId: cohort._id,
-			view: "before",
-		}))!;
-		const reserved = await db_reserve_saved(ctx, cohort, {
-			node: child,
-			role: rootRecord.role === "replacement" ? "replacement" : "descendant",
-			itemId: rootRecord.itemId ?? undefined,
-		});
-		if (reserved._nay) return reserved;
-		await db_add_subtree(ctx, cohort, (await ctx.db.get("files_move_cohort_nodes", reserved._yay))!);
+	let done = false;
+	// Skip empty phases. A mutation may paginate only one range.
+	while (!done) {
+		if (cursor.cursor === null) {
+			const first =
+				cursor.source === "before"
+					? await ctx.db
+							.query("files_saved_places")
+							.withIndex("by_view_parent_name", (q) =>
+								q.eq("cohortId", cohort._id).eq("view", "before").eq("parentId", parentId),
+							)
+							.first()
+					: await ctx.db
+							.query("files_nodes")
+							.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+								q
+									.eq("organizationId", cohort.organizationId)
+									.eq("workspaceId", cohort.workspaceId)
+									.eq("moveCohortId", undefined)
+									.eq("parentId", parentId),
+							)
+							.first();
+			if (!first) {
+				if (cursor.source === "before") {
+					cursor.source = "normal";
+					continue;
+				}
+				done = true;
+				break;
+			}
+		}
+		const page =
+			cursor.source === "before"
+				? await ctx.db
+						.query("files_saved_places")
+						.withIndex("by_view_parent_name", (q) =>
+							q.eq("cohortId", cohort._id).eq("view", "before").eq("parentId", parentId),
+						)
+						.paginate({ cursor: cursor.cursor, numItems: 1 })
+				: await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+							q
+								.eq("organizationId", cohort.organizationId)
+								.eq("workspaceId", cohort.workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("parentId", parentId),
+						)
+						.paginate({ cursor: cursor.cursor, numItems: 1 });
+		for (const entry of page.page) {
+			const nodeId = "nodeId" in entry ? entry.nodeId : entry._id;
+			const child = (await files_saved_placement_db_get_node(ctx.db, nodeId, {
+				cohortId: cohort._id,
+				view: "before",
+			}))!;
+			const reserved = await db_reserve_saved(ctx, cohort, {
+				node: child,
+				role: rootRecord.role === "replacement" ? "replacement" : "descendant",
+				itemId: rootRecord.itemId ?? undefined,
+			});
+			if (reserved._nay) return reserved;
+			await db_add_subtree(ctx, cohort, (await ctx.db.get("files_move_cohort_nodes", reserved._yay))!);
+		}
+		done = cursor.source === "normal" && page.isDone;
+		if (cursor.source === "before" && page.isDone) {
+			cursor.source = "normal";
+			cursor.cursor = null;
+		} else cursor.cursor = page.continueCursor;
+		break;
 	}
-	const done = cursor.source === "normal" && page.isDone;
 	await ctx.db.patch("files_move_work_ranges", range._id, {
-		cursor: JSON.stringify(
-			cursor.source === "before" && page.isDone
-				? { source: "normal", cursor: null }
-				: { source: cursor.source, cursor: page.continueCursor },
-		),
+		cursor: JSON.stringify(cursor),
 		status: done ? "complete" : "running",
 	});
 	if (done) {
@@ -1442,9 +1495,27 @@ async function db_sides(
 	const ownsContent = item?.nodeRecordId === record._id && item.contentId !== null;
 	const beforeTag = { cohortId: cohort._id, view: "before" as const };
 	const afterTag = { cohortId: cohort._id, view: "after" as const };
-	if (cursor.part === 0 || cursor.part === 1) {
+	let paginated = false;
+	// Skip empty phases, then stop after one native page.
+	while (cursor.part < 2 && !paginated) {
 		if (!ownsContent && record.beforePlaceId) {
 			if (cursor.part === 0) {
+				const first = await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+						q
+							.eq("organizationId", cohort.organizationId)
+							.eq("workspaceId", cohort.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", record.nodeId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
+					)
+					.first();
+				if (!first) {
+					cursor.part++;
+					continue;
+				}
 				const page = await ctx.db
 					.query("files_metadata_docs")
 					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
@@ -1480,7 +1551,26 @@ async function db_sides(
 				// Tagged docs leave this range. A long field key makes its native cursor too large to store.
 				cursor.page = null;
 				if (page.isDone) cursor.part++;
+				paginated = true;
 			} else {
+				if (cursor.page === null) {
+					const first = await ctx.db
+						.query("files_plain_text_chunks")
+						.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+							q
+								.eq("organizationId", cohort.organizationId)
+								.eq("workspaceId", cohort.workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("fileNodeId", record.nodeId)
+								.eq("moveView.cohortId", undefined)
+								.eq("moveView.view", undefined),
+						)
+						.first();
+					if (!first) {
+						cursor.part++;
+						continue;
+					}
+				}
 				const page = await ctx.db
 					.query("files_plain_text_chunks")
 					.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
@@ -1505,9 +1595,11 @@ async function db_sides(
 				}
 				cursor.page = page.isDone ? null : page.continueCursor;
 				if (page.isDone) cursor.part++;
+				paginated = true;
 			}
 		} else cursor.part++;
-	} else if (cursor.part === 2) {
+	}
+	if (!paginated && cursor.part === 2) {
 		await files_updated_by_db_sync_node(ctx, { nodeId: record.nodeId });
 		await files_share_rows_db_sync_node(ctx.db, {
 			...cohort,
@@ -1515,7 +1607,7 @@ async function db_sides(
 			node: (await ctx.db.get("files_nodes", record.nodeId))!,
 		});
 		cursor.part++;
-	} else {
+	} else if (!paginated) {
 		const before = record.beforePlaceId ? await ctx.db.get("files_saved_places", record.beforePlaceId) : null;
 		let reparented = before?.parentId !== after.parentId;
 		if (record.role === "descendant" && item) {
@@ -1825,15 +1917,24 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 							});
 					}
 				} else {
-					// An accepted delete skips the content step. Drop the text it ignored, with its untagged index docs.
-					if (proposal.pendingArchive && proposal.content) {
+					// A content proposal owns three states.
+					// Delete and replacement skip the content finisher.
+					if (proposal.content) {
 						await files_db_retire_pending_update_yjs_states(ctx, {
-							organizationId: proposal.organizationId,
-							workspaceId: proposal.workspaceId,
+							organizationId: cohort.organizationId,
+							workspaceId: cohort.workspaceId,
 							pendingUpdateId: proposal._id,
 						});
-						await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: proposal._id });
+						if (proposal.pendingArchive)
+							await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: proposal._id });
 					}
+					// The content finisher keeps adopted assets. Delete skips that finisher.
+					if (item.contentId === null && proposal.pendingReplacement)
+						await files_pending_update_db_release_replacement_asset(ctx, {
+							organizationId: cohort.organizationId,
+							workspaceId: cohort.workspaceId,
+							assetId: proposal.pendingReplacement.assetId,
+						});
 					await files_db_delete_pending_update({ ctx, pendingUpdateId: proposal._id });
 				}
 			}
@@ -2116,6 +2217,7 @@ export const advance = internalMutation({
 				}
 				const proposal = item.pendingUpdateId ? await ctx.db.get("files_pending_updates", item.pendingUpdateId) : null;
 				if (
+					record.role !== "replacement" &&
 					proposal &&
 					!proposal.pendingArchive &&
 					(proposal.content || proposal.pendingReplacement || item.target.kind === "private")

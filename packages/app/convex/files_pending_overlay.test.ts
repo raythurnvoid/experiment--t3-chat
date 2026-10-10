@@ -1912,7 +1912,7 @@ describe("files_pending_overlay flush", () => {
 			]);
 			return (await ctx.meta.getTransactionMetrics()).databaseQueries.used - before.databaseQueries.used;
 		});
-		expect(ranges).toBe(1);
+		expect(ranges, "Concurrent writes reuse the old node and the workspace check").toBe(2);
 		expect((await f.overlay(p)).place).toMatchObject({ name: "q.md", ownerTreePath: "/q.md" });
 	});
 });
@@ -2021,12 +2021,14 @@ describe("files_pending_overlay jobs", () => {
 			});
 		});
 
-		const renamed = await test_rename_node(f.t, f.asV, {
-			membershipId: f.vMember.membershipId,
-			nodeId: x._id,
-			path: "y.md",
-		});
-		if (renamed._nay) throw new Error(renamed._nay.message);
+		// Change the ordinary source without driving its queued overlay job.
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", x._id, {
+			name: "y.md",
+			sortName: files_sort_text_key("y.md"),
+			path: "/a/y.md",
+			treePath: "/a/y.md",
+			updatedAt: x.updatedAt + 1,
+		}));
 		const job = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_overlay_jobs")
@@ -2310,8 +2312,16 @@ describe("files_pending_overlay jobs", () => {
 			if ((args as { kind: string }).kind === "parent") parentRuns++;
 			return await handler(ctx, args);
 		});
-		// V's rename of the top folder moves every place under the deepest one.
-		await f.v_rename({ id: top._id }, "top");
+		// Use an ordinary source write. Move stages its own owner views.
+		const renamedPath = `${path.slice(0, path.lastIndexOf("/"))}/bottom`;
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", folder._id, {
+			name: "bottom",
+			sortName: files_sort_text_key("bottom"),
+			path: renamedPath,
+			treePath: `${renamedPath}/`,
+			updatedAt: folder.updatedAt + 1,
+		}));
+		await f.settle();
 		// Places, incoming moves and private children each have their own native page.
 		expect(parentRuns).toBe(3);
 		await f.expect_overlay_true();

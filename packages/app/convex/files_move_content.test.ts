@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_run_with_flush } from "./setup.test.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import {
 	files_move_content_action_prepare,
 	files_move_content_db_abort,
@@ -337,29 +338,62 @@ test("each content page checks current membership before changing any side", asy
 	expect(await f.chunks(), "the refused page keeps the old saved content").toBe("old text");
 });
 
-test("publication refuses extra private growth without changing any balance or saved content", async () => {
+test("a reviewed partial Save publishes at full private byte quotas and charges once", async () => {
 	const f = await fixture();
 	await f.stage();
 	const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId)))!;
 	expect(content.privateByteDelta).toBeGreaterThan(0);
-	await f.t.run(async (ctx) => {
-		const quota = await ctx.db
-			.query("quotas")
-			.withIndex("by_workspace_quotaName", (q) =>
-				q.eq("workspaceId", f.db.workspaceId).eq("quotaName", "files_private_workspace_bytes"),
-			)
-			.unique();
-		if (!quota) throw new Error("Expected private quota");
-		await ctx.db.patch("quotas", quota._id, { maxCount: quota.usedCount });
+	expect(content.privateNodeDelta).toBe(0);
+	const balances = await f.t.run(async (ctx) => {
+		const quotaDocs = [];
+		for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes", "files_private_nodes"] as const) {
+			const id = await quotas_db_ensure(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				...(quotaName === "files_private_workspace_bytes" ? { quotaName } : { quotaName, userId: f.db.userId }),
+				now: Date.now(),
+			});
+			const quota = (await ctx.db.get("quotas", id))!;
+			if (quotaName !== "files_private_nodes") await ctx.db.patch("quotas", id, { maxCount: quota.usedCount });
+			quotaDocs.push((await ctx.db.get("quotas", id))!);
+		}
+		return quotaDocs;
 	});
-	const balances = await f.t.run((ctx) => ctx.db.query("quotas").collect());
-	expect(await f.publish(), "final private growth still needs ordinary quota").toMatchObject({
-		_nay: { name: "storage_full" },
+	const expectBalances = (assertion: string) =>
+		f.t.run(async (ctx) => {
+			for (const quota of balances)
+				expect(await ctx.db.get("quotas", quota._id), assertion).toMatchObject({
+					usedCount: quota.usedCount + (quota.quotaName === "files_private_nodes" ? 0 : content.privateByteDelta),
+					maxCount: quota.maxCount,
+				});
+		});
+	expect(await f.publish(), "Reviewed partial Save publishes at full private byte quotas").toEqual({ _yay: null });
+	await expectBalances("Save applies both exact byte deltas and keeps the caps and node count");
+	expect(await f.chunks(), "Save publishes the accepted text").toBe("accepted text");
+	const proposal = await f.t.run((ctx) => files_saved_placement_db_get_proposal(ctx.db, f.proposal._id));
+	const bytes = await f.t.run(async (ctx) => {
+		const state = await ctx.db.get("files_pending_update_yjs_states", proposal!.content!.unstagedStateId);
+		if (!state) throw new Error("Expected the remaining draft state");
+		const loaded = await files_db_load_pending_update_yjs_state_bytes(ctx, { stateDoc: state });
+		if (loaded._nay) throw new Error(loaded._nay.message);
+		return files_u8_to_array_buffer(loaded._yay);
 	});
-	expect(await f.t.run((ctx) => ctx.db.query("quotas").collect()), "a refused switch changes no balance").toEqual(
-		balances,
-	);
-	expect(await f.chunks(), "quota refusal leaves the old content visible").toBe("old text");
+	const doc = files_yjs_doc_create_from_array_buffer_update(bytes);
+	expect(files_yjs_doc_get_text({ yjsDoc: doc, rootKind: "plain_text" })).toEqual({
+		_yay: "accepted text\nlater draft",
+	});
+	doc.destroy();
+	expect(await test_run_with_flush(f.t, (ctx) => files_move_content_db_publish_accounting(ctx, f.context))).toEqual({
+		_yay: null,
+	});
+	await expectBalances("Replaying Save does not charge either byte quota again");
+	for (let pass = 0; pass < 100; pass++) {
+		const result = await test_run_with_flush(f.t, (ctx) => files_move_content_db_finish(ctx, f.context));
+		if (result._nay) throw new Error(result._nay.message);
+		if (result._yay.done) break;
+		if (pass === 99) throw new Error("Content repair did not finish");
+	}
+	await expectBalances("Physical repair keeps the published byte balances, caps and node count");
 });
 
 test("a lost preparation keeps held output and fences the next attempt", async () => {

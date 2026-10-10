@@ -52,6 +52,12 @@ its Save requirement.
 Adding or changing one needs a fresh check. Large Copy review saves selected media first; it never
 silently selects it. Partial Save keeps the mappings needed by the remaining proposal.
 
+Ordinary text Save keeps broken and unselected media links as text. The media reader still checks
+current access. When Review also selects the linked media, it joins that media with the document
+and proves the exact prepared embeds before publication. A live link added after planning still
+checks its selected media. One selected ordinary document has no other selected media to prove.
+Copy sets stay strict even after a partial Save clears `copiedFrom`.
+
 The full contracts live in [pending updates](../files-agent-pending-updates/SKILL.md) and
 [transfer runs](../files-explorer-tree/references/transfer.md).
 

@@ -9,14 +9,20 @@ afterEach(() => {
 });
 
 describe("tenant deletion with many direct file grants", () => {
-	for (const scope of ["workspace", "organization"] as const) {
-		test(`delete_${scope} accepts a tenant with more file grants than one transaction can write`, async () => {
+	for (const { scope, nativeLimits } of [
+		{ scope: "workspace", nativeLimits: false },
+		{ scope: "organization", nativeLimits: false },
+		{ scope: "workspace", nativeLimits: true },
+		{ scope: "organization", nativeLimits: true },
+	] as const) {
+		test(`delete_${scope} accepts a tenant with more file grants than one transaction can write${nativeLimits ? " at native limits" : ""}`, async () => {
 			vi.useFakeTimers();
 			// Convex allows 16,000 written docs and 4,096 index ranges per transaction. Lower both limits,
 			// so 1,800 grants cross them the same way 16,200 grants cross the real ones, without a slow fixture.
 			// The range limit stays above the overlay flush of one deletion step (more than 1,100 and less than
 			// 1,500 ranges with 250 written docs), so only a read per grant goes over it.
-			const t = test_convex({ transactionLimits: { documentsWritten: 250, databaseQueries: 1600 } });
+			// Native limits check the full 100-item purge and its overlay flush.
+			const t = test_convex({ transactionLimits: nativeLimits ? true : { documentsWritten: 250, databaseQueries: 1600 } });
 			const fixture = await t.run(async (ctx) => {
 				const ownerId = await ctx.db.insert("users", { clerkUserId: `review-${scope}-owner` });
 				const membership = await test_mocks_fill_db_with.membership(ctx, {
@@ -114,20 +120,22 @@ describe("tenant deletion with many direct file grants", () => {
 				return { grantCount: grants.length, firstGrant: grants[0]! };
 			});
 			expect(grantCount).toBe(1800);
-			// Deleting every grant in one transaction, like phase 1 once did, goes over the limit.
-			await expect(
-				t.run(async (ctx) => {
-					const grants = await ctx.db.query("access_control_permission_grants").collect();
-					for (const grant of grants) await ctx.db.delete("access_control_permission_grants", grant._id);
-				}),
-			).rejects.toThrow("Wrote too many documents");
-			// Reading every grant one by one in one transaction goes over the lowered range limit too.
-			await expect(
-				t.run(async (ctx) => {
-					const grants = await ctx.db.query("access_control_permission_grants").collect();
-					for (const grant of grants) await ctx.db.get("access_control_permission_grants", grant._id);
-				}),
-			).rejects.toThrow("Too many index ranges");
+			if (!nativeLimits) {
+				// Deleting every grant in one transaction, like phase 1 once did, goes over the limit.
+				await expect(
+					t.run(async (ctx) => {
+						const grants = await ctx.db.query("access_control_permission_grants").collect();
+						for (const grant of grants) await ctx.db.delete("access_control_permission_grants", grant._id);
+					}),
+				).rejects.toThrow("Wrote too many documents");
+				// Reading every grant one by one in one transaction goes over the lowered range limit too.
+				await expect(
+					t.run(async (ctx) => {
+						const grants = await ctx.db.query("access_control_permission_grants").collect();
+						for (const grant of grants) await ctx.db.get("access_control_permission_grants", grant._id);
+					}),
+				).rejects.toThrow("Too many index ranges");
+			}
 
 			// The public sharing door accepts this exact seeded shape.
 			const nodeId = await t.run(async (ctx) => ctx.db.normalizeId("files_nodes", firstGrant.resourceId));
@@ -177,12 +185,16 @@ describe("tenant deletion with many direct file grants", () => {
 					: internal.data_deletion.process_organization_deletion_request;
 			vi.setSystemTime(request.eligibleAt + 1);
 			let done = false;
+			let fullBatches = 0;
 			for (let pass = 0; pass < 500 && !done; pass += 1) {
 				const result = await t.mutation(processRequest, { requestId: request._id, _test_batchSize: 100 });
+				if (result.deletedCount === 100) fullBatches++;
 				expect(result.deletedCount).toBeLessThanOrEqual(100);
 				done = result.done;
 			}
 			expect(done).toBe(true);
+			if (nativeLimits)
+				expect(fullBatches, "A native purge completes a full 100-item batch").toBeGreaterThan(0);
 			expect(await t.run((ctx) => ctx.db.get("data_deletion_requests", request._id))).toBeNull();
 			expect(
 				await t.run((ctx) =>

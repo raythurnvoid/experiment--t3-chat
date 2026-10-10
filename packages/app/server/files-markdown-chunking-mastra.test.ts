@@ -3,6 +3,7 @@ import {
 	files_chunk_has_bitmask_flag,
 	files_chunk_BITMASK_FLAGS,
 	files_chunk_markdown,
+	files_chunk_markdown_page,
 } from "./files-markdown-chunking-mastra.ts";
 
 describe("files_chunk_markdown", () => {
@@ -184,5 +185,68 @@ describe("files_chunk_markdown", () => {
 			expect(chunk.lineStart).toBeGreaterThanOrEqual(1);
 			expect(chunk.lineEnd).toBeGreaterThanOrEqual(chunk.lineStart);
 		}
+	});
+});
+
+describe("files_chunk_markdown_page", () => {
+	test("keeps full-source text, indexes and flags across pages", async () => {
+		const markdownContent = [
+			"# Page title",
+			"",
+			"Read [docs link](https://example.com/docs) for details.",
+			"",
+			"",
+			"",
+			"```ts",
+			'const alpha = "alpha alpha alpha alpha alpha alpha alpha alpha";',
+			'const beta = "beta beta beta beta beta beta beta beta";',
+			'const gamma = "gamma gamma gamma gamma gamma gamma gamma";',
+			"```",
+			"",
+			"| Name | Value |",
+			"| --- | --- |",
+			"| one | 1 |",
+			"| two | 2 |",
+			"",
+			"Tail paragraph.",
+		].join("\n");
+		const full = await files_chunk_markdown(markdownContent, { maxChunkSize: 80 });
+		if (full._nay) throw new Error("Expected full Markdown chunks", { cause: full._nay });
+		expect(full._yay.length).toBeGreaterThan(2);
+		expect(
+			full._yay.some((chunk) => files_chunk_has_bitmask_flag(chunk.chunkFlags, files_chunk_BITMASK_FLAGS.isCode)),
+		).toBe(true);
+		expect(
+			full._yay.some((chunk) => files_chunk_has_bitmask_flag(chunk.chunkFlags, files_chunk_BITMASK_FLAGS.isTable)),
+		).toBe(true);
+		const chunks: Array<(typeof full._yay)[number]> = [];
+		for (let startChunkIndex = 0; startChunkIndex < full._yay.length; startChunkIndex += 2) {
+			const page = await files_chunk_markdown_page(markdownContent, {
+				startChunkIndex,
+				chunkCount: 2,
+				maxChunkSize: 80,
+			});
+			if (page._nay) throw new Error("Expected a Markdown chunk page", { cause: page._nay });
+			expect(page._yay.totalChunkCount).toBe(full._yay.length);
+			expect(page._yay.chunks, "Chunk pages keep the full-source indexes, offsets and flags").toEqual(
+				full._yay.slice(startChunkIndex, startChunkIndex + 2),
+			);
+			chunks.push(...page._yay.chunks);
+		}
+		expect(chunks.map((chunk) => chunk.chunkIndex)).toEqual(chunks.map((_, index) => index));
+		expect(chunks.map((chunk) => chunk.textChunk).join("")).toBe(markdownContent);
+	});
+
+	test("returns an empty page after the end with the full chunk count", async () => {
+		const markdownContent = "x".repeat(1500);
+		expect(await files_chunk_markdown_page(markdownContent, { startChunkIndex: 3, chunkCount: 8 })).toEqual({
+			_yay: { chunks: [], totalChunkCount: 2 },
+		});
+	});
+
+	test("returns an empty page for empty Markdown", async () => {
+		expect(await files_chunk_markdown_page("", { startChunkIndex: 0, chunkCount: 8 })).toEqual({
+			_yay: { chunks: [], totalChunkCount: 0 },
+		});
 	});
 });

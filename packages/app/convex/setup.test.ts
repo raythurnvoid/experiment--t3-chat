@@ -259,6 +259,56 @@ export async function test_move_nodes(
 	}
 }
 
+async function test_run_pending_overlay_job(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	scope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+	allowFuture: boolean,
+	jobs?: Doc<"files_pending_overlay_jobs">[],
+) {
+	jobs ??= await asUser.run(ctx => ctx.db.query("files_pending_overlay_jobs")
+		.withIndex("by_org_ws", q => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId)).collect());
+	const ready = jobs.find(job => !job.blockedByCohortId && job.nextAttemptAt <= Date.now());
+	const job = ready ?? (allowFuture ? jobs.filter(job => !job.blockedByCohortId)
+		.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt)[0] : undefined);
+	if (!job) return false;
+	if (job.nextAttemptAt > Date.now()) {
+		if (!vi.isFakeTimers()) throw new Error("A deferred overlay job needs fake timers");
+		// Change the clock only. Firing timers would also run other users' jobs and expiry handlers.
+		vi.setSystemTime(job.nextAttemptAt);
+	}
+	await asUser.mutation(internal.files_pending_overlay.run_job, {
+		kind: job.kind,
+		key: job.key,
+		nextAttemptAt: job.nextAttemptAt,
+	});
+	const after = await asUser.run(ctx => ctx.db.get("files_pending_overlay_jobs", job._id));
+	if (JSON.stringify(after) === JSON.stringify(job)) throw new Error("Pending overlay job made no progress");
+	return true;
+}
+
+async function test_wake_move_cohort(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	cohortId: Id<"files_move_cohorts">,
+) {
+	// Each native wake page removes waiters or clears their blocked cohort. Do not fire the workers.
+	while (true) {
+		const waiter = await asUser.run(ctx => ctx.db.query("files_move_waiters")
+			.withIndex("by_cohort", q => q.eq("cohortId", cohortId)).first());
+		if (!waiter) break;
+		await asUser.mutation(internal.files_move_cohorts.wake_waiters, { cohortId });
+		if (await asUser.run(ctx => ctx.db.get("files_move_waiters", waiter._id)))
+			throw new Error("Move waiter wake made no progress");
+	}
+	while (true) {
+		const job = await asUser.run(ctx => ctx.db.query("files_pending_overlay_jobs")
+			.withIndex("by_blockedCohort", q => q.eq("blockedByCohortId", cohortId)).first());
+		if (!job) break;
+		await asUser.mutation(internal.files_move_cohorts.wake_owner_jobs, { cohortId });
+		if ((await asUser.run(ctx => ctx.db.get("files_pending_overlay_jobs", job._id)))?.blockedByCohortId === cohortId)
+			throw new Error("Move owner job wake made no progress");
+	}
+}
+
 /**
  * Drive this Transfer and its repairs without running another queued user job.
  */
@@ -267,57 +317,79 @@ export async function test_finish_transfer_run(
 	runId: Id<"files_transfer_runs">,
 	onStep?: () => Promise<void>,
 ) {
-	const progress = test_progress_guard();
-	for (let pass = 0; pass < 50_000; pass++) {
+	let previous: string | undefined;
+	while (true) {
 		await onStep?.();
-		// All reads of one pass in one transaction. Each write below runs alone, like a real worker.
-		const state = await asUser.run(async ctx => {
+		const { run, activity, active, jobs, repair, ownedCohort, discoveryItem } = await asUser.run(async ctx => {
 			const run = await ctx.db.get("files_transfer_runs", runId);
 			if (!run) throw new Error("Missing transfer run");
 			const activity = await activities_db_require_by_source_id(ctx, runId);
-			if (!["queued", "running", "stopping"].includes(activity.status)) return null;
-			const job = await test_db_get_overlay_job(ctx, run);
-			const op = job ? null : await files_subtree_ops_db_find_repair(ctx, run);
+			const active = ["queued", "running", "stopping"].includes(activity.status);
+			const jobs = await ctx.db.query("files_pending_overlay_jobs")
+				.withIndex("by_org_ws", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).collect();
+			const hasOverlayJob = jobs.some(job => !job.blockedByCohortId && (active || job.nextAttemptAt <= Date.now()));
+			const ownedCohort = active && !hasOverlayJob ? await ctx.db.query("files_move_cohorts")
+				.withIndex("by_origin_run", q => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).order("desc").first() : null;
+			const op = active && !hasOverlayJob && (!ownedCohort || ownedCohort.phase === "complete") ? await files_subtree_ops_db_find_repair(ctx, run) : null;
 			if (op?.kind === "archive" || op?.kind === "restore") throw new Error("Transfer waits for Archive or Restore");
 			const walk = op ? await ctx.db.query("files_subtree_op_walks").withIndex("by_op", q => q.eq("opId", op._id)).unique() : null;
 			if (op && !walk) throw new Error("Missing repair walk");
-			const cohort = job || op ? null : await test_db_get_slot_cohort(ctx, run);
-			return { run, activity, job, walk, cohort };
+			const repair = op && walk ? { opId: op._id, step: walk.step } : null;
+			const discoveryItem = active && run.kind === "copy" && run.step === "discover" ? await ctx.db.query("files_transfer_items")
+				.withIndex("by_run_discoveryDone_order", q => q.eq("runId", runId).eq("discoveryDone", false)).first() : null;
+			return { run, activity, active, jobs, repair, ownedCohort, discoveryItem };
 		});
-		if (!state) return;
-		const { run, activity, job, walk } = state;
-		progress(state, `Transfer step ${run.step}, activity ${activity.status}, job ${job?.kind ?? "none"}, repair step ${walk?.step ?? "none"}, Move ${state.cohort ? `${state.cohort.phase}/${state.cohort.workPhase} step ${state.cohort.step}` : "none"}`);
-		if (job) {
-			await asUser.mutation(internal.files_pending_overlay.run_job, {
-				kind: job.kind,
-				key: job.key,
-				nextAttemptAt: job.nextAttemptAt,
-			});
+		if (await test_run_pending_overlay_job(asUser, run, active, jobs)) {
+			previous = undefined;
 			continue;
 		}
-		if (walk) {
-			await asUser.mutation(internal.files_subtree_ops.advance, { opId: walk.opId, step: walk.step });
+		if (!active) return;
+		if (repair) {
+			await asUser.mutation(internal.files_subtree_ops.advance, repair);
+			const walk = await asUser.run(ctx => ctx.db.query("files_subtree_op_walks")
+				.withIndex("by_op", q => q.eq("opId", repair.opId)).unique());
+			if (walk?.step === repair.step) throw new Error("Transfer repair made no progress");
+			previous = undefined;
 			continue;
 		}
-		let cohort = state.cohort;
-		// With its own Move running and no Stop, advance only schedules the Move's next step (see
-		// files_transfer.ts advance), so skip it. Stop still goes through advance.
-		if (
-			cohort?.origin.kind !== "transfer" || cohort.origin.runId !== runId || cohort.phase === "complete" ||
-			activity.status === "stopping" || run.kind !== "move" || run.publication !== "saved"
-		) {
+		// Refreshing a deadline alone does not advance the worker.
+		const current = JSON.stringify({
+			run: { ...run, updatedAt: undefined },
+			activity: { ...activity, updatedAt: undefined, deadlineAt: undefined },
+			cohort: ownedCohort,
+			// An empty Copy page changes the item, not the run.
+			discovery: discoveryItem && {
+				id: discoveryItem._id,
+				cursor: discoveryItem.discoveryCursor,
+				done: discoveryItem.discoveryDone,
+			},
+		});
+		if (previous === current) throw new Error("Transfer made no progress. Finish its waiting work first.");
+		previous = current;
+		// A running cohort schedules its own pages. Stop still needs Transfer.advance.
+		let cohort = activity.status === "running" && ownedCohort?.phase !== "complete" ? ownedCohort : null;
+		if (!cohort) {
 			await asUser.mutation(internal.files_transfer.advance, { runId });
-			cohort = await asUser.run(ctx => test_db_get_slot_cohort(ctx, run));
+			cohort = await asUser.run(async ctx => {
+				const slot = await ctx.db.query("files_move_workspace_slots")
+					.withIndex("by_workspace", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).unique();
+				if (!slot?.cohortId) return null;
+				const cohort = await ctx.db.get("files_move_cohorts", slot.cohortId);
+				if (!cohort) throw new Error("Transfer waits for another Move");
+				return cohort;
+			});
 		}
 		if (cohort) {
 			const cohortId = cohort._id;
 			if (cohort.origin.kind !== "transfer" || cohort.origin.runId !== runId) throw new Error("Transfer waits for another Move");
 			await asUser.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
-			if ((await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete")
+			// Only release can complete the cohort.
+			if (cohort.workPhase === "release" && (await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete") {
+				await test_wake_move_cohort(asUser, cohortId);
 				await asUser.mutation(internal.files_transfer.settle_cohort, { cohortId });
+			}
 		}
 	}
-	throw new Error("Transfer did not finish");
 }
 
 /**
@@ -424,52 +496,96 @@ export async function test_finish_pending_update_run(
 	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
 	runId: Id<"files_pending_update_runs">,
 ) {
-	const progress = test_progress_guard();
-	// The running Move that advance already saw. Until it completes, advance only schedules its next step.
-	let advancedCohortId: Id<"files_move_cohorts"> | null = null;
-	for (let pass = 0; pass < 50_000; pass++) {
-		// All reads of one pass in one transaction. Each write below runs alone, like a real worker.
-		const state = await asUser.run(async ctx => {
-			const review = await test_db_get_review_state(ctx, runId);
-			const op = review.job ? null : await files_subtree_ops_db_find_repair(ctx, review.run);
+	let previous: string | undefined;
+	while (true) {
+		const { run, activity, active, jobs, repair, ...worker } = await asUser.run(async ctx => {
+			const run = await ctx.db.get("files_pending_update_runs", runId);
+			if (!run) throw new Error("Missing review run");
+			const activity = await activities_db_require_by_source_id(ctx, runId);
+			const active = run.step !== "finished";
+			const jobs = await ctx.db.query("files_pending_overlay_jobs")
+				.withIndex("by_org_ws", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).collect();
+			const hasOverlayJob = jobs.some(job => !job.blockedByCohortId && (active || job.nextAttemptAt <= Date.now()));
+			const unit = active && !hasOverlayJob ? await ctx.db.query("files_pending_update_run_units")
+				.withIndex("by_run_status_deleteLast_order", q => q.eq("runId", runId).eq("status", "preparing")).first() : null;
+			const cohort = unit?.cohortId ? await ctx.db.get("files_move_cohorts", unit.cohortId) : null;
+			const op = active && !hasOverlayJob && (!cohort || cohort.phase === "complete") ? await files_subtree_ops_db_find_repair(ctx, run) : null;
+			if (op?.kind === "archive" || op?.kind === "restore") throw new Error("Review waits for Archive or Restore");
 			const walk = op ? await ctx.db.query("files_subtree_op_walks").withIndex("by_op", q => q.eq("opId", op._id)).unique() : null;
 			if (op && !walk) throw new Error("Missing repair walk");
-			return { ...review, walk };
+			const repair = op && walk ? { opId: op._id, step: walk.step } : null;
+			const driveWorker = active && !hasOverlayJob && !repair;
+			const plan = driveWorker && run.graphPlanId ? await ctx.db.get("files_pending_update_plans", run.graphPlanId) : null;
+			let settlingUnit: Doc<"files_pending_update_run_units"> | null = null;
+			// A dependency page can finish before the next unit starts.
+			if (driveWorker && run.step === "running" && !unit && run.finishedUnitCount > 0) {
+				for (const status of ["completed", "blocked", "failed"] as const) {
+					settlingUnit = await ctx.db.query("files_pending_update_run_units")
+						.withIndex("by_run_status_dependentsSettled_order", q =>
+							q.eq("runId", runId).eq("status", status).eq("dependentsSettled", false)).first();
+					if (settlingUnit) break;
+				}
+			}
+			const requiredUnitId = settlingUnit?._id;
+			const dependency = requiredUnitId ? await ctx.db.query("files_pending_update_run_dependencies")
+				.withIndex("by_required_settled", q => q.eq("requiredUnitId", requiredUnitId).eq("settled", false)).first() : null;
+			return { run, activity, active, jobs, repair, plan, unit, cohort, settlingUnit, dependency };
 		});
-		const { run, job, walk } = state;
-		progress(state, `Review step ${run.step}, activity ${state.activity?.status ?? "none"}, job ${job?.kind ?? "none"}, repair step ${walk?.step ?? "none"}, Move ${state.cohort ? `${state.cohort.phase}/${state.cohort.workPhase} step ${state.cohort.step}` : "none"}`);
-		if (job) {
-			await asUser.mutation(internal.files_pending_overlay.run_job, {
-				kind: job.kind,
-				key: job.key,
-				nextAttemptAt: job.nextAttemptAt,
-			});
+		if (await test_run_pending_overlay_job(asUser, run, active, jobs)) {
+			previous = undefined;
 			continue;
 		}
-		if (walk) {
-			await asUser.mutation(internal.files_subtree_ops.advance, { opId: walk.opId, step: walk.step });
+		if (!active) return;
+		if (repair) {
+			await asUser.mutation(internal.files_subtree_ops.advance, repair);
+			const walk = await asUser.run(ctx => ctx.db.query("files_subtree_op_walks")
+				.withIndex("by_op", q => q.eq("opId", repair.opId)).unique());
+			if (walk?.step === repair.step) throw new Error("Review repair made no progress");
+			previous = undefined;
 			continue;
 		}
-		if (run.step === "finished") return;
+		const current = JSON.stringify({
+			run: { ...run, updatedAt: undefined },
+			activity: { ...activity, updatedAt: undefined, deadlineAt: undefined },
+			...worker,
+		});
+		if (previous === current) throw new Error("Review made no progress. Finish its waiting work first.");
+		previous = current;
 		if (run.step === "uploading") await asUser.mutation(internal.files_pending_update_runs.append_single_save_input, { runId, fence: run.fence, offset: run.itemCount });
 		else if (run.step === "planning") await asUser.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
 		else {
-			let { unit, cohort } = state;
-			// advance checks the deadline and access, then only schedules the running Move (see
-			// files_pending_update_runs.ts advance). Nothing here changes access, so skip it until the Move completes.
-			if (!cohort || cohort._id !== advancedCohortId || cohort.phase === "complete" || !state.activity || state.activity.deadlineAt <= Date.now()) {
+			let unit = worker.unit;
+			let cohort = activity.status === "running" && unit?.kind === "cohort" ? worker.cohort : null;
+			// A running cohort schedules its own pages. Atomic retries still need Review.advance.
+			if (!cohort) {
 				await asUser.mutation(internal.files_pending_update_runs.advance, { runId });
-				({ unit, cohort } = await asUser.run(ctx => test_db_get_review_cohort(ctx, runId)));
-				advancedCohortId = cohort && cohort.phase !== "complete" ? cohort._id : null;
+				({ unit, cohort } = await asUser.run(async ctx => {
+					const unit = await ctx.db.query("files_pending_update_run_units")
+						.withIndex("by_run_status_deleteLast_order", q => q.eq("runId", runId).eq("status", "preparing")).first();
+					const cohort = unit?.cohortId ? await ctx.db.get("files_move_cohorts", unit.cohortId) : null;
+					return { unit, cohort };
+				}));
 			}
 			if (unit?.cohortId) {
 				if (!cohort) throw new Error("Missing review cohort");
-				if (cohort.phase === "complete") await asUser.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
-				else await asUser.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+				const cohortId = cohort._id;
+				if (cohort.phase !== "complete") await asUser.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+				// Only release can complete the cohort.
+				if (cohort.phase === "complete" || (cohort.workPhase === "release" &&
+					(await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete")) {
+					await test_wake_move_cohort(asUser, cohortId);
+					await asUser.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
+				}
+			} else if (unit?.kind === "atomic") {
+				await asUser.action(internal.files_pending_update_runs.prepare_unit, {
+					runId,
+					fence: run.fence,
+					unitId: unit._id,
+					attemptFence: unit.attemptFence,
+				});
 			}
 		}
 	}
-	throw new Error("Review did not finish");
 }
 
 /**

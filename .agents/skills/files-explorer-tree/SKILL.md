@@ -146,7 +146,9 @@ Tree-item components:
     never one per row). `pickableFilesQuery` asks a batch query, at most 50 ids per call, which shown files
     can be picked and disables the rest with its reason. `leadingRows` (people in Channels) show
     before the files at the root or in a whole-workspace search. Text with no `/` searches the open
-    folder, or the whole workspace at the root. A disabled row stays reachable by keyboard, and Enter
+    folder, or the whole workspace at the root. Name search reads the normal and selected Move streams
+    with one view and search generation. Rows appear once per node id. Show more loads each stream
+    that has another page. A disabled row stays reachable by keyboard, and Enter
     on it announces the reason; opening a folder announces "Opened <path>".
 - Each open folder loads its subfolders and its files at once, each kind from 5 streams of 200 rows,
   like the folder table: the open stream (`list_tree_children`, `restricted: false`), the owner's

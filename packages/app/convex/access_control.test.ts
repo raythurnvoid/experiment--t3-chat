@@ -6,6 +6,7 @@ import {
 	test_convex,
 	test_rename_node,
 	test_move_nodes,
+	test_finish_transfer_run,
 	test_get_file_yjs_pointers,
 	test_mocks_cancel_pending_home_file_seeds,
 	test_mocks_fill_db_with,
@@ -2062,7 +2063,16 @@ describe("enforcement", () => {
 			reviewedRevision: pending.revision,
 		});
 
-		expect(saved._nay?.message).toBe("Permission denied");
+		expect(saved._nay).toEqual({ message: "This draft cannot be saved here" });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.id))).toMatchObject({
+			name: "notes",
+			path: "/notes",
+			parentId: files_ROOT_ID,
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toMatchObject({
+			revision: pending.revision,
+			pendingMove: pending.pendingMove,
+		});
 	});
 
 	test("a viewer can start a chat thread and dismiss their feed but cannot comment", async () => {
@@ -9547,23 +9557,60 @@ describe("file sharing", () => {
 				return { openId, childId: childId! };
 			});
 
+			let observedUnrepairedChild = false;
+			let memberRunId: Id<"files_transfer_runs"> | null = null;
 			const moved = await test_move_nodes(t, fixture.asOwner, {
 				membershipId: fixture.ownerMembershipId,
 				itemIds: [openId],
 				targetParentId: closedId,
+				onStep: async () => {
+					if (observedUnrepairedChild) return;
+					const cohort = await t.run(async (ctx) => {
+						const slot = await ctx.db.query("files_move_workspace_slots").withIndex("by_workspace", (q) =>
+							q.eq("organizationId", fixture.organizationId).eq("workspaceId", fixture.defaultWorkspaceId),
+						).unique();
+						return slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
+					});
+					if (!cohort || cohort.publishedAt === null) return;
+					const child = await t.run((ctx) => ctx.db.get("files_nodes", childId));
+					if (child?.restrictedScopeNodeId !== null) return;
+					observedUnrepairedChild = true;
+					// The selected view must hide the child before its stored scope is repaired.
+					expect(await fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+						membershipId: fixture.memberMembershipId,
+						fileNodeId: String(childId),
+					}), "A published Move hides unrepaired descendants").toBeNull();
+					const started = await fixture.asMember.mutation(api.files_transfer.start, {
+						membershipId: fixture.memberMembershipId,
+						requestId: "move-unrepaired-child-out",
+						kind: "move",
+						expectedSourceCount: 1,
+						sourceIds: [childId],
+						targetParentId: files_ROOT_ID,
+					});
+					if (started._nay) throw new Error(started._nay.message);
+					memberRunId = started._yay.runId;
+					expect(await fixture.asMember.mutation(api.files_transfer.seal, {
+						membershipId: fixture.memberMembershipId,
+						runId: memberRunId,
+					})).toEqual({ _yay: null });
+					await t.mutation(internal.files_transfer.advance, { runId: memberRunId });
+					expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", memberRunId!)),
+						"A Move requested during repair waits before selection").toMatchObject({ step: "select" });
+					expect(await t.run((ctx) => ctx.db.get("files_nodes", childId))).toMatchObject({ parentId: openId });
+				},
 			});
 			expect(moved._nay).toBeUndefined();
-			// The move job is still running and has not reached this child yet.
-			expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").first())).toMatchObject({ kind: "move" });
-			expect((await t.run((ctx) => ctx.db.get("files_nodes", childId)))?.restrictedScopeNodeId).toBeNull();
+			expect(observedUnrepairedChild, "The test sees publication before stored scope repair").toBe(true);
 
-			// Once out of `open`, the job would never reach it, so the stored scope would let it out for good.
-			const movedOut = await test_move_nodes(t, fixture.asMember, {
+			if (!memberRunId) throw new Error("Expected the member's waiting Move");
+			await test_finish_transfer_run(fixture.asMember, memberRunId);
+			expect(await fixture.asMember.query(api.files_transfer.get, {
 				membershipId: fixture.memberMembershipId,
-				itemIds: [childId],
-				targetParentId: files_ROOT_ID,
+				runId: memberRunId,
+			}), "The waiting Move checks access after repair").toMatchObject({
+				activity: { status: "failed", errorMessage: "Permission denied" },
 			});
-			expect(movedOut._nay?.message).toBe("Permission denied");
 			expect(await t.run((ctx) => ctx.db.get("files_nodes", childId))).toMatchObject({ parentId: openId });
 		});
 	});
@@ -10014,7 +10061,9 @@ describe("file sharing", () => {
 				})
 				.then((result) => result.page),
 		]);
-		expect(ownerListed.map((activity) => activity._id)).toEqual([currentActivityId]);
+		const moveActivity = ownerListed.find((activity) => activity.source.kind === "files_transfer_run");
+		expect(moveActivity).toMatchObject({ visibility: "requester", userId: fixture.ownerId, status: "succeeded" });
+		expect(ownerListed.map((activity) => activity._id)).toEqual([currentActivityId, moveActivity!._id]);
 		expect(memberListed.map((activity) => activity._id)).toEqual([currentActivityId]);
 
 		const archivedStale = await fixture.asMember.mutation(api.activities.archive_activity, {

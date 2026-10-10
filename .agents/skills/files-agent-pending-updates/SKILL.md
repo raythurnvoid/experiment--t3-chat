@@ -29,7 +29,7 @@ Structural state uses:
 
 - `pendingMove` for move or rename intent.
 - `copiedFrom` for copy or replace provenance.
-- `pendingArchive` for delete intent (bash `rm`): accepting archives the node; a folder archives its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Content branches survive on the doc (accept ignores them; discard restores them as a Modified row).
+- `pendingArchive` for delete intent (bash `rm`): accepting archives the node; a folder archives its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Setting Delete keeps the content branches for Undo. Accept removes the whole proposal without saving its draft text. Discard restores the content branches as a Modified row.
 - `createIntent` for a private file or folder. Missing agent write and copy targets stay private until Save. Removing an owned private create discards that private identity and its approved pending work.
 - `mediaDependencySetId` on copied documents points to sealed, indexed image/video mappings.
   Each set has one owner and a generation. The mappings pin selected destination targets and versions.
@@ -147,6 +147,10 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   Exact proposal reservations select the content view until cleanup restores normal indexes.
   Existing parent folders that keep their placement do not collect unrelated drafts. Changed
   sources still collect affected owners, including drafts inside a moved folder.
+  One node's empty owner ranges share a step through exact `first()` checks. Empty child ranges
+  and empty metadata or plain-text side ranges use the same rule. Each step uses
+  at most one paginated query. Any paginated page ends the step, including an empty cursor tail,
+  even when those owners are already known. Receipt pages keep their own step too.
 - Metadata side steps read at most eight docs with a 1 MiB source-byte page. The write guards
   reread old docs, so the count alone is not a byte bound. Tagging, finish and abort drain exact
   view ranges without storing metadata-key cursors. Owner field joins keep their source docs.
@@ -178,7 +182,12 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   preparation headroom as one huge request. Abort keeps the original private resources.
 - Every selected content candidate seals before the group's media proof starts. This keeps a
   selected replacement's final asset available even when its document was prepared first.
-  Media proof comes from the exact prepared text, including ordinary private embeds. Each page
+  Media proof comes from the exact prepared text. Ordinary embeds join and prove only media
+  selected in the same Review. Other ordinary links stay text, even when broken or not saved.
+  Readers still check each media file's current access. A one-item ordinary Review skips media
+  parsing. A larger Review selects refs through exact run-target and private-alias indexes,
+  in pages of eight, before creating the proof set. This also checks live links added after planning.
+  Copy-owned sets stay strict, including empty sets and partial Saves after `copiedFrom` clears. Each page
   checks current access and the exact asset version. Selected private media uses its exact after
   receipt. Private embed URLs keep their existing form after Save. The switch checks sealed proof
   for the current text digest, proposal revision, selection and group attempt. A proof whose
@@ -416,11 +425,14 @@ Important behavior:
 - Connected moves, folder cycles, content, and replacement occupants must appear in the explicit server review selection. Accepting one member never silently selects another member. Each connected Accept unit stages its changes in pages and publishes them with one group switch.
 - Folder Move replaces only an empty folder. Bash requires the explicit `mv -T -f` form. Active saved children, private children, and the owner's pending moves into that folder count as contents. The final Save checks again, so a late saved child keeps its folder. A file never replaces a folder, and a folder never replaces a file. Move never merges nonempty folders.
 - Move Accept uses `files_move_cohorts.ts`. It stages every affected saved header and indexed side doc in pages. Before the switch, readers keep the old IDs, names and content. After it, they read the final group while the worker finishes physical writes and releases holds. See "Create, Rename, Archive, Unarchive" in the [explorer spec](../files-explorer-tree/SKILL.md).
-- A replacement pins the saved occupant ID and content version at proposal time. A later occupant or changed version requires a new review; Save never adopts either automatically. The occupant's own pending changes must be selected too, even when another chat contributed them.
+- A replacement pins the saved occupant ID and content version at proposal time. A later occupant or changed version requires a new review; Save never adopts either automatically. The occupant's own pending changes must be selected too, even when another chat contributed them. Accept archives that occupant and removes its whole proposal without saving its draft text or charging another Save.
+- Accepting Delete or replacement retires the consumed proposal's three content states. Background cleanup removes their pages before releasing the held bytes. Removing the proposal alone must not leave those states active.
+- If that proposal also owns an unused Copy asset, cleanup queues its exact R2 key and deletes its asset doc. Its byte hold stays until R2 deletion finishes. A normal Save keeps the asset adopted by its content step.
 - The only stale literal the client treats as benign is `Stale save` (plus `Not found` on in-flight syncs); both come from multi-second ACTIONS, not from panel clicks.
 - One documented cross-tab edge (accepted editing model): an OPEN diff editor owns a live local draft, and a dead doc id with no replacement doc deliberately falls through to the create path — so a diff tab left open on a file can recreate a proposal that was discarded in another tab. The recreated content is pending only (never committed or billed) and shows up in the panel like any proposal. Making Discard authoritative across tabs would need a separate draft-cancellation design.
 - Every proposal edit refreshes the 4-hour expiry, including identical-content upsert and sync. An identical rewrite still bumps `updatedAt`, moves `expiresAt` later, and records new structural intent. Toggle and restore marking leave both timestamps unchanged. Successful preparation refreshes them normally.
 - Collaborative Save merges both branches against current text with the shared line rule, builds them on current history, and publishes only staged text. It writes the saved-sequence marker, enqueues R2 materialization, and keeps unresolved unstaged work on partial save. It does not replay old branch delete sets onto current content. A branch may contain another Yjs root accepted by the state seal; Save projects only the file's own text shape.
+- Background Save writes text in pages of eight chunks. Markdown pages convert only their own chunks to plain text. They keep the full source's chunk count, positions and flags. The remaining draft uses the same page rule.
 - Save guards the target node before any write: a missing, out-of-scope, or non-file target returns `Not found` and the doc survives. An archived target still saves: the archive only hides the node, its content stays writable, and unarchiving later shows the saved text. The sidebar marks those rows `· Archived`.
 - A save whose action-read base sequence no longer matches the file's CURRENT committed last sequence returns `Stale save` before any write or billing. This one check covers two races: a second tab replaying an old save (no double billing), and another user committing between the action's read and the mutation (the doc's new base can never silently hide that commit).
 - A replace-move Accept archives the reviewed saved occupant and moves or publishes the source into its place. A saved source keeps its saved ID, type, and history; a private source keeps its private identity until it receives its one saved receipt. A partial private Save clears the replacement claim and keeps unresolved content on the same proposal, now targeting the saved source. It does not merge the occupant's content.

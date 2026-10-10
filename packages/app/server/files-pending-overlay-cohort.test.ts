@@ -296,7 +296,7 @@ describe("Move owner views", () => {
 		let cursor: string | null = null;
 		let done = false;
 		let pages = 0;
-		while (!done && pages < 10) {
+		while (!done) {
 			const result = await f.t.run((ctx) =>
 				files_pending_overlay_db_stage_owner_fields(ctx, {
 					cohortId: f.cohortId,
@@ -307,6 +307,8 @@ describe("Move owner views", () => {
 				}),
 			);
 			expect(result._nay).toBeUndefined();
+			if (!result._yay!.done)
+				expect(result._yay!.cursor, "each unfinished field page advances its native cursor").not.toBe(cursor);
 			cursor = result._yay!.cursor;
 			done = result._yay!.done;
 			pages++;

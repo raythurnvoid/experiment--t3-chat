@@ -305,16 +305,36 @@ async function db_destination(ctx: MutationCtx, run: Run, plan: Plan, item: Item
 		if (occupant && (item.target.kind !== "saved" || occupant._id !== item.target.id)) {
 			const selected = await db_selected(ctx, plan, { kind: "saved", id: occupant._id });
 			// A selected move or delete frees the name, so both changes publish in one group.
-			if (selected?.structuralKind === "move" || selected?.structuralKind === "archive")
-				plan = await db_link(ctx, plan, item, selected, "structure");
+			if (selected?.structuralKind === "move") plan = await db_link(ctx, plan, item, selected, "structure");
+			else if (selected?.structuralKind === "archive") plan = await db_link(ctx, plan, item, selected, "archive");
 			else if ((!replaced || replaced.kind !== "saved" || replaced.id !== occupant._id) && item.errorCode === null) {
 				const current = (await ctx.db.get("files_pending_update_plan_items", item._id))!;
 				// Keep an earlier error found while checking this destination.
-				if (current.errorCode === null)
-					await ctx.db.patch("files_pending_update_plan_items", item._id, {
-						errorCode: "destination_changed",
-						errorMessage: "The destination name is already used. Review it again.",
-					});
+				if (current.errorCode === null) {
+					const proposal = selected
+						? null
+						: await ctx.db
+								.query("files_pending_updates")
+								.withIndex("by_organization_workspace_user_target", (q) =>
+									q
+										.eq("organizationId", run.organizationId)
+										.eq("workspaceId", run.workspaceId)
+										.eq("userId", run.userId)
+										.eq("target.kind", "saved")
+										.eq("target.id", occupant._id),
+								)
+								.unique();
+					if (proposal?.pendingMove || proposal?.pendingArchive)
+						await db_error(ctx, current, "This action also affects an unselected change. Review them together.", {
+							runId: run._id,
+							pendingUpdateId: proposal._id,
+						});
+					else
+						await ctx.db.patch("files_pending_update_plan_items", item._id, {
+							errorCode: "destination_changed",
+							errorMessage: "The destination name is already used. Review it again.",
+						});
+				}
 			}
 		}
 	}
@@ -541,7 +561,12 @@ export const advance = internalMutation({
 					: header.content && header.target.kind === "saved"
 						? (await files_saved_placement_db_get_node(ctx.db, header.target.id))?.textKind
 						: null;
-			if (textKind !== "rich_text" || next.settlementOnly || next.structuralKind === "archive") {
+			if (
+				textKind !== "rich_text" ||
+				next.settlementOnly ||
+				next.structuralKind === "archive" ||
+				(!item.mediaDependencySet && run.expectedItemCount === 1)
+			) {
 				plan = await db_save(ctx, plan, { producerOrder: next.order, producerItemId: null, producerMediaOffset: 0 });
 				continue;
 			}
@@ -629,6 +654,9 @@ export const stage_media = internalMutation({
 				? await files_pending_nodes_db_resolve_read_target(ctx, { ...run, target: original })
 				: null;
 			let selected = target ? await db_selected(ctx, plan, target) : null;
+			if (!selected && original) selected = await db_selected(ctx, plan, original);
+			// Ordinary links outside this selection stay text. Readers check their access.
+			if (!item.mediaDependencySet && !selected) continue;
 			if (selected?.structuralKind === "archive")
 				reviewedArchiveIds.add((await db_input(ctx, selected)).pendingUpdateId);
 			const visible = target ? await reader.resolveTargetForSave(target) : null;
@@ -636,7 +664,6 @@ export const stage_media = internalMutation({
 				await db_error(ctx, vertex, "The reviewed media is no longer available.");
 				continue;
 			}
-			selected ??= await db_selected(ctx, plan, original);
 			if (selected)
 				plan = await db_link(ctx, plan, vertex, selected, vertex.mode === "copy" ? "copy_media" : "ordinary_media");
 			else if (target?.kind === "private")

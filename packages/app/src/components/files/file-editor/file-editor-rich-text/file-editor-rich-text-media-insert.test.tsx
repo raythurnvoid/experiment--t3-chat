@@ -57,6 +57,7 @@ function set_root_files() {
 			folderId: "root" as app_convex_Id<"files_nodes">,
 			kind,
 			archived: false,
+			savedStream: { kind: "normal", generation: 0 },
 		});
 		const children = getFunctionName(app_convex_api.files_nodes.list_tree_children);
 		results.set(watch_key(children, { ...streamArgs.children(false), paginationOpts: { cursor: null } }), {
@@ -77,6 +78,7 @@ function set_root_files() {
 					membershipId: MEMBERSHIP_ID,
 					archived: false,
 					principalIndex,
+					savedStream: { kind: "normal", generation: 0 },
 					paginationOpts: { cursor: null },
 				}),
 				EMPTY_PAGE,
@@ -118,6 +120,10 @@ function render_picker() {
 
 beforeEach(() => {
 	results.clear();
+	results.set(
+		watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+		{ cohortId: null, view: null, generation: 0, searchGeneration: 0 },
+	);
 	insertContent.mockReset();
 	onClose.mockReset();
 	client = new ConvexReactClient("https://media-picker-test.convex.cloud");
