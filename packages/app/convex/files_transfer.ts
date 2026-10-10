@@ -3449,12 +3449,13 @@ async function db_commit_move(args: {
 				userId: run.userId,
 				scopes: [run.sourceScope],
 			});
-			// The check proves access only. A new file elsewhere must not restart it.
+			// The check proves access only, so it keeps the first two pins: the access clocks. A new file
+			// elsewhere must not restart it.
 			validation = {
 				itemId: item._id,
 				treePath: source.treePath,
 				cursor: null,
-				versions: pins.accessVersions,
+				versions: pins.versions.slice(0, 2),
 				done: false,
 			};
 		}
