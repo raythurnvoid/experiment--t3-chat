@@ -405,7 +405,11 @@ async function transfer_workspace() {
 	};
 	const node = (id: Id<"files_nodes">) => t.run((ctx) => ctx.db.get("files_nodes", id));
 	// Start a Move and step its group by hand until `isReady` holds.
-	const move = async (sourceId: Id<"files_nodes">, targetParentId: Id<"files_nodes">, isReady: () => Promise<boolean>) => {
+	const move = async (
+		sourceId: Id<"files_nodes">,
+		targetParentId: Id<"files_nodes">,
+		isReady: () => Promise<boolean>,
+	) => {
 		const started = await asUser.mutation(api.files_transfer.start, {
 			membershipId: db.membershipId,
 			requestId: crypto.randomUUID(),
@@ -449,7 +453,9 @@ describe("Move cohort and folder-wide jobs", () => {
 		const sub = await w.folder("/P/sub");
 		const Q = await w.folder("/Q");
 		await w.move(x, Q, async () => !!(await w.node(inner))?.moveCohortId);
-		expect(await w.asUser.mutation(api.files_sharing.restrict_node, { membershipId: w.db.membershipId, nodeId: P })).toEqual({
+		expect(
+			await w.asUser.mutation(api.files_sharing.restrict_node, { membershipId: w.db.membershipId, nodeId: P }),
+		).toEqual({
 			_yay: null,
 		});
 		await w.finish();
@@ -467,7 +473,9 @@ describe("Move cohort and folder-wide jobs", () => {
 		const deep = await w.folder("/P/sub/deep");
 		const src = await w.folder("/src");
 		await w.move(src, sub, async () => !!(await w.node(sub))?.moveCohortId);
-		expect(await w.asUser.mutation(api.files_sharing.restrict_node, { membershipId: w.db.membershipId, nodeId: P })).toEqual({
+		expect(
+			await w.asUser.mutation(api.files_sharing.restrict_node, { membershipId: w.db.membershipId, nodeId: P }),
+		).toEqual({
 			_yay: null,
 		});
 		await w.finish();
@@ -500,9 +508,9 @@ describe("Move cohort and folder-wide jobs", () => {
 		const inner = await w.folder("/P/x/inner");
 		const Q = await w.folder("/Q");
 		await w.move(x, Q, async () => !!(await w.node(inner))?.moveCohortId);
-		expect(await w.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: w.db.membershipId, nodeIds: [P] })).toHaveProperty(
-			"_yay",
-		);
+		expect(
+			await w.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: w.db.membershipId, nodeIds: [P] }),
+		).toHaveProperty("_yay");
 		await w.finish();
 		expect((await w.node(P))?.archiveOperationId).not.toBeNull();
 		for (const id of [x, inner]) {
@@ -570,7 +578,9 @@ describe("Review waiting for another Move", () => {
 				const job = await w.t.run((ctx) =>
 					ctx.db
 						.query("files_pending_overlay_jobs")
-						.withIndex("by_org_ws", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
+						.withIndex("by_org_ws", (q) =>
+							q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId),
+						)
 						.first(),
 				);
 				if (!job) return;
@@ -594,7 +604,9 @@ describe("Review waiting for another Move", () => {
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const { runId, activityId } = started._yay;
-		expect(await w.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: w.db.membershipId, runId })).toEqual({
+		expect(
+			await w.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: w.db.membershipId, runId }),
+		).toEqual({
 			_yay: null,
 		});
 		const run = async () => (await w.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))!;
@@ -606,14 +618,39 @@ describe("Review waiting for another Move", () => {
 			}
 			await w.move(src, target, async () => true);
 		}
-		// Poll once a minute, like the waiting review does, while the Move keeps the workspace.
-		for (let minute = 1; minute <= 31; minute++) {
-			vi.setSystemTime(Date.now() + 60_000);
-			if (step === "planning") await plan();
-			else await w.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const advance = () => w.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const resumeName = step === "planning" ? "files_pending_update_runs:plan" : "files_pending_update_runs:advance";
+		const pendingResumes = async () =>
+			(await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter(
+				(job) => job.name.endsWith(resumeName) && job.state.kind === "pending",
+			).length;
+		const before = await pendingResumes();
+		if (step === "planning") await plan();
+		else await advance();
+		expect(await pendingResumes(), "a parked review schedules no poll").toBe(before);
+		const waiters = () => w.t.run((ctx) => ctx.db.query("files_move_waiters").collect());
+		expect((await waiters()).map((waiter) => waiter.worker)).toEqual([
+			{ kind: "review", id: runId, fence: (await run()).fence },
+		]);
+		const fence = (await run()).fence;
+		// Recover runs every 5 minutes. It keeps a parked review alive without a new plan attempt.
+		for (let minute = 5; minute <= 35; minute += 5) {
+			vi.setSystemTime(Date.now() + 5 * 60_000);
+			await w.t.mutation(internal.files_pending_update_runs.recover, {});
+			if (step === "starting") await advance();
 		}
-		const activity = await w.t.run((ctx) => ctx.db.get("activities", activityId));
-		expect(activity?.status, "the waiting review is still active").toBe("running");
+		const activity = () => w.t.run((ctx) => ctx.db.get("activities", activityId));
+		expect((await activity())?.status, "the waiting review is still active").toBe("running");
+		expect((await run()).fence).toBe(fence);
+		// The Move's release wakes the review once, and the review finishes. Step the clock so far timers stay far.
+		for (let pass = 0; (await activity())?.status === "running"; pass++) {
+			if (pass === 100) throw new Error("The review did not finish");
+			vi.advanceTimersByTime(1_000);
+			await w.t.finishInProgressScheduledFunctions();
+		}
+		expect((await activity())?.status).toBe("succeeded");
+		expect((await w.node(y))?.name).toBe("y2");
+		expect(await waiters()).toEqual([]);
 	});
 });
 

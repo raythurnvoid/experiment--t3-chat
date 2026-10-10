@@ -2456,6 +2456,18 @@ export const wake_waiters = internalMutation({
 				case "write_policy":
 					await ctx.scheduler.runAfter(0, internal.files_write_policy_runs.advance, { runId: worker.id });
 					break;
+				case "review": {
+					const run = await ctx.db.get("files_pending_update_runs", worker.id);
+					// A stale fence makes this plan stop at once.
+					if (run?.step === "planning")
+						await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.plan, {
+							runId: run._id,
+							fence: worker.fence,
+						});
+					else if (run?.step === "running")
+						await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.advance, { runId: run._id });
+					break;
+				}
 				case "pending_hold_release":
 					await ctx.scheduler.runAfter(0, internal.files_pending_holds.release_producer, { producer: worker.producer });
 					break;

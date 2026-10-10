@@ -59,6 +59,7 @@ import {
 } from "./files_move_cohorts.ts";
 import { files_pending_update_yjs_state_digest } from "../server/files.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -1755,10 +1756,9 @@ export const plan = internalAction({
 						return null;
 					}
 					planEpoch = produced._yay.plan.epoch;
-					if (produced._yay.waiting) {
+					if (produced._yay.waiting === "poll")
 						await ctx.scheduler.runAfter(100, internal.files_pending_update_runs.plan, args);
-						return null;
-					}
+					if (produced._yay.waiting) return null;
 					if (produced._yay.media) {
 						const { item, proposal, offset } = produced._yay.media;
 						const media = await action_read_reviewed_media_refs({ ctx, run: initial._yay, item, proposal });
@@ -2186,12 +2186,16 @@ async function db_start_cohort_unit(
 	});
 	if (started._nay) {
 		if (started._nay.name === "move_busy") {
-			// Another Move holds the workspace. Keep this review alive while it waits.
+			// Another Move holds the workspace. Its wake resumes this review, and recover refreshes it while it waits.
 			const now = Date.now();
 			const activity = await activities_db_require_by_source_id(ctx, run._id);
 			await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
 			await ctx.db.patch("files_pending_update_run_units", unit._id, { attemptDeadlineAt: now + RUN_TIMEOUT_MS });
-			await ctx.scheduler.runAfter(1_000, internal.files_pending_update_runs.advance, { runId: run._id });
+			await ctx.db.patch("files_pending_update_runs", run._id, { updatedAt: now });
+			await files_move_reservations_db_pause_worker(ctx, {
+				worker: { kind: "review", id: run._id, fence: run.fence },
+				check: { wholeWorkspace: run },
+			});
 		} else
 			await db_finish_unit(ctx, {
 				run,
@@ -2930,7 +2934,26 @@ export const recover = internalMutation({
 						offset: run.itemCount,
 					});
 				} else if (step === "planning") {
-					if (run.planningAttempts < MAX_ATTEMPTS) {
+					const waiter = await ctx.db
+						.query("files_move_waiters")
+						.withIndex("by_worker", (q) => q.eq("worker.kind", "review").eq("worker.id", run._id))
+						.unique();
+					if (waiter?.worker.kind === "review" && waiter.worker.fence === run.fence) {
+						// A parked review has no live plan. Keep it alive, or resume it if its wake was lost.
+						await ctx.db.patch("files_pending_update_runs", run._id, { updatedAt: now });
+						if (
+							await files_move_reservations_db_pause_worker(ctx, {
+								worker: waiter.worker,
+								check: { wholeWorkspace: run },
+							})
+						)
+							await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
+						else
+							await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.plan, {
+								runId: run._id,
+								fence: run.fence,
+							});
+					} else if (run.planningAttempts < MAX_ATTEMPTS) {
 						await ctx.db.patch("files_pending_update_runs", run._id, {
 							fence: run.fence + 1,
 							planningAttempts: run.planningAttempts + 1,

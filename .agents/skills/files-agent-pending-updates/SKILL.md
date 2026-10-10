@@ -179,6 +179,10 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   folder-wide job (Restrict, folder protection, Archive) refreshes it too, because that job can run
   longer than the deadline. Other waits do not. Repair after the switch and abort repair also keep
   the Activity alive. A deadline that already passed is never moved.
+- A review that waits for another Move does not poll. It parks in `files_move_waiters` with its
+  fence, and the Move's release wakes it once. While it is parked, review recover refreshes the
+  deadline every few minutes and does not count a planning attempt. If the wake was lost, recover
+  resumes the review. Waits for a folder-wide job or for overlay jobs still poll.
 - A duplicate run of one group step can take over its content preparation. The older run then gets
   `stopped` and does nothing; the newer run continues the group.
 - Stop aborts an unpublished group. A published group keeps its after view and completes physical

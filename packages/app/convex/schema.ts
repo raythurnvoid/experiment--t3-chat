@@ -524,7 +524,10 @@ export const files_media_dependency_validator = v.object({
 
 export const files_media_validation_versions_validator = v.object({
 	versions: v.array(
-		v.object({ id: v.union(v.id("files_media_validation_versions"), v.id("files_content_versions")), revision: v.number() }),
+		v.object({
+			id: v.union(v.id("files_media_validation_versions"), v.id("files_content_versions")),
+			revision: v.number(),
+		}),
 	),
 	pendingVersions: v.array(v.object({ id: v.id("files_pending_review_versions"), revision: v.number() })),
 });
@@ -2105,6 +2108,7 @@ const app_convex_schema = defineSchema({
 			}),
 			v.object({ kind: v.literal("subtree"), id: v.id("files_subtree_ops") }),
 			v.object({ kind: v.literal("write_policy"), id: v.id("files_write_policy_runs") }),
+			v.object({ kind: v.literal("review"), id: v.id("files_pending_update_runs"), fence: v.number() }),
 			v.object({
 				kind: v.literal("pending_hold_release"),
 				id: v.id("files_pending_holds"),

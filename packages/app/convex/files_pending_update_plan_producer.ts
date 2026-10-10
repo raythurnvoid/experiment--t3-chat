@@ -18,6 +18,7 @@ import { files_pending_nodes_db_resolve_read_target } from "./files_pending_node
 import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
+import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_publish_receipt,
@@ -455,7 +456,7 @@ export const advance = internalMutation({
 				}),
 				v.null(),
 			),
-			waiting: v.boolean(),
+			waiting: v.union(v.literal(false), v.literal("poll"), v.literal("move")),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -470,18 +471,20 @@ export const advance = internalMutation({
 		if (plan.producerPhase === "sealed") return Result({ _yay: { plan, media: null, waiting: false } });
 		const state = await files_pending_review_facts_db_get_state(ctx.db, run);
 		const subtree = await files_subtree_ops_db_find_repair(ctx, run);
-		const slot = await ctx.db
-			.query("files_move_workspace_slots")
-			.withIndex("by_workspace", (q) => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId))
-			.unique();
-		if (subtree || (state?.pendingJobCount ?? 0) > 0 || slot?.cohortId) {
+		// Check the Move first. Overlay jobs parked behind it count as pending until it ends.
+		const parked = await files_move_reservations_db_pause_worker(ctx, {
+			worker: { kind: "review", id: run._id, fence: args.fence },
+			check: { wholeWorkspace: run },
+		});
+		if (parked || subtree || (state?.pendingJobCount ?? 0) > 0) {
 			// Another Move or folder-wide job can run past the review deadline. Keep the review alive while it waits.
-			if (subtree || slot?.cohortId) {
+			if (parked || subtree) {
 				const activity = await activities_db_require_by_source_id(ctx, run._id);
 				const now = Date.now();
 				await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + 30 * 60 * 1000 });
 			}
-			return Result({ _yay: { plan, media: null, waiting: true } });
+			// The Move wake resumes a parked review. Other waits poll.
+			return Result({ _yay: { plan, media: null, waiting: parked ? "move" : "poll" } });
 		}
 		const review = await ctx.db
 			.query("files_pending_review_versions")
