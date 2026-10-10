@@ -799,15 +799,15 @@ column choices need to change. Do not write file metadata or shared sorts for th
   label inside `.FileNodeViewFolderExplorerColumns-field[data-column-field="<field>"]`, or focus its
   checkbox and press Space. Do not force-click the input. Tab scrolls clipped fields into view.
 - **Catalog.** Opening Columns starts `files_metadata:list_folder_fields({ membershipId, savedStream?,
-  parentId, prefix, paginationOpts })`: one stream for normal rows, and one more while a Move view is
-  visible. The search text goes to the server as a key prefix (start of the key, no case) after
-  150 ms; Built-in rows match locally. `Show more fields` asks every unfinished stream for 50 more; it
+  parentId, restricted, prefix, paginationOpts })`: one stream for normal rows, and one more while a
+  Move view is visible. The owner reads each stream again with `restricted: true`. The search text
+  goes to the server as a key prefix (start of the key, no case) after 150 ms; Built-in rows match locally. `Show more fields` asks every unfinished stream for 50 more; it
   has `aria-busy` while it loads. Read `data-fields-state` on the status child, not the dialog: `loading`
   (also while older rows stay, disabled, with `Updating suggestions…`), `ready` and `failed`. An empty
   finished list says `No fields match` or `No fields start with <text>`. On failure the menu says
   `Fields could not be loaded`; `Retry` restarts page 1. A new key shows only after the catalog
-  compactor runs (about 5 to 15 seconds). Keys of restricted children show to every member: that is
-  the accepted leak (`file-metadata` skill, "Suggestions"), not a bug.
+  compactor runs (about 5 to 15 seconds). Keys of restricted children show to the owner only, also
+  when a child is shared with the member (`file-metadata` skill, "Folder Table Fields").
 - **Cells.** Scope to `[role="table"][aria-label="Folder contents"]`, then the row and
   `[data-column-field="<field>"]`. `data-value-state` is `deferred`, `loading`, `preparing`, `ready`,
   `failed` or `refused`. The text is respectively `Loads when row is visible`, `Loading…`, `Preparing`,
@@ -1242,7 +1242,7 @@ Selectors and a proven flow for the sidebar search box with metadata filters (ve
 - Paging fixture without new files: `files_metadata.set_entries` on an existing file with 55 metadata keys (`qa-k01: v1` …) gives two key pages, and `metadataYaml: ""` restores a file that had none. Metadata takes no lists (`Metadata key "x" must have a text, number, or true/false value`), so more than 50 values of one key need 51 files or a frontmatter list. A new key reached the doors within about 16 s in a live check.
 - Metadata fixture without the Properties modal: `files_metadata.set_entries({ membershipId, fileNodeId, metadataYaml: "status: open\n" })` from page context, the same door the modal calls.
 - Working-tree proof: put `if (args.clause.kind === "metadata") return { page: [], isDone: true, continueCursor: "" };` at the top of the `search_saved` handler, poll the page-context door until it answers 0 (the Convex watcher pushes in ~10 s; run it only while every uncommitted change in `git status` is yours), check that `metadata.status:open` shows `No files match your search.` while free text still matches, remove the line, and poll until the door answers again. Read `git status --short` after.
-- Restricted-folder check needs a second identity (`second-user-fixtures.md`). The owner creates `tasks/public-task.md` and `private/secret-task.md` with the same `status` key, restricts `private`, and sees both files and both values. The member must see only the public file in the tree and in `search_saved`, and must not open the secret file. The member does see both values in the `Values` suggestions and the key in the key list: that is the accepted leak (`file-metadata` skill, "Suggestions"), not a bug. Search results and opening a file stay permission-checked.
+- Restricted-folder check needs a second identity (`second-user-fixtures.md`). The owner creates `tasks/public-task.md` and `private/secret-task.md` with the same `status` key, restricts `private`, and sees both files and both values. The member must see only the public file in the tree and in `search_saved`, and must not open the secret file. A member with workspace read (for example the `member` role) does see both values in the `Values` suggestions and the key in the key list: that is the accepted leak (`file-metadata` skill, "Suggestions"), not a bug. A guest (no workspace read) gets no key or value suggestions at all. Search results and opening a file stay permission-checked.
 
 ### Global Search Palette
 

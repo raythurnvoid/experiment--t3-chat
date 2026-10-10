@@ -64,21 +64,42 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 	scope: string;
 	order: (row: PaginatedQueryItem<Query>) => Value;
 	rowKey: (row: PaginatedQueryItem<Query>) => string;
+	/**
+	 * Also read each request with `restricted: true` (the owner's restricted twin of
+	 * `list_folder_fields`) and merge its rows in.
+	 */
+	restricted?: boolean;
 }) {
-	const { query, membershipId, requests, scope, order, rowKey } = args;
+	const { query, membershipId, requests, scope, order, rowKey, restricted = false } = args;
 
 	const view = useFilesSavedView(membershipId, requests !== null);
-	const streamArgs = (index: number, savedStream: files_SavedStream | null) => {
+	const streamArgs = (index: number, savedStream: files_SavedStream | null, twin = false) => {
 		const request = requests?.[index];
-		return request && savedStream ? ({ ...request, savedStream } as unknown as PaginatedQueryArgs<Query>) : "skip";
+		return request && savedStream && (!twin || restricted)
+			? ({ ...request, savedStream, ...(twin ? { restricted: true } : {}) } as unknown as PaginatedQueryArgs<Query>)
+			: "skip";
 	};
 	const options = { initialNumItems: FILES_METADATA_CATALOG_PAGE_SIZE };
-	const pairs = [
-		[usePaginatedQuery(query, streamArgs(0, view.normal), options), usePaginatedQuery(query, streamArgs(0, view.cohort), options)],
-		[usePaginatedQuery(query, streamArgs(1, view.normal), options), usePaginatedQuery(query, streamArgs(1, view.cohort), options)],
+	const groups = [
+		[
+			usePaginatedQuery(query, streamArgs(0, view.normal), options),
+			usePaginatedQuery(query, streamArgs(0, view.cohort), options),
+			usePaginatedQuery(query, streamArgs(0, view.normal, true), options),
+			usePaginatedQuery(query, streamArgs(0, view.cohort, true), options),
+		],
+		[
+			usePaginatedQuery(query, streamArgs(1, view.normal), options),
+			usePaginatedQuery(query, streamArgs(1, view.cohort), options),
+			usePaginatedQuery(query, streamArgs(1, view.normal, true), options),
+			usePaginatedQuery(query, streamArgs(1, view.cohort, true), options),
+		],
 	];
-	const merges = pairs.slice(0, requests?.length ?? 0).map(([normal, cohort]) => {
-		const streams = view.cohort ? [normal!, cohort!] : [normal!];
+	const merges = groups.slice(0, requests?.length ?? 0).map(([normal, cohort, twinNormal, twinCohort]) => {
+		// A skipped stream never ends, so only the streams that are read join the merge.
+		const pairs = restricted ? [[normal, cohort], [twinNormal, twinCohort]] : [[normal, cohort]];
+		const streams = pairs.flatMap(([normalStream, cohortStream]) =>
+			view.cohort ? [normalStream!, cohortStream!] : [normalStream!],
+		);
 		const merged = files_merge_sorted_streams({
 			streams: streams.map((stream) => ({ rows: stream.results, isDone: stream.status === "Exhausted" })),
 			compare: (a, b) => compareValues(order(a), order(b)),
@@ -129,14 +150,18 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 
 /**
  * Keys on a folder's children that start with the typed text, for the Columns menu and the folder
- * filter bar.
+ * filter bar. The owner also reads the keys of the restricted children.
  */
 export function useFilesMetadataFolderKeys(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	folderId: app_convex_Doc<"files_nodes">["parentId"];
 	prefix: string;
+	/**
+	 * Whether the reader owns the organization, or null while that loads.
+	 */
+	isOwner: boolean | null;
 }) {
-	const { membershipId, folderId, prefix } = args;
+	const { membershipId, folderId, prefix, isOwner } = args;
 
 	return useFilesMetadataCatalogPages({
 		query: app_convex_api.files_metadata.list_folder_fields,
@@ -144,10 +169,13 @@ export function useFilesMetadataFolderKeys(args: {
 		requests: files_metadata_catalog_key_prefixes(prefix).map((keyPrefix) => ({
 			membershipId,
 			parentId: folderId,
+			restricted: false,
 			prefix: keyPrefix,
 		})),
 		scope: `${membershipId}\n${folderId}`,
 		order: files_metadata_catalog_key_order,
 		rowKey: (fieldPath) => fieldPath,
+		// Read the twin only once the reader is known to be the owner: anyone else gets an empty page.
+		restricted: isOwner === true,
 	});
 }

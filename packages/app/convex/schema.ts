@@ -705,11 +705,16 @@ const files_metadata_catalog_row_fields = {
 		v.literal("key"),
 		v.literal("value"),
 		v.literal("parent"),
+		v.literal("parent_restricted"),
 		v.literal("check_key"),
 		v.literal("check_value"),
 		v.literal("check_parent"),
+		v.literal("check_parent_restricted"),
 	),
-	/** Family `parent` only: the folder whose children have the key. */
+	/**
+	 * Families `parent` and `parent_restricted` only: the folder whose children have the key. `parent`
+	 * counts the open children, `parent_restricted` the children that are their own restricted root.
+	 */
 	parentId: v.optional(v.union(v.id("files_nodes"), v.literal("root"))),
 	/** `fieldPath` lowered one character at a time (`files_metadata_catalog_lower`), so a key prefix matches without case. */
 	fieldPathLower: v.string(),
@@ -4092,12 +4097,15 @@ const app_convex_schema = defineSchema({
 	/**
 	 * The metadata catalog: saved metadata keys and short string values of one workspace, counted, so
 	 * suggestion reads are one index range. Families: `key` (one row per key, with its kinds), `value`
-	 * (one row per key and string value) and `parent` (one row per folder and key of its children).
-	 * Rows of a Move cohort's view carry its `moveView`, like share rows.
+	 * (one row per key and string value), `parent` (one row per folder and key of its open children)
+	 * and `parent_restricted` (the same for its restricted children). Rows of a Move cohort's view
+	 * carry its `moveView`, like share rows.
 	 *
-	 * Derived docs: only the compactor writes them. Savers insert deltas instead. Any member sees
-	 * every row of the workspace, also from files they cannot open: an accepted leak until a search
-	 * engine arrives. See `server/files-metadata-catalog.ts`.
+	 * Derived docs: only the compactor writes them. Savers insert deltas instead. Rows carry no
+	 * access data, so only a member who reads the whole workspace reads the `key` and `value` rows,
+	 * and only the owner reads `parent_restricted` rows. Workspace readers still see keys and values
+	 * of restricted files they cannot open: an accepted leak until a search engine arrives. See
+	 * `server/files-metadata-catalog.ts`.
 	 */
 	files_metadata_catalog: defineTable(files_metadata_catalog_row_fields).index(
 		"by_org_ws_family_parent_lower_field_value",

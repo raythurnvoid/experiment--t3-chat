@@ -49,7 +49,8 @@ async function create_folder(t: T, scope: Scope, path: string) {
 }
 
 /**
- * A committed metadata doc of `nodeId`, as the savers write it: field docs carry the parent.
+ * A committed metadata doc of `nodeId`, as the savers write it: field docs carry the parent and the
+ * restricted flag of an open node.
  */
 function metadata_doc(
 	scope: Pick<Doc<"files_metadata_docs">, "organizationId" | "workspaceId">,
@@ -70,7 +71,8 @@ function metadata_doc(
 		treePath: "/node",
 		fieldPath: fields.fieldPath,
 	};
-	if (!fields.valueKind) return { ...base, docKind: "field" as const, parentId: fields.parentId ?? ("root" as const) };
+	if (!fields.valueKind)
+		return { ...base, docKind: "field" as const, parentId: fields.parentId ?? ("root" as const), isRestrictedScopeRoot: false };
 	return {
 		...base,
 		docKind: "value" as const,
@@ -157,6 +159,37 @@ describe("catalog hook and compactor", () => {
 		await test_compact_metadata_catalog(t);
 		expect(await list_rows(t)).toEqual([]);
 		expect(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").collect())).toEqual([]);
+	});
+
+	test("a restricted root's field doc, or one without the flag, counts in parent_restricted", async () => {
+		const { t, scope } = await seed();
+		const [a, b, c] = [await create_folder(t, scope, "/a"), await create_folder(t, scope, "/b"), await create_folder(t, scope, "/c")];
+		const [openId] = await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.status" })]);
+		await test_run_with_flush(t, async (ctx) => {
+			await ctx.db.insert("files_metadata_docs", {
+				...metadata_doc(scope, b, { fieldPath: "metadata.status" }),
+				isRestrictedScopeRoot: true,
+			});
+			await ctx.db.insert("files_metadata_docs", {
+				...metadata_doc(scope, c, { fieldPath: "metadata.status" }),
+				isRestrictedScopeRoot: undefined,
+			});
+		});
+		await test_compact_metadata_catalog(t);
+		expect(await list_rows(t)).toEqual([
+			{ family: "key", fieldPath: "metadata.status", count: 3, kindCounts: NO_KINDS },
+			{ family: "parent", fieldPath: "metadata.status", parentId: "root", count: 1 },
+			{ family: "parent_restricted", fieldPath: "metadata.status", parentId: "root", count: 2 },
+		]);
+
+		// A new transaction: the wrapper does not know the doc, and a patch of the flag alone still moves it.
+		await test_run_with_flush(t, async (ctx) => {
+			await ctx.db.patch("files_metadata_docs", openId!, { isRestrictedScopeRoot: true });
+		});
+		await test_compact_metadata_catalog(t);
+		expect((await list_rows(t)).filter((row) => row.family !== "key")).toEqual([
+			{ family: "parent_restricted", fieldPath: "metadata.status", parentId: "root", count: 3 },
+		]);
 	});
 
 	test("a write that keeps every contribution inserts no delta", async () => {
@@ -428,6 +461,7 @@ describe("catalog doors", () => {
 				await asOwner.query(api.files_metadata.list_folder_fields, {
 					membershipId: db.membershipId,
 					parentId: "root",
+					restricted: false,
 					prefix: "metadata.ΑΣ",
 					paginationOpts,
 				})
@@ -618,6 +652,32 @@ describe("catalog rebuild and check", () => {
 		expect(await list_rows(t)).toEqual(rows);
 	});
 
+	test("a restrict and an unrestrict move a child's keys between parent and parent_restricted, and the check stays clean", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const src = await create_folder(t, scope, "/src");
+		const a = await create_folder(t, scope, "/src/a");
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
+		expect(
+			await asOwner.mutation(api.files_metadata.set_entries, { membershipId: db.membershipId, fileNodeId: a, metadataYaml: "status: open\n" }),
+		).toEqual({ _yay: null });
+		const parentRows = async () => {
+			await test_compact_metadata_catalog(t);
+			return (await list_rows(t)).filter((row) => row.family.startsWith("parent")).map((row) => `${row.family}:${row.parentId}:${row.count}`);
+		};
+		expect(await parentRows()).toEqual([`parent:${src}:1`]);
+
+		expect((await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: a }))._nay).toBeUndefined();
+		expect(await parentRows()).toEqual([`parent_restricted:${src}:1`]);
+		await rebuild(t, scope, "check");
+		expect(await check(t, scope)).toEqual([]);
+		await rebuild(t, scope, "clear_check");
+
+		expect((await asOwner.mutation(api.files_sharing.unrestrict_node, { membershipId: db.membershipId, nodeId: a }))._nay).toBeUndefined();
+		expect(await parentRows()).toEqual([`parent:${src}:1`]);
+		await rebuild(t, scope, "check");
+		expect(await check(t, scope)).toEqual([]);
+	});
+
 	test("the check finds wrong counts, lost rows and extra rows, and names no value", async () => {
 		const { t, scope } = await seed();
 		const { a } = await seed_catalog(t, scope);
@@ -770,8 +830,9 @@ describe("catalog lifecycle", () => {
 	}
 
 	/**
-	 * What the browser shows: each suggestion door read on the normal stream and on the visible Move
-	 * view's stream, joined like `useFilesMetadataCatalogPages` joins them. Call after a compaction.
+	 * What the browser shows the owner: each suggestion door read on the normal stream and on the
+	 * visible Move view's stream, with the restricted twin of `list_folder_fields`, joined like
+	 * `useFilesMetadataCatalogPages` joins them. Call after a compaction.
 	 */
 	async function door_rows(
 		asOwner: ReturnType<T["withIdentity"]>,
@@ -793,10 +854,11 @@ describe("catalog lifecycle", () => {
 			for (const key of keys.page) rows.add(`key:${key.fieldPath}:${key.valueKinds.join()}`);
 			const values = await asOwner.query(api.files_metadata.list_search_values, { membershipId, savedStream, fieldPath: "metadata.status", prefix: "", paginationOpts });
 			for (const value of values.page) rows.add(`value:${value}`);
-			for (const parentId of parentIds) {
-				const fields = await asOwner.query(api.files_metadata.list_folder_fields, { membershipId, savedStream, parentId, prefix: "", paginationOpts });
-				for (const fieldPath of fields.page) rows.add(`parent:${parentId}:${fieldPath}`);
-			}
+			for (const parentId of parentIds)
+				for (const restricted of [false, true]) {
+					const fields = await asOwner.query(api.files_metadata.list_folder_fields, { membershipId, savedStream, parentId, restricted, prefix: "", paginationOpts });
+					for (const fieldPath of fields.page) rows.add(`${restricted ? "parent_restricted" : "parent"}:${parentId}:${fieldPath}`);
+				}
 		}
 		const field = await asOwner.query(api.files_metadata.get_search_field, { membershipId, fieldPath: "metadata.status" });
 		rows.add(`field:${field?.valueKinds.join()}`);
@@ -895,6 +957,40 @@ describe("catalog lifecycle", () => {
 		expect(viewOnlySteps).toBeGreaterThan(0);
 		await visible_rows(t, scope);
 		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doorsAfter);
+	});
+
+	test("a Move of a restricted folder moves its parent_restricted rows, and the owner sees its key at every step", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const src = await create_folder(t, scope, "/src");
+		const a = await create_folder(t, scope, "/src/a");
+		const dst = await create_folder(t, scope, "/dst");
+		await set_status(t, db, a);
+		expect((await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: a }))._nay).toBeUndefined();
+		const rows = (parentId: Id<"files_nodes">) => [
+			"key::metadata.status:=1",
+			`parent_restricted:${parentId}:metadata.status:=1`,
+			"value::metadata.status:open=1",
+		];
+		expect(await visible_rows(t, scope)).toEqual(rows(src));
+		const doors = (parentId: Id<"files_nodes">) =>
+			["field:string", "key:metadata.status:string", `parent_restricted:${parentId}:metadata.status`, "value:open"].sort();
+		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doors(src));
+
+		await reset_tree_write_limit(t, db.userId);
+		const moved = await test_move_nodes(t, asOwner, {
+			membershipId: db.membershipId,
+			itemIds: [a],
+			targetParentId: dst,
+			onStep: async () => {
+				await visible_rows(t, scope);
+				expect([JSON.stringify(doors(src)), JSON.stringify(doors(dst))]).toContain(
+					JSON.stringify(await door_rows(asOwner, db.membershipId, [src, dst])),
+				);
+			},
+		});
+		expect(moved._nay).toBeUndefined();
+		expect(await visible_rows(t, scope)).toEqual(rows(dst));
+		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doors(dst));
 	});
 
 	test("a folder copy counts the copied folder metadata under its new parent", async () => {
@@ -1014,7 +1110,7 @@ describe("catalog lifecycle", () => {
 		expect(await list_deltas(t)).toEqual([]);
 	});
 
-	test("restoring a file out of an archived folder moves its parent row, and restrict writes nothing", async () => {
+	test("restoring a file out of an archived folder moves its parent row", async () => {
 		const { t, db, asOwner, scope } = await seed();
 		const folder = await create_folder(t, scope, "/a");
 		const file = await create_folder(t, scope, "/a/f");
@@ -1034,12 +1130,6 @@ describe("catalog lifecycle", () => {
 		expect((await list_rows(t)).filter((row) => row.family === "parent")).toEqual([
 			{ family: "parent", fieldPath: "metadata.status", parentId: restored!.parentId, count: 1 },
 		]);
-
-		// Restrict changes who reads the file, not its metadata docs.
-		for (const restrict of [api.files_sharing.restrict_node, api.files_sharing.unrestrict_node]) {
-			expect((await asOwner.mutation(restrict, { membershipId: db.membershipId, nodeId: file }))._nay).toBeUndefined();
-			expect(await list_deltas(t)).toEqual([]);
-		}
 	});
 
 	test("archiving a folder walks its children once: five of six shared keys go", async () => {

@@ -34,6 +34,7 @@ import { useFilesMetadataCatalogPages, useFilesMetadataFolderKeys } from "@/hook
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { cn } from "@/lib/utils.ts";
 import {
 	files_folder_table_query_close_open_quote,
@@ -186,8 +187,9 @@ const FileNodeViewFolderFilterBarKeyRows = memo(function FileNodeViewFolderFilte
 	onPick: (field: string) => void;
 }) {
 	const { membershipId, folderId, prefix, stale, showNoMatch, canPick, onPick } = props;
+	const isOwner = FilesTreeProvider.useIsOwner();
 
-	const keys = useFilesMetadataFolderKeys({ membershipId, folderId, prefix });
+	const keys = useFilesMetadataFolderKeys({ membershipId, folderId, prefix, isOwner });
 	const isDisabled = stale || keys.updating;
 	const rows = keys.rows.filter(canPick);
 

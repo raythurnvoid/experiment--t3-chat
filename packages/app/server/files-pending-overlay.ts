@@ -135,6 +135,7 @@ const SOURCE_FIELDS: Record<string, string[]> = {
 		// The metadata catalog's fields.
 		"archiveOperationId",
 		"parentId",
+		"isRestrictedScopeRoot",
 		"docKind",
 		"fieldPath",
 		"valueKind",

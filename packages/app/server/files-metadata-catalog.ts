@@ -6,15 +6,22 @@
 // Families:
 // - `key`: one row per field path. `count` is its field docs, `kindCounts` its value docs by kind.
 // - `value`: one row per field path and string value of at most 1,024 encoded bytes.
-// - `parent`: one row per folder (or `"root"`) and field path of its children's field docs.
+// - `parent`: one row per folder (or `"root"`) and field path of its open children's field docs.
+// - `parent_restricted`: the same for the children that are their own restricted root
+//   (`isRestrictedScopeRoot`). A field doc without the flag counts here too, so a missing flag hides
+//   a key instead of showing it.
 // Only saved, active (not archived) docs of real workspaces count, and only fields the search grammar
-// can name in at most 160 characters. Restriction is not part of any row, so a restrict writes
-// nothing here. A doc of a Move cohort counts in the rows of its own view (`moveView`), like share
-// rows (`server/files-share-rows.ts`), and readers merge the normal rows with the visible view's rows.
+// can name in at most 160 characters. A restrict or an unrestrict patches the flag on the node's
+// field docs, so their keys move between `parent` and `parent_restricted`. A doc of a Move cohort
+// counts in the rows of its own view (`moveView`), like share rows (`server/files-share-rows.ts`), and
+// readers merge the normal rows with the visible view's rows.
 //
-// Accepted leak: any member sees every row of the workspace, also keys and values of files they
-// cannot open. Search results and opening a file stay access-checked. A search engine must fix this:
-// it counts keys and values over only the files the caller can read. Then delete the three catalog
+// Rows carry no access data. So only a member who reads the whole workspace reads the `key` and
+// `value` rows, only a member who reads a folder reads its `parent` rows, and only the owner reads
+// `parent_restricted` rows, like the folder table's restricted twin. Accepted leak (user, 2026-10-08):
+// a workspace reader still sees the keys and values of restricted files in the `key` and `value`
+// rows. Search results and opening a file stay access-checked. A search engine must fix this: it
+// counts keys and values over only the files the caller can read. Then delete the three catalog
 // tables, this module, the overlay hook, the compactor, its cron and the data deletion pass.
 //
 // Writes: the overlay wrapper (`server/files-pending-overlay.ts`) adds each metadata doc write to a
@@ -55,6 +62,7 @@ export const files_metadata_catalog_SOURCE_FIELDS = [
 	"moveView",
 	"archiveOperationId",
 	"parentId",
+	"isRestrictedScopeRoot",
 	"docKind",
 	"fieldPath",
 	"valueKind",
@@ -111,9 +119,11 @@ const CHECK_PAIRS = [
 	["key", "check_key"],
 	["value", "check_value"],
 	["parent", "check_parent"],
+	["parent_restricted", "check_parent_restricted"],
 	["check_key", "key"],
 	["check_value", "value"],
 	["check_parent", "parent"],
+	["check_parent_restricted", "parent_restricted"],
 ] as const;
 
 /**
@@ -169,8 +179,14 @@ function add_doc(changes: files_metadata_catalog_Changes, doc: Source | null, si
 	const kindCounts: KindCounts = { string: 0, number: 0, boolean: 0, maybe_date: 0 };
 	if (doc.docKind === "field") {
 		add_change(changes, { ...base, family: "key", count: sign, kindCounts });
+		// Fail closed: only a doc that says it is open counts in the `parent` rows every folder reader sees.
 		if (doc.parentId !== undefined)
-			add_change(changes, { ...base, family: "parent", parentId: doc.parentId, count: sign });
+			add_change(changes, {
+				...base,
+				family: doc.isRestrictedScopeRoot === false ? "parent" : "parent_restricted",
+				parentId: doc.parentId,
+				count: sign,
+			});
 		return;
 	}
 	if (!doc.valueKind) return;
@@ -425,7 +441,8 @@ export async function files_metadata_catalog_db_rebuild_step(
 			deleted += deltas.length;
 		}
 		// `catalog` deletes all rows, the other modes only the shadow families.
-		const prefixes = args.mode === "catalog" ? [undefined] : CHECK_PAIRS.slice(0, 3).map(([, shadow]) => shadow);
+		const prefixes =
+			args.mode === "catalog" ? [undefined] : CHECK_PAIRS.slice(0, CHECK_PAIRS.length / 2).map(([, shadow]) => shadow);
 		for (const family of prefixes) {
 			if (deleted === CLEAR_BATCH_SIZE) break;
 			const rows = await ctx.db
@@ -480,7 +497,9 @@ export async function files_metadata_catalog_db_rebuild_step(
 		for (const row of contribution.values())
 			add_change(
 				row.family === "key" ? keys : changes,
-				args.mode === "check" ? { ...row, family: `check_${row.family as "key" | "value" | "parent"}` } : row,
+				args.mode === "check"
+					? { ...row, family: `check_${row.family as "key" | "value" | "parent" | "parent_restricted"}` }
+					: row,
 			);
 	}
 	if (page.isDone) emit_keys();

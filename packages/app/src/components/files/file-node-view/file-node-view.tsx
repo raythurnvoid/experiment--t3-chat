@@ -4187,8 +4187,9 @@ const FileNodeViewFolderExplorerColumnsKeys = memo(function FileNodeViewFolderEx
 }) {
 	const { name, folderId, prefix, stale, chosenFields, showNoMatch, columns, onColumnsChange } = props;
 	const { membershipId } = AppTenantProvider.useContext();
+	const isOwner = FilesTreeProvider.useIsOwner();
 
-	const keys = useFilesMetadataFolderKeys({ membershipId, folderId, prefix });
+	const keys = useFilesMetadataFolderKeys({ membershipId, folderId, prefix, isOwner });
 	const isDisabled = stale || keys.updating;
 	const fields = [...new Set([...keys.rows, ...chosenFields])];
 

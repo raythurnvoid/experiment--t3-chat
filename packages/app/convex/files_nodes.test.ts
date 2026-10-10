@@ -14622,9 +14622,9 @@ describe("search box doors", () => {
 		expect(await entries()).toEqual([]);
 		expect(await byPath()).toBeNull();
 		expect(await search()).toEqual(new Set());
-		// Accepted leak until a search engine arrives: suggestions name every saved key and value.
-		expect(await fields()).toContainEqual({ fieldPath: "metadata.folder-secret", valueKinds: ["string"] });
-		expect(await values()).toEqual(["visible-with-grant"]);
+		// Suggestions need workspace read, so a member without it gets none.
+		expect(await fields()).toEqual([]);
+		expect(await values()).toEqual([]);
 		expect((await set())._nay).toBeDefined();
 		expect((await update())._nay).toBeDefined();
 
@@ -14644,9 +14644,10 @@ describe("search box doors", () => {
 			target: { kind: "saved", id: seeded.tasksFolderId },
 			fields: ["metadata.folder-secret"],
 		});
+		// The grant opens the folder, but not the workspace-wide suggestions.
 		expect(await search()).toEqual(new Set([seeded.tasksFolderId]));
-		expect(await fields()).toContainEqual({ fieldPath: "metadata.folder-secret", valueKinds: ["string"] });
-		expect(await values()).toEqual(["visible-with-grant"]);
+		expect(await fields()).toEqual([]);
+		expect(await values()).toEqual([]);
 		expect((await set())._nay).toBeDefined();
 		expect((await update())._nay).toBeDefined();
 
@@ -14662,12 +14663,12 @@ describe("search box doors", () => {
 			)._nay,
 		).toBeUndefined();
 		expect((await set())._nay).toBeUndefined();
-		expect(await values()).toEqual(["changed"]);
+		expect(await entries()).toEqual([{ key: "folder-secret", value: "changed" }]);
 		expect((await update())._nay).toBeUndefined();
 		expect(await entries()).toEqual([{ key: "folder-secret", value: "agent-edit" }]);
 	});
 
-	test("list_search_fields lists every saved key with its kinds, to every member", async () => {
+	test("list_search_fields lists every saved key with its kinds, to members with workspace read", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 
@@ -14721,16 +14722,30 @@ describe("search box doors", () => {
 		expect(ownerFieldsWithDraft.map((field) => field.fieldPath)).not.toContain("frontmatter.draft-key");
 		expect(ownerFieldsWithDraft.map((field) => field.fieldPath)).toContain("frontmatter.regression");
 
-		// Accepted leak until a search engine arrives: a member with no role and no grant gets the same
-		// saved keys, also from files they cannot open. The draft key stays out.
+		// A member with no role reads no workspace, so they get no keys: the catalog would show keys of
+		// files they cannot open.
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "fields" });
-		expect(await list_keys({ t, asWho: member.asMember, membershipId: member.membershipId })).toEqual(ownerFields);
-		expect(
-			await member.asMember.query(api.files_metadata.get_search_field, {
+		const memberField = () =>
+			member.asMember.query(api.files_metadata.get_search_field, {
 				membershipId: member.membershipId,
 				fieldPath: "frontmatter.legacy",
+			});
+		expect(await list_keys({ t, asWho: member.asMember, membershipId: member.membershipId })).toEqual([]);
+		expect(await memberField()).toBeNull();
+
+		// As a viewer they read the workspace, so they get the same saved keys as the owner. The draft
+		// key stays out.
+		await t.run(async (ctx) =>
+			access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				userId: member.userId,
+				role: "viewer",
+				now: Date.now(),
 			}),
-		).toEqual({ valueKinds: ["string"] });
+		);
+		expect(await list_keys({ t, asWho: member.asMember, membershipId: member.membershipId })).toEqual(ownerFields);
+		expect(await memberField()).toEqual({ valueKinds: ["string"] });
 	});
 
 	test("the key and value doors page through every row, one range per page", async () => {
@@ -14919,7 +14934,7 @@ describe("search box doors", () => {
 		).toEqual([]);
 	});
 
-	test("list_search_values lists distinct saved values that start with the prefix, to every member", async () => {
+	test("list_search_values lists distinct saved values that start with the prefix, to members with workspace read", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		const values = (fieldPath: string, prefix: string) =>
@@ -14939,8 +14954,7 @@ describe("search box doors", () => {
 		expect(await values(`frontmatter.${"a".repeat(160)}`, "")).toEqual([]);
 		expect(await values("frontmatter.status", "o".repeat(201))).toEqual([]);
 
-		// Accepted leak until a search engine arrives: a member with no role and no grant gets every
-		// saved value too.
+		// A member with no role reads no workspace, so they get no values.
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "values" });
 		expect(
 			await list_values({
@@ -14950,7 +14964,7 @@ describe("search box doors", () => {
 				fieldPath: "frontmatter.legacy",
 				prefix: "",
 			}),
-		).toEqual(["yes"]);
+		).toEqual([]);
 	});
 
 	test("search_saved finds the saved value, never a draft, for the member and the author", async () => {

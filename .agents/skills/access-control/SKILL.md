@@ -835,16 +835,20 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
 - `files_metadata.list_folder_fields` checks active membership and folder `content.read`, then reads
   one range of the metadata catalog's `parent` family. The root needs workspace read; a grant-only
   member gets an empty, done page there. A readable archived folder, a missing folder and a denied
-  folder get the same empty, done page. The catalog has no restriction flag, so the keys of
-  restricted children show to every member who can read the folder.
-- **Accepted leak in metadata suggestions (user, 2026-10-08).** `list_search_fields`,
-  `get_search_field`, `list_search_values` and `list_folder_fields` read the metadata catalog, which
-  counts saved keys and values with no access data. So any member, guests included, sees every saved
-  key and short string value of the workspace, also from files they cannot open. Search results,
-  opening a file, and the folder gate stay access-checked. This is temporary: Convex has no
-  "distinct values" search. A search engine must fix it by counting keys and values over only the
-  files the caller can read. Do not copy this pattern to other data. See the `file-metadata` skill,
-  "Suggestions".
+  folder get the same empty, done page. Like the folder table, it has a restricted twin
+  (`restricted: true`, the `parent_restricted` family) that only the owner reads. So the keys of a
+  restricted child show to the owner only, also when the child is shared with a member. A field doc
+  without the `isRestrictedScopeRoot` copy counts in the twin (fail closed).
+- **Accepted leak in metadata suggestions (user, 2026-10-08, narrowed 2026-10-10).**
+  `list_search_fields`, `get_search_field`, `list_search_values` and `list_folder_fields` read the
+  metadata catalog, which counts saved keys and values with no access data. The first three need
+  workspace-wide `content.read` (`hasWorkspaceRead`), so a guest gets an empty answer, also inside a
+  folder shared with them. A member with workspace read still sees every saved key and short string
+  value of the workspace, also from restricted files they cannot open. `list_folder_fields` shows
+  restricted children's keys to the owner only (see above). Search results, opening a
+  file, and the folder gate stay access-checked. This is temporary: Convex has no "distinct values"
+  search. A search engine must fix it by counting keys and values over only the files the caller can
+  read. Do not copy this pattern to other data. See the `file-metadata` skill, "Suggestions".
 - `files_metadata.list_node_fields` and `get_field_values` check the node on every call: they load
   the saved node, check tenant and active state, then `access_control_db_authorize_membership(...,
   { fileNode })` with `content.read`. A private target or a refusal returns null, including after a
