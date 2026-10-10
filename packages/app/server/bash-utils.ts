@@ -199,12 +199,6 @@ export function bash_job_exit_code(activityStatus: Doc<"activities">["status"], 
  * `wait` refuses a longer list with a usage error, and the door refuses it again.
  */
 export const bash_JOB_NUMBERS_MAX_COUNT = 12;
-/**
- * The JSON size limit of one saved job Copy input page. A page also holds at most
- * `files_TRANSFER_SELECTION_PAGE_SIZE` sources and as many args. The worker fills pages up to
- * these limits and the checkpoint door refuses bigger pages, so both sides must read the same numbers.
- */
-export const bash_JOB_COPY_PAGE_MAX_BYTES = 64 * 1024;
 export const bash_NON_NEGATIVE_INTEGER_REGEX = /^\d+$/u;
 export const bash_TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
 export const bash_SHELL_COMMENT_LINE_REGEX = /^\s*#.*$/gm;

@@ -511,8 +511,17 @@ describe("durable Copy admission helpers", () => {
 			expectedArgCount: 202,
 			expectedSourceCount: 201,
 		};
+		const input = {
+			r2Key: "bash-input/copy-helper-test",
+			sha256: "a".repeat(64),
+			byteCount: 202,
+			sourceByteCount: 201,
+			putMayArriveUntil: Date.now() + PLACEHOLDER_MS,
+			recursive: true,
+		};
 		const checkpoint = {
 			...intent,
+			input: { ...input, ready: true, cursor: 201, startedAt: Date.now(), lastSourceHash: null },
 			pageCount: 3,
 			argsCount: 202,
 			sourcesCount: 201,
@@ -537,7 +546,6 @@ describe("durable Copy admission helpers", () => {
 					invocationId: job.invocationId,
 					commandNumber: 3,
 					page,
-					args: Array.from({ length: page === 2 ? 2 : 100 }, () => "source"),
 					sources: Array.from({ length: page === 2 ? 1 : 100 }, () => source),
 				});
 		});
@@ -545,6 +553,7 @@ describe("durable Copy admission helpers", () => {
 			...f,
 			job,
 			intent,
+			input,
 			checkpoint,
 			source,
 			runId: started._yay.runId,
@@ -587,7 +596,7 @@ describe("durable Copy admission helpers", () => {
 		).toHaveProperty("_nay");
 	});
 
-	test.each([true, false])("a crashed worker requeues only sealed Copy input (sealed=%s)", async (sealed) => {
+	test.each([true, false])("a crashed worker requeues immutable Copy input (sealed=%s)", async (sealed) => {
 		const f = await admission();
 		if (!sealed)
 			await f.t.run(async (ctx) => {
@@ -602,18 +611,12 @@ describe("durable Copy admission helpers", () => {
 			result: { kind: "failed", error: "worker lost" },
 		});
 		const after = await f.read(f.job.invocationId);
-		if (sealed) {
-			expect(after.row?.status).toBe("running");
-			expect(after.row?.job?.copy).toEqual(f.checkpoint);
-			expect(after.row?.job?.workerGeneration).toBe(1);
-			expect(after.row?.job?.workId).not.toBe(f.fence.workId);
-			expect(after.row?.wakeNotifiedAt).toBeUndefined();
-			expect(after.transcript).toHaveLength(1);
-		} else {
-			expect(after.row?.status).toBe("interrupted");
-			expect(after.row?.job?.copy).toBeUndefined();
-			expect(after.activity?.status).toBe("failed");
-		}
+		expect(after.row?.status).toBe("running");
+		expect(after.row?.job?.copy).toEqual({ ...f.checkpoint, sealed });
+		expect(after.row?.job?.workerGeneration).toBe(1);
+		expect(after.row?.job?.workId).not.toBe(f.fence.workId);
+		expect(after.row?.wakeNotifiedAt).toBeUndefined();
+		expect(after.transcript).toHaveLength(1);
 	});
 
 	test("exports the atomic admission checks and writes", () => {
@@ -651,7 +654,7 @@ describe("durable Copy admission helpers", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_bash_job_copy_pages").collect())).toEqual([]);
 	});
 
-	test.each(["work", "command", "stop", "unsealed", "expired", "membership", "finished"])(
+	test.each(["work", "command", "stop", "unready input", "expired", "membership", "finished"])(
 		"refuses %s admission and leaves the checkpoint unchanged",
 		async (change) => {
 			const f = await admission();
@@ -664,13 +667,15 @@ describe("durable Copy admission helpers", () => {
 					await ctx.db.patch("ai_chat_bash_invocations", row!._id, {
 						job: { ...row!.job!, stopRequestedAt: Date.now() },
 					});
-				if (change === "unsealed" || change === "expired")
+				if (change === "unready input" || change === "expired")
 					await ctx.db.patch("ai_chat_bash_invocations", row!._id, {
 						job: {
 							...row!.job!,
 							copy: {
 								...f.checkpoint,
-								...(change === "unsealed" ? { sealed: false } : { admissionDeadlineAt: Date.now() }),
+								...(change === "unready input"
+									? { sealed: false, input: { ...f.checkpoint.input, ready: false } }
+									: { admissionDeadlineAt: Date.now() }),
 							},
 						},
 					});
@@ -806,7 +811,7 @@ describe("durable Copy admission helpers", () => {
 			sourceWorkspace: f.checkpoint.sourceWorkspace,
 			destinationWorkspace: f.checkpoint.destinationWorkspace,
 			expectedSourceCount: 201,
-			sources: Array.from({ length: 100 }, () => f.source),
+			sources: [f.source],
 			targetParent: f.checkpoint.targetParent,
 			targetPath: f.checkpoint.targetPath,
 			targetName: f.checkpoint.targetName,
@@ -822,13 +827,13 @@ describe("durable Copy admission helpers", () => {
 	async function waiting_copy() {
 		const f = await admission();
 		const copy = await start_copy(f);
-		for (const offset of [100, 200])
+		for (const offset of [1, 100, 200])
 			expect(
 				await f.t.mutation(internal.files_transfer.append_sources_for_agent, {
 					...copy.scope,
 					job: f.fence,
 					offset,
-					sources: Array.from({ length: offset === 100 ? 100 : 1 }, () => f.source),
+					sources: Array.from({ length: offset === 1 ? 99 : offset === 100 ? 100 : 1 }, () => f.source),
 				}),
 			).toEqual({ _yay: null });
 		expect(await f.t.mutation(internal.files_transfer.seal_for_agent, { ...copy.scope, job: f.fence })).toEqual({
@@ -853,8 +858,7 @@ describe("durable Copy admission helpers", () => {
 					invocationId: f.job.invocationId,
 					commandNumber: 2,
 					page,
-					args: ["old"],
-					sources: [],
+					sources: [f.source],
 				});
 		});
 		await cleanup(2);
@@ -978,11 +982,19 @@ describe("durable Copy admission helpers", () => {
 					await f.t.mutation(internal.files_transfer.append_sources_for_agent, {
 						...copy.scope,
 						job: f.fence,
+						offset: 1,
+						sources: Array.from({ length: 99 }, () => f.source),
+					}),
+				).toEqual({ _yay: null });
+			if (copy && stage === "seal") {
+				expect(
+					await f.t.mutation(internal.files_transfer.append_sources_for_agent, {
+						...copy.scope,
+						job: f.fence,
 						offset: 100,
 						sources: Array.from({ length: 100 }, () => f.source),
 					}),
 				).toEqual({ _yay: null });
-			if (copy && stage === "seal") {
 				expect(
 					await f.t.mutation(internal.files_transfer.append_sources_for_agent, {
 						...copy.scope,
@@ -1026,19 +1038,27 @@ describe("durable Copy admission helpers", () => {
 			}
 			if (stage !== "seal") {
 				const accepted = await f.t.query(internal.files_transfer.get_for_agent, copy.scope);
-				for (let offset = accepted!.selection!.count; offset < 201; offset += 100) {
-					const page = await f.t.query(internal.ai_chat_files.read_bash_job_copy_page, {
-						...fence,
-						page: offset / 100,
-					});
+				for (let offset = accepted!.selection!.count; offset < 201;) {
+					const page = await f.t.run((ctx) =>
+						ctx.db
+							.query("ai_chat_bash_job_copy_pages")
+							.withIndex("by_invocation_command_page", (q) =>
+								q
+									.eq("invocationId", fence.invocationId)
+									.eq("commandNumber", 3)
+									.eq("page", Math.floor(offset / 100)),
+							)
+							.unique(),
+					);
 					expect(
 						await f.t.mutation(internal.files_transfer.append_sources_for_agent, {
 							...copy.scope,
 							job: fence,
 							offset,
-							sources: page!.sources,
+							sources: page!.sources.slice(offset % 100),
 						}),
 					).toEqual({ _yay: null });
+					offset += page!.sources.length - (offset % 100);
 				}
 			}
 			expect(await f.t.mutation(internal.files_transfer.seal_for_agent, { ...copy.scope, job: fence })).toEqual({
@@ -1127,6 +1147,7 @@ describe("durable Copy admission helpers", () => {
 			await f.t.mutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, {
 				...stale,
 				checkpoint: { ...f.intent, commandNumber: 5 },
+				input: f.input,
 				output: { stdout: "stale\n", stderr: "" },
 				resume: {
 					script: "echo stale",
@@ -1193,12 +1214,12 @@ describe("durable Copy admission helpers", () => {
 			bashJob: { invocationId: f.job.invocationId, commandNumber: 3 },
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toEqual([]);
-		for (const offset of [100, 200]) {
+		for (const offset of [1, 100, 200]) {
 			const page = {
 				...scope,
 				job: f.fence,
 				offset,
-				sources: Array.from({ length: offset === 100 ? 100 : 1 }, () => f.source),
+				sources: Array.from({ length: offset === 1 ? 99 : offset === 100 ? 100 : 1 }, () => f.source),
 			};
 			expect(await f.t.mutation(internal.files_transfer.append_sources_for_agent, page)).toEqual({ _yay: null });
 			expect(await f.t.mutation(internal.files_transfer.append_sources_for_agent, page)).toEqual({ _yay: null });
@@ -1233,8 +1254,16 @@ describe("durable Copy admission helpers", () => {
 		).toHaveLength(201);
 	});
 
-	test("stages bounded complete source pages, replays exact input, and seals only complete input", async () => {
+	test("requires immutable input, replays exact sources, and seals only complete input", async () => {
 		const f = await admission();
+		expect(
+			await f.t.mutation(internal.files_transfer.stop_for_agent, {
+				membershipId: f.db.membershipId,
+				threadId: f.scope.threadId,
+				runId: f.runId,
+				reason: "user",
+			}),
+		).toEqual({ _yay: null });
 		await f.t.run(async (ctx) => {
 			const row = await ctx.db.get("ai_chat_bash_invocations", f.job.invocationId);
 			await ctx.db.patch("ai_chat_bash_invocations", row!._id, { job: { ...row!.job!, copy: undefined } });
@@ -1254,17 +1283,20 @@ describe("durable Copy admission helpers", () => {
 				cwdTarget: null,
 			},
 			liveOutput: null,
+			output: { stdout: "", stderr: "" },
 		};
-		expect(
-			await f.t.mutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, {
-				...header,
-				output: { stdout: "", stderr: "" },
-			}),
-		).toEqual({ _yay: null });
-		// The door starts the counters and takes the admission deadline from the server clock.
+		await expect(
+			// @ts-expect-error The door must reject a checkpoint without immutable input.
+			f.t.mutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, header),
+			"a checkpoint without immutable input is refused",
+		).rejects.toThrow(/input/);
+		const input = f.input;
+		const args = { ...header, input };
+		expect(await f.t.mutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, args)).toEqual({ _yay: null });
 		const saved = (await f.read(f.job.invocationId)).row?.job?.copy;
 		expect(saved).toEqual({
 			...f.intent,
+			input: { ...input, ready: false, cursor: 0, startedAt: Date.now(), lastSourceHash: null },
 			pageCount: 0,
 			argsCount: 0,
 			sourcesCount: 0,
@@ -1272,92 +1304,76 @@ describe("durable Copy admission helpers", () => {
 			admissionDeadlineAt: Date.now() + COPY_ADMISSION_MS,
 			runId: null,
 		});
-		// A replay after a lost reply matches on the sent fields and keeps the first deadline.
+		// A lost reply keeps the first input and deadline.
 		vi.setSystemTime(Date.now() + 1_000);
+		expect(await f.t.mutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, args)).toEqual({ _yay: null });
+		expect((await f.read(f.job.invocationId)).row?.job?.copy).toEqual(saved);
 		expect(
 			await f.t.mutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, {
-				...header,
-				output: { stdout: "", stderr: "" },
+				...args,
+				input: { ...input, sha256: "b".repeat(64) },
 			}),
-		).toEqual({ _yay: null });
-		expect((await f.read(f.job.invocationId)).row?.job?.copy).toEqual(saved);
+		).toMatchObject({ _nay: { name: "request_changed" } });
 		expect(await f.t.run((ctx) => ai_chat_files.ai_chat_files_db_check_copy_admission(ctx, f.fence))).toMatchObject({
 			_nay: { name: "incomplete_input" },
 		});
 		expect(await f.t.mutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, f.fence)).toMatchObject({
 			_nay: { name: "incomplete_input" },
 		});
+		expect(await f.t.mutation(internal.ai_chat_files.ready_bash_job_copy_input, f.fence)).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.ai_chat_files.ready_bash_job_copy_input, f.fence)).toEqual({ _yay: null });
 		const first = {
 			...f.fence,
-			page: 0,
-			args: Array.from({ length: 100 }, () => "source"),
-			sources: Array.from({ length: 100 }, () => f.source),
+			offset: 0,
+			cursor: 0,
+			nextCursor: 1,
+			path: "/source",
+			requiresFolder: true,
 		};
 		for (const invalid of [
-			{ ...first, page: 1 },
-			{ ...first, sources: first.sources.slice(0, 99) },
-			{ ...first, sources: [] },
-			{ ...first, args: ["x".repeat(65_536)] },
+			{ ...first, offset: 1 },
+			{ ...first, nextCursor: 0 },
+			{ ...first, nextCursor: 1.5 },
+			{ ...first, nextCursor: 202 },
 			{ ...first, workId: "stale-work" as WorkId },
 		])
-			expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, invalid)).toHaveProperty("_nay");
+			expect(await f.t.mutation(internal.ai_chat_files.accept_bash_job_copy_source, invalid)).toHaveProperty("_nay");
 		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_bash_job_copy_pages").collect())).toEqual([]);
-		expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, first)).toEqual({ _yay: null });
-		expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, first)).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.ai_chat_files.accept_bash_job_copy_source, first)).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.ai_chat_files.accept_bash_job_copy_source, first)).toEqual({ _yay: null });
 		expect(
-			await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, { ...first, args: ["changed"] }),
+			await f.t.mutation(internal.ai_chat_files.accept_bash_job_copy_source, { ...first, path: "/changed" }),
 		).toMatchObject({ _nay: { name: "request_changed" } });
-		expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, { ...first, page: 1 })).toEqual({
-			_yay: null,
-		});
-		expect(
-			await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, {
-				...first,
-				page: 2,
-				sources: [f.source],
-				args: ["source"],
-			}),
-		).toEqual({ _yay: null });
-		expect(await f.t.mutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, f.fence)).toMatchObject({
-			_nay: { name: "incomplete_input" },
-		});
-		expect(
-			await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, {
-				...first,
-				page: 3,
-				sources: [],
-				args: ["destination"],
-			}),
-		).toEqual({ _yay: null });
+		for (let offset = 1; offset < 201; offset++)
+			expect(
+				await f.t.mutation(internal.ai_chat_files.accept_bash_job_copy_source, {
+					...first,
+					offset,
+					cursor: offset,
+					nextCursor: offset + 1,
+				}),
+			).toEqual({ _yay: null });
 		expect(await f.t.mutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, f.fence)).toEqual({ _yay: null });
 		expect(await f.t.mutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, f.fence)).toEqual({ _yay: null });
-		expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, first)).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.ai_chat_files.accept_bash_job_copy_source, first)).toHaveProperty("_nay");
+		const pages = await f.t.run((ctx) =>
+			ctx.db
+				.query("ai_chat_bash_job_copy_pages")
+				.withIndex("by_invocation_command_page", (q) => q.eq("invocationId", f.job.invocationId).eq("commandNumber", 3))
+				.collect(),
+		);
+		expect(pages.map((page) => page.sources.length)).toEqual([100, 100, 1]);
 		expect(
-			await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, {
-				...first,
-				page: 4,
-				sources: [],
-				args: ["extra"],
-			}),
-		).toHaveProperty("_nay");
-		expect(await f.t.query(internal.ai_chat_files.read_bash_job_copy_page, { ...f.fence, page: 2 })).toMatchObject({
-			page: 2,
-			sources: [f.source],
-		});
-		expect(
-			await f.t.query(internal.ai_chat_files.read_bash_job_copy_page, {
-				...f.fence,
-				workId: "stale-work" as WorkId,
-				page: 2,
-			}),
-		).toBeNull();
+			pages.every((page) => !("args" in page)),
+			"resolved pages store only source identities",
+		).toBe(true);
 		expect((await f.read(f.job.invocationId)).row?.job?.copy).toMatchObject({
 			sealed: true,
-			pageCount: 4,
+			pageCount: 3,
 			sourcesCount: 201,
 			argsCount: 202,
+			input: { ready: true, cursor: 201 },
 		});
-		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toEqual([]);
 	});
 });
 

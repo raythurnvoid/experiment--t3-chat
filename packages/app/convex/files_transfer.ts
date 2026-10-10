@@ -2150,8 +2150,7 @@ export const start_for_agent = internalMutation({
 				checkpoint.sourceWorkspace !== args.sourceWorkspace ||
 				checkpoint.destinationWorkspace !== args.destinationWorkspace ||
 				checkpoint.expectedSourceCount !== args.expectedSourceCount ||
-				args.sources.length !==
-					(checkpoint.input ? 1 : Math.min(files_TRANSFER_SELECTION_PAGE_SIZE, checkpoint.expectedSourceCount)) ||
+				args.sources.length !== 1 ||
 				compareValues(checkpoint.targetParent, args.targetParent) !== 0 ||
 				checkpoint.targetPath !== args.targetPath ||
 				checkpoint.targetName !== args.targetName ||

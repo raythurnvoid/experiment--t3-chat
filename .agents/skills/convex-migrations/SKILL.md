@@ -67,6 +67,10 @@ Migration Progress:
 
 Check actions that started before the switch. Their later queries can read the new code and stored shape. Keep those reads valid, and reject stale final writes when old fields could choose the wrong mode or content. Retaining old keys alone is not enough if new writers leave their values stale. After the switch, wait for the old actions to finish before stripping fields they use; the normal [Convex action limit](https://docs.convex.dev/functions/actions#limits) is ten minutes. This wait does not replace the stale-write checks needed during that window.
 
+Also check the queues that store old calls. Workpool has its own queues and delayed callbacks.
+The app's `_scheduled_functions` query does not cover component schedulers. Drain or stop calls
+whose format will change. Keep queued work whose format is still valid.
+
 ## Phase C: Tighten
 
 1. Verify the strip migration completed.
@@ -248,6 +252,12 @@ When the user chooses migration but does not need the migration to remain replay
   - Add new index names for new field names.
   - Move query callsites to new indexes.
   - Remove old indexes only in tighten phase.
+- A redirected push log can stay at `Preparing` while indexes are building. Check native state
+  before retrying. The MCP `tables` view shows only the active schema. The CLI's `run --watch`
+  reads `_system/frontend/getSchemas`, including `inProgress`, through a query subscription.
+  Without `--watch`, the CLI uses a different path that rejects these system queries. End only
+  your own subscription after reading a valid result. Check index state too. Do not save raw
+  verbose push output: it can contain environment values.
 - Keep API contract renames explicit and separate from DB renames:
   - DB doc fields: e.g. `organization_id` -> `organizationId`.
   - Convex args/returns: e.g. `organization_id` -> `organizationId`, `file_id` -> `fileId`.

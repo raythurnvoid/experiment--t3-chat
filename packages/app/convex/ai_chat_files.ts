@@ -69,7 +69,6 @@ import {
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_STOPPED,
 	bash_COMMAND_EXIT_TIMED_OUT,
-	bash_JOB_COPY_PAGE_MAX_BYTES,
 	bash_JOB_NUMBERS_MAX_COUNT,
 	bash_job_exit_code,
 	bash_text_head,
@@ -1483,7 +1482,7 @@ export async function ai_chat_files_db_check_copy_admission(
 	if (!checkpoint || checkpoint.commandNumber !== args.commandNumber || checkpoint.phase === "delivering")
 		return Result({ _nay: { name: "stale_job", message: "This Bash Copy checkpoint is no longer active." } });
 	if (checkpoint.phase === "admitting") {
-		if (!checkpoint.sealed && !checkpoint.input?.ready)
+		if (!checkpoint.sealed && !checkpoint.input.ready)
 			return Result({ _nay: { name: "incomplete_input", message: "Seal the Bash Copy input before starting Copy." } });
 		if (checkpoint.admissionDeadlineAt <= Date.now() || invocation.transferDeadlineAt <= Date.now())
 			return Result({ _nay: { name: "timed_out", message: "This Bash Copy admission timed out." } });
@@ -1560,7 +1559,7 @@ export async function ai_chat_files_db_link_copy_admission(
 
 async function db_retire_bash_job_input(ctx: MutationCtx, invocation: BashJobRow) {
 	const copy = invocation.job.copy;
-	if (copy?.phase !== "admitting" || !copy.input) return;
+	if (copy?.phase !== "admitting") return;
 	await r2_enqueue_object_deletion_job(ctx, {
 		organizationId: invocation.organizationId,
 		workspaceId: invocation.workspaceId,
@@ -1606,9 +1605,7 @@ export async function ai_chat_files_db_seal_copy_admission(
 		deadlineAt: args.deadlineAt,
 		job: {
 			...invocation.job,
-			excludedCopyWaitMs:
-				(invocation.job.excludedCopyWaitMs ?? 0) +
-				(checkpoint.input ? Math.max(0, args.now - checkpoint.input.startedAt) : 0),
+			excludedCopyWaitMs: (invocation.job.excludedCopyWaitMs ?? 0) + Math.max(0, args.now - checkpoint.input.startedAt),
 			watchdogId,
 			copy: {
 				phase: "waiting",
@@ -1684,16 +1681,14 @@ export const save_bash_job_copy_checkpoint = internalMutation({
 		invocationId: v.id("ai_chat_bash_invocations"),
 		workId: vWorkId,
 		checkpoint: bash_copy_admission_validator.omit(...BASH_COPY_ADMISSION_SERVER_FIELDS, "input"),
-		input: v.optional(
-			v.object({
-				r2Key: v.string(),
-				sha256: v.string(),
-				byteCount: v.number(),
-				sourceByteCount: v.number(),
-				putMayArriveUntil: v.number(),
-				recursive: v.boolean(),
-			}),
-		),
+		input: v.object({
+			r2Key: v.string(),
+			sha256: v.string(),
+			byteCount: v.number(),
+			sourceByteCount: v.number(),
+			putMayArriveUntil: v.number(),
+			recursive: v.boolean(),
+		}),
 		output: v.object({ stdout: v.string(), stderr: v.string() }),
 		resume: v.object({
 			script: v.string(),
@@ -1710,7 +1705,7 @@ export const save_bash_job_copy_checkpoint = internalMutation({
 		const checked = await db_check_bash_job_worker(ctx, args);
 		if (checked._nay) return checked;
 		const invocation = checked._yay;
-		// The cp parser already guarantees at least one source and a destination, so the counts
+		// The transfer parser guarantees at least one source and a destination, so the counts
 		// are not checked again here.
 		if (
 			!Number.isSafeInteger(args.checkpoint.commandNumber) ||
@@ -1728,10 +1723,7 @@ export const save_bash_job_copy_checkpoint = internalMutation({
 			if (
 				previous.phase === "admitting" &&
 				compareValues(omit(previous, [...BASH_COPY_ADMISSION_SERVER_FIELDS, "input"]), args.checkpoint) === 0 &&
-				compareValues(
-					previous.input && omit(previous.input, ["ready", "cursor", "startedAt", "lastSourceHash"]),
-					args.input,
-				) === 0 &&
+				compareValues(omit(previous.input, ["ready", "cursor", "startedAt", "lastSourceHash"]), args.input) === 0 &&
 				invocation.job.resumeScript === args.resume.script &&
 				compareValues(invocation.job.shellState, args.resume.shellState) === 0 &&
 				invocation.job.startCwd === args.resume.cwd &&
@@ -1763,9 +1755,7 @@ export const save_bash_job_copy_checkpoint = internalMutation({
 				...invocation.job,
 				copy: {
 					...args.checkpoint,
-					input: args.input
-						? { ...args.input, ready: false, cursor: 0, startedAt: Date.now(), lastSourceHash: null }
-						: undefined,
+					input: { ...args.input, ready: false, cursor: 0, startedAt: Date.now(), lastSourceHash: null },
 					pageCount: 0,
 					argsCount: 0,
 					sourcesCount: 0,
@@ -1797,7 +1787,7 @@ export const ready_bash_job_copy_input = internalMutation({
 		if (checked._nay) return checked;
 		const invocation = checked._yay;
 		const copy = invocation.job.copy;
-		if (!copy || copy.phase !== "admitting" || copy.commandNumber !== args.commandNumber || !copy.input)
+		if (!copy || copy.phase !== "admitting" || copy.commandNumber !== args.commandNumber)
 			return Result({ _nay: { name: "stale_job", message: "This Bash input is no longer active." } });
 		if (copy.admissionDeadlineAt <= Date.now() || invocation.transferDeadlineAt <= Date.now())
 			return Result({ _nay: { name: "timed_out", message: "This Bash input timed out." } });
@@ -1836,7 +1826,7 @@ export const accept_bash_job_copy_source = internalMutation({
 		const checked = await ai_chat_files_db_check_copy_admission(ctx, args);
 		if (checked._nay) return checked;
 		const { invocation, checkpoint } = checked._yay;
-		if (checkpoint.phase !== "admitting" || !checkpoint.input?.ready)
+		if (checkpoint.phase !== "admitting" || !checkpoint.input.ready)
 			return Result({ _nay: { name: "stale_job", message: "This Bash input is no longer active." } });
 		const input = checkpoint.input;
 		const sourceHash = await crypto_sha256_hex(
@@ -1927,7 +1917,6 @@ export const accept_bash_job_copy_source = internalMutation({
 				invocationId: invocation._id,
 				commandNumber: args.commandNumber,
 				page: pageNumber,
-				args: [],
 				sources: [target],
 			});
 		const fence = { invocationId: invocation._id, commandNumber: args.commandNumber, workId: args.workId };
@@ -1977,86 +1966,6 @@ export const accept_bash_job_copy_source = internalMutation({
 	},
 });
 
-export const stage_bash_job_copy_page = internalMutation({
-	args: {
-		invocationId: v.id("ai_chat_bash_invocations"),
-		workId: vWorkId,
-		commandNumber: v.number(),
-		page: v.number(),
-		args: v.array(v.string()),
-		sources: v.array(files_pending_target_validator),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const checked = await db_check_bash_job_worker(ctx, args);
-		if (checked._nay) return checked;
-		const invocation = checked._yay;
-		const checkpoint = invocation.job.copy;
-		if (
-			!checkpoint ||
-			checkpoint.phase !== "admitting" ||
-			checkpoint.commandNumber !== args.commandNumber ||
-			checkpoint.admissionDeadlineAt <= Date.now() ||
-			invocation.transferDeadlineAt <= Date.now()
-		)
-			return Result({ _nay: { name: "stale_job", message: "This Bash Copy input is no longer active." } });
-		if (
-			!Number.isSafeInteger(args.page) ||
-			args.page < 0 ||
-			args.page > checkpoint.pageCount ||
-			args.args.length > files_TRANSFER_SELECTION_PAGE_SIZE ||
-			args.sources.length > files_TRANSFER_SELECTION_PAGE_SIZE ||
-			args.args.length + args.sources.length === 0 ||
-			new TextEncoder().encode(JSON.stringify({ args: args.args, sources: args.sources })).byteLength >
-				bash_JOB_COPY_PAGE_MAX_BYTES
-		)
-			return Result({ _nay: { name: "invalid_input", message: "Invalid Bash Copy input page." } });
-		if (args.page < checkpoint.pageCount) {
-			const previous = await ctx.db
-				.query("ai_chat_bash_job_copy_pages")
-				.withIndex("by_invocation_command_page", (q) =>
-					q.eq("invocationId", invocation._id).eq("commandNumber", args.commandNumber).eq("page", args.page),
-				)
-				.unique();
-			return previous &&
-				compareValues(previous.args, args.args) === 0 &&
-				compareValues(previous.sources, args.sources) === 0
-				? Result({ _yay: null })
-				: Result({
-						_nay: { name: "request_changed", message: "This Bash Copy page was already saved with different input." },
-					});
-		}
-		// Sources fill full transfer-sized pages first, so each saved page is one transfer page.
-		// Args may spill into later args-only pages.
-		if (
-			checkpoint.sealed ||
-			args.sources.length !==
-				Math.min(files_TRANSFER_SELECTION_PAGE_SIZE, checkpoint.expectedSourceCount - checkpoint.sourcesCount) ||
-			checkpoint.argsCount + args.args.length > checkpoint.expectedArgCount
-		)
-			return Result({ _nay: { name: "invalid_input", message: "Copy input pages must be complete and in order." } });
-		await ctx.db.insert("ai_chat_bash_job_copy_pages", {
-			invocationId: invocation._id,
-			commandNumber: args.commandNumber,
-			page: args.page,
-			args: args.args,
-			sources: args.sources,
-		});
-		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
-			job: {
-				...invocation.job,
-				copy: {
-					...checkpoint,
-					pageCount: checkpoint.pageCount + 1,
-					argsCount: checkpoint.argsCount + args.args.length,
-					sourcesCount: checkpoint.sourcesCount + args.sources.length,
-				},
-			},
-		});
-		return Result({ _yay: null });
-	},
-});
-
 export const seal_bash_job_copy_checkpoint = internalMutation({
 	args: { invocationId: v.id("ai_chat_bash_invocations"), workId: vWorkId, commandNumber: v.number() },
 	returns: v_result({ _yay: v.null() }),
@@ -2076,7 +1985,8 @@ export const seal_bash_job_copy_checkpoint = internalMutation({
 		if (
 			checkpoint.argsCount !== checkpoint.expectedArgCount ||
 			checkpoint.sourcesCount !== checkpoint.expectedSourceCount ||
-			(checkpoint.input && (!checkpoint.input.ready || checkpoint.input.cursor !== checkpoint.input.sourceByteCount))
+			!checkpoint.input.ready ||
+			checkpoint.input.cursor !== checkpoint.input.sourceByteCount
 		)
 			return Result({ _nay: { name: "incomplete_input", message: "Save all Bash Copy input before sealing." } });
 		if (!checkpoint.sealed)
@@ -2084,26 +1994,6 @@ export const seal_bash_job_copy_checkpoint = internalMutation({
 				job: { ...invocation.job, copy: { ...checkpoint, sealed: true } },
 			});
 		return Result({ _yay: null });
-	},
-});
-
-export const read_bash_job_copy_page = internalQuery({
-	args: {
-		invocationId: v.id("ai_chat_bash_invocations"),
-		workId: vWorkId,
-		commandNumber: v.number(),
-		page: v.number(),
-	},
-	returns: v.union(doc(app_convex_schema, "ai_chat_bash_job_copy_pages"), v.null()),
-	handler: async (ctx, args) => {
-		const checked = await ai_chat_files_db_check_copy_admission(ctx, args);
-		if (checked._nay) return null;
-		return await ctx.db
-			.query("ai_chat_bash_job_copy_pages")
-			.withIndex("by_invocation_command_page", (q) =>
-				q.eq("invocationId", args.invocationId).eq("commandNumber", args.commandNumber).eq("page", args.page),
-			)
-			.unique();
 	},
 });
 
@@ -2144,7 +2034,7 @@ export const cleanup_bash_job_copy_pages = internalMutation({
 async function db_bash_job_copy_deadline(ctx: QueryCtx | MutationCtx, invocation: BashJobRow) {
 	const copy = invocation.job.copy;
 	if (!copy) return null;
-	if (copy.phase === "admitting") return copy.sealed || copy.input ? copy.admissionDeadlineAt : null;
+	if (copy.phase === "admitting") return copy.admissionDeadlineAt;
 	if (copy.phase === "delivering") return null;
 	const checked = await files_transfer_db_get_job_copy(ctx, {
 		runId: copy.runId,
@@ -2194,9 +2084,7 @@ async function db_deliver_bash_job_copy(
 		...invocation.job,
 		excludedCopyWaitMs:
 			(invocation.job.excludedCopyWaitMs ?? 0) +
-			(invocation.job.copy?.phase === "admitting" && invocation.job.copy.input
-				? Math.max(0, now - invocation.job.copy.input.startedAt)
-				: 0),
+			(invocation.job.copy?.phase === "admitting" ? Math.max(0, now - invocation.job.copy.input.startedAt) : 0),
 		watchdogId,
 		copy: {
 			phase: "delivering" as const,
@@ -2314,7 +2202,7 @@ async function db_requeue_bash_job_copy(args: { ctx: MutationCtx; invocation: Ba
 	const { ctx, invocation, now } = args;
 
 	const copy = invocation.job.copy;
-	if (!copy || copy.phase === "delivering" || (copy.phase === "admitting" && !copy.sealed && !copy.input)) return false;
+	if (!copy || copy.phase === "delivering") return false;
 	if (invocation.job.workId === null) return false;
 	const checked = await db_check_bash_job_worker(ctx, { invocationId: invocation._id, workId: invocation.job.workId });
 	if (checked._nay) return false;
@@ -3003,7 +2891,7 @@ export const claim_bash_job = internalMutation({
 			return null;
 
 		const copy = invocation.job.copy;
-		if (copy && (copy.phase === "delivering" || (copy.phase === "admitting" && !copy.sealed && !copy.input))) {
+		if (copy?.phase === "delivering") {
 			await db_settle_bash_job({
 				ctx,
 				invocation,
@@ -3018,7 +2906,7 @@ export const claim_bash_job = internalMutation({
 			deadlineAt === null ||
 			deadlineAt <= now ||
 			(copy?.phase !== "waiting" &&
-				!(copy?.phase === "admitting" && copy.input) &&
+				copy?.phase !== "admitting" &&
 				now - invocation._creationTime - (invocation.job.excludedCopyWaitMs ?? 0) >= BASH_JOB_LIFETIME_MS)
 		) {
 			await db_settle_bash_job({ ctx, invocation, status: "timed_out", errorMessage: null, now });
@@ -3131,8 +3019,7 @@ export async function ai_chat_files_db_request_job_stop(
 	// A user Stop that reaches its deadline is still a stop, not a timeout.
 	if (args.reason === "timeout") {
 		if (
-			(invocation.job.copy?.phase === "waiting" ||
-				(invocation.job.copy?.phase === "admitting" && invocation.job.copy.input)) &&
+			(invocation.job.copy?.phase === "waiting" || invocation.job.copy?.phase === "admitting") &&
 			invocation.job.stopRequestedAt === null &&
 			(await ai_chat_files_db_get_invocation_membership(ctx, invocation))
 		) {
