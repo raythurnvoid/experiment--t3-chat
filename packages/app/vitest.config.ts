@@ -25,9 +25,10 @@ export default defineConfig({
 		passWithNoTests: true,
 		silent: "passed-only",
 		testTimeout: 30_000,
-		// Run these slow full-size checks with test:files:full-size.
+		// Run these slow full-size checks with test:files:full-size. A renamed test runs here again, so
+		// keep these names and the script's names in sync with the tests.
 		testNamePattern:
-			/^(?!.*(?:saves 1,000 Copy outputs beside one ordinary edit|plans 10,001 unrelated saved Move proposals as 10,001 units|moves one folder with 2001 descendants and keeps every metadata value)$)/,
+			/^(?!.*(?:saves 1,000 Copy outputs beside one ordinary edit|plans 10,001 unrelated saved Move proposals as 10,001 units|moves one folder with 2001 descendants and keeps every metadata value|measures scheduled phases with maximum metadata, draft copies, shares and links)$)/,
 		hookTimeout: 30_000,
 		teardownTimeout: 30_000,
 		projects: [

@@ -3,7 +3,8 @@
 //
 // Vitest hides the logs of passing tests. Run with `--silent=false --reporter=default` to see the
 // numbers. In an agent shell Vitest picks a reporter that hides them even with `--silent=false`.
-// The mock scans each indexed table. The maximum fixture can take an hour here.
+// The mock scans each indexed table. The full maximum Move fixture can take an hour here, so it
+// runs only with `test:files:full-size`. Two smaller Move tests split its sizes for the default run.
 
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -154,20 +155,16 @@ function measure_cohort(record: ReturnType<typeof budget_recorder>["record"]) {
 	});
 }
 
-async function finish_scheduled(
-	t: ReturnType<typeof test_convex>,
-	isDone: () => Promise<boolean>,
-) {
+async function finish_scheduled(t: ReturnType<typeof test_convex>, isDone: () => Promise<boolean>) {
 	for (let step = 0; step < 50_000; step++) {
 		vi.advanceTimersByTime(0);
 		await t.finishInProgressScheduledFunctions();
 		if (await isDone()) return;
-		const next = await t.run(async ctx => (await ctx.db.system.query("_scheduled_functions").collect())
-			.filter(job => job.state.kind === "pending")
-			.reduce<number | null>((time, job) => time === null ? job.scheduledTime : Math.min(time, job.scheduledTime), null));
-		if (next === null) throw new Error("The accepted job has no scheduled worker");
+		// Each scheduled worker has a fake timer. Reading `_scheduled_functions` here would be slow:
+		// that table keeps finished jobs, so each read grows with the steps already run.
+		if (vi.getTimerCount() === 0) throw new Error("The accepted job has no scheduled worker");
 		// Advance between workers, never while an async worker is still reading or writing.
-		vi.advanceTimersByTime(Math.max(0, next - Date.now()));
+		vi.advanceTimersToNextTimer();
 	}
 	throw new Error("The scheduled job did not finish");
 }
@@ -216,11 +213,18 @@ async function insert_saved_node(
 }
 
 describe("paged Move transaction budgets", () => {
-	test("measures scheduled phases with maximum metadata, draft copies, shares and links", async () => {
+	// MAX_OTHER_USERS_DOCS_PER_SAVED_NODE in files-pending-overlay.ts is 32, one hide and one place
+	// per user. So at most 16 users can draft on one saved node.
+	const MAX_DRAFT_OWNERS = 16;
+
+	// Moves a heavy file with `keys` frontmatter and metadata keys (128 is the maximum) and `lines`
+	// lines of text while `owners` users draft a move of it. Also moves a folder with restricted
+	// folders and a file with a link.
+	const measure_paged_move = async (args: { owners: number; keys: number; lines: number }) => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const dates = Array.from({ length: 128 }, (_, index) =>
+		const dates = Array.from({ length: args.keys }, (_, index) =>
 			new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
 		);
 		const frontmatter = [
@@ -229,7 +233,7 @@ describe("paged Move transaction budgets", () => {
 			"---",
 			"",
 		].join("\n");
-		const body = "A large saved file keeps its text chunks beside both metadata sources.\n".repeat(12_000);
+		const body = "A large saved file keeps its text chunks beside both metadata sources.\n".repeat(args.lines);
 		const heavyId = await test_create_saved_text_file(t, {
 			membershipId: db.membershipId,
 			path: "/project/heavy.md",
@@ -263,8 +267,10 @@ describe("paged Move transaction budgets", () => {
 				.collect();
 			return { heavy, project, target, drafts, shared, light, links, users, metadata };
 		});
-		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(512);
-		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("metadata."))).toHaveLength(384);
+		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(args.keys * 4);
+		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("metadata."))).toHaveLength(args.keys * 3);
+		// Owner steps page these docs 8 at a time (PAGE_SIZE in files_move_owner_work.ts). Use full pages.
+		expect(seeded.metadata.length, "the metadata fills more than one owner page").toBeGreaterThan(8);
 		let extraLinkId: Id<"files_nodes"> | null = null;
 		for (const [parentId, count] of [
 			[seeded.project._id, 99],
@@ -358,7 +364,8 @@ describe("paged Move transaction budgets", () => {
 					enabled: true,
 				}),
 			).toEqual({ _yay: null });
-			if ((seeded.links.indexOf(node) + 1) % 100 === 0) console.info("Move budget fixture: public links ready", seeded.links.indexOf(node) + 1);
+			if ((seeded.links.indexOf(node) + 1) % 100 === 0)
+				console.info("Move budget fixture: public links ready", seeded.links.indexOf(node) + 1);
 		}
 		refill_sharing();
 		expect(
@@ -371,7 +378,7 @@ describe("paged Move transaction budgets", () => {
 			)._nay?.message,
 		).toContain("at most 500");
 		await t.finishAllScheduledFunctions(vi.runAllTimers);
-		for (const userId of seeded.users.slice(0, 16)) {
+		for (const userId of seeded.users.slice(0, args.owners)) {
 			expect(
 				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 					organizationId: db.organizationId,
@@ -385,6 +392,18 @@ describe("paged Move transaction budgets", () => {
 				_yay: { fromPath: seeded.heavy.path, destPath: `${seeded.drafts.path}/${seeded.heavy.name}` },
 			});
 		}
+		if (args.owners === MAX_DRAFT_OWNERS)
+			await expect(
+				t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: seeded.users[MAX_DRAFT_OWNERS]!,
+					target: { kind: "saved", id: heavyId },
+					destParent: { kind: "saved", id: seeded.drafts._id },
+					destName: seeded.heavy.name,
+				}),
+				"the cap refuses one more owner draft",
+			).rejects.toThrow("Too many people have pending changes");
 		console.info("Move budget fixture: shares, links and owner drafts ready");
 		await t.run(async (ctx) => {
 			expect(
@@ -392,13 +411,13 @@ describe("paged Move transaction budgets", () => {
 					.query("files_pending_hides")
 					.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", heavyId))
 					.collect(),
-			).toHaveLength(16);
+			).toHaveLength(args.owners);
 			expect(
 				await ctx.db
 					.query("files_pending_places")
 					.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", heavyId))
 					.collect(),
-			).toHaveLength(16);
+			).toHaveLength(args.owners);
 			expect(
 				await ctx.db
 					.query("files_share_rows")
@@ -472,20 +491,53 @@ describe("paged Move transaction budgets", () => {
 		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
 			_yay: null,
 		});
-		await finish_scheduled(t, async () =>
-			(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !== undefined);
+		await finish_scheduled(
+			t,
+			async () =>
+				(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !==
+				undefined,
+		);
+		// The compactor applies only deltas older than 5 s (COMPACT_CUTOFF_MS), and a smaller Move ends
+		// first. Run on until its chain ends, so it applies all the Move's catalog deltas.
+		await finish_scheduled(
+			t,
+			async () => !(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").first())),
+		);
 		console.info(
 			"paged Move phase peaks, with the metadata catalog",
-			JSON.stringify({ phases: Object.fromEntries(peaks) }),
+			JSON.stringify({ args, phases: Object.fromEntries(peaks) }),
 		);
 		expect(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: { status: "succeeded", progress: { completed: 3, failed: 0, canceled: 0 } },
 		});
 		expect(peaks.get("cohort/publish")?.calls, "every saved Move root reaches cohort publication").toBe(sources.length);
-		expect(peaks.get("catalog/compactor")?.calls, "the Move's catalog deltas reach the compactor").toBeGreaterThan(0);
+		expect(
+			peaks.get("catalog/compactor")?.measured.documentsWritten,
+			"the compactor applies the Move's catalog deltas",
+		).toBeGreaterThan(0);
 		expect(peaks.get("cohort/descendants")?.calls).toBeGreaterThan(0);
 		expect(peaks.get("cohort/finish_owners")?.calls).toBeGreaterThan(0);
+	};
+
+	// The full size: 16 owners with 896 metadata docs each and a large text make about 8,700 Move steps
+	// over large tables, more than an hour here. It runs only in `test:files:full-size`. The steps
+	// work in pages, so one step's cost does not grow with the owner count, the doc count or the text
+	// size. The two tests below split these sizes and reach the same peak per phase (checked once
+	// against this test).
+	test("measures scheduled phases with maximum metadata, draft copies, shares and links", async () => {
+		await measure_paged_move({ owners: MAX_DRAFT_OWNERS, keys: 128, lines: 12_000 });
 	}, 7_200_000);
+
+	// The maximum metadata with one owner. 200 lines make about 12 text chunks, more than one page of
+	// 8. A larger text only adds steps, and saving it takes most of the full test's fixture time.
+	test("measures scheduled phases with maximum metadata, shares, links and one draft copy", async () => {
+		await measure_paged_move({ owners: 1, keys: 128, lines: 200 });
+	}, 1_200_000);
+
+	// The owner cap with two keys: 14 metadata docs, two pages per owner.
+	test("measures scheduled phases with the most draft copies, shares and links", async () => {
+		await measure_paged_move({ owners: MAX_DRAFT_OWNERS, keys: 2, lines: 200 });
+	}, 600_000);
 
 	test("moves one saved file while six owners have large pending content", async () => {
 		const t = test_convex({ transactionLimits: true });
@@ -571,8 +623,12 @@ describe("paged Move transaction budgets", () => {
 		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
 			_yay: null,
 		});
-		await finish_scheduled(t, async () =>
-			(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !== undefined);
+		await finish_scheduled(
+			t,
+			async () =>
+				(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !==
+				undefined,
+		);
 		const receipt = await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
 		console.info(
 			"singleton Move with six native 800KiB drafts",
@@ -662,8 +718,12 @@ describe("cohort Accept transaction budgets", () => {
 		expect(
 			await asOwner.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId }),
 		).toEqual({ _yay: null });
-		await finish_scheduled(t, async () =>
-			(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.run.step === "finished");
+		await finish_scheduled(
+			t,
+			async () =>
+				(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.run.step ===
+				"finished",
+		);
 		expect(
 			(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.activity,
 			"the measured linked Accept completes through native cohort workers",
