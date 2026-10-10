@@ -41,20 +41,44 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 10,
 	},
+	// A key's parallel requests all charge this bucket. Four shards spread the charges over four
+	// docs. Each charge still reads two random shards, so about half of the parallel charges still
+	// conflict and Convex retries them. The total limit does not change, but near the limit a few
+	// requests may get a 429 early. Each charge must be at most capacity / (shards / 2) = 10, or
+	// the limiter throws. So every charge here is 1, and batch routes charge their items in their
+	// own bulk bucket.
 	public_api_principal: {
 		kind: "token bucket",
 		rate: 120,
 		period: MINUTE,
 		capacity: 20,
+		shards: 4,
 	},
 	// Bulk file writes charge one token per file in a single up-front batch charge, so the
 	// capacity must cover a full write-many request (20 files) with room for several back-to-back
-	// batches during an import.
+	// batches during an import. Sharded like the principal bucket: one charge may be up to 50, and
+	// one full shard (25) covers a 20-file batch alone.
 	public_api_files_write_bulk: {
 		kind: "token bucket",
 		rate: 600,
 		period: MINUTE,
 		capacity: 100,
+		shards: 4,
+	},
+	// `upload-urls` and `download-urls` items: one token per URL, charged once per request. Same
+	// numbers as the principal bucket. Not sharded: they are not hot paths, and a 20-item charge
+	// needs the whole capacity.
+	public_api_files_upload_bulk: {
+		kind: "token bucket",
+		rate: 120,
+		period: MINUTE,
+		capacity: 20,
+	},
+	public_api_files_download_bulk: {
+		kind: "token bucket",
+		rate: 120,
+		period: MINUTE,
+		capacity: 20,
 	},
 	// Same shape for plugin-document batches: one token per document, charged once before the batch
 	// writes anything. The capacity covers two full 50-document batches back to back.
@@ -275,6 +299,21 @@ function key_digest(key: string) {
 	return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+/**
+ * Convex retries a mutation a few times when another call changed the same doc. When every retry
+ * loses, the calling action gets this error. The text comes from the Convex backend
+ * (`crates/errors/src/lib.rs:378-382`). Keep the match narrow: any other error is a bug and must
+ * still throw.
+ */
+function is_write_conflict_error(error: unknown) {
+	return error instanceof Error && error.message.includes("changed while this mutation was being run");
+}
+
+/**
+ * How long a caller waits after a lost write conflict. A real refusal has its own `retryAfter`.
+ */
+const WRITE_CONFLICT_RETRY_AFTER_MS = 1_000;
+
 export async function rate_limiter_limit_by_key(
 	ctx: MutationCtx | ActionCtx,
 	args: {
@@ -283,10 +322,24 @@ export async function rate_limiter_limit_by_key(
 		count?: number;
 	},
 ) {
-	const limit = await rate_limiter.limit(ctx, args.name, {
-		key: args.key,
-		count: args.count,
-	});
+	let limit;
+	try {
+		limit = await rate_limiter.limit(ctx, args.name, {
+			key: args.key,
+			count: args.count,
+		});
+	} catch (error) {
+		// Only an action sees this error. Inside a mutation, Convex reruns the whole mutation instead.
+		// Answer "try again soon" instead of a 500. This still fails closed: nothing is let through.
+		if (!("db" in ctx) && is_write_conflict_error(error)) {
+			console.warn("Rate limit write conflict", { name: args.name, keyDigest: key_digest(args.key) });
+			return {
+				message: rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE,
+				retryAfterMs: WRITE_CONFLICT_RETRY_AFTER_MS,
+			} as const;
+		}
+		throw error;
+	}
 
 	if (limit.ok) {
 		return null;

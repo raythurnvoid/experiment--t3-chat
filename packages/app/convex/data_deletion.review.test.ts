@@ -601,20 +601,30 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				userId: args.userId,
 				body: `${args.tag} ${i}`,
 			}),
-			ctx.db.insert("api_credentials", {
-				serviceAccountId: null,
-				organizationId: apiOrganizationId,
-				workspaceId: apiWorkspaceId,
-				userId: args.userId,
-				name: `${args.tag} API key ${i}`,
-				keyId: `pk_${args.tag}_${i}`,
-				obfuscatedValue: `pk_${args.tag}_${i}.****test`,
-				secretHash: `secret_hash_${args.tag}_${i}`,
-				scopes: ["files:list", "files:read"],
-				createdAt: Date.now(),
-				revokedAt: null,
-				lastUsedAt: null,
-			}),
+			ctx.db
+				.insert("api_credentials", {
+					serviceAccountId: null,
+					organizationId: apiOrganizationId,
+					workspaceId: apiWorkspaceId,
+					userId: args.userId,
+					name: `${args.tag} API key ${i}`,
+					keyId: `pk_${args.tag}_${i}`,
+					obfuscatedValue: `pk_${args.tag}_${i}.****test`,
+					secretHash: `secret_hash_${args.tag}_${i}`,
+					scopes: ["files:list", "files:read"],
+					createdAt: Date.now(),
+					revokedAt: null,
+					lastUsedAt: null,
+				})
+				.then((credentialId) =>
+					ctx.db.insert("api_credentials_last_used", {
+						credentialId,
+						organizationId: apiOrganizationId,
+						workspaceId: apiWorkspaceId,
+						userId: args.userId,
+						lastUsedAt: Date.now(),
+					}),
+				),
 			ctx.db.insert("public_api_grants", {
 				organizationId: apiOrganizationId,
 				workspaceId: apiWorkspaceId,
@@ -663,6 +673,7 @@ const review_workspace_tables = [
 	"ai_chat_bash_shell_transcripts",
 	"ai_chat_bash_shells",
 	"ai_chat_threads",
+	"api_credentials_last_used",
 	"api_credentials",
 	"public_api_grants",
 	"public_api_file_write_stages",
@@ -1499,6 +1510,28 @@ async function review_seed_two_shared_memberships(ctx: MutationCtx, userId: Id<"
 			userId,
 			now: Date.now(),
 		});
+		// This workspace survives, so only the user passes delete this key and its usage doc.
+		const credentialId = await ctx.db.insert("api_credentials", {
+			serviceAccountId: null,
+			organizationId: organization._yay.organizationId,
+			workspaceId,
+			userId,
+			name: "Shared API key",
+			keyId: `pk_shared_${workspaceId}`,
+			obfuscatedValue: "pk_shared.****test",
+			secretHash: `secret_hash_shared_${workspaceId}`,
+			scopes: ["files:list"],
+			createdAt: Date.now(),
+			revokedAt: null,
+			lastUsedAt: null,
+		});
+		await ctx.db.insert("api_credentials_last_used", {
+			credentialId,
+			organizationId: organization._yay.organizationId,
+			workspaceId,
+			userId,
+			lastUsedAt: Date.now(),
+		});
 		await ctx.db.insert("access_control_role_assignments", {
 			organizationId: organization._yay.organizationId,
 			workspaceId,
@@ -1545,6 +1578,7 @@ const review_user_tables = [
 	"plugins_mcp_oauth_pending",
 	"plugins_mcp_calls",
 	"quotas",
+	"api_credentials_last_used",
 	"api_credentials",
 	"public_api_grants",
 ] as const;

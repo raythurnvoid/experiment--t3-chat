@@ -1906,12 +1906,31 @@ const app_convex_schema = defineSchema({
 		),
 		createdAt: v.number(),
 		revokedAt: v.union(v.number(), v.null()),
+		/**
+		 * Old usage time. New uses are written to `api_credentials_last_used`. The key list shows
+		 * this value only when the key has no usage doc yet.
+		 */
 		lastUsedAt: v.union(v.number(), v.null()),
 	})
 		.index("by_keyId", ["keyId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
 		.index("by_organization_workspace_user_revokedAt", ["organizationId", "workspaceId", "userId", "revokedAt"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * When an API key was last used. It has its own table, so the once-a-minute write never touches
+	 * the `api_credentials` doc that every file publish reads.
+	 */
+	api_credentials_last_used: defineTable({
+		credentialId: v.id("api_credentials"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		lastUsedAt: v.number(),
+	})
+		.index("by_credential", ["credentialId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_user", ["userId"]),
 
 	/**

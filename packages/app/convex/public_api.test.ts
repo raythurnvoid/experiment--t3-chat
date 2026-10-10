@@ -24,7 +24,7 @@ import {
 import type { api_schemas_Main } from "../shared/api-schemas.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
-import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
@@ -1277,27 +1277,92 @@ describe("mark_credential_used", () => {
 		if (created._nay) throw new Error(created._nay.message);
 		const credentialId = created._yay.credentialId;
 		const now = Date.now();
+		const credentialBefore = await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId));
+		const usedAt = async () =>
+			(
+				await t.run(async (ctx) =>
+					ctx.db
+						.query("api_credentials_last_used")
+						.withIndex("by_credential", (q) => q.eq("credentialId", credentialId))
+						.first(),
+				)
+			)?.lastUsedAt;
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now });
-		const firstUse = await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId));
-		expect(firstUse?.lastUsedAt).toBe(now);
+		expect(await usedAt()).toBe(now);
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 59_999 });
-		expect(await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId))).toEqual(firstUse);
+		expect(await usedAt()).toBe(now);
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 60_000 });
-		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(
-			now + 60_000,
-		);
+		expect(await usedAt()).toBe(now + 60_000);
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 30_000 });
-		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(
-			now + 60_000,
-		);
+		expect(await usedAt()).toBe(now + 60_000);
+
+		// Every file publish reads the credential doc, so marking use must never write it.
+		expect(await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId))).toEqual(credentialBefore);
+	});
+
+	test("the key list shows the usage time and falls back to the old field", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-key-usage-list" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const create = async (name: string) => {
+			const created = await asUser.mutation(api.public_api.api_credential_create, {
+				membershipId: db.membershipId,
+				serviceAccountId: null,
+				name,
+				scopes: ["files:read"],
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.credentialId;
+		};
+		const usedId = await create("Used");
+		const legacyId = await create("Legacy");
+		await t.run((ctx) => ctx.db.patch("api_credentials", legacyId, { lastUsedAt: 1_000 }));
+		await t.mutation(internal.public_api.mark_credential_used, { credentialId: usedId, now: 2_000 });
+
+		const listed = await asUser.query(api.public_api.api_credentials_list, { membershipId: db.membershipId });
+		if (listed._nay) throw new Error(listed._nay.message);
+		expect(
+			Object.fromEntries(listed._yay.map((credential) => [credential.credentialId, credential.lastUsedAt])),
+		).toEqual({ [usedId]: 2_000, [legacyId]: 1_000 });
 	});
 });
 
 describe("public files API", () => {
+	test("download-urls charges its own bulk bucket, even for one file", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-download-urls-charge" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId: null,
+			name: "Downloader",
+			scopes: ["files:download"],
+		});
+		if (created._nay) throw new Error(created._nay.message);
+
+		// Freeze the limiter clock, so the drained bucket does not refill on a slow machine.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now());
+		const drained = await t.run(async (ctx) =>
+			rate_limiter_limit_by_key(ctx, {
+				name: "public_api_files_download_bulk",
+				key: `user_api_key:${created._yay.credential.split(".")[0]}`,
+				count: 20,
+			}),
+		);
+		expect(drained).toBeNull();
+
+		const response = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(created._yay.credential),
+			body: JSON.stringify({ fileNodeIds: ["missing"] }),
+		});
+		expect(response.status).toBe(429);
+	});
+
 	test.each(["😀", "\uffff"])("lists %s descendants and content type suffixes", async (suffix) => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -1490,7 +1555,6 @@ describe("public files API", () => {
 		const afterUse = await t.run(async (ctx) => {
 			return await ctx.db.get("api_credentials", created._yay!.credentialId);
 		});
-		expect(afterUse?.lastUsedAt).toEqual(expect.any(Number));
 		expect(afterUse?.serviceAccountId).toBeNull();
 
 		const listed = await asUser.query(api.public_api.api_credentials_list, {
@@ -1504,6 +1568,7 @@ describe("public files API", () => {
 				keyId: created._yay!.keyId,
 				obfuscatedValue: expect.stringContaining("****"),
 				scopes: ["files:list", "files:read"],
+				lastUsedAt: expect.any(Number),
 			}),
 		]);
 
@@ -3472,6 +3537,9 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/anything.md" }),
 		});
 		expect(readResponse.status).toBe(403);
+		// The principal bucket has 4 shards. A random pick of two can refuse early and leave tokens in
+		// the others, so the last call could pass. A fixed `Math.random` reads the same two shards.
+		vi.spyOn(Math, "random").mockReturnValue(0);
 		let lastWrongScopeStatus = readResponse.status;
 		for (let index = 0; index < 20; index += 1) {
 			const response = await t.fetch("/api/v1/files/read", {
@@ -4651,36 +4719,31 @@ describe("files upload-urls", () => {
 		expect(await response.json()).toEqual({ message: "Request body validation failed" });
 	});
 
-	test("a multi-file mint charges one principal unit per minted URL", async () => {
+	test("upload-urls charges its own bulk bucket, even for one file", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-charge" });
 		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-charge" });
 
+		// Freeze the limiter clock, so the drained bucket does not refill on a slow machine.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now());
+		const drained = await t.run(async (ctx) =>
+			rate_limiter_limit_by_key(ctx, {
+				name: "public_api_files_upload_bulk",
+				key: `user_api_key:${credential.split(".")[0]}`,
+				count: 20,
+			}),
+		);
+		expect(drained).toBeNull();
+
 		const response = await t.fetch("/api/v1/files/upload-urls", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({
-				files: [
-					{ path: "/charge/a.bin", contentType: "application/octet-stream", size: 8 },
-					{ path: "/charge/b.bin", contentType: "application/octet-stream", size: 8 },
-					{ path: "/charge/c.bin", contentType: "application/octet-stream", size: 8 },
-				],
+				files: [{ path: "/charge/a.bin", contentType: "application/octet-stream", size: 8 }],
 			}),
 		});
-		expect(response.status).toBe(200);
-
-		// Auth charged 1 and the batch charged 2 more on the same route-scoped key, so of the
-		// bucket's capacity of 20 exactly 17 remain: a 17-token check passes, an 18-token one fails.
-		const chargeKey = `user_api_key:${credential.split(".")[0]}:/api/v1/files/upload-urls`;
-		const canTakeRemaining = await t.run(async (ctx) =>
-			rate_limiter_check_by_key(ctx, { name: "public_api_principal", key: chargeKey, count: 17 }),
-		);
-		expect(canTakeRemaining).toBeNull();
-		const canTakeOneMore = await t.run(async (ctx) =>
-			rate_limiter_check_by_key(ctx, { name: "public_api_principal", key: chargeKey, count: 18 }),
-		);
-		expect(canTakeOneMore).not.toBeNull();
+		expect(response.status).toBe(429);
 	});
 });
 
@@ -5059,15 +5122,19 @@ describe("files write-many", () => {
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-rate" });
 		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-rate" });
 
-		// Drain the whole bulk bucket for this credential's principal key up front.
-		const drained = await t.run(async (ctx) =>
-			rate_limiter_limit_by_key(ctx, {
-				name: "public_api_files_write_bulk",
-				key: `user_api_key:${credential.split(".")[0]}`,
-				count: 100,
-			}),
-		);
-		expect(drained).toBeNull();
+		// The bucket has 4 shards of 25 tokens. With a fixed `Math.random`, every charge reads the
+		// same two shards, so two charges of 25 spend every token this key can reach.
+		vi.spyOn(Math, "random").mockReturnValue(0);
+		for (let index = 0; index < 2; index += 1) {
+			const drained = await t.run(async (ctx) =>
+				rate_limiter_limit_by_key(ctx, {
+					name: "public_api_files_write_bulk",
+					key: `user_api_key:${credential.split(".")[0]}`,
+					count: 25,
+				}),
+			);
+			expect(drained).toBeNull();
+		}
 
 		const blocked = await t.fetch("/api/v1/files/write-many", {
 			method: "POST",

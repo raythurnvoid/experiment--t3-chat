@@ -144,13 +144,13 @@ const FILES_READ_MANY_MAX_CONTENT_BYTES = 384_000;
 const FILES_DOWNLOAD_URL_MAX_TTL_SECONDS = 15 * 60;
 // The signer timestamps after our pre-sign check, so leave one full second inside plugin authority.
 const FILES_DOWNLOAD_URL_SIGNING_MARGIN_SECONDS = 1;
-// Must stay <= the public_api_principal bucket capacity: a batch charges one unit per URL.
+// Must stay <= the public_api_files_download_bulk bucket capacity: a batch charges one unit per URL.
 const FILES_DOWNLOAD_URLS_MAX_ITEMS = 20;
 // Keep unauthenticated validation work small while still allowing a truncated client batch.
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS = 100;
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES = 32_000;
 const FILES_TOUCH_MAX_PATHS = 8;
-// Must stay <= the public_api_principal bucket capacity: a batch charges one unit per minted URL.
+// Must stay <= the public_api_files_upload_bulk bucket capacity: a batch charges one unit per minted URL.
 const FILES_UPLOAD_URLS_MAX_ITEMS = 20;
 
 /**
@@ -158,7 +158,8 @@ const FILES_UPLOAD_URLS_MAX_ITEMS = 20;
  * no longer upload another object.
  */
 const FILES_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
-// Must stay <= the public_api_files_write_bulk bucket capacity: the batch charges one token per file.
+// The batch charges one token per file in the sharded public_api_files_write_bulk bucket. Must stay
+// <= the largest charge that bucket accepts: capacity / (shards / 2) = 50. A bigger charge throws.
 const FILES_WRITE_MANY_MAX_ITEMS = 20;
 // Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
 const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
@@ -1190,6 +1191,10 @@ export const api_credentials_list = query({
 					const account = credential.serviceAccountId
 						? await ctx.db.get("access_control_service_accounts", credential.serviceAccountId)
 						: null;
+					const usage = await ctx.db
+						.query("api_credentials_last_used")
+						.withIndex("by_credential", (q) => q.eq("credentialId", credential._id))
+						.first();
 					return {
 						credentialId: credential._id,
 						serviceAccountId: credential.serviceAccountId,
@@ -1204,7 +1209,7 @@ export const api_credentials_list = query({
 						scopes: credential.scopes,
 						createdAt: credential.createdAt,
 						revokedAt: credential.revokedAt,
-						lastUsedAt: credential.lastUsedAt,
+						lastUsedAt: usage?.lastUsedAt ?? credential.lastUsedAt,
 					};
 				}),
 			),
@@ -2084,14 +2089,29 @@ export const mark_credential_used = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		// Never write the credential doc here: every file publish reads it to check revocation, so a
+		// write there would conflict with parallel publishes. The usage doc has its own table.
+		const usage = await ctx.db
+			.query("api_credentials_last_used")
+			.withIndex("by_credential", (q) => q.eq("credentialId", args.credentialId))
+			.first();
+		if (usage) {
+			// Write at most once per minute, so parallel requests of one key rarely touch this doc.
+			if (args.now - usage.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS) {
+				await ctx.db.patch("api_credentials_last_used", usage._id, { lastUsedAt: args.now });
+			}
+			return null;
+		}
+
 		const credential = await ctx.db.get("api_credentials", args.credentialId);
-		// Frequent timestamp writes make concurrent file writes retry on the same credential doc.
-		if (
-			credential &&
-			(credential.lastUsedAt === null ||
-				args.now - credential.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS)
-		) {
-			await ctx.db.patch("api_credentials", credential._id, { lastUsedAt: args.now });
+		if (credential) {
+			await ctx.db.insert("api_credentials_last_used", {
+				credentialId: credential._id,
+				organizationId: credential.organizationId,
+				workspaceId: credential.workspaceId,
+				userId: credential.userId,
+				lastUsedAt: args.now,
+			});
 		}
 
 		return null;
@@ -7171,20 +7191,18 @@ export async function public_api_http_download_urls(args: {
 	const fileNodeIds = body.data.fileNodeIds.slice(0, FILES_DOWNLOAD_URLS_MAX_ITEMS);
 	const truncated = body.data.fileNodeIds.length > fileNodeIds.length;
 
-	// Authorization charged one slot for the request; the rest of the batch
-	// charges here so N URLs cost the same principal budget as N single calls.
-	if (fileNodeIds.length > 1) {
-		const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
-			name: "public_api_principal",
-			key: `${principal.kind}:${principal.principalKey}:${path}`,
-			count: fileNodeIds.length - 1,
-		});
-		if (batchRateLimit) {
-			return {
-				status: 429,
-				body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
-			} as const;
-		}
+	// Authorization charged one principal slot for the request. The URLs charge their own bulk
+	// bucket, because the sharded principal bucket refuses a charge above 10.
+	const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "public_api_files_download_bulk",
+		key: `${principal.kind}:${principal.principalKey}`,
+		count: fileNodeIds.length,
+	});
+	if (batchRateLimit) {
+		return {
+			status: 429,
+			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+		} as const;
 	}
 
 	// Per-node queries keep each file in its own Convex cache entry, so one changed
@@ -7466,20 +7484,19 @@ export async function public_api_http_upload_urls(args: {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
 
-	// Authorization charged one slot for the request; the rest of the batch
-	// charges here so N upload URLs cost the same principal budget as N single calls.
-	if (body._yay.files.length > 1) {
-		const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
-			name: "public_api_principal",
-			key: `${principal.kind}:${principal.principalKey}:${path}`,
-			count: body._yay.files.length - 1,
-		});
-		if (batchRateLimit) {
-			return {
-				status: 429,
-				body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
-			} as const;
-		}
+	// Authorization charged one principal slot for the request. The URLs charge their own bulk
+	// bucket, so minting does not eat the write-many budget, and the sharded principal bucket would
+	// refuse a charge above 10.
+	const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "public_api_files_upload_bulk",
+		key: `${principal.kind}:${principal.principalKey}`,
+		count: body._yay.files.length,
+	});
+	if (batchRateLimit) {
+		return {
+			status: 429,
+			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+		} as const;
 	}
 
 	const created = (await ctx.runMutation(internal.public_api.create_file_upload_targets, {
