@@ -150,9 +150,10 @@ function make_run(
 	overrides: Partial<Omit<TransferRun, "activity">> & {
 		status?: TransferRun["activity"]["status"];
 		progress?: Partial<TransferRun["activity"]["progress"]>;
+		isRename?: boolean;
 	} = {},
 ): TransferRun {
-	const { status = "running", progress, ...run } = overrides;
+	const { status = "running", progress, isRename = false, ...run } = overrides;
 	const isTerminal = ["succeeded", "partial", "failed", "canceled", "timed_out"].includes(status);
 	return {
 		_id: RUN_ID,
@@ -168,7 +169,7 @@ function make_run(
 			userId: "user" as app_convex_Id<"users">,
 			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 			membershipLifetime: 1,
-			source: { kind: "files_transfer_run", id: run._id ?? RUN_ID, transferKind: run.kind ?? "copy", isRename: false },
+			source: { kind: "files_transfer_run", id: run._id ?? RUN_ID, transferKind: run.kind ?? "copy", isRename },
 			title: "Copy files",
 			status,
 			visibility: "requester",
@@ -1357,6 +1358,15 @@ describe("FilesTransferRunModal", () => {
 		expect(screen.getByRole("heading", { name: "Paste files" })).toBeTruthy();
 		push_run(make_run({ kind: "move" }));
 		expect(screen.getByRole("heading", { name: "Move files" })).toBeTruthy();
+	});
+
+	test("names a Rename run as a Rename, not a Move", () => {
+		queryState.run = make_run({ kind: "move", isRename: true });
+		queryState.runs = [queryState.run];
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
+		expect(screen.getByRole("heading", { name: "Rename item" })).toBeTruthy();
+		expect(within(screen.getByRole("dialog")).getByText("Renaming…")).toBeTruthy();
 	});
 
 	test("submits explicit conflict choices with their revision", async () => {

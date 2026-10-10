@@ -736,7 +736,7 @@ describe("paged review graph", () => {
 	});
 
 	// Run this slow full-size check with test:files:full-size. It has no time limit.
-	test("plans 10,001 unrelated saved Move proposals as 10,001 units", async () => {
+	test("plans 10,001 unrelated saved Move proposals as 10,001 units", { tags: ["full-size"], timeout: 0 }, async () => {
 		const costs: Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>[] = [];
 		test_spy_handler(advance, async (handler, ctx, args) => {
 			const result = await handler(ctx, args);
@@ -770,5 +770,5 @@ describe("paged review graph", () => {
 		expect(max.documentsWritten).toBeLessThan(16_000 * 0.75);
 		expect(max.bytesWritten).toBeLessThan(16 * 1024 * 1024 * 0.75);
 		console.info("Review graph transaction max", { transactions: costs.length, ...max });
-	}, 0);
+	});
 });

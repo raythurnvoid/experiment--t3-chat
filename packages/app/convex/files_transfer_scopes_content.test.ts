@@ -517,6 +517,50 @@ describe("complete folder Copy", () => {
 			expect(await ctx.db.query("files_pending_nodes").collect()).toEqual([]);
 		});
 	});
+
+	test("names a Move in the Retry refusal after it stopped before discovery", async () => {
+		const f = await fixture();
+		const created = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: f.owner.organizationId,
+			workspaceId: f.owner.workspaceId,
+			userId: f.owner.userId,
+			path: "/source/a00",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const source = await f.asUser.query(api.files_nodes.get_visible_target_by_path, {
+			membershipId: f.current.membershipId,
+			path: "/source",
+		});
+		if (!source) throw new Error("Missing source folder");
+		const started = await f.t.mutation(internal.files_transfer.start_for_agent, {
+			membershipId: f.current.membershipId,
+			threadId: f.threadId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
+			requestId: "stopped-move",
+			kind: "move",
+			expectedSourceCount: 1,
+			sources: [source.target],
+			targetParent: { kind: "root" },
+			targetPath: "/",
+			targetName: "moved",
+			missingParentNames: [],
+			conflictPolicy: { file: "replace", folder: "merge" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const args = { membershipId: f.current.membershipId, runId: started._yay.runId };
+		expect(await f.asUser.mutation(api.files_transfer.stop, args)).toEqual({ _yay: null });
+		for (let step = 0; step < 10; step++)
+			await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+
+		expect(await f.asUser.query(api.files_transfer.get, args)).toMatchObject({
+			activity: { progress: { total: null } },
+			controls: { canRetry: false },
+		});
+		expect(await f.asUser.mutation(api.files_transfer.retry_remaining, { ...args, requestId: "retry" })).toEqual({
+			_nay: { message: "This move stopped before it found all its files. Start a new move instead." },
+		});
+	});
 });
 
 describe("copy_transfer_file scopes", () => {

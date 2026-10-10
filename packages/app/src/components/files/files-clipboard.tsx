@@ -747,6 +747,9 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 			);
 		});
 
+	// A Rename runs as a one-item Move. Name it as a Rename.
+	const isRename = run?.activity.source.kind === "files_transfer_run" && run.activity.source.isRename;
+
 	const statusLabel =
 		isStopPending && !isTerminal && status !== "stopping"
 			? "Stop requested. Waiting for the server…"
@@ -764,9 +767,11 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 								: status === "awaiting_input"
 									? "Choose how to handle these files."
 									: status === "running"
-										? run.kind === "move"
-											? "Moving files…"
-											: "Copying files…"
+										? isRename
+											? "Renaming…"
+											: run.kind === "move"
+												? "Moving files…"
+												: "Copying files…"
 										: status === "stopping"
 											? "Stopping…"
 											: status === "succeeded"
@@ -853,7 +858,9 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 		>
 			<MyModalPopover className={"FilesTransferRunModal" satisfies FilesTransferRunModal_ClassNames}>
 				<MyModalHeader>
-					<MyModalHeading>{!run ? "Paste files" : run.kind === "move" ? "Move files" : "Copy files"}</MyModalHeading>
+					<MyModalHeading>
+						{!run ? "Paste files" : isRename ? "Rename item" : run.kind === "move" ? "Move files" : "Copy files"}
+					</MyModalHeading>
 					<MyModalDescription role="status">
 						{run === null ? "This operation is no longer available." : statusLabel}
 					</MyModalDescription>

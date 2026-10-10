@@ -1099,9 +1099,11 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 			? "This file became read-only, so your unsaved changes were not saved. The saved version was reloaded."
 			: filesYjs.pushRefusedReason === "permission"
 				? "You no longer have permission to edit this file. Your unsaved changes were not saved."
-				: filesYjs.pushRefusedReason === "other"
-					? "Your latest changes were not saved. The server refused the update. New edits will retry it. If this message stays, copy your changes and reload."
-					: null;
+				: filesYjs.pushRefusedReason === "moving"
+					? "This file is being moved. Your changes will save when the Move ends. Keep this tab open until then."
+					: filesYjs.pushRefusedReason === "other"
+						? "Your latest changes were not saved. The server refused the update. New edits will retry it. If this message stays, copy your changes and reload."
+						: null;
 
 	return (
 		<>
@@ -1113,7 +1115,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 				</div>
 			)}
 			{/* Network and rate-limit errors keep retrying and do not reach this alert. Show the
-			    final server refusal so the user knows why the edits stopped. */}
+			    final server refusal so the user knows why the edits stopped, and a Move wait while it retries. */}
 			{!filesYjs.loadFailed && pushRefusedMessage && (
 				<div className={"FileEditorRichText-push-refused" satisfies FileEditorRichText_ClassNames} role="alert">
 					{pushRefusedMessage}

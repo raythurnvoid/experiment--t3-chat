@@ -1,6 +1,5 @@
 import { Result } from "common/errors-as-values-utils.ts";
 import { doc } from "convex-helpers/validators";
-import type { PaginationOptions } from "convex/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
@@ -601,20 +600,6 @@ export async function files_pending_update_plans_db_get(
 	const checked = await db_get_plan(ctx, args.planId);
 	if (checked._nay) return checked;
 	return Result({ _yay: checked._yay.plan });
-}
-
-export async function files_pending_update_plans_db_list_components(
-	ctx: QueryCtx | MutationCtx,
-	args: { planId: Id<"files_pending_update_plans">; paginationOpts: PaginationOptions },
-) {
-	const checked = await db_get_plan(ctx, args.planId);
-	if (checked._nay) return checked;
-	return Result({
-		_yay: await ctx.db
-			.query("files_pending_update_plan_components")
-			.withIndex("by_plan_order", (q) => q.eq("planId", args.planId))
-			.paginate(args.paginationOpts),
-	});
 }
 
 /**

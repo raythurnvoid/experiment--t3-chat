@@ -25,10 +25,10 @@ export default defineConfig({
 		passWithNoTests: true,
 		silent: "passed-only",
 		testTimeout: 30_000,
-		// Run these slow full-size checks with test:files:full-size. A renamed test runs here again, so
-		// keep these names and the script's names in sync with the tests.
-		testNamePattern:
-			/^(?!.*(?:saves 1,000 Copy outputs beside one ordinary edit|plans 10,001 unrelated saved Move proposals as 10,001 units|moves one folder with 2001 descendants and keeps every metadata value|measures scheduled phases with maximum metadata, draft copies, shares and links)$)/,
+		// Slow full-size checks carry this tag and run only with test:files:full-size (vitest.full-size.config.ts).
+		// A tag does not depend on the test name, and `-t` cannot select a tagged test here.
+		tags: [{ name: "full-size", description: "Slow full-size checks. Run them with test:files:full-size." }],
+		tagsFilter: ["!full-size"],
 		hookTimeout: 30_000,
 		teardownTimeout: 30_000,
 		projects: [

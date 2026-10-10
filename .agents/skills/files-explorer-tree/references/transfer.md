@@ -81,7 +81,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
   indexes cover source and destination workspaces, including Copy started in another chat.
   All queue reads use exact indexed ranges. A Rename waiting for a conflict answer gives way;
   its pins and access are checked again when it resumes. Stop can cancel a queued Rename alone.
-  `list_current` and agent busy polling return bulk first, then an active Rename. The Activity
+  `list_current` and agent busy polling return bulk first, then an active Rename. A Rename waiting
+  for a conflict answer is left out, so it does not block a new Copy or Move. The Activity
   feed and returned run ID expose every queued Rename. Waiting extends the idle deadline;
   fixed Bash deadlines keep their original time.
 
@@ -330,7 +331,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
   preparation, retry, Stop, and cleanup.
 - The normal test commands omit only four checks: "saves 1,000 Copy outputs beside one ordinary
   edit", "plans 10,001 unrelated saved Move proposals as 10,001 units", the 2,001-descendant Move
-  scale check and the 16-owner overlay budget check. Run them with
+  scale check and the 16-owner overlay budget check. They carry the `full-size` tag, and
+  `vitest.config.ts` filters that tag out, so `-t` cannot pick them by accident.
+  `vitest.full-size.config.ts` flips the filter. Run them with
   `vp env exec pnpm --dir packages/app run test:files:full-size`.
   This command keeps every input and assertion. It runs the files one at a time.
   These checks write a lot of docs, so they can take hours. The Copy and

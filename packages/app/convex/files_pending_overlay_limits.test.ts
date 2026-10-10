@@ -524,9 +524,13 @@ describe("paged Move transaction budgets", () => {
 	// work in pages, so one step's cost does not grow with the owner count, the doc count or the text
 	// size. The two tests below split these sizes and reach the same peak per phase (checked once
 	// against this test).
-	test("measures scheduled phases with maximum metadata, draft copies, shares and links", async () => {
-		await measure_paged_move({ owners: MAX_DRAFT_OWNERS, keys: 128, lines: 12_000 });
-	}, 7_200_000);
+	test(
+		"measures scheduled phases with maximum metadata, draft copies, shares and links",
+		{ tags: ["full-size"], timeout: 7_200_000 },
+		async () => {
+			await measure_paged_move({ owners: MAX_DRAFT_OWNERS, keys: 128, lines: 12_000 });
+		},
+	);
 
 	// The maximum metadata with one owner. 200 lines make about 12 text chunks, more than one page of
 	// 8. A larger text only adds steps, and saving it takes most of the full test's fixture time.

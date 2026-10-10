@@ -342,3 +342,121 @@ test.each([false, true])(
 	},
 	120_000,
 );
+
+async function document_content(f: Awaited<ReturnType<typeof fixture>>, cohort: Doc<"files_move_cohorts">) {
+	const content = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_move_cohort_content")
+			.withIndex("by_cohort_proposal", (q) => q.eq("cohortId", cohort._id).eq("pendingUpdateId", f.document._id))
+			.unique(),
+	);
+	if (!content?.preparedMediaSet) throw new Error("Expected prepared document media");
+	return { ...content, preparedMediaSet: content.preparedMediaSet };
+}
+
+async function validate(f: Awaited<ReturnType<typeof fixture>>, cohort: Doc<"files_move_cohorts">) {
+	const content = await document_content(f, cohort);
+	return await test_run_with_flush(f.t, (ctx) =>
+		files_move_media_db_validate_next(ctx, {
+			cohortId: cohort._id,
+			contentId: content._id,
+			proofEpoch: cohort.proofEpoch,
+			cursor: null,
+		}),
+	);
+}
+
+test("refuses linked media the reviewer can no longer read", async () => {
+	const f = await fixture();
+	const cohort = await stage_review(f, "validating");
+	await f.t.run(async (ctx) => {
+		const target = await files_saved_placement_db_resolve_read_target(
+			ctx.db,
+			{ ...f.scope, target: f.image.target },
+			{ cohortId: cohort._id, view: "after" },
+		);
+		if (target?.kind !== "saved") throw new Error("Expected the staged media");
+		// Raw writes keep the access clocks unchanged, so only the per-file read check can refuse.
+		const ownerUserId = await ctx.db.insert("users", { clerkUserId: "cohort-media-new-owner" });
+		await ctx.db.patch("organizations", f.scope.organizationId, { ownerUserId });
+		await ctx.db.patch("files_nodes", target.id, { restrictedScopeNodeId: target.id });
+	});
+	const proof = await validate(f, cohort);
+	expect(proof._nay?.message, "linked media the reviewer cannot read stops the proof").toBe("Permission denied");
+	expect((await document_content(f, cohort)).mediaProof).toBeNull();
+	expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohort._id))).toMatchObject({
+		visibleView: "before",
+		publishedAt: null,
+	});
+}, 120_000);
+
+test("refuses linked media selected in a review unit that has not finished", async () => {
+	const f = await fixture();
+	const cohort = await stage_review(f, "validating");
+	if (cohort.origin.kind !== "review") throw new Error("Expected a review cohort");
+	const { runId, unitId } = cohort.origin;
+	await f.t.run(async (ctx) => {
+		// The planner joins these into one unit. Move the media to a waiting unit to check the guard.
+		const unit = await ctx.db.get("files_pending_update_run_units", unitId);
+		if (!unit) throw new Error("Expected the review unit");
+		const { _id: _unitId, _creationTime: _unitTime, ...rest } = unit;
+		const waitingId = await ctx.db.insert("files_pending_update_run_units", {
+			...rest,
+			order: unit.order + 1,
+			cohortId: null,
+			status: "waiting",
+		});
+		const item = await ctx.db
+			.query("files_pending_update_run_items")
+			.withIndex("by_run_target", (q) =>
+				q.eq("runId", runId).eq("target.kind", f.image.target.kind).eq("target.id", f.image.target.id),
+			)
+			.unique();
+		if (!item) throw new Error("Expected the media review item");
+		await ctx.db.patch("files_pending_update_run_items", item._id, { unitId: waitingId });
+	});
+	const proof = await validate(f, cohort);
+	expect(proof._nay?.name, "media from an unfinished unit stops the proof").toBe("needs_review");
+	expect((await document_content(f, cohort)).mediaProof).toBeNull();
+}, 120_000);
+
+test.each(["finish", "abort"] as const)(
+	"hands the prepared media set to cleanup when the Move ends (%s)",
+	async (end) => {
+		const f = await fixture();
+		let cohort = await stage_review(f, end === "finish" ? "ready" : "validating");
+		const content = await document_content(f, cohort);
+		if (end === "abort") {
+			const image = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_move_cohort_content")
+					.withIndex("by_cohort_proposal", (q) => q.eq("cohortId", cohort._id).eq("pendingUpdateId", f.image._id))
+					.unique(),
+			);
+			if (!image?.afterAssetId) throw new Error("Expected staged media");
+			// A lost hold fails the final proof, so the Move aborts.
+			await f.t.run(async (ctx) => {
+				const hold = await ctx.db
+					.query("files_private_storage_reservations")
+					.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", image.afterAssetId!))
+					.unique();
+				await ctx.db.delete("files_private_storage_reservations", hold!._id);
+			});
+		}
+		for (let pass = 0; pass < 2_000 && cohort.phase !== "complete"; pass++) {
+			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohort._id)))!;
+		}
+		expect(cohort).toMatchObject({ phase: "complete", publishedAt: end === "finish" ? expect.any(Number) : null });
+		expect((await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", content._id)))?.preparedMediaSet).toBeNull();
+		expect(
+			(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", content.preparedMediaSet.setId)))?.owner,
+			"the ended Move hands its media set to cleanup",
+		).toEqual({ kind: "cleanup" });
+		await f.t.mutation(internal.files_media_dependencies.cleanup_set, { setId: content.preparedMediaSet.setId });
+		expect(
+			await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", content.preparedMediaSet.setId)),
+		).toBeNull();
+	},
+	120_000,
+);

@@ -739,6 +739,40 @@ describe("Rename at a group boundary", () => {
 		await test_finish_transfer_run(asUser, second._yay.runId);
 	});
 
+	test("lets a new Copy start while a Rename waits on a conflict", async () => {
+		const fixture = await create_folder_fixture(["/source", "/one", "/two"]);
+		const { db, asUser, folders } = fixture;
+		const first = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			requestId: "paused-first-rename",
+			nodeId: folders.get("/one")!,
+			path: "renamed",
+		});
+		vi.setSystemTime(Date.now() + 1);
+		const second = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			requestId: "paused-second-rename",
+			nodeId: folders.get("/two")!,
+			path: "renamed",
+		});
+		if (!first._yay || !second._yay) throw new Error("Expected both Renames");
+		await test_finish_transfer_run(asUser, first._yay.runId);
+		await test_finish_transfer_run(asUser, second._yay.runId);
+		// The Activity card opens the paused Rename through get, so it does not need list_current.
+		expect(
+			await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: second._yay.runId }),
+		).toMatchObject({ activity: { status: "awaiting_input" }, conflicts: [{ kind: "destination_changed" }] });
+		expect(await asUser.query(api.files_transfer.list_current, { membershipId: db.membershipId })).toEqual([]);
+		const copy = await start_transfer(asUser, {
+			membershipId: db.membershipId,
+			requestId: "copy-during-paused-rename",
+			kind: "copy",
+			sourceIds: [folders.get("/source")!],
+			targetParentId: folders.get("/target")!,
+		});
+		expect(copy._nay, "a paused Rename gives way to a new Copy").toBeUndefined();
+	});
+
 	test("stops a queued Rename without stopping the Copy and retries Rename through its own queue", async () => {
 		const fixture = await create_folder_fixture(["/source", "/other"]);
 		const { t, db, asUser, folders } = fixture;

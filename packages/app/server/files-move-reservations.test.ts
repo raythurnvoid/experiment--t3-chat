@@ -566,6 +566,37 @@ describe("Move write reservations", () => {
 		expect(waiter?.worker).toEqual({ kind: "content", id: job._id, userId: f.db.userId });
 	});
 
+	test("refuses a live editor push on a file held by a Move with move_busy", async () => {
+		const f = await fixture();
+		if (!f.saved.yjsLastSequenceId) throw new Error("Expected saved fixture input");
+		await f.t.run((ctx) =>
+			ctx.db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source: { kind: "saved", id: f.nodeId },
+				mode: "placement",
+				userId: null,
+				generation: 1,
+			}),
+		);
+		const before = await f.t.run((ctx) => ctx.db.get("files_yjs_docs_last_sequences", f.saved.yjsLastSequenceId!));
+		const doc = new YjsDoc();
+		doc.getText(files_YJS_DOC_KEYS.plainText).insert(0, "typed during the Move");
+		const push = await f.asUser
+			.mutation(api.files_nodes.yjs_push_update, {
+				membershipId: f.db.membershipId,
+				nodeId: f.nodeId,
+				expectedYjsLastSequenceId: f.saved.yjsLastSequenceId,
+				update: files_u8_to_array_buffer(encodeStateAsUpdate(doc)),
+				sessionId: "editor-during-move",
+			})
+			.catch((error: unknown) => error);
+		doc.destroy();
+		// A thrown error would look like a network error to the editor, which then retries with no message.
+		expect(push, "the push answers move_busy instead of throwing").toMatchObject({ _nay: { name: "move_busy" } });
+		const after = await f.t.run((ctx) => ctx.db.get("files_yjs_docs_last_sequences", f.saved.yjsLastSequenceId!));
+		expect(after?.lastSequence).toBe(before?.lastSequence);
+	});
+
 	test("a native accepted Yjs cleanup waits before history and old asset cleanup", async () => {
 		// The fixture holds the Move slot, and a Save waits for it. Create the file before that.
 		const f = await fixture({ normalPaths: ["/cleanup.txt"] });
