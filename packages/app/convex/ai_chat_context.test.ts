@@ -161,7 +161,7 @@ const skillText = "---\nname: example\ndescription: Saved description\n---\nSKIL
 describe("discover_sources", () => {
 	test("discovers both roots but no third workspace or another user's home", async () => {
 		const f = await fixture();
-		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		const fileId = await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
 		await f.create({
 			path: "/.agents/skills/example/SKILL.md",
 			textContent: skillText.replace("Saved description", "Home description"),
@@ -173,11 +173,30 @@ describe("discover_sources", () => {
 		const other = await f.t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
 		);
-		for (const membershipId of [third.membershipId, other.membershipId])
-			await test_create_saved_text_file(f.t, {
-				membershipId,
-				path: "/.agents/skills/secret/SKILL.md",
-				textContent: "PRIVATE_OTHER_WORKSPACE",
+		// Clone the saved skill's rows to `/.agents/skills/secret/SKILL.md` in each other workspace.
+		// Discovery reads paths and access, not the content, and each real Save costs seconds.
+		for (const membership of [third, other])
+			await f.t.run(async (ctx) => {
+				const chain = [(await ctx.db.get("files_nodes", fileId))!];
+				while (chain[0]!.parentId !== files_ROOT_ID)
+					chain.unshift((await ctx.db.get("files_nodes", chain[0]!.parentId))!);
+				let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
+				for (const { _id, _creationTime, ...node } of chain) {
+					const name = node.name === "example" ? "secret" : node.name;
+					const path = node.path.replace("/example", "/secret");
+					parentId = await ctx.db.insert("files_nodes", {
+						...node,
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						createdBy: membership.userId,
+						updatedBy: membership.userId,
+						parentId,
+						name,
+						sortName: files_sort_text_key(name),
+						path,
+						treePath: node.treePath.replace("/example", "/secret"),
+					});
+				}
 			});
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
 		expect(found._yay?.workspaces.map((root) => root.workspaceId)).toEqual([
@@ -191,8 +210,8 @@ describe("discover_sources", () => {
 		const system = await f.system();
 		expect(system).toContain("Saved description");
 		expect(system).toContain("Home description");
-		expect(system).not.toMatch(/secret|PRIVATE_OTHER_WORKSPACE/u);
-	});
+		expect(system).not.toMatch(/secret/u);
+	}, 60_000);
 
 	test("scans personal home once when it is also current", async () => {
 		const f = await fixture(true);
@@ -386,8 +405,9 @@ describe("discover_sources", () => {
 			await ctx.db.patch("files_nodes", parentId, { restrictedScopeNodeId: parentId });
 			return parentId;
 		});
-		// Folders the member cannot read, in batches that fit one transaction.
-		for (let batch = 0; batch < 10; batch++) {
+		// Folders the member cannot read, in batches that fit one transaction. Reading 12,000 of them is
+		// about 13 MB, just past the 12 MiB list budget. 9,000 stay under it.
+		for (let batch = 0; batch < 4; batch++) {
 			await f.t.run(async (ctx) => {
 				const { _id, _creationTime, ...fields } = (await ctx.db.get("files_nodes", folderId))!;
 				for (let index = batch * 3_000; index < (batch + 1) * 3_000; index++) {

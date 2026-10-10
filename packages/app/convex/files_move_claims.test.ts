@@ -46,19 +46,22 @@ test("saved Moves refresh more than 32 native private name claims in one flush",
 	const nodeId = await folder(sourceId, "shared");
 
 	// Drain due work only. Jumping to expiry would discard the drafts under test.
+	// A one-item Move with no owner work takes about 80 steps. Stop well before a long drain: the
+	// drain never yields to the event loop, so the test timeout fires only minutes after it is due.
 	const settle = async () => {
-		for (let step = 0; step < 10_000; step++) {
+		let due: string[] = [];
+		for (let step = 0; step < 250; step++) {
 			await t.finishInProgressScheduledFunctions();
 			const now = Date.now();
-			const due = await t.run(async (ctx) =>
-				(await ctx.db.system.query("_scheduled_functions").collect()).some(
-					(job) => job.state.kind === "pending" && job.scheduledTime <= now,
-				),
+			due = await t.run(async (ctx) =>
+				(await ctx.db.system.query("_scheduled_functions").collect())
+					.filter((job) => job.state.kind === "pending" && job.scheduledTime <= now)
+					.map((job) => job.name),
 			);
-			if (!due) return;
+			if (due.length === 0) return;
 			vi.advanceTimersToNextTimer();
 		}
-		throw new Error("Scheduled functions did not settle");
+		throw new Error(`Scheduled functions did not settle in 250 steps, still due: ${due.join(", ")}`);
 	};
 	await settle();
 
@@ -195,6 +198,8 @@ test("saved Moves refresh more than 32 native private name claims in one flush",
 		measuring = true;
 		await move(otherId);
 		measuring = false;
+		// Fail here, not after the slower second round, when no transfer step moved the node.
+		expect(costs.at(-1)?.owners, "the transfer step that moves the node records its cost").toBe(total);
 		expect(await hides(), "the claim ends after the saved node moves away").toHaveLength(0);
 	}
 
