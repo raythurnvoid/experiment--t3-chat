@@ -321,8 +321,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.
 - `convex/files_pending_update_runs*.test.ts`: selected connected units, transaction bounds,
   preparation, retry, Stop, and cleanup.
-- The normal test commands omit only the 1,001-input Copy/Move completion check and the
-  10,001-unit planner check. Run both with
+- The normal test commands omit only two Save checks: "saves 1,000 Copy outputs beside one
+  ordinary edit" and "plans 10,001 unrelated saved Move proposals as 10,001 units". Run both with
   `vp env exec pnpm --dir packages/app run test:files:full-size`.
   This command keeps every input and assertion. It runs the two files one at a time.
   The test database scans stored docs, so these checks can take many hours. They have no

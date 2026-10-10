@@ -989,7 +989,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 - Root create, upload, and folder import controls stay disabled unless the destination is writable. The header "Archive N selected" action needs at least one writable selected row, like the row menu. The backend refuses each selected item that is unwritable or holds an unwritable item, lists a selected item that is gone as "Not found", and archives the rest, like `rm` with several files. The Archive dialog shows the refusal inline and stays open only when the request's own check refuses every item.
 - Folder create can create child files/folders.
 - File rows do not show child creation actions and are not expandable.
-- Rename guards and optimistic rename behavior are correct.
+- Rename guards are correct. Rename opens a Move Activity, and the new name shows when the Move publishes.
 - Archive/unarchive and archived filter/toggle behavior is correct.
 - DnD allows legal moves, blocks drops onto files, and root-zone feedback works.
 - A viewer cannot start keyboard rename or drag a row. Read-only root and folder screens disable create, README, upload, import, archive, and drop controls.

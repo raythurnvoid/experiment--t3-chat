@@ -797,6 +797,43 @@ describe("review jobs", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 
+	test("accepts a delete of x and a move of y onto the name x in one unit", async () => {
+		const f = await fixture();
+		const xId = await saved_folder(f, "x");
+		const yId = await saved_folder(f, "y");
+		expect(
+			(
+				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					...f.scope,
+					target: { kind: "saved", id: xId },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					...f.scope,
+					target: { kind: "saved", id: yId },
+					destParent: { kind: "root" },
+					destName: "x",
+				})
+			)._nay,
+		).toBeUndefined();
+		const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
+
+		const { runId } = await start_review({ f, kind: "accept", proposals });
+		const result = await finish_review(f, runId);
+
+		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2 } });
+		expect(result?.run).toMatchObject({ unitCount: 1, finishedUnitCount: 1 });
+		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+		expect(saved.map((node) => [node._id, node.path, node.archiveOperationId !== null])).toEqual([
+			[xId, "/x", true],
+			[yId, "/x", false],
+		]);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
+	});
+
 	test("a reviewed delete of a folder with many side docs archives its first step within the unit budget", async () => {
 		const f = await fixture();
 		const parentId = await saved_folder(f, "big");

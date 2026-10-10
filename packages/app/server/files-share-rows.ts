@@ -103,6 +103,21 @@ export async function files_share_rows_db_compute_for_grant(
 }
 
 /**
+ * The node each share row copies: the node itself, or its before and after places while a Move holds
+ * it. A before place is null for a node the Move creates.
+ */
+async function db_get_placed_nodes(db: QueryCtx["db"], node: Doc<"files_nodes">) {
+	const cohortId = node.moveCohortId;
+	if (!cohortId) return [{ placed: node, moveView: undefined }];
+	return await Promise.all(
+		(["before", "after"] as const).map(async (view) => ({
+			placed: await files_saved_placement_db_get_node(db, node._id, { cohortId, view }),
+			moveView: { cohortId, view },
+		})),
+	);
+}
+
+/**
  * Current grants apply to both candidates, even before the Move is published.
  */
 export async function files_share_rows_db_compute_all_for_grant(
@@ -113,13 +128,9 @@ export async function files_share_rows_db_compute_all_for_grant(
 	const nodeId = db.normalizeId("files_nodes", grant.resourceId);
 	const node = nodeId && (await db.get("files_nodes", nodeId));
 	if (!node) return [];
-	if (!node.moveCohortId) {
-		const row = share_row_of(node, grant);
-		return row ? [row] : [];
-	}
 	const rows: ShareRow[] = [];
-	for (const view of ["before", "after"] as const) {
-		const row = await files_share_rows_db_compute_for_grant(db, grant, { cohortId: node.moveCohortId, view });
+	for (const { placed, moveView } of await db_get_placed_nodes(db, node)) {
+		const row = placed && share_row_of(placed, grant, moveView);
 		if (row) rows.push(row);
 	}
 	return rows;
@@ -232,9 +243,13 @@ export async function files_share_rows_db_sync_node(
 					.eq("permission", "content.read"),
 			)
 			.collect();
+		// Read the placed nodes once. A long name in a Move would make a read per grant too large.
+		const placedNodes = await db_get_placed_nodes(db, node);
 		for (const grant of grants)
-			for (const row of await files_share_rows_db_compute_all_for_grant(db, grant))
-				desiredByGrant.set(row_key(row), row);
+			for (const { placed, moveView } of placedNodes) {
+				const row = placed && share_row_of(placed, grant, moveView);
+				if (row) desiredByGrant.set(row_key(row), row);
+			}
 	}
 
 	const stored = await db

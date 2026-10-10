@@ -6700,8 +6700,9 @@ export const get_folder_readme = query({
 			return null;
 		}
 
+		const prefixes = ["REA", "REa", "ReA", "Rea", "rEA", "rEa", "reA", "rea"];
 		const candidateLists = await Promise.all(
-			["REA", "REa", "ReA", "Rea", "rEA", "rEa", "reA", "rea"].map((prefix) =>
+			prefixes.map((prefix) =>
 				ctx.db
 					.query("files_nodes")
 					.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) => {
@@ -6720,11 +6721,44 @@ export const get_folder_readme = query({
 			),
 		);
 
+		// A Move takes its files out of the normal docs until it ends. Read the same ranges on the places
+		// of the view that readers see now, so a README that the Move holds stays visible.
+		const view = await files_saved_placement_db_get_view(ctx.db, membership);
+		const selected = view.cohortId && view.view ? { cohortId: view.cohortId, view: view.view } : null;
+		const placeLists = selected
+			? await Promise.all(
+					prefixes.map(async (prefix) => {
+						const places = await ctx.db
+							.query("files_saved_places")
+							.withIndex("by_view_parent_archive_kind_name", (q) => {
+								const range = q
+									.eq("cohortId", selected.cohortId)
+									.eq("view", selected.view)
+									.eq("parentId", args.folderId)
+									.eq("archiveOperationId", null)
+									.eq("kind", "file")
+									.gte("name", prefix);
+								const upperBound = string_prefix_upper_bound(prefix);
+								return upperBound === null ? range : range.lt("name", upperBound);
+							})
+							.take(50);
+						const nodes = await Promise.all(
+							places.map((place) => files_saved_placement_db_get_node(ctx.db, place.nodeId, selected)),
+						);
+						return nodes.filter((node) => node !== null);
+					}),
+				)
+			: [];
+
+		// Both sources give README names in plain ASCII, so a string sort keeps the byte order.
+		const candidates = [...candidateLists.flat(), ...placeLists.flat()]
+			.filter((fileNode) => fileNode.name.toLowerCase() === "readme.md")
+			.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 		const readmes = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
-			nodes: candidateLists.flat().filter((fileNode) => fileNode.name.toLowerCase() === "readme.md"),
+			nodes: candidates,
 			hasWorkspaceRead,
 		});
 		if (readmes.length === 0) {

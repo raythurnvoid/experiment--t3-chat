@@ -352,8 +352,10 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 				}[displayStatus];
 	const stopLabel = reviewRun
 		? "Stop and keep completed changes"
-		: transferRun && (progress?.completed ?? 0) > 0 && transferRun.transferKind === "copy"
-			? "Stop and keep completed copies"
+		: transferRun && (progress?.completed ?? 0) > 0
+			? transferRun.transferKind === "move"
+				? "Stop and keep completed moves"
+				: "Stop and keep completed copies"
 			: "Stop";
 
 	const isAwaitingInput = activity.status === "awaiting_input";
