@@ -1,6 +1,7 @@
 # Plugin backend execution checks
 
-Use the published `raythurnvoid/bonobo-plugin-data-probe` fixture. Version 0.4.0 keeps
+Use the published `raythurnvoid/bonobo-plugin-data-probe` fixture. Version 0.4.1 accepts
+404 for the hidden folder list. Version 0.4.0 keeps
 the response and PNG cases and adds scheduled permission checks. Version 0.3.0 added
 the MCP fixture and skill. Publish through the normal reviewed-SHA flow. Keep existing
 service accounts, grants, upload settings, and store docs when updating an installation.
@@ -58,8 +59,10 @@ makes no API calls. The checks use public APIs and the selected user's real self
    that the saved bytes do not have. Compare privately; do not change the file to fix the hash.
    The owner control must reach the denied-file read with 200, then fail the named success
    check. With the same YAML, the user run must succeed with four finished calls: list 200,
-   allowed read 200 with the expected bytes, denied read 404 `not_found`, and list 200.
-   The reviewed fixture checks that the last list is empty. Save or assignment makes the
+   allowed read 200 with the expected bytes, denied read 404 `not_found`, and a list of the
+   hidden folder that answers 404 `not_found`. The call ledger records the last two as failed
+   calls; the run still succeeds. 0.4.0 needs that list to be 200 and empty, so update to
+   0.4.1 before this check. Save or assignment makes the
    schedule due now; select the fresh root created after that action, not an older result.
 5. For `revoke-hold`, start the private, bounded runner log watch before saving settings.
    Confirm the new run is running and its `scheduled-waiting` KV marker exists. The selected

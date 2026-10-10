@@ -136,8 +136,12 @@ describe("crypto_seal_cursor", () => {
 
 	test("keeps the same length for short and long paths", async () => {
 		const seal = (value: string) =>
-			crypto_seal_cursor({ purpose: "files_list", scope, payload: { lastKey: { ...payload.lastKey, value } } });
-		expect((await seal("/a")).length).toBe((await seal(`/${"a".repeat(120)}`)).length);
+			crypto_seal_cursor({
+				purpose: "files_list",
+				scope,
+				payload: { lastKey: { createdAt: 1760000000000.123, nodeId: "k".repeat(32), value } },
+			});
+		expect((await seal("/a")).length).toBe((await seal(`/${"a".repeat(880)}`)).length);
 	});
 
 	test("opens cursors of the previous secret after a rotation, and refuses an unknown secret", async () => {
@@ -146,7 +150,7 @@ describe("crypto_seal_cursor", () => {
 		// The module reads the secrets once at load, so load it again after each change.
 		vi.resetModules();
 		vi.stubEnv("LIST_CURSOR_SECRET_PREVIOUS", process.env.LIST_CURSOR_SECRET);
-		vi.stubEnv("LIST_CURSOR_SECRET", "LIST_CURSOR_SECRET_ROTATED");
+		vi.stubEnv("LIST_CURSOR_SECRET", "LIST_CURSOR_SECRET_ROTATED_AT_LEAST_32_CHARS");
 		const rotated = await import("./crypto-utils.ts");
 		expect(await rotated.crypto_open_cursor({ purpose: "files_list", scope, cursor })).toEqual(payload);
 
@@ -160,5 +164,18 @@ describe("crypto_seal_cursor", () => {
 		vi.resetModules();
 		vi.stubEnv("LIST_CURSOR_SECRET", "");
 		await expect(import("./crypto-utils.ts")).rejects.toThrow("LIST_CURSOR_SECRET is not set");
+	});
+
+	test("fails to load with a short secret", async () => {
+		vi.resetModules();
+		vi.stubEnv("LIST_CURSOR_SECRET", "a".repeat(31));
+		await expect(import("./crypto-utils.ts")).rejects.toThrow("LIST_CURSOR_SECRET must be at least 32 characters");
+
+		vi.resetModules();
+		vi.stubEnv("LIST_CURSOR_SECRET", "a".repeat(32));
+		vi.stubEnv("LIST_CURSOR_SECRET_PREVIOUS", "b".repeat(31));
+		await expect(import("./crypto-utils.ts")).rejects.toThrow(
+			"LIST_CURSOR_SECRET_PREVIOUS must be at least 32 characters",
+		);
 	});
 });

@@ -35,7 +35,8 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 					[method]: ((/* iife */) => {
 						const bodyValidator = z.object({
 							path: z.string().optional(),
-							cursor: z.string().nullable().optional(),
+							// A real cursor is about 1.4 KB. The cap stops a huge string before the server decodes it.
+							cursor: z.string().max(16384).nullable().optional(),
 							limit: z.number().int().min(1).optional(),
 							// Accepted and ignored: the type filter reads an index, so there is no scan budget.
 							scanLimit: z.number().int().min(1).optional(),

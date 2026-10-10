@@ -118,11 +118,18 @@ export async function crypto_decrypt_secret_value(args: {
 if (!process.env.LIST_CURSOR_SECRET) {
 	throw convex_error({ message: "LIST_CURSOR_SECRET is not set in Convex env" });
 }
+// 32 random bytes as hex is 64 characters. A short value is a typo or a weak secret.
+if (process.env.LIST_CURSOR_SECRET.length < 32) {
+	throw convex_error({ message: "LIST_CURSOR_SECRET must be at least 32 characters" });
+}
 const LIST_CURSOR_SECRET = process.env.LIST_CURSOR_SECRET;
 /**
  * Optional. After a rotation, keep the old secret here for a while, so cursors sealed with it still open.
  */
 const LIST_CURSOR_SECRET_PREVIOUS = process.env.LIST_CURSOR_SECRET_PREVIOUS || null;
+if (LIST_CURSOR_SECRET_PREVIOUS && LIST_CURSOR_SECRET_PREVIOUS.length < 32) {
+	throw convex_error({ message: "LIST_CURSOR_SECRET_PREVIOUS must be at least 32 characters" });
+}
 
 /**
  * Each cursor kind gets its own key, so a cursor of one kind never opens as another kind.
@@ -172,8 +179,9 @@ export async function crypto_seal_cursor(args: { purpose: CursorPurpose; scope: 
 
 	const { current } = await cursor_crypto_keys(purpose);
 	const json = text_encoder.encode(JSON.stringify(payload));
-	// Pad with spaces to a multiple of 256 bytes. Then the cursor length does not tell how long a hidden path is.
-	const plaintext = new Uint8Array(Math.ceil(json.length / 256) * 256).fill(0x20);
+	// Pad with spaces to a multiple of 1 KiB. The JSON around the path is about 100 bytes, so the cursor
+	// length does not tell how long a hidden path is, up to about 900 bytes.
+	const plaintext = new Uint8Array(Math.ceil(json.length / 1024) * 1024).fill(0x20);
 	plaintext.set(json);
 	const nonce = crypto.getRandomValues(new Uint8Array(12));
 	const ciphertext = await crypto.subtle.encrypt(
@@ -208,6 +216,8 @@ export async function crypto_open_cursor(args: { purpose: CursorPurpose; scope: 
 		const bytes = Uint8Array.from(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")), (char) =>
 			char.charCodeAt(0),
 		);
+		// Key id, nonce, and the 16-byte GCM tag. A shorter cursor was cut.
+		if (bytes.length < 4 + 12 + 16) return null;
 		const kid = bytes.subarray(0, 4);
 		const sealer = [keys.current, keys.previous].find((item) => item?.kid.every((byte, index) => byte === kid[index]));
 		if (!sealer) return null;

@@ -6,7 +6,12 @@ import { api, internal } from "./_generated/api.js";
 import { getFunctionName } from "convex/server";
 import { public_api_http_read_bytes, public_api_http_read_file, public_api_http_read_many } from "./public_api.ts";
 import * as publicApiHttpAuth from "./public_api_http_auth.ts";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_mocks_fill_db_with,
+	test_save_file_pending_update,
+} from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 const tokens = { current: "a".repeat(64), personal: "b".repeat(64) };
@@ -449,6 +454,66 @@ describe("two-root code grants", () => {
 			}
 		},
 	);
+
+	test("list rechecks the source before it refuses a folder", async () => {
+		const f = await fixture();
+		await f.file({ workspace: "personal" });
+		await f.mint();
+		const list = async (path: string) => {
+			const response = await f.request({ workspace: "personal", route: "list", body: { path } });
+			return [response.status, await response.json()];
+		};
+		expect(await list("/data.txt")).toEqual([400, { message: "Path must point to a folder: /data.txt" }]);
+
+		// The auth step calls this function inside its own module, so the spy sees only the route's recheck.
+		const resolve = publicApiHttpAuth.public_api_resolve_live_principal;
+		const recheck = vi
+			.spyOn(publicApiHttpAuth, "public_api_resolve_live_principal")
+			.mockImplementation(async (ctx, args) => {
+				await f.t.run((ctx) => ctx.db.patch("ai_chat_threads", f.source.threadId, { archived: true }));
+				return resolve(ctx, args);
+			});
+		expect(await list("/data.txt"), "a lost source must not learn that the path is a file").toEqual([
+			404,
+			{ message: "File unavailable" },
+		]);
+		expect(recheck).toHaveBeenCalledTimes(1);
+	});
+
+	test("list answers 404 for a folder that is only the source user's draft", async () => {
+		const f = await fixture();
+		await f.mint();
+		const list = async () => {
+			const response = await f.request({ workspace: "personal", route: "list", body: { path: "/drafts" } });
+			return [response.status, await response.json()];
+		};
+		const draft = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: f.roots.personal.organizationId,
+			workspaceId: f.roots.personal.workspaceId,
+			userId: f.actor.userId,
+			agentSource: f.source,
+			threadId: f.source.threadId,
+			path: "/drafts",
+			kind: "folder",
+		});
+		if (draft._nay || !draft._yay.pendingUpdateId) throw new Error("Expected a folder draft");
+		expect(await list(), "the folder lookup reads saved files only").toEqual([
+			404,
+			{ message: "Folder not found: /drafts" },
+		]);
+
+		const saved = await test_save_file_pending_update(
+			f.t.withIdentity({ issuer: "https://clerk.test", external_id: f.actor.userId }),
+			{
+				membershipId: f.roots.personal.membershipId,
+				target: draft._yay.target,
+				pendingUpdateId: draft._yay.pendingUpdateId,
+				reviewedRevision: 1,
+			},
+		);
+		expect(saved._nay).toBeUndefined();
+		expect(await list()).toEqual([200, expect.objectContaining({ items: [], isDone: true })]);
+	});
 
 	test.each(["read", "read-many"] as const)(
 		"%s suppresses missing-file results after source re-invitation",

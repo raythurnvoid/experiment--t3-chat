@@ -4035,6 +4035,17 @@ describe("files list hidden paths", () => {
 			status: 400,
 			body: { message: "This list cursor changed. Start a new page." },
 		});
+		// A plain JSON cursor from before the seal, like a caller may still hold after the deploy.
+		const old = JSON.stringify({ scope: "[]", lastKey: { value: "/b.md", createdAt: 0, nodeId: "node" } });
+		expect(await list(t, f.memberCredential, { path: "/", recursive: true, limit: 1, cursor: old })).toEqual({
+			status: 400,
+			body: { message: "This list cursor changed. Start a new page." },
+		});
+		const huge = await list(t, f.memberCredential, { path: "/", cursor: `c1.${"A".repeat(16384)}` });
+		expect(huge, "the body check refuses an over-long cursor before the server decodes it").toEqual({
+			status: 400,
+			body: { message: "Request body validation failed" },
+		});
 	});
 
 	test("answers 404 for a missing or hidden folder and 400 for a readable file", async () => {

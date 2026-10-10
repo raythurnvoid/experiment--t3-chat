@@ -104,7 +104,7 @@ if (!process.env.MCP_SECRETS_ENCRYPTION_KEY) {
 	process.env.MCP_SECRETS_ENCRYPTION_KEY = "MCP_SECRETS_ENCRYPTION_KEY_TEST";
 }
 if (!process.env.LIST_CURSOR_SECRET) {
-	process.env.LIST_CURSOR_SECRET = "LIST_CURSOR_SECRET_TEST";
+	process.env.LIST_CURSOR_SECRET = "LIST_CURSOR_SECRET_TEST_AT_LEAST_32_CHARS";
 }
 if (!process.env.APP_BASE_URL) {
 	process.env.APP_BASE_URL = "https://app.press.test";
