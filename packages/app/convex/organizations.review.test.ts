@@ -13,10 +13,10 @@ describe("tenant deletion with many direct file grants", () => {
 		test(`delete_${scope} accepts a tenant with more file grants than one transaction can write`, async () => {
 			vi.useFakeTimers();
 			// Convex allows 16,000 written docs and 4,096 index ranges per transaction. Lower both limits,
-			// so 1,200 grants cross them the same way 16,200 grants cross the real ones, without a slow fixture.
-			// The range limit stays above the overlay flush, which needs a few hundred ranges at any size, so
-			// only a read per grant goes over it.
-			const t = test_convex({ transactionLimits: { documentsWritten: 250, databaseQueries: 800 } });
+			// so 1,800 grants cross them the same way 16,200 grants cross the real ones, without a slow fixture.
+			// The range limit stays above the overlay flush of one deletion step (more than 1,100 and less than
+			// 1,500 ranges with 250 written docs), so only a read per grant goes over it.
+			const t = test_convex({ transactionLimits: { documentsWritten: 250, databaseQueries: 1600 } });
 			const fixture = await t.run(async (ctx) => {
 				const ownerId = await ctx.db.insert("users", { clerkUserId: `review-${scope}-owner` });
 				const membership = await test_mocks_fill_db_with.membership(ctx, {
@@ -49,7 +49,7 @@ describe("tenant deletion with many direct file grants", () => {
 
 			// Each folder has one direct member share. The 50-file role cap does not apply.
 			// Seed in small transactions, with the same three docs as a real Can manage share.
-			for (let start = 0; start < 400; start += 25) {
+			for (let start = 0; start < 600; start += 25) {
 				await t.run(async (ctx) => {
 					for (let index = start; index < start + 25; index += 1) {
 						const name = `shared-${index}`;
@@ -113,7 +113,7 @@ describe("tenant deletion with many direct file grants", () => {
 					.collect();
 				return { grantCount: grants.length, firstGrant: grants[0]! };
 			});
-			expect(grantCount).toBe(1200);
+			expect(grantCount).toBe(1800);
 			// Deleting every grant in one transaction, like phase 1 once did, goes over the limit.
 			await expect(
 				t.run(async (ctx) => {
