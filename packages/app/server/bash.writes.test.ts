@@ -3,14 +3,13 @@ import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
-import { r2, r2_server_side_copy } from "../convex/r2_client.ts";
+import { r2_server_side_copy } from "../convex/r2_client.ts";
 import {
 	test_save_file_pending_update,
 	test_apply_file_pending_move,
 	test_convex,
 	test_mocks_fill_db_with,
 } from "../convex/setup.test.ts";
-import { bash_run_command } from "./bash.ts";
 import {
 	bash_COMMAND_EXIT_CANNOT_EXECUTE,
 	bash_COMMAND_EXIT_NOT_FOUND,

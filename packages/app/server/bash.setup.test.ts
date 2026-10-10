@@ -11,7 +11,7 @@ import { ai_chat_runs_db_begin, ai_chat_runs_db_insert_node } from "../convex/ai
 import { organizations_membership_lifetimes_db_ensure } from "../convex/organizations_membership_lifetimes.ts";
 import { files_db_yjs_push_update } from "../convex/files_nodes.ts";
 import { db_insert_file_text_content } from "../convex/files_nodes_content.ts";
-import { r2, r2_confirmed_object_delete } from "../convex/r2_client.ts";
+import { r2_confirmed_object_delete } from "../convex/r2_client.ts";
 import {
 	test_save_file_pending_update,
 	test_finish_pending_update_run,
