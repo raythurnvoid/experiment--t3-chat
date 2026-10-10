@@ -56,6 +56,7 @@ import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_slot,
+	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import {
 	files_pending_nodes_db_create,
@@ -2597,22 +2598,40 @@ export const resolve_conflicts = mutation({
 				)
 					return Result({ _nay: { message: "The destination changed. Review it again." } });
 				// A Move replaces only an empty folder. Refuse here, so the item keeps Keep both and Skip.
-				if (
-					current.kind === "saved" &&
-					current.node.kind === "folder" &&
-					(await ctx.db
+				if (current.kind === "saved" && current.node.kind === "folder") {
+					const folder = current.node;
+					const child = await ctx.db
 						.query("files_nodes")
 						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 							q
-								.eq("organizationId", current.node.organizationId)
-								.eq("workspaceId", current.node.workspaceId)
+								.eq("organizationId", folder.organizationId)
+								.eq("workspaceId", folder.workspaceId)
 								.eq("moveCohortId", undefined)
-								.eq("parentId", current.node._id)
+								.eq("parentId", folder._id)
 								.eq("archiveOperationId", null),
 						)
-						.first())
-				)
-					return Result({ _nay: { message: "Cannot replace a folder that is not empty. Keep both or skip it." } });
+						.first();
+					// Another Move takes its children out of the normal docs until it ends. Check the places of
+					// the view that readers see now too, or a full folder would look empty.
+					const view = child ? null : await files_saved_placement_db_get_view(ctx.db, folder);
+					const cohortId = view?.cohortId;
+					const moveView = view?.view;
+					const placedChild =
+						cohortId && moveView
+							? await ctx.db
+									.query("files_saved_places")
+									.withIndex("by_view_parent_archive_name", (q) =>
+										q
+											.eq("cohortId", cohortId)
+											.eq("view", moveView)
+											.eq("parentId", folder._id)
+											.eq("archiveOperationId", null),
+									)
+									.first()
+							: null;
+					if (child || placedChild)
+						return Result({ _nay: { message: "Cannot replace a folder that is not empty. Keep both or skip it." } });
+				}
 			}
 		}
 
@@ -3430,7 +3449,14 @@ async function db_commit_move(args: {
 				userId: run.userId,
 				scopes: [run.sourceScope],
 			});
-			validation = { itemId: item._id, treePath: source.treePath, cursor: null, versions: pins.versions, done: false };
+			// The check proves access only. A new file elsewhere must not restart it.
+			validation = {
+				itemId: item._id,
+				treePath: source.treePath,
+				cursor: null,
+				versions: pins.accessVersions,
+				done: false,
+			};
 		}
 		if (!validation.done) {
 			const page = await ctx.db

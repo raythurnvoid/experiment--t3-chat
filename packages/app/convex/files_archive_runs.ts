@@ -1592,10 +1592,9 @@ export async function files_archive_runs_db_start(
 		writeState: { isWritten: false },
 	};
 	// A Move in the workspace makes the first step wait too. The Move wakes the job when it ends.
-	const outcome =
-		blocker || (await files_subtree_ops_db_pause_for_move(ctx, (await ctx.db.get("files_subtree_ops", opId))!))
-			? null
-			: await db_step(ctx, stepArgs);
+	const paused =
+		!blocker && (await files_subtree_ops_db_pause_for_move(ctx, (await ctx.db.get("files_subtree_ops", opId))!));
+	const outcome = blocker || paused ? null : await db_step(ctx, stepArgs);
 	// Work that ended inside the request, or a refusal before the first write, leaves no job. Work that
 	// refused a named item keeps its job, so its Activity can list what was not archived.
 	if (

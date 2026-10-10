@@ -433,7 +433,6 @@ async function db_rebuild_walk(args: {
 	budget: { nodes: number; hasPaginated: boolean };
 }) {
 	const { ctx, op, budget } = args;
-	if (await files_subtree_ops_db_pause_for_move(ctx, op)) return false;
 
 	const walk = await db_require_walk(ctx, op._id);
 	let passWrote = walk.passWrote;
@@ -562,7 +561,11 @@ export async function files_subtree_ops_db_start_rebuild(
 	});
 
 	const op = (await ctx.db.get("files_subtree_ops", opId))!;
-	if (!args.deferWalk && (await db_rebuild_walk({ ctx, op, budget: args.budget }))) {
+	if (
+		!args.deferWalk &&
+		!(await files_subtree_ops_db_pause_for_move(ctx, op)) &&
+		(await db_rebuild_walk({ ctx, op, budget: args.budget }))
+	) {
 		await files_subtree_ops_db_delete(ctx, { opId, now: args.now });
 		return null;
 	}
@@ -716,6 +719,7 @@ export const advance = internalMutation({
 		switch (op.kind) {
 			case "move":
 			case "scope": {
+				if (await files_subtree_ops_db_pause_for_move(ctx, op)) return null;
 				if (
 					await db_rebuild_walk({ ctx, op, budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false } })
 				) {

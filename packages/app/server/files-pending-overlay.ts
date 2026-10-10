@@ -2886,7 +2886,8 @@ export async function files_pending_overlay_list(
 		// that only cross an empty seek phase read no rows, so they do not count.
 		const runnable = view.cohortId
 			? blocking.filter(
-					(stream) => !(stream.kind !== "pending" && stream.savedStream.kind === savedSources[0]!.kind && stream.hasRead),
+					(stream) =>
+						!(stream.kind !== "pending" && stream.savedStream.kind === savedSources[0]!.kind && stream.hasRead),
 				)
 			: blocking;
 		if (blocking.length > 0) {

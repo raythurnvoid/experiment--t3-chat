@@ -4279,46 +4279,78 @@ describe("move", () => {
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", occupant._yay.nodeId)))?.archiveOperationId).not.toBeNull();
 	});
 
-	test("Move refuses to replace a folder that is not empty and keeps the choice open", async () => {
-		const fixture = await create_folder_fixture(["/source", "/source/child", "/target/source", "/target/source/keep"]);
-		const { db, asUser, folders } = fixture;
-		const started = await start_transfer(asUser, {
-			membershipId: db.membershipId,
-			requestId: "move-replace-full-folder",
-			kind: "move",
-			sourceIds: [folders.get("/source")!],
-			targetParentId: folders.get("/target")!,
-		});
-		if (started._nay) throw new Error(started._nay.message);
-		const runId = started._yay.runId;
-		const waiting = await finish_discovery(fixture, runId);
-		const list = async () =>
-			(await asUser.query(api.files_transfer.list_items, {
+	test.each(["normal", "held"] as const)(
+		"Move refuses to replace a folder with a %s child and keeps the choice open",
+		async (childState) => {
+			const fixture = await create_folder_fixture([
+				"/source",
+				"/source/child",
+				"/target/source",
+				"/target/source/keep",
+				"/other",
+			]);
+			const { t, db, asUser, folders } = fixture;
+			const started = await start_transfer(asUser, {
 				membershipId: db.membershipId,
-				runId,
-				paginationOpts: { cursor: null, numItems: 50 },
-			}))!.page[0]!;
-		const item = await list();
-		expect(item).toMatchObject({ state: "conflict", conflictKind: "name_conflict" });
-		expect(
-			await asUser.mutation(api.files_transfer.resolve_conflicts, {
-				membershipId: db.membershipId,
-				runId,
-				revision: waiting.revision,
-				choices: [
-					{
-						itemId: item.itemId,
-						choice: "replace",
-						reviewedTarget: item.conflict!.target!,
-						reviewedVersion: item.conflict!.version,
-					},
-				],
-				applyToRemaining: { file: null, folder: null },
-			}),
-			"the refusal names the reason",
-		).toEqual({ _nay: { message: "Cannot replace a folder that is not empty. Keep both or skip it." } });
-		expect(await list(), "Keep both and Skip stay open").toMatchObject({ state: "conflict", conflictKind: "name_conflict" });
-	});
+				requestId: "move-replace-full-folder",
+				kind: "move",
+				sourceIds: [folders.get("/source")!],
+				targetParentId: folders.get("/target")!,
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			const runId = started._yay.runId;
+			const waiting = await finish_discovery(fixture, runId);
+			const list = async () =>
+				(await asUser.query(api.files_transfer.list_items, {
+					membershipId: db.membershipId,
+					runId,
+					paginationOpts: { cursor: null, numItems: 50 },
+				}))!.page[0]!;
+			const item = await list();
+			expect(item).toMatchObject({ state: "conflict", conflictKind: "name_conflict" });
+			if (childState === "held") {
+				// Another member's Move holds the child, so the child is out of the normal docs until it ends.
+				const member = await add_member(fixture);
+				const keepId = folders.get("/target/source/keep")!;
+				const other = await start_transfer(member.asUser, {
+					membershipId: member.membershipId,
+					requestId: "move-hold-child",
+					kind: "move",
+					sourceIds: [keepId],
+					targetParentId: folders.get("/other")!,
+				});
+				if (other._nay) throw new Error(other._nay.message);
+				for (let step = 0; !(await t.run((ctx) => ctx.db.get("files_nodes", keepId)))?.moveCohortId; step++) {
+					if (step === 20) throw new Error("The other Move did not hold the child");
+					const cohort = await t.run((ctx) => ctx.db.query("files_move_cohorts").first());
+					if (cohort)
+						await t.mutation(internal.files_move_cohorts.advance, { cohortId: cohort._id, step: cohort.step });
+					else await t.mutation(internal.files_transfer.advance, { runId: other._yay.runId });
+				}
+			}
+			expect(
+				await asUser.mutation(api.files_transfer.resolve_conflicts, {
+					membershipId: db.membershipId,
+					runId,
+					revision: waiting.revision,
+					choices: [
+						{
+							itemId: item.itemId,
+							choice: "replace",
+							reviewedTarget: item.conflict!.target!,
+							reviewedVersion: item.conflict!.version,
+						},
+					],
+					applyToRemaining: { file: null, folder: null },
+				}),
+				"the refusal names the reason",
+			).toEqual({ _nay: { message: "Cannot replace a folder that is not empty. Keep both or skip it." } });
+			expect(await list(), "Keep both and Skip stay open").toMatchObject({
+				state: "conflict",
+				conflictKind: "name_conflict",
+			});
+		},
+	);
 
 	test.each([
 		{ access: "none", archived: false },
@@ -4415,6 +4447,48 @@ describe("move", () => {
 			}
 		},
 	);
+
+	test("a new folder elsewhere does not restart the nested restricted check", async () => {
+		const nested = Array.from({ length: 9 }, (_, index) => `/source/r${index}`);
+		const fixture = await create_folder_fixture(["/source", ...nested]);
+		const { t, db, asUser, folders } = fixture;
+		// Empty folders need no walk, so restrict them directly.
+		await t.run(async (ctx) => {
+			for (const path of nested)
+				await files_nodes_db_set_restricted_scope({
+					ctx,
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					nodeId: folders.get(path)!,
+					restrictedScopeNodeId: folders.get(path)!,
+					shareLinkCleanup: files_share_links_create_cleanup_state(),
+				});
+		});
+		const started = await start_transfer(asUser, {
+			membershipId: db.membershipId,
+			requestId: "nested-restricted-pages",
+			kind: "move",
+			sourceIds: [folders.get("/source")!],
+			targetParentId: folders.get("/target")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		const validation = async () => (await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))?.moveValidation;
+		// The check reads 8 restricted folders per step. Stop after the first page.
+		for (let step = 0; !(await validation())?.cursor; step++) {
+			if (step === 20) throw new Error("The nested check did not start");
+			await t.mutation(internal.files_transfer.advance, { runId });
+		}
+		const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/elsewhere",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		await t.mutation(internal.files_transfer.advance, { runId });
+		expect((await validation())?.done, "the check goes on from its second page").toBe(true);
+	});
 
 	test("continues suffix checks in later steps and moves every source", async () => {
 		const names = ["one", "two", "three"];
