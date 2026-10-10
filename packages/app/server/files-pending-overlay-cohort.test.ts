@@ -1,5 +1,6 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
+import { type FunctionReference, getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
@@ -522,5 +523,103 @@ describe("Move owner views", () => {
 			"/target/new.txt",
 		]);
 		expect(cursor).toBeNull();
+	});
+
+	test("keeps a saved doc that stages between two stream calls of one page", async () => {
+		for (const stageMidPage of [false, true]) {
+			const f = await fixture({ normalPaths: ["/target/a.txt", "/target/b1.txt", "/target/b2.txt", "/target/c.txt"] });
+			// The owner's drafts move b1 and b2 away, so the normal stream drops them and must read again.
+			for (const name of ["b1.txt", "b2.txt"]) {
+				const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					userId: f.db.userId,
+					target: { kind: "saved", id: f.normalNodes.get(`/target/${name}`)! },
+					destParent: { kind: "root" },
+					destName: `out-${name}`,
+				});
+				if (moved._nay) throw new Error(moved._nay.message);
+			}
+			const c = f.normalNodes.get("/target/c.txt")!;
+			if (!stageMidPage) await f.stageNode(c);
+			// Stage c right after the cohort stream read its empty range, before the normal stream reads again.
+			let staged = !stageMidPage;
+			const ctx = {
+				runQuery: async (query: FunctionReference<"query", "internal">, args: { savedStream?: { kind: string } }) => {
+					const result = await f.t.query(query, args as never);
+					if (
+						!staged &&
+						getFunctionName(query) === "files_visible:internal_list_children_saved" &&
+						args.savedStream?.kind === "cohort"
+					) {
+						staged = true;
+						await f.stageNode(c);
+					}
+					return result;
+				},
+			} as unknown as Pick<ActionCtx, "runQuery">;
+			const paths: string[] = [];
+			let cursor: string | null = null;
+			for (let page = 0; page < 12; page++) {
+				const result = await files_pending_overlay_list(ctx, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					visibilityUserId: f.db.userId,
+					overlayUserId: f.db.userId,
+					folderPath: "/target",
+					mode: "children",
+					order: "asc",
+					kind: "file",
+					numItems: 3,
+					cursor,
+				});
+				if (result._nay) throw new Error(result._nay.message);
+				paths.push(...result._yay.items.map((item) => item.path));
+				cursor = result._yay.continueCursor;
+				if (cursor === null) break;
+			}
+			expect(staged).toBe(true);
+			expect(paths, `c.txt is listed (staged mid-page: ${stageMidPage})`).toEqual([
+				"/target/a.txt",
+				"/target/c.txt",
+				"/target/new.txt",
+			]);
+		}
+	});
+
+	test("keeps the owner's after hide at the after place when a published Move's node changes its write policy", async () => {
+		const f = await fixture();
+		await f.publish();
+		// The owner's draft hides the moved node in the after view. The physical node still has the
+		// before place until cleanup.
+		const hideId = await f.t.run((ctx) =>
+			ctx.db.insert("files_pending_hides", {
+				moveView: { cohortId: f.cohortId, view: "after" },
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				savedNodeId: f.nodeId,
+				parentId: f.after.parentId,
+				kind: f.after.kind,
+				name: f.after.name,
+				updatedAt: f.after.updatedAt,
+				lowercaseExtension: f.after.lowercaseExtension,
+				nodeCreationTime: f.after.nodeCreationTime,
+				treePath: f.after.treePath,
+			}),
+		);
+		expect(
+			await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+				membershipId: f.db.membershipId,
+				nodeId: f.nodeId,
+				writePolicy: { mode: "read_only" },
+			}),
+		).toEqual({ _yay: null });
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_hides", hideId))).toMatchObject({
+			parentId: f.parentId,
+			name: "new.txt",
+			treePath: "/target/new.txt",
+			updatedAt: f.after.updatedAt,
+		});
 	});
 });

@@ -2055,32 +2055,39 @@ async function db_flush_saved_node(
 		.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", nodeId))
 		.collect();
 
+	// During a Move the physical node keeps its old place until cleanup. A hide or place tagged with a
+	// Move view copies the node as that view shows it, so security writes keep the after copies right.
+	const view_node = async (moveView: files_saved_placement_FixedView | undefined) =>
+		moveView ? await files_saved_placement_db_get_node(ctx.db, nodeId, moveView) : node;
+
 	const active = node?.archiveOperationId === null;
 	for (const { _id, _creationTime, ...hide } of hides) {
 		if (!active) {
 			await ctx.db.delete("files_pending_hides", _id);
 			continue;
 		}
+		const viewNode = (await view_node(hide.moveView)) ?? node;
 		await db_sync_doc(
 			ctx.db,
 			"files_pending_hides",
 			{ _id, _creationTime, ...hide },
 			{
 				...hide,
-				parentId: node.parentId,
-				kind: node.kind,
-				name: node.name,
-				updatedAt: node.updatedAt,
-				lowercaseExtension: node.lowercaseExtension,
-				nodeCreationTime: node._creationTime,
-				treePath: node.treePath,
+				parentId: viewNode.parentId,
+				kind: viewNode.kind,
+				name: viewNode.name,
+				updatedAt: viewNode.updatedAt,
+				lowercaseExtension: viewNode.lowercaseExtension,
+				nodeCreationTime: viewNode._creationTime,
+				treePath: viewNode.treePath,
 			},
 		);
 	}
 	// The saved node job deletes the places of a hard deleted node, with their claim and folder effects.
 	if (node)
 		for (const place of places) {
-			const patch = changed_fields(place, { kind: node.kind, updatedAt: node.updatedAt });
+			const viewNode = (await view_node(place.moveView)) ?? node;
+			const patch = changed_fields(place, { kind: viewNode.kind, updatedAt: viewNode.updatedAt });
 			if (Object.keys(patch).length > 0) await ctx.db.patch("files_pending_places", place._id, patch);
 		}
 
@@ -2678,7 +2685,8 @@ export async function files_pending_overlay_list(
 			: []),
 	];
 	// Read the source docs first. A move between these reads can duplicate a doc,
-	// but cannot make both reads miss it.
+	// but cannot make both reads miss it. Later reads of the first source break this, so the round
+	// loop limits them.
 	if (view.migrationDirection === "to_normal") savedSources.reverse();
 	const scope = JSON.stringify([
 		args.organizationId,
@@ -2711,6 +2719,10 @@ export async function files_pending_overlay_list(
 		buffer: Row[];
 		frontier: Value[] | null;
 		after: { position: CursorStream["position"]; done: boolean };
+		/**
+		 * True once a call of this page returned rows, a frontier, or the end.
+		 */
+		hasRead: boolean;
 	};
 
 	const start = { rangeStart: null, cursor: null, lastKey: null };
@@ -2782,6 +2794,7 @@ export async function files_pending_overlay_list(
 		buffer: [],
 		frontier: null,
 		after: { position: stream.position, done: false },
+		hasRead: false,
 	}));
 
 	const run = (stream: Stream): Promise<files_visible_stream_Result> => {
@@ -2866,12 +2879,22 @@ export async function files_pending_overlay_list(
 			return comparison < 0 || (comparison === 0 && rank < next.rank);
 		});
 
+		// While a Move runs, docs leave the first source of a pair for the second one. If the first
+		// source read again after the second one read the same keys, a doc that moved in between would
+		// be in neither read. So the first source reads rows once per page, and the page ends when it
+		// needs more. The next page seeks both sources again from a key no later than its frontier. Calls
+		// that only cross an empty seek phase read no rows, so they do not count.
+		const runnable = view.cohortId
+			? blocking.filter(
+					(stream) => !(stream.kind !== "pending" && stream.savedStream.kind === savedSources[0]!.kind && stream.hasRead),
+				)
+			: blocking;
 		if (blocking.length > 0) {
-			if (rounds === LIST_MAX_ROUNDS) break;
+			if (runnable.length === 0 || rounds === LIST_MAX_ROUNDS) break;
 			rounds++;
 			// One stream at a time: transfer discovery calls this from a mutation, and Convex does not
 			// promise that nested `runQuery` calls may run in parallel there.
-			for (const stream of blocking) {
+			for (const stream of runnable) {
 				// Only after the cursor moved, so every page makes progress: buffered rows of one stream
 				// do not move it while another stream still blocks them. Actions have no transaction metrics.
 				if (progressed && ctx.meta && "getTransactionMetrics" in ctx.meta) {
@@ -2888,6 +2911,7 @@ export async function files_pending_overlay_list(
 				root = rootKey;
 
 				const { rows, decided } = result._yay;
+				stream.hasRead ||= rows.length > 0 || result._yay.frontier !== null || result._yay.done;
 				stream.buffer = [...rows];
 				stream.frontier = result._yay.frontier;
 				stream.after = { position: result._yay.position, done: result._yay.done };
@@ -2926,6 +2950,7 @@ export async function files_pending_overlay_list(
 					buffer: [],
 					frontier: null,
 					after: { position: start, done: false },
+					hasRead: false,
 				});
 		}
 		// Two calls read different snapshots, so a moved row can come from two streams.
