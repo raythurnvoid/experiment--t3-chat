@@ -56,8 +56,8 @@ const rate_limiter_CONFIG = {
 	},
 	// Bulk file writes charge one token per file in a single up-front batch charge, so the
 	// capacity must cover a full write-many request (20 files) with room for several back-to-back
-	// batches during an import. Sharded like the principal bucket: one charge may be up to 50, and
-	// one full shard (25) covers a 20-file batch alone.
+	// batches during an import. Sharded like the principal bucket. One charge must stay <= capacity /
+	// shards = 25, because the first charge on an unused shard reads only that shard.
 	public_api_files_write_bulk: {
 		kind: "token bucket",
 		rate: 600,

@@ -24,9 +24,14 @@ describe("rate_limiter_limit_by_key", () => {
 		await expect(
 			rate_limiter_limit_by_key(actionCtx(new Error("boom")), { name: "public_api_principal", key: "user_api_key:k" }),
 		).rejects.toThrow("boom");
+		// A mutation ctx must rethrow, so Convex reruns the whole mutation.
+		const mutationCtx = { db: {}, runMutation: () => Promise.reject(conflict) } as unknown as ActionCtx;
+		await expect(
+			rate_limiter_limit_by_key(mutationCtx, { name: "public_api_principal", key: "user_api_key:k" }),
+		).rejects.toThrow("changed while this mutation was being run");
 	});
 
-	test("public API buckets are sharded and every batch charge fits", async () => {
+	test("public API buckets are sharded", async () => {
 		const t = test_convex();
 		// A config check: the limiter names the shard count when a charge is too big for it.
 		await expect(
@@ -35,12 +40,6 @@ describe("rate_limiter_limit_by_key", () => {
 		await expect(
 			t.run((ctx) => rate_limiter_limit_by_key(ctx, { name: "public_api_files_write_bulk", key: "k", count: 51 })),
 		).rejects.toThrow("exceeds 50 per 4 shards");
-		// The largest write-many batch fits one charge on a fresh key.
-		expect(
-			await t.run((ctx) =>
-				rate_limiter_limit_by_key(ctx, { name: "public_api_files_write_bulk", key: "k", count: 20 }),
-			),
-		).toBeNull();
 	});
 });
 

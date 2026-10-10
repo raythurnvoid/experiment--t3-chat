@@ -15,6 +15,7 @@ import * as activities from "./activities_db.ts";
 import plugin_runner, { type Env as PluginRunnerEnv } from "../../plugin-runner/src/index.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_mcp_destination_fingerprint } from "./plugins_mcp.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	plugins_REVIEW_POLICY_VERSION,
@@ -1950,6 +1951,36 @@ describe("plugins Phase 0", () => {
 			body: JSON.stringify({ fileNodeIds: [String(upload.nodeId)] }),
 		});
 		expect(response.status).toBe(401);
+	});
+
+	test("settles the run call when the download bulk bucket refuses", async () => {
+		const t = test_convex();
+		const { runId, upload, apiToken } = await start_running_plugin_run(t, { tokenSeed: "5" });
+		// Freeze the limiter clock, so the drained bucket does not refill on a slow machine.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now());
+		const drained = await t.run((ctx) =>
+			rate_limiter_limit_by_key(ctx, {
+				name: "public_api_files_download_bulk",
+				key: `plugin_run:plugin_run:${runId}`,
+				count: 20,
+			}),
+		);
+		expect(drained).toBeNull();
+
+		const response = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ fileNodeIds: [String(upload.nodeId)] }),
+		});
+		expect(response.status).toBe(429);
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({ status: "failed", responseStatus: 429, errorCode: "rate_limited" });
 	});
 
 	test("suppresses a signed source url when the plugin run becomes terminal during signing", async () => {

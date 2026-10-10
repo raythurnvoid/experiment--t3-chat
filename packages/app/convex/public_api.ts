@@ -159,7 +159,8 @@ const FILES_UPLOAD_URLS_MAX_ITEMS = 20;
  */
 const FILES_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
 // The batch charges one token per file in the sharded public_api_files_write_bulk bucket. Must stay
-// <= the largest charge that bucket accepts: capacity / (shards / 2) = 50. A bigger charge throws.
+// <= capacity / shards = 25, because the first charge on an unused shard reads only that shard. A
+// bigger batch on a fresh key is refused forever.
 const FILES_WRITE_MANY_MAX_ITEMS = 20;
 // Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
 const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
@@ -7201,7 +7202,10 @@ export async function public_api_http_download_urls(args: {
 	if (batchRateLimit) {
 		return {
 			status: 429,
-			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+			body: {
+				...(await fail({ status: 429, message: batchRateLimit.message, errorCode: "rate_limited" })),
+				retryAfterMs: batchRateLimit.retryAfterMs,
+			},
 		} as const;
 	}
 
@@ -7675,4 +7679,25 @@ export async function public_api_http_verify_key(args: {
 		},
 		headers: { "Cache-Control": "no-store" },
 	} as const;
+}
+
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test } = import.meta.vitest;
+
+	describe("bulk route maximums", () => {
+		test("the largest batch passes as the first charge on a fresh key", async () => {
+			// Import the test setup here, so the Convex build drops it together with this block.
+			const { test_convex } = await import("./setup.test.ts");
+			const t = test_convex();
+			// The first charge on a sharded bucket reads one unused shard only. So a batch above capacity /
+			// shards (25 for write-many) is refused on every fresh key, and never passes.
+			for (const [name, count] of [
+				["public_api_files_write_bulk", FILES_WRITE_MANY_MAX_ITEMS],
+				["public_api_files_upload_bulk", FILES_UPLOAD_URLS_MAX_ITEMS],
+				["public_api_files_download_bulk", FILES_DOWNLOAD_URLS_MAX_ITEMS],
+			] as const) {
+				expect(await t.run((ctx) => rate_limiter_limit_by_key(ctx, { name, key: "fresh", count }))).toBeNull();
+			}
+		});
+	});
 }
