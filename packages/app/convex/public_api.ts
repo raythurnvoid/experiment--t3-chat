@@ -58,10 +58,12 @@ import {
 } from "../server/files.ts";
 import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
 import {
 	files_nodes_db_archive_nodes,
+	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_get_write_policy_management_state,
 	files_nodes_db_set_write_policy,
@@ -4537,6 +4539,17 @@ export const create_file_upload_targets = internalMutation({
 			) {
 				return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
 			}
+			// The write pass meets a Move only after it wrote the earlier items, so refuse the batch here.
+			const busy = item.collidingNodeId
+				? await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: item.collidingNodeId } })
+				: await files_nodes_db_check_create_busy(ctx, {
+						...args,
+						parentNode,
+						name: segments[parentNode?.pathDepth ?? 0]!,
+					});
+			if (busy._nay) {
+				return { ...busy, _nay: { ...busy._nay, data: { path: item.path } } };
+			}
 			const target = { kind: "create" as const, parentNode, path: item.path };
 			const writable = await files_nodes_db_require_writable(ctx, {
 				organizationId: args.organizationId,
@@ -7504,6 +7517,7 @@ export async function public_api_http_upload_urls(args: {
 					  created._nay.name === "plan_required"
 					? 403
 					: isReadOnly ||
+						  created._nay.name === "move_busy" ||
 						  created._nay.message === "A file already exists at this path" ||
 						  created._nay.message === "The path cannot point to a folder" ||
 						  created._nay.message === "An intermediate segment is owned by a file"

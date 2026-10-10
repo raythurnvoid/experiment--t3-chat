@@ -59,7 +59,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Each preparation transaction checks current membership lifetime, source and destination access,
   local write rules and version pins. A moved folder carries protected children unchanged.
   Reparenting checks nested restricted roots. Replacement checks every removed descendant.
-  Source, subtree and name reservations block competing writes. Security changes can revoke access;
+  Source, subtree and name reservations block competing writes. The guard checks each write's file once
+  per mutation and drops those answers when a reservation or a parent changes, so a bulk metadata or
+  chunk write of one file stays cheap while any Move runs. Security changes can revoke access;
   their clocks prevent a later publication from using stale permission. New files elsewhere in the
   workspace do not stop a Move. Restrict, folder protection and Archive wait while a Move holds
   the workspace, so they never skip the nodes it holds.

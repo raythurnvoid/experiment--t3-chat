@@ -1236,6 +1236,39 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
+	test("a destination a Move holds answers 409 and writes nothing", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture });
+		await t.run(async (ctx) => {
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId: fixture.userId,
+				parentId: files_ROOT_ID,
+				path: "/meetings",
+				kind: "folder",
+				now: Date.now(),
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+			// Only the reservation decides the refusal, so a placeholder cohort id is enough.
+			await ctx.db.insert("files_move_source_reservations", {
+				cohortId: "999999files_move_cohorts" as Id<"files_move_cohorts">,
+				source: { kind: "saved", id: created._yay },
+				mode: "subtree",
+				userId: null,
+				generation: 1,
+			});
+		});
+		const response = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
+		expect(response.status, "a service upload into a moved folder").toBe(409);
+		expect(await response.json()).toEqual({ message: "This item is being moved. Try again when the Move ends." });
+		expect(await read_targets(t)).toHaveLength(0);
+		expect(await t.run(async (ctx) => await ctx.db.query("files_r2_assets").collect())).toHaveLength(0);
+	});
+
 	test("requires both mode flags and rejects non-collaborative binary targets", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);

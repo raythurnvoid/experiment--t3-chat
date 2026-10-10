@@ -4,7 +4,7 @@ import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { getFunctionName } from "convex/server";
 import type { Id } from "./_generated/dataModel";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
@@ -4253,6 +4253,57 @@ describe("files upload-urls", () => {
 			}
 		},
 	);
+
+	test("a folder a Move holds refuses the whole batch with 409 before any item is written", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-move-busy" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-move-busy" });
+		await t.run(async (ctx) => {
+			const dirId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				parentId: files_ROOT_ID,
+				name: "dir",
+				sortName: files_sort_text_key("dir"),
+				kind: "folder",
+				path: "/dir",
+				treePath: "/dir/",
+				pathDepth: 1,
+			});
+			// Only the reservation decides the refusal, so a placeholder cohort id is enough.
+			await ctx.db.insert("files_move_source_reservations", {
+				cohortId: "999999files_move_cohorts" as Id<"files_move_cohorts">,
+				source: { kind: "saved", id: dirId },
+				mode: "subtree",
+				userId: null,
+				generation: 1,
+			});
+		});
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/free.png", contentType: "image/png", size: 64 },
+					{ path: "/dir/new.png", contentType: "image/png", size: 64 },
+				],
+			}),
+		});
+		expect(response.status, "upload-urls into a moved folder").toBe(409);
+		expect(await response.json()).toEqual({
+			message: "This item is being moved. Try again when the Move ends.",
+			path: "/dir/new.png",
+		});
+		const written = await t.run(async (ctx) => ({
+			nodes: (await ctx.db.query("files_nodes").collect()).map((node) => node.path),
+			assets: await ctx.db.query("files_r2_assets").collect(),
+		}));
+		expect(written).toEqual({ nodes: ["/dir"], assets: [] });
+	});
 
 	test("rejects an invalid content type before writing any upload files or assets", async () => {
 		const t = test_convex();

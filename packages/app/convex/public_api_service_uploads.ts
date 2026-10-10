@@ -22,6 +22,7 @@ import { billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
 import {
 	files_nodes_db_archive_nodes,
+	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
 	files_nodes_db_require_writable,
@@ -991,6 +992,15 @@ export const create_upload_target = internalMutation({
 		});
 		if (writable._nay) {
 			return writable;
+		}
+		// Refuse before the asset insert below: the create meets a Move only after it.
+		const busy = await files_nodes_db_check_create_busy(ctx, {
+			...args.principal,
+			parentNode: effectiveDestinationAclNode,
+			name: segments[effectiveDestinationAclNode?.pathDepth ?? 0]!,
+		});
+		if (busy._nay) {
+			return busy;
 		}
 		const writePolicy = args.readOnly ? { mode: "writer" as const, writers: [writeContext.writer] } : undefined;
 

@@ -2055,6 +2055,27 @@ async function db_insert_node(
 }
 
 /**
+ * Refuse a create while a Move holds its parent or its first missing name. Batch doors call this in
+ * their validation pass, so the item is refused before earlier items are written.
+ */
+export async function files_nodes_db_check_create_busy(
+	ctx: MutationCtx,
+	args: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId"> & {
+		parentNode: Doc<"files_nodes"> | null;
+		name: string;
+	},
+) {
+	const organizationId = ctx.db.normalizeId("organizations", args.organizationId);
+	const workspaceId = ctx.db.normalizeId("organizations_workspaces", args.workspaceId);
+	if (!organizationId || !workspaceId) return Result({ _yay: null });
+	const parentId = args.parentNode?._id ?? files_ROOT_ID;
+	return await files_move_reservations_db_check(ctx.db, {
+		parent: parentId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: parentId },
+		slot: { organizationId, workspaceId, parentId, name: args.name },
+	});
+}
+
+/**
  * Create a node from a path, creating each missing parent folder segment before
  * creating the final file/folder segment.
  *
@@ -2268,14 +2289,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		}
 	}
 
-	const organizationId = ctx.db.normalizeId("organizations", args.organizationId);
-	const workspaceId = ctx.db.normalizeId("organizations_workspaces", args.workspaceId);
-	if (organizationId && workspaceId && missingNames[0] !== undefined) {
-		const parentId = parentNode?._id ?? files_ROOT_ID;
-		const busy = await files_move_reservations_db_check(ctx.db, {
-			parent: parentId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: parentId },
-			slot: { organizationId, workspaceId, parentId, name: missingNames[0] },
-		});
+	if (missingNames[0] !== undefined) {
+		const busy = await files_nodes_db_check_create_busy(ctx, { ...args, parentNode, name: missingNames[0] });
 		if (busy._nay) return busy;
 	}
 

@@ -5,7 +5,10 @@ import { api, internal } from "../convex/_generated/api.js";
 import { Doc as YjsDoc, encodeStateAsUpdate } from "yjs";
 import { files_u8_to_array_buffer, files_YJS_DOC_KEYS } from "../shared/files.ts";
 import { r2_create_asset_key } from "../convex/r2_client.ts";
-import { test_mocks } from "../convex/setup.test.ts";
+import type { Doc, Id } from "../convex/_generated/dataModel.js";
+import type { MutationCtx } from "../convex/_generated/server.js";
+import { test_mocks, test_run_with_flush } from "../convex/setup.test.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 import { test_create_saved_placement_fixture as fixture } from "./files-saved-placement.test-fixtures.ts";
 import {
 	files_move_reservations_db_check,
@@ -695,5 +698,133 @@ describe("Move write reservations", () => {
 				.unique(),
 		);
 		expect(waiter?.worker.kind, "the accepted scope repair waits before reading normal-only children").toBe("subtree");
+	});
+
+	test("a bulk metadata replace during an unrelated Move checks the file once, not once per doc", async () => {
+		const f = await fixture();
+		// An unrelated file at depth 3, while the fixture's Move holds the workspace.
+		const file = await test_run_with_flush(f.t, async (ctx) => {
+			let parent: Doc<"files_nodes"> | null = null;
+			for (const [name, kind] of [
+				["a", "folder"],
+				["b", "folder"],
+				["max", "file"],
+			] as const) {
+				const path: string = `${parent?.path ?? ""}/${name}`;
+				const id: Id<"files_nodes"> = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: parent?._id ?? "root",
+					name,
+					sortName: files_sort_text_key(name),
+					kind,
+					path,
+					treePath: kind === "folder" ? `${path}/` : path,
+					pathDepth: path.split("/").length - 1,
+				});
+				parent = (await ctx.db.get("files_nodes", id))!;
+			}
+			return parent!;
+		});
+		// The largest metadata set of one file: 128 keys per namespace, 3 frontmatter or 2 metadata values each.
+		const docs = (round: number) =>
+			(["frontmatter", "metadata"] as const).flatMap((namespace) =>
+				Array.from({ length: 128 }, (_, key) => {
+					const base = {
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						sourceKind: "committed" as const,
+						fileNodeId: file._id,
+						path: file.path,
+						treePath: file.treePath,
+						fieldPath: `${namespace}.r${round}k${key}`,
+					};
+					return [
+						{ ...base, docKind: "field" as const, parentId: file.parentId },
+						...Array.from({ length: namespace === "frontmatter" ? 3 : 2 }, (_, value) => ({
+							...base,
+							docKind: "value" as const,
+							valueKind: "string" as const,
+							stringValue: `r${round}k${key}v${value}`,
+						})),
+					];
+				}).flat(),
+			);
+		await test_run_with_flush(f.t, async (ctx) => {
+			for (const doc of docs(0)) await ctx.db.insert("files_metadata_docs", doc);
+		});
+		const cost = await test_run_with_flush(f.t, async (ctx) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const old = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_source_fileNode", (q) =>
+					q
+						.eq("organizationId", f.db.organizationId)
+						.eq("workspaceId", f.db.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", file._id),
+				)
+				.collect();
+			for (const doc of old) await ctx.db.delete("files_metadata_docs", doc._id);
+			for (const doc of docs(1)) await ctx.db.insert("files_metadata_docs", doc);
+			const after = await ctx.meta.getTransactionMetrics();
+			return { ranges: after.databaseQueries.used - before.databaseQueries.used, docs: old.length };
+		});
+		expect(cost.docs).toBe(896);
+		// Without a Move this write uses 2 ranges. Each doc once walked the file's 3 ancestors.
+		expect(cost.ranges, "index ranges of 896 deletes and 896 inserts during a Move").toBeLessThan(16);
+	});
+
+	test("a reservation added later in the same mutation still blocks a side write", async () => {
+		const f = await fixture();
+		const fileId = await f.t.run((ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId: f.parentId,
+				name: "free.md",
+				sortName: files_sort_text_key("free.md"),
+				kind: "file",
+				path: "/target/free.md",
+				treePath: "/target/free.md",
+				pathDepth: 2,
+			}),
+		);
+		const insert_doc = (ctx: MutationCtx, fieldPath: string) =>
+			ctx.db.insert("files_metadata_docs", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				sourceKind: "committed",
+				fileNodeId: fileId,
+				path: "/target/free.md",
+				treePath: "/target/free.md",
+				fieldPath,
+				docKind: "field",
+				parentId: f.parentId,
+			});
+		const written: string[] = [];
+		await expect(
+			f.t.run(async (ctx) => {
+				const guarded = { ...ctx, ...files_move_reservations_db_wrap(ctx) };
+				await insert_doc(guarded, "metadata.a");
+				written.push("metadata.a");
+				await guarded.db.insert("files_move_source_reservations", {
+					cohortId: f.cohortId,
+					source: { kind: "saved", id: f.parentId },
+					mode: "subtree",
+					userId: null,
+					generation: 1,
+				});
+				await insert_doc(guarded, "metadata.b");
+				written.push("metadata.b");
+			}),
+		).rejects.toThrow("This item is being moved");
+		expect(written, "only the write before the reservation passes").toEqual(["metadata.a"]);
 	});
 });
