@@ -42,6 +42,7 @@ import {
 	test_apply_file_pending_move,
 	test_compact_metadata_catalog,
 	test_convex,
+	test_drain_billing_usage_event_outbox,
 	test_finish_pending_update_run,
 	test_rename_node,
 	test_move_nodes,
@@ -9967,6 +9968,7 @@ describe("non-collaborative files", () => {
 			path: "/repeat-id.md",
 		});
 		// Count only the two edits whose Yjs histories restart at sequence 1.
+		await test_drain_billing_usage_event_outbox(t);
 		enqueueActionSpy.mockClear();
 
 		const push_text = async (text: string) => {
@@ -10000,6 +10002,7 @@ describe("non-collaborative files", () => {
 			targetSequence: 1,
 		});
 		expect(materialized._nay).toBeUndefined();
+		await test_drain_billing_usage_event_outbox(t);
 		expect(billed_file_save_ids()).toHaveLength(1);
 
 		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
@@ -10020,6 +10023,7 @@ describe("non-collaborative files", () => {
 		expect(await push_text("# Repeat id\n\nsecond lineage\n")).toBe(1);
 
 		// Every save must get its own id: Polar drops an event whose id it has already seen.
+		await test_drain_billing_usage_event_outbox(t);
 		const allIds = billed_file_save_ids();
 		expect(allIds).toHaveLength(2);
 		expect(new Set(allIds).size).toBe(2);
@@ -17336,8 +17340,10 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		size: files_get_utf8_byte_size(restoredMarkdown),
 	});
 	const restoredVersion = `${(await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId}:${yjsUpdates[0]?.sequence}`;
+	await test_drain_billing_usage_event_outbox(t);
+	// The create save and the restore go to Polar in one outbox batch.
 	expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
-		events: [
+		events: expect.arrayContaining([
 			expect.objectContaining({
 				name: "file_save",
 				externalCustomerId: db.userId,
@@ -17352,7 +17358,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 					version: restoredVersion,
 				}),
 			}),
-		],
+		]),
 	});
 });
 

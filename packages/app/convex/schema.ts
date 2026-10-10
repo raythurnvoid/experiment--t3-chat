@@ -284,6 +284,138 @@ const ai_model_call_charge_validator = v.object({
 });
 
 /**
+ * One app usage event for Polar. `billing.ingest_events` sends it; see the billing-system skill.
+ */
+export const billing_event_validator = v.union(
+	v.object({
+		name: v.literal("manual_credit"),
+		externalCustomerId: v.id("users"),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+		}),
+	}),
+	v.object({
+		name: v.literal("file_save"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.string(),
+			workspaceId: v.string(),
+			nodeId: v.string(),
+			/**
+			 * See the `version` tuple item in `AppCompositeIds.billing`.
+			 */
+			version: v.string(),
+		}),
+	}),
+	v.object({
+		name: v.literal("file_upload"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			nodeId: v.union(v.id("files_nodes"), v.null()),
+			assetId: v.id("files_r2_assets"),
+			bytes: v.number(),
+		}),
+	}),
+	v.object({
+		name: v.literal("plugin_volume_file_write"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			assetId: v.id("files_r2_assets"),
+		}),
+	}),
+	v.object({
+		name: v.literal("monthly_credit"),
+		externalCustomerId: v.id("users"),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			subscriptionId: v.string(),
+			productId: v.string(),
+			productName: v.string(),
+			periodStart: v.string(),
+		}),
+	}),
+	v.object({
+		name: v.literal("ai_usage"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.string(),
+			workspaceId: v.string(),
+			modelId: v.string(),
+			/**
+			 * The provider request this charge belongs to (`ai_model_call_receipts`).
+			 */
+			modelCallId: v.string(),
+			purpose: ai_model_call_purpose_validator,
+			/**
+			 * `tokens` bills the request's tokens. `image` bills one finished picture.
+			 */
+			component: v.union(v.literal("tokens"), v.literal("image")),
+			imageCallId: v.union(v.string(), v.null()),
+			responseId: v.union(v.string(), v.null()),
+			providerModelId: v.union(v.string(), v.null()),
+			/**
+			 * Null on an image charge. A tokens charge always has the reported numbers.
+			 */
+			inputTokens: v.union(v.number(), v.null()),
+			outputTokens: v.union(v.number(), v.null()),
+			/**
+			 * `1` on an image charge, `0` on a tokens charge.
+			 */
+			generatedImages: v.number(),
+			/**
+			 * Null for inline AI, which has no chat thread.
+			 */
+			threadId: v.union(v.string(), v.null()),
+		}),
+	}),
+	v.object({
+		name: v.literal("browser_usage"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.string(),
+			workspaceId: v.string(),
+			sessionId: v.string(),
+			mode: v.union(v.literal("file"), v.literal("web")),
+			/**
+			 * The runner's real browser time for this session. `amount` charges every started minute.
+			 */
+			billedMs: v.number(),
+		}),
+	}),
+);
+
+/**
  * The one agent run in progress on a thread: a `/api/chat` request streaming, or a
  * `run_job_wakeup` action. A thread has at most one. The run clears it at its end; `expiresAt`
  * covers a run whose action was killed.
@@ -8705,6 +8837,20 @@ const app_convex_schema = defineSchema({
 		jobId: vWorkId,
 		updatedAt: v.number(),
 	}).index("by_user", ["userId"]),
+
+	/**
+	 * Signed-in usage events that wait for Polar. Saves only insert here, so parallel saves never write
+	 * the same doc. The drainer sends them in batches (`billing_db_drain_usage_event_outbox`).
+	 */
+	billing_usage_event_outbox: defineTable({
+		event: billing_event_validator,
+	}),
+
+	/**
+	 * At most one doc, while the drainer chain runs. Each run gets its id, so deleting it stops the
+	 * chain. Savers insert it when it is missing and never patch it.
+	 */
+	billing_usage_event_outbox_drainers: defineTable({}),
 
 	/**
 	 * One receipt per billed provider request: chat steps, titles and inline AI. A receipt is saved

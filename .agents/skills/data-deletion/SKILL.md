@@ -51,6 +51,7 @@ Load each companion skill that owns the affected boundary:
   server registered for Press (DCR), keyed by issuer. It holds no member data, and every member
   reuses it.
 - `ai_model_call_receipts` are billing records. No user, organization, workspace, or thread deletion path touches them. Their only deletion path is the daily retention cron, which deletes a receipt 396 days after admission once its usage is final and no charge is `queued`. A deleted user's id stays in those docs until then.
+- `billing_usage_event_outbox` and its one `billing_usage_event_outbox_drainers` marker are billing records on their way to Polar, like the jobs in the usage pool. No user, organization, or workspace deletion path touches them: deleting them would drop charges for saves that already happened. The drainer sends each doc within seconds and then deletes it. The docs hold ids and amounts only, no names or paths.
 
 # Primary Files
 

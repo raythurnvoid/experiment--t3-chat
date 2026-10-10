@@ -9,6 +9,7 @@ import { quotas_db_ensure } from "./quotas.ts";
 import {
 	test_convex,
 	test_db_get_review_state,
+	test_drain_billing_usage_event_outbox,
 	test_finish_pending_update_run,
 	test_mocks,
 	test_mocks_fill_db_with,
@@ -645,6 +646,8 @@ describe("review job content", () => {
 			expect(await saved_text(f, before.find((node) => node.path === `/target/${name}.txt`)!._id)).toBe(
 				`target ${name}\n`,
 			);
+		// Send the earlier saves first, so the spy below sees only this review's charges.
+		await test_drain_billing_usage_event_outbox(f.t);
 		const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
 		const runId = await start_review({ f, proposals });
 		expect(
@@ -673,8 +676,14 @@ describe("review job content", () => {
 				`source ${name}\n`,
 			);
 		}
-		const billing = () => enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
-		expect(billing()).toHaveLength(2);
+		// Billed events, after the outbox drainer sent them.
+		const billing = async () => {
+			await test_drain_billing_usage_event_outbox(f.t);
+			return enqueue.mock.calls
+				.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")
+				.flatMap((call) => (call[2] as { events: unknown[] }).events);
+		};
+		expect(await billing()).toHaveLength(2);
 		const units = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_update_run_units")
@@ -688,7 +697,7 @@ describe("review job content", () => {
 				unitId: unit._id,
 				attemptFence: unit.attemptFence - 1,
 			});
-		expect(billing()).toHaveLength(2);
+		expect(await billing()).toHaveLength(2);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 		expect((await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).map((node) => node._id)).toEqual(
 			before.map((node) => node._id),
@@ -1069,6 +1078,7 @@ describe("review job content", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual(proposals);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")).toEqual([]);
 		const failedUnit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").unique());
 		await f.t.mutation(internal.files_pending_update_runs.retire_unit_preparation, { unitId: failedUnit!._id });
@@ -1093,9 +1103,12 @@ describe("review job content", () => {
 				.unique(),
 		);
 		expect(balance?.meter?.balance).toBe(anonymous ? 0 : 2);
-		expect(enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")).toHaveLength(
-			anonymous ? 0 : 2,
-		);
+		await test_drain_billing_usage_event_outbox(f.t);
+		expect(
+			enqueue.mock.calls
+				.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")
+				.flatMap((call) => (call[2] as { events: unknown[] }).events),
+		).toHaveLength(anonymous ? 0 : 2);
 	});
 
 	test("publishes private text before archiving its selected saved parent", async () => {
@@ -1336,6 +1349,7 @@ describe("review job content", () => {
 					.reduce((total, hold) => total + hold.byteCount, 0);
 				expect(quota.usedCount).toBe(heldBytes);
 			}
+			await test_drain_billing_usage_event_outbox(f.t);
 			const billingCalls = enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
 			const afterBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
 			if (anonymous) {
@@ -1393,20 +1407,19 @@ describe("review job content", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(13);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(beforeBilling);
-		const billingCalls = enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
-		expect(billingCalls).toHaveLength(12);
-		expect(billingCalls.map((call) => call[2])).toEqual(
+		await test_drain_billing_usage_event_outbox(f.t);
+		const billedEvents = enqueue.mock.calls
+			.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")
+			.flatMap((call) => (call[2] as { events: unknown[] }).events);
+		expect(billedEvents).toHaveLength(12);
+		expect(billedEvents).toEqual(
 			expect.arrayContaining(
 				saved
 					.filter((node) => node.kind === "file")
 					.map((node) =>
 						expect.objectContaining({
-							events: [
-								expect.objectContaining({
-									name: "file_save",
-									metadata: expect.objectContaining({ amount: 1, nodeId: node._id }),
-								}),
-							],
+							name: "file_save",
+							metadata: expect.objectContaining({ amount: 1, nodeId: node._id }),
 						}),
 					),
 			),
@@ -1483,27 +1496,26 @@ describe("review job content", () => {
 			expect(
 				publicationHolds.filter((hold) => hold.resource.kind === "asset" && hold.settlement.kind === "saved"),
 			).toHaveLength(128);
+			await test_drain_billing_usage_event_outbox(f.t);
 			const billingCalls = enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
+			// The outbox drainer sends the events in batches of up to 100.
+			const billedEvents = billingCalls.flatMap((call) => (call[2] as { events: unknown[] }).events);
 			const afterBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
 			if (anonymous) {
 				expect(billingCalls).toHaveLength(0);
 				expect(afterBilling?.meter?.consumedUnits).toBe(beforeBilling!.meter!.consumedUnits + 64);
 				expect(afterBilling?.meter?.balance).toBe(beforeBilling!.meter!.balance - 64);
 			} else {
-				expect(billingCalls).toHaveLength(64);
+				expect(billedEvents).toHaveLength(64);
 				expect(afterBilling).toEqual(beforeBilling);
-				expect(billingCalls.map((call) => call[2])).toEqual(
+				expect(billedEvents).toEqual(
 					expect.arrayContaining(
 						saved
 							.filter((node) => node.kind === "file")
 							.map((node) =>
 								expect.objectContaining({
-									events: [
-										expect.objectContaining({
-											name: "file_save",
-											metadata: expect.objectContaining({ amount: 1, nodeId: node._id }),
-										}),
-									],
+									name: "file_save",
+									metadata: expect.objectContaining({ amount: 1, nodeId: node._id }),
 								}),
 							),
 					),

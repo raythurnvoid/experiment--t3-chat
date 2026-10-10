@@ -71,9 +71,22 @@ Server-side usage-event typing lives in [billing.ts](../../../packages/app/serve
 - `billing_event` is a typed identity helper for preserving the narrow `billing_Event` variant at call sites. It does not build full event payloads; callers own the metadata they emit.
 - Usage-event `externalId` values are built directly with the shared `composite_id("billing", ...)` helper. Its `AppCompositeIds.billing` tuple union keeps billing IDs strict and always joins parts with `::`; organization usage event ids include the billed user, actor, organization, and workspace.
 - Organization usage events (`file_save`, `file_upload`, `plugin_volume_file_write`, `ai_usage`, `browser_usage`) always include `metadata.actorUserId`, `metadata.billedUserId`, `metadata.organizationId`, and `metadata.workspaceId`. `externalMemberId` is optional actor attribution; when present, `ingest_events` passes it through to Polar. `browser_usage` always sets it to the session owner.
-- `billing_ingest_events` is the mandatory local emission helper for billing usage events, except AI usage. Model call receipts deliver `ai_usage` themselves (see "Model call receipts"). It accepts `{ event, billedUser }` pairs using the real payer `users` row. Signed-in payers use the `billing_workpool_usage_event` retry path. Anonymous payers use `billing_db_ingest_anonymous_user_events` in the caller's mutation context; action callers reach that helper through the registered mutation. The enqueued `ingest_events` action remains the only caller of Polar `eventsIngest`.
+- `billing_ingest_events` is the mandatory local emission helper for billing usage events, except AI usage. Model call receipts deliver `ai_usage` themselves (see "Model call receipts"). It accepts `{ event, billedUser }` pairs using the real payer `users` row. Signed-in payers go through the usage event outbox below. Anonymous payers use `billing_db_ingest_anonymous_user_events` in the caller's mutation context; action callers reach that helper through the registered mutation. The enqueued `ingest_events` action remains the only caller of Polar `eventsIngest`.
 
 See [Glossary — server/billing.ts](#glossary--serverbillingts) and [Glossary — event ingestion](#glossary--event-ingestion) for precise signatures and behavior.
+
+## Usage event outbox
+
+Polar takes about 4 calls a second (one call is about 250 ms) and answers 429 at about 100 calls a minute in sandbox (500 in production). One call per save cannot keep up with 10 saves a second. So signed-in events wait in an outbox and go to Polar in batches. This is the same pattern as the metadata catalog compactor.
+
+- **Save.** In a mutation, `billing_ingest_events` inserts one `billing_usage_event_outbox` doc per signed-in event and reads the one `billing_usage_event_outbox_drainers` marker. Only when the marker is missing does it insert one and schedule `billing.drain_usage_event_outbox` 2 seconds later. A save writes no shared doc and does not touch the usage pool, so parallel saves do not conflict.
+- **Drain.** Each drainer run takes up to 100 outbox docs older than 1 second, oldest first. It enqueues them as one `ingest_events` job on `billing_workpool_usage_event` and deletes them in the same transaction, so each event enters the pool once. While docs remain it schedules the next run 2 seconds later; otherwise it deletes the marker. That is at most 30 Polar calls and 3,000 events a minute.
+- **Retries.** The pool retries a failed Polar call (429, 5xx, network) with the same batch: first after 10 minutes, then 1.2 times longer each time, with no attempt limit. Polar inserts a batch in one transaction and skips each event whose `externalId` it already has, so a retry never counts an event twice. Polar validates the whole batch: one event it refuses fails all events of that batch.
+- **Recovery.** If a drainer run throws, the marker stays and savers schedule no new run. The 5-minute cron `recover_usage_event_outbox` sees an outbox doc older than 5 minutes, replaces the marker, and starts a new chain. The old chain stops because its marker is gone.
+- **Order.** Polar sums amounts, so order does not matter. Batches go out in creation order.
+- **Credit gate lag.** The Free-plan gate reads `billing_usage_snapshots`, which only `customer.state_changed` updates. The outbox adds up to about 3 seconds before the event reaches the pool. Then come the pool queue, Polar's meter aggregation (about 20 seconds), and the webhook. So a Free user can spend a little past zero during that time, as before.
+- **Not outbox:** model call receipts send `ai_usage` through `billing_db_enqueue_signed_in_event`, because they need `onComplete`. The admin `grant_credit` action has no `db`, so `billing_ingest_events` enqueues its event on the pool directly.
+- **Deletion.** No purge deletes outbox docs. They are charges for work that already happened, like jobs in the pool, and the drainer sends them within seconds.
 
 ## Backend ownership
 
@@ -255,11 +268,11 @@ They exclude folders, moves, unchanged content, and replaced occupants. This che
 against one balance without changing the existing signed-in Polar refresh policy.
 They use the same DB context for anonymous debits, so billing reads and writes
 count toward the review budget and roll back with the files. Each debit reads the previous debit's
-balance. Signed-in billing jobs also enter the queue in that final transaction.
+balance. Signed-in billing events also enter the outbox in that final transaction.
 
 R2 content materialization is storage bookkeeping for an already accepted save; it must not emit an additional billing event.
 
-For bulk imports, distinguish a saved file with a durable billing job from an event already accepted by Polar. A large sandbox queue can remain after all file checks pass. Check the current queue's workspace, payer, amount, unique event IDs, retry state, and worker progress; report pending events separately. A healthy pending queue alone does not require waiting for full drain to finish the file import. Failed or canceled jobs need investigation. Never disable billing, change rates, or mark jobs complete to speed up the import. See the [import guide](../convex-admin-ops/references/large-file-imports.md#billing-and-upload-finalization).
+For bulk imports, distinguish a saved file with a durable billing job from an event already accepted by Polar. A large sandbox queue can remain after all file checks pass. Events wait in `billing_usage_event_outbox` for a few seconds first, then move to the pool in batches of up to 100. Check the current queue's workspace, payer, amount, unique event IDs, retry state, and worker progress; report pending events separately. A healthy pending queue alone does not require waiting for full drain to finish the file import. Failed or canceled jobs need investigation. Never disable billing, change rates, or mark jobs complete to speed up the import. See the [import guide](../convex-admin-ops/references/large-file-imports.md#billing-and-upload-finalization).
 
 Plugin workspace-file writes through `/api/v1/files/write` emit `file_save` like any other save.
 Mount files use the separate event below. The plugin file doors (`plugin-folders/ensure`,
@@ -519,7 +532,13 @@ The indicator displays the current user's balance for personal organizations, `"
 
 - **Kind:** exported async helper in [packages/app/convex/billing_db.ts](../../../packages/app/convex/billing_db.ts) — split out of `billing.ts` so emitting call sites skip the Polar SDK module-load cost.
 - **Signature:** `(ctx: ActionCtx | MutationCtx, { billedUserEvents: Array<{ event: billing_Event; billedUser: Doc<"users"> }> }) => Promise<void>`
-- **Role:** Mandatory local entrypoint for billing usage events, except AI usage (model call receipts use the two helpers below). Signed-in payers use `billing_workpool_usage_event`. Anonymous payers use `billing_db_ingest_anonymous_user_events` directly in mutations, or through `internal.billing.ingest_anonymous_user_events` in actions. Call sites do not choose billing transport or substitute the actor for the payer.
+- **Role:** Mandatory local entrypoint for billing usage events, except AI usage (model call receipts use the two helpers below). In a mutation, signed-in payers go into `billing_usage_event_outbox` (see "Usage event outbox"); an action enqueues them on `billing_workpool_usage_event` directly. Anonymous payers use `billing_db_ingest_anonymous_user_events` directly in mutations, or through `internal.billing.ingest_anonymous_user_events` in actions. Call sites do not choose billing transport or substitute the actor for the payer.
+
+#### `drain_usage_event_outbox` / `recover_usage_event_outbox`
+
+- **Kind:** `internalMutation`s in [billing.ts](../../../packages/app/convex/billing.ts); the logic is `billing_db_drain_usage_event_outbox` and `billing_db_recover_usage_event_outbox` in [billing_db.ts](../../../packages/app/convex/billing_db.ts).
+- **Args:** `{ markerId }` for the drainer, `{}` for the recovery cron (every 5 minutes).
+- **Role:** One drainer run sends up to 100 old outbox events as one `ingest_events` job and schedules the next run, or ends the chain. Recovery restarts a stopped chain. See "Usage event outbox".
 
 #### `billing_db_enqueue_signed_in_event`
 

@@ -10,7 +10,7 @@ import {
 	billing_db_emit_plugin_volume_file_writes,
 	billing_ingest_events,
 } from "./billing_db.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_drain_billing_usage_event_outbox, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { customersList } from "@polar-sh/sdk/funcs/customersList.js";
@@ -1790,6 +1790,7 @@ describe("billing bootstrap_free_subscription", () => {
 			email: "bootstrap-existing-missing-snapshot@test.local",
 			name: "Bootstrap Existing Missing Snapshot User",
 		});
+		await test_drain_billing_usage_event_outbox(t);
 
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
@@ -2678,6 +2679,7 @@ describe("handle_polar_customer_state_update", () => {
 			balance: 760 + freeRecurringCents,
 			amountDueCents: 0,
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 			events: [
 				expect.objectContaining({
@@ -2861,6 +2863,7 @@ describe("handle_polar_customer_state_update", () => {
 				.unique(),
 		);
 		expect(after).toEqual(before);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 
@@ -2909,6 +2912,7 @@ describe("handle_polar_customer_state_update", () => {
 		expect(usageSnapshot!.subscription?.id).toBe("sub_refresh_snapshot_missing_meter");
 		// No meter resolves here, so the optimistic write leaves `meter` as `null`.
 		expect(usageSnapshot!.meter).toBeNull();
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 			events: [
 				expect.objectContaining({
@@ -2979,6 +2983,7 @@ describe("refresh_from_polar_customer_state", () => {
 			balance: freeRecurringCents,
 			amountDueCents: 0,
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 			events: [
 				expect.objectContaining({
@@ -3027,6 +3032,7 @@ describe("refresh_from_polar_customer_state", () => {
 				.unique(),
 		);
 
+		await test_drain_billing_usage_event_outbox(t);
 		enqueueActionSpy.mockClear();
 
 		await t.action(internal.billing.refresh_from_polar_customer_state, {
@@ -3042,6 +3048,7 @@ describe("refresh_from_polar_customer_state", () => {
 
 		expect(usageSnapshotAfterFirstReplay).not.toBeNull();
 		expect(usageSnapshotAfterSecondReplay).toEqual(usageSnapshotAfterFirstReplay);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 });
@@ -4631,6 +4638,7 @@ describe("ingest_events", () => {
 			});
 		});
 
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		expect(captured.ingestPayload).toEqual({
 			events: [
@@ -4731,6 +4739,7 @@ describe("ingest_events", () => {
 			});
 		});
 
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		expect(captured.ingestPayload).toEqual({
 			events: [
@@ -4787,6 +4796,7 @@ describe("billing_db_emit_plugin_volume_file_writes", () => {
 			});
 			return assetIds;
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		expect(captured.ingestPayload?.events).toEqual(
 			assetIds.map((assetId) => ({
@@ -4804,6 +4814,100 @@ describe("billing_db_emit_plugin_volume_file_writes", () => {
 				},
 			})),
 		);
+	});
+});
+
+describe("usage event outbox", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/**
+	 * One signed-in `file_save` per version, each in its own transaction, like parallel saves.
+	 */
+	async function emit_file_saves(t: ReturnType<typeof test_convex>, billedUserId: Id<"users">, versions: string[]) {
+		await Promise.all(
+			versions.map((version) =>
+				t.run(async (ctx) => {
+					const billedUser = await ctx.db.get("users", billedUserId);
+					if (!billedUser) throw new Error("Expected the seeded billed user");
+					await billing_db_emit_file_save(ctx, {
+						billedUser,
+						actorUserId: billedUserId,
+						organizationId: "organization_1" as Id<"organizations">,
+						workspaceId: "workspace_1" as Id<"organizations_workspaces">,
+						nodeId: "file_1" as Id<"files_nodes">,
+						version,
+					});
+				}),
+			),
+		);
+	}
+
+	test("parallel saves only insert outbox docs, and the drainer sends them to Polar as one batch", async () => {
+		const t = test_convex();
+		const billedUserId = await seed_signed_in_user_id(t);
+		const { enqueueActionSpy } = mock_billing_ingest_enqueue("work_outbox_batch");
+		const versions = Array.from({ length: 20 }, (_, index) => `v${index}`);
+
+		await emit_file_saves(t, billedUserId, versions);
+
+		// No save touched the usage pool. Each wrote its own outbox doc; one marker starts the drainer.
+		// Count the calls: the spy's ctx args cannot be printed in a failure message.
+		expect(enqueueActionSpy.mock.calls.length, "no save may touch the usage pool").toBe(0);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox").collect())).toHaveLength(20);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").collect())).toHaveLength(1);
+
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
+			events: versions.map((version) =>
+				expect.objectContaining({
+					name: "file_save",
+					externalId: `file_save::${billedUserId}::${billedUserId}::organization_1::workspace_1::file_1::${version}`,
+				}),
+			),
+		});
+		// The chain ended with the outbox.
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").collect())).toEqual([]);
+	});
+
+	test("the drainer sends 100 events per run, and a failed run or a stopped chain sends no event twice", async () => {
+		const t = test_convex();
+		const billedUserId = await seed_signed_in_user_id(t);
+		const { enqueueActionSpy } = mock_billing_ingest_enqueue("work_outbox_retry");
+		const versions = Array.from({ length: 150 }, (_, index) => `v${index}`);
+		await emit_file_saves(t, billedUserId, versions);
+		const marker = await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").unique());
+		vi.setSystemTime(Date.now() + 2000);
+
+		// A run that throws commits nothing: every event stays, and so does the marker.
+		enqueueActionSpy.mockRejectedValueOnce(new Error("pool unavailable"));
+		await expect(t.mutation(internal.billing.drain_usage_event_outbox, { markerId: marker!._id })).rejects.toThrow(
+			"pool unavailable",
+		);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox").collect())).toHaveLength(150);
+
+		// The cron restarts the stopped chain with a new marker; the old marker's run is then a no-op.
+		vi.setSystemTime(Date.now() + 5 * 60 * 1000);
+		await t.mutation(internal.billing.recover_usage_event_outbox, {});
+		await t.mutation(internal.billing.drain_usage_event_outbox, { markerId: marker!._id });
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+		// The failed call and two batches: 100 events, then the last 50. Each event was sent once.
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(3);
+		const batches = enqueueActionSpy.mock.calls
+			.slice(1)
+			.map((call) => (call[2] as { events: Array<{ externalId: string }> }).events.map((event) => event.externalId));
+		expect(batches.map((batch) => batch.length)).toEqual([100, 50]);
+		expect(new Set(batches.flat()).size).toBe(150);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").collect())).toEqual([]);
 	});
 });
 
@@ -5069,6 +5173,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 			},
 		});
 
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		expect_monthly_credit_ingest(enqueueActionSpy, {
 			callIndex: 1,
@@ -5124,6 +5229,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 				},
 			},
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 
 		await t.mutation(internal.billing.handle_polar_customer_state_update, {
@@ -5149,6 +5255,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		// Period unchanged: no second grant ingest, and Polar dedupes the
 		// already-ingested `monthly_credit` event by its deterministic
 		// `externalId` if a webhook ever does files another attempt.
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 	});
 
@@ -5194,6 +5301,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 			},
 		});
 
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		expect_monthly_credit_ingest(enqueueActionSpy, {
 			callIndex: 1,
@@ -5249,6 +5357,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 			},
 		});
 
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		expect_monthly_credit_ingest(enqueueActionSpy, {
 			callIndex: 1,
@@ -5280,6 +5389,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 			},
 		});
 
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 });

@@ -10,6 +10,7 @@ import {
 	test_finish_pending_update_run,
 	test_apply_file_pending_move,
 	test_convex,
+	test_drain_billing_usage_event_outbox,
 	test_rename_node,
 	test_move_nodes,
 	test_finish_transfer_run,
@@ -3302,6 +3303,7 @@ describe("prepared Save media proof", () => {
 			proposal: await ctx.db.get("files_pending_updates", proposal._id),
 			file: await ctx.db.get("files_nodes", target.id),
 		}));
+		await test_drain_billing_usage_event_outbox(f.t);
 		const savesBefore = file_save_events().length;
 		expect(
 			(
@@ -3319,6 +3321,7 @@ describe("prepared Save media proof", () => {
 				file: await ctx.db.get("files_nodes", target.id),
 			})),
 		).toEqual(before);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(file_save_events()).toHaveLength(savesBefore);
 		const inputs = await f.t.run((ctx) => ctx.db.query("files_pending_update_text_inputs").collect());
 		expect(inputs.some((input) => input.mediaValidation?.pendingUpdateId === proposal._id)).toBe(true);
@@ -7748,6 +7751,7 @@ describe("save_file_pending_update", () => {
 				message: "Insufficient funds",
 			},
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
 			expect.anything(),
 			internal.billing.ingest_events,
@@ -7832,6 +7836,7 @@ describe("save_file_pending_update", () => {
 				message: "Insufficient funds",
 			},
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
 			expect.anything(),
 			internal.billing.ingest_events,
@@ -7898,6 +7903,7 @@ describe("save_file_pending_update", () => {
 		}
 
 		expect(saveResult._yay.newSequence).not.toBeNull();
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
 			expect.anything(),
 			internal.billing.ingest_events,
@@ -7966,6 +7972,7 @@ describe("save_file_pending_update", () => {
 		}
 		expect(saveResult._yay.newSequence).not.toBeNull();
 		const savedVersion = `${(await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId}:${saveResult._yay.newSequence}`;
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 			events: [
 				expect.objectContaining({
@@ -8783,6 +8790,7 @@ describe("save_file_pending_update", () => {
 			throw new Error("Missing save result _yay while testing the stale replayed save");
 		}
 		expect(firstSave._yay.newSequence).toBe(1);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
 		enqueueActionSpy.mockClear();
 
@@ -8809,6 +8817,7 @@ describe("save_file_pending_update", () => {
 			baseLineageGeneration: 0,
 		});
 		expect(replayedSave._nay?.message).toBe("Stale save");
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
 			expect.anything(),
 			internal.billing.ingest_events,
@@ -8898,6 +8907,7 @@ describe("save_file_pending_update", () => {
 			sessionId: "other-user-session",
 		});
 		// The push above bills its own event; only the stale save below must not bill.
+		await test_drain_billing_usage_event_outbox(t);
 		enqueueActionSpy.mockClear();
 
 		// The mutation still runs with the action-read sequence: saving would stamp the pushed
@@ -8925,6 +8935,7 @@ describe("save_file_pending_update", () => {
 			baseLineageGeneration: 0,
 		});
 		expect(saved._nay?.message).toBe("Stale save");
+		await test_drain_billing_usage_event_outbox(t);
 		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
 			expect.anything(),
 			internal.billing.ingest_events,
@@ -9031,6 +9042,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		expect(after.lastSequenceSaved).toBeNull();
 
 		// One save billed, with the version snapshot as the save id.
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 			events: [
@@ -9085,6 +9097,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id })).toHaveLength(0);
 			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.path).toBe("/off-accept-mixed-renamed.txt");
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 	});
 
@@ -9239,6 +9252,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			});
 			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id })).not.toHaveLength(0);
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 	});
 
@@ -9272,6 +9286,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			).toHaveLength(0);
 			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9303,6 +9318,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			}));
 		const beforeAccept = await read_file();
 		expect(beforeAccept.assetId).toBe(savedAssetId);
+		await test_drain_billing_usage_event_outbox(t);
 		const billedBefore = file_save_events().length;
 		const count_deletion_jobs = () =>
 			t.run(async (ctx) => (await ctx.db.query("files_r2_object_deletion_jobs").collect()).length);
@@ -9317,6 +9333,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		expect(await read_file()).toEqual(beforeAccept);
 		expect(r2Objects.size).toBe(objectsBefore);
 		expect(await count_deletion_jobs()).toBe(deletionJobsBefore);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(billedBefore);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", row._id))).toEqual(row);
 	});
@@ -9365,6 +9382,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
 		expect(r2Objects.size).toBe(objectsBefore);
 		expect(await count_deletion_jobs()).toBe(deletionJobsBefore);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9402,6 +9420,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		await t.run(async (ctx) => {
 			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.assetId).toBe(seeded.assetId);
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9438,6 +9457,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toEqual(deletionJobsBefore);
 		expect(await read_seeded_pending_row(t, seeded)).toEqual(row);
 		expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe("# Off base");
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9471,6 +9491,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
 		expect(r2Objects.size).toBe(objectsBefore);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", row._id))).toEqual(row);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9517,6 +9538,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
 			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9567,6 +9589,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
 			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9616,6 +9639,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
 			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9661,6 +9685,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
 			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9733,6 +9758,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
 			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -9798,6 +9824,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		expect(after?.content?.stagedStateId).toBe(row.content?.stagedStateId);
 		expect(after?.content?.unstagedStateId).toBe(row.content?.unstagedStateId);
 		// The one event is the member save during the upload. The refused accept billed nothing.
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 	});
 });
@@ -11006,6 +11033,7 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 				current,
 				rootKind,
 			});
+			await test_drain_billing_usage_event_outbox(t);
 			const savesBefore = file_save_events().length;
 
 			const result = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, prepareArgs);
@@ -11024,6 +11052,7 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 				},
 			);
 			expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(current);
+			await test_drain_billing_usage_event_outbox(t);
 			expect(file_save_events()).toHaveLength(savesBefore);
 
 			// A second Review does not replace a family that is already current.
@@ -11087,12 +11116,14 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 				current: "saved\n",
 				rootKind,
 			});
+			await test_drain_billing_usage_event_outbox(t);
 			const savesBefore = file_save_events().length;
 			expect(
 				await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, prepareArgs),
 			).toEqual({ _yay: { pendingUpdate: null } });
 			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", original._id))).toBeNull();
 			expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe("saved\n");
+			await test_drain_billing_usage_event_outbox(t);
 			expect(file_save_events()).toHaveLength(savesBefore);
 		},
 	);
@@ -11337,6 +11368,7 @@ describe("prepare_file_pending_update_for_review", () => {
 				target: "asset",
 			});
 			const bytes = await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }));
+			await test_drain_billing_usage_event_outbox(t);
 			const eventsBefore = file_save_events().length;
 
 			const result = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, prepareArgs);
@@ -11345,6 +11377,7 @@ describe("prepare_file_pending_update_for_review", () => {
 			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(marked);
 			expect(await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }))).toEqual(bytes);
 			expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(fixture.current);
+			await test_drain_billing_usage_event_outbox(t);
 			expect(file_save_events()).toHaveLength(eventsBefore);
 			const batches = await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
 			expect(batches).toHaveLength(1);
@@ -11467,6 +11500,7 @@ describe("prepare_file_pending_update_for_review", () => {
 		},
 	])("merges $name without publishing text", async (fixture) => {
 		const { t, asUser, seeded, prepareArgs } = await seed_marked_proposal({ ...fixture, target: "asset" });
+		await test_drain_billing_usage_event_outbox(t);
 		const eventsBefore = file_save_events().length;
 
 		const result = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, prepareArgs);
@@ -11482,6 +11516,7 @@ describe("prepare_file_pending_update_for_review", () => {
 			unstagedMarkdown: fixture.mergedUnstaged,
 		});
 		expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(fixture.current);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(eventsBefore);
 	});
 
@@ -11490,6 +11525,7 @@ describe("prepare_file_pending_update_for_review", () => {
 		{ base: "start end\n", staged: "start Aend\n", unstaged: "start Aend\n", current: "start Bend\n" },
 	])("keeps the proposed line on an overlap ($base)", async (fixture) => {
 		const { t, seeded, asUser, prepareArgs } = await seed_marked_proposal({ ...fixture, target: "asset" });
+		await test_drain_billing_usage_event_outbox(t);
 		const eventsBefore = file_save_events().length;
 		const result = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, prepareArgs);
 		expect(result._nay).toBeUndefined();
@@ -11505,6 +11541,7 @@ describe("prepare_file_pending_update_for_review", () => {
 		expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(fixture.current);
 		const batches = await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
 		expect(batches).toHaveLength(0);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(eventsBefore);
 	});
 
@@ -11515,10 +11552,12 @@ describe("prepare_file_pending_update_for_review", () => {
 			unstaged: "new\n",
 			current: "new\n",
 		});
+		await test_drain_billing_usage_event_outbox(t);
 		const eventsBefore = file_save_events().length;
 		const result = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, prepareArgs);
 		expect(result).toEqual({ _yay: { pendingUpdate: null } });
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", prepareArgs.pendingUpdateId))).toBeNull();
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(eventsBefore);
 	});
 

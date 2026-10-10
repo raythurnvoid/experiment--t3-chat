@@ -26,6 +26,25 @@ const billing_workpool_usage_event = new Workpool(components.billing_workpool_us
 	} as const,
 });
 
+/**
+ * Polar answers 429 at about 100 calls a minute. So mutations do not send signed-in events one by
+ * one: they wait in `billing_usage_event_outbox`, and one drainer chain sends at most one batch per
+ * run, one run every 2 seconds. That is at most 30 Polar calls and 3,000 events a minute.
+ */
+const OUTBOX_DRAIN_INTERVAL_MS = 2000;
+const OUTBOX_BATCH_SIZE = 100;
+
+/**
+ * A run takes only events older than this, so a save that commits during the run rarely makes the
+ * run conflict.
+ */
+const OUTBOX_CUTOFF_MS = 1000;
+
+/**
+ * The recovery cron restarts the chain when the oldest event waits longer than this.
+ */
+const OUTBOX_RECOVERY_MS = 5 * 60 * 1000;
+
 export function billing_pick_billed_user_id(args: {
 	userId: Id<"users">;
 	organization: Pick<Doc<"organizations">, "default" | "billingMode" | "ownerUserId">;
@@ -241,7 +260,11 @@ export async function billing_db_emit_plugin_volume_file_writes(
 	await billing_ingest_events(ctx, { billedUserEvents });
 }
 
-/** Route app-owned billing events by billed user row: Polar for signed-in payers, local snapshot updates for anonymous payers. */
+/**
+ * Route app-owned billing events by billed user row: the Polar outbox for signed-in payers, local
+ * snapshot updates for anonymous payers. An action has no db, so it enqueues its signed-in events on
+ * the usage pool directly; only the admin `grant_credit` does that.
+ */
 export async function billing_ingest_events(
 	ctx: ActionCtx | MutationCtx,
 	args: {
@@ -266,9 +289,11 @@ export async function billing_ingest_events(
 	await Promise.all([
 		signedInEvents.length === 0
 			? Promise.resolve()
-			: billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, {
-					events: signedInEvents,
-				}),
+			: "db" in ctx
+				? db_insert_outbox_events(ctx, signedInEvents)
+				: billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, {
+						events: signedInEvents,
+					}),
 		anonymousUserEvents.length === 0
 			? Promise.resolve()
 			: "db" in ctx
@@ -279,6 +304,68 @@ export async function billing_ingest_events(
 						billedUserEvents: anonymousUserEvents,
 					}),
 	]);
+}
+
+/**
+ * Insert the events into the outbox. When no drainer marker exists, insert one and schedule a run.
+ *
+ * Savers only insert events and read the marker, so parallel saves do not conflict. When the drainer
+ * deletes the marker while a saver reads it, one of them retries, and the saver then inserts a new
+ * marker.
+ */
+async function db_insert_outbox_events(ctx: MutationCtx, events: billing_Event[]) {
+	for (const event of events) await ctx.db.insert("billing_usage_event_outbox", { event });
+	if (await ctx.db.query("billing_usage_event_outbox_drainers").first()) return;
+	const markerId = await ctx.db.insert("billing_usage_event_outbox_drainers", {});
+	await ctx.scheduler.runAfter(OUTBOX_DRAIN_INTERVAL_MS, internal.billing.drain_usage_event_outbox, { markerId });
+}
+
+/**
+ * One drainer run: send up to `OUTBOX_BATCH_SIZE` old events as one `ingest_events` job on the usage
+ * pool and delete them, then schedule the next run or end the chain. A missing marker ends the chain.
+ *
+ * The job and the deletes commit together, so each event reaches the pool once. The pool retries a
+ * failed Polar call (429, 5xx) with the whole batch. Polar skips each event whose `externalId` it
+ * already has, so a retry never counts an event twice.
+ */
+export async function billing_db_drain_usage_event_outbox(
+	ctx: MutationCtx,
+	args: { markerId: Id<"billing_usage_event_outbox_drainers"> },
+) {
+	const marker = await ctx.db.get("billing_usage_event_outbox_drainers", args.markerId);
+	if (!marker) return;
+
+	// Each run reads from the oldest event, so an event that commits late with an old creation time
+	// is still sent by a later run.
+	const docs = await ctx.db
+		.query("billing_usage_event_outbox")
+		.withIndex("by_creation_time", (q) => q.lt("_creationTime", Date.now() - OUTBOX_CUTOFF_MS))
+		.take(OUTBOX_BATCH_SIZE);
+	if (docs.length > 0) {
+		await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, {
+			events: docs.map((doc) => doc.event),
+		});
+		for (const doc of docs) await ctx.db.delete("billing_usage_event_outbox", doc._id);
+	}
+
+	// Read young events too, so an event inserted after the read above always gets a run.
+	if (await ctx.db.query("billing_usage_event_outbox").first())
+		await ctx.scheduler.runAfter(OUTBOX_DRAIN_INTERVAL_MS, internal.billing.drain_usage_event_outbox, args);
+	else await ctx.db.delete("billing_usage_event_outbox_drainers", marker._id);
+}
+
+/**
+ * Restart the drainer chain when it stopped, for example after a run that threw: the marker stays,
+ * so savers never schedule a new run. A new marker stops the old chain if it still runs, so only one
+ * chain sends.
+ */
+export async function billing_db_recover_usage_event_outbox(ctx: MutationCtx) {
+	const marker = await ctx.db.query("billing_usage_event_outbox_drainers").first();
+	const oldest = await ctx.db.query("billing_usage_event_outbox").first();
+	if (!marker || !oldest || oldest._creationTime >= Date.now() - OUTBOX_RECOVERY_MS) return;
+	await ctx.db.delete("billing_usage_event_outbox_drainers", marker._id);
+	const markerId = await ctx.db.insert("billing_usage_event_outbox_drainers", {});
+	await ctx.scheduler.runAfter(0, internal.billing.drain_usage_event_outbox, { markerId });
 }
 
 /**

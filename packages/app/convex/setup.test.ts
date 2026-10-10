@@ -158,6 +158,31 @@ export async function test_compact_metadata_catalog(t: TestConvexRoot<DataModel>
 }
 
 /**
+ * Run the billing outbox drainer until no marker is left, so a test sees every signed-in usage event
+ * of its saves as an `ingest_events` job on the usage pool. Only `Date.now` moves past the drainer's
+ * cutoff, and only during these runs.
+ */
+export async function test_drain_billing_usage_event_outbox(t: TestConvexRoot<DataModel>) {
+	// A test may mock `Date.now` itself; put its mock back after.
+	const previous = vi.isMockFunction(Date.now) ? vi.mocked(Date.now).getMockImplementation() : undefined;
+	// convex-test keeps creation times increasing, so a mocked clock in the past can be behind them.
+	const newest = await t.run(async (ctx) => await ctx.db.query("billing_usage_event_outbox").order("desc").first());
+	const now = Math.ceil(Math.max(Date.now(), newest?._creationTime ?? 0)) + 1001;
+	const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+	try {
+		for (let pass = 0; pass < 100; pass++) {
+			const marker = await t.run(async (ctx) => await ctx.db.query("billing_usage_event_outbox_drainers").first());
+			if (!marker) return;
+			await t.mutation(internal.billing.drain_usage_event_outbox, { markerId: marker._id });
+		}
+		throw new Error("The billing usage event outbox did not drain");
+	} finally {
+		if (previous) dateNow.mockImplementation(previous);
+		else dateNow.mockRestore();
+	}
+}
+
+/**
  * Return the real worker result after public paged Move intake.
  */
 export async function test_move_nodes(

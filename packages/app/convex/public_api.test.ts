@@ -4,7 +4,7 @@ import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { getFunctionName } from "convex/server";
 import type { Id } from "./_generated/dataModel";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_drain_billing_usage_event_outbox, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
@@ -4254,6 +4254,7 @@ describe("files upload-urls", () => {
 			(await asUser.query(api.quotas.get, { quotaName: "stored_file_bytes", membershipId: db.membershipId }))
 				?.usedCount,
 		).toBe(64);
+		await test_drain_billing_usage_event_outbox(t);
 		const billingCalls = enqueueActionSpy.mock.calls.filter(
 			(call) => getFunctionName(call[1] as never) === getFunctionName(internal.billing.ingest_events),
 		);
@@ -5512,6 +5513,7 @@ describe("files write billing", () => {
 		// committed write, in order.
 		const snapshotAssetIds = await read_version_snapshot_asset_ids({ t, db, nodeId: writtenBody.nodeId });
 		expect(snapshotAssetIds).toHaveLength(2);
+		await test_drain_billing_usage_event_outbox(t);
 		const events = file_save_events();
 		expect(events).toHaveLength(2);
 		for (const [index, event] of events.entries()) {
@@ -5544,6 +5546,7 @@ describe("files write billing", () => {
 			body: JSON.stringify({ path: "/billing/skip.md", content: "# Same\n" }),
 		});
 		expect(written.status).toBe(200);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 
 		const unchanged = await t.fetch("/api/v1/files/write", {
@@ -5554,6 +5557,7 @@ describe("files write billing", () => {
 		expect(unchanged.status).toBe(200);
 		expect(((await unchanged.json()) as { unchanged?: boolean }).unchanged).toBe(true);
 		// No publish happened, so no second event.
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 
 		// The gate runs before the unchanged comparison: a broke Free payer is refused even for a
@@ -5583,6 +5587,7 @@ describe("files write billing", () => {
 		expect(touched.status).toBe(200);
 		const touchedBody = (await touched.json()) as { files: Array<{ path: string; created: boolean }> };
 		expect(touchedBody.files).toEqual([expect.objectContaining({ path: "/billing/placeholder.md", created: true })]);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -5635,6 +5640,7 @@ describe("files write billing", () => {
 			body: JSON.stringify({ path: "/billing/existing.md", content: "# Existing\n" }),
 		});
 		expect(first.status).toBe(200);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 
 		const response = await t.fetch("/api/v1/files/write-many", {
@@ -5657,6 +5663,7 @@ describe("files write billing", () => {
 		expect(body.errors).toEqual([expect.objectContaining({ path: "/billing/existing.md", errorCode: "conflict" })]);
 
 		// One event per committed item; the refused item emits nothing.
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(3);
 	});
 
@@ -5694,6 +5701,7 @@ describe("files write billing", () => {
 		});
 		expect(written.status).toBe(200);
 
+		await test_drain_billing_usage_event_outbox(t);
 		const events = file_save_events();
 		expect(events).toHaveLength(1);
 		expect(events[0]).toEqual(

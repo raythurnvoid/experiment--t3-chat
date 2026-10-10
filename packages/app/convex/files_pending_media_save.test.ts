@@ -8,6 +8,7 @@ import {
 	test_save_file_pending_update,
 	test_finish_pending_update_run,
 	test_convex,
+	test_drain_billing_usage_event_outbox,
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
@@ -763,6 +764,7 @@ describe("Save copied rich-text media", () => {
 			const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
 			const billingCalls = () =>
 				enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events").length;
+			await test_drain_billing_usage_event_outbox(f.t);
 			const billedBefore = billingCalls();
 			expect(await save(f, pending)).toMatchObject({
 				_nay: { message: expect.stringContaining("Save the selected media") },
@@ -780,6 +782,7 @@ describe("Save copied rich-text media", () => {
 								.unique(),
 						)
 					: null;
+			await test_drain_billing_usage_event_outbox(f.t);
 			expect(billingCalls()).toBe(billedBefore);
 			expect(await proposal(f, pending.target)).toEqual(pending);
 			if (target.kind === "saved") {
@@ -809,6 +812,7 @@ describe("Save copied rich-text media", () => {
 				).toBeDefined();
 				expect(base?.singleSaveLatestRunId).not.toBe(refusedRun._id);
 			}
+			await test_drain_billing_usage_event_outbox(f.t);
 			expect(billingCalls()).toBeGreaterThan(billedBefore);
 		},
 	);

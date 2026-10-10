@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_drain_billing_usage_event_outbox, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_get_utf8_byte_size, files_ROOT_ID } from "../server/files.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
@@ -668,11 +668,13 @@ describe("volumes stage, write, and publish", () => {
 			{ path: "/two.txt", content: "two" },
 		];
 		expect((await write({ f, stagingId: staged.stagingId, files })).response.status).toBe(200);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events(), "N events for N files").toHaveLength(2);
 		expect(events().map((event) => event.metadata.amount)).toEqual([0.5, 0.5]);
 		expect(new Set(events().map((event) => event.externalId)).size).toBe(2);
 		const prior = (await volume_nodes(f)).filter((node) => node.kind === "file");
 		expect((await write({ f, stagingId: staged.stagingId, files })).response.status).toBe(200);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events(), "retry must not charge a replacement").toHaveLength(2);
 		const next = (await volume_nodes(f)).filter((node) => node.kind === "file");
 		expect(next).toHaveLength(2);
@@ -728,6 +730,7 @@ describe("volumes stage, write, and publish", () => {
 			errors: [{ path: "/failed", errorCode: "storage_failure", message: "Failed to store volume file" }],
 		});
 		expect(await unused_assets(f)).toEqual([]);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events()).toHaveLength(1);
 		expect((await calls(f)).at(-1)?.status).toBe("succeeded");
 	});
@@ -1006,6 +1009,7 @@ describe("scheduled public API authority", () => {
 		expect(
 			(await write({ f, stagingId: staged.stagingId, files: [{ path: "/record", content: "saved" }] })).response.status,
 		).toBe(200);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events()).toHaveLength(1);
 	});
 
@@ -1040,6 +1044,7 @@ describe("scheduled public API authority", () => {
 			expect(result.response.status, "scheduled writes must use the current owner credit").toBe(
 				empty === "owner" ? 402 : 200,
 			);
+			await test_drain_billing_usage_event_outbox(f.t);
 			if (empty === "owner") {
 				expect(events()).toEqual([]);
 				expect(objects.size).toBe(0);
@@ -1067,6 +1072,7 @@ describe("scheduled public API authority", () => {
 			"volume finalization must repeat direct scope consent",
 		).toBe(403);
 		expect(await volume_nodes(f)).toEqual([]);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events()).toEqual([]);
 		expect(await unused_assets(f)).toEqual([]);
 	});
@@ -1276,6 +1282,7 @@ describe("volumes caps and lifecycle", () => {
 			errors: [{ path: "/two", errorCode: "daily_cap_reached" }],
 		});
 		expect(objects.size - before).toBe(2);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events()).toHaveLength(2);
 		vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1000);
 		const remaining = await f.t.run(async (ctx) => {
@@ -1322,6 +1329,7 @@ describe("volumes caps and lifecycle", () => {
 		const next = await stage({ f });
 		const result = await write({ f, stagingId: next.stagingId, files: [{ path: "/refused", content: "refused" }] });
 		expect(result.body).toMatchObject({ written: [], errors: [{ errorCode: "daily_cap_reached" }] });
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events()).toHaveLength(1);
 	});
 
@@ -1485,6 +1493,7 @@ describe("volumes caps and lifecycle", () => {
 					.status,
 			).toBe(409);
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", old._id))).toEqual(old);
+			await test_drain_billing_usage_event_outbox(f.t);
 			expect(events()).toHaveLength(1);
 			expect(await unused_assets(f)).toEqual([]);
 		},
@@ -1548,6 +1557,7 @@ describe("volumes live authority and credits", () => {
 			).response.status,
 		).toBe(402);
 		expect(objects.size).toBe(0);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events()).toHaveLength(0);
 	});
 
@@ -1596,6 +1606,7 @@ describe("volumes live authority and credits", () => {
 					.status,
 			).toBe(401);
 			expect((await volume_nodes(f)).filter((node) => node.kind === "file")).toEqual([]);
+			await test_drain_billing_usage_event_outbox(f.t);
 			expect(events()).toHaveLength(0);
 			expect(await unused_assets(f)).toEqual([]);
 			expect((await calls(f)).at(-1)).toMatchObject({ status: "failed", responseStatus: 401 });
@@ -1647,6 +1658,7 @@ describe("volumes live authority and credits", () => {
 			(await write({ f, stagingId: staged.stagingId, files: [{ path: "/old", content: "changed" }] })).response.status,
 		).toBe(403);
 		for (const node of prior) expect(await f.t.run((ctx) => ctx.db.get("files_nodes", node._id))).toEqual(node);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events()).toHaveLength(2);
 		expect(await unused_assets(f)).toEqual([]);
 	});
@@ -1699,6 +1711,7 @@ describe("volumes live authority and credits", () => {
 				.status,
 		).toBe(402);
 		expect((await volume_nodes(f)).filter((node) => node.kind === "file")).toEqual([]);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events()).toHaveLength(0);
 		expect(await (await post({ f, route: "list", body: {} })).json()).toMatchObject({
 			usage: { fileCount: 0, dailyFilesLeft: 10_000 },
@@ -1739,6 +1752,7 @@ describe("volumes replacement transaction budget", () => {
 		});
 		expect(replaced.response.status, "old replacement content must fit each final transaction").toBe(200);
 		expect(replaced.body).toMatchObject({ written: files.map((file) => ({ path: file.path, bytes: 4 })), errors: [] });
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(events()).toHaveLength(5);
 		for (const node of prior) expect(await f.t.run((ctx) => ctx.db.get("files_nodes", node._id))).toBeNull();
 		expect(await (await post({ f, route: "list", body: {} })).json()).toMatchObject({

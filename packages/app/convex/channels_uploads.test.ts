@@ -9,7 +9,12 @@ import { channels_db_purge_workspace_batch } from "./channels.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { r2_create_asset_key, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
 import { files_UPLOAD_URL_TTL_MS } from "./files_nodes.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_drain_billing_usage_event_outbox,
+	test_mocks,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 
 let uploadUrlSpy: MockInstance;
 let downloadUrlSpy: MockInstance;
@@ -302,6 +307,7 @@ describe("settle_channel_upload_asset", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_r2_assets", minted.asset._id)).then((asset) => asset?.r2Key)).toBe(
 			minted.key,
 		);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
 	});
@@ -354,6 +360,7 @@ describe("settle_channel_upload_asset", () => {
 			expect(asset?.unfinalizedExpiresAt).toBe(minted.asset.unfinalizedExpiresAt);
 			expect(await ctx.db.query("files_nodes").collect()).toEqual([]);
 		});
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(enqueueActionSpy, "replayed settlement must bill once").toHaveBeenCalledTimes(1);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 			events: [

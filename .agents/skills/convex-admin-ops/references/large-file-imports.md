@@ -66,7 +66,7 @@ A native exception with unknown send status stays unresolved until readback. Do 
 
 ## Billing and upload finalization
 
-R2 finalization, text indexing, and Polar billing are separate queues. A ready upload and a durable file-save billing job do not mean Polar has ingested the event. Confirm the billing environment; never infer sandbox from a development app URL alone.
+R2 finalization, text indexing, and Polar billing are separate queues. A ready upload and a durable file-save billing job do not mean Polar has ingested the event. A save's event first waits a few seconds in `billing_usage_event_outbox`, then joins the usage pool in a batch of up to 100. Confirm the billing environment; never infer sandbox from a development app URL alone.
 
 For a healthy sandbox backlog, verify scoped event IDs, payer, amount, duplicates, retries, and recent worker progress. The queue contains current jobs, not the full historical billing ledger; an event absent from it may already have completed. Report pending accounting separately from file readiness. A full queue drain is not an import gate unless the task requires provider settlement. Failed or canceled work needs investigation. Do not alter billing rates, skip billing, or drain unrelated jobs as an import shortcut.
 

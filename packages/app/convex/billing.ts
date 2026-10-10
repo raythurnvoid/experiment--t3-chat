@@ -36,7 +36,9 @@ import { billing_POLAR_METER_EVENT, billing_event, billing_polar_client } from "
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	billing_db_check_credits,
+	billing_db_drain_usage_event_outbox,
 	billing_db_ingest_anonymous_user_events,
+	billing_db_recover_usage_event_outbox,
 	billing_ingest_events,
 	billing_pick_billed_user_id,
 } from "./billing_db.ts";
@@ -46,7 +48,7 @@ import {
 	should_never_happen,
 } from "../server/server-utils.ts";
 import { convertToDatabaseSubscription } from "../vendor/polar/src/component/util.ts";
-import app_convex_schema, { ai_model_call_purpose_validator } from "./schema.ts";
+import app_convex_schema, { billing_event_validator } from "./schema.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { billing_polar } from "./billing_polar.ts";
 
@@ -1796,135 +1798,6 @@ export const cancel_current_subscription = action({
 });
 
 // #region event ingestion
-const billing_event_validator = v.union(
-	v.object({
-		name: v.literal("manual_credit"),
-		externalCustomerId: v.id("users"),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-		}),
-	}),
-	v.object({
-		name: v.literal("file_save"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.string(),
-			workspaceId: v.string(),
-			nodeId: v.string(),
-			/**
-			 * See the `version` tuple item in `AppCompositeIds.billing`.
-			 */
-			version: v.string(),
-		}),
-	}),
-	v.object({
-		name: v.literal("file_upload"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.id("organizations"),
-			workspaceId: v.id("organizations_workspaces"),
-			nodeId: v.union(v.id("files_nodes"), v.null()),
-			assetId: v.id("files_r2_assets"),
-			bytes: v.number(),
-		}),
-	}),
-	v.object({
-		name: v.literal("plugin_volume_file_write"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.id("organizations"),
-			workspaceId: v.id("organizations_workspaces"),
-			assetId: v.id("files_r2_assets"),
-		}),
-	}),
-	v.object({
-		name: v.literal("monthly_credit"),
-		externalCustomerId: v.id("users"),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			subscriptionId: v.string(),
-			productId: v.string(),
-			productName: v.string(),
-			periodStart: v.string(),
-		}),
-	}),
-	v.object({
-		name: v.literal("ai_usage"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.string(),
-			workspaceId: v.string(),
-			modelId: v.string(),
-			/**
-			 * The provider request this charge belongs to (`ai_model_call_receipts`).
-			 */
-			modelCallId: v.string(),
-			purpose: ai_model_call_purpose_validator,
-			/**
-			 * `tokens` bills the request's tokens. `image` bills one finished picture.
-			 */
-			component: v.union(v.literal("tokens"), v.literal("image")),
-			imageCallId: v.union(v.string(), v.null()),
-			responseId: v.union(v.string(), v.null()),
-			providerModelId: v.union(v.string(), v.null()),
-			/**
-			 * Null on an image charge. A tokens charge always has the reported numbers.
-			 */
-			inputTokens: v.union(v.number(), v.null()),
-			outputTokens: v.union(v.number(), v.null()),
-			/**
-			 * `1` on an image charge, `0` on a tokens charge.
-			 */
-			generatedImages: v.number(),
-			/**
-			 * Null for inline AI, which has no chat thread.
-			 */
-			threadId: v.union(v.string(), v.null()),
-		}),
-	}),
-	v.object({
-		name: v.literal("browser_usage"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.string(),
-			workspaceId: v.string(),
-			sessionId: v.string(),
-			mode: v.union(v.literal("file"), v.literal("web")),
-			/**
-			 * The runner's real browser time for this session. `amount` charges every started minute.
-			 */
-			billedMs: v.number(),
-		}),
-	}),
-);
-
 export const ingest_events = internalAction({
 	args: {
 		events: v.array(billing_event_validator),
@@ -1969,6 +1842,30 @@ export const ingest_anonymous_user_events = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		await billing_db_ingest_anonymous_user_events(ctx, args);
+		return null;
+	},
+});
+
+/**
+ * One run of the usage event outbox drainer (`billing_db_drain_usage_event_outbox`).
+ */
+export const drain_usage_event_outbox = internalMutation({
+	args: { markerId: v.id("billing_usage_event_outbox_drainers") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await billing_db_drain_usage_event_outbox(ctx, args);
+		return null;
+	},
+});
+
+/**
+ * 5-minute cron. Restarts the outbox drainer when its chain stopped.
+ */
+export const recover_usage_event_outbox = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		await billing_db_recover_usage_event_outbox(ctx);
 		return null;
 	},
 });
