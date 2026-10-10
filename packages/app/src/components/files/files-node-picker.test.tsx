@@ -154,6 +154,7 @@ function PickerHarness(props: {
 	return (
 		<ConvexProvider client={client}>
 			<AppTenantProvider
+				userId={"user_1" as app_convex_Id<"users">}
 				membershipId={MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">}
 				workspaceId={"workspace_1" as app_convex_Id<"organizations_workspaces">}
 				workspaceName="home"

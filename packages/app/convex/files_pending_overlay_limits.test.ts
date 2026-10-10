@@ -13,7 +13,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_rebuild_node } from "./files_nodes.ts";
-import { advance as advance_review } from "./files_pending_update_runs.ts";
+import { advance as advance_review, start as start_review, seal as seal_review } from "./files_pending_update_runs.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import {
 	advance as advance_transfer,
@@ -23,9 +23,11 @@ import {
 } from "./files_transfer.ts";
 import { advance as advance_subtree } from "./files_subtree_ops.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
+import { files_metadata_db_insert_committed } from "./files_metadata.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_pending_update_run,
 	test_mocks,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
@@ -36,6 +38,7 @@ import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts"
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
 import { access_control_FILE_SHARE_LEVELS } from "../shared/access-control.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_metadata_catalog_lower, files_metadata_preflight_frontmatter } from "../shared/files-metadata.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -121,13 +124,7 @@ function expect_under_convex_limits(cost: ReturnType<typeof transaction_cost>) {
  */
 function budget_recorder() {
 	const peaks = new Map<string, { measured: Cost; calls: number }>();
-	const record = (phase: string, measured: Cost) => {
-		const peak = peaks.get(phase) ?? { measured: { ...zero }, calls: 0 };
-		for (const key of Object.keys(zero) as Array<keyof Cost>)
-			peak.measured[key] = Math.max(peak.measured[key], measured[key]);
-		peak.calls++;
-		peaks.set(phase, peak);
-		if (peak.calls === 1 || peak.calls % 500 === 0) console.info("Move budget phase", phase, peak.calls);
+	const check = (phase: string, measured: Cost) => {
 		expect_under_convex_limits(measured);
 		for (const [key, limit] of Object.entries({
 			databaseQueries: 4096,
@@ -139,21 +136,83 @@ function budget_recorder() {
 		}) as Array<[keyof Cost, number]>)
 			expect(measured[key], `${phase}: ${key}`).toBeLessThan(limit * 0.75);
 	};
-	return { peaks, record };
+	const record = (phase: string, measured: Cost) => {
+		const peak = peaks.get(phase) ?? { measured: { ...zero }, calls: 0 };
+		for (const key of Object.keys(zero) as Array<keyof Cost>)
+			peak.measured[key] = Math.max(peak.measured[key], measured[key]);
+		peak.calls++;
+		peaks.set(phase, peak);
+		if (peak.calls === 1 || peak.calls % 500 === 0) console.info("Move budget phase", phase, peak.calls);
+		check(phase, measured);
+	};
+	return {
+		peaks,
+		record,
+		check: (name: string) => {
+			for (const [phase, peak] of peaks) check(`${name}/${phase}`, peak.measured);
+		},
+	};
 }
 
-function measure_cohort(record: ReturnType<typeof budget_recorder>["record"]) {
+function measure_cohort(
+	record: ReturnType<typeof budget_recorder>["record"],
+	metadata: Doc<"files_metadata_docs">[] = [],
+) {
+	const rows = new Map(metadata.map((row) => [row._id, { fileNodeId: row.fileNodeId!, view: "before" as "before" | "after" }]));
+	const fileIds = new Set(metadata.map((row) => row.fileNodeId));
+	const pages: {
+		cohortId: Id<"files_move_cohorts">;
+		phase: string;
+		view: "before" | "after";
+		rowIds: Id<"files_metadata_docs">[];
+		fileNodeIds: Id<"files_nodes">[];
+	}[] = [];
 	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
 		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
 		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
 		const phase = cohort?.step === step ? cohort.workPhase : "stale";
+		const patch = metadata.length ? vi.spyOn(ctx.db, "patch") : null;
+		const insert = metadata.length ? vi.spyOn(ctx.db, "insert") : null;
+		const remove = metadata.length ? vi.spyOn(ctx.db, "delete") : null;
 		const before = await ctx.meta.getTransactionMetrics();
-		const result = await handler(ctx, args);
-		// The registered handler includes the mutation wrapper and its overlay flush.
-		const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
-		record(`cohort/${phase}`, cost);
-		return result;
+		try {
+			const result = await handler(ctx, args);
+			// The registered handler includes the mutation wrapper and its overlay flush.
+			const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
+			if (insert) for (const [index, call] of insert.mock.calls.entries()) {
+				const fields = call[1] as Partial<Doc<"files_metadata_docs">>;
+				if (
+					phase !== "sides" || call[0] !== "files_metadata_docs" || fields.sourceKind !== "committed" ||
+					!fileIds.has(fields.fileNodeId) || fields.moveView?.view !== "after"
+				) continue;
+				const id = await insert.mock.results[index]!.value as Id<"files_metadata_docs">;
+				rows.set(id, { fileNodeId: fields.fileNodeId!, view: "after" });
+			}
+			const written = new Map<"before" | "after", Id<"files_metadata_docs">[]>();
+			if (patch) for (const [table, id, fields] of patch.mock.calls) {
+				const row = rows.get(id as Id<"files_metadata_docs">);
+				if (
+					!["sides", "finish_sides", "abort_sides"].includes(phase) ||
+					table !== "files_metadata_docs" || !row || !("moveView" in fields)
+				) continue;
+				if (phase === "sides" && (fields as Partial<Doc<"files_metadata_docs">>).moveView?.view !== "before") continue;
+				written.set(row.view, [...(written.get(row.view) ?? []), id as Id<"files_metadata_docs">]);
+			}
+			if (remove) for (const [table, id] of remove.mock.calls) {
+				const row = rows.get(id as Id<"files_metadata_docs">);
+				if ((phase === "finish_sides" || phase === "abort_sides") && table === "files_metadata_docs" && row)
+					written.set(row.view, [...(written.get(row.view) ?? []), id as Id<"files_metadata_docs">]);
+			}
+			for (const [view, rowIds] of written) pages.push({ cohortId, phase, view, rowIds, fileNodeIds: rowIds.map((id) => rows.get(id)!.fileNodeId) });
+			record(`cohort/${phase}`, cost);
+			return result;
+		} finally {
+			patch?.mockRestore();
+			insert?.mockRestore();
+			remove?.mockRestore();
+		}
 	});
+	return pages;
 }
 
 async function finish_scheduled(t: ReturnType<typeof test_convex>, isDone: () => Promise<boolean>) {
@@ -330,7 +389,7 @@ describe("paged Move transaction budgets", () => {
 	// Moves a heavy file with `keys` frontmatter and metadata keys (128 is the maximum) and `lines`
 	// lines of text while `owners` users draft a move of it. Also moves a folder with restricted
 	// folders and a file with a link.
-	const measure_paged_move = async (args: { owners: number; keys: number; lines: number }) => {
+	const measure_paged_move = async (args: { owners: number; keys: number; lines: number; dense?: boolean }) => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -339,21 +398,32 @@ describe("paged Move transaction budgets", () => {
 		);
 		const frontmatter = [
 			"---",
-			...dates.map((date, index) => `field${index}: ["distinct-${index}", "${date}"]`),
+			...dates.map((date, index) => {
+				const key = args.dense ? `field${index}-`.padEnd(148, "k") : `field${index}`;
+				const value = args.dense ? `distinct-${index}-`.padEnd(1024, "x") : `distinct-${index}`;
+				return `${key}: ["${value}", "${date}"]`;
+			}),
 			"---",
 			"",
 		].join("\n");
 		const body = "A large saved file keeps its text chunks beside both metadata sources.\n".repeat(args.lines);
+		const textContent = frontmatter + body;
+		const metadataYaml = dates.map((date, index) => `key${index}: "${date}"`).join("\n");
+		if (args.dense) {
+			expect(new TextEncoder().encode(textContent).byteLength).toBeLessThanOrEqual(900_000);
+			expect(new TextEncoder().encode(metadataYaml).byteLength).toBeLessThanOrEqual(16 * 1024);
+			expect(files_metadata_preflight_frontmatter(textContent)._yay).toMatchObject({ fieldCount: 128, indexDocumentCount: 512 });
+		}
 		const heavyId = await test_create_saved_text_file(t, {
 			membershipId: db.membershipId,
 			path: "/project/heavy.md",
-			textContent: frontmatter + body,
+			textContent,
 		});
 		expect(
 			await asOwner.mutation(api.files_metadata.set_entries, {
 				membershipId: db.membershipId,
 				fileNodeId: heavyId,
-				metadataYaml: dates.map((date, index) => `key${index}: "${date}"`).join("\n"),
+				metadataYaml,
 			}),
 		).toEqual({ _yay: null });
 		await t.finishAllScheduledFunctions(vi.runAllTimers);
@@ -379,6 +449,7 @@ describe("paged Move transaction budgets", () => {
 		});
 		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(args.keys * 4);
 		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("metadata."))).toHaveLength(args.keys * 3);
+		if (args.dense) expect(seeded.metadata.every((doc) => doc.fieldPath.length <= 160), "Dense metadata keys fit the catalog").toBe(true);
 		// Owner steps page these docs 8 at a time (PAGE_SIZE in files_move_owner_work.ts). Use full pages.
 		expect(seeded.metadata.length, "the metadata fills more than one owner page").toBeGreaterThan(8);
 		let extraLinkId: Id<"files_nodes"> | null = null;
@@ -553,8 +624,8 @@ describe("paged Move transaction budgets", () => {
 			expect(await ctx.db.query("files_share_links").collect()).toHaveLength(500);
 		});
 
-		const { peaks, record } = budget_recorder();
-		measure_cohort(record);
+		const { peaks, record, check } = budget_recorder();
+		const metadataPages = measure_cohort(record, args.dense ? seeded.metadata : []);
 		// The metadata catalog's compactor runs in its own transactions while the Move goes on.
 		test_spy_handler(compact_metadata_catalog, async (handler, ctx, args) => {
 			const before = await ctx.meta.getTransactionMetrics();
@@ -619,6 +690,12 @@ describe("paged Move transaction budgets", () => {
 		});
 		// Move completion can come before its delayed catalog work.
 		await finish_scheduled(t, async () => {
+			if (args.dense && metadataPages.length) {
+				const page = metadataPages[0]!;
+				const cohort = await t.run((ctx) => ctx.db.get("files_move_cohorts", page.cohortId));
+				expect(cohort).not.toBeNull();
+				expect(page.rowIds.length, "Dense metadata uses 64 rows when the byte bound allows it").toBe(64);
+			}
 			if ((await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt === undefined)
 				return false;
 			return await t.run(async (ctx) => !(await ctx.db
@@ -641,6 +718,24 @@ describe("paged Move transaction budgets", () => {
 		).toBeGreaterThan(0);
 		expect(peaks.get("cohort/descendants")?.calls).toBeGreaterThan(0);
 		expect(peaks.get("cohort/finish_owners")?.calls).toBeGreaterThan(0);
+		if (args.dense) {
+			// Check outside the worker too: a worker can catch a failed budget assertion.
+			check("Dense metadata Move stays below the budget after the flush");
+			const metadata = await t.run((ctx) => ctx.db.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId))
+				.collect());
+			const metadata_fields = (rows: Doc<"files_metadata_docs">[]) => rows.map((row) => Object.fromEntries(Object.entries(row)
+				.filter(([key]) => !["_id", "_creationTime", "moveView", "path", "treePath", "parentId"].includes(key))))
+				.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+			expect(metadata, "Dense metadata keeps all 896 saved docs").toHaveLength(896);
+			expect(metadata_fields(metadata)).toEqual(metadata_fields(seeded.metadata));
+			expect(metadata.every((row) => row.moveView === undefined && row.path === "/target/heavy.md" && row.treePath === row.path)).toBe(true);
+			expect(metadata.filter((row) => row.docKind === "field").every((row) => row.parentId === seeded.target._id)).toBe(true);
+			expect((await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
+				path: "/target/heavy.md", includePending: false,
+			}))?.content, "Dense metadata Move keeps its saved text").toBe(textContent);
+		}
 	};
 
 	// The full size: 16 owners with 896 metadata docs each and a large text make about 8,700 Move steps.
@@ -655,7 +750,7 @@ describe("paged Move transaction budgets", () => {
 	// The maximum metadata with one owner. 200 lines make about 12 text chunks, more than one page of
 	// 8. A larger text only adds steps, and saving it takes most of the full test's fixture time.
 	test("measures scheduled phases with maximum metadata, shares, links and one draft copy", async () => {
-		await measure_paged_move({ owners: 1, keys: 128, lines: 200 });
+		await measure_paged_move({ owners: 1, keys: 128, lines: 200, dense: true });
 	}, 1_200_000);
 
 	// The owner cap with two keys: 14 metadata docs, two pages per owner.
@@ -861,6 +956,189 @@ describe("cohort Accept transaction budgets", () => {
 			"linked public Accept phase peaks, with the metadata catalog",
 			JSON.stringify(Object.fromEntries(peaks)),
 		);
+	}, 180_000);
+
+	test.each([
+		["mixed", "finish"],
+		["mixed", "stop"],
+		["bytes", "finish"],
+		["bytes", "stop"],
+	] as const)("Metadata cleanup keeps %s docs on native %s", async (size, mode) => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const nodes: Doc<"files_nodes">[] = [];
+		const texts: string[] = [];
+		let folder: Doc<"files_nodes">;
+		if (size === "mixed") {
+			folder = await t.run((ctx) => insert_saved_node(ctx, db, { parent: null, name: "metadata", kind: "folder" }));
+			for (let index = 0; index < 65; index++) {
+				const node = await t.run((ctx) => insert_saved_node(ctx, db, { parent: folder, name: `file-${index}.md`, kind: "file" }));
+				const key = `field${index}-`.padEnd(148, "k");
+				const value = `value-${index}-`.padEnd(1024, "x");
+				await test_run_with_flush(t, (ctx) => files_metadata_db_insert_committed(ctx, {
+					...scope, nodeId: node._id, yjsSequence: 1, markdownContent: `---\n${key}: ${value}\n---\n`,
+				}));
+				nodes.push(node);
+			}
+		} else {
+			const createdFolder = await asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId, parentId: files_ROOT_ID, path: "metadata",
+			});
+			if (createdFolder._nay) throw new Error(createdFolder._nay.message);
+			folder = (await t.run((ctx) => ctx.db.get("files_nodes", createdFolder._yay.nodeId)))!;
+			for (let index = 0; index < 3; index++) {
+				// Explicit YAML keys have no 1,024-character implicit-key limit.
+				const text = index === 0
+					? `---\n? ${"k".repeat(898_900)}\n: []\n---\n`
+					: `---\nfield${index}: ${`value-${index}-`.padEnd(898_900, "x")}\n---\n`;
+				expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(900_000);
+				expect(files_metadata_preflight_frontmatter(text)._yay).toMatchObject({
+					fieldCount: 1, indexDocumentCount: index === 0 ? 1 : 2,
+				});
+				const created = await asOwner.action(api.files_nodes_content.create_text_node, {
+					membershipId: db.membershipId, parentId: folder._id, path: `file-${index}.md`,
+				});
+				if (created._nay) throw new Error(created._nay.message);
+				const nodeId = created._yay.nodeId;
+				// The member Save door keeps exact text without building draft Yjs branches.
+				expect(await asOwner.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId, nodeId, acknowledgeDropCollaborativeHistory: true,
+				})).toEqual({ _yay: null });
+				expect(await asOwner.action(api.files_nodes_content.replace_file_content, {
+					membershipId: db.membershipId, nodeId, text,
+				})).toEqual({ _yay: null });
+				nodes.push((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!);
+				expect(nodes[index], "Near-cap metadata uses a native Markdown file with collaboration off").toMatchObject({
+					contentType: "text/markdown;charset=utf-8", textKind: "rich_text", collaborationEnabled: false,
+					yjsSnapshotId: null, yjsLastSequenceId: null,
+				});
+				texts.push(text);
+				expect((await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					...scope, path: nodes[index]!.path, includePending: false,
+				}))?.content, "Near-cap metadata starts from the exact native saved text").toBe(text);
+			}
+		}
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		const originals = await t.run(async (ctx) => (await Promise.all(nodes.map((node) => ctx.db.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", node._id))
+			.collect()))).flat());
+		expect(originals, "The native metadata producer creates every expected field and value").toHaveLength(size === "mixed" ? 130 : 5);
+		if (size === "mixed") expect(originals.every((row) => row.fieldPath.length === 160), "Mixed metadata keys reach the catalog cap").toBe(true);
+		else expect(nodes.map((node) => originals.filter((doc) => doc.fileNodeId === node._id).length), "Near-cap text creates the expected metadata docs per file").toEqual([1, 2, 2]);
+		const fieldPaths = [...new Set(originals.map((row) => row.fieldPath).filter((field) => field.length <= 160))];
+		const readCatalog = () => t.run(async (ctx) => (await Promise.all(fieldPaths.flatMap((fieldPath) =>
+			(["key", "parent", "value"] as const).map((family) => ctx.db.query("files_metadata_catalog")
+				.withIndex("by_org_ws_family_parent_lower_field_value", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)
+					.eq("moveView.cohortId", undefined).eq("moveView.view", undefined).eq("family", family)
+					.eq("parentId", family === "parent" ? folder._id : undefined).eq("fieldPathLower", files_metadata_catalog_lower(fieldPath)).eq("fieldPath", fieldPath))
+				.collect())))).flat().map(({ _id, _creationTime, ...row }) => row));
+		const catalogBefore = await readCatalog();
+		expect(catalogBefore).toHaveLength(size === "mixed" ? 195 : 4);
+		expect(catalogBefore.every((row) => row.count === 1)).toBe(true);
+		const proposalResult = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...scope, target: { kind: "saved", id: folder._id }, destParent: { kind: "root" }, destName: "moved",
+		});
+		if (proposalResult._nay) throw new Error(proposalResult._nay.message);
+		const proposal = await t.run((ctx) => ctx.db.query("files_pending_updates")
+			.withIndex("by_user_target", (q) => q.eq("userId", db.userId).eq("target.kind", "saved").eq("target.id", folder._id)).unique());
+		if (!proposal) throw new Error("Expected the folder Move proposal");
+		const { peaks, record, check } = budget_recorder();
+		const pages = measure_cohort(record, originals);
+		for (const [phase, registered] of [
+			["review/start", start_review], ["review/seal", seal_review], ["review/advance", advance_review],
+			["catalog/compactor", compact_metadata_catalog], ["overlay", run_overlay_job],
+		] as const) test_spy_handler(registered, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			record(phase, transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
+		const started = await asOwner.mutation(api.files_pending_update_runs.start, {
+			membershipId: db.membershipId, requestId: crypto.randomUUID(), kind: "accept", expectedItemCount: 1,
+			items: [{ pendingUpdateId: proposal._id, reviewedRevision: proposal.revision, selectedContentStateId: null }],
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const { runId, activityId } = started._yay;
+		expect(await asOwner.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId })).toEqual({ _yay: null });
+		for (let pass = 0; pass < 1000; pass++) {
+			const job = await t.run((ctx) => ctx.db.query("files_pending_overlay_jobs")
+				.withIndex("by_org_ws", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)).first());
+			if (job) await t.mutation(internal.files_pending_overlay.run_job, { kind: job.kind, key: job.key, nextAttemptAt: job.nextAttemptAt });
+			else await t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
+			if ((await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))?.step !== "planning") break;
+			if (pass === 999) throw new Error("Metadata Review planning did not finish");
+		}
+		await t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const unit = await t.run((ctx) => ctx.db.query("files_pending_update_run_units").withIndex("by_run_order", (q) => q.eq("runId", runId)).first());
+		if (!unit?.cohortId) throw new Error("Metadata Review did not start a cohort");
+		const cohortId = unit.cohortId;
+		let stopped = false;
+		let bytePage: Id<"files_metadata_docs">[] | null = null;
+		let completed: Doc<"files_move_cohorts"> | null = null;
+		for (let pass = 0; pass < 10_000; pass++) {
+			const cohort = await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId));
+			if (!cohort) throw new Error("Missing metadata cohort");
+			const staged = pages.filter((page) => page.phase === "sides").reduce((count, page) => count + page.rowIds.length, 0);
+			if (mode === "stop" && !stopped && staged >= (size === "mixed" ? 66 : 5)) {
+				expect(cohort, "Stop reaches real metadata staging before publication").toMatchObject({ phase: "staging", workPhase: "sides", publishedAt: null, errorCode: null });
+				expect(await asOwner.mutation(api.activities.request_stop, { membershipId: db.membershipId, activityId })).toEqual({ _yay: null });
+				stopped = true;
+				continue;
+			}
+			if (size === "bytes" && bytePage === null && (cohort.workPhase === "finish_sides" || cohort.workPhase === "abort_sides")) {
+				// This expected native page is read outside the measured handler.
+				const page = await t.run((ctx) => ctx.db.query("files_metadata_docs").withIndex("by_move_view", (q) => q.eq("moveView.cohortId", cohortId).eq("moveView.view", "before"))
+					.paginate({ cursor: null, numItems: 64, maximumBytesRead: 1024 * 1024 }));
+				expect(page.isDone, "Near-cap metadata reaches the byte bound before the row bound").toBe(false);
+				expect(page.page.length).toBeLessThan(64);
+				bytePage = page.page.map((row) => row._id);
+			}
+			const cleanup = pages.filter((page) => page.phase === "finish_sides" || page.phase === "abort_sides");
+			if (cleanup.length) {
+				if (size === "mixed") expect(cleanup[0]!.rowIds.length, "Saved metadata cleanup takes 64 rows when they fit").toBe(64);
+				else expect(cleanup[0]!.rowIds, "Metadata cleanup keeps the 1 MiB page bound").toEqual(bytePage);
+			}
+			if (cohort.phase === "complete") { completed = cohort; break; }
+			await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			if (pass === 9999) throw new Error("Metadata cohort did not finish");
+		}
+		await t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
+		await test_finish_pending_update_run(asOwner, runId);
+		await finish_scheduled(t, async () => !(await t.run((ctx) => ctx.db.query("files_metadata_catalog_compactors")
+			.withIndex("by_org_ws", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)).first())));
+		check("Saved metadata cleanup stays below the budget after the flush");
+		expect(completed).toMatchObject({ phase: "complete", visibleView: mode === "stop" ? "before" : "after", errorCode: mode === "stop" ? "stopped" : null });
+		if (mode === "stop") expect(completed?.publishedAt).toBeNull();
+		else expect(completed?.publishedAt).not.toBeNull();
+		expect((await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.activity).toMatchObject({
+			status: mode === "stop" ? "canceled" : "succeeded",
+			progress: { completed: mode === "stop" ? 0 : 1, canceled: mode === "stop" ? 1 : 0, failed: 0, blocked: 0 },
+		});
+		const finalNodes = await t.run((ctx) => Promise.all(nodes.map((node) => ctx.db.get("files_nodes", node._id))));
+		expect(finalNodes.map((node) => [node?._id, node?.parentId, node?.path, node?.treePath])).toEqual(nodes.map((node) => {
+			const path = mode === "stop" ? node.path : node.path.replace("/metadata/", "/moved/");
+			return [node._id, folder._id, path, path];
+		}));
+		const metadata = await t.run(async (ctx) => (await Promise.all(nodes.map((node) => ctx.db.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", node._id)).collect()))).flat());
+		if (mode === "stop") expect(metadata, "Stop before publication keeps every saved metadata field").toEqual(originals);
+		else {
+			const metadata_fields = (rows: Doc<"files_metadata_docs">[]) => rows.map((row) => Object.fromEntries(Object.entries(row).filter(([key]) => !["_id", "_creationTime", "moveView", "path", "treePath"].includes(key))))
+				.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+			expect(metadata_fields(metadata), "Native Move keeps every saved metadata field and value").toEqual(metadata_fields(originals));
+		}
+		const paths = new Map(finalNodes.map((node) => [node!._id, node!.path]));
+		expect(metadata.every((row) => row.moveView === undefined && row.path === paths.get(row.fileNodeId!) && row.treePath === row.path)).toBe(true);
+		expect(finalNodes.every((node) => node?.moveCohortId === undefined)).toBe(true);
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual(mode === "stop" ? proposal : null);
+		expect(await readCatalog(), "Native metadata cleanup keeps exact catalog counts").toEqual(catalogBefore);
+		if (size === "mixed") expect(new Set(pages.find((page) => page.phase === (mode === "stop" ? "abort_sides" : "finish_sides"))!.fileNodeIds).size, "Metadata cleanup pages cross file boundaries").toBeGreaterThan(1);
+		else for (const [index, text] of texts.entries()) expect((await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			...scope, path: finalNodes[index]!.path, includePending: false,
+		}))?.content, "Native metadata cleanup keeps every near-cap saved text").toBe(text);
+		console.info("saved metadata page peaks, with the catalog", JSON.stringify({ size, mode, phases: Object.fromEntries(peaks), pages: pages.map(({ phase, view, rowIds }) => ({ phase, view, rows: rowIds.length })) }));
 	}, 180_000);
 });
 

@@ -9,7 +9,9 @@ import {
 	test_move_nodes,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_spy_handler,
 } from "./setup.test.ts";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	files_pending_update_runs_db_delete_run_batch,
@@ -862,8 +864,71 @@ describe("review jobs", () => {
 		const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 
 		const { runId } = await start_review({ f, kind: "accept", proposals });
+		const stagePages: number[] = [];
+		const cleanupPages = { before: [] as number[], after: [] as number[] };
+		const originals = new Set((await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect())).map((row) => row._id));
+		const copies = new Set<Id<"files_metadata_docs">>();
+		test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+			const patch = vi.spyOn(ctx.db, "patch");
+			const insert = vi.spyOn(ctx.db, "insert");
+			const remove = vi.spyOn(ctx.db, "delete");
+			try {
+				const result = await handler(ctx, args);
+				let staged = 0;
+				let copied = 0;
+				let before = 0;
+				let after = 0;
+				for (const [index, call] of insert.mock.calls.entries()) {
+					const fields = call[1] as Partial<Doc<"files_metadata_docs">>;
+					if (call[0] !== "files_metadata_docs" || fields.sourceKind !== "committed" || fields.moveView?.view !== "after") continue;
+					copies.add(await insert.mock.results[index]!.value as Id<"files_metadata_docs">);
+					copied++;
+				}
+				for (const [table, id, fields] of patch.mock.calls) {
+					if (table !== "files_metadata_docs") continue;
+					const view = (fields as Partial<Doc<"files_metadata_docs">>).moveView;
+					if (originals.has(id as Id<"files_metadata_docs">) && view?.view === "before") staged++;
+					else if (copies.has(id as Id<"files_metadata_docs">) && "moveView" in fields && view === undefined) after++;
+				}
+				for (const [table, id] of remove.mock.calls) if (table === "files_metadata_docs" && originals.has(id as Id<"files_metadata_docs">)) before++;
+				if (staged) {
+					expect(copied).toBe(staged);
+					stagePages.push(staged);
+				}
+				if (before) cleanupPages.before.push(before);
+				if (after) cleanupPages.after.push(after);
+				return result;
+			} finally {
+				patch.mockRestore();
+				insert.mockRestore();
+				remove.mockRestore();
+			}
+		});
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const firstUnit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units")
+			.withIndex("by_run_order", (q) => q.eq("runId", runId)).first());
+		if (!firstUnit?.cohortId) throw new Error("Expected the review cohort");
+		// Check a real page early. The old page size must fail here, before the full job finishes.
+		for (let pass = 0; pass < 10_000; pass++) {
+			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", firstUnit.cohortId!));
+			if (!cohort) throw new Error("Missing review cohort");
+			if (stagePages.length) expect(stagePages[0], "Saved metadata staging moves all 20 fields in its first page").toBe(20);
+			if (cleanupPages.before.length) {
+				expect(cohort.publishedAt).not.toBeNull();
+				expect(cleanupPages.before[0], "Saved metadata cleanup takes 64 rows when they fit").toBe(64);
+				break;
+			}
+			if (cohort.phase === "complete") throw new Error("Review completed without metadata cleanup");
+			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			if (pass === 9999) throw new Error("Review did not reach metadata cleanup");
+		}
 		const result = await finish_review(f, runId);
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
+		expect(stagePages, "Reviewed Delete stages metadata in one page per file").toHaveLength(150);
+		expect(cleanupPages, "Reviewed Delete cleans both metadata views in 94 pages").toMatchObject({
+			before: Array.from({ length: 47 }, (_, index) => index === 46 ? 56 : 64),
+			after: Array.from({ length: 47 }, (_, index) => index === 46 ? 56 : 64),
+		});
 
 		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
 		expect(units).toMatchObject([{ status: "completed", errorMessage: null }]);

@@ -498,8 +498,8 @@ describe("unarchive_nodes", () => {
 			expect((await f.asOwner.query(api.files_transfer.get, {
 				membershipId: f.db.membershipId,
 				runId,
-			}))?.activity, "Move waits while Restore is still running").toMatchObject({
-				status: "running",
+			}))?.activity, "Move stays queued while Restore is running").toMatchObject({
+				status: "queued",
 				progress: { completed: 0, blocked: 0 },
 			});
 			expect(await read_node(f, nodeId), "a waiting Move keeps its source in place").toMatchObject({

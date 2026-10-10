@@ -78,6 +78,7 @@ Element.prototype.scrollIntoView = vi.fn();
 function render_with_tenant(ui: ReactElement) {
 	return render(
 		<AppTenantProvider
+			userId={"user_1" as app_convex_Id<"users">}
 			membershipId={"membership-1" as app_convex_Id<"organizations_workspaces_users">}
 			workspaceId={"workspace-1" as app_convex_Id<"organizations_workspaces">}
 			workspaceName="home"

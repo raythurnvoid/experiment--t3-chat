@@ -86,6 +86,7 @@ import {
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 const WAKE_PAGE_SIZE = 8;
+const METADATA_PAGE_SIZE = 64;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
 function placement_header(node: Doc<"files_nodes">) {
@@ -1527,7 +1528,7 @@ async function db_sides(
 							.eq("moveView.cohortId", undefined)
 							.eq("moveView.view", undefined),
 					)
-					.paginate({ cursor: null, numItems: 8, maximumBytesRead: 1024 * 1024 });
+					.paginate({ cursor: null, numItems: METADATA_PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
 				for (const row of page.page) {
 					const { _id, _creationTime: _time, ...fields } = row;
 					await ctx.db.patch("files_metadata_docs", _id, { moveView: beforeTag });
@@ -1662,7 +1663,11 @@ async function db_cleanup_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 			const page = await ctx.db
 				.query(table)
 				.withIndex("by_move_view", (q) => q.eq("moveView.cohortId", cohort._id).eq("moveView.view", view))
-				.paginate({ cursor: null, numItems: table === "files_yjs_updates" ? 1 : 8, maximumBytesRead: 1024 * 1024 });
+				.paginate({
+					cursor: null,
+					numItems: table === "files_metadata_docs" ? METADATA_PAGE_SIZE : table === "files_yjs_updates" ? 1 : 8,
+					maximumBytesRead: 1024 * 1024,
+				});
 			for (const row of page.page) {
 				if (view === chosen) await ctx.db.patch(table, row._id, { moveView: undefined });
 				else await ctx.db.delete(table, row._id);

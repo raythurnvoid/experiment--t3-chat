@@ -89,6 +89,7 @@ function RouteTenantOrganizationWorkspaceLayout() {
 
 	return (
 		<AppTenantProvider
+			userId={membership.userId}
 			membershipId={membership._id}
 			organizationId={organizationId}
 			organizationName={organizationName}

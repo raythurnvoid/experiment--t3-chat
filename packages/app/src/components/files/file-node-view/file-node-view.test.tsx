@@ -717,7 +717,11 @@ function renderFileView(searchParams: FileNodeView_SearchParams = { nodeId: NODE
 	const result = render(<FileNodeView searchParams={searchParams} onNavigateSearch={onNavigateSearch} />, {
 		wrapper: ({ children }) => (
 			<AppActivitiesProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
-				<FilesClipboardProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
+				<FilesClipboardProvider
+					key={tenantContextMock().membershipId}
+					userId={"user_1" as app_convex_Id<"users">}
+					membershipId={tenantContextMock().membershipId}
+				>
 					{children}
 				</FilesClipboardProvider>
 			</AppActivitiesProvider>
@@ -2829,7 +2833,9 @@ describe("FileNodeView folder filter", () => {
 		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
 			wrapper: ({ children }) => (
 				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-					<FilesClipboardProvider membershipId={tenantContextMock().membershipId}>{children}</FilesClipboardProvider>
+					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={tenantContextMock().membershipId}>
+						{children}
+					</FilesClipboardProvider>
 				</AppActivitiesProvider>
 			),
 		});
@@ -2933,7 +2939,9 @@ describe("FileNodeView folder filter", () => {
 		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
 			wrapper: ({ children }) => (
 				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-					<FilesClipboardProvider membershipId={tenantContextMock().membershipId}>{children}</FilesClipboardProvider>
+					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={tenantContextMock().membershipId}>
+						{children}
+					</FilesClipboardProvider>
 				</AppActivitiesProvider>
 			),
 		});
@@ -3009,7 +3017,12 @@ describe("FileNodeView folder filter", () => {
 			{
 				wrapper: ({ children }) => (
 					<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-						<FilesClipboardProvider membershipId={tenantContextMock().membershipId}>{children}</FilesClipboardProvider>
+						<FilesClipboardProvider
+							userId={"user_1" as app_convex_Id<"users">}
+							membershipId={tenantContextMock().membershipId}
+						>
+							{children}
+						</FilesClipboardProvider>
 					</AppActivitiesProvider>
 				),
 			},

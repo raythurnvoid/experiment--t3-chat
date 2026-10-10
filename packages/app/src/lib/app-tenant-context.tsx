@@ -17,18 +17,19 @@ export type AppTenantContextValue = {
 const AppTenantContext = createContext<AppTenantContextValue | null>(null);
 
 type AppTenantProvider_Props = AppTenantContextValue & {
+	userId: app_convex_Id<"users">;
 	children: ReactNode;
 };
 
 const AppTenantProvider = Object.assign(
 	memo(function AppTenantProvider(props: AppTenantProvider_Props) {
-		const { membershipId, organizationId, organizationName, workspaceId, workspaceName, children } = props;
+		const { userId, membershipId, organizationId, organizationName, workspaceId, workspaceName, children } = props;
 
 		return (
 			<AppTenantContext.Provider value={{ membershipId, organizationId, organizationName, workspaceId, workspaceName }}>
 				<FilesTreeProvider key={membershipId} membershipId={membershipId} workspaceId={workspaceId}>
 					<AppActivitiesProvider key={membershipId} membershipId={membershipId}>
-						<FilesClipboardProvider key={membershipId} membershipId={membershipId}>
+						<FilesClipboardProvider key={membershipId} userId={userId} membershipId={membershipId}>
 							<AppChannelsProvider key={membershipId} membershipId={membershipId}>
 								{children}
 							</AppChannelsProvider>

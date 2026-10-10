@@ -145,15 +145,17 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   Unselected owners' pending plain-text chunks and metadata use the same before/after scope.
   They stage in indexed pages before publication. Their proposal headers stay unselected.
   Exact proposal reservations select the content view until cleanup restores normal indexes.
+  Exact source reservation reads share a Promise within one mutation. Reservation writes clear
+  it before and after the write. Each new step still checks current access and capability fences.
   Existing parent folders that keep their placement do not collect unrelated drafts. Changed
   sources still collect affected owners, including drafts inside a moved folder.
   One node's empty owner ranges share a step through exact `first()` checks. Empty child ranges
   and empty metadata or plain-text side ranges use the same rule. Each step uses
   at most one paginated query. Any paginated page ends the step, including an empty cursor tail,
   even when those owners are already known. Receipt pages keep their own step too.
-- Metadata side steps read at most eight docs with a 1 MiB source-byte page. The write guards
+- Saved metadata side steps read at most 64 docs with a 1 MiB source-byte page. The write guards
   reread old docs, so the count alone is not a byte bound. Tagging, finish and abort drain exact
-  view ranges without storing metadata-key cursors. Owner field joins keep their source docs.
+  view ranges without storing metadata-key cursors. Owner field joins stay at eight docs and keep their source docs.
   They use the metadata identity/view indexes without `fieldPath`, so even a large key gives
   a short stored cursor. Before joins and owner cleanup use the same byte page.
 - Private direct Save uses this same review flow. Its immutable parent-chain input is saved with

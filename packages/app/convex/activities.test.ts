@@ -3,7 +3,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_db_add_target, activities_get_result_status } from "./activities_db.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_finish_pending_update_run, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -321,6 +321,85 @@ describe("recover_expired", () => {
 });
 
 describe("cleanup_history", () => {
+	test("drains expired Review graphs in separate transactions and keeps saved files", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const reviews = [];
+		for (let index = 0; index < 2; index++) {
+			const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path: `/review-folder-${index}`,
+				kind: "folder",
+			});
+			if (created._nay || created._yay.target.kind !== "private" || !created._yay.pendingUpdateId)
+				throw new Error("Expected a private folder proposal");
+			const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!));
+			if (!proposal) throw new Error("Expected the folder proposal");
+			const queued = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+				membershipId: db.membershipId,
+				target: proposal.target,
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+			});
+			if (queued._nay) throw new Error(queued._nay.message);
+			if (!("kind" in queued._yay)) throw new Error("Expected a queued Review");
+			const { runId, activityId } = queued._yay;
+			await test_finish_pending_update_run(asUser, runId);
+			const activity = await t.run((ctx) => ctx.db.get("activities", activityId));
+			expect(activity?.status).toBe("succeeded");
+			if (activity?.expiresAt === undefined) throw new Error("Expected Review history expiry");
+			const plan = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_update_plans")
+					.withIndex("by_run_epoch", (q) => q.eq("runId", runId))
+					.first(),
+			);
+			if (!plan) throw new Error("Expected the completed Review plan");
+			expect(await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_update_plan_items")
+					.withIndex("by_plan_order", (q) => q.eq("planId", plan._id))
+					.first(),
+			)).not.toBeNull();
+			reviews.push({ runId, activityId, expiresAt: activity.expiresAt });
+		}
+		const files = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+		expect(files).toHaveLength(2);
+		const now = Math.max(...reviews.map((review) => review.expiresAt));
+		await expect(
+			t.mutation(internal.activities.cleanup_history, { _test_now: now, _test_disableReschedule: true }),
+			"Expired Review history cleanup uses one graph page per transaction",
+		).resolves.toMatchObject({ done: false });
+		let done = false;
+		for (let pass = 0; pass < 100; pass++) {
+			done = (await t.mutation(internal.activities.cleanup_history, { _test_now: now, _test_disableReschedule: true })).done;
+			if (done) break;
+		}
+		expect(done, "Both expired Review histories finish cleanup").toBe(true);
+		await t.run(async (ctx) => {
+			for (const review of reviews) {
+				expect(await ctx.db.get("activities", review.activityId)).toBeNull();
+				expect(await ctx.db.get("files_pending_update_runs", review.runId)).toBeNull();
+			}
+			for (const table of [
+				"files_pending_update_plans",
+				"files_pending_update_plan_edges",
+				"files_pending_update_plan_frames",
+				"files_pending_update_plan_walks",
+				"files_pending_update_plan_relations",
+				"files_pending_update_plan_components",
+				"files_pending_update_plan_items",
+				"files_pending_update_run_items",
+				"files_pending_update_run_units",
+				"files_pending_update_run_dependencies",
+			] as const) expect(await ctx.db.query(table).collect()).toEqual([]);
+			expect(await ctx.db.query("files_nodes").collect()).toEqual(files);
+		});
+	});
+
 	test("keeps unexpired history and removes expired transfer receipts without deleting files", async () => {
 		const { t, asMember, member, activity, runId } = await create_transfer_activity();
 		await asMember.mutation(api.activities.request_stop, {

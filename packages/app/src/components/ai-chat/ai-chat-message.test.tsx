@@ -230,6 +230,7 @@ function renderMessage(args: {
 function withTenant(ui: ReactNode, tenant = { organizationName: "personal", workspaceName: "home" }) {
 	return (
 		<AppTenantProvider
+			userId={"user_1" as app_convex_Id<"users">}
 			membershipId={"membership-1" as app_convex_Id<"organizations_workspaces_users">}
 			workspaceId={"workspace-1" as app_convex_Id<"organizations_workspaces">}
 			workspaceName={tenant.workspaceName}

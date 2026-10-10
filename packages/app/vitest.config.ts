@@ -41,6 +41,8 @@ export default defineConfig({
 			fsModuleCache: true,
 		},
 		silent: "passed-only",
+		// Keep fewer copies of app code in memory at once.
+		maxWorkers: "50%",
 		testTimeout: 30_000,
 		// Run these slow full-size checks with test:files:full-size. A renamed test runs here again, so
 		// keep these names and the script's names in sync with the tests.

@@ -4,7 +4,6 @@ import { createContext, memo, use, useEffect, useId, useRef, useState, type Reac
 import { useConvex, useQuery } from "convex/react";
 import { ClipboardPaste, Copy, Scissors } from "lucide-react";
 import { toast } from "sonner";
-import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
@@ -64,12 +63,13 @@ const FilesClipboardContext = createContext<{
 
 const FilesClipboardProvider = Object.assign(
 	memo(function FilesClipboardProvider(props: {
+		// The tenant passes this. Importing app-auth here creates a router cycle.
+		userId: app_convex_Id<"users">;
 		membershipId: app_convex_Id<"organizations_workspaces_users">;
 		children: ReactNode;
 	}) {
-		const { membershipId, children } = props;
+		const { userId, membershipId, children } = props;
 		const convex = useConvex();
-		const { userId } = AppAuthProvider.useAuthenticated();
 		const { pendingStopSourceIds } = AppActivitiesProvider.useContext();
 		const currentRuns = useQuery(app_convex_api.files_transfer.list_current, { membershipId });
 		const [clipboard, setClipboardValue] = useState<FilesClipboard | null>(null);

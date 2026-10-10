@@ -72,6 +72,7 @@ import { path_tree_prefix_upper_bound, server_path_normalize } from "./server-ut
 import {
 	files_move_reservations_db_enter,
 	files_move_reservations_db_find_blocker,
+	files_move_reservations_db_get_source,
 	files_move_reservations_db_note_source,
 	files_move_reservations_db_is_rename_allocation,
 } from "./files-move-reservations.ts";
@@ -772,10 +773,7 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 									? { kind: "proposal" as const, id: value.pendingUpdateId }
 									: null;
 		if (!source) return false;
-		const reservation = await raw
-			.query("files_move_source_reservations")
-			.withIndex("by_source", (q) => q.eq("source.kind", source.kind).eq("source.id", source.id))
-			.unique();
+		const reservation = await files_move_reservations_db_get_source(raw, source);
 		return reservation?.cohortId === state.materializingCohortId;
 	};
 

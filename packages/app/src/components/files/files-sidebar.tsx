@@ -8135,7 +8135,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					<ConvexProvider client={app_convex}>
 						{/* The clipboard provider reads pending Stops from the Activity provider. */}
 						<AppActivitiesProvider membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}>
-							<FilesClipboardProvider membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}>
+							<FilesClipboardProvider
+								userId={"user" as app_convex_Id<"users">}
+								membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}
+							>
 								<div ref={scrollElementRef}>
 									<FilesSidebarTree
 										tree={tree}

@@ -1,5 +1,6 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
+import { getDocumentSize } from "convex/values";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import { Doc as YjsDoc, encodeStateAsUpdate } from "yjs";
@@ -12,6 +13,7 @@ import {
 	files_move_reservations_db_enter,
 	files_move_reservations_db_enter_security,
 	files_move_reservations_db_find_blocker,
+	files_move_reservations_db_get_source,
 	files_move_reservations_db_is_rename_allocation,
 	files_move_reservations_db_note_source,
 	files_move_reservations_db_pause_worker,
@@ -76,6 +78,72 @@ describe("Move write reservations", () => {
 			}),
 		).rejects.toThrow("This item is being moved");
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.name).toBe("old.txt");
+	});
+
+	test("shares repeated source reads within one transaction", async () => {
+		const f = await fixture();
+		const source = { kind: "saved" as const, id: f.nodeId };
+		const reservationId = await f.t.run((ctx) =>
+			ctx.db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source,
+				mode: "placement",
+				userId: null,
+				generation: 1,
+			}),
+		);
+		const reservation = (await f.t.run((ctx) => ctx.db.get("files_move_source_reservations", reservationId)))!;
+		await f.t.run(async (ctx) => {
+			const guarded = files_move_reservations_db_wrap(ctx);
+			const before = await ctx.meta.getTransactionMetrics();
+			const reads = await Promise.all(
+				Array.from({ length: 8 }, () => files_move_reservations_db_get_source(guarded.db, source)),
+			);
+			const after = await ctx.meta.getTransactionMetrics();
+			const ranges = after.databaseQueries.used - before.databaseQueries.used;
+			expect(reads).toEqual(Array.from({ length: 8 }, () => reservation));
+			expect(after.documentsRead.used - before.documentsRead.used).toBe(ranges);
+			expect(after.bytesRead.used - before.bytesRead.used).toBe(ranges * getDocumentSize(reservation));
+			expect(ranges, "Repeated source checks share one indexed read").toBe(1);
+		});
+	});
+
+	test("refreshes source reads after reservation writes and in the next transaction", async () => {
+		const f = await fixture();
+		const source = { kind: "saved" as const, id: f.nodeId };
+		await f.t.run(async (ctx) => {
+			const guarded = files_move_reservations_db_wrap(ctx);
+			expect(await files_move_reservations_db_get_source(guarded.db, source)).toBeNull();
+			const value = { cohortId: f.cohortId, source, mode: "placement" as const, userId: null, generation: 1 };
+			const reservationId = await guarded.db.insert("files_move_source_reservations", value);
+			expect(await files_move_reservations_db_get_source(guarded.db, source)).toEqual(
+				await ctx.db.get("files_move_source_reservations", reservationId),
+			);
+			await guarded.db.patch("files_move_source_reservations", reservationId, { generation: 2, mode: "subtree" });
+			expect(await files_move_reservations_db_get_source(guarded.db, source)).toMatchObject({
+				generation: 2,
+				mode: "subtree",
+			});
+			await guarded.db.replace("files_move_source_reservations", reservationId, { ...value, generation: 3 });
+			expect(await files_move_reservations_db_get_source(guarded.db, source)).toMatchObject({
+				generation: 3,
+				mode: "placement",
+			});
+			await guarded.db.delete("files_move_source_reservations", reservationId);
+			expect(await files_move_reservations_db_get_source(guarded.db, source)).toBeNull();
+		});
+		await f.t.run((ctx) =>
+			ctx.db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source,
+				mode: "subtree",
+				userId: null,
+				generation: 4,
+			}),
+		);
+		expect(
+			await f.t.run((ctx) => files_move_reservations_db_find_blocker(files_move_reservations_db_wrap(ctx).db, { source })),
+		).toBe(f.cohortId);
 	});
 
 	test("protects descendants only when their ancestor reserves its subtree", async () => {
