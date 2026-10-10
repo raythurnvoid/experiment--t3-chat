@@ -20,6 +20,8 @@ import { MyButton } from "@/components/my-button.tsx";
 import type { MyMenuItem_ClassNames } from "@/components/my-menu.tsx";
 import { MySearchSelectItem, MySearchSelectList } from "@/components/my-search-select.tsx";
 import { MySelectItemsGroup, MySelectItemsGroupText } from "@/components/my-select.tsx";
+import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
+import { files_merge_search_lists } from "@/hooks/files-search-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_ROOT_ID } from "@/lib/files.ts";
@@ -27,6 +29,7 @@ import { detect_search_query_mode } from "@/lib/files-search.ts";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { path_name_of } from "@/lib/paths.ts";
 import { cn } from "@/lib/utils.ts";
+import type { files_SavedStream } from "../../../shared/files.ts";
 import { files_search_query_folder_path } from "../../../shared/files-search-query.ts";
 
 // #region item content
@@ -286,21 +289,30 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 
 	// Search the name words the search box searches: `readme.md` searches `readme`.
 	const nameQuery = detect_search_query_mode(nameText);
-	const search = usePaginatedQuery(
-		app_convex_api.files_nodes.search_saved,
-		isSearch
+	// Like `useFilesSearchSaved`: search the normal rows and, during a Move, the visible Move view too.
+	const savedView = useFilesSavedView(membershipId, isSearch);
+	const searchArgs = (savedStream: files_SavedStream | null) =>
+		isSearch && savedStream !== null
 			? {
 					membershipId,
+					savedStream,
+					searchGeneration: savedView.searchGeneration!,
 					clause: {
-						kind: "name",
+						kind: "name" as const,
 						text: nameQuery.mode === "name" ? nameQuery.value : nameText,
-						nodeKind: select === "folder" ? "folder" : undefined,
+						nodeKind: select === "folder" ? ("folder" as const) : undefined,
 					},
 					// Text with no "/" searches the open folder, or the whole workspace at the root.
 					folderPath: slashIndex === -1 && folderPath === "/" ? undefined : folderPath,
 				}
-			: "skip",
-		{ initialNumItems: FILES_NODE_PICKER_PAGE_SIZE },
+			: ("skip" as const);
+	const searchOptions = { initialNumItems: FILES_NODE_PICKER_PAGE_SIZE };
+	const normalSearch = usePaginatedQuery(app_convex_api.files_nodes.search_saved, searchArgs(savedView.normal), searchOptions);
+	const cohortSearch = usePaginatedQuery(app_convex_api.files_nodes.search_saved, searchArgs(savedView.cohort), searchOptions);
+	const search = files_merge_search_lists(
+		savedView.normal === null ? [] : [normalSearch, ...(savedView.cohort === null ? [] : [cohortSearch])],
+		true,
+		savedView.loading,
 	);
 
 	const toPickerRows = (rows: ReturnType<typeof FilesTreeProvider.usePickerFolder>["children"]["rows"]) =>
@@ -309,18 +321,14 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 				? []
 				: [{ nodeId: row._id, name: row.name, path: row.path, kind: row.kind, contentType: row.contentType }],
 		);
-	const searchRows = search.results.flatMap((row): FilesNodePicker_Row[] =>
-		row.kind === "problem"
-			? []
-			: [
-					{
-						nodeId: row.nodeId,
-						name: path_name_of(row.path),
-						path: row.path,
-						kind: row.kind,
-						contentType: row.contentType,
-					},
-				],
+	const searchRows = search.rows.map(
+		(row): FilesNodePicker_Row => ({
+			nodeId: row.nodeId,
+			name: path_name_of(row.path),
+			path: row.path,
+			kind: row.kind,
+			contentType: row.contentType,
+		}),
 	);
 	const sharedRows = browse.shared ? toPickerRows(browse.shared.rows) : [];
 	const childRows = toPickerRows(browse.children.rows);
@@ -332,7 +340,13 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 	const shownFileIdsText = !pickableFilesQuery
 		? ""
 		: isSearch
-			? search.results.flatMap((row) => (row.kind === "file" ? [row.nodeId] : [])).join(",")
+			? [
+					...new Set(
+						[...normalSearch.results, ...cohortSearch.results].flatMap((row) =>
+							row.kind === "file" ? [row.nodeId] : [],
+						),
+					),
+				].join(",")
 			: [...(browse.shared?.rows ?? []), ...browse.children.rows]
 					.flatMap((row) => (row.kind === "file" ? [row._id] : []))
 					.join(",");
@@ -388,21 +402,19 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 		});
 	}
 	if (isSearch) {
-		const problem = search.results.find((row) => row.kind === "problem");
-		const hasMore = search.status === "CanLoadMore" || search.status === "LoadingMore";
 		sections.push({
 			key: "search",
 			label: null,
 			items: [
 				...searchRows.map((row) => nodeItem("search", row)),
-				...(hasMore ? [moreItem("search", () => search.loadMore(FILES_NODE_PICKER_PAGE_SIZE))] : []),
+				...(search.status === "more" ? [moreItem("search", search.loadMore)] : []),
 			],
 		});
-		statusText = problem
-			? problem.message
-			: search.status === "LoadingFirstPage"
+		statusText = search.problem
+			? search.problem
+			: search.status === "loading"
 				? "Loading…"
-				: search.status === "Exhausted" && searchRows.length === 0
+				: search.status === "done" && searchRows.length === 0
 					? select === "folder"
 						? "No matching folders"
 						: "No matching files"

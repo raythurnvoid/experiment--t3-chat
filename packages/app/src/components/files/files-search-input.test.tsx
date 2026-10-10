@@ -25,18 +25,26 @@ vi.mock("convex/react", async (importOriginal) => ({
 			setLoaded({ request, pageCount: pageCount + 1 }),
 		);
 	},
-	useQueries: (queries: Record<string, { args: { clause?: { text: string } } }>) =>
-		queries.folders ? { folders: test_folder_page(queries.folders.args.clause!.text) } : {},
+	useQueries: (queries: Record<string, { args: { clause: { text: string }; savedStream?: { kind: string } } }>) =>
+		Object.fromEntries(
+			Object.entries(queries).map(([key, { args }]) => [key, test_folder_page(args.clause.text, args.savedStream?.kind)]),
+		),
 }));
 
-/** The saved folders a `file.path` value completes from. */
-const test_folder_page = (text: string) => ({
-	page: ["/Projects/tasks", "/archive", "/tasks"]
-		.filter((path) => path.toLowerCase().includes(text.toLowerCase()))
-		.map((path) => ({ kind: "folder", nodeId: `id${path}`, path })),
-	isDone: true,
-	continueCursor: "",
-});
+/**
+ * The saved folders a `file.path` value completes from, in the normal or the Move view stream. Like
+ * the server, a search with no stream fails while a Move runs.
+ */
+const test_folder_page = (text: string, streamKind: string | undefined) =>
+	streamKind === undefined && test_catalog.cohortKeys
+		? new Error("A saved listing has no Move view")
+		: {
+				page: (streamKind === "cohort" ? ["/tasks", "/tasks-moved"] : ["/Projects/tasks", "/archive", "/tasks"])
+					.filter((path) => path.toLowerCase().includes(text.toLowerCase()))
+					.map((path) => ({ kind: "folder", nodeId: `id${path}`, path })),
+				isDone: true,
+				continueCursor: "",
+			};
 
 const test_catalog_KEYS = [
 	{ fieldPath: "frontmatter.status", valueKinds: ["string"] },
@@ -260,6 +268,15 @@ describe("FilesSearchInput", () => {
 			expect(await screen.findByRole("option", { name: "/Projects/tasks" })).toBeTruthy();
 			expect(screen.getByRole("option", { name: "/tasks" })).toBeTruthy();
 			expect(screen.queryByRole("option", { name: "/archive" })).toBeNull();
+		});
+
+		test("during a Move, completes a file.path value from both streams, each folder once", async () => {
+			test_catalog.cohortKeys = [];
+			render(<FilesSearchInput {...props} variant={variant} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			fireEvent.change(input, { target: { value: "file.path:tas" } });
+			await waitFor(() => expect(test_labels("Values for file.path")).toEqual(["/Projects/tasks", "/tasks", "/tasks-moved"]));
 		});
 
 		test("reopens on a new visit but keeps dismissal when returning from chips or results", async () => {

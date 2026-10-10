@@ -46,10 +46,10 @@ export type FilesSearchSavedList = {
 };
 
 /**
- * Merge the pages of one or two queries into one list. `isTextSearch` is set for a names or contents
- * list, which the search index caps.
+ * Merge the pages of some `search_saved` queries into one list. `isTextSearch` is set for a names or
+ * contents list, which the search index caps.
  */
-function merge_search_lists(results: Array<UsePaginatedQueryResult<FilesSearchSavedResult>>, isTextSearch: boolean, loading = false) {
+export function files_merge_search_lists(results: Array<UsePaginatedQueryResult<FilesSearchSavedResult>>, isTextSearch: boolean, loading = false) {
 	const rows: FilesSearchSavedRow[] = [];
 	const seenNodeIds = new Set<string>();
 	let problem: string | null = null;
@@ -178,7 +178,7 @@ export function useFilesSearchSaved(args: {
 		 * A date chip inside a folder: it matches only values stored with the same text.
 		 */
 		isFolderDate,
-		names: merge_search_lists(
+		names: files_merge_search_lists(
 			[...firstResults, ...(isText ? [] : secondResults)],
 			isText,
 			savedView.loading,
@@ -187,7 +187,7 @@ export function useFilesSearchSaved(args: {
 			isText && withContents
 				? hasFolder
 					? ("folder" as const)
-						: merge_search_lists(secondResults, true, savedView.loading)
+						: files_merge_search_lists(secondResults, true, savedView.loading)
 				: null,
 	};
 }

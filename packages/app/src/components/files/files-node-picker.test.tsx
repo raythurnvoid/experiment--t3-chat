@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_tree_stream_args } from "@/lib/files-tree-context.tsx";
+import type { files_SavedStream } from "../../../shared/files.ts";
 import {
 	FilesNodePicker,
 	type FilesNodePicker_Pickable,
@@ -26,6 +27,7 @@ Element.prototype.scrollIntoView = vi.fn();
 
 const MEMBERSHIP_ID = "membership_1";
 const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
+const NORMAL_STREAM: files_SavedStream = { kind: "normal", generation: 1 };
 
 const results = new Map<string, unknown>();
 let client: ConvexReactClient;
@@ -66,6 +68,7 @@ function set_folder(args: {
 			folderId: parentId as app_convex_Id<"files_nodes">,
 			kind,
 			archived: false,
+			savedStream: NORMAL_STREAM,
 		});
 		const children = getFunctionName(app_convex_api.files_nodes.list_tree_children);
 		const page = kind === "folder" ? folders : files;
@@ -104,11 +107,24 @@ function set_shared_roots(rows: Array<ReturnType<typeof tree_row>>) {
 				membershipId: MEMBERSHIP_ID,
 				archived: false,
 				principalIndex,
+				savedStream: NORMAL_STREAM,
 				paginationOpts: { cursor: null },
 			}),
 			{ ...EMPTY_PAGE, page: principalIndex === 0 ? rows : [] },
 		);
 	}
+}
+
+/**
+ * Answer the workspace view: no Move, or a Move with the given cohort.
+ */
+function set_move_view(cohortId: string | null) {
+	results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }), {
+		generation: 1,
+		searchGeneration: 1,
+		cohortId,
+		view: cohortId === null ? null : "after",
+	});
 }
 
 function set_folder_path(path: string, nodeId: string) {
@@ -178,6 +194,7 @@ function option_names() {
 
 beforeEach(() => {
 	results.clear();
+	set_move_view(null);
 	onPick.mockReset();
 	client = new ConvexReactClient("https://picker-test.convex.cloud");
 	// Keep the real pagination and subscription hooks. Only replace the server watches.
@@ -231,6 +248,8 @@ describe("FilesNodePicker", () => {
 				membershipId: MEMBERSHIP_ID,
 				clause: { kind: "name", text: "ap" },
 				folderPath: "/docs",
+				savedStream: NORMAL_STREAM,
+				searchGeneration: 1,
 				paginationOpts: { cursor: null },
 			}),
 			{
@@ -254,6 +273,8 @@ describe("FilesNodePicker", () => {
 				membershipId: MEMBERSHIP_ID,
 				clause: { kind: "name", text: "na" },
 				folderPath: "/a/b",
+				savedStream: NORMAL_STREAM,
+				searchGeneration: 1,
 				paginationOpts: { cursor: null },
 			}),
 			{
@@ -273,6 +294,27 @@ describe("FilesNodePicker", () => {
 			kind: "file",
 			contentType: "text/markdown",
 		});
+	});
+
+	test("during a Move, searches the normal rows and the Move view, each row once", async () => {
+		set_move_view("cohort_1");
+		const search_key = (savedStream: files_SavedStream) =>
+			watch_key(getFunctionName(app_convex_api.files_nodes.search_saved), {
+				membershipId: MEMBERSHIP_ID,
+				savedStream,
+				searchGeneration: 1,
+				clause: { kind: "name", text: "notes" },
+				paginationOpts: { cursor: null },
+			});
+		const row = (path: string) => ({ kind: "file", nodeId: path, path, contentType: "text/markdown" });
+		results.set(search_key(NORMAL_STREAM), { ...EMPTY_PAGE, page: [row("/notes.md")] });
+		results.set(search_key({ kind: "cohort", cohortId: "cohort_1" as app_convex_Id<"files_move_cohorts">, view: "after", generation: 1 }), {
+			...EMPTY_PAGE,
+			page: [row("/notes.md"), row("/moved/notes-2.md")],
+		});
+		render(<PickerHarness initialQuery="notes" />);
+
+		await waitFor(() => expect(option_names()).toEqual(["notes.md/", "notes-2.md/moved/"]));
 	});
 
 	test("reaches a disabled row by keyboard and announces its reason on Enter", async () => {
