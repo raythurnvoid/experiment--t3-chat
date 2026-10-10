@@ -2543,7 +2543,11 @@ describe("bash_run_command", () => {
 		expect((await runner.run({ command: `cat ${test_db_files_mount}${racedPath}` })).stdout).toBe("raced\n");
 	});
 
-	test("cp prints only the error when the copy stops before any item", async () => {
+	test.each([
+		{ status: "failed", errorMessage: "Permission denied", stderr: /^cp: Permission denied\n$/ },
+		// A Stop from the Files UI leaves no error message.
+		{ status: "canceled", errorMessage: null, stderr: /^cp: transfer stopped\. Activity \S+\n$/ },
+	])("cp prints only why the copy stopped when it ends $status before any item", async (stop) => {
 		const runner = await create_bash_runner();
 		const baseImpl = runner.runQuery.getMockImplementation()!;
 		runner.runQuery.mockImplementation(async (ref, queryArgs) => {
@@ -2555,8 +2559,8 @@ describe("bash_run_command", () => {
 				...view,
 				activity: {
 					...activity,
-					status: "failed",
-					errorMessage: "Permission denied",
+					status: stop.status,
+					errorMessage: stop.errorMessage,
 					progress: { ...activity.progress, completed: 0, skipped: 0, failed: 0 },
 				},
 			};
@@ -2566,7 +2570,7 @@ describe("bash_run_command", () => {
 			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/stopped-copy.md`,
 		});
 		expect(copied.metadata.exitCode).toBe(1);
-		expect(copied.stderr).toBe("cp: Permission denied\n");
+		expect(copied.stderr).toMatch(stop.stderr);
 		expect(copied.stdout).toBe("");
 	});
 

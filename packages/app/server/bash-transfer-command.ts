@@ -332,13 +332,17 @@ export async function bash_transfer_command_run(
 				const completed = progress?.completed ?? 0;
 				const skipped = progress?.skipped ?? 0;
 				const failed = progress?.failed ?? 0;
-				// A run that stopped before any item has nothing to review; print only its error.
-				const stoppedEmpty = activity.errorMessage && completed + skipped + failed === 0;
+				// A run that stopped before any item has nothing to review; print only why it stopped.
+				const stoppedEmpty = activity.status !== "succeeded" && completed + skipped + failed === 0;
 				return {
 					stdout: stoppedEmpty
 						? ""
 						: `Transfer ${runId}: ${completed} ready for review, ${skipped} skipped, ${failed} failed. Activity ${activityId}. Review in Files.\n`,
-					stderr: activity.errorMessage ? `${command}: ${activity.errorMessage}\n` : "",
+					stderr: activity.errorMessage
+						? `${command}: ${activity.errorMessage}\n`
+						: stoppedEmpty
+							? `${command}: transfer stopped. Activity ${activityId}\n`
+							: "",
 					exitCode: activity.status === "succeeded" ? 0 : 1,
 				};
 			}
