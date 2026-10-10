@@ -7,6 +7,9 @@
 // `by_org_ws_principal_archive_treePath`, in path order. Nested folders use the nearest scope only: a
 // readable folder inside a hidden one is its own partition. A service account also reads single open
 // nodes through its own grants, and its share rows give those nodes too.
+//
+// Only the transitional partitions have a cap (`TRANSITIONAL_MAX_SCOPE_OPS`). Past it the plan hides
+// more, never less, and says so with `truncated`, so a reader that needs a whole folder can stop.
 
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { QueryCtx } from "../convex/_generated/server.js";
@@ -24,7 +27,7 @@ import { path_tree_prefix_upper_bound } from "./server-utils.ts";
 
 /**
  * Scope ops read for transitional partitions. Past this many, the children under the dead scopes of
- * the other ops stay hidden until their job rewrites them: closed, never open.
+ * the other ops stay hidden until their job rewrites them: closed, never open, and `truncated`.
  */
 const TRANSITIONAL_MAX_SCOPE_OPS = 500;
 
@@ -33,9 +36,10 @@ type Reader = Extract<Awaited<ReturnType<typeof files_readable_scopes_db_reader>
 /**
  * How one caller lists files.
  *
- * - `flat`: one stream on the scope-less indexes. The owner without a service account, plugin volumes
- *   and GLOBAL reserved workspaces read every row. A member acting through a service account has no
- *   partitioned read yet: the per-row filter decides for it, like before.
+ * - `flat`: one stream on the scope-less indexes. With `filter: false` every row is readable: the
+ *   owner without a service account reads everything, and plugin volumes and GLOBAL reserved
+ *   workspaces have no restricted folders. With `filter: true` the per-row filter must check every
+ *   row: a member acting through a service account has no partitioned read yet.
  * - `scoped`: one partition per readable scope. `principalKeys` are the share row streams to read: the
  *   member and their roles, or the service account when the owner acts through it (the owner reads
  *   everything, so the account decides alone). `openReadable` says whether open content is readable.
@@ -51,13 +55,15 @@ export async function files_readable_scopes_db_reader(
 ) {
 	const scope = files_db_resolve_scope(ctx, args.workspaceId);
 	const organizationId = ctx.db.normalizeId("organizations", args.organizationId);
-	if (scope.kind !== "workspace" || !organizationId) return { mode: "flat" as const };
+	if (scope.kind !== "workspace" || !organizationId) return { mode: "flat" as const, filter: false };
 	const organization = await ctx.db.get("organizations", organizationId);
 	if (!organization?.defaultWorkspaceId)
 		throw should_never_happen("The workspace has no organization", { organizationId });
 	const isOwner = args.userId === organization.ownerUserId;
-	if (isOwner && !args.serviceAccountId) return { mode: "flat" as const };
-	if (!isOwner && args.serviceAccountId) return { mode: "flat" as const };
+	if (isOwner && !args.serviceAccountId) return { mode: "flat" as const, filter: false };
+	// Known gap until the user decides: the account's and the member's folders have no bounded
+	// intersection read, so this caller pays the per-row filter.
+	if (!isOwner && args.serviceAccountId) return { mode: "flat" as const, filter: true };
 
 	const ids = {
 		organizationId,
@@ -180,6 +186,10 @@ async function db_get_readable_items(ctx: QueryCtx, reader: Reader, rows: Doc<"f
  *   Their children keep the dead pointer until the job writes them, and readability follows the live
  *   scope (`access_control_db_resolve_live_restricted_scope`), so the children stay listed meanwhile.
  *
+ * `truncated` is true when the workspace has more than `TRANSITIONAL_MAX_SCOPE_OPS` scope ops: the
+ * children under the other ops' dead scopes are missing. A list may show the page, but a reader that
+ * must see the whole folder, like `cp -r`, must stop instead of copying part of it.
+ *
  * `tag` picks the Move view (`files_saved_stream_db_create`), undefined outside a Move.
  */
 export async function files_readable_scopes_db_plan(
@@ -235,8 +245,11 @@ export async function files_readable_scopes_db_plan(
 		.withIndex("by_organization_workspace_kind", (q) =>
 			q.eq("organizationId", reader.organizationId).eq("workspaceId", reader.workspaceId).eq("kind", "scope"),
 		)
-		.take(TRANSITIONAL_MAX_SCOPE_OPS);
-	for (const op of ops)
+		.take(TRANSITIONAL_MAX_SCOPE_OPS + 1);
+	const truncated = ops.length > TRANSITIONAL_MAX_SCOPE_OPS;
+	for (const op of ops.slice(0, TRANSITIONAL_MAX_SCOPE_OPS)) {
+		// Skip an op away from the folder before reading its roots. A stale path only hides more.
+		if (!op.treePaths.some((path) => path.startsWith(folderTreePath) || folderTreePath.startsWith(path))) continue;
 		for (const rootNodeId of op.rootNodeIds) {
 			const root = await files_saved_placement_db_get_node(ctx.db, rootNodeId, tag);
 			if (!root || root.restrictedScopeNodeId === root._id) continue;
@@ -244,14 +257,16 @@ export async function files_readable_scopes_db_plan(
 			if (!under && !folderTreePath.startsWith(root.treePath)) continue;
 			if (await db_can_read_partition(ctx, reader, root._id)) add(root._id, under ? root.treePath : folderTreePath);
 		}
+	}
 
-	return { partitions };
+	return { partitions, truncated };
 }
 
 /**
  * One page of the readable items under a folder after `afterTreePath` (null at the start), in
  * `treePath` order, from the share rows of one principal (`reader.principalKeys[principalIndex]`).
- * `folderTreePath` "/" walks the whole workspace.
+ * `folderTreePath` "/" walks the whole workspace: that is the plan's `enumerate_all`, so it has no
+ * function of its own.
  *
  * Each principal is its own `.paginate()` stream, and the caller merges them by `treePath` and drops
  * a node it already has, like the folder table merges its share streams. Every row read is a row of

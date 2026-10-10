@@ -137,7 +137,7 @@ async function fixture() {
 			return partitions;
 		});
 
-	return { t, db, scope, v, w, insert, share, enumerate, plan };
+	return { t, db, scope, v, w, insert, share, as_reader, enumerate, plan };
 }
 
 describe("files_readable_scopes", () => {
@@ -221,6 +221,56 @@ describe("files_readable_scopes", () => {
 		expect(await f.plan({ userId: f.v }, null)).toEqual([{ scopeNodeId: null, treePath: "/" }]);
 	});
 
+	test("reads only the scope ops over the folder, and says when it stops at the cap", async () => {
+		const f = await fixture();
+		// Two unrestricted folders whose jobs still run. The op of `s2` names a stale path elsewhere.
+		const { folder, s1 } = await f.t.run(async (ctx) => {
+			const folder = await f.insert(ctx, null, "f", "folder");
+			const s1 = await f.insert(ctx, folder, "s1", "folder");
+			const s2 = await f.insert(ctx, folder, "s2", "folder");
+			for (const [root, treePath] of [
+				[s1, "/f/s1/"],
+				[s2, "/g/"],
+			] as const)
+				await ctx.db.insert("files_subtree_ops", {
+					...f.scope,
+					userId: f.db.userId,
+					kind: "scope",
+					status: "running",
+					blockedByOpId: null,
+					rootNodeIds: [root._id],
+					treePaths: [treePath],
+				});
+			return { folder, s1 };
+		});
+		const plan = () =>
+			f.as_reader({ userId: f.v }, (ctx, reader) =>
+				files_readable_scopes_db_plan(ctx, { reader, tag: undefined, folder, at: null }),
+			);
+		expect(await plan()).toEqual({
+			partitions: [
+				{ scopeNodeId: null, treePath: "/f/" },
+				{ scopeNodeId: s1._id, treePath: "/f/s1/" },
+			],
+			truncated: false,
+		});
+
+		// Past the cap the other ops are not read, and the plan says so.
+		await f.t.run(async (ctx) => {
+			for (let index = 0; index < 499; index++)
+				await ctx.db.insert("files_subtree_ops", {
+					...f.scope,
+					userId: f.db.userId,
+					kind: "scope",
+					status: "running",
+					blockedByOpId: null,
+					rootNodeIds: [s1._id],
+					treePaths: ["/z/"],
+				});
+		});
+		expect(await plan()).toMatchObject({ truncated: true });
+	});
+
 	test("an owner acting through a service account reads the account's folders and open nodes only", async () => {
 		const f = await fixture();
 		const serviceAccountId = await test_run_with_flush(f.t, async (ctx) => {
@@ -253,13 +303,17 @@ describe("files_readable_scopes", () => {
 		]);
 		// The account has no workspace grant, so open content is not one partition.
 		expect(await f.plan(caller, null)).toEqual([]);
-		// The owner alone reads every row, and a member through an account has no partitioned read yet.
+		// The owner alone reads every row, and a member through an account has no partitioned read yet, so
+		// every row is checked.
 		expect(
 			await f.t.run(async (ctx) => [
-				(await files_readable_scopes_db_reader(ctx, { ...f.scope, userId: f.db.userId })).mode,
-				(await files_readable_scopes_db_reader(ctx, { ...f.scope, userId: f.v, serviceAccountId })).mode,
+				await files_readable_scopes_db_reader(ctx, { ...f.scope, userId: f.db.userId }),
+				await files_readable_scopes_db_reader(ctx, { ...f.scope, userId: f.v, serviceAccountId }),
 			]),
-		).toEqual(["flat", "flat"]);
+		).toEqual([
+			{ mode: "flat", filter: false },
+			{ mode: "flat", filter: true },
+		]);
 
 		// A revoked account keeps its rows but reads nothing.
 		await f.t.run((ctx) => ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: Date.now() }));

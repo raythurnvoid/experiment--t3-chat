@@ -962,8 +962,9 @@ the folder table, and a reader can list the restricted folders it may read in pa
 - Nothing writes rows by hand. The pending overlay flush keeps them true in the writer's transaction
   (grants are one of its source tables): a file grant insert, patch or delete syncs that grant's row,
   and a write to a node that is or was a restricted root syncs the node's rows. Another node syncs
-  when it opens or closes, or when it has rows and a copied field changed (one `by_node` range). A
-  move or rename of an ancestor changes `treePath`, and its Move cohort syncs each node it writes.
+  when it opens or closes, or when it has rows and a copied field changed (one `by_node` range,
+  skipped for a node that stays inside a restricted folder outside a Move). A restore or scope job
+  writes a new `treePath` through the flush. A move or rename of an ancestor changes `treePath`, and its Move cohort syncs each node it writes.
 - A node sync reads the node's `content.read` grants in the node's own workspace with one range
   (`by_resource_permission`). The share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people and roles, in
   `files_sharing.ts`, the same 50 with service accounts in
@@ -988,21 +989,24 @@ hidden row only to drop it. Rows are split by their stored `restrictedScopeNodeI
 (null) and one partition per restricted folder. No list reads it yet.
 
 - `files_readable_scopes_db_reader` is the one flat-mode decision. The owner without a service
-  account, plugin volumes and GLOBAL reserved workspaces read flat. A member acting through a service
-  account reads flat too for now, with the per-row filter: an intersection of the account's and the
-  member's folders has no bounded read yet. Everyone else is `scoped`, with the share row principals
+  account, plugin volumes and GLOBAL reserved workspaces read flat with `filter: false`: every row is
+  readable. A member acting through a service account reads flat with `filter: true`: the per-row
+  filter checks every row, because an intersection of the account's and the member's folders has
+  no bounded read yet (a known gap until the user decides). Everyone else is `scoped`, with the share row principals
   to read (the member and their roles, or the account when the owner acts through it).
 - `files_readable_scopes_db_enumerate_by_path` pages one principal's rows on
   `by_org_ws_principal_archive_treePath` under a folder, after a `treePath`, and checks each row
   again like the share streams. It gives `scope` items (restricted folders) and `node` items (open
   nodes an account reads by its own grant). The caller merges the principals by `treePath`. Folder
-  `/` walks the whole workspace.
+  `/` walks the whole workspace (the plan's `enumerate_all`).
 - `files_readable_scopes_db_plan` gives the partitions open at a list's last key: open content, the
   folder's own stored scope, the readable restricted folders that hold the key, and the
   **transitional partitions** of running unrestrict jobs. A child of an unrestricted folder keeps the
   dead pointer until its job writes it, so the plan opens that pointer's partition, readable like its
-  live scope. It reads at most 500 scope ops of the workspace. Past that, the children of the other
-  jobs stay hidden until their job runs (closed, never open).
+  live scope. It skips an op whose `treePaths` miss the folder before it reads the op's roots. It
+  reads at most 500 scope ops of the workspace. Past that, the children of the other jobs stay hidden
+  until their job runs (closed, never open), and the plan returns `truncated: true`. A reader that
+  needs a whole folder, like `cp -r`, must stop then instead of copying part of it.
 
 ## Public file links
 

@@ -209,7 +209,8 @@ export async function files_share_rows_db_sync_grant(
  *
  * A node that is or was a restricted scope root changes when a copied field, its workspace or its
  * scope changed. Another node has rows only from service account grants, and only while it is open.
- * So it changes when it opens or closes, or when it has rows and a copied field changed: one range.
+ * So it changes when it opens or closes, or when it has rows and a copied field changed: one range,
+ * skipped for a node that stays inside a restricted folder outside a Move.
  */
 export async function files_share_rows_db_node_changed(
 	db: QueryCtx["db"],
@@ -232,6 +233,8 @@ export async function files_share_rows_db_node_changed(
 	// A new node has no grant yet.
 	if (!old) return false;
 	if (node && (old.restrictedScopeNodeId === null) !== (node.restrictedScopeNodeId === null)) return true;
+	// Inside a restricted folder only a scope root (above) or a node a Move holds has rows.
+	if (node && old.restrictedScopeNodeId !== null && !old.moveCohortId && !node.moveCohortId) return false;
 	return (
 		fieldsChanged &&
 		(await db

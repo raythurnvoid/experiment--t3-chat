@@ -12,6 +12,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { files_nodes_db_rebuild_node } from "./files_nodes.ts";
 import { advance as advance_review } from "./files_pending_update_runs.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import {
@@ -210,6 +211,45 @@ async function insert_saved_node(
 		pathDepth: path.split("/").length - 1,
 	});
 	return (await ctx.db.get("files_nodes", nodeId))!;
+}
+
+/**
+ * Share a restricted root 100 times. The share caps allow 50 shares on one node
+ * (MAX_FILE_SHARE_PRINCIPALS in files_sharing.ts, MAX_READERS in plugins_external_files.ts). This is
+ * twice that: 50 users and 50 roles, each with the three grants of a "manage" share.
+ */
+async function share_100_times(t: ReturnType<typeof test_convex>, db: Db, nodeId: Id<"files_nodes">) {
+	await test_run_with_flush(t, async (ctx) => {
+		const principals: Array<
+			{ principalKind: "user"; userId: Id<"users"> } | { principalKind: "role"; role: Id<"access_control_roles"> }
+		> = [];
+		for (let index = 0; index < 50; index++) {
+			const userId = await ctx.db.insert("users", { clerkUserId: `clerk_reader_${index}` });
+			const role = await ctx.db.insert("access_control_roles", {
+				organizationId: db.organizationId,
+				name: `Readers ${index}`,
+				normalizedName: `readers ${index}`,
+				description: "",
+				permissions: ["content.read"],
+				createdBy: db.userId,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			principals.push({ principalKind: "user", userId }, { principalKind: "role", role });
+		}
+		for (const principal of principals)
+			for (const permission of access_control_FILE_SHARE_LEVELS.manage.permissions)
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					resourceKind: "file",
+					resourceId: String(nodeId),
+					...principal,
+					permission,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+	});
 }
 
 describe("paged Move transaction budgets", () => {
@@ -990,9 +1030,7 @@ describe("metadata catalog", () => {
 
 describe("content save", () => {
 	// A content save patches the file node, so the flush rewrites every share row of a shared file
-	// that is a restricted root. The share caps allow 50 shares on one node (MAX_FILE_SHARE_PRINCIPALS
-	// in files_sharing.ts, MAX_READERS in plugins_external_files.ts). This measures twice that: 50
-	// users and 50 roles, each with the three grants of a "manage" share.
+	// that is a restricted root (see `share_100_times`).
 	test("saves a shared file with 100 shares", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -1001,37 +1039,7 @@ describe("content save", () => {
 			await ctx.db.patch("files_nodes", file._id, { restrictedScopeNodeId: file._id, isRestrictedScopeRoot: true });
 			return file;
 		});
-		await test_run_with_flush(t, async (ctx) => {
-			const principals: Array<
-				{ principalKind: "user"; userId: Id<"users"> } | { principalKind: "role"; role: Id<"access_control_roles"> }
-			> = [];
-			for (let index = 0; index < 50; index++) {
-				const userId = await ctx.db.insert("users", { clerkUserId: `clerk_reader_${index}` });
-				const role = await ctx.db.insert("access_control_roles", {
-					organizationId: db.organizationId,
-					name: `Readers ${index}`,
-					normalizedName: `readers ${index}`,
-					description: "",
-					permissions: ["content.read"],
-					createdBy: db.userId,
-					createdAt: Date.now(),
-					updatedAt: Date.now(),
-				});
-				principals.push({ principalKind: "user", userId }, { principalKind: "role", role });
-			}
-			for (const principal of principals)
-				for (const permission of access_control_FILE_SHARE_LEVELS.manage.permissions)
-					await ctx.db.insert("access_control_permission_grants", {
-						organizationId: db.organizationId,
-						workspaceId: db.workspaceId,
-						resourceKind: "file",
-						resourceId: String(file._id),
-						...principal,
-						permission,
-						createdAt: Date.now(),
-						updatedAt: Date.now(),
-					});
-		});
+		await share_100_times(t, db, file._id);
 
 		const cost = await test_run_with_flush(t, async (ctx) => {
 			const before = await ctx.meta.getTransactionMetrics();
@@ -1049,6 +1057,43 @@ describe("content save", () => {
 		const rows = await t.run((ctx) => ctx.db.query("files_share_rows").collect());
 		expect(rows).toHaveLength(100);
 		expect(rows.every((row) => row.contentByteSize === 2048)).toBe(true);
+		expect_under_convex_limits(cost);
+	}, 120_000);
+
+	// A rename of a folder changes the `treePath` of every node below it. A job that writes a shared
+	// folder's new path (a restore, a scope job) does it through the flush, which rewrites every share
+	// row of the folder.
+	test("rewrites the paths of a shared folder with 100 shares after its parent's rename", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const { parent, shared } = await t.run(async (ctx) => {
+			const parent = await insert_saved_node(ctx, db, { parent: null, name: "p", kind: "folder" });
+			const shared = await insert_saved_node(ctx, db, { parent, name: "shared", kind: "folder" });
+			await ctx.db.patch("files_nodes", shared._id, { restrictedScopeNodeId: shared._id, isRestrictedScopeRoot: true });
+			return { parent, shared };
+		});
+		await share_100_times(t, db, shared._id);
+		const renamed = await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", parent._id, {
+				name: "p2",
+				sortName: files_sort_text_key("p2"),
+				path: "/p2",
+				treePath: "/p2/",
+			});
+			return (await ctx.db.get("files_nodes", parent._id))!;
+		});
+
+		const cost = await test_run_with_flush(t, async (ctx) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			await files_nodes_db_rebuild_node(ctx, { node: (await ctx.db.get("files_nodes", shared._id))!, parent: renamed });
+			await files_pending_overlay_db_flush(ctx);
+			return transaction_cost(before, await ctx.meta.getTransactionMetrics());
+		});
+		console.info("path rewrite, a shared folder with 100 shares", cost);
+
+		const rows = await t.run((ctx) => ctx.db.query("files_share_rows").collect());
+		expect(rows).toHaveLength(100);
+		expect(rows.every((row) => row.treePath === "/p2/shared/")).toBe(true);
 		expect_under_convex_limits(cost);
 	}, 120_000);
 });

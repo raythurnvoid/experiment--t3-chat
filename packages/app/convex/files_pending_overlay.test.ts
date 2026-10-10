@@ -2400,6 +2400,24 @@ describe("files_share_rows", () => {
 		await f.expect_share_rows_true();
 	});
 
+	test("rows follow a restore that lands the folder above a shared folder at a new path", async () => {
+		const f = await fixture();
+		const a = await f.saved(null, "a", "folder");
+		const b = await f.saved(a, "b", "folder");
+		const s = await f.saved(b, "s", "folder");
+		await f.restrict(s);
+		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
+		const membershipId = f.db.membershipId;
+
+		// `s` has its own archive, so the restore of `b` only moves it. `a` stays archived, so `b` lands
+		// at the root, and the restore's job writes the new `treePath` of `s` through the flush.
+		for (const node of [s, b, a])
+			await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [node._id] }));
+		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [b._id] }));
+		expect(await share_rows(f, s._id)).toMatchObject([{ treePath: "/b/s/", archiveOperationId: expect.any(String) }]);
+		await f.expect_share_rows_true();
+	});
+
 	test("rows live only while their node is a restricted root", async () => {
 		const f = await fixture();
 		const s = await f.saved(null, "s", "folder");
