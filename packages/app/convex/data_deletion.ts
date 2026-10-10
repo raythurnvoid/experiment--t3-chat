@@ -1534,7 +1534,14 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.unique();
 	if (mediaVersion) await ctx.db.delete("files_media_validation_versions", mediaVersion._id);
-	return { done: true, deletedCount: mediaVersion ? 1 : 0 };
+	const contentVersion = await ctx.db
+		.query("files_content_versions")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.unique();
+	if (contentVersion) await ctx.db.delete("files_content_versions", contentVersion._id);
+	return { done: true, deletedCount: (mediaVersion ? 1 : 0) + (contentVersion ? 1 : 0) };
 }
 
 /**

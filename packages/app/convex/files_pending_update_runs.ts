@@ -2185,9 +2185,14 @@ async function db_start_cohort_unit(
 		attemptFence: unit.attemptFence,
 	});
 	if (started._nay) {
-		if (started._nay.name === "move_busy")
+		if (started._nay.name === "move_busy") {
+			// Another Move holds the workspace. Keep this review alive while it waits.
+			const now = Date.now();
+			const activity = await activities_db_require_by_source_id(ctx, run._id);
+			await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
+			await ctx.db.patch("files_pending_update_run_units", unit._id, { attemptDeadlineAt: now + RUN_TIMEOUT_MS });
 			await ctx.scheduler.runAfter(1_000, internal.files_pending_update_runs.advance, { runId: run._id });
-		else
+		} else
 			await db_finish_unit(ctx, {
 				run,
 				unit,

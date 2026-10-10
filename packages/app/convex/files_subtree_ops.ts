@@ -27,7 +27,7 @@ import { files_nodes_db_rebuild_node } from "./files_nodes.ts";
 import { files_transfer_db_promote } from "./files_transfer.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
-import { files_move_reservations_db_find_blocker, files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
+import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -433,7 +433,7 @@ async function db_rebuild_walk(args: {
 	budget: { nodes: number; hasPaginated: boolean };
 }) {
 	const { ctx, op, budget } = args;
-	if (await db_pause_for_move(ctx, op)) return false;
+	if (await files_subtree_ops_db_pause_for_move(ctx, op)) return false;
 
 	const walk = await db_require_walk(ctx, op._id);
 	let passWrote = walk.passWrote;
@@ -687,19 +687,13 @@ export async function files_subtree_ops_db_recover(ctx: MutationCtx, args: { opI
 	await ctx.scheduler.runAfter(0, internal.files_subtree_ops.advance, { opId: op._id, step: walk.step });
 }
 
-async function db_pause_for_move(ctx: MutationCtx, op: Doc<"files_subtree_ops">) {
-	const worker = { kind: "subtree" as const, id: op._id };
-	// Whole-workspace restore has no root yet. Other jobs check only their exact roots.
-	if (op.rootNodeIds.length === 0) return await files_move_reservations_db_pause_worker(ctx, {
-		worker, check: { wholeWorkspace: { organizationId: op.organizationId, workspaceId: op.workspaceId } },
-	});
-	for (const nodeId of op.rootNodeIds) {
-		const check = { source: { kind: "saved" as const, id: nodeId } };
-		if (await files_move_reservations_db_find_blocker(ctx.db, check))
-			return await files_move_reservations_db_pause_worker(ctx, { worker, check });
-	}
+export async function files_subtree_ops_db_pause_for_move(ctx: MutationCtx, op: Doc<"files_subtree_ops">) {
+	// The walk reads only nodes that no Move holds. A held node under a root would keep its old scope or
+	// archive state, and an aborted Move writes its old header back. No index finds a held node under a
+	// root, so wait while any Move holds the workspace. The walk then sees every node.
 	return await files_move_reservations_db_pause_worker(ctx, {
-		worker, check: { source: { kind: "saved", id: op.rootNodeIds[0]! } },
+		worker: { kind: "subtree", id: op._id },
+		check: { wholeWorkspace: { organizationId: op.organizationId, workspaceId: op.workspaceId } },
 	});
 }
 
@@ -734,7 +728,7 @@ export const advance = internalMutation({
 			}
 			case "archive":
 			case "restore": {
-				if (await db_pause_for_move(ctx, op)) return null;
+				if (await files_subtree_ops_db_pause_for_move(ctx, op)) return null;
 				await files_archive_runs_db_advance(ctx, { op, now });
 				return null;
 			}
@@ -755,7 +749,7 @@ export const promote = internalMutation({
 		if (!op || op.status !== "queued" || op.blockedByOpId !== null) {
 			return null;
 		}
-		if (await db_pause_for_move(ctx, op)) return null;
+		if (await files_subtree_ops_db_pause_for_move(ctx, op)) return null;
 
 		const now = Date.now();
 		switch (op.kind) {

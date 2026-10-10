@@ -107,7 +107,10 @@ import {
 	files_move_reservations_db_find_blocker,
 } from "../server/files-move-reservations.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
-import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import {
+	files_media_validation_db_advance_content_version,
+	files_media_validation_db_advance_version,
+} from "./files_media_validation.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
 import { components, internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
@@ -2011,7 +2014,7 @@ async function db_insert_node(
 					: null,
 		}),
 	);
-	await files_media_validation_db_advance_version(ctx, args);
+	await files_media_validation_db_advance_content_version(ctx, args);
 	await files_updated_by_db_sync_node(ctx, { nodeId });
 
 	if (args.kind === "folder") {

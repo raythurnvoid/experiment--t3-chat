@@ -7,6 +7,8 @@ import { test_create_saved_placement_fixture as fixture } from "../server/files-
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_saved_placement_db_get_slot } from "../server/files-saved-placement.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import { activities_db_require_by_source_id } from "./activities_db.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -318,7 +320,7 @@ describe("Move cohort publication", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_move_source_reservations").collect())).toEqual([]);
 	}, 120_000);
 
-	test("a fresh outside write stops publication without changing old names", async () => {
+	test("a new folder elsewhere does not stop publication", async () => {
 		const f = await native_rotation(3);
 		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: 0 });
 		expect(
@@ -329,10 +331,33 @@ describe("Move cohort publication", () => {
 			}),
 		).toHaveProperty("_yay.nodeId");
 		const finished = await finish_cohort(f);
+		expect(finished.errorCode, "a new folder outside the Move does not stop it").toBeNull();
+		expect(finished.publishedAt).not.toBeNull();
+		expect((await f.readNames()).map((node) => node?._id)).toEqual([f.nodes[2], f.nodes[0], f.nodes[1]]);
+	}, 120_000);
+
+	test("a fresh access change stops publication without changing old names", async () => {
+		const f = await native_rotation(3);
+		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: 0 });
+		await f.t.run((ctx) => files_media_validation_db_advance_version(ctx, f.scope));
+		const finished = await finish_cohort(f);
 		expect(finished.publishedAt, "a changed workspace clock prevents publication").toBeNull();
 		expect(finished.errorCode).toBe("needs_review");
 		expect((await f.readNames()).map((node) => node?._id)).toEqual(f.nodes);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toHaveLength(3);
+	}, 120_000);
+
+	test("a step that lost its preparation to a duplicate run does not stop the Move", async () => {
+		const f = await native_rotation(3);
+		const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId));
+		await f.t.mutation(internal.files_move_cohorts.resume, {
+			cohortId: f.cohortId,
+			step: cohort!.step,
+			error: { name: "stopped", message: "This Move step is no longer current." },
+		});
+		const finished = await finish_cohort(f);
+		expect(finished.errorCode, "the stale step does not abort the Move").toBeNull();
+		expect(finished.publishedAt).not.toBeNull();
 	}, 120_000);
 
 	test("history cleanup keeps the group until its parent is gone, then drains child rows", async () => {
@@ -362,4 +387,286 @@ describe("Move cohort publication", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_move_cohort_nodes").collect())).toEqual([]);
 		expect((await f.readNames()).map((node) => node?._id)).toEqual([f.nodes[2], f.nodes[0], f.nodes[1]]);
 	}, 120_000);
+});
+
+async function transfer_workspace() {
+	const t = test_convex();
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const folder = async (path: string) => {
+		const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		return created._yay.nodeId;
+	};
+	const node = (id: Id<"files_nodes">) => t.run((ctx) => ctx.db.get("files_nodes", id));
+	// Start a Move and step its group by hand until `isReady` holds.
+	const move = async (sourceId: Id<"files_nodes">, targetParentId: Id<"files_nodes">, isReady: () => Promise<boolean>) => {
+		const started = await asUser.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "move",
+			sourceIds: [sourceId],
+			expectedSourceCount: 1,
+			targetParentId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(
+			await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId: started._yay.runId }),
+		).toEqual({ _yay: null });
+		const slot = () =>
+			t.run((ctx) =>
+				ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.unique(),
+			);
+		for (let pass = 0; pass < 10 && !(await slot())?.cohortId; pass++)
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+		const cohortId = (await slot())?.cohortId;
+		if (!cohortId) throw new Error("The Move did not start a group");
+		for (let pass = 0; !(await isReady()); pass++) {
+			if (pass === 100) throw new Error("The Move did not reach the wanted step");
+			const cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
+			await t.mutation(internal.files_move_cohorts.advance, { cohortId, step: cohort.step });
+		}
+		return cohortId;
+	};
+	const finish = () => t.finishAllScheduledFunctions(vi.runAllTimers, 2_000);
+	return { t, db, asUser, folder, node, move, finish };
+}
+
+describe("Move cohort and folder-wide jobs", () => {
+	test("Restrict reaches the items an unpublished Move holds", async () => {
+		const w = await transfer_workspace();
+		const P = await w.folder("/P");
+		const x = await w.folder("/P/x");
+		const inner = await w.folder("/P/x/inner");
+		const sub = await w.folder("/P/sub");
+		const Q = await w.folder("/Q");
+		await w.move(x, Q, async () => !!(await w.node(inner))?.moveCohortId);
+		expect(await w.asUser.mutation(api.files_sharing.restrict_node, { membershipId: w.db.membershipId, nodeId: P })).toEqual({
+			_yay: null,
+		});
+		await w.finish();
+		for (const id of [x, inner, sub]) {
+			const node = await w.node(id);
+			expect(node?.path.startsWith("/P/"), `${node?.path} stays in the restricted folder`).toBe(true);
+			expect(node?.restrictedScopeNodeId, `${node?.path} gets the folder's scope`).toBe(P);
+		}
+	});
+
+	test("Restrict reaches a destination folder that a Move holds", async () => {
+		const w = await transfer_workspace();
+		const P = await w.folder("/P");
+		const sub = await w.folder("/P/sub");
+		const deep = await w.folder("/P/sub/deep");
+		const src = await w.folder("/src");
+		await w.move(src, sub, async () => !!(await w.node(sub))?.moveCohortId);
+		expect(await w.asUser.mutation(api.files_sharing.restrict_node, { membershipId: w.db.membershipId, nodeId: P })).toEqual({
+			_yay: null,
+		});
+		await w.finish();
+		expect((await w.node(sub))?.restrictedScopeNodeId, "the held destination gets the scope").toBe(P);
+		expect((await w.node(deep))?.restrictedScopeNodeId, "a child of the held destination gets the scope").toBe(P);
+	});
+
+	test("folder protection reaches a destination folder that a Move holds", async () => {
+		const w = await transfer_workspace();
+		const P = await w.folder("/P");
+		const sub = await w.folder("/P/sub");
+		const deep = await w.folder("/P/sub/deep");
+		const src = await w.folder("/src");
+		await w.move(src, sub, async () => !!(await w.node(sub))?.moveCohortId);
+		const started = await w.asUser.mutation(api.files_write_policy_runs.start, {
+			membershipId: w.db.membershipId,
+			nodeId: P,
+			writePolicy: { mode: "read_only" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		await w.finish();
+		expect((await w.node(sub))?.writePolicy, "the held destination gets the protection").toEqual({ mode: "read_only" });
+		expect((await w.node(deep))?.writePolicy).toEqual({ mode: "read_only" });
+	});
+
+	test("Archive leaves no active item under an archived folder", async () => {
+		const w = await transfer_workspace();
+		const P = await w.folder("/P");
+		const x = await w.folder("/P/x");
+		const inner = await w.folder("/P/x/inner");
+		const Q = await w.folder("/Q");
+		await w.move(x, Q, async () => !!(await w.node(inner))?.moveCohortId);
+		expect(await w.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: w.db.membershipId, nodeIds: [P] })).toHaveProperty(
+			"_yay",
+		);
+		await w.finish();
+		expect((await w.node(P))?.archiveOperationId).not.toBeNull();
+		for (const id of [x, inner]) {
+			const node = await w.node(id);
+			expect(
+				node?.archiveOperationId !== null || !node.path.startsWith("/P/"),
+				`${node?.path} is archived or moved out of the archived folder`,
+			).toBe(true);
+		}
+	});
+});
+
+describe("Move cohort Activity deadline", () => {
+	test.each(["published", "aborting"] as const)("%s repair keeps the Move Activity alive", async (phase) => {
+		const w = await transfer_workspace();
+		const a = await w.folder("/a");
+		await w.folder("/a/c1");
+		await w.folder("/a/c2");
+		const target = await w.folder("/target");
+		const cohort = async () => (await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first()))!;
+		const cohortId = await w.move(a, target, async () => {
+			const current = await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first());
+			return phase === "published" ? current?.publishedAt != null : current?.workPhase === "descendants";
+		});
+		if (phase === "aborting") {
+			// An access change stops the Move before publication. Its repair then runs in the aborting phase.
+			await w.t.run((ctx) => files_media_validation_db_advance_version(ctx, w.db));
+			for (let pass = 0; (await cohort()).phase !== "aborting"; pass++) {
+				if (pass === 10) throw new Error("The Move did not abort");
+				await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+			}
+		}
+		const runId = (await cohort()).origin.runId;
+		const activity = () => w.t.run((ctx) => activities_db_require_by_source_id(ctx, runId));
+		const before = (await activity()).deadlineAt;
+		vi.setSystemTime(Date.now() + 20 * 60 * 1000);
+		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+		expect((await activity()).deadlineAt, "a repair step refreshes the Activity deadline").toBeGreaterThan(before);
+	});
+});
+
+describe("Review waiting for another Move", () => {
+	test.each(["planning", "starting"] as const)("does not time out while %s", async (step) => {
+		const w = await transfer_workspace();
+		const src = await w.folder("/src");
+		await w.folder("/src/c1");
+		const target = await w.folder("/target");
+		const y = await w.folder("/y");
+		const scope = { organizationId: w.db.organizationId, workspaceId: w.db.workspaceId, userId: w.db.userId };
+		const moved = await w.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...scope,
+			target: { kind: "saved", id: y },
+			destParent: { kind: "root" },
+			destName: "y2",
+		});
+		if (moved._nay) throw new Error(moved._nay.message);
+		const proposal = (await w.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_user_target", (q) => q.eq("userId", w.db.userId).eq("target.kind", "saved").eq("target.id", y))
+				.unique(),
+		))!;
+		const drainOverlay = async () => {
+			for (let pass = 0; pass < 100; pass++) {
+				const job = await w.t.run((ctx) =>
+					ctx.db
+						.query("files_pending_overlay_jobs")
+						.withIndex("by_org_ws", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
+						.first(),
+				);
+				if (!job) return;
+				await w.t.mutation(internal.files_pending_overlay.run_job, {
+					kind: job.kind,
+					key: job.key,
+					nextAttemptAt: job.nextAttemptAt,
+				});
+			}
+			throw new Error("Overlay jobs did not finish");
+		};
+		await drainOverlay();
+		// Another Move holds the workspace while the review plans, or after it planned.
+		if (step === "planning") await w.move(src, target, async () => true);
+		const started = await w.asUser.mutation(api.files_pending_update_runs.start, {
+			membershipId: w.db.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "accept",
+			expectedItemCount: 1,
+			items: [{ pendingUpdateId: proposal._id, reviewedRevision: proposal.revision, selectedContentStateId: null }],
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const { runId, activityId } = started._yay;
+		expect(await w.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: w.db.membershipId, runId })).toEqual({
+			_yay: null,
+		});
+		const run = async () => (await w.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))!;
+		const plan = async () => w.t.action(internal.files_pending_update_runs.plan, { runId, fence: (await run()).fence });
+		if (step === "starting") {
+			for (let pass = 0; (await run()).step === "planning"; pass++) {
+				if (pass === 100) throw new Error("The review did not finish planning");
+				await plan();
+			}
+			await w.move(src, target, async () => true);
+		}
+		// Poll once a minute, like the waiting review does, while the Move keeps the workspace.
+		for (let minute = 1; minute <= 31; minute++) {
+			vi.setSystemTime(Date.now() + 60_000);
+			if (step === "planning") await plan();
+			else await w.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		}
+		const activity = await w.t.run((ctx) => ctx.db.get("activities", activityId));
+		expect(activity?.status, "the waiting review is still active").toBe("running");
+	});
+});
+
+describe("Move cohort share rows", () => {
+	test("a share added while the Move finishes keeps its normal row", async () => {
+		const w = await transfer_workspace();
+		const P = await w.folder("/P");
+		const shared = await w.folder("/P/shared");
+		const dest = await w.folder("/dest");
+		expect(
+			await w.asUser.mutation(api.files_sharing.restrict_node, { membershipId: w.db.membershipId, nodeId: shared }),
+		).toEqual({ _yay: null });
+		await w.finish();
+		const memberId = await w.t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: w.db.organizationId,
+				workspaceId: w.db.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			return userId;
+		});
+		const cohort = async () => (await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first()))!;
+		const cohortId = await w.move(
+			P,
+			dest,
+			async () => (await cohort()).workPhase === "finish_nodes" && !!(await w.node(shared))?.moveCohortId,
+		);
+		// The grant lands after the side rows were finished, while the node is still held.
+		expect(
+			await w.asUser.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: w.db.membershipId,
+				nodeId: shared,
+				principal: { kind: "user", userId: memberId },
+				level: "read",
+			}),
+		).toEqual({ _yay: null });
+		for (let pass = 0; (await cohort()).phase !== "complete"; pass++) {
+			if (pass === 100) throw new Error("The Move did not finish");
+			await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+		}
+		const rows = await w.t.run((ctx) =>
+			ctx.db
+				.query("files_share_rows")
+				.withIndex("by_node", (q) => q.eq("nodeId", shared))
+				.collect(),
+		);
+		expect(
+			rows.map((row) => [row.moveView ?? null, row.name]),
+			"the shared folder keeps one normal row",
+		).toEqual([[null, "shared"]]);
+	});
 });

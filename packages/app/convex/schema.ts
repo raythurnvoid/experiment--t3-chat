@@ -523,7 +523,9 @@ export const files_media_dependency_validator = v.object({
 });
 
 export const files_media_validation_versions_validator = v.object({
-	versions: v.array(v.object({ id: v.id("files_media_validation_versions"), revision: v.number() })),
+	versions: v.array(
+		v.object({ id: v.union(v.id("files_media_validation_versions"), v.id("files_content_versions")), revision: v.number() }),
+	),
 	pendingVersions: v.array(v.object({ id: v.id("files_pending_review_versions"), revision: v.number() })),
 });
 
@@ -2610,6 +2612,14 @@ const app_convex_schema = defineSchema({
 	files_media_validation_versions: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.union(v.id("organizations_workspaces"), v.null()),
+		revision: v.number(),
+	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	// New files and replaced content advance this clock instead of the one above. Media proofs pin both.
+	// A Move pins only the one above, so new files elsewhere in the workspace do not stop it.
+	files_content_versions: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		revision: v.number(),
 	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
@@ -5472,7 +5482,7 @@ const app_convex_schema = defineSchema({
 				itemId: v.id("files_transfer_items"),
 				treePath: v.string(),
 				cursor: v.union(v.string(), v.null()),
-				versions: v.array(v.object({ id: v.id("files_media_validation_versions"), revision: v.number() })),
+				versions: files_media_validation_versions_validator.fields.versions,
 				done: v.boolean(),
 			}),
 		),

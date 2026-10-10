@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
+import { files_media_validation_db_advance_content_version } from "./files_media_validation.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -166,6 +167,7 @@ describe("Copy reference purge", () => {
 			}
 			return ids;
 		});
+		await t.run((ctx) => files_media_validation_db_advance_content_version(ctx, victim));
 		const requestId =
 			kind === "workspace"
 				? await t.run((ctx) =>
@@ -219,6 +221,17 @@ describe("Copy reference purge", () => {
 				await t.run((ctx) =>
 					ctx.db
 						.query("files_media_validation_versions")
+						.withIndex("by_organization_workspace", (q) =>
+							q.eq("organizationId", victim.organizationId).eq("workspaceId", victim.workspaceId),
+						)
+						.unique(),
+				),
+			).toBeNull();
+		if (kind === "workspace")
+			expect(
+				await t.run((ctx) =>
+					ctx.db
+						.query("files_content_versions")
 						.withIndex("by_organization_workspace", (q) =>
 							q.eq("organizationId", victim.organizationId).eq("workspaceId", victim.workspaceId),
 						)

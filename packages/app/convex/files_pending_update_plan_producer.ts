@@ -472,8 +472,15 @@ export const advance = internalMutation({
 			.query("files_move_workspace_slots")
 			.withIndex("by_workspace", (q) => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId))
 			.unique();
-		if (subtree || (state?.pendingJobCount ?? 0) > 0 || slot?.cohortId)
+		if (subtree || (state?.pendingJobCount ?? 0) > 0 || slot?.cohortId) {
+			// Another Move or folder-wide job can run past the review deadline. Keep the review alive while it waits.
+			if (subtree || slot?.cohortId) {
+				const activity = await activities_db_require_by_source_id(ctx, run._id);
+				const now = Date.now();
+				await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + 30 * 60 * 1000 });
+			}
 			return Result({ _yay: { plan, media: null, waiting: true } });
+		}
 		const review = await ctx.db
 			.query("files_pending_review_versions")
 			.withIndex("by_organization_workspace_user", (q) =>

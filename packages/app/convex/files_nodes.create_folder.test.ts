@@ -36,7 +36,7 @@ async function fixture() {
 describe("create_folder_node", () => {
 	test("creates every missing path part with folder fields and media versions", async () => {
 		const { t, db, asOwner } = await fixture();
-		const before = await t.run((ctx) => ctx.db.query("files_media_validation_versions").collect());
+		const before = await t.run((ctx) => ctx.db.query("files_content_versions").collect());
 		const created = await asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
@@ -74,7 +74,7 @@ describe("create_folder_node", () => {
 			});
 		}
 		expect(nodes.at(-1)?._id).toBe(created._yay.nodeId);
-		const after = await t.run((ctx) => ctx.db.query("files_media_validation_versions").collect());
+		const after = await t.run((ctx) => ctx.db.query("files_content_versions").collect());
 		const beforeRevision = before.find((version) => version.workspaceId === db.workspaceId)?.revision ?? 0;
 		expect(after.find((version) => version.workspaceId === db.workspaceId)?.revision).toBe(beforeRevision + 3);
 	});

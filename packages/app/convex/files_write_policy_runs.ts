@@ -342,9 +342,11 @@ export const advance = internalMutation({
 			await db_fail_run({ ctx, run, errorMessage: "You can no longer change this folder's protection.", now });
 			return null;
 		}
+		// The walk skips nodes that a Move holds. Wait while any Move holds the workspace, so no held node
+		// inside the folder misses the new rule.
 		if (await files_move_reservations_db_pause_worker(ctx, {
 			worker: { kind: "write_policy", id: run._id },
-			check: { source: { kind: "saved", id: folder._id } },
+			check: { wholeWorkspace: run },
 		})) return null;
 
 		if (activity.status === "queued") {

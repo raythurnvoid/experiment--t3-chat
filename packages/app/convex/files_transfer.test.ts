@@ -4279,6 +4279,47 @@ describe("move", () => {
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", occupant._yay.nodeId)))?.archiveOperationId).not.toBeNull();
 	});
 
+	test("Move refuses to replace a folder that is not empty and keeps the choice open", async () => {
+		const fixture = await create_folder_fixture(["/source", "/source/child", "/target/source", "/target/source/keep"]);
+		const { db, asUser, folders } = fixture;
+		const started = await start_transfer(asUser, {
+			membershipId: db.membershipId,
+			requestId: "move-replace-full-folder",
+			kind: "move",
+			sourceIds: [folders.get("/source")!],
+			targetParentId: folders.get("/target")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		const waiting = await finish_discovery(fixture, runId);
+		const list = async () =>
+			(await asUser.query(api.files_transfer.list_items, {
+				membershipId: db.membershipId,
+				runId,
+				paginationOpts: { cursor: null, numItems: 50 },
+			}))!.page[0]!;
+		const item = await list();
+		expect(item).toMatchObject({ state: "conflict", conflictKind: "name_conflict" });
+		expect(
+			await asUser.mutation(api.files_transfer.resolve_conflicts, {
+				membershipId: db.membershipId,
+				runId,
+				revision: waiting.revision,
+				choices: [
+					{
+						itemId: item.itemId,
+						choice: "replace",
+						reviewedTarget: item.conflict!.target!,
+						reviewedVersion: item.conflict!.version,
+					},
+				],
+				applyToRemaining: { file: null, folder: null },
+			}),
+			"the refusal names the reason",
+		).toEqual({ _nay: { message: "Cannot replace a folder that is not empty. Keep both or skip it." } });
+		expect(await list(), "Keep both and Skip stay open").toMatchObject({ state: "conflict", conflictKind: "name_conflict" });
+	});
+
 	test.each([
 		{ access: "none", archived: false },
 		{ access: "read", archived: false },

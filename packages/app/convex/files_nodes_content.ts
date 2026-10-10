@@ -180,7 +180,7 @@ import {
 	type files_pending_media_ValidatedSave,
 } from "./files_pending_media.ts";
 import {
-	files_media_validation_db_advance_version,
+	files_media_validation_db_advance_content_version,
 	files_media_validation_db_capture_versions,
 	files_media_validation_db_versions_match,
 } from "./files_media_validation.ts";
@@ -6581,7 +6581,7 @@ async function db_install_file_content_replacement(
 		updatedAt: now,
 	});
 	await files_updated_by_db_sync_node(ctx, { nodeId });
-	await files_media_validation_db_advance_version(ctx, membership);
+	await files_media_validation_db_advance_content_version(ctx, membership);
 
 	// The committed text docs follow the node's new shape (the chunk helper reads it back).
 	if (args.text !== undefined) {

@@ -5,7 +5,7 @@ import { api, internal } from "../convex/_generated/api.js";
 import { Doc as YjsDoc, encodeStateAsUpdate } from "yjs";
 import { files_u8_to_array_buffer, files_YJS_DOC_KEYS } from "../shared/files.ts";
 import { r2_create_asset_key } from "../convex/r2_client.ts";
-import { test_create_saved_text_file, test_mocks } from "../convex/setup.test.ts";
+import { test_mocks } from "../convex/setup.test.ts";
 import { test_create_saved_placement_fixture as fixture } from "./files-saved-placement.test-fixtures.ts";
 import {
 	files_move_reservations_db_check,
@@ -567,12 +567,9 @@ describe("Move write reservations", () => {
 	});
 
 	test("a native accepted Yjs cleanup waits before history and old asset cleanup", async () => {
-		const f = await fixture();
-		const nodeId = await test_create_saved_text_file(f.t, {
-			membershipId: f.db.membershipId,
-			path: "/cleanup.txt",
-			textContent: "saved text",
-		});
+		// The fixture holds the Move slot, and a Save waits for it. Create the file before that.
+		const f = await fixture({ normalPaths: ["/cleanup.txt"] });
+		const nodeId = f.normalNodes.get("/cleanup.txt")!;
 		expect(
 			await f.asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 				membershipId: f.db.membershipId,

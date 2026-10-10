@@ -2596,6 +2596,23 @@ export const resolve_conflicts = mutation({
 					)
 				)
 					return Result({ _nay: { message: "The destination changed. Review it again." } });
+				// A Move replaces only an empty folder. Refuse here, so the item keeps Keep both and Skip.
+				if (
+					current.kind === "saved" &&
+					current.node.kind === "folder" &&
+					(await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+							q
+								.eq("organizationId", current.node.organizationId)
+								.eq("workspaceId", current.node.workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("parentId", current.node._id)
+								.eq("archiveOperationId", null),
+						)
+						.first())
+				)
+					return Result({ _nay: { message: "Cannot replace a folder that is not empty. Keep both or skip it." } });
 			}
 		}
 

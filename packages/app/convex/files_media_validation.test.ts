@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
+	files_media_validation_db_advance_content_version,
 	files_media_validation_db_advance_version,
 	files_media_validation_db_capture_versions,
 	files_media_validation_db_versions_match,
@@ -14,7 +15,7 @@ describe("media validation versions", () => {
 		const pins = await t.run((ctx) =>
 			files_media_validation_db_capture_versions(ctx, { userId: scope.userId, scopes: [scope, scope] }),
 		);
-		expect(pins.versions).toHaveLength(2);
+		expect(pins.versions).toHaveLength(3);
 		expect(pins.pendingVersions).toHaveLength(1);
 		expect(await t.run((ctx) => files_media_validation_db_versions_match(ctx, pins))).toBe(true);
 		await t.run((ctx) => files_media_validation_db_advance_version(ctx, scope));
@@ -24,12 +25,13 @@ describe("media validation versions", () => {
 		);
 		expect(current.versions[0]).toEqual(pins.versions[0]);
 		expect(current.versions[1]).toEqual({ id: pins.versions[1]!.id, revision: pins.versions[1]!.revision + 2 });
+		expect(current.versions[2]).toEqual(pins.versions[2]);
 		expect(current.pendingVersions).toEqual(pins.pendingVersions);
 		expect(await t.run((ctx) => files_media_validation_db_versions_match(ctx, pins))).toBe(false);
 		expect(await t.run((ctx) => files_media_validation_db_versions_match(ctx, current))).toBe(true);
 	});
 
-	test.each(["organization", "workspace", "pending"] as const)(
+	test.each(["organization", "workspace", "content", "pending"] as const)(
 		"invalidates a proof when its %s clock changes",
 		async (kind) => {
 			const t = test_convex({ transactionLimits: true });
@@ -39,6 +41,7 @@ describe("media validation versions", () => {
 			);
 			await t.run(async (ctx) => {
 				if (kind === "pending") await files_db_advance_pending_review_version(ctx, scope);
+				else if (kind === "content") await files_media_validation_db_advance_content_version(ctx, scope);
 				else
 					await files_media_validation_db_advance_version(ctx, {
 						organizationId: scope.organizationId,

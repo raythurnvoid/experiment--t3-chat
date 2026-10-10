@@ -94,6 +94,7 @@ async function apply_to_contents(
 async function snapshot(f: Awaited<ReturnType<typeof fixture>>) {
 	return await f.t.run(async (ctx) => ({
 		clocks: await ctx.db.query("files_media_validation_versions").collect(),
+		contentClocks: await ctx.db.query("files_content_versions").collect(),
 		pending: await ctx.db.query("files_pending_review_versions").collect(),
 		nodes: await ctx.db.query("files_nodes").collect(),
 	}));
@@ -103,9 +104,10 @@ async function expect_clock(args: {
 	f: Awaited<ReturnType<typeof fixture>>;
 	before: Awaited<ReturnType<typeof snapshot>>;
 	changed: boolean;
+	contentChanged?: boolean;
 	pendingChanged?: boolean;
 }) {
-	const { f, before, changed, pendingChanged = false } = args;
+	const { f, before, changed, contentChanged, pendingChanged = false } = args;
 
 	const after = await snapshot(f);
 	const previous = before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!;
@@ -117,6 +119,11 @@ async function expect_clock(args: {
 		before.clocks.filter((clock) => clock._id !== previous._id),
 	);
 	if (!pendingChanged) expect(after.pending).toEqual(before.pending);
+	if (contentChanged !== undefined) {
+		const revision = (clocks: typeof before.contentClocks) =>
+			clocks.find((clock) => clock.workspaceId === f.db.workspaceId)?.revision ?? 0;
+		expect(revision(after.contentClocks) > revision(before.contentClocks)).toBe(contentChanged);
+	}
 }
 
 async function upload(args: { f: Awaited<ReturnType<typeof fixture>>; bulk: boolean; replace?: boolean }) {
@@ -164,7 +171,7 @@ async function proposal(f: Awaited<ReturnType<typeof fixture>>, nodeId: Id<"file
 
 describe("saved file media validation clocks", () => {
 	test.each(["folder", "branch/child"])(
-		"advances the workspace clock when a saved folder is created: %s",
+		"advances only the content clock when a saved folder is created: %s",
 		async (path) => {
 			const f = await fixture();
 			const before = await snapshot(f);
@@ -172,18 +179,19 @@ describe("saved file media validation clocks", () => {
 			const saved = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 			expect(saved).toMatchObject({ path: `/${path}`, kind: "folder", archiveOperationId: null });
 			expect((await snapshot(f)).nodes).toHaveLength(path.split("/").length);
-			await expect_clock({ f, before, changed: true });
+			// A Move pins the access clock. A new folder elsewhere must not stop it.
+			await expect_clock({ f, before, changed: false, contentChanged: true });
 		},
 	);
 
-	test.each([false, true])("advances the workspace clock for a new stored upload (bulk: %s)", async (bulk) => {
+	test.each([false, true])("advances only the content clock for a new stored upload (bulk: %s)", async (bulk) => {
 		const f = await fixture();
 		const before = await snapshot(f);
 		const nodeId = await upload({ f, bulk });
 		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 		expect(node).toMatchObject({ path: "/photo.png", contentType: "image/png", archiveOperationId: null });
 		expect(node?.assetId).toBeTruthy();
-		await expect_clock({ f, before, changed: true });
+		await expect_clock({ f, before, changed: false, contentChanged: true });
 	});
 
 	test("advances the workspace clock when a private text file is saved", async () => {

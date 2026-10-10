@@ -102,8 +102,8 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 		const run = await ctx.db.get("files_transfer_runs", started._yay.runId);
 		if (!run) throw new Error("Expected the Transfer origin");
 		const pins = await files_media_validation_db_capture_versions(ctx, { userId: db.userId, scopes: [db] });
-		const organization = pins.versions[0]!;
-		const workspace = pins.versions[1]!;
+		const organization = pins.versions[0] as Doc<"files_move_cohorts">["clockPins"]["organization"];
+		const workspace = pins.versions[1] as Doc<"files_move_cohorts">["clockPins"]["workspace"];
 		const review = pins.pendingVersions[0]!;
 		const cohortId = await ctx.db.insert("files_move_cohorts", {
 			...db,

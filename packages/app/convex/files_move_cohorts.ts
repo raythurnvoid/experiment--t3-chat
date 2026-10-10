@@ -66,7 +66,12 @@ import {
 import { billing_db_check_credits, billing_db_debit_anonymous_snapshot } from "./billing_db.ts";
 import { files_pending_update_runs_db_record_cohort_publication } from "./files_pending_update_runs.ts";
 import { files_transfer_db_record_cohort_publication } from "./files_transfer.ts";
-import { files_db_delete_pending_update, files_db_advance_pending_review_version } from "../server/files.ts";
+import {
+	files_db_delete_pending_update,
+	files_db_advance_pending_review_version,
+	files_db_retire_pending_update_yjs_states,
+} from "../server/files.ts";
+import { files_pending_update_db_delete_chunks } from "./files_pending_updates.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 const WAKE_PAGE_SIZE = 8;
@@ -192,7 +197,12 @@ async function db_begin(
 		affectedNodeCount: 0,
 		materializedNodeCount: 0,
 		proofEpoch: 1,
-		clockPins: { organization: pins.versions[0]!, workspace: pins.versions[1]!, review: pins.pendingVersions[0]! },
+		// The first two pins are the access clocks. A Move skips the content clock, so new files elsewhere do not stop it.
+		clockPins: {
+			organization: pins.versions[0] as Doc<"files_move_cohorts">["clockPins"]["organization"],
+			workspace: pins.versions[1] as Doc<"files_move_cohorts">["clockPins"]["workspace"],
+			review: pins.pendingVersions[0]!,
+		},
 		billedUserId: billing_pick_billed_user_id({ userId: args.userId, organization: authorized._yay.organization }),
 		contentCostCents: 0,
 		storedByteDelta: 0,
@@ -743,8 +753,9 @@ async function db_items(
 		reserved = await db_allocate_private(ctx, cohort, node, proposal);
 	}
 	if (reserved._nay) return reserved;
+	// Accepting a delete ignores the content changes and removes the draft with its pending index docs.
 	const afterProposal =
-		proposal?.content || proposal?.pendingReplacement
+		!proposal?.pendingArchive && (proposal?.content || proposal?.pendingReplacement)
 			? (() => {
 					const { _id: _id, _creationTime: _time, moveCohortId: _marker, ...header } = proposal;
 					return { ...header, pendingMove: undefined, pendingArchive: undefined, revision: proposal.revision + 1 };
@@ -1767,6 +1778,12 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 			moveCohortId: undefined,
 		});
 	else await ctx.db.delete("files_nodes", record.nodeId);
+	// A share change while the node was held wrote tagged rows only. Rebuild the rows from the final node.
+	await files_share_rows_db_sync_node(ctx.db, {
+		...cohort,
+		nodeId: record.nodeId,
+		node: await ctx.db.get("files_nodes", record.nodeId),
+	});
 	const item = record.itemId ? await ctx.db.get("files_move_cohort_items", record.itemId) : null;
 	if (item && item.nodeRecordId === record._id) {
 		if (item.pendingUpdateId) {
@@ -1795,7 +1812,18 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 								privateGeneration: null,
 							});
 					}
-				} else await files_db_delete_pending_update({ ctx, pendingUpdateId: proposal._id });
+				} else {
+					// An accepted delete skips the content step. Drop the text it ignored, with its untagged index docs.
+					if (proposal.pendingArchive && proposal.content) {
+						await files_db_retire_pending_update_yjs_states(ctx, {
+							organizationId: proposal.organizationId,
+							workspaceId: proposal.workspaceId,
+							pendingUpdateId: proposal._id,
+						});
+						await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: proposal._id });
+					}
+					await files_db_delete_pending_update({ ctx, pendingUpdateId: proposal._id });
+				}
 			}
 		}
 		if (item.target.kind === "private") {
@@ -1895,10 +1923,12 @@ async function db_save_step(
 		deadlineAt: now + RUN_TIMEOUT_MS,
 		...patch,
 	});
+	// Repair after publication or an abort can take many steps too. Keep the Activity alive while it runs,
+	// but do not revive one that already passed its deadline.
+	const activity = await activities_db_require_by_source_id(ctx, cohort.origin.runId);
+	if (activities_is_active(activity.status) && activity.deadlineAt > now)
+		await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
 	if (cohort.publishedAt === null && cohort.phase !== "aborting") {
-		const activity = await activities_db_require_by_source_id(ctx, cohort.origin.runId);
-		if (activities_is_active(activity.status))
-			await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
 		if (cohort.origin.kind === "review") {
 			const unit = await ctx.db.get("files_pending_update_run_units", cohort.origin.unitId);
 			if (unit?.cohortId === cohort._id && unit.status === "preparing")
@@ -2214,6 +2244,8 @@ export const resume = internalMutation({
 	handler: async (ctx, args) => {
 		const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 		if (!cohort || cohort.phase === "complete" || cohort.step !== args.step) return null;
+		// A duplicate run of this step took over the content preparation. That run moves the Move on.
+		if (args.error?.name === "stopped") return null;
 		if (args.error && cohort.publishedAt === null && cohort.phase !== "aborting")
 			await db_abort(ctx, cohort, args.error);
 		else await db_save_step(ctx, cohort, {}, args.error ? 30_000 : 0);

@@ -1124,6 +1124,44 @@ describe("review job content", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", child._id))).toBeNull();
 	});
 
+	test("accepting a delete with a text edit removes the draft and its index docs", async () => {
+		const f = await fixture();
+		const draft = await private_node({ f, path: "/a.txt", text: "one\n" });
+		expect((await finish_review({ f, runId: await start_review({ f, proposals: [draft] }) }))?.activity.status).toBe(
+			"succeeded",
+		);
+		const saved = (await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).find((node) => node.name === "a.txt")!;
+		const target = { kind: "saved", id: saved._id } as const;
+		const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			membershipId: f.db.membershipId,
+			target,
+		});
+		if (batch._nay) throw new Error(batch._nay.message);
+		await stage_text({ f, target, operationBatchId: batch._yay.operationBatchId, text: "two\n" });
+		expect(
+			(await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...f.scope, target }))._nay,
+		).toBeUndefined();
+		const proposal = (await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).find(
+			(row) => row.target.id === saved._id,
+		)!;
+		expect(proposal.pendingArchive && proposal.content).toBeTruthy();
+		const result = await finish_review({ f, runId: await start_review({ f, proposals: [proposal] }) });
+		expect(result?.activity.status).toBe("succeeded");
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", saved._id)))?.archiveOperationId).not.toBeNull();
+		expect(
+			await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id)),
+			"accepting a delete removes the draft",
+		).toBeNull();
+		const indexDocs = await f.t.run(async (ctx) =>
+			[
+				...(await ctx.db.query("files_plain_text_chunks").collect()),
+				...(await ctx.db.query("files_text_chunks").collect()),
+				...(await ctx.db.query("files_metadata_docs").collect()),
+			].filter((row) => row.pendingUpdateId === proposal._id),
+		);
+		expect(indexDocs, "no pending index doc outlives the draft").toEqual([]);
+	});
+
 	test("keeps saved child content and its selected parent move in one unit", async () => {
 		const f = await fixture();
 		const parent = await private_node({ f, path: "/parent" });
