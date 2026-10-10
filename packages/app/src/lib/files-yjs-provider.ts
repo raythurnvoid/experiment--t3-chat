@@ -31,7 +31,7 @@ type FilesConvexIncrementalUpdates = NonNullable<
 >;
 
 export type files_yjs_EditBlockReason = "read_only" | "permission";
-export type files_yjs_PushRefusalReason = files_yjs_EditBlockReason | "other";
+export type files_yjs_PushRefusalReason = files_yjs_EditBlockReason | "moving" | "other";
 
 type FilesConvexYjsStream_Args = {
 	nodeId: app_convex_Id<"files_nodes">;
@@ -239,6 +239,14 @@ class FilesConvexYjsStream {
 									break;
 								}
 
+								// A Move holds this file until it ends. Keep this batch, say why it waits, and retry every 5 seconds.
+								// The next accepted push clears the message.
+								if (result._nay.name === "move_busy") {
+									this.onPushRefusedChange("moving");
+									await new Promise((resolve) => setTimeout(resolve, 5000));
+									continue;
+								}
+
 								// A rate limit is temporary. Keep retrying every 5 seconds.
 								// Do not show the final warning for this case.
 								if (result._nay.message === "Rate limit exceeded") {
@@ -300,6 +308,10 @@ class FilesConvexYjsStream {
 		}
 		// Reset the timer while idle so this stays a real debounce, not a throttle.
 		this.outgoingUpdatesDebounceTimer = setTimeout(flushUpdates, 500);
+	}
+
+	hasPendingUpdates() {
+		return this.pendingOutgoingBatches.length > 0;
 	}
 
 	dropPendingUpdates() {
@@ -654,6 +666,13 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 				this.emit("status", [this.getStatus()]);
 			}),
 		);
+
+		// Unsent edits live only in memory. Ask before the tab closes while any are waiting, for example during a Move.
+		const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+			if ([...this.convexStreams.values()].some((stream) => stream.hasPendingUpdates())) event.preventDefault();
+		};
+		window.addEventListener("beforeunload", handleBeforeUnload);
+		this.unsubscribers.push(() => window.removeEventListener("beforeunload", handleBeforeUnload));
 	}
 
 	private updateDoc = (update: Uint8Array) => {

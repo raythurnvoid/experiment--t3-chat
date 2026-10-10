@@ -79,6 +79,7 @@ HTML Monaco uses syntax coloring only, like the other code files. `app-monaco-co
 The provider is app code adapted from Liveblocks. Convex stores and streams updates; R2 stores the snapshot bytes. The source comments name the read-only upstream reference files.
 
 - `FilesConvexYjsStream` watches `files_nodes.yjs_get_incremental_updates` and sends merged local batches through `files_nodes.yjs_push_update`. The idle debounce is 500 ms. Failed batches stay ahead of newer edits.
+- While a Move holds the file, `yjs_push_update` answers a `move_busy` `_nay`. The stream keeps the batch, shows the "moving" message, and retries every 5 seconds. Unsent batches live only in memory, so `beforeunload` asks before the tab closes while any wait.
 - After the document has loaded, a `USER_EDIT` packet with the same `sessionId` is an acknowledgement only. It updates sync status without applying the edit again. Other origins are applied as remote edits.
 - The first sync must include matching-session updates too: a fresh provider has not applied them yet.
 - `sync()` merges the snapshot with later updates, applies the merged state, and advances `appliedSeq`. The backend returns updates in descending order; reconstruction applies them in ascending order and skips sequences already covered by the snapshot.

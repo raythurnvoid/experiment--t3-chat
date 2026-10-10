@@ -887,6 +887,57 @@ describe("files_yjs_Provider outgoing update queue", () => {
 		provider.destroy();
 	});
 
+	test("keeps the batch and tells the user while a Move holds the file", async () => {
+		const busy = { _nay: { message: "This item is being moved. Try again when the Move ends.", name: "move_busy" } };
+		appConvexMock.app_convex.mutation
+			.mockResolvedValueOnce(busy)
+			.mockResolvedValueOnce(busy)
+			.mockResolvedValueOnce({ _yay: { newSequence: 1 } });
+		const { presenceStore, provider, rootDoc } = await createReadyProvider();
+		const pushRefused = vi.fn();
+		provider.on("pushRefused", pushRefused);
+
+		insertText(rootDoc, "typed during a Move");
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+		expect(provider.getStatus()).toBe("synchronizing");
+		expect(pushRefused, "the user gets a sign that edits wait for a Move").toHaveBeenCalledWith("moving", false);
+		expect(provider.pushRefusedReason).toBe("moving");
+
+		await advanceTimersByTime(5000);
+		await advanceTimersByTime(5000);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(3);
+		expect(getMutationUpdate(2)).toBe(getMutationUpdate(0));
+		expect(provider.pushRefusedReason).toBeNull();
+		emitLocalAck({ sequence: 1, sessionId: presenceStore.localSessionId, update: getMutationUpdate(2) });
+		expect(provider.getStatus()).toBe("synchronized");
+
+		provider.destroy();
+	});
+
+	test("asks before the tab closes only while edits are unsent", async () => {
+		const pushResult = Promise.withResolvers<{ _yay: { newSequence: number } }>();
+		appConvexMock.app_convex.mutation.mockReturnValue(pushResult.promise);
+		const { provider, rootDoc } = await createReadyProvider();
+		const unload = () => {
+			const event = new Event("beforeunload", { cancelable: true });
+			window.dispatchEvent(event);
+			return event.defaultPrevented;
+		};
+
+		expect(unload()).toBe(false);
+		insertText(rootDoc, "not sent yet");
+		expect(unload(), "unsent edits ask before the tab closes").toBe(true);
+		await advanceTimersByTime(500);
+		pushResult.resolve({ _yay: { newSequence: 1 } });
+		await flushMicrotasks();
+		expect(unload()).toBe(false);
+
+		provider.destroy();
+		insertText(rootDoc, "after destroy");
+		expect(unload()).toBe(false);
+	});
+
 	test("keeps edits made during retry behind the failed head batch", async () => {
 		appConvexMock.app_convex.mutation
 			.mockResolvedValueOnce({ _nay: { message: "Rate limit exceeded", name: "nay" } })

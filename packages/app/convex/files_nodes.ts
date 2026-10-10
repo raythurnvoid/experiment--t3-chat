@@ -10782,6 +10782,9 @@ export const yjs_push_update = mutation({
 		if (writable._nay) {
 			return writable;
 		}
+		// Answer before the write guard throws, so the editor can keep the edit and say why it waits.
+		const busy = await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: fileNode._id } });
+		if (busy._nay) return busy;
 
 		const organization = await ctx.db.get("organizations", membership.organizationId);
 		if (!organization) {
