@@ -3,7 +3,13 @@ import { Workpool } from "@convex-dev/workpool";
 import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_convex, test_move_nodes, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_finish_pending_update_run,
+	test_move_nodes,
+	test_mocks,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	files_pending_update_runs_db_delete_run_batch,
@@ -112,36 +118,8 @@ async function start_review(args: {
 }
 
 async function finish_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_pending_update_runs">) {
-	for (let pass = 0; pass < 10_000; pass++) {
-		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
-		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		if (!run) throw new Error("Expected the review run");
-		if (run.step === "finished")
-			return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
-		const unit = await f.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_update_run_units")
-				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-				.first(),
-		);
-		if (!unit) continue;
-		if (unit.kind === "cohort") {
-			if (!unit.cohortId) continue;
-			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
-			if (!cohort) throw new Error("Expected the review cohort");
-			if (cohort.phase === "complete")
-				await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
-			else await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
-			continue;
-		}
-		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
-			runId,
-			fence: run.fence,
-			unitId: unit._id,
-			attemptFence: unit.attemptFence,
-		});
-	}
-	throw new Error("Review did not finish");
+	await test_finish_pending_update_run(f.asUser, runId);
+	return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
 }
 
 describe("review jobs", () => {
@@ -834,11 +812,12 @@ describe("review jobs", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 
-	test("a reviewed delete of a folder with many side docs archives its first step within the unit budget", async () => {
+	test("a reviewed folder delete archives its files and metadata docs within the unit budget", async () => {
 		const f = await fixture();
 		const parentId = await saved_folder(f, "big");
-		// 150 files with 20 metadata docs each: one archive step patches about 3,150 docs.
-		await f.t.run(async (ctx) => {
+		// Keep all 150 files and 3,000 metadata docs across the cohort's small steps.
+		const fileIds = await f.t.run(async (ctx) => {
+			const ids: Id<"files_nodes">[] = [];
 			for (let index = 0; index < 150; index++) {
 				const name = `f${String(index).padStart(3, "0")}.md`;
 				const fileNodeId = await ctx.db.insert("files_nodes", {
@@ -855,6 +834,7 @@ describe("review jobs", () => {
 					treePath: `/big/${name}`,
 					pathDepth: 2,
 				});
+				ids.push(fileNodeId);
 				for (let field = 0; field < 20; field++) {
 					await ctx.db.insert("files_metadata_docs", {
 						organizationId: f.scope.organizationId,
@@ -869,6 +849,7 @@ describe("review jobs", () => {
 					});
 				}
 			}
+			return ids;
 		});
 		expect(
 			(
@@ -881,14 +862,39 @@ describe("review jobs", () => {
 		const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 
 		const { runId } = await start_review({ f, kind: "accept", proposals });
-		await finish_review(f, runId);
+		const result = await finish_review(f, runId);
+		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
 
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
-			{ status: "completed", errorMessage: null },
+		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
+		expect(units).toMatchObject([{ status: "completed", errorMessage: null }]);
+		const unit = units[0];
+		if (!unit?.cohortId) throw new Error("Expected the review cohort");
+		const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
+		expect(cohort).toMatchObject({ phase: "complete", visibleView: "after" });
+		expect(cohort?.publishedAt).not.toBeNull();
+		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+		expect(saved.map((node) => [node._id, node.path, node.treePath])).toEqual([
+			[parentId, "/big", "/big/"],
+			...fileIds.map((id, index) => {
+				const path = `/big/f${String(index).padStart(3, "0")}.md`;
+				return [id, path, path];
+			}),
 		]);
-		// The archive job goes on in the background after the review.
-		const archiveRun = await f.t.run((ctx) => ctx.db.query("files_archive_runs").first());
-		expect(archiveRun?.active).toBe(true);
+		expect(saved.every((node) => node.archiveOperationId === unit.cohortId && node.moveCohortId === undefined)).toBe(true);
+		const metadata = await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect());
+		expect(metadata.map((row) => [row.fileNodeId, row.fieldPath]).sort()).toEqual(
+			fileIds.flatMap((id) => Array.from({ length: 20 }, (_, field) => [id, `frontmatter.tag${field}`])).sort(),
+		);
+		expect(
+			metadata.every((row) => row.archiveOperationId === unit.cohortId),
+			"Reviewed Delete archives every metadata field",
+		).toBe(true);
+		expect(
+			metadata.every((row) => row.yjsSequence === 1 && row.sourceKind === "committed" && row.moveView === undefined),
+		).toBe(true);
+		const paths = new Map(saved.map((node) => [node._id, node.path]));
+		expect(metadata.every((row) => row.path === paths.get(row.fileNodeId!) && row.treePath === row.path)).toBe(true);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 
 	test("does not discard an unselected ready child", async () => {
