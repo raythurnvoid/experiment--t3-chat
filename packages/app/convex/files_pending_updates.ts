@@ -7410,7 +7410,26 @@ export const get_pending_move_occupant = query({
 						)
 						.first()
 				: null;
-		return { nodeId: readable._id, hasActiveChild: child !== null };
+		// A Move takes its children out of the normal docs until it ends. Check the places of the view
+		// that readers see now too, or a full folder would look empty.
+		const view = readable.kind === "folder" && !child ? await files_saved_placement_db_get_view(ctx.db, scope) : null;
+		const cohortId = view?.cohortId;
+		const moveView = view?.view;
+		const placedChild =
+			cohortId && moveView
+				? await ctx.db
+						.query("files_saved_places")
+						.withIndex("by_view_parent_archive_restricted_kind_sort_name", (q) =>
+							q
+								.eq("cohortId", cohortId)
+								.eq("view", moveView)
+								.eq("parentId", readable._id)
+								.eq("archiveOperationId", null)
+								.eq("isRestrictedScopeRoot", false),
+						)
+						.first()
+				: null;
+		return { nodeId: readable._id, hasActiveChild: child !== null || placedChild !== null };
 	},
 });
 

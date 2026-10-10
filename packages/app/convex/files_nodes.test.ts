@@ -78,6 +78,7 @@ import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from 
 import { delay } from "../shared/async-utils.ts";
 import { r2_confirmed_object_delete, r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
+import { test_create_saved_placement_fixture } from "../server/files-saved-placement.test-fixtures.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import {
@@ -1191,6 +1192,18 @@ describe("get_folder_readme", () => {
 		await expect(
 			t.query(api.files_nodes.get_folder_readme, { membershipId: f.admin.membershipId, folderId: f.nodes.boxId }),
 		).rejects.toThrow("Unauthenticated");
+	});
+
+	test("finds a README that an active Move holds, before and after the switch", async () => {
+		const f = await test_create_saved_placement_fixture({ normalPaths: ["/target/README.md"] });
+		const readmeId = f.normalNodes.get("/target/README.md")!;
+		const get = () =>
+			f.asUser.query(api.files_nodes.get_folder_readme, { membershipId: f.db.membershipId, folderId: f.parentId });
+
+		await f.stageNode(readmeId);
+		expect((await get())?._id).toBe(readmeId);
+		await f.publish();
+		expect((await get())?._id).toBe(readmeId);
 	});
 });
 

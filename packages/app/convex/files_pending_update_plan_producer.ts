@@ -303,7 +303,9 @@ async function db_destination(ctx: MutationCtx, run: Run, plan: Plan, item: Item
 		});
 		if (occupant && (item.target.kind !== "saved" || occupant._id !== item.target.id)) {
 			const selected = await db_selected(ctx, plan, { kind: "saved", id: occupant._id });
-			if (selected?.structuralKind === "move") plan = await db_link(ctx, plan, item, selected, "structure");
+			// A selected move or delete frees the name, so both changes publish in one group.
+			if (selected?.structuralKind === "move" || selected?.structuralKind === "archive")
+				plan = await db_link(ctx, plan, item, selected, "structure");
 			else if ((!replaced || replaced.kind !== "saved" || replaced.id !== occupant._id) && item.errorCode === null) {
 				const current = (await ctx.db.get("files_pending_update_plan_items", item._id))!;
 				// Keep an earlier error found while checking this destination.

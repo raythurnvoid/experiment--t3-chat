@@ -1,7 +1,9 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "../convex/_generated/api.js";
+import { api, internal } from "../convex/_generated/api.js";
+import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
+import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { test_create_saved_placement_fixture as fixture } from "./files-saved-placement.test-fixtures.ts";
 import { files_share_rows_db_compute_all_for_grant } from "./files-share-rows.ts";
 
@@ -148,4 +150,94 @@ describe("share rows during a Move", () => {
 			).page,
 		).toEqual([]);
 	});
+
+	// Each share row copies the long name. If the Move read the node and its places again for every
+	// grant, 50 shares of a 19,000-char folder would read more than 16 MiB in one step.
+	test("moves a restricted folder with 50 shares and a long name", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folder = async (path: string) => {
+			const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.nodeId;
+		};
+		const sourceId = await folder(`/${"n".repeat(19_000)}`);
+		const targetId = await folder("/target");
+		const userIds = await t.run(async (ctx) => {
+			const ids = [];
+			for (let index = 0; index < 50; index++) {
+				const userId = await ctx.db.insert("users", { clerkUserId: `clerk_share_rows_${index}` });
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId,
+					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId,
+					role: "member",
+					now: Date.now(),
+				});
+				ids.push(userId);
+			}
+			return ids;
+		});
+		// Advance only the clock between sharing writes, so their rate limit refills.
+		vi.setSystemTime(Date.now() + 3_000);
+		expect(
+			await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: sourceId }),
+		).toEqual({ _yay: null });
+		for (const userId of userIds) {
+			vi.setSystemTime(Date.now() + 3_000);
+			expect(
+				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: db.membershipId,
+					nodeId: sourceId,
+					principal: { kind: "user", userId },
+					level: "manage",
+				}),
+			).toEqual({ _yay: null });
+		}
+
+		const started = await asOwner.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "share-rows-long-name",
+			kind: "move",
+			sourceIds: [sourceId],
+			expectedSourceCount: 1,
+			targetParentId: targetId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(
+			await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId: started._yay.runId }),
+		).toEqual({ _yay: null });
+		for (let step = 0; step < 3_000; step++) {
+			vi.advanceTimersByTime(0);
+			await t.finishInProgressScheduledFunctions();
+			const activity = await t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
+			if (activity?.finishedAt !== undefined || vi.getTimerCount() === 0) break;
+			vi.advanceTimersToNextTimer();
+		}
+
+		expect(
+			await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId: started._yay.runId }),
+		).toMatchObject({ activity: { status: "succeeded", progress: { completed: 1 } } });
+		const rows = await t.run((ctx) =>
+			ctx.db
+				.query("files_share_rows")
+				.withIndex("by_node", (q) => q.eq("nodeId", sourceId))
+				.collect(),
+		);
+		expect(rows.map((row) => [row.parentId, row.moveView])).toEqual(Array(50).fill([targetId, undefined]));
+	}, 120_000);
 });
