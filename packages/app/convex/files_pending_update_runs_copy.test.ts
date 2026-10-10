@@ -8,8 +8,12 @@ import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_u
 import { files_db_patch_pending_update } from "../server/files.ts";
 import {
 	test_convex,
+	test_db_get_overlay_job,
+	test_db_get_review_state,
+	test_db_get_slot_cohort,
 	test_finish_pending_update_run,
 	test_mocks_fill_db_with,
+	test_progress_guard,
 	test_run_with_flush,
 } from "./setup.test.ts";
 
@@ -231,17 +235,7 @@ async function review_clock(f: Awaited<ReturnType<typeof fixture>>) {
 
 async function next_overlay_job(f: Awaited<ReturnType<typeof fixture>>) {
 	// This test fixture owns the jobs. Parked jobs wake only after cohort cleanup.
-	return await f.t.run(
-		async (ctx) =>
-			(
-				await ctx.db
-					.query("files_pending_overlay_jobs")
-					.withIndex("by_org_ws", (q) =>
-						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
-					)
-					.collect()
-			).find((job) => !job.blockedByCohortId) ?? null,
-	);
+	return await f.t.run((ctx) => test_db_get_overlay_job(ctx, f.db));
 }
 
 async function produce_plan_page(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_pending_update_runs">) {
@@ -304,8 +298,20 @@ async function plan_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"fi
 
 async function save_next(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_pending_update_runs">) {
 	const before = await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
+	const progress = test_progress_guard();
+	// The running Move that advance already saw. Until it completes, advance only schedules its next step.
+	let advancedCohortId: Id<"files_move_cohorts"> | null = null;
 	for (let pass = 0; pass < 50_000; pass++) {
-		const job = await next_overlay_job(f);
+		// All reads of one pass in one transaction.
+		const state = await f.t.run(async (ctx) => ({
+			...(await test_db_get_review_state(ctx, runId)),
+			slotCohort: await test_db_get_slot_cohort(ctx, f.db),
+		}));
+		const { job, activity } = state;
+		progress(
+			state,
+			`Review step ${state.run.step}, job ${job?.kind ?? "none"}, Move ${state.cohort ? `${state.cohort.phase}/${state.cohort.workPhase} step ${state.cohort.step}` : "none"}`,
+		);
 		if (job) {
 			await f.t.mutation(internal.files_pending_overlay.run_job, {
 				kind: job.kind,
@@ -314,41 +320,26 @@ async function save_next(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"file
 			});
 			continue;
 		}
-		const current = await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
-		if ((current?.activity.progress?.completed ?? 0) > (before?.activity.progress?.completed ?? 0)) {
-			const slot = await f.t.run((ctx) =>
-				ctx.db
-					.query("files_move_workspace_slots")
-					.withIndex("by_workspace", (q) =>
-						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
-					)
-					.unique(),
-			);
-			if (!slot?.cohortId) {
-				const unit = await f.t.run((ctx) =>
-					ctx.db
-						.query("files_pending_update_run_units")
-						.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-						.first(),
-				);
-				if (unit?.cohortId)
-					await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: unit.cohortId });
-				return true;
-			}
+		if ((activity?.progress?.completed ?? 0) > (before?.activity.progress?.completed ?? 0) && !state.slotCohort) {
+			if (state.unit?.cohortId)
+				await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: state.unit.cohortId });
+			return true;
 		}
-		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
-		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		if (!run) throw new Error("Expected the review run");
+		let { run, unit, cohort } = state;
+		// Like test_finish_pending_update_run: skip advance while the Move it already saw still runs.
+		if (
+			!cohort ||
+			cohort._id !== advancedCohortId ||
+			cohort.phase === "complete" ||
+			!activity ||
+			activity.deadlineAt <= Date.now()
+		) {
+			await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
+			({ run, unit, cohort } = await f.t.run((ctx) => test_db_get_review_state(ctx, runId)));
+			advancedCohortId = cohort && cohort.phase !== "complete" ? cohort._id : null;
+		}
 		if (run.step === "finished") return false;
-		const unit = await f.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_update_run_units")
-				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-				.first(),
-		);
-		if (!unit) continue;
-		if (!unit.cohortId) continue;
-		const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
+		if (!unit?.cohortId) continue;
 		if (!cohort) throw new Error("Expected the review cohort");
 		if (cohort.phase === "complete")
 			await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });

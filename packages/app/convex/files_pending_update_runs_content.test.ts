@@ -6,7 +6,14 @@ import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { test_convex, test_finish_pending_update_run, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_db_get_review_state,
+	test_finish_pending_update_run,
+	test_mocks,
+	test_mocks_fill_db_with,
+	test_progress_guard,
+} from "./setup.test.ts";
 import {
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_patch_pending_update,
@@ -197,17 +204,11 @@ async function start_review(args: {
 	expect(
 		await f.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: f.db.membershipId, runId }),
 	).toEqual({ _yay: null });
+	const progress = test_progress_guard();
 	for (let pass = 0; pass < 50_000; pass++) {
-		const job = await f.t.run(async (ctx) =>
-			(
-				await ctx.db
-					.query("files_pending_overlay_jobs")
-					.withIndex("by_org_ws", (q) =>
-						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
-					)
-					.collect()
-			).find((row) => !row.blockedByCohortId),
-		);
+		const state = await f.t.run((ctx) => test_db_get_review_state(ctx, runId));
+		const { job } = state;
+		progress(state, `Review planning, job ${job?.kind ?? "none"}`);
 		if (job) {
 			await f.t.mutation(internal.files_pending_overlay.run_job, {
 				kind: job.kind,
@@ -399,9 +400,11 @@ describe("review job content", () => {
 		);
 		expect(unit?.status).toBe("preparing");
 		if (!unit?.cohortId) throw new Error("Expected the partial Save group");
+		const progress = test_progress_guard();
 		for (let pass = 0; pass < 50_000; pass++) {
 			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
 			if (!cohort) throw new Error("Expected the partial Save group");
+			progress(cohort, `Move ${cohort.phase}/${cohort.workPhase} step ${cohort.step}`);
 			if (cohort.phase === "complete") {
 				await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
 				break;
@@ -466,9 +469,11 @@ describe("review job content", () => {
 		);
 		if (!unit?.cohortId) throw new Error("Expected the partial Save group");
 		const cohortId = unit.cohortId;
+		const progress = test_progress_guard();
 		for (let pass = 0; pass < 50_000; pass++) {
 			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId));
 			if (!cohort) throw new Error("Expected the partial Save group");
+			progress(cohort, `Move ${cohort.phase}/${cohort.workPhase} step ${cohort.step}`);
 			if (cohort.publishedAt !== null) {
 				expect(cohort.workPhase).toBe("finish_content");
 				break;
@@ -524,9 +529,11 @@ describe("review job content", () => {
 		).resolves.toBeNull();
 		expect(await getHold()).toEqual(hold);
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id))).toEqual(beforeRepair);
+		const repairProgress = test_progress_guard();
 		for (let pass = 0; pass < 50_000; pass++) {
 			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId));
 			if (!cohort) throw new Error("Expected the partial Save group");
+			repairProgress(cohort, `Move ${cohort.phase}/${cohort.workPhase} step ${cohort.step}`);
 			if (cohort.phase === "complete") break;
 			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
 			if (pass === 49_999) throw new Error("Stopped partial Save did not finish repair");
