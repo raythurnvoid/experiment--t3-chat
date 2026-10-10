@@ -2174,6 +2174,11 @@ export const settle_cohort = internalMutation({
 				? { code: cohort.errorCode ?? "needs_review", message: cohort.errorMessage ?? "Review these changes again." }
 				: {}),
 		});
+		// Stop waited for this repair.
+		if (run.step === "finished") {
+			await activities_db_finish(ctx, { sourceId: run._id, status: "canceled", errorMessage: null, now: Date.now() });
+			await files_pending_holds_db_finish(ctx, { producer: { kind: "files_pending_update_run", id: run._id } });
+		}
 		return null;
 	},
 });
@@ -2277,24 +2282,32 @@ export async function files_pending_update_runs_db_request_stop(
 		progress: { ...progress, canceled: progress.canceled + remaining },
 		updatedAt: args.now,
 	});
-	await activities_db_finish(ctx, {
-		sourceId: run._id,
-		status: args.reason === "timeout" ? "timed_out" : "canceled",
-		now: args.now,
-		errorCode: args.reason === "permission" ? "permission_denied" : undefined,
-		errorMessage:
-			args.reason === "permission"
-				? "This review is no longer available."
-				: args.reason === "timeout"
-					? "The review reached its execution deadline."
-					: null,
-	});
 	const preparing = await ctx.db
 		.query("files_pending_update_run_units")
 		.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", run._id).eq("status", "preparing"))
 		.first();
+	const cohort = preparing?.cohortId ? await ctx.db.get("files_move_cohorts", preparing.cohortId) : null;
+	// A saved group still repairs after Stop. Keep the Activity until it ends, so a repair notice stays visible.
+	const waitsForRepair =
+		args.reason === "user" && cohort !== null && cohort.publishedAt !== null && cohort.phase !== "complete";
+	if (waitsForRepair) await ctx.db.patch("activities", activity._id, { status: "stopping", stopRequestedAt: args.now });
+	else
+		await activities_db_finish(ctx, {
+			sourceId: run._id,
+			status: args.reason === "timeout" ? "timed_out" : "canceled",
+			now: args.now,
+			errorCode: args.reason === "permission" ? "permission_denied" : undefined,
+			errorMessage:
+				args.reason === "permission"
+					? "This review is no longer available."
+					: args.reason === "timeout"
+						? "The review reached its execution deadline."
+						: null,
+		});
 	if (preparing?.cohortId) await files_move_cohorts_db_request_stop(ctx, { cohortId: preparing.cohortId });
-	await files_pending_holds_db_finish(ctx, { producer: { kind: "files_pending_update_run", id: run._id } });
+	// The holds go when the Activity ends.
+	if (!waitsForRepair)
+		await files_pending_holds_db_finish(ctx, { producer: { kind: "files_pending_update_run", id: run._id } });
 	if (preparing?.workId) {
 		await files_review_workpool.cancel(ctx, preparing.workId);
 		await ctx.db.patch("files_pending_update_run_units", preparing._id, { workId: null });

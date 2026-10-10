@@ -495,10 +495,9 @@ describe("review job content", () => {
 				activityId: current.activity._id,
 			}),
 		).toEqual({ _yay: null });
+		// Stop keeps the Activity until repair ends, so the review deadline is not fixed yet.
 		const stopped = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		const outputReviewUntil = stopped?.outputReviewUntil;
-		if (outputReviewUntil === undefined) throw new Error("Expected the fixed review deadline");
-		expect(outputReviewUntil).toBeGreaterThan(partial.expiresAt);
+		expect(stopped?.outputReviewUntil).toBeUndefined();
 		const producer = { kind: "files_pending_update_run" as const, id: runId };
 		const getHold = () =>
 			f.t.run((ctx) =>
@@ -539,6 +538,10 @@ describe("review job content", () => {
 			if (pass === 49_999) throw new Error("Stopped partial Save did not finish repair");
 		}
 		await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
+		const outputReviewUntil = (await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))
+			?.outputReviewUntil;
+		if (outputReviewUntil === undefined) throw new Error("Expected the fixed review deadline");
+		expect(outputReviewUntil).toBeGreaterThan(partial.expiresAt);
 		await f.t.mutation(internal.files_move_cohorts.wake_waiters, { cohortId });
 		expect(await f.t.mutation(internal.files_pending_holds.release_producer, { producer })).toBeNull();
 		expect(await getHold()).toBeNull();

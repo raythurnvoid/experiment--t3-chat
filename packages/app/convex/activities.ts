@@ -21,6 +21,8 @@ import {
 } from "./files_write_policy_runs.ts";
 import { files_archive_runs_db_delete_run_batch, files_archive_runs_db_request_stop } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_recover, files_subtree_ops_RECOVER_AFTER_MS } from "./files_subtree_ops.ts";
+import { files_move_cohorts_db_retry_repair_now, files_move_cohorts_REPAIR_STUCK_CODE } from "./files_move_cohorts.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { plugins_runtime_db_delete_run_history, plugins_runtime_db_timeout_run } from "./plugins_runtime.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
@@ -279,6 +281,53 @@ export const request_stop = mutation({
 			default:
 				throw should_never_happen("Unknown Activity source", activity.source satisfies never);
 		}
+		return Result({ _yay: null });
+	},
+});
+
+/**
+ * "Try again now" on a Move whose repair keeps failing. Only the person who started it can use it.
+ */
+export const retry_move_repair = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		activityId: v.id("activities"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+		const activity = await ctx.db.get("activities", args.activityId);
+		if (
+			!activity ||
+			activity.organizationId !== membership.organizationId ||
+			activity.workspaceId !== membership.workspaceId ||
+			activity.userId !== userAuth.id ||
+			(activity.source.kind !== "files_transfer_run" && activity.source.kind !== "files_pending_update_run")
+		) {
+			return Result({ _nay: { message: "Activity not found" } });
+		}
+		// The repair already went on, or the Move ended.
+		if (activity.errorCode !== files_move_cohorts_REPAIR_STUCK_CODE) return Result({ _yay: null });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
+		// A run has one group at a time, and it is the newest one.
+		const runId = activity.source.id;
+		const cohort = await ctx.db
+			.query("files_move_cohorts")
+			.withIndex("by_origin_run", (q) =>
+				q
+					.eq("origin.kind", activity.source.kind === "files_transfer_run" ? "transfer" : "review")
+					.eq("origin.runId", runId),
+			)
+			.order("desc")
+			.first();
+		if (cohort) await files_move_cohorts_db_retry_repair_now(ctx, cohort);
 		return Result({ _yay: null });
 	},
 });

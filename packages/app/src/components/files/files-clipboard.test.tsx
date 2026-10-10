@@ -1266,6 +1266,19 @@ describe("FilesTransferRunModal", () => {
 		},
 	);
 
+	test.each([
+		["move_repair_stuck", "running", "Files moved. Cleanup needs help."],
+		["waiting_for_move", "queued", "Waiting for another Move in this workspace to finish."],
+	] as const)("says why a Move does not go on (%s)", async (errorCode, status, label) => {
+		const run = make_run({ kind: "move", status });
+		run.activity.errorCode = errorCode;
+		queryState.run = run;
+		queryState.runs = [run];
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
+		expect(await screen.findByText(label)).toBeTruthy();
+	});
+
 	test("shows a pending Stop before the run details load", async () => {
 		const response = Promise.withResolvers<{ _yay: null }>();
 		mutationMock.mockReturnValue(response.promise);

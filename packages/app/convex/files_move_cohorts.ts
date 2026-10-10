@@ -1,10 +1,12 @@
 import { Result } from "common/errors-as-values-utils.ts";
 import type { WithoutSystemFields } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalAction, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalAction, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
+import app_convex_schema from "./schema.ts";
 import {
 	files_nodes_db_get_content_version,
 	files_nodes_db_require_user_writable,
@@ -87,6 +89,11 @@ const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const REPAIR_RETRY_MS = 30 * 1000;
 const REPAIR_RETRY_MAX_MS = 60 * 60 * 1000;
 const REPAIR_STUCK_COUNT = 8;
+/** After this many failed repair tries in a row, the starter sees that the Move needs help. */
+const REPAIR_HELP_COUNT = 3;
+export const files_move_cohorts_REPAIR_STUCK_CODE = "move_repair_stuck";
+const REPAIR_STUCK_MESSAGE =
+	"Your files are already in their new place. A cleanup step keeps failing. We try again on our own. Until it finishes, other moves, archives and access changes in this workspace wait.";
 
 function placement_header(node: Doc<"files_nodes">) {
 	const {
@@ -497,6 +504,15 @@ export async function files_move_cohorts_db_request_stop(
 			errorMessage: "This Move stopped before it was saved.",
 		});
 	await files_move_cohorts_db_schedule(ctx, args);
+}
+
+/**
+ * Try a waiting repair now. The try is fenced by step, so a second click does nothing.
+ */
+export async function files_move_cohorts_db_retry_repair_now(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
+	if (cohort.phase === "complete" || cohort.repairNextRetryAt === undefined) return;
+	await ctx.db.patch("files_move_cohorts", cohort._id, { repairNextRetryAt: undefined });
+	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
 }
 
 /**
@@ -1956,6 +1972,19 @@ async function db_save_step(
 		cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;
 	if (activities_is_active(activity.status) && activity.deadlineAt > now && !transfer?.fixedDeadline)
 		await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + delayMs + RUN_TIMEOUT_MS });
+	// A good step takes the notice away.
+	const needsHelp = (patch.repairFailureCount ?? 0) >= REPAIR_HELP_COUNT;
+	if (
+		activities_is_active(activity.status) &&
+		needsHelp !== (activity.errorCode === files_move_cohorts_REPAIR_STUCK_CODE)
+	)
+		await ctx.db.patch(
+			"activities",
+			activity._id,
+			needsHelp
+				? { errorCode: files_move_cohorts_REPAIR_STUCK_CODE, errorMessage: REPAIR_STUCK_MESSAGE }
+				: { errorCode: undefined, errorMessage: null },
+		);
 	if (cohort.publishedAt === null && cohort.phase !== "aborting") {
 		if (cohort.origin.kind === "review") {
 			const unit = await ctx.db.get("files_pending_update_run_units", cohort.origin.unitId);
@@ -2385,6 +2414,33 @@ export const recover = internalMutation({
 			}
 		}
 		await ctx.scheduler.runAfter(0, internal.files_move_cohorts.recover_completed, {});
+		return null;
+	},
+});
+
+/**
+ * For ops: groups whose repair failed several times in a row, most failures first.
+ */
+export const list_stuck = internalQuery({
+	args: {},
+	returns: v.array(doc(app_convex_schema, "files_move_cohorts")),
+	handler: async (ctx) =>
+		await ctx.db
+			.query("files_move_cohorts")
+			.withIndex("by_repair_failure_count", (q) => q.gte("repairFailureCount", REPAIR_HELP_COUNT))
+			.order("desc")
+			.take(50),
+});
+
+/**
+ * For ops: the same as the starter's "Try again now", without auth.
+ */
+export const retry_now = internalMutation({
+	args: { cohortId: v.id("files_move_cohorts") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
+		if (cohort) await files_move_cohorts_db_retry_repair_now(ctx, cohort);
 		return null;
 	},
 });

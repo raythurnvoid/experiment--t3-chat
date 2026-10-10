@@ -4064,11 +4064,22 @@ describe("move", () => {
 			vi.setSystemTime(Date.now() + 5 * 60_000);
 			await t.mutation(internal.activities.recover_expired, { _test_disableReschedule: true });
 		}
-		expect(
-			(await member.asUser.query(api.files_transfer.get, secondArgs))?.activity.status,
-			"a Paste waiting for a Move does not time out",
-		).toBe("queued");
+		const waiting = (await member.asUser.query(api.files_transfer.get, secondArgs))?.activity;
+		expect(waiting?.status, "a Paste waiting for a Move does not time out").toBe("queued");
+		expect(waiting?.errorCode, "the waiting Paste says why").toBe("waiting_for_move");
 		expect((await slot())?.cohortId, "the first Move still holds the workspace").not.toBeNull();
+		// An agent's Move keeps its fixed deadline. When that ends the wait, the reason is clear.
+		await t.run((ctx) => ctx.db.patch("files_transfer_runs", second._yay.runId, { fixedDeadline: true }));
+		await t.mutation(internal.files_transfer.advance, { runId: second._yay.runId });
+		vi.setSystemTime(Date.now() + 31 * 60_000);
+		await t.mutation(internal.files_transfer.advance, { runId: second._yay.runId });
+		expect(
+			(await member.asUser.query(api.files_transfer.get, secondArgs))?.activity,
+			"a Move that timed out while waiting says why",
+		).toMatchObject({
+			errorCode: "timed_out",
+			errorMessage: "Another Move in this workspace did not finish in time. Nothing was moved. Try again later.",
+		});
 	});
 
 	test("holds the empty private destination before a Move Retry's first page", async () => {

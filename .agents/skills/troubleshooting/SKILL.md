@@ -120,6 +120,15 @@ Three crons clean up after killed chat actions, every 5 minutes: `end expired ch
 
 AI usage billing has its own markers. `AI usage not billed` means a charge had no target (an admin full purge deleted the payer or its billing snapshot); the receipt keeps the charge as `target_gone`. `AI usage delivery failed` means the Polar usage pool gave up on an event; the receipt keeps `delivery_failed`. `AI usage lookup failed` means the recovery cron could not reach the provider for one receipt. Read the `ai_model_call_receipts` doc by `modelCallId` to see its usage and charge states.
 
+A stuck Move repair logs `Move repair stuck` once, after 8 failed tries in a row (cohort id, work
+phase, count, last error). After 3 failures the starter's Activity already shows `Needs help`.
+While it is stuck, the group keeps the workspace slot, so other Moves, Archives and access changes
+in that workspace wait. To check, run `files_move_cohorts:list_stuck` (no args): it lists up to 50
+groups with `repairFailureCount` 3 or more, with `repairLastError` and `repairNextRetryAt`. Fix the
+cause first (the error says which step and why). Then run `files_move_cohorts:retry_now` with
+`{ cohortId }` to try the step at once. It is safe to run twice: the try is fenced by step. Never
+release the slot by hand; the repair must finish.
+
 A failed function, including one that hits a Convex limit, also shows on the dashboard Logs page. In production the client sees only "Server Error", but the log keeps the details. Convex adds warning lines with a `system_code` field when a function gets close to a limit. No log stream or alert is set up yet; that needs the Convex Pro plan.
 
 # Convex HTTP Action Latency

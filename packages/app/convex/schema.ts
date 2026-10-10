@@ -2110,6 +2110,7 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_workspace_phase", ["organizationId", "workspaceId", "phase"])
 		.index("by_origin_run", ["origin.kind", "origin.runId"])
+		.index("by_repair_failure_count", ["repairFailureCount"])
 		.index("by_origin_item", ["origin.kind", "origin.itemId"])
 		.index("by_origin_unit", ["origin.kind", "origin.unitId"])
 		.index("by_deadline", ["phase", "deadlineAt"])
