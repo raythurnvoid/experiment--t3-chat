@@ -1722,9 +1722,9 @@ function build_discard_dependencies(selected: NonNullable<get_plan_selection_pag
 }
 
 export const plan = internalAction({
-	args: { runId: v.id("files_pending_update_runs"), fence: v.number() },
+	args: { runId: v.id("files_pending_update_runs"), fence: v.number(), pollMs: v.optional(v.number()) },
 	returns: v.null(),
-	handler: async (ctx, args) => {
+	handler: async (ctx, { pollMs, ...args }) => {
 		async function fail(error: { name?: string; message: string }, unreviewedIds: Id<"files_pending_updates">[] = []) {
 			if (error.name === "stopped") return;
 			await ctx.runMutation(internal.files_pending_update_runs.fail_plan, {
@@ -1756,8 +1756,14 @@ export const plan = internalAction({
 						return null;
 					}
 					planEpoch = produced._yay.plan.epoch;
-					if (produced._yay.waiting === "poll")
-						await ctx.scheduler.runAfter(100, internal.files_pending_update_runs.plan, args);
+					// A folder-wide job or overlay jobs can run for minutes. Poll less often while nothing moves.
+					if (produced._yay.waiting === "poll") {
+						const delayMs = pass === 0 ? (pollMs ?? 100) : 100;
+						await ctx.scheduler.runAfter(delayMs, internal.files_pending_update_runs.plan, {
+							...args,
+							pollMs: Math.min(delayMs * 2, 5_000),
+						});
+					}
 					if (produced._yay.waiting) return null;
 					if (produced._yay.media) {
 						const { item, proposal, offset } = produced._yay.media;
@@ -2927,6 +2933,10 @@ export async function files_pending_update_runs_db_delete_run_batch(
 	const removed = await activities_db_delete(ctx, activity._id);
 	if (!removed.done) return removed;
 	await ctx.db.delete("files_pending_update_runs", run._id);
+	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.cleanup_origin, {
+		origin: { kind: "review", runId: run._id },
+		cursor: null,
+	});
 	return { done: true, deletedCount: removed.deletedCount + 1 };
 }
 

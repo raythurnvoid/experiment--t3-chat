@@ -4020,6 +4020,57 @@ describe("move", () => {
 		});
 	});
 
+	test("keeps a Paste alive while it waits for another user's long Move", async () => {
+		const fixture = await create_folder_fixture(["/first", "/second"]);
+		const { t, db, asUser, folders } = fixture;
+		const member = await add_member(fixture);
+		const first = await start_transfer(asUser, {
+			membershipId: db.membershipId,
+			requestId: "long-move",
+			kind: "move",
+			sourceIds: [folders.get("/first")!],
+			targetParentId: folders.get("/target")!,
+		});
+		if (first._nay) throw new Error(first._nay.message);
+		const slot = () =>
+			t.run((ctx) =>
+				ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.unique(),
+			);
+		for (let step = 0; step < 10 && !(await slot())?.cohortId; step++)
+			await t.mutation(internal.files_transfer.advance, { runId: first._yay.runId });
+		expect((await slot())?.cohortId, "the first Move holds the workspace").not.toBeNull();
+		const second = await member.asUser.mutation(api.files_transfer.start, {
+			membershipId: member.membershipId,
+			requestId: "waiting-move",
+			kind: "move",
+			sourceIds: [folders.get("/second")!],
+			expectedSourceCount: 1,
+			targetParentId: folders.get("/target")!,
+		});
+		if (second._nay) throw new Error(second._nay.message);
+		expect(
+			await member.asUser.mutation(api.files_transfer.seal, {
+				membershipId: member.membershipId,
+				runId: second._yay.runId,
+			}),
+		).toEqual({ _yay: null });
+		const secondArgs = { membershipId: member.membershipId, runId: second._yay.runId };
+		// The waiting Paste checks again every second. Here each check is 5 minutes apart, for 35 minutes.
+		for (let minute = 5; minute <= 35; minute += 5) {
+			await t.mutation(internal.files_transfer.advance, { runId: second._yay.runId });
+			vi.setSystemTime(Date.now() + 5 * 60_000);
+			await t.mutation(internal.activities.recover_expired, { _test_disableReschedule: true });
+		}
+		expect(
+			(await member.asUser.query(api.files_transfer.get, secondArgs))?.activity.status,
+			"a Paste waiting for a Move does not time out",
+		).toBe("queued");
+		expect((await slot())?.cohortId, "the first Move still holds the workspace").not.toBeNull();
+	});
+
 	test("holds the empty private destination before a Move Retry's first page", async () => {
 		const fixture = await create_folder_fixture(["/source"]);
 		const { t, db, asUser, folders } = fixture;

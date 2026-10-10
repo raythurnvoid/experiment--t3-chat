@@ -1,6 +1,6 @@
 import { Result } from "common/errors-as-values-utils.ts";
 import type { WithoutSystemFields } from "convex/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalAction, type MutationCtx, type QueryCtx } from "./_generated/server.js";
@@ -84,6 +84,9 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 
 const WAKE_PAGE_SIZE = 8;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
+const REPAIR_RETRY_MS = 30 * 1000;
+const REPAIR_RETRY_MAX_MS = 60 * 60 * 1000;
+const REPAIR_STUCK_COUNT = 8;
 
 function placement_header(node: Doc<"files_nodes">) {
 	const {
@@ -1914,7 +1917,14 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 			cohortId: null,
 			searchGeneration: slot.searchGeneration + 1,
 		});
-	await ctx.db.patch("files_move_cohorts", cohort._id, { phase: "complete", workPhase: "complete", workId: null });
+	await ctx.db.patch("files_move_cohorts", cohort._id, {
+		phase: "complete",
+		workPhase: "complete",
+		workId: null,
+		repairFailureCount: undefined,
+		repairNextRetryAt: undefined,
+		repairLastError: undefined,
+	});
 	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.wake_waiters, { cohortId: cohort._id });
 	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.wake_owner_jobs, { cohortId: cohort._id });
 	if (cohort.origin.kind === "review")
@@ -1932,7 +1942,11 @@ async function db_save_step(
 	const now = Date.now();
 	await ctx.db.patch("files_move_cohorts", cohort._id, {
 		step: cohort.step + 1,
-		deadlineAt: now + RUN_TIMEOUT_MS,
+		// A delayed retry must not look lost to recover before it runs.
+		deadlineAt: now + delayMs + RUN_TIMEOUT_MS,
+		repairFailureCount: undefined,
+		repairNextRetryAt: undefined,
+		repairLastError: undefined,
 		...patch,
 	});
 	// Repair after publication or an abort can take many steps too. Keep the Activity alive while it runs,
@@ -1941,7 +1955,7 @@ async function db_save_step(
 	const transfer =
 		cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;
 	if (activities_is_active(activity.status) && activity.deadlineAt > now && !transfer?.fixedDeadline)
-		await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
+		await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + delayMs + RUN_TIMEOUT_MS });
 	if (cohort.publishedAt === null && cohort.phase !== "aborting") {
 		if (cohort.origin.kind === "review") {
 			const unit = await ctx.db.get("files_pending_update_run_units", cohort.origin.unitId);
@@ -1965,6 +1979,26 @@ async function db_abort(
 		errorCode: error.name ?? "needs_review",
 		errorMessage: error.message,
 	});
+}
+
+/**
+ * Repair cannot abort and keeps the slot. A failure that repeats waits longer each time.
+ */
+async function db_retry_repair(
+	ctx: MutationCtx,
+	cohort: Doc<"files_move_cohorts">,
+	error: { name: string; message: string },
+) {
+	const count = (cohort.repairFailureCount ?? 0) + 1;
+	const delayMs = Math.min(REPAIR_RETRY_MS * 2 ** (count - 1), REPAIR_RETRY_MAX_MS);
+	if (count === REPAIR_STUCK_COUNT)
+		console.error("Move repair stuck", { cohortId: cohort._id, workPhase: cohort.workPhase, count, error });
+	await db_save_step(
+		ctx,
+		cohort,
+		{ repairFailureCount: count, repairNextRetryAt: Date.now() + delayMs, repairLastError: error },
+		delayMs,
+	);
 }
 
 async function db_parent_running(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
@@ -2004,6 +2038,8 @@ export const advance = internalMutation({
 	handler: async (ctx, args) => {
 		const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 		if (!cohort || cohort.phase === "complete" || cohort.step !== args.step) return null;
+		// A failed repair waits for its delayed try. Other wakes must not retry it early.
+		if (cohort.repairNextRetryAt !== undefined && cohort.repairNextRetryAt > Date.now()) return null;
 		const call = { cohortId: cohort._id, fence: cohort.fence, attemptFence: cohort.attemptFence };
 		const repairing = cohort.publishedAt !== null || cohort.phase === "aborting";
 		let membership: Doc<"organizations_workspaces_users"> | null = null;
@@ -2223,7 +2259,9 @@ export const advance = internalMutation({
 			if (await db_release(ctx, cohort)) return null;
 		} else throw should_never_happen("Unexpected Move step", { cohortId: cohort._id, workPhase: cohort.workPhase });
 		if (result._nay) {
-			await db_abort(ctx, cohort, result._nay);
+			if (repairing)
+				await db_retry_repair(ctx, cohort, { name: result._nay.name ?? "repair_failed", message: result._nay.message });
+			else await db_abort(ctx, cohort, result._nay);
 			return null;
 		}
 		await db_save_step(
@@ -2252,7 +2290,15 @@ export const resume = internalMutation({
 	args: {
 		cohortId: v.id("files_move_cohorts"),
 		step: v.number(),
-		error: v.union(v.object({ name: v.optional(v.string()), message: v.string() }), v.null()),
+		error: v.union(
+			v.object({
+				name: v.optional(v.string()),
+				message: v.string(),
+				/** The real error. Only repair keeps it, the user sees the message above. */
+				cause: v.optional(v.object({ name: v.string(), message: v.string() })),
+			}),
+			v.null(),
+		),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -2262,7 +2308,13 @@ export const resume = internalMutation({
 		if (args.error?.name === "stopped") return null;
 		if (args.error && cohort.publishedAt === null && cohort.phase !== "aborting")
 			await db_abort(ctx, cohort, args.error);
-		else await db_save_step(ctx, cohort, {}, args.error ? 30_000 : 0);
+		else if (args.error)
+			await db_retry_repair(
+				ctx,
+				cohort,
+				args.error.cause ?? { name: args.error.name ?? "repair_failed", message: args.error.message },
+			);
+		else await db_save_step(ctx, cohort);
 		return null;
 	},
 });
@@ -2288,9 +2340,23 @@ export const run = internalAction({
 			});
 		} catch (error) {
 			console.error("Move step failed", { cohortId: args.cohortId, step: args.step, error });
+			// Keep the real error, so a repair that keeps failing shows why.
+			const data = error instanceof ConvexError ? (error.data as { name?: unknown; message?: unknown }) : null;
+			const message =
+				typeof data?.message === "string" ? data.message : error instanceof Error ? error.message : String(error);
+			const name =
+				typeof data?.name === "string"
+					? data.name
+					: message.startsWith("[should_never_happen]")
+						? "should_never_happen"
+						: "move_step_failed";
 			await ctx.runMutation(internal.files_move_cohorts.resume, {
 				...args,
-				error: { name: "move_step_failed", message: "This Move step failed. Review it again." },
+				error: {
+					name: "move_step_failed",
+					message: "This Move step failed. Review it again.",
+					cause: { name, message },
+				},
 			});
 		}
 		return null;
@@ -2310,15 +2376,68 @@ export const recover = internalMutation({
 			for (const cohort of rows) {
 				if (cohort.publishedAt === null && cohort.phase !== "aborting")
 					await db_abort(ctx, cohort, { name: "timeout", message: "This Move stopped before it was saved." });
-				else await db_save_step(ctx, cohort);
+				// A lost run is not a good step. Keep the failure count, but try again now.
+				else
+					await db_save_step(ctx, cohort, {
+						repairFailureCount: cohort.repairFailureCount,
+						repairLastError: cohort.repairLastError,
+					});
 			}
 		}
+		await ctx.scheduler.runAfter(0, internal.files_move_cohorts.recover_completed, {});
+		return null;
+	},
+});
+
+/**
+ * Cleanup sets the next deadline itself. Move it now, so another page does not start this group twice.
+ */
+async function db_start_cleanup(ctx: MutationCtx, cohortId: Id<"files_move_cohorts">) {
+	await ctx.db.patch("files_move_cohorts", cohortId, { deadlineAt: Date.now() + 5 * 60 * 1000 });
+	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.cleanup, { cohortId });
+}
+
+/**
+ * Start cleanup for every due completed group, a page at a time.
+ */
+export const recover_completed = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
 		const completed = await ctx.db
 			.query("files_move_cohorts")
-			.withIndex("by_deadline", (q) => q.eq("phase", "complete").lte("deadlineAt", now))
-			.take(8);
-		for (const cohort of completed)
-			await ctx.scheduler.runAfter(0, internal.files_move_cohorts.cleanup, { cohortId: cohort._id });
+			.withIndex("by_deadline", (q) => q.eq("phase", "complete").lte("deadlineAt", Date.now()))
+			.take(WAKE_PAGE_SIZE);
+		for (const cohort of completed) await db_start_cleanup(ctx, cohort._id);
+		if (completed.length === WAKE_PAGE_SIZE)
+			await ctx.scheduler.runAfter(0, internal.files_move_cohorts.recover_completed, {});
+		return null;
+	},
+});
+
+/**
+ * A deleted parent run no longer keeps its completed groups. Start their cleanup now.
+ */
+export const cleanup_origin = internalMutation({
+	args: {
+		origin: v.union(
+			v.object({ kind: v.literal("transfer"), runId: v.id("files_transfer_runs") }),
+			v.object({ kind: v.literal("review"), runId: v.id("files_pending_update_runs") }),
+		),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("files_move_cohorts")
+			.withIndex("by_origin_run", (q) => q.eq("origin.kind", args.origin.kind).eq("origin.runId", args.origin.runId))
+			.paginate({ cursor: args.cursor, numItems: WAKE_PAGE_SIZE });
+		for (const cohort of page.page) if (cohort.phase === "complete") await db_start_cleanup(ctx, cohort._id);
+		if (!page.isDone)
+			await ctx.scheduler.runAfter(0, internal.files_move_cohorts.cleanup_origin, {
+				...args,
+				cursor: page.continueCursor,
+			});
 		return null;
 	},
 });

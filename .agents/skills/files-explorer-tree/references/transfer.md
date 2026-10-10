@@ -56,6 +56,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Normal names keep their old IDs and content until one small switch selects the complete group.
   Physical repair then drains before the next transfer item. A folder uses the same path.
   Existing Move, scope, Archive and Restore repairs must finish before a new Move starts.
+  A Move or Paste that waits for another Move's group checks every second and keeps its Activity
+  deadline fresh. A failing repair keeps the slot and tries again after 30 s, doubling up to 1 h.
 - Each preparation transaction checks current membership lifetime, source and destination access,
   local write rules and version pins. A moved folder carries protected children unchanged.
   Reparenting checks nested restricted roots. Replacement checks every removed descendant.

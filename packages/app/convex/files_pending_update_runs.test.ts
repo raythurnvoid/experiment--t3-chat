@@ -9,6 +9,7 @@ import {
 	files_pending_update_runs_db_delete_run_batch,
 	files_pending_update_runs_db_record_cohort_publication,
 } from "./files_pending_update_runs.ts";
+import { files_subtree_ops_db_insert } from "./files_subtree_ops.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -145,6 +146,45 @@ async function finish_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"
 }
 
 describe("review jobs", () => {
+	test("polls less often while a folder-wide job runs", async () => {
+		const f = await fixture();
+		// A big Restrict still walks this folder.
+		const folderId = await saved_folder(f, "shared");
+		await f.t.run((ctx) =>
+			files_subtree_ops_db_insert(ctx, {
+				op: {
+					...f.scope,
+					kind: "scope",
+					status: "running",
+					blockedByOpId: null,
+					rootNodeIds: [folderId],
+					treePaths: ["/shared/"],
+				},
+				now: Date.now(),
+			}),
+		);
+		const proposal = await private_folder(f, "/draft");
+		const { runId } = await start_review({ f, kind: "accept", proposals: [proposal], plan: false });
+		// Run each plan by hand, so drop its scheduled copy. Seal queued the first one.
+		const take_plan = () =>
+			f.t.run(async (ctx) => {
+				const scheduled = (await ctx.db.system.query("_scheduled_functions").collect()).find(
+					(job) => job.name.endsWith("files_pending_update_runs:plan") && job.state.kind === "pending",
+				)!;
+				await ctx.scheduler.cancel(scheduled._id);
+				return scheduled;
+			});
+		let job = await take_plan();
+		expect(job.args[0].runId).toBe(runId);
+		const delays: number[] = [];
+		for (let poll = 0; poll < 4; poll++) {
+			await f.t.action(internal.files_pending_update_runs.plan, job.args[0]);
+			job = await take_plan();
+			delays.push(job.scheduledTime - Date.now());
+		}
+		expect(delays, "each poll with no progress waits twice as long").toEqual([100, 200, 400, 800]);
+	});
+
 	test("routes Accept to one durable cohort and aborts it before releasing review holds", async () => {
 		const f = await fixture();
 		const proposal = await private_folder(f, "/cohort-draft");

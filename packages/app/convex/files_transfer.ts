@@ -4255,6 +4255,11 @@ export async function files_transfer_db_delete_run_batch(
 	if (!deletedActivity.done) return { done: false, deletedCount: items.length + deletedActivity.deletedCount };
 
 	await ctx.db.delete("files_transfer_runs", runId);
+	if (run.kind === "move")
+		await ctx.scheduler.runAfter(0, internal.files_move_cohorts.cleanup_origin, {
+			origin: { kind: "transfer", runId },
+			cursor: null,
+		});
 	return { done: true, deletedCount: items.length + 1 + deletedActivity.deletedCount };
 }
 
