@@ -76,7 +76,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
   indexes cover source and destination workspaces, including Copy started in another chat.
   All queue reads use exact indexed ranges. A Rename waiting for a conflict answer gives way;
   its pins and access are checked again when it resumes. Stop can cancel a queued Rename alone.
-  `list_current` and agent busy polling return bulk first, then an active Rename. The Activity
+  `list_current` and agent busy polling return bulk first, then an active Rename. A Rename waiting
+  for a conflict answer is left out, so it does not block a new Copy or Move. The Activity
   feed and returned run ID expose every queued Rename. Waiting extends the idle deadline;
   fixed Bash deadlines keep their original time.
 

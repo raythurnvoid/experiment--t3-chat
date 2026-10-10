@@ -151,11 +151,13 @@ async function db_get_current_activity(
 	readyRenamesOnly = false,
 ) {
 	// A Rename waiting for a conflict answer gives way until its pins are checked again.
+	// It also does not block new Copy or Move starts. Its Activity card still opens it.
 	const statuses = readyRenamesOnly
 		? ["running", "stopping", "queued"] as const
 		: ["queued", "running", "awaiting_input", "stopping"] as const;
 	for (const isRename of readyRenamesOnly ? [true] : [false, true]) {
 		for (const status of statuses) {
+			if (isRename && status === "awaiting_input") continue;
 			const query = ctx.db
 				.query("activities")
 				.withIndex("by_user_workspace_source_kind_isRename_status", (q) =>
@@ -2727,7 +2729,7 @@ export const retry_remaining = mutation({
 		// Retry reuses the old item list. It is complete only after discovery set the total.
 		if (!activities_is_active(activity.status) && activity.progress.total === null)
 			return Result({
-				_nay: { message: "This copy stopped before it found all its files. Start a new copy instead." },
+				_nay: { message: `This ${run.kind} stopped before it found all its files. Start a new ${run.kind} instead.` },
 			});
 		if (!activities_get_controls(activity, run.userId).canRetry)
 			return Result({ _nay: { message: "This transfer has no stopped or failed work to retry" } });
