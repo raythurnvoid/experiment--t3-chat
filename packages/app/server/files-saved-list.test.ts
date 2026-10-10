@@ -250,6 +250,55 @@ describe("saved list action", () => {
 		expect(after.page.map((node) => node.path)).toEqual(["/target/new.txt"]);
 	});
 
+	// Five walks over the Move fixture take about 30 s on a busy machine, so the default 30 s is too short.
+	test("lists type-filtered rows once in both Move views and refuses a view change between pages", async () => {
+		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.md", "/b.md", "/z.txt"] });
+		// A non-matching row in the Move view: the view stream must filter by type too.
+		await f.stageNode(f.normalNodes.get("/a.md")!);
+		let stageBetweenReads = true;
+		const ctx: Pick<ActionCtx, "runQuery"> = {
+			runQuery: async (query, args) => {
+				const result = await f.t.action((ctx) => ctx.runQuery(query, args));
+				if (stageBetweenReads && getFunctionName(query) === "files_nodes:list_subtree") {
+					stageBetweenReads = false;
+					await f.stageNode(f.normalNodes.get("/z.txt")!);
+				}
+				return result;
+			},
+		};
+		const args = {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			visibilityUserId: f.db.userId,
+			folderPath: "/",
+			minDepth: 1,
+			numItems: 1,
+			cursorScope: "types",
+			contentTypePrefixes: ["text/plain"],
+		};
+		const walk = async () => {
+			const paths: string[] = [];
+			for (let cursor: string | null = null; ;) {
+				const page = await files_saved_list_page(ctx, { ...args, cursor });
+				paths.push(...page.page.map((node) => node.path));
+				if (page.isDone) return paths;
+				cursor = page.continueCursor;
+			}
+		};
+
+		// Before publication, with `/z.txt` staged between two reads.
+		expect(await walk(), "a filtered row shows once in the before view").toEqual(["/old.txt", "/z.txt"]);
+		const first = await files_saved_list_page(ctx, { ...args, cursor: null });
+		await f.publish();
+		await expect(files_saved_list_page(ctx, { ...args, cursor: first.continueCursor })).rejects.toThrow(
+			"scope changed",
+		);
+		expect(await walk(), "a filtered row shows once in the after view").toEqual(["/target/new.txt", "/z.txt"]);
+		for (const path of ["/a.md", "/z.txt"]) await f.materializeNode(f.normalNodes.get(path)!);
+		await f.materializeNode(f.nodeId);
+		expect(await walk(), "the cleaned up rows come back from the normal stream").toEqual(["/target/new.txt", "/z.txt"]);
+	}, 120_000);
+
 	test("refuses a seek key outside its recursive source range", async () => {
 		const f = await test_create_saved_placement_fixture();
 		const args = {

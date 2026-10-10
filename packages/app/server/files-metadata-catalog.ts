@@ -262,6 +262,13 @@ function db_get_row(ctx: QueryCtx, row: Row) {
  *
  * Drift (a count below 0) never throws: it clamps to 0 and logs one line per run. A throw would stop
  * the chain, and with it every later key. A rebuild in a quiet window fixes drift.
+ *
+ * Runs apply deltas in creation order, and a doc is always added before it is removed. So each count
+ * alone never goes below 0 without drift. A key row has two counts from different docs: `count` from
+ * field docs and `kindCounts` from value docs. A paged writer, like a Move, can write a key's field
+ * doc and its value docs in two transactions, and a run can fall between them. So a key row with
+ * `count` 0 and value kinds is not drift: the row stays until all its counts are 0, and a later run
+ * settles it.
  */
 export async function files_metadata_catalog_db_compact(
 	ctx: MutationCtx,
@@ -291,21 +298,21 @@ export async function files_metadata_catalog_db_compact(
 	for (const change of sums.values()) {
 		if (is_zero(change)) continue;
 		const row = await db_get_row(ctx, change);
-		const count = (row?.count ?? 0) + change.count;
+		let count = (row?.count ?? 0) + change.count;
 		let drift = count < 0;
+		count = Math.max(0, count);
 		const kindCounts = change.kindCounts && { ...change.kindCounts };
 		if (kindCounts)
 			for (const kind of KINDS) {
 				kindCounts[kind] += row?.kindCounts?.[kind] ?? 0;
-				// A key with no field doc left has no value doc left either.
-				if (kindCounts[kind] < 0 || (count <= 0 && kindCounts[kind] > 0)) drift = true;
+				if (kindCounts[kind] < 0) drift = true;
 				kindCounts[kind] = Math.max(0, kindCounts[kind]);
 			}
 		if (drift) {
 			driftRows++;
 			firstDrift ??= change;
 		}
-		if (count <= 0) {
+		if (is_zero({ ...change, count, kindCounts })) {
 			if (row) await ctx.db.delete("files_metadata_catalog", row._id);
 		} else if (!row) await ctx.db.insert("files_metadata_catalog", { ...change, count, kindCounts });
 		else await ctx.db.patch("files_metadata_catalog", row._id, { count, kindCounts });
@@ -389,9 +396,9 @@ export async function files_metadata_catalog_db_rebuild(
  * compactor applies them meanwhile. The last page sets the marker to `draining`, so the compactor
  * deletes it when no delta is left. A missing marker, or one in another phase, ends the chain.
  *
- * A file's key deltas wait until its last doc is read (`keys` carries them to the next job): a key
- * delta with value kinds but no field count would make the compactor delete the row. Value and parent
- * deltas go out at once. A file has a few hundred key rows at most, of at most 160-character paths.
+ * A file's key deltas wait until its last doc is read (`keys` carries them to the next job), so no key
+ * row shows value kinds without its field count between two pages. Value and parent deltas go out at
+ * once. A file has a few hundred key rows at most, of at most 160-character paths.
  */
 export async function files_metadata_catalog_db_rebuild_step(
 	ctx: MutationCtx,

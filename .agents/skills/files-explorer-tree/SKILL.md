@@ -234,7 +234,7 @@ Tree-item components:
 - While the first page loads, the list shows "Searching…". A finished empty list shows "No files match your search." in the sidebar and "No matching files" in the palette. An archived node never matches.
 - The free text loses its quotes before `detect_search_query_mode`, and a text of quotes alone matches nothing.
 - The suggestion `useQueries` argument objects are wrapped in `useMemo` on purpose: `useQueries` resubscribes on object identity and calls setState during render, so a fresh object every render is "Too many re-renders".
-- Suggestions: while the box is focused, the popover lists keys from `files_metadata.list_search_fields` (read once per focus with `convex.query`, not subscribed, so a metadata write elsewhere does not rerun the catalog walk; each key row is one qualified key such as `metadata.status`, with a short value-kind hint), the two `file.*` fields from `files_search_query_FILE_FIELDS`, `file.path` and `file.link` (each row shows only its key, the same text the chip shows; there is no second label), and values from `list_search_values` (or `true`/`false` for a boolean key, `* (any value)`, `public` for `file.link`, and folder paths for `file.path`; folder paths come from `search_saved` with `{ kind: "name", nodeKind: "folder" }`, found by the words of the last part of the typed path, and a folder is listed when its path contains the typed text without the leading slash the filter adds, so `tasks` lists `/projects/tasks`). Picking a key writes `key:` into the input; picking a value commits the chip. The final token comes from `files_search_query_typing_token`, so a quoted value with spaces still gets value suggestions. Key rows match the typed text anywhere in the qualified key, so `meta` lists every `metadata.` key. A typed `file.path` value is read as a folder path (`tasks` lists `/tasks`). Any other `file.*` key is a chip with a problem, for example `file.name:x` gets "Type the name as plain text.". Metadata value rows match the typed prefix in exact case, the same rule as the server walk, so a row never shows for a prefix the server will not confirm; file value rows ignore case, and a picked row writes the stored value. A short hint sits below the list. The expandable Filter syntax section shows every token form.
+- Suggestions: while the box is focused, the popover lists keys from `files_metadata.list_search_fields` (paged and subscribed through `useFilesMetadataCatalogPages`; each key row is one qualified key such as `metadata.status`, with a short value-kind hint; paging, held rows, Show more, no-match rows and Retry are in the `file-metadata` skill, "Suggestions"), the two `file.*` fields from `files_search_query_FILE_FIELDS`, `file.path` and `file.link` (each row shows only its key, the same text the chip shows; there is no second label), and values from `list_search_values` (or `true`/`false` for a boolean key, `* (any value)`, `public` for `file.link`, and folder paths for `file.path`; folder paths come from `search_saved` with `{ kind: "name", nodeKind: "folder" }`, found by the words of the last part of the typed path, and a folder is listed when its path contains the typed text without the leading slash the filter adds, so `tasks` lists `/projects/tasks`). Picking a key writes `key:` into the input; picking a value commits the chip. The final token comes from `files_search_query_typing_token`, so a quoted value with spaces still gets value suggestions. Key rows match the start of the key, ignoring case: `st` asks for `frontmatter.st` and `metadata.st`, and `meta` lists every `metadata.` key. When a plain word starts no key, the list shows every key and a picked key is added after the words. A typed `file.path` value is read as a folder path (`tasks` lists `/tasks`). Any other `file.*` key is a chip with a problem, for example `file.name:x` gets "Type the name as plain text.". Metadata value rows match the typed prefix in exact case, the same rule as the server range, so a row never shows for a prefix the server will not confirm; `true` and `false` come from `get_search_field`, not from a page; file value rows ignore case, and a picked row writes the stored value. A short hint sits below the list. The expandable Filter syntax section shows every token form.
 - Keyboard: Enter commits the typed filters, or opens the top match when only free text is typed. Space commits the complete filters typed so far, but only when the caret is at the end of the text, because the commit rewrites the whole text; a filter with a problem stays in the text next to the free text, so the user can fix it. An open quote is closed on commit: `metadata.assignee:"Denys` becomes the chip `metadata.assignee:"Denys"`. A key pressed while an IME composes text (`nativeEvent.isComposing`, or Safari's `keyCode` 229 on the key that ends a composition) is left to the composition. Removing a chip re-parses the chips left, so a chip that broke the one-clause rule becomes valid once the other clause is gone. Escape closes suggestions and keeps the text and chips. Ctrl+Space reopens suggestions without changing the text or selection. Plain typing and Space do not reopen a dismissed menu. Backspace on an empty input focuses the last chip's remove button; after a removal the chip row moves focus to the next chip, else the previous one, else back to the input. The chip row comes before the input in the Tab order. Tab from the input reaches Add search filter, then Clear. A filter the parser cannot run becomes a chip on Enter, with the `-invalid` class, a `title`, and an `aria-describedby` reason; it matches nothing.
 - The sr-only `role="status"` line reads "Added filter …", "Removed filter …", or "Filter … cannot run. <reason>", followed by "Searching…" or "N matches". While more pages can load, it reads "N+ matches".
 - Chips show a muted key and a separate value. A file field shows its key, such as `file.path` or `file.link`, with no short label. Negation, ranges, and quoted values stay visible; the raw token remains in the URL, hover title, and remove-button name.
@@ -469,10 +469,13 @@ and `find` also keep raw name order.
 - The toolbar holds the filter and sort bar (`FileNodeViewFolderFilterBar`), then "Save sort for
   everyone" (writers, only while the URL has a sort), then the Columns icon button.
 - The Columns popover uses visible labels and native checkboxes, grouped as Built-in and
-  Metadata. Its catalog covers the saved direct children: `list_folder_fields` (the open children,
-  and for the owner the restricted children too). A member's shared rows add no fields: a metadata
-  sort or filter hides them, so their fields could not be used. Search checks loaded keys. Show more fields requests another page from unfinished
-  sources. An absent selected key stays removable.
+  Metadata. Metadata lists the saved keys on the direct children from `list_folder_fields`, which
+  reads the catalog's `parent` family. Keys of restricted children show for every member (the
+  accepted leak in the `file-metadata` skill, "Suggestions"). Search sends the text as a key prefix
+  to the server (start of the key, ignoring case, like the search box); the short Built-in list still
+  matches locally, anywhere in the name. Show more fields loads the next page. Rows of an older text
+  stay, disabled, with "Updating suggestions…". A failed read shows "Fields could not be loaded" and
+  Retry. A chosen key that the page lacks stays listed and removable.
 - Column choices use `app_state::files_folder_columns::scope::${membershipId}` in browser storage.
   Each folder id, or `root`, has its own list. Keep at most 100 recent folder choices per membership.
   A folder rename keeps its choice. Another membership starts with its own choices. A list saved
@@ -573,8 +576,10 @@ and `find` also keep raw name order.
   contains`, a metadata `missing`, or extra sorts open with those parts removed. Bare words are not
   structure and are never parsed.
 - Enter and Space commit whole tokens. Ctrl+Space or the slider button opens the menu. Menu groups:
-  Sort, Filter by, Sort by, Direction, How to compare, Values. Value suggestions for metadata and
-  frontmatter fields come from `files_metadata.list_search_values`. Backspace on empty text focuses
+  Sort, Filter by, Sort by, Direction, How to compare, Values. Filter by and Sort by list the
+  folder's keys from `files_metadata.list_folder_fields`; value suggestions for metadata and
+  frontmatter fields come from `files_metadata.list_search_values` (workspace-wide). Both are paged
+  with Show more and fail locally with Retry (`file-metadata` skill, "Suggestions"). Backspace on empty text focuses
   the last chip. The Clear button removes every token. Typing `sort` offers `sort_by` and a metadata
   key named `sort_by` side by side. The menu stops offering `sort_by` once the bar has a sort, and
   with a filter Sort by lists only the filter's order field. With a filter, Filter by lists only
@@ -766,7 +771,7 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   source at the same switch. Stop before that switch removes them and keeps the old source name.
 - Move and linked Pending Accept have no total selection, node, document or byte cap. Durable
   graph rows and native side-data pages keep each transaction small. The limits test checks the
-  full wrapped steps with spare room for the planned metadata catalog. Existing per-file content
+  full wrapped steps, with the metadata catalog's writes. Existing per-file content
   and quota rules still apply. Cross-workspace Move remains unsupported.
   Metadata pages also use a 1 MiB source-byte threshold. Draining stages store no metadata-key
   cursor. Owner field joins use short identity/view cursors because their source docs stay in place.
@@ -968,7 +973,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 - The sidebar search shows a flat list with each row's folder, and the tree comes back with its expanded folders when the search closes.
 - Search matches a name word, a path, a node id, and a pasted app link. Enter opens the exact match, or the only match of a finished search.
 - `metadata.status:open`, `metadata.priority:>2`, and `file.path:/tasks metadata.status:open` list the files and folders whose own metadata matches, and `/tasks-archive` stays out of `file.path:/tasks`.
-- A member with no read access on a restricted folder never sees its files, keys, or values in the results or in the suggestions, while the owner sees them (second identity).
+- A member with no read access on a restricted folder never sees its files in the results and cannot open them, while the owner sees them (second identity). The member does see its keys and values in the suggestions: that is the accepted leak (`file-metadata` skill, "Suggestions").
 - A file with a public link shows the badge and `data-file-public-link="on"` for the owner and for a second member who can read it. `file.link:public` lists it even inside a folder that is not expanded, and Enter right after typing the chip waits for the list.
 - Breaking the `metadata` clause of `search_saved` on purpose empties every metadata chip while free text keeps matching, which proves the browser runs the Convex working tree.
 - `Mod+K` opens the files sidebar when closed, focuses the search input, and keeps the chips.

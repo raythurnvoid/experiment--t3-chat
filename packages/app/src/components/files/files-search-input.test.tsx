@@ -10,10 +10,21 @@ vi.mock("convex/react", async (importOriginal) => ({
 		args === "skip"
 			? undefined
 			: getFunctionName(query) === "files_nodes:get_workspace_move_view"
-				? { generation: 1, cohortId: null, view: null, searchGeneration: 1 }
-				: (test_catalog.keys.find((key) => key.fieldPath === args.fieldPath) ?? null),
-	usePaginatedQuery: (query: FunctionReference<"query">, args: Record<string, string> | "skip") =>
-		test_catalog_page(getFunctionName(query), args),
+				? test_catalog.cohortKeys
+					? { generation: 1, cohortId: "cohort_1", view: "after", searchGeneration: 1 }
+					: { generation: 1, cohortId: null, view: null, searchGeneration: 1 }
+				: test_catalog.loading.has(args.fieldPath!)
+					? undefined
+					: test_catalog_field(args.fieldPath!),
+	usePaginatedQuery: (query: FunctionReference<"query">, args: Record<string, string> | "skip") => {
+		// Show more adds one page, like the real pager. A new request starts again at one page.
+		const request = JSON.stringify(args);
+		const [loaded, setLoaded] = useState({ request, pageCount: 1 });
+		const pageCount = loaded.request === request ? loaded.pageCount : 1;
+		return test_catalog_page(getFunctionName(query), args, pageCount, () =>
+			setLoaded({ request, pageCount: pageCount + 1 }),
+		);
+	},
 	useQueries: (queries: Record<string, { args: { clause?: { text: string } } }>) =>
 		queries.folders ? { folders: test_folder_page(queries.folders.args.clause!.text) } : {},
 }));
@@ -27,44 +38,74 @@ const test_folder_page = (text: string) => ({
 	continueCursor: "",
 });
 
-/** The saved catalog the search box pages through. */
+const test_catalog_KEYS = [
+	{ fieldPath: "frontmatter.status", valueKinds: ["string"] },
+	{ fieldPath: "metadata.done", valueKinds: ["boolean"] },
+	{ fieldPath: "metadata.status", valueKinds: ["string"] },
+];
+const test_catalog_VALUES = ["fixed", "open", "opened"];
+
+/** The saved catalog the search box pages through, 50 rows per page. */
 const test_catalog = {
-	keys: [
-		{ fieldPath: "frontmatter.status", valueKinds: ["string"] },
-		{ fieldPath: "metadata.done", valueKinds: ["boolean"] },
-		{ fieldPath: "metadata.status", valueKinds: ["string"] },
-	],
-	values: ["fixed", "open", "opened"],
+	keys: test_catalog_KEYS,
+	values: test_catalog_VALUES,
+	/** Keys of the Move view stream, or null while no Move runs. That stream has no values. */
+	cohortKeys: null as typeof test_catalog_KEYS | null,
 	hasMore: false,
-	/** Key prefixes whose first page is still loading. */
+	/** Key prefixes whose first page, or exact keys whose kinds, are still loading. */
 	loading: new Set<string>(),
 	error: null as Error | null,
 	loadMore: vi.fn(),
 	requests: [] as Array<Record<string, string>>,
 };
 
-const test_catalog_page = (name: string, args: Record<string, string> | "skip") => {
+const test_catalog_page = (
+	name: string,
+	args: Record<string, string> | "skip",
+	pageCount: number,
+	loadNextPage: () => void,
+) => {
+	const loadMore = (numItems: number) => {
+		test_catalog.loadMore(numItems);
+		loadNextPage();
+	};
 	if (args === "skip") {
-		return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: test_catalog.loadMore };
+		return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore };
 	}
 	if (test_catalog.error) {
 		throw test_catalog.error;
 	}
 	test_catalog.requests.push(args);
 	if (test_catalog.loading.has(args.prefix!)) {
-		return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: test_catalog.loadMore };
+		return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore };
 	}
+	const isCohort = (args.savedStream as unknown as { kind: string }).kind === "cohort";
 	const results =
 		name === "files_metadata:list_search_fields"
-			? test_catalog.keys.filter((key) => key.fieldPath.toLowerCase().startsWith(args.prefix!.toLowerCase()))
-			: test_catalog.values.filter((value) => value.startsWith(args.prefix!));
+			? (isCohort ? test_catalog.cohortKeys! : test_catalog.keys).filter((key) =>
+					key.fieldPath.toLowerCase().startsWith(args.prefix!.toLowerCase()),
+				)
+			: (isCohort ? [] : test_catalog.values).filter((value) => value.startsWith(args.prefix!));
 	return {
-		results,
-		status: test_catalog.hasMore ? "CanLoadMore" : "Exhausted",
+		results: results.slice(0, pageCount * 50),
+		status: test_catalog.hasMore || results.length > pageCount * 50 ? "CanLoadMore" : "Exhausted",
 		isLoading: false,
-		loadMore: test_catalog.loadMore,
+		loadMore,
 	};
 };
+
+/** The exact key's kinds. Like the server, it joins the normal and the Move view stream. */
+const test_catalog_field = (fieldPath: string) => {
+	const keys = [...test_catalog.keys, ...(test_catalog.cohortKeys ?? [])].filter((key) => key.fieldPath === fieldPath);
+	return keys.length === 0 ? null : { valueKinds: keys.flatMap((key) => key.valueKinds) };
+};
+
+/** The labels of the rows in one suggestions group, in order. */
+const test_labels = (heading: string) =>
+	Array.from(
+		screen.getByRole("group", { name: heading }).querySelectorAll(".FilesSearchInput-suggestion-label"),
+		(label) => label.textContent,
+	);
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => ({ membershipId: "test-membership" }) },
@@ -82,6 +123,9 @@ const props: FilesSearchInput_Props = {
 describe("FilesSearchInput", () => {
 	afterEach(() => {
 		cleanup();
+		test_catalog.keys = test_catalog_KEYS;
+		test_catalog.values = test_catalog_VALUES;
+		test_catalog.cohortKeys = null;
 		test_catalog.hasMore = false;
 		test_catalog.loading.clear();
 		test_catalog.error = null;
@@ -134,6 +178,34 @@ describe("FilesSearchInput", () => {
 		expect(screen.getByText(problem, { selector: ".FilesSearchInput-error" })).toBeTruthy();
 		fireEvent.change(input, { target: { value: "" } });
 		expect(screen.queryByText(problem)).toBeNull();
+	});
+
+	test("during a Move, shows a key of both streams once with the kinds of both", async () => {
+		test_catalog.cohortKeys = [
+			{ fieldPath: "metadata.stage", valueKinds: ["string"] },
+			{ fieldPath: "metadata.status", valueKinds: ["boolean"] },
+		];
+		render(<FilesSearchInput {...props} />);
+		const input = screen.getByRole<HTMLInputElement>("combobox");
+		act(() => input.focus());
+		fireEvent.change(input, { target: { value: "metadata.st" } });
+		await waitFor(() => expect(test_labels("Properties")).toEqual(["metadata.stage", "metadata.status"]));
+		expect(screen.getByRole("option", { name: "metadata.status text, boolean" })).toBeTruthy();
+		fireEvent.change(input, { target: { value: "metadata.status:" } });
+		await waitFor(() => expect(test_labels("Values for metadata.status")).toEqual(["* (any value)", "true", "false", "fixed", "open", "opened"]));
+	});
+
+	test("held values of one key do not show for another key", async () => {
+		render(<FilesSearchInput {...props} />);
+		const input = screen.getByRole<HTMLInputElement>("combobox");
+		act(() => input.focus());
+		fireEvent.change(input, { target: { value: "metadata.status:" } });
+		await waitFor(() => expect(screen.getByRole("option", { name: "open" }).getAttribute("aria-disabled")).toBeNull());
+		// The other key's first page keeps loading.
+		test_catalog.loading.add("");
+		fireEvent.change(input, { target: { value: "metadata.stage:" } });
+		expect(screen.getByRole("option", { name: "Updating suggestions…" })).toBeTruthy();
+		expect(screen.queryByRole("option", { name: "open" })).toBeNull();
 	});
 
 	describe.each(["sidebar", "palette"] as const)("%s suggestions", (variant) => {
@@ -305,6 +377,43 @@ describe("FilesSearchInput", () => {
 			expect(await screen.findByRole("button", { name: "Remove filter metadata.status:opened" })).toBeTruthy();
 		});
 
+		test("says when no saved value starts with the text", async () => {
+			render(<FilesSearchInput {...props} variant={variant} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			fireEvent.change(input, { target: { value: "metadata.status:Op" } });
+			expect(await screen.findByRole("option", { name: "No saved values start with Op" })).toBeTruthy();
+		});
+
+		test("shows every loaded key and value with no 40-row cut, and Show more adds the next page", async () => {
+			const names = Array.from({ length: 60 }, (_, index) => `k${String(index + 1).padStart(2, "0")}`);
+			test_catalog.keys = names.map((name) => ({ fieldPath: `metadata.${name}`, valueKinds: ["string"] }));
+			test_catalog.values = names;
+			render(<FilesSearchInput {...props} variant={variant} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			await waitFor(() => expect(test_labels("Properties")).toEqual(names.slice(0, 50).map((name) => `metadata.${name}`)));
+			fireEvent.click(screen.getByRole("option", { name: "Show more keys" }));
+			await waitFor(() => expect(test_labels("Properties")).toEqual(names.map((name) => `metadata.${name}`)));
+
+			fireEvent.change(input, { target: { value: "metadata.k01:" } });
+			await waitFor(() => expect(test_labels("Values for metadata.k01")).toEqual(["* (any value)", ...names.slice(0, 50)]));
+			fireEvent.click(screen.getByRole("option", { name: "Show more values" }));
+			await waitFor(() => expect(test_labels("Values for metadata.k01")).toEqual(["* (any value)", ...names]));
+		});
+
+		test("waits for the key's kinds before saying no value matches", async () => {
+			test_catalog.loading.add("metadata.done");
+			render(<FilesSearchInput {...props} variant={variant} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			fireEvent.change(input, { target: { value: "metadata.done:t" } });
+			await waitFor(() =>
+				expect(test_catalog.requests).toContainEqual(expect.objectContaining({ fieldPath: "metadata.done", prefix: "t" })),
+			);
+			expect(screen.queryByRole("option", { name: "No saved values start with t" })).toBeNull();
+		});
+
 		test("keeps a failed list local with a Retry row", async () => {
 			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 			test_catalog.error = new Error("catalog down");
@@ -316,6 +425,14 @@ describe("FilesSearchInput", () => {
 			test_catalog.error = null;
 			fireEvent.click(screen.getByRole("option", { name: "Retry" }));
 			expect(await screen.findByRole("option", { name: "metadata.done boolean" })).toBeTruthy();
+
+			// New typed text clears a failed list too, without Retry.
+			test_catalog.error = new Error("catalog down");
+			fireEvent.change(input, { target: { value: "zz" } });
+			expect(await screen.findByRole("option", { name: "Could not load suggestions." })).toBeTruthy();
+			test_catalog.error = null;
+			fireEvent.change(input, { target: { value: "sta" } });
+			expect(await screen.findByRole("option", { name: "metadata.status text" })).toBeTruthy();
 			consoleError.mockRestore();
 		});
 	});

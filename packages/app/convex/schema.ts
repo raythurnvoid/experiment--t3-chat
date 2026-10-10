@@ -398,6 +398,9 @@ const files_saved_placement_fields = {
 	ancestor11: v.optional(v.id("files_nodes")),
 	ancestor12: v.optional(v.id("files_nodes")),
 	contentType: v.union(v.string(), v.null()),
+	// Same as the `files_nodes` fields. Optional for the same reasons.
+	contentTypeEssence: v.optional(v.union(v.string(), v.null())),
+	contentTypeFamily: v.optional(v.union(v.string(), v.null())),
 	assetId: v.union(v.id("files_r2_assets"), v.null()),
 	contentByteSize: v.union(v.number(), v.null()),
 	textKind: v.union(v.literal("rich_text"), v.literal("plain_text"), v.null()),
@@ -2605,6 +2608,24 @@ const app_convex_schema = defineSchema({
 			"nodeCreationTime",
 			"nodeId",
 		])
+		.index("by_view_archive_contentTypeFamily_tree", [
+			"cohortId",
+			"view",
+			"archiveOperationId",
+			"contentTypeFamily",
+			"treePath",
+			"nodeCreationTime",
+			"nodeId",
+		])
+		.index("by_view_archive_contentTypeEssence_tree", [
+			"cohortId",
+			"view",
+			"archiveOperationId",
+			"contentTypeEssence",
+			"treePath",
+			"nodeCreationTime",
+			"nodeId",
+		])
 		.index("by_view_restricted_tree", [
 			"cohortId",
 			"view",
@@ -4300,6 +4321,17 @@ const app_convex_schema = defineSchema({
 		 * Store lowercase media types with optional semicolon parameters, e.g. `text/markdown;charset=utf-8`.
 		 */
 		contentType: v.union(v.string(), v.null()),
+		/**
+		 * `contentType` without parameters, like `image/png`, for the public files list type filter.
+		 * Null for folders and for a type that does not parse. Every writer of `contentType` sets it with
+		 * `files_content_type_index_fields`. Optional because nodes saved before this field have no value
+		 * until the backfill runs, and raw test seeds leave it out. A missing value never matches a type filter.
+		 */
+		contentTypeEssence: v.optional(v.union(v.string(), v.null())),
+		/**
+		 * The part of `contentTypeEssence` before the slash, like `image`. Same rules as that field.
+		 */
+		contentTypeFamily: v.optional(v.union(v.string(), v.null())),
 		assetId: v.union(v.id("files_r2_assets"), v.null()),
 		/**
 		 * Byte size of the `assetId` asset, copied here so the folder table can sort by size. Every
@@ -4587,6 +4619,24 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"kind",
 			"lowercaseExtension",
+			"treePath",
+		])
+		// The public files list pages a subtree's files of one type family or one exact type. No `kind`:
+		// folders store null types, so every row in these ranges is a file.
+		.index("by_org_ws_archive_contentTypeFamily_tree", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"archiveOperationId",
+			"contentTypeFamily",
+			"treePath",
+		])
+		.index("by_org_ws_archive_contentTypeEssence_tree", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"archiveOperationId",
+			"contentTypeEssence",
 			"treePath",
 		])
 		.index("by_organization_workspace_archiveOperation_updatedAt", [

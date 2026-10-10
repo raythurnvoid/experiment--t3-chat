@@ -42,6 +42,7 @@ import {
 import {
 	files_ancestor_fields,
 	files_ancestor_ids,
+	files_content_type_index_fields,
 	files_derive_tree_path_for_file_node,
 	files_lowercase_extension,
 } from "../shared/files.ts";
@@ -606,6 +607,7 @@ async function db_allocate_private(
 	// This output is after-only. Its final parent is resolved after every selected draft has an ID.
 	const path = path_join("/", node.name);
 	const intent = proposal.createIntent;
+	const contentType = intent.kind === "folder" ? null : intent.contentType;
 	const fields = {
 		organizationId: cohort.organizationId,
 		workspaceId: cohort.workspaceId,
@@ -617,7 +619,8 @@ async function db_allocate_private(
 		treePath: files_derive_tree_path_for_file_node(path, node.kind),
 		pathDepth: 1,
 		lowercaseExtension: files_lowercase_extension(path, node.kind),
-		contentType: intent.kind === "folder" ? null : intent.contentType,
+		contentType,
+		...files_content_type_index_fields(contentType),
 		assetId: intent.kind === "stored" ? intent.assetId : null,
 		contentByteSize: intent.kind === "stored" ? intent.size : null,
 		textKind: intent.kind === "text" ? intent.textKind : null,
@@ -895,6 +898,8 @@ async function db_rename_parents(
 			pathDepth: path_extract_segments_from(path).length,
 			lowercaseExtension: null,
 			contentType: null,
+			contentTypeEssence: null,
+			contentTypeFamily: null,
 			assetId: null,
 			contentByteSize: null,
 			textKind: null,

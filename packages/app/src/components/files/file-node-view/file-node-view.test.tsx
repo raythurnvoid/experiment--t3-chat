@@ -2817,6 +2817,14 @@ describe("FileNodeView folder filter", () => {
 		fireEvent.change(input, { target: { value: "metadata.status:is:op" } });
 		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["open", "opened"]));
 
+		// New typed text clears a failed list, without Retry.
+		failed = true;
+		fireEvent.change(input, { target: { value: "metadata.status:is:" } });
+		expect(await screen.findByRole("option", { name: "Could not load suggestions." })).toBeTruthy();
+		failed = false;
+		fireEvent.change(input, { target: { value: "metadata.status:is:fi" } });
+		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["fixed"]));
+
 		// A failed list stays in its group, keeps the text, and retries.
 		failed = true;
 		fireEvent.change(input, { target: { value: "metadata.status:is:f" } });
@@ -2830,6 +2838,52 @@ describe("FileNodeView folder filter", () => {
 		fireEvent.click(screen.getByRole("option", { name: "Retry" }));
 		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["fixed"]));
 		consoleError.mockRestore();
+	});
+
+	test.each([
+		{ surface: "Columns", text: null, group: "Metadata", more: { role: "button", name: "Show more fields" } },
+		{ surface: "filter keys", text: "", group: "Filter by", more: { role: "option", name: "Show more keys" } },
+		{ surface: "sort keys", text: "sort_by:", group: "Sort by", more: { role: "option", name: "Show more keys" } },
+	])("$surface shows every loaded folder key, and Show more adds the next page", async ({ text, group, more }) => {
+		const keys = Array.from({ length: 60 }, (_, index) => `metadata.k${String(index + 1).padStart(2, "0")}`);
+		// The server sends 50 keys a page, and Show more adds one page.
+		let pageCount = 1;
+		loadMorePendingMock.mockImplementation(() => {
+			pageCount++;
+			queryPushListeners.forEach((listener) => listener());
+		});
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			if (getFunctionName(reference) !== "files_metadata:list_folder_fields") return previousQuery(reference, args);
+			const page = test_folder_keys(keys, args);
+			return { results: page.slice(0, pageCount * 50), status: page.length > pageCount * 50 ? "CanLoadMore" : "Exhausted" };
+		});
+		// Render by hand: the debounce writes from an effect, and the harness would rerender inside it.
+		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
+			wrapper: ({ children }) => (
+				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
+					<FilesClipboardProvider membershipId={tenantContextMock().membershipId}>{children}</FilesClipboardProvider>
+				</AppActivitiesProvider>
+			),
+		});
+		if (text === null) {
+			fireEvent.click(await screen.findByRole("button", { name: "Columns" }));
+		} else {
+			const input = await screen.findByRole("combobox", { name: "Filter and sort this folder" });
+			act(() => input.focus());
+			fireEvent.change(input, { target: { value: text } });
+		}
+		const labels = () =>
+			Array.from(
+				screen
+					.getByRole("group", { name: group })
+					.querySelectorAll("[data-column-field], .FileNodeViewFolderFilterBar-suggestion-label"),
+				(label) => label.getAttribute("data-column-field") ?? label.textContent,
+			).filter((label) => label.startsWith("metadata."));
+
+		await waitFor(() => expect(labels()).toEqual(keys.slice(0, 50)));
+		fireEvent.click(screen.getByRole(more.role, { name: more.name }));
+		await waitFor(() => expect(labels()).toEqual(keys));
 	});
 
 	test("the bar suggests only the filters that can join the committed one", async () => {

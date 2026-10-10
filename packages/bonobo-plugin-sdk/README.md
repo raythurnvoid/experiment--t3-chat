@@ -622,7 +622,7 @@ Each of the first 20 requested files consumes one call from the route's principa
 bucket. One inaccessible file appears in `errors` without discarding the other successful URLs.
 Duplicate file IDs are rejected with `400` before they consume route capacity or start file work.
 
-Pagination of `/api/v1/files/list` (`{ items, cursor, isDone }`): with `contentTypePrefixes`, one request uses one bounded query. `scanLimit` sets its source-doc budget; the server defaults and caps it at 10,000 docs. The query does not set a byte-read cap. A page may come back short or even empty while `isDone` is still `false` — keep passing `cursor` until `isDone` is `true` or you have enough items. Scan with `limit: 100`, `scanLimit: 10000`, and `kind: "file"`; bound the requests advanced per user action, buffer overflow items for the next action, and retry a `429` on the same cursor.
+Pagination of `/api/v1/files/list` (`{ items, cursor, isDone }`): `contentTypePrefixes` takes up to 8 whole families like `image/` or exact types like `image/png`, and needs `recursive: true` and no `extension`. Any other value, like `image` or `image/png;charset=utf-8`, answers `400`; `image/p` means the exact type `image/p`, not a prefix. The server reads these types from indexes, so a page is full unless the access check drops files you may not read. A page can still come back short while `isDone` is `false` — keep passing `cursor` until `isDone` is `true` or you have enough items. `scanLimit` is ignored. List with `limit: 100` and `kind: "file"`; bound the requests advanced per user action, buffer overflow items for the next action, and retry a `429` on the same cursor.
 
 ### Using your own fetch
 
@@ -722,10 +722,10 @@ if (client.context.kind === "page") {
 	document.title = client.context.pageTitle;
 }
 
-// files:list — a bounded contentTypePrefixes scan can return a short or even empty page, so
-// that does not mean the listing is done. Scan wide (limit 100, scanLimit 10000, kind "file"),
-// cap how many source pages one user action advances, and keep the cursor so the next action resumes; anything
-// fetched beyond what is shown stays buffered for that next action.
+// files:list — the access check can make a page short, so a short page does not mean the
+// listing is done. List wide (limit 100, kind "file"), cap how many pages one user action
+// advances, and keep the cursor so the next action resumes; anything fetched beyond what is
+// shown stays buffered for that next action.
 let cursor = null;
 let isDone = false;
 const images = [];
@@ -737,7 +737,6 @@ for (let pages = 0; images.length < 48 && !isDone && pages < 30; pages += 1) {
 			recursive: true,
 			kind: "file",
 			limit: 100,
-			scanLimit: 10_000,
 			contentTypePrefixes: ["image/"],
 			cursor,
 		});

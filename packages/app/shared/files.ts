@@ -382,6 +382,11 @@ const FILES_INLINE_SERVED_MEDIA_CONTENT_TYPES = new Set([
 const FILES_CONTENT_TYPE_ESSENCE_REGEX = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
 
 /**
+ * The `type` part of an essence alone, like `image`.
+ */
+const FILES_CONTENT_TYPE_FAMILY_REGEX = /^[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+
+/**
  * Keep a stored type short enough for one header value. It also refuses junk that only looks
  * like a type.
  */
@@ -448,6 +453,34 @@ export function files_parse_content_type(value: string) {
 	}
 
 	return { essence, charset };
+}
+
+/**
+ * The indexed `contentTypeEssence` and `contentTypeFamily` of a stored content type. Every write
+ * that sets `contentType` on `files_nodes` or `files_saved_places` spreads this in the same object.
+ * Folders and types that do not parse get nulls, so they never match a type filter.
+ */
+export function files_content_type_index_fields(contentType: string | null) {
+	const essence = contentType === null ? null : (files_parse_content_type(contentType)?.essence ?? null);
+	return {
+		contentTypeEssence: essence,
+		contentTypeFamily: essence === null ? null : essence.slice(0, essence.indexOf("/")),
+	};
+}
+
+/**
+ * Parse one `contentTypePrefixes` value of the public files list: a whole family like `image/`, or
+ * an exact type like `image/png`. Return the indexed field and the value it must equal, or `null`
+ * for anything else, like `image`, `ima` or `image/png;charset=utf-8`. A value is never a partial
+ * prefix: `image/p` is the exact type `image/p`.
+ */
+export function files_parse_content_type_prefix(value: string) {
+	const prefix = value.trim().toLowerCase();
+	if (prefix.endsWith("/")) {
+		const family = prefix.slice(0, -1);
+		return FILES_CONTENT_TYPE_FAMILY_REGEX.test(family) ? { field: "contentTypeFamily" as const, value: family } : null;
+	}
+	return FILES_CONTENT_TYPE_ESSENCE_REGEX.test(prefix) ? { field: "contentTypeEssence" as const, value: prefix } : null;
 }
 
 /**

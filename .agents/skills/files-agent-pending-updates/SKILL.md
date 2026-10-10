@@ -598,8 +598,8 @@ The pending overlay is a set of derived tables. They copy what each user's draft
 
 - Human Move, Rename, agent `mv` and Accept use durable jobs. There is no total Move or Accept cap.
   One selected root or a linked review group uses the same cohort worker. Each step handles one
-  node, metadata page or chunk page. The limits test measures every wrapped transaction and reserves
-  room for the planned metadata catalog. Page sizes limit transaction work, never the selection.
+  node, metadata page or chunk page. The limits test measures every wrapped transaction, with the
+  metadata catalog's delta writes and its compactor runs. Page sizes limit transaction work, never the selection.
 - Move prepares pending metadata, plain-text scope and owner overlays before selecting the after
   view. Existing Archive and Restore `saved_node` jobs still page their exact target indexes.
 - Bash `meta get` merges the normal and selected exact file or proposal ranges. An unselected

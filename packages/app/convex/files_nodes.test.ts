@@ -1507,8 +1507,7 @@ describe("paginated bash listing queries", () => {
 		expect(await list({})).toEqual(["/docs", "/docs/a", "/docs/a/deep.md", "/docs/z.md"]);
 		// `minDepth: 1` starts the subtree range after the root row.
 		expect(await list({ minDepth: 1 })).toEqual(["/docs/a", "/docs/a/deep.md", "/docs/z.md"]);
-		// The public files/list scan cap keeps its old scope: direct children read whole pages, and a
-		// subtree listing with `minDepth` stops at the cap.
+		// The read cap: direct children read whole pages, and a subtree listing with `minDepth` stops at the cap.
 		expect(await list({ minDepth: 1, maxDepth: 1, maximumRowsRead: 1 })).toEqual(["/docs/a", "/docs/z.md"]);
 		expect(await list({ minDepth: 1, maximumRowsRead: 1 })).toEqual(["/docs/a"]);
 		await expect(list({ maxDepth: 2 })).rejects.toThrow("list_subtree takes minDepth 0 or 1");

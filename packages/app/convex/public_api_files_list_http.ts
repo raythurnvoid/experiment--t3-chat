@@ -18,10 +18,9 @@ import type { r2_get_assets_ready_states_Result } from "./r2.ts";
 import type { public_api_validate_and_finish_scheduled_file_read_Result } from "./public_api.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_saved_list_page } from "../server/files-saved-list.ts";
+import { files_parse_content_type_prefix } from "../shared/files.ts";
 
 const FILES_LIST_MAX_ITEMS = 100;
-// Public clients may scan more source docs than AI tools. The internal query still owns the hard cap.
-const FILES_LIST_DEFAULT_SCAN_LIMIT = 10_000;
 
 function normalize_extension(extension: string | undefined) {
 	const normalized = extension?.trim().replace(/^\./u, "").toLowerCase();
@@ -38,11 +37,13 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 							path: z.string().optional(),
 							cursor: z.string().nullable().optional(),
 							limit: z.number().int().min(1).optional(),
+							// Accepted and ignored: the type filter reads an index, so there is no scan budget.
 							scanLimit: z.number().int().min(1).optional(),
 							recursive: z.boolean().optional(),
 							kind: z.enum(["file", "folder"]).optional(),
 							extension: z.string().optional(),
-							contentTypePrefixes: z.array(z.string().min(1)).min(1).max(8).optional(),
+							// Stored content types are at most 255 characters, so a longer value can never match.
+							contentTypePrefixes: z.array(z.string().min(1).max(255)).min(1).max(8).optional(),
 						});
 
 						type SearchParams = never;
@@ -95,6 +96,33 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 							}
 
 							const lowercaseExtension = normalize_extension(body._yay.extension);
+							// Each value reads one index range, so only whole families and exact types work.
+							const contentTypePrefixes = new Set<string>();
+							for (const value of body._yay.contentTypePrefixes ?? []) {
+								const match = files_parse_content_type_prefix(value);
+								if (!match) {
+									return {
+										status: 400,
+										body: await fail({
+											status: 400,
+											message:
+												'contentTypePrefixes takes whole families like "image/" or exact types like "image/png".',
+											errorCode: "invalid_input",
+										}),
+									} as const;
+								}
+								contentTypePrefixes.add(match.field === "contentTypeFamily" ? `${match.value}/` : match.value);
+							}
+							if (contentTypePrefixes.size > 0 && (!body._yay.recursive || lowercaseExtension)) {
+								return {
+									status: 400,
+									body: await fail({
+										status: 400,
+										message: "contentTypePrefixes needs recursive: true and no extension.",
+										errorCode: "invalid_input",
+									}),
+								} as const;
+							}
 							const numItems = Math.min(body._yay.limit ?? FILES_LIST_MAX_ITEMS, FILES_LIST_MAX_ITEMS);
 							let result: Awaited<ReturnType<typeof files_saved_list_page>>;
 							try {
@@ -114,10 +142,9 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									cursor: body._yay.cursor ?? null,
 									kind: body._yay.kind,
 									lowercaseExtension,
-									contentTypePrefixes: body._yay.contentTypePrefixes,
+									contentTypePrefixes: contentTypePrefixes.size > 0 ? [...contentTypePrefixes] : undefined,
 									minDepth: 1,
 									maxDepth: body._yay.recursive ? undefined : 1,
-									maximumRowsRead: body._yay.scanLimit ?? FILES_LIST_DEFAULT_SCAN_LIMIT,
 								});
 							} catch (error) {
 								if (

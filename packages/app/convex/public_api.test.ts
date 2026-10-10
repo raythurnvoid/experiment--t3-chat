@@ -1330,7 +1330,7 @@ describe("public files API", () => {
 			organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
 		})).not.toBeNull();
 		for (const path of ["/", "/scope", `/scope/${suffix}folder`]) {
-			for (const contentTypePrefixes of [undefined, ["image/png;charset="]]) {
+			for (const contentTypePrefixes of [undefined, ["image/"], ["image/png"]]) {
 				const response = await t.fetch("/api/v1/files/list", {
 					method: "POST",
 					headers: auth_headers(key._yay.credential),
@@ -1395,6 +1395,34 @@ describe("public files API", () => {
 			| api_schemas_Main["/api/v1/files/write"]["POST"]["response"][400]["body"]
 			| api_schemas_Main["/api/v1/files/download-urls"]["POST"]["response"][400]["body"];
 		expectTypeOf<PublicValidationError>().toMatchTypeOf<{ message: string }>();
+	});
+
+	test("refuses content type filters that no index range serves", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-content-types" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
+			membershipId: db.membershipId,
+			name: "Content type key",
+			scopes: ["files:list"],
+		});
+		if (created._nay) throw new Error(created._nay.message);
+
+		const badValue = 'contentTypePrefixes takes whole families like "image/" or exact types like "image/png".';
+		const badShape = "contentTypePrefixes needs recursive: true and no extension.";
+		for (const [body, message] of [
+			[{ recursive: true, contentTypePrefixes: ["image"] }, badValue],
+			[{ contentTypePrefixes: ["image/"] }, badShape],
+		] as const) {
+			const response = await t.fetch("/api/v1/files/list", {
+				method: "POST",
+				headers: auth_headers(created._yay.credential),
+				body: JSON.stringify(body),
+			});
+			expect(response.status, JSON.stringify(body)).toBe(400);
+			expect(await response.json()).toEqual({ message });
+		}
 	});
 
 	test("creates an API credential, reads files, updates usage, and revokes access", async () => {

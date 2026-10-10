@@ -51,6 +51,7 @@ import {
 } from "./public_api_service_uploads.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
+	files_content_type_index_fields,
 	files_editable_text_content_type_of,
 	files_get_signed_download_serving,
 	files_get_utf8_byte_size,
@@ -934,6 +935,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			assetId: args.versionSnapshotAssetId,
 			contentByteSize: args.versionSnapshotSize,
 			contentType: args.contentType,
+			...files_content_type_index_fields(args.contentType),
 			collaborationEnabled: args.yjsSnapshot !== null,
 			yjsSnapshotId,
 			yjsLastSequenceId,

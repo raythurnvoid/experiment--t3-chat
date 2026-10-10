@@ -32,7 +32,11 @@ import { files_pending_overlay_db_set_cohort_materialization } from "../server/f
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { files_yjs_scan_client_update } from "../shared/files-yjs.ts";
-import { files_get_utf8_byte_size, files_MAX_YJS_WIRE_BYTES } from "../shared/files.ts";
+import {
+	files_content_type_index_fields,
+	files_get_utf8_byte_size,
+	files_MAX_YJS_WIRE_BYTES,
+} from "../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -787,6 +791,7 @@ async function db_seal(
 		contentId: content._id,
 		assetId,
 		contentType: shape.contentType,
+		...files_content_type_index_fields(shape.contentType),
 		textKind: shape.rootKind,
 		collaborationEnabled: shape.collaborationEnabled,
 		contentByteSize: size,
@@ -1273,6 +1278,7 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: Conte
 	await ctx.db.patch("files_nodes", node._id, {
 		assetId: place.assetId,
 		contentType: place.contentType,
+		...files_content_type_index_fields(place.contentType),
 		textKind: place.textKind,
 		collaborationEnabled: place.collaborationEnabled,
 		contentByteSize: place.contentByteSize,
