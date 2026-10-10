@@ -97,7 +97,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
   children. A paste has no Merge: `resolve_conflicts` refuses `merge` ("A pasted folder cannot merge
   into another folder"), and a folder Replace is only for a Move run. File replacement names
   the exact reviewed occupant and content version. Move replaces only an empty folder, never merges
-  a nonempty one. Bash requires `mv -T -f` for exact empty-folder replacement. A file cannot replace
+  a nonempty one. A child that another running Move holds counts too. Bash requires `mv -T -f` for exact empty-folder replacement. A file cannot replace
   a folder or a folder replace a file.
 - A blocked item has two different shapes, and the review UI must keep them apart. A **name
   conflict** is stored with `conflictKind: "name_conflict"`. It can have a destination document,

@@ -344,10 +344,13 @@ export const advance = internalMutation({
 		}
 		// The walk skips nodes that a Move holds. Wait while any Move holds the workspace, so no held node
 		// inside the folder misses the new rule.
-		if (await files_move_reservations_db_pause_worker(ctx, {
-			worker: { kind: "write_policy", id: run._id },
-			check: { wholeWorkspace: run },
-		})) return null;
+		if (
+			await files_move_reservations_db_pause_worker(ctx, {
+				worker: { kind: "write_policy", id: run._id },
+				check: { wholeWorkspace: run },
+			})
+		)
+			return null;
 
 		if (activity.status === "queued") {
 			await ctx.db.patch("activities", activity._id, {

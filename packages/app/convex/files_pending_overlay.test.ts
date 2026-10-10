@@ -2139,7 +2139,12 @@ describe("files_pending_overlay jobs", () => {
 
 		// A saved write of a new path sends the scope repair to x's saved node job.
 		await test_run_with_flush(f.t, (ctx) =>
-			ctx.db.patch("files_nodes", x._id, { name: "y.md", sortName: files_sort_text_key("y.md"), path: "/y.md", treePath: "/y.md" }),
+			ctx.db.patch("files_nodes", x._id, {
+				name: "y.md",
+				sortName: files_sort_text_key("y.md"),
+				path: "/y.md",
+				treePath: "/y.md",
+			}),
 		);
 		const cursors: string[] = [];
 		for (let run = 0; run < 50; run++) {

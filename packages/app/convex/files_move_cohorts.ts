@@ -25,7 +25,11 @@ import {
 	files_saved_placement_db_get_publish_receipt,
 } from "../server/files-saved-placement.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
-import { activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
+import {
+	activities_db_get_by_source_id,
+	activities_db_require_by_source_id,
+	activities_is_active,
+} from "./activities_db.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_pending_nodes_db_can_save_to_copied_parent } from "./files_pending_nodes.ts";
@@ -64,7 +68,10 @@ import {
 	files_move_owner_work_db_abort,
 } from "./files_move_owner_work.ts";
 import { billing_db_check_credits, billing_db_debit_anonymous_snapshot } from "./billing_db.ts";
-import { files_pending_update_runs_db_record_cohort_publication } from "./files_pending_update_runs.ts";
+import {
+	files_pending_update_runs_db_record_cohort_publication,
+	files_pending_update_runs_db_resume_parked,
+} from "./files_pending_update_runs.ts";
 import { files_transfer_db_record_cohort_publication } from "./files_transfer.ts";
 import {
 	files_db_delete_pending_update,
@@ -197,10 +204,10 @@ async function db_begin(
 		affectedNodeCount: 0,
 		materializedNodeCount: 0,
 		proofEpoch: 1,
-		// The first two pins are the access clocks. A Move skips the content clock, so new files elsewhere do not stop it.
+		// A Move skips the content clock, so new files elsewhere do not stop it.
 		clockPins: {
-			organization: pins.versions[0] as Doc<"files_move_cohorts">["clockPins"]["organization"],
-			workspace: pins.versions[1] as Doc<"files_move_cohorts">["clockPins"]["workspace"],
+			organization: pins.accessVersions[0]!,
+			workspace: pins.accessVersions[1]!,
 			review: pins.pendingVersions[0]!,
 		},
 		billedUserId: billing_pick_billed_user_id({ userId: args.userId, organization: authorized._yay.organization }),
@@ -1924,9 +1931,11 @@ async function db_save_step(
 		...patch,
 	});
 	// Repair after publication or an abort can take many steps too. Keep the Activity alive while it runs,
-	// but do not revive one that already passed its deadline.
+	// but do not revive one that already passed its deadline, and never move an agent's fixed deadline.
 	const activity = await activities_db_require_by_source_id(ctx, cohort.origin.runId);
-	if (activities_is_active(activity.status) && activity.deadlineAt > now)
+	const transfer =
+		cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;
+	if (activities_is_active(activity.status) && activity.deadlineAt > now && !transfer?.fixedDeadline)
 		await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
 	if (cohort.publishedAt === null && cohort.phase !== "aborting") {
 		if (cohort.origin.kind === "review") {
@@ -2453,21 +2462,19 @@ export const wake_waiters = internalMutation({
 				case "subtree":
 					await files_subtree_ops_db_recover(ctx, { opId: worker.id });
 					break;
-				case "write_policy":
+				case "write_policy": {
+					// Only the Activity sweep moved this run's deadline while it waited. Move it before the run resumes.
+					const activity = await activities_db_get_by_source_id(ctx, worker.id);
+					if (activity && activities_is_active(activity.status)) {
+						const now = Date.now();
+						await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
+					}
 					await ctx.scheduler.runAfter(0, internal.files_write_policy_runs.advance, { runId: worker.id });
 					break;
-				case "review": {
-					const run = await ctx.db.get("files_pending_update_runs", worker.id);
-					// A stale fence makes this plan stop at once.
-					if (run?.step === "planning")
-						await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.plan, {
-							runId: run._id,
-							fence: worker.fence,
-						});
-					else if (run?.step === "running")
-						await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.advance, { runId: run._id });
-					break;
 				}
+				case "review":
+					await files_pending_update_runs_db_resume_parked(ctx, { runId: worker.id, fence: worker.fence });
+					break;
 				case "pending_hold_release":
 					await ctx.scheduler.runAfter(0, internal.files_pending_holds.release_producer, { producer: worker.producer });
 					break;

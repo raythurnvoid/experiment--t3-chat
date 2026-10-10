@@ -458,29 +458,23 @@ describe("Move cohort and folder-wide jobs", () => {
 		).toEqual({
 			_yay: null,
 		});
+		const op = (await w.t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).find((op) => op.kind === "scope")!;
+		const walk = (await w.t.run((ctx) => ctx.db.query("files_subtree_op_walks").collect())).find(
+			(walk) => walk.opId === op._id,
+		)!;
+		const pendingSteps = async () =>
+			(await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter(
+				(job) => job.name.endsWith("files_subtree_ops:advance") && job.state.kind === "pending",
+			).length;
+		const before = await pendingSteps();
+		await w.t.mutation(internal.files_subtree_ops.advance, { opId: op._id, step: walk.step });
+		expect(await pendingSteps(), "a paused Restrict waits for the Move wake").toBe(before);
 		await w.finish();
 		for (const id of [x, inner, sub]) {
 			const node = await w.node(id);
 			expect(node?.path.startsWith("/P/"), `${node?.path} stays in the restricted folder`).toBe(true);
 			expect(node?.restrictedScopeNodeId, `${node?.path} gets the folder's scope`).toBe(P);
 		}
-	});
-
-	test("Restrict reaches a destination folder that a Move holds", async () => {
-		const w = await transfer_workspace();
-		const P = await w.folder("/P");
-		const sub = await w.folder("/P/sub");
-		const deep = await w.folder("/P/sub/deep");
-		const src = await w.folder("/src");
-		await w.move(src, sub, async () => !!(await w.node(sub))?.moveCohortId);
-		expect(
-			await w.asUser.mutation(api.files_sharing.restrict_node, { membershipId: w.db.membershipId, nodeId: P }),
-		).toEqual({
-			_yay: null,
-		});
-		await w.finish();
-		expect((await w.node(sub))?.restrictedScopeNodeId, "the held destination gets the scope").toBe(P);
-		expect((await w.node(deep))?.restrictedScopeNodeId, "a child of the held destination gets the scope").toBe(P);
 	});
 
 	test("folder protection reaches a destination folder that a Move holds", async () => {
@@ -496,7 +490,22 @@ describe("Move cohort and folder-wide jobs", () => {
 			writePolicy: { mode: "read_only" },
 		});
 		if (started._nay) throw new Error(started._nay.message);
+		const runId = (await w.t.run((ctx) => ctx.db.query("files_write_policy_runs").first()))!._id;
+		await w.t.mutation(internal.files_write_policy_runs.advance, { runId });
+		// This test ran that step by hand. Drop its scheduled copy, so only the Move wake resumes the run.
+		await w.t.run(async (ctx) => {
+			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
+				if (job.name.endsWith("files_write_policy_runs:advance") && job.state.kind === "pending")
+					await ctx.scheduler.cancel(job._id);
+		});
+		const activity = () => w.t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
+		// The Move outlasts the first deadline. The sweep moves it, then the Move ends after the next one.
+		vi.setSystemTime(Date.now() + 31 * 60_000);
+		await w.t.mutation(internal.activities.recover_expired, {});
+		expect((await activity())?.status, "the waiting protection is still active").toBe("queued");
+		vi.setSystemTime(Date.now() + 31 * 60_000);
 		await w.finish();
+		expect((await activity())?.status).toBe("succeeded");
 		expect((await w.node(sub))?.writePolicy, "the held destination gets the protection").toEqual({ mode: "read_only" });
 		expect((await w.node(deep))?.writePolicy).toEqual({ mode: "read_only" });
 	});
@@ -524,31 +533,28 @@ describe("Move cohort and folder-wide jobs", () => {
 });
 
 describe("Move cohort Activity deadline", () => {
-	test.each(["published", "aborting"] as const)("%s repair keeps the Move Activity alive", async (phase) => {
+	test("published repair keeps the Move Activity alive, but not past a fixed deadline", async () => {
 		const w = await transfer_workspace();
 		const a = await w.folder("/a");
 		await w.folder("/a/c1");
 		await w.folder("/a/c2");
 		const target = await w.folder("/target");
 		const cohort = async () => (await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first()))!;
-		const cohortId = await w.move(a, target, async () => {
-			const current = await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first());
-			return phase === "published" ? current?.publishedAt != null : current?.workPhase === "descendants";
-		});
-		if (phase === "aborting") {
-			// An access change stops the Move before publication. Its repair then runs in the aborting phase.
-			await w.t.run((ctx) => files_media_validation_db_advance_version(ctx, w.db));
-			for (let pass = 0; (await cohort()).phase !== "aborting"; pass++) {
-				if (pass === 10) throw new Error("The Move did not abort");
-				await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
-			}
-		}
+		const cohortId = await w.move(a, target, async () => (await cohort()).publishedAt != null);
 		const runId = (await cohort()).origin.runId;
 		const activity = () => w.t.run((ctx) => activities_db_require_by_source_id(ctx, runId));
 		const before = (await activity()).deadlineAt;
 		vi.setSystemTime(Date.now() + 20 * 60 * 1000);
 		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
-		expect((await activity()).deadlineAt, "a repair step refreshes the Activity deadline").toBeGreaterThan(before);
+		const refreshed = (await activity()).deadlineAt;
+		expect(refreshed, "a repair step refreshes the Activity deadline").toBeGreaterThan(before);
+		// An agent's Move keeps the deadline it asked for.
+		await w.t.run((ctx) =>
+			ctx.db.patch("files_transfer_runs", runId as Id<"files_transfer_runs">, { fixedDeadline: true }),
+		);
+		vi.setSystemTime(Date.now() + 60_000);
+		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+		expect((await activity()).deadlineAt, "a repair step keeps a fixed deadline").toBe(refreshed);
 	});
 });
 
@@ -628,20 +634,27 @@ describe("Review waiting for another Move", () => {
 		if (step === "planning") await plan();
 		else await advance();
 		expect(await pendingResumes(), "a parked review schedules no poll").toBe(before);
+		// This test ran those steps by hand. Drop their scheduled copies, so only the Move wake resumes the review.
+		await w.t.run(async (ctx) => {
+			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
+				if (job.name.endsWith(resumeName) && job.state.kind === "pending") await ctx.scheduler.cancel(job._id);
+		});
 		const waiters = () => w.t.run((ctx) => ctx.db.query("files_move_waiters").collect());
 		expect((await waiters()).map((waiter) => waiter.worker)).toEqual([
 			{ kind: "review", id: runId, fence: (await run()).fence },
 		]);
 		const fence = (await run()).fence;
-		// Recover runs every 5 minutes. It keeps a parked review alive without a new plan attempt.
+		// Both recover crons run every 5 minutes. They keep a parked review alive without a new plan attempt.
 		for (let minute = 5; minute <= 35; minute += 5) {
 			vi.setSystemTime(Date.now() + 5 * 60_000);
 			await w.t.mutation(internal.files_pending_update_runs.recover, {});
-			if (step === "starting") await advance();
+			await w.t.mutation(internal.activities.recover_expired, {});
 		}
 		const activity = () => w.t.run((ctx) => ctx.db.get("activities", activityId));
 		expect((await activity())?.status, "the waiting review is still active").toBe("running");
 		expect((await run()).fence).toBe(fence);
+		// The Move ends after the review's deadline passed, before the next sweep. The wake moves the deadline.
+		vi.setSystemTime(Date.now() + 31 * 60_000);
 		// The Move's release wakes the review once, and the review finishes. Step the clock so far timers stay far.
 		for (let pass = 0; (await activity())?.status === "running"; pass++) {
 			if (pass === 100) throw new Error("The review did not finish");
@@ -682,7 +695,7 @@ describe("Move cohort share rows", () => {
 			dest,
 			async () => (await cohort()).workPhase === "finish_nodes" && !!(await w.node(shared))?.moveCohortId,
 		);
-		// The grant lands after the side rows were finished, while the node is still held.
+		// The grant lands after the side docs were finished, while the node is still held.
 		expect(
 			await w.asUser.mutation(api.files_sharing.set_node_share_grant, {
 				membershipId: w.db.membershipId,

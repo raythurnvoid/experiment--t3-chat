@@ -2186,7 +2186,7 @@ async function db_start_cohort_unit(
 	});
 	if (started._nay) {
 		if (started._nay.name === "move_busy") {
-			// Another Move holds the workspace. Its wake resumes this review, and recover refreshes it while it waits.
+			// Another Move holds the workspace. Its wake resumes this review, and the Activity sweep keeps it alive.
 			const now = Date.now();
 			const activity = await activities_db_require_by_source_id(ctx, run._id);
 			await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
@@ -2207,6 +2207,27 @@ async function db_start_cohort_unit(
 		return;
 	}
 	await files_move_cohorts_db_schedule(ctx, { cohortId: started._yay });
+}
+
+/**
+ * Resume a review that waited for another Move. Only the Activity sweep moved its deadline while it
+ * waited, so that deadline may have passed: move it. Moving `updatedAt` keeps recover from starting a
+ * second plan before this one runs.
+ */
+export async function files_pending_update_runs_db_resume_parked(
+	ctx: MutationCtx,
+	args: { runId: Id<"files_pending_update_runs">; fence: number },
+) {
+	const run = await ctx.db.get("files_pending_update_runs", args.runId);
+	if (run?.fence !== args.fence || (run.step !== "planning" && run.step !== "running")) return;
+	const activity = await activities_db_require_by_source_id(ctx, run._id);
+	if (!activities_is_active(activity.status)) return;
+	const now = Date.now();
+	await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
+	await ctx.db.patch("files_pending_update_runs", run._id, { updatedAt: now });
+	if (run.step === "planning")
+		await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.plan, { runId: run._id, fence: run.fence });
+	else await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.advance, { runId: run._id });
 }
 
 export const begin_cohort_unit = internalMutation({
@@ -2920,6 +2941,23 @@ export const recover = internalMutation({
 				.withIndex("by_step_updatedAt", (q) => q.eq("step", step).lte("updatedAt", now - ATTEMPT_TIMEOUT_MS))
 				.take(32);
 			for (const run of runs) {
+				// A review parked behind a Move has no live step. The Move's release wakes it, and the Activity
+				// sweep keeps its deadline ahead. Resume it here only if the Move left and its wake was lost.
+				const waiter = await ctx.db
+					.query("files_move_waiters")
+					.withIndex("by_worker", (q) => q.eq("worker.kind", "review").eq("worker.id", run._id))
+					.unique();
+				if (waiter?.worker.kind === "review" && waiter.worker.fence === run.fence) {
+					await ctx.db.patch("files_pending_update_runs", run._id, { updatedAt: now });
+					if (
+						!(await files_move_reservations_db_pause_worker(ctx, {
+							worker: waiter.worker,
+							check: { wholeWorkspace: run },
+						}))
+					)
+						await files_pending_update_runs_db_resume_parked(ctx, { runId: run._id, fence: run.fence });
+					continue;
+				}
 				const activity = await activities_db_require_by_source_id(ctx, run._id);
 				if (activity.deadlineAt <= now || !(await db_get_run_membership(ctx, run))) {
 					await files_pending_update_runs_db_request_stop(ctx, {
@@ -2934,26 +2972,7 @@ export const recover = internalMutation({
 						offset: run.itemCount,
 					});
 				} else if (step === "planning") {
-					const waiter = await ctx.db
-						.query("files_move_waiters")
-						.withIndex("by_worker", (q) => q.eq("worker.kind", "review").eq("worker.id", run._id))
-						.unique();
-					if (waiter?.worker.kind === "review" && waiter.worker.fence === run.fence) {
-						// A parked review has no live plan. Keep it alive, or resume it if its wake was lost.
-						await ctx.db.patch("files_pending_update_runs", run._id, { updatedAt: now });
-						if (
-							await files_move_reservations_db_pause_worker(ctx, {
-								worker: waiter.worker,
-								check: { wholeWorkspace: run },
-							})
-						)
-							await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
-						else
-							await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.plan, {
-								runId: run._id,
-								fence: run.fence,
-							});
-					} else if (run.planningAttempts < MAX_ATTEMPTS) {
+					if (run.planningAttempts < MAX_ATTEMPTS) {
 						await ctx.db.patch("files_pending_update_runs", run._id, {
 							fence: run.fence + 1,
 							planningAttempts: run.planningAttempts + 1,

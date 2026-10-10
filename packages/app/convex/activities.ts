@@ -49,6 +49,11 @@ const ACTIVITIES_LIST_MAX = 50;
 const ACTIVITIES_BASH_JOB_ROWS_MAX = 8;
 
 /**
+ * A review or folder protection run waiting for a Move gets this much time again at each sweep.
+ */
+const MOVE_WAIT_DEADLINE_MS = 30 * 60 * 1000;
+
+/**
  * Keep only the activities the user may see.
  *
  * Plugin activities follow file access. Those with no named file require workspace read.
@@ -366,6 +371,27 @@ export const archive_all_activities = mutation({
 });
 
 /**
+ * A run that waits for a Move has no live step, and the Move's release wakes it. While it waits, its
+ * deadline only moves, like a subtree op's. A long Move cannot make it time out.
+ */
+async function db_keep_move_waiter(
+	ctx: MutationCtx,
+	activity: Doc<"activities">,
+	worker:
+		| { kind: "review"; id: Id<"files_pending_update_runs"> }
+		| { kind: "write_policy"; id: Id<"files_write_policy_runs"> },
+	now: number,
+) {
+	const waiter = await ctx.db
+		.query("files_move_waiters")
+		.withIndex("by_worker", (q) => q.eq("worker.kind", worker.kind).eq("worker.id", worker.id))
+		.unique();
+	if (!waiter) return false;
+	await ctx.db.patch("activities", activity._id, { deadlineAt: now + MOVE_WAIT_DEADLINE_MS });
+	return true;
+}
+
+/**
  * Producers fence their own writes before finishing an expired Activity.
  */
 export const recover_expired = internalMutation({
@@ -400,6 +426,7 @@ export const recover_expired = internalMutation({
 			}
 			switch (activity.source.kind) {
 				case "files_pending_update_run": {
+					if (await db_keep_move_waiter(ctx, activity, { kind: "review", id: activity.source.id }, now)) break;
 					await files_pending_update_runs_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
 					break;
 				}
@@ -412,6 +439,7 @@ export const recover_expired = internalMutation({
 					break;
 				}
 				case "files_write_policy_run": {
+					if (await db_keep_move_waiter(ctx, activity, { kind: "write_policy", id: activity.source.id }, now)) break;
 					await files_write_policy_runs_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
 					break;
 				}

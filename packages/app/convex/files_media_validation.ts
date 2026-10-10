@@ -62,8 +62,8 @@ export async function files_media_validation_db_advance_content_version(
 }
 
 /**
- * `versions` starts with the access clocks: the organization, then each workspace. The content clocks
- * come after them.
+ * `versions` holds the access clocks and then the content clocks. `accessVersions` holds only the
+ * access clocks: the organization, then each workspace.
  */
 export async function files_media_validation_db_capture_versions(
 	ctx: MutationCtx,
@@ -136,12 +136,12 @@ export async function files_media_validation_db_capture_versions(
 	}
 	const allVersions: { id: Id<"files_media_validation_versions"> | Id<"files_content_versions">; revision: number }[] =
 		[...versions, ...contentVersions];
-	return { versions: allVersions, pendingVersions };
+	return { versions: allVersions, accessVersions: versions, pendingVersions };
 }
 
 export async function files_media_validation_db_versions_match(
 	ctx: QueryCtx | MutationCtx,
-	pins: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>>,
+	pins: Pick<Awaited<ReturnType<typeof files_media_validation_db_capture_versions>>, "versions" | "pendingVersions">,
 ) {
 	// Pin row identity too: deleting and recreating a clock cannot revive an old proof.
 	for (const pin of pins.versions) {

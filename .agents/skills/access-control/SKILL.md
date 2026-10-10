@@ -440,7 +440,8 @@ Rules that are easy to miss, all of which were real holes:
   Replacement checks every descendant it hides. Existing Move and scope repairs finish before
   new planning uses stored scopes. Access changes advance the clocks that each group checks.
   Restrict, folder protection and Archive wait while any Move holds the workspace. Their walk reads
-  only nodes no Move holds, so waiting is how it reaches every node.
+  only nodes no Move holds, so waiting is how it reaches every node. They do not poll: the Move's
+  release wakes them.
   A move that keeps the same parent and path does not change descendants. A
   name-only rename in the same saved parent carries nested shares without asking for write access to
   each one. Reparenting through Rename uses the same nested-scope checks as other moves.
