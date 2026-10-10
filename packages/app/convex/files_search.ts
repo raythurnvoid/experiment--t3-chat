@@ -27,11 +27,6 @@ export async function files_search_db_create_reader(
 		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
 		serviceAccountId?: Id<"access_control_service_accounts">;
 		hasWorkspaceRead?: boolean;
-		/**
-		 * Read saved docs only, with no owner overlay: the search box shows no drafts, not even the
-		 * caller's own. Every doc still gets the plain access check.
-		 */
-		savedOnly?: true;
 	},
 ) {
 	const scope = files_db_resolve_scope(ctx, args.workspaceId);
@@ -49,7 +44,6 @@ export async function files_search_db_create_reader(
 		}
 	}
 	const ownerReader =
-		!args.savedOnly &&
 		args.serviceAccountId === undefined &&
 		!organizations_is_global_organization_id(args.organizationId) &&
 		scope.kind === "workspace"
@@ -67,8 +61,7 @@ export async function files_search_db_create_reader(
 	async function resolveDocument(document: Doc<"files_metadata_docs"> | Doc<"files_plain_text_chunks">) {
 		if (!active) return null;
 		// A pending index doc belongs to one owner. Hide it from every other member, and from callers
-		// that read without an owner overlay, such as service accounts, reserved scopes and saved-only
-		// readers.
+		// that read without an owner overlay, such as service accounts and reserved scopes.
 		if (document.sourceKind === "pending" && (document.userId !== args.userId || !ownerReader)) return null;
 
 		const target =

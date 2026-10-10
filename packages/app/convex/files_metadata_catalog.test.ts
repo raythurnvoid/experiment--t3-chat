@@ -253,6 +253,25 @@ describe("catalog hook and compactor", () => {
 		expect(await list_rows(t)).toHaveLength(3);
 	});
 
+	test("two writes of one doc in one Promise.all count the doc once", async () => {
+		const { t, scope } = await seed();
+		const a = await create_folder(t, scope, "/a");
+		const b = await create_folder(t, scope, "/b");
+		const [fieldId] = await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.status" })]);
+		await test_compact_metadata_catalog(t);
+		const errors = vi.spyOn(console, "error");
+		// Both writes read the old doc before either ends. The archive must build on the new parent.
+		await test_run_with_flush(t, async (ctx) => {
+			await Promise.all([
+				ctx.db.patch("files_metadata_docs", fieldId!, { parentId: b }),
+				ctx.db.patch("files_metadata_docs", fieldId!, { archiveOperationId: "archive-op" }),
+			]);
+		});
+		await test_compact_metadata_catalog(t);
+		expect(await list_rows(t)).toEqual([]);
+		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([]);
+	});
+
 	test("every flush inserts its own changes once", async () => {
 		const { t, scope } = await seed();
 		const a = await create_folder(t, scope, "/a");
@@ -293,9 +312,15 @@ describe("catalog hook and compactor", () => {
 				(job) => job.name.includes("compact_metadata_catalog") && job.state.kind === "pending",
 			),
 		);
-		expect(scheduled.length).toBeGreaterThanOrEqual(2);
-		await test_compact_metadata_catalog(t);
+		// The saver's run and the next run, both for the same marker. The next run waits just past the
+		// young delta's cutoff.
+		expect(scheduled.map((job) => job.args)).toEqual([[{ markerId: marker!._id }], [{ markerId: marker!._id }]]);
+		const young = (await list_deltas(t))[0]!;
+		expect(Math.max(...scheduled.map((job) => job.scheduledTime)) - young._creationTime).toBeCloseTo(5001, 0);
+		// The scheduler runs the chain to its end: every delta applied, and the marker gone.
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
 		expect(await list_rows(t)).toHaveLength(4);
+		expect(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").collect())).toEqual([]);
 	});
 
 	test("drift clamps to zero and logs one line without values", async () => {
@@ -378,10 +403,66 @@ describe("catalog hook and compactor", () => {
 	});
 });
 
+describe("catalog doors", () => {
+	const paginationOpts = { numItems: 50, cursor: null };
+
+	test("a prefix matches by a lowercase copy made one character at a time, also past 160 units", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const a = await create_folder(t, scope, "/a");
+		// 160 characters; its lowercase copy has 311 UTF-16 units.
+		const dotted = `metadata.${"İ".repeat(151)}`;
+		await insert_docs(t, [
+			metadata_doc(scope, a, { fieldPath: "metadata.ΑΣΑ" }),
+			metadata_doc(scope, a, { fieldPath: dotted }),
+			metadata_doc(scope, a, { fieldPath: dotted, valueKind: "boolean" }),
+		]);
+		await test_compact_metadata_catalog(t);
+		const keys = async (prefix: string) =>
+			(await asOwner.query(api.files_metadata.list_search_fields, { membershipId: db.membershipId, prefix, paginationOpts })).page.map(
+				(key) => key.fieldPath,
+			);
+		// A whole-text lowercase ends `ΑΣ` with a final sigma, which `metadata.ασα` does not start with.
+		expect(await keys("metadata.ΑΣ")).toEqual(["metadata.ΑΣΑ"]);
+		expect(
+			(
+				await asOwner.query(api.files_metadata.list_folder_fields, {
+					membershipId: db.membershipId,
+					parentId: "root",
+					prefix: "metadata.ΑΣ",
+					paginationOpts,
+				})
+			).page,
+		).toEqual(["metadata.ΑΣΑ"]);
+		expect(await keys(dotted)).toEqual([dotted]);
+		expect(await asOwner.query(api.files_metadata.get_search_field, { membershipId: db.membershipId, fieldPath: dotted })).toEqual({ valueKinds: ["boolean"] });
+	});
+
+	test("the exact key's kinds come after more than a page of case variants", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const a = await create_folder(t, scope, "/a");
+		// 60 variants of `status` with capitals sort before the all-lowercase key.
+		const variants = Array.from({ length: 63 }, (_, mask) =>
+			[..."status"].map((char, index) => (((mask + 1) >> index) & 1 ? char.toUpperCase() : char)).join(""),
+		).slice(0, 60);
+		await insert_docs(t, [
+			...variants.flatMap((name) => [
+				metadata_doc(scope, a, { fieldPath: `metadata.${name}` }),
+				metadata_doc(scope, a, { fieldPath: `metadata.${name}`, valueKind: "string", stringValue: "x" }),
+			]),
+			metadata_doc(scope, a, { fieldPath: "metadata.status" }),
+			metadata_doc(scope, a, { fieldPath: "metadata.status", valueKind: "boolean" }),
+		]);
+		await test_compact_metadata_catalog(t);
+		expect(
+			await asOwner.query(api.files_metadata.get_search_field, { membershipId: db.membershipId, fieldPath: "metadata.status" }),
+		).toEqual({ valueKinds: ["boolean"] });
+	});
+});
+
 describe("catalog rebuild and check", () => {
 	/**
 	 * Saved docs over two folders. File `a` has more docs than a seed page, with its key's field doc
-	 * after its value docs, so its key row must wait for the file's last page.
+	 * after its value docs, so its key spans two seed pages.
 	 */
 	async function seed_catalog(t: T, scope: Scope) {
 		const a = await create_folder(t, scope, "/a");
@@ -499,6 +580,27 @@ describe("catalog rebuild and check", () => {
 		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([]);
 
 		await rebuild(t, scope, "catalog");
+		expect(await list_rows(t)).toEqual(expected);
+	});
+
+	test("a rebuild counts a file whose docs span pages ended by bytes", async () => {
+		const { t, scope } = await seed();
+		const a = await create_folder(t, scope, "/a");
+		// Four 400 KB values: a 1 MiB page read ends after the second value, far below 100 docs.
+		await insert_docs(t, [
+			metadata_doc(scope, a, { fieldPath: "metadata.big" }),
+			...Array.from({ length: 4 }, (_, index) =>
+				metadata_doc(scope, a, { fieldPath: "metadata.big", valueKind: "string", stringValue: `${index}${"x".repeat(400_000)}` }),
+			),
+		]);
+		await test_compact_metadata_catalog(t);
+		const expected = await list_rows(t);
+		expect(expected).toEqual([
+			{ family: "key", fieldPath: "metadata.big", count: 1, kindCounts: { ...NO_KINDS, string: 4 } },
+			{ family: "parent", fieldPath: "metadata.big", parentId: "root", count: 1 },
+		]);
+		// One clear job, then two seed pages.
+		expect(await rebuild(t, scope, "catalog")).toBe(3);
 		expect(await list_rows(t)).toEqual(expected);
 	});
 
@@ -667,6 +769,40 @@ describe("catalog lifecycle", () => {
 		});
 	}
 
+	/**
+	 * What the browser shows: each suggestion door read on the normal stream and on the visible Move
+	 * view's stream, joined like `useFilesMetadataCatalogPages` joins them. Call after a compaction.
+	 */
+	async function door_rows(
+		asOwner: ReturnType<T["withIdentity"]>,
+		membershipId: Id<"organizations_workspaces_users">,
+		parentIds: Id<"files_nodes">[],
+	) {
+		const view = await asOwner.query(api.files_nodes.get_workspace_move_view, { membershipId });
+		if (!view) throw new Error("no move view");
+		const streams = [
+			{ kind: "normal" as const, generation: view.generation },
+			...(view.cohortId && view.view
+				? [{ kind: "cohort" as const, cohortId: view.cohortId, view: view.view, generation: view.generation }]
+				: []),
+		];
+		const paginationOpts = { numItems: 50, cursor: null };
+		const rows = new Set<string>();
+		for (const savedStream of streams) {
+			const keys = await asOwner.query(api.files_metadata.list_search_fields, { membershipId, savedStream, prefix: "metadata.", paginationOpts });
+			for (const key of keys.page) rows.add(`key:${key.fieldPath}:${key.valueKinds.join()}`);
+			const values = await asOwner.query(api.files_metadata.list_search_values, { membershipId, savedStream, fieldPath: "metadata.status", prefix: "", paginationOpts });
+			for (const value of values.page) rows.add(`value:${value}`);
+			for (const parentId of parentIds) {
+				const fields = await asOwner.query(api.files_metadata.list_folder_fields, { membershipId, savedStream, parentId, prefix: "", paginationOpts });
+				for (const fieldPath of fields.page) rows.add(`parent:${parentId}:${fieldPath}`);
+			}
+		}
+		const field = await asOwner.query(api.files_metadata.get_search_field, { membershipId, fieldPath: "metadata.status" });
+		rows.add(`field:${field?.valueKinds.join()}`);
+		return [...rows].sort();
+	}
+
 	test("a Move keeps every key visible at every step and moves the parent rows", async () => {
 		const { t, db, asOwner, scope } = await seed();
 		const src = await create_folder(t, scope, "/src");
@@ -681,6 +817,12 @@ describe("catalog lifecycle", () => {
 			"value::metadata.status:open=2",
 		]);
 		const after = ["key::metadata.status:=2", `parent:${dst}:metadata.status:=1`, `parent:${src}:metadata.status:=1`, "value::metadata.status:open=2"].sort();
+		// The doors through both streams: a key, its kinds and its value never vanish while the Move runs.
+		const doorsBefore = await door_rows(asOwner, db.membershipId, [src, dst]);
+		expect(doorsBefore).toEqual(
+			["field:string", "key:metadata.status:string", `parent:${src}:metadata.status`, "value:open"].sort(),
+		);
+		const doorsAfter = [...doorsBefore, `parent:${dst}:metadata.status`].sort();
 
 		const seen = new Set<string>();
 		await reset_tree_write_limit(t, db.userId);
@@ -692,13 +834,67 @@ describe("catalog lifecycle", () => {
 				const rows = await visible_rows(t, scope);
 				seen.add(JSON.stringify(rows));
 				expect([JSON.stringify(before), JSON.stringify(after)]).toContain(JSON.stringify(rows));
+				const doors = await door_rows(asOwner, db.membershipId, [src, dst]);
+				expect([JSON.stringify(doorsBefore), JSON.stringify(doorsAfter)]).toContain(JSON.stringify(doors));
 			},
 		});
 		expect(moved._nay).toBeUndefined();
 		expect(await visible_rows(t, scope)).toEqual(after);
+		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doorsAfter);
 		// No tagged row is left behind.
 		expect((await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog").collect())).filter((row) => row.moveView)).toEqual([]);
 		expect(seen.size).toBe(2);
+	});
+
+	test("a Move of the only file with the key keeps it in the doors through the view stream, and an after-only key waits for publication", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const src = await create_folder(t, scope, "/src");
+		const a = await create_folder(t, scope, "/src/a");
+		const dst = await create_folder(t, scope, "/dst");
+		const other = await create_folder(t, scope, "/other");
+		await set_status(t, db, a);
+		await visible_rows(t, scope);
+		const common = ["field:string", "key:metadata.status:string", "value:open"];
+		const doorsBefore = [...common, `parent:${src}:metadata.status`].sort();
+		const doorsAfter = [...common, `parent:${dst}:metadata.status`, "key:metadata.draft:"].sort();
+		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doorsBefore);
+
+		// Count the steps where the key has only Move-tagged rows, so only the view stream shows it.
+		let viewOnlySteps = 0;
+		// A key only the after view has, like an Accept that adds one. A file under the Move refuses
+		// writes, so it sits on another file. It shows from publication on; cleanup then untags it.
+		let draftAdded = false;
+		let published = false;
+		await reset_tree_write_limit(t, db.userId);
+		const moved = await test_move_nodes(t, asOwner, {
+			membershipId: db.membershipId,
+			itemIds: [a],
+			targetParentId: dst,
+			onStep: async () => {
+				const view = await asOwner.query(api.files_nodes.get_workspace_move_view, { membershipId: db.membershipId });
+				if (view?.cohortId && view.view === "before" && !draftAdded) {
+					await test_run_with_flush(t, async (ctx) => {
+						await ctx.db.insert("files_metadata_docs", {
+							...metadata_doc(scope, other, { fieldPath: "metadata.draft" }),
+							moveView: { cohortId: view.cohortId!, view: "after" },
+						});
+					});
+					draftAdded = true;
+				}
+				published ||= view?.view === "after";
+				await visible_rows(t, scope);
+				const keyRows = await t.run(async (ctx) =>
+					(await ctx.db.query("files_metadata_catalog").collect()).filter((row) => row.family === "key" && row.fieldPath === "metadata.status"),
+				);
+				if (keyRows.length > 0 && keyRows.every((row) => row.moveView)) viewOnlySteps++;
+				expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(published ? doorsAfter : doorsBefore);
+			},
+		});
+		expect(moved._nay).toBeUndefined();
+		expect(draftAdded && published).toBe(true);
+		expect(viewOnlySteps).toBeGreaterThan(0);
+		await visible_rows(t, scope);
+		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doorsAfter);
 	});
 
 	test("a folder copy counts the copied folder metadata under its new parent", async () => {
@@ -818,6 +1014,34 @@ describe("catalog lifecycle", () => {
 		expect(await list_deltas(t)).toEqual([]);
 	});
 
+	test("restoring a file out of an archived folder moves its parent row, and restrict writes nothing", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const folder = await create_folder(t, scope, "/a");
+		const file = await create_folder(t, scope, "/a/f");
+		await set_status(t, db, file);
+		for (const nodeId of [file, folder]) {
+			await reset_tree_write_limit(t, db.userId);
+			expect((await asOwner.mutation(api.files_nodes.archive_nodes, { membershipId: db.membershipId, nodeIds: [String(nodeId)] }))._nay).toBeUndefined();
+		}
+		await test_compact_metadata_catalog(t);
+		expect(await list_rows(t)).toEqual([]);
+
+		await reset_tree_write_limit(t, db.userId);
+		expect((await asOwner.mutation(api.files_nodes.unarchive_nodes, { membershipId: db.membershipId, nodeIds: [String(file)] }))._nay).toBeUndefined();
+		const restored = await t.run(async (ctx) => await ctx.db.get("files_nodes", file));
+		expect(restored?.parentId).not.toBe(folder);
+		await test_compact_metadata_catalog(t);
+		expect((await list_rows(t)).filter((row) => row.family === "parent")).toEqual([
+			{ family: "parent", fieldPath: "metadata.status", parentId: restored!.parentId, count: 1 },
+		]);
+
+		// Restrict changes who reads the file, not its metadata docs.
+		for (const restrict of [api.files_sharing.restrict_node, api.files_sharing.unrestrict_node]) {
+			expect((await asOwner.mutation(restrict, { membershipId: db.membershipId, nodeId: file }))._nay).toBeUndefined();
+			expect(await list_deltas(t)).toEqual([]);
+		}
+	});
+
 	test("archiving a folder walks its children once: five of six shared keys go", async () => {
 		const { t, db, asOwner, scope } = await seed();
 		const errors = vi.spyOn(console, "error");
@@ -866,5 +1090,82 @@ describe("catalog lifecycle", () => {
 		expect(restored._nay).toBeUndefined();
 		await test_compact_metadata_catalog(t);
 		expect((await list_rows(t)).map((row) => row.count)).toEqual([6, 5, 1, 6]);
+	});
+});
+
+describe("compactor drift", () => {
+	test("a Move that splits a key over two pages logs no drift", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const errors = vi.spyOn(console, "error");
+		const a = await create_folder(t, scope, "/a");
+		const dst = await create_folder(t, scope, "/dst");
+		// Nine docs in path order: `a` has three (a date string adds a `maybe_date` doc), `b` and `c`
+		// two each, then the field doc of `d` is the 8th. A Move tags 8 docs per transaction, so the
+		// value doc of `d` falls on the next page.
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
+		const written = await asOwner.mutation(api.files_metadata.set_entries, {
+			membershipId: db.membershipId,
+			fileNodeId: a,
+			metadataYaml: 'a: "2026-01-01"\nb: x\nc: y\nd: z\n',
+		});
+		expect(written).toEqual({ _yay: null });
+		await test_compact_metadata_catalog(t);
+		const before = await list_rows(t);
+
+		let splitSteps = 0;
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
+		const moved = await test_move_nodes(t, asOwner, {
+			membershipId: db.membershipId,
+			itemIds: [a],
+			targetParentId: dst,
+			onStep: async () => {
+				// Run the compactor between every two steps, then put the clock back for the Move leases.
+				const now = Date.now();
+				await test_compact_metadata_catalog(t);
+				vi.setSystemTime(now);
+				const rows = await list_rows(t);
+				if (rows.some((row) => row.family === "key" && row.count === 0)) splitSteps++;
+			},
+		});
+		expect(moved._nay).toBeUndefined();
+		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([]);
+		// The compactor did see a key row with value docs but no field doc.
+		expect(splitSteps).toBeGreaterThan(0);
+		await test_compact_metadata_catalog(t);
+		expect(await list_rows(t)).toEqual(before.map((row) => (row.family === "parent" ? { ...row, parentId: dst } : row)));
+	});
+
+	test("a key whose value doc is saved first keeps its kinds, and a remove with no add still logs", async () => {
+		const { t, scope } = await seed();
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		const a = await create_folder(t, scope, "/a");
+		// Two transactions with a compactor run between them, the value doc first.
+		await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.status", valueKind: "string", stringValue: "open" })]);
+		await test_compact_metadata_catalog(t);
+		await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.status" })]);
+		await test_compact_metadata_catalog(t);
+		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([]);
+		expect(await list_rows(t)).toEqual([
+			{ family: "key", fieldPath: "metadata.status", count: 1, kindCounts: { ...NO_KINDS, string: 1 } },
+			{ family: "parent", fieldPath: "metadata.status", parentId: "root", count: 1 },
+			{ family: "value", fieldPath: "metadata.status", stringValue: "open", count: 1 },
+		]);
+
+		// A value doc written past the overlay has no add, so removing it is real drift.
+		await t.run(async (ctx) => {
+			await ctx.db.insert("files_metadata_docs", metadata_doc(scope, a, { fieldPath: "metadata.status", valueKind: "string", stringValue: "open" }));
+		});
+		await test_run_with_flush(t, async (ctx) => {
+			for (const doc of await ctx.db.query("files_metadata_docs").collect())
+				if (doc.docKind === "value") await ctx.db.delete("files_metadata_docs", doc._id);
+		});
+		await test_compact_metadata_catalog(t);
+		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([
+			["files_metadata_catalog drift", expect.objectContaining({ fieldPath: "metadata.status", driftRows: 2 })],
+		]);
+		expect(await list_rows(t)).toEqual([
+			{ family: "key", fieldPath: "metadata.status", count: 1, kindCounts: NO_KINDS },
+			{ family: "parent", fieldPath: "metadata.status", parentId: "root", count: 1 },
+		]);
 	});
 });

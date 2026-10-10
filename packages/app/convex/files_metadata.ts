@@ -501,39 +501,6 @@ function search_field_path_is_valid(fieldPath: string) {
 }
 
 /**
- * Resolve who is calling through `membershipId`, and whether the workspace lets them read
- * everything. Return null when the membership is not theirs. Every search door answers that with
- * its empty shape.
- *
- * A failed read check does not end the query. Somebody whose role gives no workspace-wide read
- * can still have been given one folder, and finding files in that folder is the whole point of
- * sharing. `hasWorkspaceRead` carries that answer to
- * `access_control_db_filter_readable_file_nodes`, which keeps only the nodes they were given.
- */
-async function db_get_search_caller(ctx: QueryCtx, args: { membershipId: Id<"organizations_workspaces_users"> }) {
-	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-	const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
-	if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
-		throw convex_error({ message: "Unauthenticated" });
-	}
-
-	const membership = await organizations_db_get_membership(ctx, {
-		userId: userAuth.id,
-		membershipId: args.membershipId,
-	});
-	if (!membership) {
-		return null;
-	}
-
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth,
-		membership,
-		permission: "content.read",
-	});
-	return { userAuth, membership, hasWorkspaceRead: !authorized._nay };
-}
-
-/**
  * The index range of one plan over saved (committed), active docs, for the search box
  * (`files_nodes.search_saved`) and the agent's metadata stream (`files_visible.internal_search_metadata_saved`).
  * A folder is the last range of the `exists` and `eq` plans: `treePathPrefix` is the folder's stored
@@ -720,8 +687,9 @@ export const list_search_fields = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		// Accepted leak until a search engine arrives: any member sees every eligible saved key and value of the
-		// workspace, also from files they cannot open. See the file-metadata skill, "Suggestions".
+		// Accepted leak until a search engine arrives: any member sees every eligible saved key and
+		// value of the workspace, also from files they cannot open. See the file-metadata skill,
+		// "Suggestions".
 		const refused = { page: [], isDone: true, continueCursor: "" };
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
 		// No key is longer than this, so a longer prefix matches nothing.
@@ -779,8 +747,9 @@ export const get_search_field = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		// Accepted leak until a search engine arrives: any member sees every eligible saved key and value of the
-		// workspace, also from files they cannot open. See the file-metadata skill, "Suggestions".
+		// Accepted leak until a search engine arrives: any member sees every eligible saved key and
+		// value of the workspace, also from files they cannot open. See the file-metadata skill,
+		// "Suggestions".
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
 		if (!reader || !search_field_path_is_valid(args.fieldPath)) {
 			return null;
@@ -832,8 +801,9 @@ export const list_search_values = query({
 	},
 	returns: paginationResultValidator(v.string()),
 	handler: async (ctx, args) => {
-		// Accepted leak until a search engine arrives: any member sees every eligible saved key and value of the
-		// workspace, also from files they cannot open. See the file-metadata skill, "Suggestions".
+		// Accepted leak until a search engine arrives: any member sees every eligible saved key and
+		// value of the workspace, also from files they cannot open. See the file-metadata skill,
+		// "Suggestions".
 		const refused = { page: [], isDone: true, continueCursor: "" };
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
 		if (
@@ -878,6 +848,27 @@ const node_fields_cursor_schema = z.object({
 	scope: z.string(),
 	afterField: z.string(),
 });
+
+/**
+ * Resolve who is calling through `membershipId`. Return null when the membership is not theirs;
+ * the table doors answer that with null. Each door then checks the node itself.
+ */
+async function db_get_table_caller(ctx: QueryCtx, args: { membershipId: Id<"organizations_workspaces_users"> }) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
+	if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
+		throw convex_error({ message: "Unauthenticated" });
+	}
+
+	const membership = await organizations_db_get_membership(ctx, {
+		userId: userAuth.id,
+		membershipId: args.membershipId,
+	});
+	if (!membership) {
+		return null;
+	}
+	return { userAuth, membership };
+}
 
 function count_table_doc(budget: { readBytes: number }, metadataDoc: object | null) {
 	if (metadataDoc) budget.readBytes += files_get_utf8_byte_size(JSON.stringify(metadataDoc)) + 128;
@@ -999,8 +990,9 @@ export const list_folder_fields = query({
 	},
 	returns: paginationResultValidator(v.string()),
 	handler: async (ctx, args) => {
-		// Accepted leak until a search engine arrives: any member sees every eligible saved key and value of the
-		// workspace, also from files they cannot open. See the file-metadata skill, "Suggestions".
+		// Accepted leak until a search engine arrives: any member sees every eligible saved key and
+		// value of the workspace, also from files they cannot open. See the file-metadata skill,
+		// "Suggestions".
 
 		// Every refusal gives this one answer, like `list_tree_children`. A different answer for a
 		// missing, foreign, or hidden folder would tell the caller that a hidden folder exists.
@@ -1069,7 +1061,7 @@ export const list_node_fields = query({
 	handler: async (ctx, args) => {
 		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
 		// (files-explorer-tree skill, "Saved-only lists").
-		const caller = await db_get_search_caller(ctx, args);
+		const caller = await db_get_table_caller(ctx, args);
 		if (!caller) return null;
 		const fileNode = await files_metadata_db_get_table_node(ctx, { ...caller, target: args.target });
 		if (!fileNode) return null;
@@ -1164,7 +1156,7 @@ export const get_field_values = query({
 		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
 		// (files-explorer-tree skill, "Saved-only lists"). So a saved row shows its committed
 		// frontmatter even while the owner edits pending text.
-		const caller = await db_get_search_caller(ctx, args);
+		const caller = await db_get_table_caller(ctx, args);
 		if (!caller) return null;
 		if (
 			args.fields.length === 0 ||

@@ -44,10 +44,6 @@ vi.mock("convex/react", async (importOriginal) => {
 					? { generation: 1, cohortId: null, view: null, searchGeneration: 1 }
 					: null,
 		usePaginatedQuery: (query: FunctionReference<"query">, args: SavedArgs | "skip") => {
-			// The input's key and value suggestions page the metadata catalog. They stay empty.
-			if (getFunctionName(query).startsWith("files_metadata:")) {
-				return { results: [], status: "Exhausted", isLoading: false, loadMore: () => {} };
-			}
 			const [, forceRender] = useState(0);
 			useEffect(() => {
 				const listener = () => forceRender((count) => count + 1);
@@ -59,6 +55,10 @@ vi.mock("convex/react", async (importOriginal) => {
 			const key = args === "skip" ? "skip" : saved_key(args.clause, args.folderPath);
 			const [loaded, setLoaded] = useState({ key, pageCount: 1 });
 			const pageCount = loaded.key === key ? loaded.pageCount : 1;
+			// The input's key and value suggestions page the metadata catalog. They stay empty.
+			if (getFunctionName(query).startsWith("files_metadata:")) {
+				return { results: [], status: "Exhausted", isLoading: false, loadMore: () => {} };
+			}
 			if (args === "skip") {
 				return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} };
 			}

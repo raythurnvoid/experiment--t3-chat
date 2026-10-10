@@ -720,8 +720,10 @@ index, and the index fixes the order (`files_table_filter_order_field`).
   field`, or `Remove the filter to sort by <field>`). Chips carry `Remove <token>` buttons.
 - **Menu rows.** Typing `sort` lists `sort_by` and any metadata key named `sort_by`. After `sort_by:`
   pick a field, then a direction. After `file.name:` the operations show; for `metadata.*` and
-  `frontmatter.*` the values come from `list_search_values`. Wait about 300 ms after typing before
-  reading options, or the list still shows the old rows.
+  `frontmatter.*` the values come from `list_search_values`. Filter by and Sort by list the folder's
+  keys from `list_folder_fields`. Both lists page with `Show more keys` / `Show more values`. Wait
+  about 300 ms after typing before reading options, or the list still shows the old rows (disabled,
+  with `Updating suggestions…`).
 - **Save for everyone.** The button `Save sort for everyone` shows only for a writer and only while the
   URL has a sort. After the click, read the toast `Sort saved for everyone.`, then read the doc with the
   page's Convex client (`files_folder_sorts.get_folder_sort`). A one-clause file.name asc sort deletes the
@@ -794,12 +796,16 @@ column choices need to change. Do not write file metadata or shared sorts for th
 - **Checkboxes.** The native input is visually hidden and does not take pointer clicks. Click the visible
   label inside `.FileNodeViewFolderExplorerColumns-field[data-column-field="<field>"]`, or focus its
   checkbox and press Space. Do not force-click the input. Tab scrolls clipped fields into view.
-- **Catalog.** Opening Columns starts `files_metadata:list_folder_fields` plus
-  `files_metadata:list_node_fields` for supported side targets, including private drafts. Search only filters
-  loaded keys. `Show more fields` requests another page; it does not load every page automatically.
-  Read `data-fields-state` on the status child, not the dialog. States are `loading`, `ready` and `failed`.
-  An incomplete catalog says `No loaded fields match`; a complete one says `No fields match`.
-  On failure, `Retry` clears the old keys and restarts page 1. Check proposal changes while the chooser stays open.
+- **Catalog.** Opening Columns starts `files_metadata:list_folder_fields({ membershipId, savedStream?,
+  parentId, prefix, paginationOpts })`: one stream for normal rows, and one more while a Move view is
+  visible. The search text goes to the server as a key prefix (start of the key, no case) after
+  150 ms; Built-in rows match locally. `Show more fields` asks every unfinished stream for 50 more; it
+  has `aria-busy` while it loads. Read `data-fields-state` on the status child, not the dialog: `loading`
+  (also while older rows stay, disabled, with `Updating suggestions…`), `ready` and `failed`. An empty
+  finished list says `No fields match` or `No fields start with <text>`. On failure the menu says
+  `Fields could not be loaded`; `Retry` restarts page 1. A new key shows only after the catalog
+  compactor runs (about 5 to 15 seconds). Keys of restricted children show to every member: that is
+  the accepted leak (`file-metadata` skill, "Suggestions"), not a bug.
 - **Cells.** Scope to `[role="table"][aria-label="Folder contents"]`, then the row and
   `[data-column-field="<field>"]`. `data-value-state` is `deferred`, `loading`, `preparing`, `ready`,
   `failed` or `refused`. The text is respectively `Loads when row is visible`, `Loading…`, `Preparing`,
@@ -1229,10 +1235,12 @@ Selectors and a proven flow for the sidebar search box with metadata filters (ve
 - Space commits only the complete filters in the text, and only with the caret at the end. `metadata.priority:>high metadata.status:open` plus Space leaves `metadata.priority:>high ` in the input and makes one `metadata.status:open` chip; Enter commits the broken one as an invalid chip. With the caret in the middle, Space just types a space (`input.setSelectionRange(n, n)` before `keyboard.press("Space")`).
 - Enter inside the 300 ms debounce: remove the last chip with `.FilesSearchInputFilterChip button` `.last().click()`, `focus()` the input, press Enter at once. While the input is ahead of the search or the first page loads, the status reads "Still searching. Press Enter again when the results are in" and `?nodeId=` stays. Once the list is done, Enter opens the only row, or the node an exact path names (`?nodeId=` becomes its id). A typed path with no chips opens through the path route at once. The `/tasks` folder in the dev workspace holds the fixture files (`/tasks-archive` holds one): search inside it with `file.path:/tasks metadata.status:open` and read the row labels.
 - IME guard: a key pressed while a composition is active commits nothing. Drive it over CDP through the harness global `getCDPSession({ page })` (never `page.context().newCDPSession`, see known-hazards): `Input.imeSetComposition({ text: "こん", selectionStart: 2, selectionEnd: 2 })` shows the composing text in the input, then a keyCode-229 key (`Input.dispatchKeyEvent({ type: "keyDown", key: "Process", code: "Space", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 })` plus its `keyUp`) for Space and for Enter leaves 0 chips and the text unchanged. Chrome has no `Input.imeCommitComposition`; `Input.insertText` ends a composition. Positive control: End + Space outside the composition commits the chip (verified 2026-09-05).
-- Page-context doors for a positive control or a second identity, with `m = await import("/src/lib/app-convex-client.ts")` and `q = await import("/shared/files-search-query.ts")`: `m.app_convex.query(m.app_convex_api.files_nodes.search_saved, { membershipId, clause: { kind: "metadata", plan: q.files_search_query_to_plans(q.files_search_query_parse("metadata.status:open").filters[0])[0] }, folderPath: "/tasks", paginationOpts: { numItems: 50, cursor: null } })` (rows `{ kind, nodeId, path, contentType }`; a filter with two plans is two calls; follow `continueCursor` until `isDone`), `files_metadata.list_search_fields({ membershipId })`, and `files_metadata.list_search_values({ membershipId, fieldPath: "metadata.assignee", prefix: "" })`.
+- Page-context doors for a positive control or a second identity, with `m = await import("/src/lib/app-convex-client.ts")` and `q = await import("/shared/files-search-query.ts")`: `m.app_convex.query(m.app_convex_api.files_nodes.search_saved, { membershipId, clause: { kind: "metadata", plan: q.files_search_query_to_plans(q.files_search_query_parse("metadata.status:open").filters[0])[0] }, folderPath: "/tasks", paginationOpts: { numItems: 50, cursor: null } })` (rows `{ kind, nodeId, path, contentType }`; a filter with two plans is two calls; follow `continueCursor` until `isDone`), `files_metadata.list_search_fields({ membershipId, prefix: "metadata.", paginationOpts: { numItems: 50, cursor: null } })`, `files_metadata.get_search_field({ membershipId, fieldPath: "metadata.done" })`, and `files_metadata.list_search_values({ membershipId, fieldPath: "metadata.assignee", prefix: "", paginationOpts: { numItems: 50, cursor: null } })`. The three suggestion doors read the metadata catalog; follow `continueCursor` until `isDone` to page. A new key or value shows only after the catalog compactor runs (about 5 to 15 seconds), so poll before you call a missing row a bug.
+- Suggestion paging: key and value lists end with `Show more keys` / `Show more values` while the server has more. While a newer prefix loads, the old rows stay disabled under `Updating suggestions…`. A word that starts no key (`zzz`, also `metadata.zzz` before its colon) lists every key, so a pick adds a filter after the words; `No keys start with <text>` shows only while a file field also matches (`pa` next to `file.path`). A value prefix with no match says `No saved values start with <text>`; values match in exact case. A failed read shows `Could not load suggestions.` and a `Retry` option; the typed text stays. Keyboard check: ArrowUp from the input reaches `Show more keys`, Enter loads the next page and focus stays in the input (verified 2026-10-10).
+- Paging fixture without new files: `files_metadata.set_entries` on an existing file with 55 metadata keys (`qa-k01: v1` …) gives two key pages, and `metadataYaml: ""` restores a file that had none. Metadata takes no lists (`Metadata key "x" must have a text, number, or true/false value`), so more than 50 values of one key need 51 files or a frontmatter list. A new key reached the doors within about 16 s in a live check.
 - Metadata fixture without the Properties modal: `files_metadata.set_entries({ membershipId, fileNodeId, metadataYaml: "status: open\n" })` from page context, the same door the modal calls.
 - Working-tree proof: put `if (args.clause.kind === "metadata") return { page: [], isDone: true, continueCursor: "" };` at the top of the `search_saved` handler, poll the page-context door until it answers 0 (the Convex watcher pushes in ~10 s), check that `metadata.status:open` shows `No files match your search.` while free text still matches, remove the line, and poll until the door answers again. Read `git status --short` after.
-- Restricted-folder check needs a second identity (`second-user-fixtures.md`). The owner creates `tasks/public-task.md` and `private/secret-task.md` with the same `status` key, restricts `private`, and sees both files and both values. The member must see only the public file in the tree, in `search_saved`, in the `Values` suggestions, and in the key catalog.
+- Restricted-folder check needs a second identity (`second-user-fixtures.md`). The owner creates `tasks/public-task.md` and `private/secret-task.md` with the same `status` key, restricts `private`, and sees both files and both values. The member must see only the public file in the tree and in `search_saved`, and must not open the secret file. The member does see both values in the `Values` suggestions and the key in the key list: that is the accepted leak (`file-metadata` skill, "Suggestions"), not a bug. Search results and opening a file stay permission-checked.
 
 ### Global Search Palette
 

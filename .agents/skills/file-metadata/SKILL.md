@@ -303,24 +303,20 @@ both field and value docs. File copy does not copy metadata; folder copy is unsu
 
 # Folder Table Fields
 
-The table's field catalog is separate from the workspace search suggestions below. It reads
-committed fields on direct children of the open folder. It never finds keys by paging the first
-50 file rows or by scanning another folder.
+The table's key list reads the catalog's `parent` family: the saved keys on the direct children of
+the open folder (see "Catalog" and "Suggestions"). It never pages the file rows or scans another
+folder.
 
 The three public queries live in the `folder table fields` region of `convex/files_metadata.ts`.
 Like the folder table, they are saved-only: they read committed docs and never pending docs (see
 the `files-explorer-tree` skill, "Saved-only lists").
 
-- `list_folder_fields({ membershipId, parentId, afterField })` returns
-  `{ fields, afterField, isDone }`. Its parent-first index reads active committed `field` docs with
-  `isRestrictedScopeRoot: false`. Each `.first()` seek uses `gt(fieldPath, afterField)` to skip all
-  copies of the last key. The owner walks the open range and the restricted range
-  (`isRestrictedScopeRoot: true`) together: each step reads the next key of both and takes the
-  smaller one in index order (`compareValues`, not JS `<`, which compares UTF-16 units), so a key
-  in both shows once. Other callers read the open range only; a member's
-  shared restricted children add no keys, because a metadata sort or filter hides them. The real
-  node must still belong to that folder, be active, and have a scope flag that matches the range it
-  came from. A stale scope flag throws instead of publishing a hidden key.
+- `list_folder_fields({ membershipId, savedStream?, parentId, prefix, paginationOpts })` returns a
+  page of field paths (at most 50) on the folder's children that start with `prefix`, ignoring case. It is
+  one range of the `parent` family in one stream (see "Suggestions" for streams). The folder must be
+  a readable, active folder of the membership's workspace; `"root"` needs workspace-wide
+  `content.read`. Every refusal gives the same empty, done page. Keys of restricted children count
+  for every member too (the accepted leak in "Suggestions").
 - `list_node_fields({ membershipId, target, cursor })` returns
   `{ fields, continueCursor, isDone }`. It seeks distinct committed field paths of one saved node,
   so a 400-item list costs one key candidate. The cursor belongs to the membership and target.
@@ -342,9 +338,9 @@ A list displays its first plain primitive in extraction order. Date companion do
 that value. Empty lists, map parents, and absent keys return an explicit `null` cell value. Every
 read doc must be a committed doc of the same tenant and node; a mismatch throws.
 
-Each catalog reads at most 50 distinct candidates, including invalid keys and an end probe.
-Only search-valid qualified keys are returned. All three queries use whole-query transaction
-metrics and a local doc byte count. They keep a 4 MiB read budget and a 1,000-call budget, with
+`list_node_fields` reads at most 50 distinct candidates, including invalid keys and an end probe.
+Only search-valid qualified keys are returned. `list_node_fields` and `get_field_values` use
+whole-query transaction metrics and a local doc byte count. They keep a 4 MiB read budget and a 1,000-call budget, with
 1 MiB and 16 calls reserved before the next read. Cell pages advance only after a whole field is
 finished. A budget stop returns the completed prefix; no first progress throws a clear query error.
 
@@ -485,37 +481,22 @@ answers its empty shape for a membership that is not the caller's.
   `range` with a folder get an empty page. Each row reads its node with one `get`, then one batch
   read check. The split guard is 400 (comment at `SEARCH_SAVED_SPLIT_GUARD`). String prefix plans
   use `string_prefix_upper_bound`, which includes non-BMP text such as `op😀`.
-- `files_search_db_create_reader` serves the agent's `search` and, with `savedOnly: true`, the two
-  catalogs. It shares owner, ancestor, and permission reads across indexed results. It checks
+- `files_search_db_create_reader` serves the agent's `search`. It shares owner, ancestor, and permission reads across indexed results. It checks
   active membership, private ownership, current proposal id and revision, readiness, and read
   access. Ready private drafts use captured metadata and pending frontmatter. Saved metadata stays
   current beside pending text; ready pending frontmatter replaces committed frontmatter. Other
   owners, old proposal revisions, preparing drafts, and hidden destinations never produce a result.
-- `list_search_fields({ membershipId })` → `[{ fieldPath, valueKinds }]`, the key catalog for
-  the suggestions, in index order. A stored field the other doors refuse (longer than
-  `files_search_query_FIELD_PATH_MAX_LENGTH`; frontmatter has no cap on a key path) is skipped, so the
-  catalog never offers a key that then finds nothing.
-- `list_search_values({ membershipId, fieldPath, prefix })` → the string values of one key that
-  start with `prefix`, in exact case: `d` does not list `Denys`. The sidebar filters its rows by
-  the same rule.
-- The two catalog doors are saved-only, like `search_saved`. They walk the committed-only indexes
-  and name a key or value only when one of the first `SEARCH_CATALOG_SAMPLE_DOCS` docs passes the
-  reader made with `savedOnly: true` (`db_search_sample_is_readable`): no owner overlay, the plain
-  read check with the caller's `hasWorkspaceRead`. A key or value that exists only in a draft is
-  not suggested, and a saved value stays suggested while the owner has a draft that changes it.
-  `SearchSampleCache` reuses the reader across samples. A readable match beyond the sample limit
-  can still be missed; typing the key remains valid.
-- The caps (`SEARCH_FIELDS_*`, `SEARCH_VALUES_*`) bound the reads, not the answer. The catalog
-  budgets (`SEARCH_FIELDS_READ_BUDGET`, `SEARCH_VALUES_READ_BUDGET`) count index reads, not docs:
-  Convex allows 4096 `db.get` and `db.query` calls per query, and a shared owner reader separately
-  bounds node, ancestor, and permission work. The walk stops early instead of throwing.
+- `list_search_fields`, `get_search_field` and `list_search_values` are the suggestion doors. They
+  read the catalog, not the source docs. See "Suggestions".
 - A member whose role has no workspace-wide `content.read` still finds files in folders shared with
-  them: `db_get_search_caller` passes `hasWorkspaceRead` to the readable-nodes filter instead of
-  refusing. The other way round holds too: a member whose role reads the workspace sees nothing
-  from a restricted folder in any door until it is shared with them.
-- Archiving a file removes it from every door: `search_saved` and both catalogs read
-  `archiveOperationId: undefined` docs only, so an archived file's keys and values disappear with
-  it. `search_saved` reads saved, active rows only, so the search box never lists an archived file.
+  them: `search_saved` passes the tree reader's `hasWorkspaceRead` to the readable-nodes filter
+  instead of refusing. The other way round holds too: a member whose role reads the workspace never gets a
+  file of a restricted folder from `search_saved` until it is shared with them. The suggestion
+  doors do not follow this rule (the accepted leak in "Suggestions").
+- Archiving a file removes it from every door: `search_saved` reads `archiveOperationId: undefined`
+  docs only, and the catalog counts active docs only, so an archived file's keys and values
+  disappear with it (after the catalog lag). `search_saved` reads saved, active rows only, so the
+  search box never lists an archived file.
 
 # Catalog
 
@@ -548,15 +529,21 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
   by id (a missing marker ends the chain), applies up to 500 deltas older than 5 seconds to their rows,
   deletes them, and schedules itself again while any delta is left; otherwise it deletes the marker. Drift
   (a count below 0) never throws: it clamps to 0 and logs one `files_metadata_catalog drift` line per run,
-  with no value. A new key shows after about 5 to 15 seconds. The `recover metadata catalog compactors`
-  cron (every 15 minutes) starts a run for a marker whose oldest delta waited more than 10 minutes.
+  with no value. Runs apply deltas in creation order and a doc is added before it is removed, so only a
+  count below 0 is drift. A key row lives until its `count` and all its `kindCounts` are 0. A paged writer
+  (Move staging and cleanup, 8 docs per transaction) can write a key's field doc and its value docs in two
+  transactions, so between two runs a key row can have `count` 0 and value kinds. That is not drift: the
+  doors show the key for those few seconds, and the next run settles the row. Every saved value doc has a
+  field doc, so a settled catalog has no such row, and the check reports a stuck one as an extra row. A
+  new key shows after about 5 to 15 seconds. The `recover metadata catalog compactors` cron (every 15
+  minutes) starts a run for a marker whose oldest delta waited more than 10 minutes.
 - **Rebuild and check** (`rebuild_metadata_catalog`, `check_metadata_catalog` in
   `convex/files_pending_overlay.ts`). Run them only in a quiet window: every source writer stopped, also
   scheduled jobs, until the check ends. Both refuse while a Move cohort holds the workspace. A rebuild puts
   a new `clearing` marker in place of the old one (older rebuild jobs and compactor runs then stop), deletes
   100 docs per job, sets the marker to `seeding`, and pages the saved docs on
   `by_organization_workspace_source_fileNode` (100 docs or 1 MiB per page). A file's key deltas wait for
-  its last doc, so no key delta has kinds without its field count. The compactor runs between pages and
+  its last doc, so no key row shows kinds without its field count between two pages. The compactor runs between pages and
   keeps a `seeding` marker; the last page sets it to `draining`. Mode `catalog` replaces every row and
   fixes drift. Mode `check` counts into the shadow families `check_key`, `check_value` and
   `check_parent`; then page `check_metadata_catalog` to the end (it compares each row with its shadow
@@ -566,11 +553,62 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
   batch. At the largest node (896 docs, 160-character keys, 1,024-byte values) a full replacement in one
   transaction measured 4,097 writes and 3.7 MB written, and a compactor run 2,002 docs read and 1,000
   writes (`files_pending_overlay_limits.test.ts`, "metadata catalog").
-- **Accepted leak until a search engine arrives (user, 2026-10-08).** Any member, guests included, will see
-  every catalog row of the workspace, also keys and values of files they cannot open. Search results,
-  opening a file and the folder gate stay access-checked. A search engine must fix this: it counts keys
-  and values over only the files the caller can read. Then delete the catalog tables, the leaf module, the
-  overlay hook, the compactor, its cron and the data deletion pass.
+- **Accepted leak.** Every member reads every row. See "Suggestions".
+
+# Suggestions
+
+The search box, the global search palette, the folder filter bar and the Columns menu suggest keys
+and values from the catalog. Each read is one index range, so it costs the same at any workspace size.
+
+- **Doors** (search box region of `convex/files_metadata.ts`, plus `list_folder_fields` above):
+  - `list_search_fields({ membershipId, savedStream?, prefix, paginationOpts })` → a page of
+    `{ fieldPath, valueKinds }` from the `key` family.
+  - `get_search_field({ membershipId, fieldPath })` → `{ valueKinds }` or null. It reads the exact key
+    row in the normal stream and the visible Move view. The search box uses it to offer `true` and `false`.
+  - `list_search_values({ membershipId, savedStream?, fieldPath, prefix, paginationOpts })` → a page of
+    string values from the `value` family.
+  - `list_folder_fields` (see "Folder Table Fields") → a page of keys from the `parent` family.
+  - Pages hold at most 50 rows (`SEARCH_PAGE_MAX_ITEMS`). A prefix longer than 160 characters (keys) or
+    200 (values) matches nothing and gets an empty, done page. So does a membership that is not the caller's.
+- **Matching.** A key matches by its start, ignoring case (`fieldPathLower`,
+  `files_metadata_catalog_lower`). A value matches by its start in exact case: `d` does not list
+  `Denys`. Rows come in index order; `files_metadata_catalog_key_order` gives the same order in the
+  browser. There is no "contains" match.
+- **What is suggested.** Saved, active keys whose path passes `files_search_query_field_path_is_valid`
+  (at most 160 characters), and string values of at most 1,024 encoded bytes. A longer value saves and
+  can be searched for, but is never suggested. A key or value that exists only in a draft is not
+  suggested, and a saved value stays suggested while its owner has a draft that changes it.
+- **Lag.** A new or removed key or value shows after the compactor runs, about 5 to 15 seconds. The
+  browser also waits 150 ms after typing before it asks.
+- **Streams.** Each door reads one stream: the normal rows, or the rows of one Move view
+  (`savedStream`). `useFilesMetadataCatalogPages` (`src/hooks/files-metadata-catalog-hooks.ts`) reads the
+  normal stream and the visible view's stream and merges them with `files_merge_sorted_streams`, so a
+  key shows once while a Move runs. Value kinds are joined across the streams.
+- **Namespace prefixes** (`files_metadata_catalog_key_prefixes`). A typed `metadata.st` sends one
+  prefix. A bare `st` sends `frontmatter.st` and `metadata.st`. A start of a namespace name (`meta`,
+  `front`) sends that whole namespace (`metadata.`). The hook pages each prefix and joins the pages.
+- **Held rows.** While a new prefix waits for its debounce or its first page, the list keeps the last
+  rows, disabled, with "Updating suggestions…". They clear when the membership, the folder or (for
+  values) the key changes.
+- **Show more.** "Show more keys", "Show more values" and "Show more fields" load 50 more rows of every
+  stream that has more. There is no row cut in the browser. While a page loads the row has
+  `aria-busy` and ignores clicks.
+- **No match.** After the first page ends empty: "No keys start with …" (or "No saved keys yet"), "No
+  saved values start with …", and in Columns "No fields start with …". The search box keeps plain
+  words: when the typed word starts no key, it lists every key, and a picked key is added after the
+  words as a new filter (`onUnmatched`).
+- **Errors.** Each list sits in its own TanStack `CatchBoundary` above the component that calls
+  `usePaginatedQuery`, because the hook throws query errors. The error view says "Could not load
+  suggestions." (Columns: "Fields could not be loaded") with a Retry that resets the boundary. The
+  boundary also resets when the request changes. The typed text stays.
+- **Accepted leak until a search engine arrives (user, 2026-10-08).** Any member, guests included,
+  sees every catalog row of the workspace: keys and values of files they cannot open, and keys of
+  restricted children in Columns. Search results, opening a file and the folder gate stay
+  access-checked. This replaces the old rule that a restricted file's keys and values stay hidden. A
+  search engine must fix this: it counts keys and values over only the files the caller can read
+  (owner: all; member: open files plus shared restricted files; guest: files in shared folders).
+  Then delete the catalog tables, the leaf module, the overlay hook, the compactor, its cron, the
+  rebuild and check tools and the data deletion pass. "Starts with" can become "contains" again.
 
 # Dialog Reconciliation
 

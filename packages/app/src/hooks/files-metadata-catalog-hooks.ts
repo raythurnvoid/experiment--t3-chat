@@ -19,7 +19,7 @@ import { files_merge_sorted_streams } from "./files-search-hooks.ts";
 /**
  * Rows per catalog page. The doors return at most 50.
  */
-export const files_metadata_catalog_PAGE_SIZE = 50;
+const FILES_METADATA_CATALOG_PAGE_SIZE = 50;
 
 /**
  * The key prefixes to ask the catalog for, at most one per namespace. A qualified key asks only its
@@ -72,7 +72,7 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 		const request = requests?.[index];
 		return request && savedStream ? ({ ...request, savedStream } as unknown as PaginatedQueryArgs<Query>) : "skip";
 	};
-	const options = { initialNumItems: files_metadata_catalog_PAGE_SIZE };
+	const options = { initialNumItems: FILES_METADATA_CATALOG_PAGE_SIZE };
 	const pairs = [
 		[usePaginatedQuery(query, streamArgs(0, view.normal), options), usePaginatedQuery(query, streamArgs(0, view.cohort), options)],
 		[usePaginatedQuery(query, streamArgs(1, view.normal), options), usePaginatedQuery(query, streamArgs(1, view.cohort), options)],
@@ -121,7 +121,7 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 					: ("Exhausted" as const),
 		loadMore: () => {
 			for (const merge of merges) {
-				merge.blocking?.loadMore(files_metadata_catalog_PAGE_SIZE);
+				merge.blocking?.loadMore(FILES_METADATA_CATALOG_PAGE_SIZE);
 			}
 		},
 	};
@@ -146,8 +146,7 @@ export function useFilesMetadataFolderKeys(args: {
 			parentId: folderId,
 			prefix: keyPrefix,
 		})),
-		scope: `${membershipId}
-${folderId}`,
+		scope: `${membershipId}\n${folderId}`,
 		order: files_metadata_catalog_key_order,
 		rowKey: (fieldPath) => fieldPath,
 	});

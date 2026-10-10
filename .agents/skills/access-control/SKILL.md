@@ -819,18 +819,22 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
   table shows no error there.
 - `isRestrictedScopeRoot` on `files_nodes` is a stored copy of `restrictedScopeNodeId === _id`, and
   committed metadata field docs carry the same copy. `files_nodes_db_set_restricted_scope` writes
-  both whenever a node is restricted or unrestricted. `list_tree_children_sorted` and
-  `list_folder_fields` throw `should_never_happen` when a row's flag does not match the range it
-  came from. The share streams need no such guard: they check every row.
-- `files_metadata.list_folder_fields` checks active membership and folder `content.read` before
-  listing direct-child committed keys. The root needs workspace read; a grant-only member gets an
-  empty, done ordinary catalog there. A readable archived folder also gets an empty, done page.
-  Missing or denied folders return null. It reads committed docs only, never pending docs.
-  The parent-first index has the restricted-root flag. Other callers read only the ordinary range,
-  so hidden restricted children cannot change the catalog's fields, page length, or cursor. The
-  owner walks the ordinary and the restricted range together and takes the smaller next key.
-  Each witness node must still have the same tenant and parent, be active, and have a flag that
-  matches its range. A mismatch throws an invariant error.
+  both whenever a node is restricted or unrestricted. `list_tree_children_sorted` throws
+  `should_never_happen` when a row's flag does not match the range it came from. The share streams
+  need no such guard: they check every row.
+- `files_metadata.list_folder_fields` checks active membership and folder `content.read`, then reads
+  one range of the metadata catalog's `parent` family. The root needs workspace read; a grant-only
+  member gets an empty, done page there. A readable archived folder, a missing folder and a denied
+  folder get the same empty, done page. The catalog has no restriction flag, so the keys of
+  restricted children show to every member who can read the folder.
+- **Accepted leak in metadata suggestions (user, 2026-10-08).** `list_search_fields`,
+  `get_search_field`, `list_search_values` and `list_folder_fields` read the metadata catalog, which
+  counts saved keys and values with no access data. So any member, guests included, sees every saved
+  key and short string value of the workspace, also from files they cannot open. Search results,
+  opening a file, and the folder gate stay access-checked. This is temporary: Convex has no
+  "distinct values" search. A search engine must fix it by counting keys and values over only the
+  files the caller can read. Do not copy this pattern to other data. See the `file-metadata` skill,
+  "Suggestions".
 - `files_metadata.list_node_fields` and `get_field_values` check the node on every call: they load
   the saved node, check tenant and active state, then `access_control_db_authorize_membership(...,
   { fileNode })` with `content.read`. A private target or a refusal returns null, including after a

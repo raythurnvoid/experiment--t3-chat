@@ -346,7 +346,12 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 					</span>
 				</MyComboboxItem>
 			))}
-			{isDisabled ? <FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage> : null}
+			{isDisabled ? (
+				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
+			) : rows.length === 0 && values.status === "Exhausted" && field !== undefined ? (
+				// Wait for the key's kinds too: a boolean key adds `true` and `false` when they load.
+				<FilesSearchInputSuggestionsMessage>{`No saved values start with ${prefix}`}</FilesSearchInputSuggestionsMessage>
+			) : null}
 			{values.status === "CanLoadMore" || values.status === "LoadingMore" ? (
 				<FilesSearchInputSuggestionsMore
 					label="Show more values"
