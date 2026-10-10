@@ -7,7 +7,6 @@ import { create_deferred } from "../lib/async.ts";
 import { app_fetch_auth_anonymous, app_fetch_auth_resolve_user } from "../lib/fetch.ts";
 import { storage_local } from "../lib/storage.ts";
 import { delay } from "../lib/utils.ts";
-import { app_router } from "../lib/app-router.ts";
 import { useAsyncEffect, useFn, useStateRef } from "../hooks/utils-hooks.ts";
 
 function jwt_read_payload_claim_string(jwt: string, key: string): string | null {
@@ -391,6 +390,9 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		tokenFlowAbortControllerRef.current = new AbortController();
 
 		await getToken({ skipCache: true });
+		// Load the router here, not at the top. The router loads every route, and many routes load
+		// this file, so a top import makes a cycle that breaks when a route file loads first.
+		const { app_router } = await import("../lib/app-router.ts");
 		await app_router().navigate({ to: "/", replace: true });
 	});
 

@@ -66,6 +66,7 @@ function set_folder(args: {
 			folderId: parentId as app_convex_Id<"files_nodes">,
 			kind,
 			archived: false,
+			savedStream: { kind: "normal", generation: 0 },
 		});
 		const children = getFunctionName(app_convex_api.files_nodes.list_tree_children);
 		const page = kind === "folder" ? folders : files;
@@ -104,6 +105,7 @@ function set_shared_roots(rows: Array<ReturnType<typeof tree_row>>) {
 				membershipId: MEMBERSHIP_ID,
 				archived: false,
 				principalIndex,
+				savedStream: { kind: "normal", generation: 0 },
 				paginationOpts: { cursor: null },
 			}),
 			{ ...EMPTY_PAGE, page: principalIndex === 0 ? rows : [] },
@@ -179,6 +181,13 @@ function option_names() {
 beforeEach(() => {
 	results.clear();
 	onPick.mockReset();
+	// The saved streams wait for the workspace view. No Move is running.
+	results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }), {
+		cohortId: null,
+		view: null,
+		generation: 0,
+		searchGeneration: 0,
+	});
 	client = new ConvexReactClient("https://picker-test.convex.cloud");
 	// Keep the real pagination and subscription hooks. Only replace the server watches.
 	vi.spyOn(client, "watchQuery").mockImplementation((query, args?, _options?) => {

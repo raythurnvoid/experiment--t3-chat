@@ -36,13 +36,17 @@ vi.mock("convex/react", async (importOriginal) => {
 				loadMore: vi.fn(),
 			};
 		},
-		// Only the popup's folder lookup answers. The other queries stay loading.
+		// Only the workspace view (no Move running) and the popup's folder lookup answer. The other
+		// queries stay loading.
 		useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") =>
-			args !== "skip" &&
-			getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.get_authorized_by_path) &&
-			args.path === "/docs"
-				? { nodeId: "docs", name: "docs", kind: "folder", assetId: null }
-				: undefined,
+			args === "skip"
+				? undefined
+				: getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.get_workspace_move_view)
+					? { cohortId: null, view: null, generation: 0, searchGeneration: 0 }
+					: getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.get_authorized_by_path) &&
+						  args.path === "/docs"
+						? { nodeId: "docs", name: "docs", kind: "folder", assetId: null }
+						: undefined,
 		// The popup asks no file checks.
 		useQueries: () => ({}),
 	};
@@ -688,7 +692,14 @@ describe("AiChatComposer", () => {
 		const [, fileOption] = screen.getAllByRole("option");
 		expect(treeNodesMock).toHaveBeenCalledWith(
 			app_convex_api.files_nodes.list_tree_children,
-			{ membershipId: "membership-1", parentId: "root", kind: "file", archived: false, restricted: false },
+			{
+				membershipId: "membership-1",
+				parentId: "root",
+				kind: "file",
+				archived: false,
+				restricted: false,
+				savedStream: { kind: "normal", generation: 0 },
+			},
 			{ initialNumItems: 50 },
 		);
 
