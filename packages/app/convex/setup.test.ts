@@ -499,9 +499,12 @@ export async function test_create_saved_text_file(
 			});
 			if (ready._nay) throw new Error(ready._nay.message);
 		}
+		// Keep new parents as drafts. The file's Save below saves them in the same job, and each
+		// extra Save job costs about 100 steps.
+		if (kind === "folder") continue;
 		const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
 		if (!proposal) throw new Error("Expected a proposal to save");
-		// Save new parents first, then publish exact text at sequence 0.
+		// Publish the exact text at sequence 0.
 		const saved = await test_save_file_pending_update(asUser, {
 			membershipId: args.membershipId,
 			target,
@@ -510,7 +513,7 @@ export async function test_create_saved_text_file(
 		});
 		if (saved._nay) throw new Error(saved._nay.message);
 		if (saved._yay.target.kind !== "saved") throw new Error("Expected a saved test node");
-		if (kind === "file") return saved._yay.target.id;
+		return saved._yay.target.id;
 	}
 	throw new Error("Expected a test file path");
 }
