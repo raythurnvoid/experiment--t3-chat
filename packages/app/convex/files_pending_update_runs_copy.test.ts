@@ -1195,6 +1195,7 @@ describe("scalable Copy Save", () => {
 	// table). Run this slow check with test:files:full-size.
 	test(
 		"saves 1,000 Copy outputs beside one ordinary edit",
+		{ tags: ["full-size"], timeout: 0 },
 		async () => {
 			const f = await fixture();
 			const copies = await copied_folders({ f, count: 1_000 });
@@ -1256,7 +1257,6 @@ describe("scalable Copy Save", () => {
 			expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").first())).toBeNull();
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).toMatchObject({ path: "/renamed-source" });
 		},
-		0,
 	);
 
 	test("starts a Save above the Discard limit", async () => {

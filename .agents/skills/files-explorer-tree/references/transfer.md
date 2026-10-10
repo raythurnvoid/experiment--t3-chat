@@ -326,7 +326,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
   preparation, retry, Stop, and cleanup.
 - The normal test commands omit only four checks: "saves 1,000 Copy outputs beside one ordinary
   edit", "plans 10,001 unrelated saved Move proposals as 10,001 units", the 2,001-descendant Move
-  scale check and the 16-owner overlay budget check. Run them with
+  scale check and the 16-owner overlay budget check. They carry the `full-size` tag, and
+  `vitest.config.ts` filters that tag out, so `-t` cannot pick them by accident.
+  `vitest.full-size.config.ts` flips the filter. Run them with
   `vp env exec pnpm --dir packages/app run test:files:full-size`.
   This command keeps every input and assertion. It runs the files one at a time.
   These checks write a lot of docs, so they can take hours. The Copy and

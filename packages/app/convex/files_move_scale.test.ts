@@ -379,52 +379,57 @@ describe("public Move scale", () => {
 		console.info("Move scale selected files", JSON.stringify(Object.fromEntries(peaks)));
 	}, 7_200_000);
 
-	test.each([
+	for (const { count, tags } of [
 		// Move reserves the folder, each descendant and the target. 7 descendants make 9 reservations,
 		// one past the 8 that a release step frees.
-		7,
+		{ count: 7, tags: [] },
 		// 2001 was just past the old 2000-doc Move cap, which is gone. Run it with test:files:full-size.
-		2001,
-	])("moves one folder with %i descendants and keeps every metadata value", async (count) => {
-		const fixture = await create_fixture();
-		const { t } = fixture;
-		const target = await create_folder(fixture, "target");
-		const source = await create_folder(fixture, "source");
-		const seed = await create_folder(fixture, "child-0000", source._id);
-		const descendants = [seed._id];
-		const { _id: _seedId, _creationTime: _seedTime, ...fields } = seed;
-		// Bulk setup copies a real folder doc. Move still enters through the public door.
-		for (let offset = 1; offset < count; offset += 100) {
-			const ids = await t.run(async (ctx) => {
-				const ids: Id<"files_nodes">[] = [];
-				for (let index = offset; index < Math.min(offset + 100, count); index++) {
-					const name = `child-${index.toString().padStart(4, "0")}`;
-					const path = `/source/${name}`;
-					ids.push(
-						await ctx.db.insert("files_nodes", {
-							...fields,
-							name,
-							sortName: files_sort_text_key(name),
-							path,
-							treePath: `${path}/`,
-						}),
-					);
+		{ count: 2001, tags: ["full-size"] },
+	])
+		test(
+			`moves one folder with ${count} descendants and keeps every metadata value`,
+			{ tags, timeout: 7_200_000 },
+			async () => {
+				const fixture = await create_fixture();
+				const { t } = fixture;
+				const target = await create_folder(fixture, "target");
+				const source = await create_folder(fixture, "source");
+				const seed = await create_folder(fixture, "child-0000", source._id);
+				const descendants = [seed._id];
+				const { _id: _seedId, _creationTime: _seedTime, ...fields } = seed;
+				// Bulk setup copies a real folder doc. Move still enters through the public door.
+				for (let offset = 1; offset < count; offset += 100) {
+					const ids = await t.run(async (ctx) => {
+						const ids: Id<"files_nodes">[] = [];
+						for (let index = offset; index < Math.min(offset + 100, count); index++) {
+							const name = `child-${index.toString().padStart(4, "0")}`;
+							const path = `/source/${name}`;
+							ids.push(
+								await ctx.db.insert("files_nodes", {
+									...fields,
+									name,
+									sortName: files_sort_text_key(name),
+									path,
+									treePath: `${path}/`,
+								}),
+							);
+						}
+						return ids;
+					});
+					descendants.push(...ids);
 				}
-				return ids;
-			});
-			descendants.push(...ids);
-		}
-		expect(new Set(descendants).size, "every descendant is distinct").toBe(count);
-		await write_markers(fixture, [source._id, ...descendants]);
-		await t.finishAllScheduledFunctions(vi.runAllTimers, 10_000);
-		const peaks = measure_move();
-		await finish_move(fixture, await start_move(fixture, [source._id], target._id), 1);
-		await expect_moved_markers(fixture, [source._id, ...descendants], (node) =>
-			node._id === source._id ? "/target/source" : `/target/source/${node.name}`,
+				expect(new Set(descendants).size, "every descendant is distinct").toBe(count);
+				await write_markers(fixture, [source._id, ...descendants]);
+				await t.finishAllScheduledFunctions(vi.runAllTimers, 10_000);
+				const peaks = measure_move();
+				await finish_move(fixture, await start_move(fixture, [source._id], target._id), 1);
+				await expect_moved_markers(fixture, [source._id, ...descendants], (node) =>
+					node._id === source._id ? "/target/source" : `/target/source/${node.name}`,
+				);
+				expect(peaks.get("cohort/release (paged)")?.calls, "the folder needs two release pages").toBeGreaterThan(0);
+				console.info("Move scale descendants", JSON.stringify(Object.fromEntries(peaks)));
+			},
 		);
-		expect(peaks.get("cohort/release (paged)")?.calls, "the folder needs two release pages").toBeGreaterThan(0);
-		console.info("Move scale descendants", JSON.stringify(Object.fromEntries(peaks)));
-	}, 7_200_000);
 
 	test("pages 896 native metadata docs when repeated destination paths exceed 16 MiB", async () => {
 		const fixture = await create_fixture();
