@@ -230,8 +230,8 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 		measuring = true;
 		await move(otherId);
 		measuring = false;
-		// Fail here, not after the slower second round, when no transfer step moved the node.
-		expect(costs.at(-1)?.owners, "the transfer step that moves the node records its cost").toBe(total);
+		// Check this round before starting the next crowded Move.
+		expect(costs.at(-1)?.owners, "the crowded Move records its owner count").toBe(total);
 		expect(await hides(), "the claim ends after the saved node moves away").toHaveLength(0);
 	}
 
