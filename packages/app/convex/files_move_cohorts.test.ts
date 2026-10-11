@@ -340,7 +340,7 @@ describe("Move cohort publication", () => {
 		const retries = (await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()))
 			.filter((job) => job.name.endsWith("activities:cleanup_history") && job.state.kind === "pending")
 			.map((job) => job.scheduledTime - Date.now());
-		expect(retries, "a pass that deleted nothing retries later, not at once").toEqual([5 * 60_000]);
+		expect(retries, "a pass that deleted nothing ends the chain, and the daily cron tries again").toEqual([]);
 	}, 120_000);
 
 	test("Stop keeps the review Activity until its saved group ends repair", async () => {

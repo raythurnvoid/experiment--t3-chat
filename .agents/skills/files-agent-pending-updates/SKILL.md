@@ -207,8 +207,8 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 - Activity owns the seven-day review history. Child graph docs drain before the plan. Completed
   group docs stay until their parent history is gone and delayed storage resources have settled.
   Deleting the parent run starts cleanup for its groups. The group recover cron also pages through
-  every due completed group. Activity history cleanup that deleted nothing tries again after five
-  minutes, not at once.
+  every due completed group. An Activity history cleanup pass that deleted nothing ends its chain.
+  The daily cron starts the next one.
 
 Paged pending-state storage (`packages/app/convex/schema.ts`; shared helpers in `packages/app/server/files.ts`):
 

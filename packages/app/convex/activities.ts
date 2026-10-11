@@ -58,11 +58,6 @@ const ACTIVITIES_BASH_JOB_ROWS_MAX = 8;
 const MOVE_WAIT_DEADLINE_MS = 30 * 60 * 1000;
 
 /**
- * History cleanup tries again after this long when its last pass could delete nothing.
- */
-const HISTORY_WAIT_RETRY_MS = 5 * 60 * 1000;
-
-/**
  * Keep only the activities the user may see.
  *
  * Plugin activities follow file access. Those with no named file require workspace read.
@@ -631,9 +626,10 @@ export const cleanup_history = internalMutation({
 		}
 
 		const done = processedCount < batchSize && deletedCount < 50 && !pendingCleanup;
-		if (!done && !args._test_disableReschedule) {
-			// A pass that deleted nothing waits for other work, like a Move repair. Do not retry it in a busy loop.
-			await ctx.scheduler.runAfter(deletedCount > 0 ? 0 : HISTORY_WAIT_RETRY_MS, internal.activities.cleanup_history, {
+		// A pass that deleted nothing waits for other work, like a Move repair. End the chain then: the
+		// daily cron starts the next one, so a long wait does not keep a chain running.
+		if (!done && deletedCount > 0 && !args._test_disableReschedule) {
+			await ctx.scheduler.runAfter(0, internal.activities.cleanup_history, {
 				batchSize: args.batchSize,
 				_test_now: args._test_now,
 			});
