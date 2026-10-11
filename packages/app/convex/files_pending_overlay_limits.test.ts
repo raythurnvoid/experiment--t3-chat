@@ -13,6 +13,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { advance as advance_review } from "./files_pending_update_runs.ts";
+import { upsert_file_pending_archive_in_db } from "./files_pending_updates.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import {
 	advance as advance_transfer,
@@ -35,7 +36,7 @@ import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts"
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
 import { access_control_FILE_SHARE_LEVELS } from "../shared/access-control.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
+import { files_MAX_TEXT_CONTENT_BYTES, files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -830,6 +831,53 @@ describe("cohort Accept transaction budgets", () => {
 		expect(peaks.get("cohort/finish_nodes")?.calls).toBeGreaterThan(0);
 		console.info("accepted delete with a full-size edit, phase peaks", JSON.stringify(Object.fromEntries(peaks)));
 	}, 900_000);
+
+	test("keeps the draft delete of a full-size edit at the longest path under the budget", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		// Every plain text chunk stores this path, and the delete patches every chunk.
+		const path = `/${Array.from({ length: 3 }, (_, index) => String(index).repeat(files_NAME_MAX_LENGTH)).join("/")}/${"e".repeat(files_NAME_MAX_LENGTH - 3)}.md`;
+		expect(path).toHaveLength(files_PATH_MAX_LENGTH);
+		const nodeId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path, textContent: "Saved." });
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		const target = { kind: "saved", id: nodeId } as const;
+		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			...scope,
+			target,
+		});
+		if (batch._nay) throw new Error(batch._nay.message);
+		const text = Array.from({ length: files_MAX_TEXT_CONTENT_BYTES / 16 }, (_, index) =>
+			index.toString(36).padStart(15, "-"),
+		).join("\n");
+		expect(
+			await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+				...scope,
+				operationBatchId: batch._yay.operationBatchId,
+				role: "unstaged",
+				text,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				...scope,
+				target,
+				operationBatchId: batch._yay.operationBatchId,
+			}),
+		).toEqual({ _yay: null });
+		const { peaks, record } = budget_recorder();
+		test_spy_handler(upsert_file_pending_archive_in_db, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			record("draft delete", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
+		expect(
+			(await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...scope, target }))._nay,
+		).toBeUndefined();
+		expect(peaks.get("draft delete")?.calls).toBe(1);
+		console.info("draft delete at the longest path", JSON.stringify(Object.fromEntries(peaks)));
+	}, 300_000);
 });
 
 describe("discard_file_pending_update", () => {
