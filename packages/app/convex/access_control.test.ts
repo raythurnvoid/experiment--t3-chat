@@ -9509,7 +9509,7 @@ describe("file sharing", () => {
 			expect(await filterChild()).toEqual([childId]);
 		});
 
-		test("a member without a grant cannot move out an item that a move into a restricted folder has not reached", async () => {
+		test("a member without a grant cannot move out an item that a move put into a restricted folder", async () => {
 			const t = test_convex();
 			const fixture = await access_control_test_seed_enforcement_fixture(t, {
 				name: "mj-org",
@@ -9532,7 +9532,7 @@ describe("file sharing", () => {
 					treePath: "/open/",
 				});
 				let childId: Id<"files_nodes"> | null = null;
-				for (let index = 0; index < 150; index += 1) {
+				for (let index = 0; index < 3; index += 1) {
 					const id = await ctx.db.insert("files_nodes", {
 						...base,
 						parentId: openId,
@@ -9542,7 +9542,7 @@ describe("file sharing", () => {
 						treePath: `/open/child-${index}/`,
 						pathDepth: 2,
 					});
-					if (index === 99) childId = id;
+					if (index === 1) childId = id;
 				}
 				return { openId, childId: childId! };
 			});
@@ -9553,11 +9553,9 @@ describe("file sharing", () => {
 				targetParentId: closedId,
 			});
 			expect(moved._nay).toBeUndefined();
-			// The move job is still running and has not reached this child yet.
-			expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").first())).toMatchObject({ kind: "move" });
-			expect((await t.run((ctx) => ctx.db.get("files_nodes", childId)))?.restrictedScopeNodeId).toBeNull();
+			// A saved Move switches the whole folder at once. Its children have the new scope when it ends.
+			expect((await t.run((ctx) => ctx.db.get("files_nodes", childId)))?.restrictedScopeNodeId).toBe(closedId);
 
-			// Once out of `open`, the job would never reach it, so the stored scope would let it out for good.
 			const movedOut = await test_move_nodes(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				itemIds: [childId],
@@ -10014,7 +10012,10 @@ describe("file sharing", () => {
 				})
 				.then((result) => result.page),
 		]);
-		expect(ownerListed.map((activity) => activity._id)).toEqual([currentActivityId]);
+		// The owner also sees the Activity of their own Move. Check only the seeded file Activities.
+		expect(
+			ownerListed.filter((activity) => activity.source.kind !== "files_transfer_run").map((activity) => activity._id),
+		).toEqual([currentActivityId]);
 		expect(memberListed.map((activity) => activity._id)).toEqual([currentActivityId]);
 
 		const archivedStale = await fixture.asMember.mutation(api.activities.archive_activity, {

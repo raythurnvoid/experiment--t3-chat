@@ -27,6 +27,7 @@ import {
 	files_pending_overlay_db_flush,
 	files_pending_overlay_db_mark_target,
 	files_pending_overlay_db_set_acting_user,
+	files_pending_overlay_db_wrap,
 	files_pending_overlay_list,
 	files_pending_overlay_search_name,
 } from "../server/files-pending-overlay.ts";
@@ -1901,14 +1902,18 @@ describe("files_pending_overlay flush", () => {
 	test("two writes of one private node in Promise.all read its old doc once", async () => {
 		const f = await fixture();
 		const p = await f.create_private("/p.md");
-		const ranges = await test_run_with_flush(f.t, async (ctx) => {
+		// Wrap with the overlay only. The Move guard of the real wrapper adds its own checks.
+		const ranges = await f.t.run(async (raw) => {
+			const ctx = { ...raw, ...files_pending_overlay_db_wrap(raw) };
 			const before = await ctx.meta.getTransactionMetrics();
 			const privateNodeId = p.id as Id<"files_pending_nodes">;
 			await Promise.all([
 				ctx.db.patch("files_pending_nodes", privateNodeId, { name: "q.md" }),
 				ctx.db.patch("files_pending_nodes", privateNodeId, { structuralRevision: 5 }),
 			]);
-			return (await ctx.meta.getTransactionMetrics()).databaseQueries.used - before.databaseQueries.used;
+			const used = (await ctx.meta.getTransactionMetrics()).databaseQueries.used - before.databaseQueries.used;
+			await files_pending_overlay_db_flush(ctx);
+			return used;
 		});
 		expect(ranges).toBe(1);
 		expect((await f.overlay(p)).place).toMatchObject({ name: "q.md", ownerTreePath: "/q.md" });
@@ -2019,12 +2024,15 @@ describe("files_pending_overlay jobs", () => {
 			});
 		});
 
-		const renamed = await test_rename_node(f.t, f.asV, {
-			membershipId: f.vMember.membershipId,
-			nodeId: x._id,
-			path: "y.md",
+		// Rename x with one direct write. A public rename runs as a Move, and the Move restages the overlay itself.
+		await test_run_with_flush(f.t, async (ctx) => {
+			await ctx.db.patch("files_nodes", x._id, {
+				name: "y.md",
+				sortName: files_sort_text_key("y.md"),
+				path: x.path.replace(/x\.md$/, "y.md"),
+				treePath: x.treePath.replace(/x\.md$/, "y.md"),
+			});
 		});
-		if (renamed._nay) throw new Error(renamed._nay.message);
 		const job = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_overlay_jobs")
@@ -2308,8 +2316,8 @@ describe("files_pending_overlay jobs", () => {
 			if ((args as { kind: string }).kind === "parent") parentRuns++;
 			return await handler(ctx, args);
 		});
-		// V's rename of the top folder moves every place under the deepest one.
-		await f.v_rename({ id: top._id }, "top");
+		// V's archive of the top folder changes every place under the deepest one.
+		await f.v_archive({ id: top._id });
 		// Places, incoming moves and private children each have their own native page.
 		expect(parentRuns).toBe(3);
 		await f.expect_overlay_true();

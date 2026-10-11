@@ -619,6 +619,7 @@ export async function files_pending_update_plans_db_list_components(
 
 /**
  * Drain one graph page before deleting its parent review history.
+ * Use take, not paginate: History cleanup deletes many runs in one mutation, and Convex allows one paginate per call.
  */
 export async function files_pending_update_plans_db_delete_run_batch(
 	ctx: MutationCtx,
@@ -635,38 +636,26 @@ export async function files_pending_update_plans_db_delete_run_batch(
 		"files_pending_update_plan_frames",
 		"files_pending_update_plan_walks",
 	] as const) {
-		if (
-			!(await ctx.db
-				.query(table)
-				.withIndex("by_plan", (q) => q.eq("planId", plan._id))
-				.first())
-		)
-			continue;
-		const page = await ctx.db
+		const rows = await ctx.db
 			.query(table)
 			.withIndex("by_plan", (q) => q.eq("planId", plan._id))
-			.paginate({ cursor: null, numItems });
-		for (const row of page.page) await ctx.db.delete(table, row._id);
-		return { done: false, deletedCount: page.page.length };
+			.take(numItems);
+		if (!rows.length) continue;
+		for (const row of rows) await ctx.db.delete(table, row._id);
+		return { done: false, deletedCount: rows.length };
 	}
 	for (const table of [
 		"files_pending_update_plan_relations",
 		"files_pending_update_plan_components",
 		"files_pending_update_plan_items",
 	] as const) {
-		if (
-			!(await ctx.db
-				.query(table)
-				.withIndex("by_plan_order", (q) => q.eq("planId", plan._id))
-				.first())
-		)
-			continue;
-		const page = await ctx.db
+		const rows = await ctx.db
 			.query(table)
 			.withIndex("by_plan_order", (q) => q.eq("planId", plan._id))
-			.paginate({ cursor: null, numItems });
-		for (const row of page.page) await ctx.db.delete(table, row._id);
-		return { done: false, deletedCount: page.page.length };
+			.take(numItems);
+		if (!rows.length) continue;
+		for (const row of rows) await ctx.db.delete(table, row._id);
+		return { done: false, deletedCount: rows.length };
 	}
 	await ctx.db.delete("files_pending_update_plans", plan._id);
 	return { done: false, deletedCount: 1 };

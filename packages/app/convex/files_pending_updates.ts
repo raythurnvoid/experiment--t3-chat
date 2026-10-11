@@ -10463,7 +10463,12 @@ export const start_single_save_review = internalMutation({
 			return Result({
 				_nay: {
 					message:
-						view?.readiness === "preparing" ? "This draft is still preparing" : "This draft cannot be saved here",
+						view?.readiness === "preparing"
+							? "This draft is still preparing"
+							: // A saved file that the user cannot write gets the usual access refusal.
+								args.target.kind === "saved" && view && !view.canEdit
+								? "Permission denied"
+								: "This draft cannot be saved here",
 				},
 			});
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "save_file_pending_update", key: args.userId });
