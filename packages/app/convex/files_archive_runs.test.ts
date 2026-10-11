@@ -1,9 +1,13 @@
+import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { activities_is_active } from "./activities_db.ts";
-import { test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
+import { drain_deleted_pending_update_docs } from "./files_pending_updates.ts";
+import { db_replace_file_chunks } from "./files_nodes_content.ts";
+import { files_subtree_ops_db_find_blocker } from "./files_subtree_ops.ts";
 import {
 	fixture,
 	add_member,
@@ -30,6 +34,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
 
@@ -495,6 +500,29 @@ describe("archive_nodes", () => {
 		expect((await read_activity(f, job.activityId)).status).toBe("succeeded");
 	}, 120_000);
 
+	test("an archive of many named items marks at most 64 busy paths, and they still cover every item", async () => {
+		const f = await fixture();
+		// 80 named folders, more than one step of 75, so the archive is still a job after the request.
+		const tree = await seed_tree(f, { name: "many", folderCount: 80, filesPerFolder: 0 });
+		expect((await archive(f, tree.folderIds))._nay).toBeUndefined();
+
+		const op = (await f.t.run((ctx) => ctx.db.query("files_subtree_ops").unique()))!;
+		expect(op.treePaths.length, "the op keeps at most 64 paths, like a restore").toBeLessThanOrEqual(64);
+		const blockers = await f.t.run(async (ctx) =>
+			Promise.all(
+				["/many/d0/", "/many/d79/x.md"].map(async (treePath) =>
+					files_subtree_ops_db_find_blocker(ctx, {
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						treePaths: [treePath],
+						waiter: null,
+					}),
+				),
+			),
+		);
+		expect(blockers.map((blocker) => blocker?._id)).toEqual([op._id, op._id]);
+	});
+
 	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
 		// With a limit of 1,000 queries, clearing 200 + 200 folders needs more than one step. 70 + 70 fit in one.
 		const f = await fixture({ transactionLimits: { databaseQueries: 1000 } });
@@ -552,6 +580,129 @@ describe("apply_file_pending_archive", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdate._id))).toBeNull();
 		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBeNull();
 	});
+
+	test("an agent delete of a file with the owner's big draft drains the draft in passes that fit", async () => {
+		// Saves write to R2. Never call the real service.
+		vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key) => ({
+			key: key ?? "key",
+			url: "https://r2.test/upload",
+		}));
+		vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 200 }));
+		const f = await fixture();
+		const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
+		// The measured worst case: a ~980-char path, a 900 KB saved file, and the owner's full-size draft.
+		// Archiving the file and deleting the draft in one transaction reads about 25 MB.
+		const dir = `/${"a".repeat(250)}/${"b".repeat(250)}/${"c".repeat(250)}/${"d".repeat(200)}`;
+		const nodeId = await test_create_saved_text_file(f.t, {
+			membershipId: f.db.membershipId,
+			path: `${dir}/big.md`,
+			textContent: "x",
+		});
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		// A full Save of a big text is slow here, so write the saved chunks directly.
+		await f.t.run((ctx) =>
+			db_replace_file_chunks(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				nodeId,
+				textContent: Array.from({ length: 900_000 / 16 - 1 }, (_, index) => index.toString(36).padStart(15, "-")).join(
+					"\n",
+				),
+			}),
+		);
+		const read_private_bytes = () =>
+			f.t.run(async (ctx) => {
+				const quota = await ctx.db
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) =>
+						q.eq("userId", f.db.userId).eq("quotaName", "files_private_user_bytes"),
+					)
+					.unique();
+				return quota?.usedCount ?? 0;
+			});
+		const bytesBefore = await read_private_bytes();
+
+		const target = { kind: "saved" as const, id: nodeId };
+		const batch = await f.t.mutation(
+			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+			{ ...scope, target },
+		);
+		if (batch._nay) throw new Error(batch._nay.message);
+		const line = "draftword ".repeat(60);
+		const staged = await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			...scope,
+			operationBatchId: batch._yay.operationBatchId,
+			role: "unstaged",
+			text: `## h\n\n${line}\n\n`.repeat(Math.floor(900_000 / (line.length + 8))),
+		});
+		if (staged._nay) throw new Error(staged._nay.message);
+		const drafted = await f.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			...scope,
+			target,
+			operationBatchId: batch._yay.operationBatchId,
+		});
+		if (drafted._nay) throw new Error(drafted._nay.message);
+		// Run only the jobs that are due now. Running every timer would also expire the draft.
+		const run_due_jobs = async () => {
+			for (let round = 0; round < 50; round++) {
+				vi.advanceTimersByTime(1);
+				await f.t.finishInProgressScheduledFunctions();
+			}
+		};
+		await run_due_jobs();
+		const search = () =>
+			f.t.query(internal.files_nodes.text_search_files, {
+				...scope,
+				hasWorkspaceRead: true,
+				query: "draftword",
+				numItems: 10,
+				cursor: null,
+			});
+		const found = (await search()).items;
+		expect(found.length).toBeGreaterThan(0);
+		expect(found.every((item) => item.target.id === nodeId)).toBe(true);
+		const proposed = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+			...scope,
+			target,
+		});
+		if (proposed._nay) throw new Error(proposed._nay.message);
+		await run_due_jobs();
+		const pendingUpdate = (await f.t.run((ctx) => ctx.db.query("files_pending_updates").unique()))!;
+		const read_draft_docs = () =>
+			f.t.run(async (ctx) => {
+				const query = (table: "files_plain_text_chunks" | "files_text_chunks") =>
+					ctx.db
+						.query(table)
+						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+						.collect();
+				return (await query("files_plain_text_chunks")).length + (await query("files_text_chunks")).length;
+			});
+		expect(await read_draft_docs()).toBeGreaterThan(2_000);
+
+		// The click deletes the proposal but leaves its chunks. Search does not show them.
+		const applied = await f.asOwner.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: f.db.membershipId,
+			target,
+			pendingUpdateId: pendingUpdate._id,
+			reviewedRevision: pendingUpdate.revision,
+		});
+		expect(applied, "the agent delete fits in one transaction").toEqual({ _yay: null });
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdate._id))).toBeNull();
+		expect(await read_draft_docs()).toBeGreaterThan(0);
+		expect((await search()).items).toEqual([]);
+
+		// Each drain pass runs under the real limits and schedules the next one.
+		let passes = 0;
+		test_spy_handler(drain_deleted_pending_update_docs, async (handler, ctx, args) => {
+			passes += 1;
+			return await handler(ctx, args);
+		});
+		await run_due_jobs();
+		expect(passes).toBeGreaterThan(1);
+		expect(await read_draft_docs()).toBe(0);
+		expect(await read_private_bytes(), "the draft's storage is released once").toBe(bytesBefore);
+	}, 300_000);
 
 	test("a Discard during the check ends the job before anything is archived", async () => {
 		const f = await fixture();

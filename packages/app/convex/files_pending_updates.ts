@@ -78,6 +78,7 @@ import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { files_pending_update_runs_db_start } from "./files_pending_update_runs.ts";
 import { activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
 import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
+import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops.ts";
 import {
 	files_private_storage_db_reserve,
 	files_private_storage_db_release,
@@ -5433,7 +5434,7 @@ export async function files_pending_updates_db_apply_archive(
 				workspaceId: membership.workspaceId,
 				pendingUpdateId: pendingUpdate._id,
 			}),
-			files_pending_update_db_delete_chunks(ctx, {
+			ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_deleted_pending_update_docs, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
 			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
@@ -5560,12 +5561,70 @@ export async function files_pending_updates_db_remove_archived_node_proposal(
 			workspaceId: args.workspaceId,
 			pendingUpdateId: pendingUpdate._id,
 		}),
-		files_pending_update_db_delete_chunks(ctx, {
+		// A big draft holds thousands of chunks. Deleting them here, beside the archive, can pass the
+		// transaction limits, so a background drain deletes them after the proposal is gone.
+		ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_deleted_pending_update_docs, {
 			pendingUpdateId: pendingUpdate._id,
 		}),
 		files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 	]);
 }
+
+/** How many docs of each kind one drain page deletes before it checks the limits again. */
+const DELETED_PROPOSAL_DRAIN_PAGE_SIZE = 64;
+
+/**
+ * Delete the chunk and metadata docs of a proposal that is already deleted, in pages. Readers drop
+ * docs whose proposal is gone, so nobody sees them while they wait. A pass that gets near the limits
+ * schedules the next pass.
+ */
+export const drain_deleted_pending_update_docs = internalMutation({
+	args: { pendingUpdateId: v.id("files_pending_updates") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		for (;;) {
+			const [plainTextChunks, textChunks, metadataDocs] = await Promise.all([
+				ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+						q
+							.eq("pendingUpdateId", args.pendingUpdateId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
+					)
+					.take(DELETED_PROPOSAL_DRAIN_PAGE_SIZE),
+				ctx.db
+					.query("files_text_chunks")
+					.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+						q
+							.eq("pendingUpdateId", args.pendingUpdateId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
+					)
+					.take(DELETED_PROPOSAL_DRAIN_PAGE_SIZE),
+				ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_pendingUpdate_fieldPath", (q) =>
+						q
+							.eq("pendingUpdateId", args.pendingUpdateId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
+					)
+					.take(DELETED_PROPOSAL_DRAIN_PAGE_SIZE),
+			]);
+			if (plainTextChunks.length + textChunks.length + metadataDocs.length === 0) return null;
+			await Promise.all([
+				...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
+				...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
+				...metadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)),
+			]);
+			if (await files_subtree_ops_db_is_near_limits(ctx)) {
+				await ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_deleted_pending_update_docs, args);
+				return null;
+			}
+		}
+	},
+});
 
 export const discard_file_pending_update = mutation({
 	args: {

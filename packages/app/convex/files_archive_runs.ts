@@ -116,7 +116,7 @@ const CHOICE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MAX_ROOT_LANDINGS = 500;
 
 /**
- * A restore marks at most this many paths busy. Every op check reads each of them.
+ * An archive or restore marks at most this many paths busy. Every op check reads each of them.
  */
 const MAX_DISCOVER_TREE_PATHS = 64;
 
@@ -744,7 +744,7 @@ async function db_can_replace(
  * items cannot make it grow. Past that, the two paths with the longest shared folder merge into that folder.
  * The folder can be `/`, which marks the whole workspace busy.
  */
-function add_discover_tree_path(run: RunFields, treePath: string) {
+function add_discover_tree_path(run: Pick<RunFields, "discoverTreePaths">, treePath: string) {
 	// Only a folder's `treePath` ends with "/", like in `files_subtree_ops_db_find_blocker`.
 	const holds = (outer: string, inner: string) => outer === inner || (outer.endsWith("/") && inner.startsWith(outer));
 	const add = (path: string) => {
@@ -757,14 +757,16 @@ function add_discover_tree_path(run: RunFields, treePath: string) {
 
 	add(treePath);
 	while (run.discoverTreePaths.length > MAX_DISCOVER_TREE_PATHS) {
+		// In sorted order, the two paths with the longest shared folder are next to each other. So
+		// compare neighbors only: comparing every pair of long paths takes too long for 500 named items.
+		const sorted = run.discoverTreePaths.toSorted();
 		let folder = "/";
-		for (const [index, first] of run.discoverTreePaths.entries()) {
-			for (const second of run.discoverTreePaths.slice(index + 1)) {
-				let length = 0;
-				while (length < first.length && first[length] === second[length]) length += 1;
-				const shared = first.slice(0, first.lastIndexOf("/", length - 1) + 1);
-				if (shared.length > folder.length) folder = shared;
-			}
+		for (const [index, first] of sorted.slice(0, -1).entries()) {
+			const second = sorted[index + 1]!;
+			let length = 0;
+			while (length < first.length && first[length] === second[length]) length += 1;
+			const shared = first.slice(0, first.lastIndexOf("/", length - 1) + 1);
+			if (shared.length > folder.length) folder = shared;
 		}
 		add(folder);
 	}
@@ -1520,6 +1522,11 @@ export async function files_archive_runs_db_start(
 		}
 	}
 
+	// An archive can name 500 items. Merge their paths like a restore does, so every later op check
+	// reads at most `MAX_DISCOVER_TREE_PATHS` paths from this op.
+	const busyPaths = { discoverTreePaths: [] as string[] };
+	for (const treePath of args.treePaths) add_discover_tree_path(busyPaths, treePath);
+
 	const previousRun = args.previousRunId ? await ctx.db.get("files_archive_runs", args.previousRunId) : null;
 	const previousOp = args.previousRunId ? await db_require_op(ctx, args.previousRunId) : null;
 	const blocker =
@@ -1529,7 +1536,7 @@ export async function files_archive_runs_db_start(
 				(await files_subtree_ops_db_find_blocker(ctx, {
 					organizationId: args.membership.organizationId,
 					workspaceId: args.membership.workspaceId,
-					treePaths: args.treePaths,
+					treePaths: busyPaths.discoverTreePaths,
 					waiter: null,
 				})));
 
@@ -1577,7 +1584,7 @@ export async function files_archive_runs_db_start(
 			status: blocker ? "queued" : "running",
 			blockedByOpId: blocker?._id ?? null,
 			rootNodeIds: args.rootNodeIds,
-			treePaths: args.treePaths,
+			treePaths: busyPaths.discoverTreePaths,
 			kind: args.kind,
 			archiveRunId: runId,
 		},
