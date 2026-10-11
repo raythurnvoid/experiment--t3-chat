@@ -159,6 +159,7 @@ import {
 	files_normalize_file_rename_name,
 	files_normalize_markdown_name,
 	files_normalize_upload_file_name,
+	files_REQUEST_FOLDER_PREFIXES_MAX,
 	files_yjs_root_kind_of_content_type,
 	type files_EditorView,
 	type files_TreeItem,
@@ -326,6 +327,7 @@ const FILES_IMPORT_MAX_PATH_DEPTH = 32;
 const FILES_IMPORT_MAX_PATH_LENGTH = 1024;
 const FILES_IMPORT_PREPARE_CONCURRENCY = 4;
 const FILES_IMPORT_PUT_CONCURRENCY = 4;
+const FILES_IMPORT_TOAST_FAILED_PATHS = 5;
 const FILES_IMPORT_PROGRESS_TOAST_ID = "files-sidebar-import-progress";
 
 // `fromEvent` filters these junk files for drops but not for folder picker files, so the shared
@@ -551,33 +553,43 @@ function build_import_plan(entries: FilesImportEntry[]) {
 	return { items: invalidSkillPaths.length > 0 ? [] : items, skipped, invalidSkillPaths };
 }
 
-function chunk_array<T>(items: T[], size: number) {
-	const chunks: T[][] = [];
-	for (let index = 0; index < items.length; index += size) {
-		chunks.push(items.slice(index, index + size));
-	}
-	return chunks;
-}
-
 /**
- * Chunk by item count and by declared bytes. Presigned URLs are minted per chunk right before
- * their PUTs, so a byte-bounded chunk keeps a URL from sitting longer than one chunk's upload.
+ * Chunk in path order by item count, by declared bytes, and by folder paths. Presigned URLs are
+ * minted per chunk right before their PUTs, so a byte-bounded chunk keeps a URL from sitting longer
+ * than one chunk's upload. The server refuses a call that names more than
+ * `files_REQUEST_FOLDER_PREFIXES_MAX` folder paths, and path order keeps each folder's files
+ * together, so a real folder rarely needs an extra chunk.
  */
 function chunk_import_items(items: FilesImportPlanItem[]) {
 	const chunks: FilesImportPlanItem[][] = [];
 	let currentChunk: FilesImportPlanItem[] = [];
 	let currentChunkBytes = 0;
-	for (const item of items) {
+	let currentChunkFolders = new Set<string>();
+	// Compare code units, not the locale: then no other path sorts between the files of one folder.
+	const sortedItems = items.toSorted((a, b) =>
+		a.normalizedPath < b.normalizedPath ? -1 : a.normalizedPath > b.normalizedPath ? 1 : 0,
+	);
+	for (const item of sortedItems) {
+		// Every parent folder path of the file, at every level, as the server counts them.
+		const segments = item.normalizedPath.split("/");
+		const folders = segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join("/"));
+		const newFolderCount = folders.filter((folder) => !currentChunkFolders.has(folder)).length;
 		if (
-			currentChunk.length >= files_IMPORT_MAX_ITEMS_PER_CALL ||
-			(currentChunk.length > 0 && currentChunkBytes + item.file.size > FILES_IMPORT_MAX_CHUNK_BYTES)
+			currentChunk.length > 0 &&
+			(currentChunk.length >= files_IMPORT_MAX_ITEMS_PER_CALL ||
+				currentChunkBytes + item.file.size > FILES_IMPORT_MAX_CHUNK_BYTES ||
+				currentChunkFolders.size + newFolderCount > files_REQUEST_FOLDER_PREFIXES_MAX)
 		) {
 			chunks.push(currentChunk);
 			currentChunk = [];
 			currentChunkBytes = 0;
+			currentChunkFolders = new Set();
 		}
 		currentChunk.push(item);
 		currentChunkBytes += item.file.size;
+		for (const folder of folders) {
+			currentChunkFolders.add(folder);
+		}
 	}
 	if (currentChunk.length > 0) {
 		chunks.push(currentChunk);
@@ -630,11 +642,18 @@ function finish_import_run() {
 		summaryParts.push(`${state.failed.length} failed`);
 	}
 	const summary = summaryParts.join(", ");
+	// Name the first failed files, so the user knows what to import again. The console has them all.
+	const failedPaths = state.failed.slice(0, FILES_IMPORT_TOAST_FAILED_PATHS).map((item) => item.relativePath);
+	const moreFailedCount = state.failed.length - failedPaths.length;
+	const description =
+		failedPaths.length > 0
+			? `Not imported: ${failedPaths.join(", ")}${moreFailedCount > 0 ? ` and ${moreFailedCount} more` : ""}.`
+			: undefined;
 
 	if (state.cancelRequested) {
-		toast.info(`Import cancelled: ${summary}.`);
+		toast.info(`Import cancelled: ${summary}.`, { description });
 	} else if (state.failed.length > 0) {
-		toast.error(`Import finished: ${summary}.`);
+		toast.error(`Import finished: ${summary}.`, { description });
 	} else if (state.pendingConfirmation > 0) {
 		toast.info(`Import finished: ${summary}.`);
 	} else {
@@ -709,9 +728,11 @@ async function run_folder_import(args: {
 			return;
 		}
 
-		// Ask once which target paths already exist, so the user decides before any write.
+		// Ask once which target paths already exist, so the user decides before any write. The check
+		// reads the same folders as the create call, so it uses the same chunks.
+		const chunks = chunk_import_items(uploadItems);
 		const conflicts: FilesImportConflict[] = [];
-		for (const itemChunk of chunk_array(uploadItems, files_IMPORT_MAX_ITEMS_PER_CALL)) {
+		for (const itemChunk of chunks) {
 			const chunkConflicts = await args.convex.query(app_convex_api.files_nodes.get_upload_conflicts, {
 				membershipId: args.membershipId,
 				parentId: args.parentId,
@@ -798,16 +819,28 @@ async function run_folder_import(args: {
 					return "stop";
 				}
 
-				const result = await args.convex.mutation(app_convex_api.files_nodes.create_upload_nodes, {
-					membershipId: args.membershipId,
-					parentId: args.parentId,
-					onConflict,
-					items: chunk.map((item) => ({
-						relativePath: item.normalizedPath,
-						contentType: item.contentType,
-						size: item.file.size,
-					})),
-				});
+				const result = await args.convex
+					.mutation(app_convex_api.files_nodes.create_upload_nodes, {
+						membershipId: args.membershipId,
+						parentId: args.parentId,
+						onConflict,
+						items: chunk.map((item) => ({
+							relativePath: item.normalizedPath,
+							contentType: item.contentType,
+							size: item.file.size,
+						})),
+					})
+					.catch((error: unknown) => {
+						console.error("[FilesSidebar.runFolderImport] Create upload nodes threw", { error });
+						return null;
+					});
+				// A thrown call wrote nothing, like a refusal. Report its files instead of ending the run.
+				if (!result) {
+					useFilesImportStore.setState((state) => ({
+						failed: [...state.failed, ...chunk.map((item) => ({ relativePath: item.relativePath }))],
+					}));
+					return "stop";
+				}
 				if (result._nay) {
 					// "Rate limit exceeded" is the literal from `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`.
 					if (result._nay.message === "Rate limit exceeded") {
@@ -883,7 +916,6 @@ async function run_folder_import(args: {
 			return "continue";
 		};
 
-		const chunks = chunk_import_items(uploadItems);
 		for (const [chunkIndex, chunk] of chunks.entries()) {
 			if (useFilesImportStore.getState().cancelRequested) {
 				break;
@@ -7922,6 +7954,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			]);
 		});
 
+		test("chunk_import_items sorts by path and closes a chunk before it passes 64 folder paths", () => {
+			const item = (name: string): FilesImportPlanItem => ({
+				file: { size: 1 } as unknown as File,
+				relativePath: name,
+				normalizedPath: name,
+				contentType: undefined,
+			});
+			// 31 folders each, the most an import keeps.
+			const deepA = `a/${Array.from({ length: 30 }, (_, index) => `d${index}`).join("/")}/f.pdf`;
+			const deepB = `b/${Array.from({ length: 30 }, (_, index) => `d${index}`).join("/")}/f.pdf`;
+
+			// 31 + 31 + 2 = 64 folder paths fit in one call. One more folder starts a new call.
+			expect(
+				chunk_import_items([item("e/f.pdf"), item("c/d/f.pdf"), item(deepB), item(deepA)]).map((chunk) =>
+					chunk.map((chunkItem) => chunkItem.relativePath),
+				),
+			).toEqual([[deepA, deepB, "c/d/f.pdf"], ["e/f.pdf"]]);
+		});
+
 		test("run_folder_import waits out a rate-limited chunk and counts kept nodes as imported", async () => {
 			// First create call is rate-limited, second succeeds. The PUT then fails, but the
 			// discard answers `removed: false` (the upload landed after all), so the file must
@@ -7971,6 +8022,58 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(createCalls).toBe(2);
 			expect(maxDone).toBe(1);
 			expect(maxFailed).toBe(0);
+			expect(useFilesImportStore.getState().phase).toBe("idle");
+		});
+
+		test("run_folder_import keeps earlier chunks and names the failed files when a create call throws", async () => {
+			// Five files in their own 31-folder chains: two per call, so three calls.
+			const paths = ["a", "b", "c", "d", "e"].map(
+				(root) => `${root}/${Array.from({ length: 30 }, (_, index) => `d${index}`).join("/")}/f.pdf`,
+			);
+			let createCalls = 0;
+			const convexStub = {
+				query: async () => [],
+				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
+					createCalls += 1;
+					// Like a call over a Convex limit: it throws and writes nothing.
+					if (createCalls === 2) throw new Error("Too many index ranges read");
+					return {
+						_yay: {
+							created: mutationArgs.items.map((item) => ({
+								relativePath: item.relativePath,
+								nodeId: `node-${item.relativePath}`,
+								url: "https://r2.test/put",
+								headers: {},
+							})),
+							skipped: [],
+						},
+					};
+				},
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 200 })),
+			);
+			const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					entries: get_import_file_entries(
+						paths.map((path) => test_file_with_path({ name: "f.pdf", path: `/${path}` })),
+					),
+				});
+				// Check before the restore, which clears the recorded calls.
+				expect(errorToast).toHaveBeenCalledWith("Import finished: 2 imported, 3 failed.", {
+					description: `Not imported: ${paths.slice(2).join(", ")}.`,
+				});
+			} finally {
+				vi.unstubAllGlobals();
+				errorToast.mockRestore();
+			}
+
+			expect(createCalls).toBe(2);
 			expect(useFilesImportStore.getState().phase).toBe("idle");
 		});
 

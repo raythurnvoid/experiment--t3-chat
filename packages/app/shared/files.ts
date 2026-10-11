@@ -1029,6 +1029,14 @@ export const files_NAME_MAX_LENGTH = 255;
 export const files_PATH_MAX_LENGTH = 1024;
 
 /**
+ * Limits for one call that creates files and their missing folders. One call names at most 64
+ * distinct parent folder paths (every level of every file), and one path creates at most 32 new
+ * folders, so the call stays under Convex's 4,096 index ranges.
+ */
+export const files_REQUEST_FOLDER_PREFIXES_MAX = 64;
+export const files_NEW_FOLDER_DEPTH_MAX = 32;
+
+/**
  * Refuse a name or a path over the limits. Pass only the names and the path a write sets: an old
  * node may keep a longer name, so lookups and unchanged names are never checked.
  */
