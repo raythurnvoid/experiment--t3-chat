@@ -451,9 +451,10 @@ most 255 characters.` or `Paths can have at most 1,024 characters.`). A replace 
 Folder limits keep one batch under the 4,096 index reads of a mutation. Each path finds its deepest
 existing folder with `files_db_create_path_lookups`. Without a Move it looks up the parent first, then walks
 up through missing folders. While a Move holds the workspace slot, or a move op runs, it walks each path
-from the root once, and the whole call shares every folder it read, the file lookups too. The access checks
-on that folder come first, so a hidden folder answers 403 whether a name below it exists or not. Only then
-does a path that would add more than 32 new folders (`files_NEW_FOLDER_DEPTH_MAX`) answer 400 with
+from the root once, and the whole call shares every folder it read, the file lookups too. Each item's
+access checks (on its file and on that folder) come right after its lookups, before any other answer for it
+and before later items, so a hidden folder answers 403 whether a name below it exists or not. These 403s
+name the path as sent. Only then does a path that would add more than 32 new folders (`files_NEW_FOLDER_DEPTH_MAX`) answer 400 with
 `code: "too_many_folders"`, its `path`, and `This path creates too many new folders (limit 32).`.
 A batch whose new folders plus the existing parents it found number more than 64
 (`files_REQUEST_FOLDER_PREFIXES_MAX`) answers 400
@@ -461,8 +462,10 @@ A batch whose new folders plus the existing parents it found number more than 64
 with the path that went over. Folders above a found parent do not count, so a file can go into an existing
 folder at any depth. During a Move, reads grow with the depth of each different folder branch, so a batch
 into many different very deep folders can still pass the read limit. A `path` over 4,096 characters
-(`files_STORED_PATH_MAX_LENGTH`, the older path cap) fails body validation, so older long paths stay
-replaceable while the work per path stays bounded.
+(`files_STORED_PATH_MAX_LENGTH`, the older path cap) answers `Paths can have at most 1,024 characters.` before
+any lookup (`files_check_request_path_length`), so older long paths stay replaceable while the work per path
+stays bounded. `write` and `touch` share one walk per mutation the same way and start the create at the
+found folder.
 One bad item returns 400, 403, or 409 with its `path`, and creates nothing. Each asset stores
 `uploadUrlExpiresAt`, like `create_upload_node`. Creating these docs accepts
 the upload. A later policy change does not cancel publication or processing. The finished node keeps its current policy.

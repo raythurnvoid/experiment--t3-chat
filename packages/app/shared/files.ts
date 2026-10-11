@@ -1029,7 +1029,7 @@ export const files_NAME_MAX_LENGTH = 255;
 export const files_PATH_MAX_LENGTH = 1024;
 /**
  * The path cap before it was lowered to 1,024. Older paths can be this long, so a request may still name
- * one to replace it. Request bodies use it to bound the work for each path.
+ * one to replace it.
  */
 export const files_STORED_PATH_MAX_LENGTH = 4096;
 
@@ -1044,6 +1044,15 @@ export function files_check_name_and_path_length(args: { names?: string[]; path?
 	if (args.path !== undefined && args.path.length > files_PATH_MAX_LENGTH) {
 		return Result({ _nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters." } });
 	}
+	return Result({ _yay: null });
+}
+
+/**
+ * Refuse a request path longer than any stored path, before any lookup, so the work for each path stays
+ * bounded. Such a path can only be new, so it gets the same answer as a new path over the current cap.
+ */
+export function files_check_request_path_length(path: string) {
+	if (path.length > files_STORED_PATH_MAX_LENGTH) return files_check_name_and_path_length({ path });
 	return Result({ _yay: null });
 }
 

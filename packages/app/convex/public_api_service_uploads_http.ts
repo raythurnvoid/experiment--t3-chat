@@ -21,7 +21,7 @@ import type {
 import { public_api_authorize_request } from "./public_api_http_auth.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
-import { files_STORED_PATH_MAX_LENGTH } from "../shared/files.ts";
+import { files_check_request_path_length } from "../shared/files.ts";
 
 // #region shared
 
@@ -126,8 +126,7 @@ const create_target_body_validator = z
 	.object({
 		idempotencyKey: z.string().min(1).max(128),
 		targetKey: z.string().min(1).max(128),
-		// Bound the work for the path. The handler refuses a new path over the lower cap.
-		path: z.string().min(1).max(files_STORED_PATH_MAX_LENGTH),
+		path: z.string().min(1),
 		contentType: z.string().min(1).max(200),
 		size: z.number().int().min(1),
 		readOnly: z.boolean(),
@@ -152,6 +151,10 @@ export async function public_api_service_uploads_http_create_target(args: {
 	const body = await server_request_json_parse_and_validate(request, create_target_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	const pathLength = files_check_request_path_length(body._yay.path);
+	if (pathLength._nay) {
+		return upload_failure(pathLength._nay);
 	}
 
 	const created: public_api_service_uploads_create_upload_target_Result = await ctx.runMutation(

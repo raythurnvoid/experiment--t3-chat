@@ -19,7 +19,7 @@ import {
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
-	files_STORED_PATH_MAX_LENGTH,
+	files_check_request_path_length,
 } from "../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
@@ -95,10 +95,8 @@ export const create_upload_targets = internalMutation({
 			collidingNodeId: Id<"files_nodes"> | null;
 		}> = [];
 		for (const rawItem of args.items) {
-			// Bound the work for each path. The ancestor pass refuses a new path over the lower cap.
-			if (rawItem.path.length > files_STORED_PATH_MAX_LENGTH) {
-				return Result({ _nay: { message: "Path is too long", data: { path: rawItem.path } } });
-			}
+			const pathLength = files_check_request_path_length(rawItem.path);
+			if (pathLength._nay) return Result({ _nay: { ...pathLength._nay, data: { path: rawItem.path } } });
 			const item = { ...rawItem, path: files_normalize_special_node_path("file", rawItem.path) };
 			// Conventional names are cased above. Every other path must already be canonical.
 			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {

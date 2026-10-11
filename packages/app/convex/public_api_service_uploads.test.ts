@@ -1565,7 +1565,7 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 
-	test("refuses a path over 4,096 characters in the body check", async () => {
+	test("refuses a path over 4,096 characters before any lookup, like any new path over the limit", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
@@ -1577,7 +1577,7 @@ describe("service upload targets", () => {
 		});
 		expect(response.status).toBe(400);
 		expect(await response.json(), "a path over the stored path cap").toEqual({
-			message: "Request body validation failed",
+			message: "Paths can have at most 1,024 characters.",
 		});
 	});
 

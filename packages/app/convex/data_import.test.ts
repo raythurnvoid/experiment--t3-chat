@@ -63,7 +63,7 @@ describe("data_import.create_upload_targets", () => {
 		).toEqual({ nodes: [], assets: [] });
 	});
 
-	test("a path over 4,096 characters refuses the batch before any lookup", async () => {
+	test("a path over 4,096 characters refuses the batch before any lookup, like any new path over the limit", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const longPath = `/${"d/".repeat(files_STORED_PATH_MAX_LENGTH / 2)}f.pdf`;
@@ -75,7 +75,7 @@ describe("data_import.create_upload_targets", () => {
 			items: [{ path: longPath, contentType: "application/pdf", size: 10 }],
 		});
 		expect(created, "a path over the stored path cap").toEqual({
-			_nay: { message: "Path is too long", data: { path: longPath } },
+			_nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters.", data: { path: longPath } },
 		});
 	});
 

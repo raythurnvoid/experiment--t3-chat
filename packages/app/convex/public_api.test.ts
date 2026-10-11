@@ -4473,20 +4473,22 @@ describe("files upload-urls", () => {
 		});
 	});
 
-	test("upload-urls refuses a path over 4,096 characters in the body check", async () => {
+	test("upload-urls refuses a path over 4,096 characters before any lookup, like any new path over the limit", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-body-bound" });
 		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-body-bound" });
+		const longPath = `/${"d/".repeat(files_STORED_PATH_MAX_LENGTH / 2)}f.png`;
 		const response = await t.fetch("/api/v1/files/upload-urls", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({
-				files: [{ path: `/${"d/".repeat(files_STORED_PATH_MAX_LENGTH / 2)}f.png`, contentType: "image/png", size: 64 }],
+				files: [{ path: longPath, contentType: "image/png", size: 64 }],
 			}),
 		});
 		expect(response.status).toBe(400);
 		expect(await response.json(), "a path over the stored path cap").toEqual({
-			message: "Request body validation failed",
+			message: "Paths can have at most 1,024 characters.",
+			path: longPath,
 		});
 	});
 
@@ -6123,10 +6125,12 @@ describe("files read-only locks", () => {
 				`/secret/${name}/2.bin`,
 			]),
 			longPath: await answer([`/secret/${name}/${longFolder}/old.bin`]),
+			// A hidden file that exists must not answer before a later item's error while a missing one does not.
+			laterBadItem: await answer([`/secret/${name}/${longFolder}/old.bin`, "/dup.bin", "/dup.bin"]),
 		});
 		const denied = { status: 403, message: "Permission denied", code: undefined };
 		const known = await guesses("known");
-		expect(known).toEqual({ newFolders: denied, batch: denied, longPath: denied });
+		expect(known).toEqual({ newFolders: denied, batch: denied, longPath: denied, laterBadItem: denied });
 		expect(await guesses("missing"), "a missing name inside a hidden folder answers like an existing one").toEqual(
 			known,
 		);
@@ -7439,6 +7443,81 @@ describe("files read-only locks", () => {
 		expect(touched.status, "a touch of a new name over the limit").toBe(400);
 		// The refusal comes before the stage and its R2 objects.
 		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
+	});
+
+	test("write and touch add new folders below an existing folder about 500 levels deep during a Move", async () => {
+		const t = test_convex({ transactionLimits: true });
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-write-deep-folder-move" });
+		const newFolders = 8;
+		// The deepest chain of one-letter folders that still leaves room for the new folders and a file name.
+		const depth = Math.floor((files_PATH_MAX_LENGTH - "/w.md".length) / 2) - newFolders;
+		// Raw inserts in pages, so seeding the chain stays under the limits too.
+		let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
+		let deepPath = "";
+		for (let start = 1; start <= depth; start += 200) {
+			({ parentId, deepPath } = await t.run(async (ctx) => {
+				let id = parentId;
+				let path = deepPath;
+				for (let pathDepth = start; pathDepth < start + 200 && pathDepth <= depth; pathDepth++) {
+					path = `${path}/a`;
+					id = await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: writer.db.organizationId,
+						workspaceId: writer.db.workspaceId,
+						createdBy: writer.db.userId,
+						updatedBy: writer.db.userId,
+						parentId: id,
+						name: "a",
+						sortName: files_sort_text_key("a"),
+						kind: "folder",
+						path,
+						treePath: `${path}/`,
+						pathDepth,
+					});
+				}
+				return { parentId: id, deepPath: path };
+			}));
+		}
+		// Another folder is in a Move, so every path is found by name from the root.
+		await t.run(async (ctx) => {
+			const movingId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				createdBy: writer.db.userId,
+				updatedBy: writer.db.userId,
+				parentId: files_ROOT_ID,
+				name: "moving",
+				sortName: files_sort_text_key("moving"),
+				kind: "folder",
+				path: "/moving",
+				treePath: "/moving/",
+				pathDepth: 1,
+			});
+			await ctx.db.insert("files_move_source_reservations", {
+				cohortId: await test_db_hold_move_slot(ctx, writer.db),
+				source: { kind: "saved", id: movingId },
+				mode: "subtree",
+				userId: null,
+				generation: 1,
+			});
+		});
+		const below = (head: string) => `${deepPath}/${Array<string>(newFolders).fill(head).join("/")}`;
+
+		const written = await write_file({
+			t,
+			credential: writer.credential,
+			path: `${below("b")}/w.md`,
+			content: "# Deep\n",
+		});
+		expect(written.status, "a write with new folders below the deep folder").toBe(200);
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: [`${below("c")}/t.md`] }),
+		});
+		expect(touched.status, "a touch with new folders below the deep folder").toBe(200);
 	});
 
 	test("write and touch refuse a path with too many new folders with 400, before any upload", async () => {
