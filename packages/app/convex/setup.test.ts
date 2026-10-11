@@ -1,5 +1,5 @@
 import "./setup-env.test.ts";
-import { afterEach, vi } from "vitest";
+import { afterEach, expect, vi } from "vitest";
 import { convexTest, type TestConvexRoot } from "convex-test";
 import type { FunctionArgs } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -158,9 +158,9 @@ export async function test_compact_metadata_catalog(t: TestConvexRoot<DataModel>
 }
 
 /**
- * Run the billing outbox drainer until no marker is left, so a test sees every signed-in usage event
- * of its saves as an `ingest_events` job on the usage pool. Only `Date.now` moves past the drainer's
- * cutoff, and only during these runs.
+ * Run the billing outbox drainer until the outbox is empty, so a test sees every signed-in usage
+ * event of its saves as an `ingest_events` job on the usage pool. Only `Date.now` moves past the
+ * drainer's cutoff, and only during these runs.
  */
 export async function test_drain_billing_usage_event_outbox(t: TestConvexRoot<DataModel>) {
 	// A test may mock `Date.now` itself; put its mock back after.
@@ -171,11 +171,18 @@ export async function test_drain_billing_usage_event_outbox(t: TestConvexRoot<Da
 	const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
 	try {
 		for (let pass = 0; pass < 100; pass++) {
-			const marker = await t.run(async (ctx) => await ctx.db.query("billing_usage_event_outbox_drainers").first());
-			if (!marker) return;
+			const { marker, waiting } = await t.run(async (ctx) => ({
+				marker: await ctx.db.query("billing_usage_event_outbox_drainers").first(),
+				waiting: await ctx.db.query("billing_usage_event_outbox").first(),
+			}));
+			if (!waiting) break;
+			if (!marker) throw new Error("Billing usage events wait in the outbox without a drainer marker");
 			await t.mutation(internal.billing.drain_usage_event_outbox, { markerId: marker._id });
 		}
-		throw new Error("The billing usage event outbox did not drain");
+		expect(
+			await t.run(async (ctx) => await ctx.db.query("billing_usage_event_outbox").collect()),
+			"the drainer must send every outbox event",
+		).toEqual([]);
 	} finally {
 		if (previous) dateNow.mockImplementation(previous);
 		else dateNow.mockRestore();

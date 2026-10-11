@@ -13,6 +13,7 @@ import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js"
 import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
 import type { CustomerState } from "@polar-sh/sdk/models/components/customerstate.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
+import { HTTPValidationError } from "@polar-sh/sdk/models/errors/httpvalidationerror.js";
 import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
 import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlocked.js";
@@ -41,6 +42,7 @@ import {
 	billing_db_recover_usage_event_outbox,
 	billing_ingest_events,
 	billing_pick_billed_user_id,
+	billing_workpool_usage_event,
 } from "./billing_db.ts";
 import {
 	allowed_origins,
@@ -1802,7 +1804,7 @@ export const ingest_events = internalAction({
 	args: {
 		events: v.array(billing_event_validator),
 	},
-	handler: async (_ctx, args) => {
+	handler: async (ctx, args) => {
 		// Skip direct Polar calls in tests; tests usually assert the queued payload.
 		if (process.env.NODE_ENV === "test") {
 			return;
@@ -1825,6 +1827,22 @@ export const ingest_events = internalAction({
 			}),
 		});
 		if (!ingestResult.ok) {
+			// Polar checks the whole batch before it saves any event, so one bad event refuses all of
+			// them (422), and a retry would fail forever. Split the batch in halves until the bad event
+			// is alone, then log it and drop it. Other errors throw, so the pool retries the batch.
+			if (ingestResult.error instanceof HTTPValidationError) {
+				if (args.events.length === 1) {
+					console.error("Polar refused a usage event; it is not retried", {
+						event: args.events[0],
+						detail: ingestResult.error.detail,
+					});
+					return;
+				}
+				const half = Math.ceil(args.events.length / 2);
+				for (const events of [args.events.slice(0, half), args.events.slice(half)])
+					await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, { events });
+				return;
+			}
 			throw new Error(JSON.stringify(ingestResult.error));
 		}
 	},
@@ -1850,7 +1868,7 @@ export const ingest_anonymous_user_events = internalMutation({
  * One run of the usage event outbox drainer (`billing_db_drain_usage_event_outbox`).
  */
 export const drain_usage_event_outbox = internalMutation({
-	args: { markerId: v.id("billing_usage_event_outbox_drainers") },
+	args: { markerId: v.id("billing_usage_event_outbox_drainers"), idleSince: v.optional(v.number()) },
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		await billing_db_drain_usage_event_outbox(ctx, args);

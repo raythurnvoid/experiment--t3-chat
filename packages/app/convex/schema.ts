@@ -8855,7 +8855,13 @@ const app_convex_schema = defineSchema({
 	 * At most one doc, while the drainer chain runs. Each run gets its id, so deleting it stops the
 	 * chain. Savers insert it when it is missing and never patch it.
 	 */
-	billing_usage_event_outbox_drainers: defineTable({}),
+	billing_usage_event_outbox_drainers: defineTable({
+		/**
+		 * The last time a run stamped it, at most once a minute. A stale stamp tells the recovery cron
+		 * that the chain stopped.
+		 */
+		lastRunAt: v.number(),
+	}),
 
 	/**
 	 * One receipt per billed provider request: chat steps, titles and inline AI. A receipt is saved

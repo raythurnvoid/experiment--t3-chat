@@ -20,6 +20,7 @@ import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js"
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
 import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
+import { HTTPValidationError } from "@polar-sh/sdk/models/errors/httpvalidationerror.js";
 import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
@@ -4590,6 +4591,77 @@ describe("ingest_events", () => {
 		});
 	});
 
+	test("splits a batch Polar refuses (422) until the bad event is alone, then logs it and sends the rest", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const events = ["a", "b", "bad", "c"].map((key) => ({
+			name: "manual_credit" as const,
+			externalCustomerId: userId,
+			externalId: `manual_credit::${key}`,
+			metadata: { amount: 1 },
+		}));
+		const refused = new HTTPValidationError(
+			{ detail: [] },
+			{
+				request: new Request("https://polar.test/v1/events/ingest"),
+				response: new Response("{}", { status: 422 }),
+				body: "{}",
+			},
+		);
+		// Polar refuses every batch that holds the bad event.
+		eventsIngestMock.mockImplementation(((_client: unknown, request: { events: Array<{ externalId?: string }> }) =>
+			Promise.resolve(
+				request.events.some((event) => event.externalId === "manual_credit::bad")
+					? { ok: false, error: refused }
+					: { ok: true, value: { inserted: request.events.length, duplicates: 0 } },
+			)) as never);
+		const { enqueueActionSpy } = mock_billing_ingest_enqueue("work_split_refused_batch");
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const originalNodeEnv = process.env.NODE_ENV;
+		process.env.NODE_ENV = "production";
+
+		try {
+			// Run each split job like the pool would, until no job is left.
+			const jobs = [events];
+			for (let job = jobs.shift(); job; job = jobs.shift()) {
+				const before = enqueueActionSpy.mock.calls.length;
+				await t.action(internal.billing.ingest_events, { events: job });
+				jobs.push(...enqueueActionSpy.mock.calls.slice(before).map((call) => (call[2] as { events: typeof events }).events));
+			}
+			// Any other error throws, so the pool retries the batch.
+			eventsIngestMock.mockResolvedValueOnce({ ok: false, error: new UnexpectedClientError("offline") } as never);
+			await expect(t.action(internal.billing.ingest_events, { events: events.slice(0, 1) })).rejects.toThrow();
+		} finally {
+			if (originalNodeEnv === undefined) {
+				delete process.env.NODE_ENV;
+			} else {
+				process.env.NODE_ENV = originalNodeEnv;
+			}
+		}
+
+		const ids = (calls: Array<Array<unknown>>, index: number) =>
+			calls.map((call) => (call[index] as { events: Array<{ externalId?: string }> }).events.map((event) => event.externalId));
+		expect(ids(eventsIngestMock.mock.calls, 1)).toEqual([
+			["manual_credit::a", "manual_credit::b", "manual_credit::bad", "manual_credit::c"],
+			["manual_credit::a", "manual_credit::b"],
+			["manual_credit::bad", "manual_credit::c"],
+			["manual_credit::bad"],
+			["manual_credit::c"],
+			["manual_credit::a"],
+		]);
+		expect(ids(enqueueActionSpy.mock.calls, 2)).toEqual([
+			["manual_credit::a", "manual_credit::b"],
+			["manual_credit::bad", "manual_credit::c"],
+			["manual_credit::bad"],
+			["manual_credit::c"],
+		]);
+		expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+		expect(consoleErrorSpy).toHaveBeenCalledWith("Polar refused a usage event; it is not retried", {
+			event: expect.objectContaining({ externalId: "manual_credit::bad" }),
+			detail: [],
+		});
+	});
+
 	test("billing_ingest_events splits signed-in and anonymous billedUserEvents", async () => {
 		const t = test_convex();
 		const anonymousUserId = await seed_user_id(t);
@@ -4847,7 +4919,7 @@ describe("usage event outbox", () => {
 		);
 	}
 
-	test("parallel saves only insert outbox docs, and the drainer sends them to Polar as one batch", async () => {
+	test("each save inserts one outbox doc and enqueues nothing, and one drainer run sends them all as one batch", async () => {
 		const t = test_convex();
 		const billedUserId = await seed_signed_in_user_id(t);
 		const { enqueueActionSpy } = mock_billing_ingest_enqueue("work_outbox_batch");
@@ -4877,11 +4949,11 @@ describe("usage event outbox", () => {
 		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").collect())).toEqual([]);
 	});
 
-	test("the drainer sends 100 events per run, and a failed run or a stopped chain sends no event twice", async () => {
+	test("the drainer sends 500 events per run, and a failed run or a stopped chain sends no event twice", async () => {
 		const t = test_convex();
 		const billedUserId = await seed_signed_in_user_id(t);
 		const { enqueueActionSpy } = mock_billing_ingest_enqueue("work_outbox_retry");
-		const versions = Array.from({ length: 150 }, (_, index) => `v${index}`);
+		const versions = Array.from({ length: 600 }, (_, index) => `v${index}`);
 		await emit_file_saves(t, billedUserId, versions);
 		const marker = await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").unique());
 		vi.setSystemTime(Date.now() + 2000);
@@ -4891,7 +4963,7 @@ describe("usage event outbox", () => {
 		await expect(t.mutation(internal.billing.drain_usage_event_outbox, { markerId: marker!._id })).rejects.toThrow(
 			"pool unavailable",
 		);
-		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox").collect())).toHaveLength(150);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox").collect())).toHaveLength(600);
 
 		// The cron restarts the stopped chain with a new marker; the old marker's run is then a no-op.
 		vi.setSystemTime(Date.now() + 5 * 60 * 1000);
@@ -4900,14 +4972,69 @@ describe("usage event outbox", () => {
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-		// The failed call and two batches: 100 events, then the last 50. Each event was sent once.
+		// The failed call and two batches: 500 events, then the last 100. Each event was sent once.
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(3);
 		const batches = enqueueActionSpy.mock.calls
 			.slice(1)
 			.map((call) => (call[2] as { events: Array<{ externalId: string }> }).events.map((event) => event.externalId));
-		expect(batches.map((batch) => batch.length)).toEqual([100, 50]);
-		expect(new Set(batches.flat()).size).toBe(150);
+		expect(batches.map((batch) => batch.length)).toEqual([500, 100]);
+		expect(new Set(batches.flat()).size).toBe(600);
 		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").collect())).toEqual([]);
+	});
+
+	test("a run that would end the chain but sees an event younger than 1 second keeps the marker, and sends the event later", async () => {
+		const t = test_convex();
+		const billedUserId = await seed_signed_in_user_id(t);
+		const { enqueueActionSpy } = mock_billing_ingest_enqueue("work_outbox_young");
+		await emit_file_saves(t, billedUserId, ["v0"]);
+		const marker = await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").unique());
+
+		// The chain had nothing to send for 30 seconds, and the event is too young to send.
+		await t.mutation(internal.billing.drain_usage_event_outbox, {
+			markerId: marker!._id,
+			idleSince: Date.now() - 30_000,
+		});
+		expect(enqueueActionSpy.mock.calls.length).toBe(0);
+		expect(
+			await t.run((ctx) => ctx.db.get("billing_usage_event_outbox_drainers", marker!._id)),
+			"the young event must keep the chain",
+		).not.toBeNull();
+
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(
+			enqueueActionSpy.mock.calls.map((call) =>
+				(call[2] as { events: Array<{ externalId: string }> }).events.map((event) => event.externalId),
+			),
+		).toEqual([[`file_save::${billedUserId}::${billedUserId}::organization_1::workspace_1::file_1::v0`]]);
+	});
+
+	test("recovery keeps a slow chain that still runs, and starts a chain for an old event with no marker", async () => {
+		const t = test_convex();
+		const billedUserId = await seed_signed_in_user_id(t);
+		const { enqueueActionSpy } = mock_billing_ingest_enqueue("work_outbox_recover");
+		await emit_file_saves(t, billedUserId, ["v0"]);
+		const marker = await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").unique());
+
+		// The event is old, but a run stamped the marker a moment ago: the chain is slow, not stuck.
+		vi.setSystemTime(Date.now() + 6 * 60 * 1000);
+		await t.run((ctx) => ctx.db.patch("billing_usage_event_outbox_drainers", marker!._id, { lastRunAt: Date.now() }));
+		await t.mutation(internal.billing.recover_usage_event_outbox, {});
+		expect(
+			(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").collect())).map((doc) => doc._id),
+			"recovery must keep a chain with a fresh stamp",
+		).toEqual([marker!._id]);
+
+		// The marker is gone and the old event still waits.
+		await t.run((ctx) => ctx.db.delete("billing_usage_event_outbox_drainers", marker!._id));
+		await t.mutation(internal.billing.recover_usage_event_outbox, {});
+		expect(
+			await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").collect()),
+			"an old event with no marker needs a new chain",
+		).toHaveLength(1);
+
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(enqueueActionSpy.mock.calls.length).toBe(1);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox").collect())).toEqual([]);
 	});
 });
 
