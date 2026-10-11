@@ -319,7 +319,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
   exact versions, partial Save, and linked review units.
 - `convex/files_nodes.test.ts`: public Move and Rename permissions, scope and names.
 - `convex/files_move_cohorts.test.ts`: linked cycles, one group switch, Stop and cleanup.
-- `convex/files_pending_overlay_limits.test.ts`: full transaction costs and catalog reserve.
+- `convex/files_pending_overlay_limits*.test.ts`: full transaction costs and catalog reserve.
 - `convex/files_pending_updates.test.ts`: all saved/private Move pairs, exact replacements,
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.
 - `convex/files_pending_update_runs*.test.ts`: selected connected units, transaction bounds,

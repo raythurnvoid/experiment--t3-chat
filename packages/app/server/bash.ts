@@ -186,9 +186,10 @@ const BASH_JOB_BOUNDARY_POLL_MS = 1_000;
 // Any abort reason other than `bash_ABORT_REASON_STOPPED` reports 124, so this text is what the
 // user reads in the job's stderr. It is not the flag that picks the exit code.
 const BASH_JOB_DEADLINE_ABORT_REASON = "Bash deadline reached";
-// One worker slice appends at most this many Copy source pages, then leaves the rest to the next
-// slice. It also stops this long before the run's transfer deadline.
-const BASH_JOB_COPY_ADMIT_MAX_PAGES = 32;
+// One worker slice appends at most `maxPages` Copy source pages, then leaves the rest to the next
+// slice. It also stops this long before the run's transfer deadline. Keep this object so tests can
+// lower the page cap and cross it with a small input.
+export const bash_job_copy_admit_limits = { maxPages: 32 };
 const BASH_JOB_COPY_ADMIT_HEADROOM_MS = 10_000;
 const BASH_JOB_INPUT_WINDOW_BYTES = 64 * 1024;
 const BASH_JOB_INPUT_UPLOAD_SECONDS = 300;
@@ -2385,7 +2386,7 @@ async function bash_job_admit_copy(ctx: ActionCtx, row: Doc<"ai_chat_bash_invoca
 	let acceptedCount = 0;
 	for await (const source of bash_job_input_sources(input)) {
 		if (
-			acceptedCount >= BASH_JOB_COPY_ADMIT_MAX_PAGES * files_TRANSFER_SELECTION_PAGE_SIZE ||
+			acceptedCount >= bash_job_copy_admit_limits.maxPages * files_TRANSFER_SELECTION_PAGE_SIZE ||
 			Date.now() >= row.transferDeadlineAt - BASH_JOB_COPY_ADMIT_HEADROOM_MS
 		)
 			return null;

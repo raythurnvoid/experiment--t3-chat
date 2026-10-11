@@ -446,21 +446,24 @@ describe("chat pending destination counts", () => {
 
 	test("caps each destination scan and marks an incomplete count", async () => {
 		const f = await fixture();
-		// The flush writes the list rows that the counts read.
-		await test_run_with_flush(f.t, async (ctx) => {
-			for (let index = 0; index < 501; index++) {
-				const result = await files_pending_nodes_db_create(ctx, {
-					organizationId: f.current.organizationId,
-					workspaceId: f.current.workspaceId,
-					userId: f.home.userId,
-					parent: { kind: "root" },
-					name: `draft-${index}`,
-					kind: "folder",
-					threadId: f.threadId,
-				});
-				if (result._nay) throw new Error(result._nay.message);
-			}
-		});
+		// The flush writes the list rows that the counts read. One flush of 501 drafts takes about
+		// 15 s, while 25 drafts per flush take about 2.5 s in all.
+		for (let start = 0; start < 501; start += 25) {
+			await test_run_with_flush(f.t, async (ctx) => {
+				for (let index = start; index < Math.min(start + 25, 501); index++) {
+					const result = await files_pending_nodes_db_create(ctx, {
+						organizationId: f.current.organizationId,
+						workspaceId: f.current.workspaceId,
+						userId: f.home.userId,
+						parent: { kind: "root" },
+						name: `draft-${index}`,
+						kind: "folder",
+						threadId: f.threadId,
+					});
+					if (result._nay) throw new Error(result._nay.message);
+				}
+			});
+		}
 		await f.folder({ root: f.home, path: "/home" });
 		expect(await f.counts()).toEqual([
 			{
