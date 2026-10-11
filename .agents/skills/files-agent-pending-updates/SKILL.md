@@ -198,7 +198,7 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   `repairNextRetryAt` and `repairLastError`. After 8 failures in a row it logs `Move repair stuck`
   once. A payer doc deleted after the switch does not block repair: the item gets billing state
   `payer_missing` and no billing event.
-- After 3 failures in a row, the starter's Activity gets `errorCode: "move_repair_stuck"` and a
+- After 3 failures in a row of a published group, the starter's Activity gets `errorCode: "move_repair_stuck"` and a
   fixed message, and loses Stop. `Try again now` clears the wait and runs the same fenced step.
   Stop on a review whose group already switched keeps the Activity `stopping` until repair ends,
   then finishes it as `canceled` and releases its proposal holds.

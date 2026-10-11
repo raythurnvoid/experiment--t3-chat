@@ -123,10 +123,11 @@ progress (transfer, review, protection, archive, and restore) the same way:
   `N name conflicts need your choice.`, and a `Resolve` button. It shows no bar.
 - The button is `View progress` while the job runs and `Open` when it ends, both `ghost-highlightable`.
   A protection job has no dialog, so it has no button.
-- A Move whose repair failed 3 times in a row keeps status `running` with `errorCode:
+- A published Move whose repair failed 3 times in a row keeps status `running` with `errorCode:
   "move_repair_stuck"`. The card shows `Needs help`, the error message, no bar, no Stop, and a
   `Try again now` button (`activities.retry_move_repair`, starter only, rate limited). The Move
-  dialog says `Files moved. Cleanup needs help.` A later good step clears the code.
+  dialog says `Files moved. Cleanup needs help.` A later good step clears the code. An abort that
+  never published gets no notice, and a Stop's `canceled` or `timed_out` code is never replaced.
 - A Move or Paste that waits for another Move has `errorCode: "waiting_for_move"`. The card line and
   the dialog say `Waiting for another Move in this workspace to finish.` They never name the other
   Move or its files.

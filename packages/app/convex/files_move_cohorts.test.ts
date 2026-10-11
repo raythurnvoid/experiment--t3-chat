@@ -834,6 +834,24 @@ describe("Move cohort repair retries", () => {
 		expect((await activity()).status).toBe(status);
 	});
 
+	test("an abort that keeps failing does not say the files moved", async () => {
+		const w = await transfer_workspace();
+		const a = await w.folder("/a");
+		await w.folder("/a/c1");
+		const target = await w.folder("/target");
+		const cohort = async () => (await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first()))!;
+		const cohortId = await w.move(a, target, async () => true);
+		const runId = (await cohort()).origin.runId;
+		const error = { name: "move_step_failed", message: "This Move step failed. Review it again." };
+		// The first failure aborts the unpublished group. The next ones are repair failures.
+		for (let failure = 0; failure < 4; failure++)
+			await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error });
+		expect(await cohort()).toMatchObject({ publishedAt: null, phase: "aborting", repairFailureCount: 3 });
+		expect((await w.t.run((ctx) => activities_db_require_by_source_id(ctx, runId))).errorCode).not.toBe(
+			"move_repair_stuck",
+		);
+	});
+
 	test("Try again now is refused for another user and tries at once for the starter", async () => {
 		const { w, cohortId, cohort, activity } = await stuck_move();
 		const activityId = (await activity())._id;

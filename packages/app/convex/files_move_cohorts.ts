@@ -1988,8 +1988,9 @@ async function db_save_step(
 	if (activities_is_active(activity.status) && activity.deadlineAt > now && !transfer?.fixedDeadline)
 		await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + delayMs + RUN_TIMEOUT_MS });
 	// A good step takes the notice away. Only set or clear the notice itself: a Stop's "canceled" or
-	// "timed_out" code picks the final status, so it must stay.
-	const needsHelp = (patch.repairFailureCount ?? 0) >= REPAIR_HELP_COUNT;
+	// "timed_out" code picks the final status, so it must stay. The notice says the files already moved,
+	// so an abort that never published does not get it.
+	const needsHelp = (patch.repairFailureCount ?? 0) >= REPAIR_HELP_COUNT && cohort.publishedAt !== null;
 	if (
 		activities_is_active(activity.status) &&
 		(needsHelp ? activity.errorCode == null : activity.errorCode === files_move_cohorts_REPAIR_STUCK_CODE)
