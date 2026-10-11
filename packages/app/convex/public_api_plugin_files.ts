@@ -392,6 +392,10 @@ export const ensure_plugin_folder = internalMutation({
 				now,
 			});
 			if (createdResult._nay) {
+				// A name or path over the limit is bad input, not a conflict.
+				if (createdResult._nay.name === "name_too_long" || createdResult._nay.name === "path_too_long") {
+					return Result({ _nay: { name: "invalid_input", message: createdResult._nay.message } });
+				}
 				return Result({ _nay: { name: "conflict", message: createdResult._nay.message } });
 			}
 			nodeId = createdResult._yay;
@@ -984,6 +988,12 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 			return {
 				status: 404,
 				body: await fail({ status: 404, message: result._nay.message, errorCode: "not_found" }),
+			} as const;
+		}
+		if (result._nay.name === "invalid_input") {
+			return {
+				status: 400,
+				body: await fail({ status: 400, message: result._nay.message, errorCode: "invalid_input" }),
 			} as const;
 		}
 

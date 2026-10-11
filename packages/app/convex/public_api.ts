@@ -2961,6 +2961,15 @@ async function db_preflight_file_write_target(
 	if (writable._nay) {
 		return writable;
 	}
+	// Refuse before the caller uploads to R2. Check only the names this create adds: an older folder on
+	// the way may keep a longer name.
+	const tooLong = files_check_name_and_path_length({
+		names: path_extract_segments_from(args.path).slice(ancestor?.pathDepth ?? 0),
+		path: args.path,
+	});
+	if (tooLong._nay) {
+		return Result({ _nay: { name: "invalid_input", message: tooLong._nay.message } });
+	}
 
 	return Result({ _yay: { targetAnchor: { kind: "create" as const } } });
 }
@@ -6984,6 +6993,12 @@ export async function public_api_http_touch_files(args: {
 				return {
 					status: 403,
 					body: await fail({ status: 403, message: prepared._nay.message, errorCode: "permission_denied" }),
+				} as const;
+			}
+			if (prepared._nay.name === "invalid_input") {
+				return {
+					status: 400,
+					body: await fail({ status: 400, message: prepared._nay.message, errorCode: "invalid_input" }),
 				} as const;
 			}
 			// A locked parent is a conflict, not a permission error.

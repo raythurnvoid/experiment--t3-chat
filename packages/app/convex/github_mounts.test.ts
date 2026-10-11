@@ -10,7 +10,7 @@ import {
 } from "./github_mounts.ts";
 import { github_codeload_url } from "../server/github.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
-import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
+import { files_MAX_TEXT_CONTENT_BYTES, files_NAME_MAX_LENGTH } from "../shared/files.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -891,6 +891,34 @@ describe("sync_mount", () => {
 		const settled = await drain_until_settled(t, mountId);
 
 		expect(settled.status).toBe("idle");
+		expect(await list_mount_file_paths(t, MOUNT)).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
+		expect(settled.skippedCount).toBe(1);
+	});
+
+	test("a name over the limit is skipped, not retried until the run fails", async () => {
+		const t = test_convex();
+		install_fetch({
+			commitSha: COMMIT_1,
+			treeSha: TREE_1,
+			zip: build_repo_zip(COMMIT_1, {
+				"README.md": "ok\n",
+				[`${"n".repeat(files_NAME_MAX_LENGTH + 1)}.md`]: "long\n",
+			}),
+		});
+
+		const inserted = await t.mutation(internal.github_mounts.upsert_mount, {
+			name: MOUNT,
+			owner: OWNER,
+			repo: REPO,
+			ref: REF,
+		});
+		if (inserted._nay) throw new Error(inserted._nay.message);
+		const mountId = inserted._yay.mountId;
+
+		await t.action(internal.github_mounts.sync_mount, { mountId });
+		const settled = await drain_until_settled(t, mountId);
+
+		expect(settled.status, "a sync with a name over the limit").toBe("idle");
 		expect(await list_mount_file_paths(t, MOUNT)).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
 		expect(settled.skippedCount).toBe(1);
 	});

@@ -7085,6 +7085,24 @@ describe("files read-only locks", () => {
 		const replaced = await find_active_node({ t, db: writer.db, path: `/${longName}` });
 		expect(replaced?._id).not.toBe(occupant._yay.nodeId);
 	});
+
+	test("write and touch refuse a new name over the limit with 400, before any upload", async () => {
+		const t = test_convex();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-write-new-long-name" });
+		const path = `/${"n".repeat(files_NAME_MAX_LENGTH + 1)}.md`;
+
+		const written = await write_file({ t, credential: writer.credential, path, content: "# Long\n" });
+		expect(written.status, "a write of a new name over the limit").toBe(400);
+		expect(await written.json()).toEqual({ message: "Names can have at most 255 characters." });
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: [path] }),
+		});
+		expect(touched.status, "a touch of a new name over the limit").toBe(400);
+		// The refusal comes before the stage and its R2 objects.
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
+	});
 });
 
 describe("service file writes", () => {
