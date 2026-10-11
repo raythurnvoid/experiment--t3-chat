@@ -184,7 +184,7 @@ function measure_cohort(
 				const fields = call[1] as Partial<Doc<"files_metadata_docs">>;
 				if (
 					phase !== "sides" || call[0] !== "files_metadata_docs" || fields.sourceKind !== "committed" ||
-					!fileIds.has(fields.fileNodeId) || fields.moveView?.view !== "after"
+					!fileIds.has(fields.fileNodeId!) || fields.moveView?.view !== "after"
 				) continue;
 				const id = await insert.mock.results[index]!.value as Id<"files_metadata_docs">;
 				rows.set(id, { fileNodeId: fields.fileNodeId!, view: "after" });
