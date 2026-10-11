@@ -8,9 +8,10 @@ import type { mcp_oauth_Client } from "../server/mcp-oauth.ts";
 // `server/mcp-oauth.ts` code, with the test-only switch that allows `http://localhost`. The baseline
 // files next to this script list every expected failure with its reason.
 
-// `server/crypto-utils.ts` needs this Convex env value when it loads. The adapter never encrypts
-// anything, so a placeholder is enough. Set it before the dynamic import below.
+// `server/crypto-utils.ts` needs these Convex env values when it loads. The adapter never encrypts
+// anything, so placeholders are enough. Set them before the dynamic import below.
 process.env.PLUGIN_SECRETS_ENCRYPTION_KEY ??= "conformance-placeholder";
+process.env.LIST_CURSOR_SECRET ??= "conformance-placeholder-at-least-32-chars";
 const { mcp_client_auth_challenge, mcp_client_call_tool, mcp_client_list_tools, mcp_client_step_up_scope } =
 	await import("../server/mcp-client.ts");
 const { mcp_oauth_callback_iss_matches, mcp_oauth_exchange, mcp_oauth_start } = await import("../server/mcp-oauth.ts");

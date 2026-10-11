@@ -482,11 +482,19 @@ describe("plugin file media validation clocks", () => {
 		await expect_clock({ f, before, changed: false });
 	});
 
-	test("initial external leaf restriction advances the workspace clock beyond the ordinary create", async () => {
+	test("initial external leaf restriction advances the workspace clock, the ordinary create does not", async () => {
 		const deltas = [];
 		for (const privateRoot of [false, true]) {
 			const f = await fixture();
 			const before = await snapshot(f);
+			const beforeContentRevision = await f.t.run(async (ctx) =>
+				(await ctx.db
+					.query("files_content_versions")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+					)
+					.first())?.revision ?? 0,
+			);
 			const result = await f.t.mutation(internal.plugins_external_files.ensure_writer, {
 				...f.credentials,
 				path: ROOT,
@@ -503,15 +511,26 @@ describe("plugin file media validation clocks", () => {
 				[],
 			);
 			expect(after.externalBindings).toHaveLength(privateRoot ? 1 : 0);
-			// A new folder advances only the content clock, so a Move that pins the access clock goes on.
-			await expect_clock({ f, before, changed: privateRoot });
-			deltas.push(
-				after.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision -
-					before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision,
+			const afterContentRevision = await f.t.run(async (ctx) =>
+				(await ctx.db
+					.query("files_content_versions")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+					)
+					.first())?.revision ?? 0,
 			);
+			expect(afterContentRevision, "External folder creation keeps its content clock")
+				.toBe(beforeContentRevision);
+			const delta =
+				after.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision -
+				before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision;
+			if (privateRoot) expect(delta, "Initial restriction advances the access clock").toBeGreaterThan(0);
+			else expect(delta, "Ordinary creation leaves the access clock unchanged").toBe(0);
+			await expect_clock({ f, before, changed: privateRoot });
+			deltas.push(delta);
 		}
-		// Creation does not advance the workspace clock. The root restriction needs its own writer hook.
-		expect(deltas[1]).toBeGreaterThan(deltas[0]!);
+		// Creation keeps both clocks. The restriction changes access.
+		expect(deltas[1], "Initial restriction advances access beyond ordinary creation").toBeGreaterThan(deltas[0]!);
 	});
 
 	test.each(["add", "remove", "same"])("advances the workspace clock when external readers %s", async (change) => {

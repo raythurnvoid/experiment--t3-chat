@@ -1,5 +1,5 @@
 import { MDocument } from "@mastra/rag";
-import { files_tiptap_markdown_to_plain_text } from "../shared/files-tiptap.ts";
+import { files_tiptap_markdown_list_to_plain_text } from "../shared/files-tiptap.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "./server-utils.ts";
 import { create_line_start_offsets, get_line_number_from_offset } from "./files-line-offsets.ts";
@@ -183,7 +183,10 @@ function set_chunk_bitmask_flags(args: {
 	return chunkFlags;
 }
 
-export async function files_chunk_markdown(markdown: string, options?: { maxChunkSize?: number }) {
+/**
+ * Chunk Markdown without the plain text. Indexes, lines and flags describe the whole file.
+ */
+export async function files_chunk_markdown_bounds(markdown: string, options?: { maxChunkSize?: number }) {
 	if (markdown.length === 0) {
 		return Result({ _yay: [] });
 	}
@@ -215,7 +218,6 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 	const chunks: Array<{
 		chunkIndex: number;
 		textChunk: string;
-		plainTextChunk: string;
 		startIndex: number;
 		endIndex: number;
 		lineStart: number;
@@ -223,8 +225,7 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 		chunkFlags: number;
 	}> = [];
 
-	for (let chunkIndex = 0; chunkIndex < chunkDocs.length; chunkIndex++) {
-		const chunkDoc = chunkDocs[chunkIndex]!;
+	for (const chunkDoc of chunkDocs) {
 		const textChunk = chunkDoc.text;
 		if (textChunk.length === 0) {
 			continue;
@@ -242,6 +243,7 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 			});
 		}
 
+		const chunkIndex = chunks.length;
 		const endIndex = startIndex + textChunk.length;
 
 		const lineStart = get_line_number_from_offset({
@@ -253,20 +255,6 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 			lineStartOffsetsAsc,
 		});
 
-		const plainTextResult = files_tiptap_markdown_to_plain_text({
-			markdown: textChunk,
-		});
-		if (plainTextResult._nay) {
-			return Result({
-				_nay: {
-					name: "nay",
-					message: "Failed to convert markdown chunk to plain text",
-					cause: plainTextResult._nay,
-				},
-			});
-		}
-
-		const plainTextChunk = plainTextResult._yay;
 		const chunkFlags = set_chunk_bitmask_flags({
 			lineStart,
 			lineEnd,
@@ -274,9 +262,8 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 		});
 
 		chunks.push({
-			chunkIndex: chunks.length,
+			chunkIndex,
 			textChunk,
-			plainTextChunk,
 			startIndex,
 			endIndex,
 			lineStart,
@@ -286,6 +273,32 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 	}
 
 	return Result({ _yay: chunks });
+}
+
+/**
+ * Add the plain text of each chunk. Save calls this for one page of chunks at a time.
+ */
+export function files_chunk_markdown_add_plain_text<T extends { textChunk: string }>(chunks: readonly T[]) {
+	const plainTexts = files_tiptap_markdown_list_to_plain_text({
+		markdownList: chunks.map((chunk) => chunk.textChunk),
+	});
+	if (plainTexts._nay) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Failed to convert markdown chunk to plain text",
+				cause: plainTexts._nay,
+			},
+		});
+	}
+
+	return Result({ _yay: chunks.map((chunk, index) => ({ ...chunk, plainTextChunk: plainTexts._yay[index]! })) });
+}
+
+export async function files_chunk_markdown(markdown: string, options?: { maxChunkSize?: number }) {
+	const chunks = await files_chunk_markdown_bounds(markdown, options);
+	if (chunks._nay) return chunks;
+	return files_chunk_markdown_add_plain_text(chunks._yay);
 }
 
 export function files_chunk_has_bitmask_flag(chunkFlags: number, flag: number) {

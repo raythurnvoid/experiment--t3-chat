@@ -331,6 +331,15 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
 - Check stored scope the same way, with a plain member as `visibilityUserId` (`qa.perm.viewer`).
   The owner sees everything, so an owner readback proves nothing. After a restrict of a folder the
   member cannot open, the member must see 0 items under it. After unrestrict, all of them again.
+- A UI list while a Move runs (search box, `file.path` suggestions, `@` picker): open the list and
+  type first, then start and seal the Move from page context (`files_transfer.start` + `seal`
+  through `app_convex`), so focus stays in the list. Read `files_nodes.get_workspace_move_view`:
+  `cohortId` is set while the Move view is on. Read the rows in the same call. A list that reads
+  only one stream throws or goes empty in that window. `chitchat-qa/xfer-qa-0914:/g4-many` (about
+  60 files) into `/u16` and back works. Its Move view stayed on from seconds to over an hour on
+  2026-10-10, depending on machine load. To move it back without a browser, run
+  `files_transfer:start` and `seal` with `convex run --identity` (the identity needs `email`, see
+  `snippets.md`).
 - Move access while another job runs: start and seal a public Transfer request. Check its
   accepted wait, then change the actor's access before the next root starts. Read `get` and
   `list_items` until the run ends. The next worker must check fresh access. Completed roots stay
@@ -799,15 +808,16 @@ column choices need to change. Do not write file metadata or shared sorts for th
   label inside `.FileNodeViewFolderExplorerColumns-field[data-column-field="<field>"]`, or focus its
   checkbox and press Space. Do not force-click the input. Tab scrolls clipped fields into view.
 - **Catalog.** Opening Columns starts `files_metadata:list_folder_fields({ membershipId, savedStream?,
-  parentId, prefix, paginationOpts })`: one stream for normal rows, and one more while a Move view is
-  visible. The search text goes to the server as a key prefix (start of the key, no case) after
-  150 ms; Built-in rows match locally. `Show more fields` asks every unfinished stream for 50 more; it
-  has `aria-busy` while it loads. Read `data-fields-state` on the status child, not the dialog: `loading`
+  parentId, restricted, prefix, paginationOpts })`: one stream for normal rows, and one more while a
+  Move view is visible. The owner reads each stream again with `restricted: true`. The search text
+  goes to the server as a key prefix (start of the key, no case) after 150 ms; Built-in rows match
+  locally. `Show more fields` asks every unfinished stream for 50 more; it has `aria-busy` while it
+  loads. Read `data-fields-state` on the status child, not the dialog: `loading`
   (also while older rows stay, disabled, with `Updating suggestions…`), `ready` and `failed`. An empty
   finished list says `No fields match` or `No fields start with <text>`. On failure the menu says
   `Fields could not be loaded`; `Retry` restarts page 1. A new key shows only after the catalog
-  compactor runs (about 5 to 15 seconds). Keys of restricted children show to every member: that is
-  the accepted leak (`file-metadata` skill, "Suggestions"), not a bug.
+  compactor runs (about 5 to 15 seconds). Keys of restricted children show to the owner only, also
+  when a child is shared with the member (`file-metadata` skill, "Folder Table Fields").
 - **Cells.** Scope to `[role="table"][aria-label="Folder contents"]`, then the row and
   `[data-column-field="<field>"]`. `data-value-state` is `deferred`, `loading`, `preparing`, `ready`,
   `failed` or `refused`. The text is respectively `Loads when row is visible`, `Loading…`, `Preparing`,
@@ -1242,7 +1252,7 @@ Selectors and a proven flow for the sidebar search box with metadata filters (ve
 - Paging fixture without new files: `files_metadata.set_entries` on an existing file with 55 metadata keys (`qa-k01: v1` …) gives two key pages, and `metadataYaml: ""` restores a file that had none. Metadata takes no lists (`Metadata key "x" must have a text, number, or true/false value`), so more than 50 values of one key need 51 files or a frontmatter list. A new key reached the doors within about 16 s in a live check.
 - Metadata fixture without the Properties modal: `files_metadata.set_entries({ membershipId, fileNodeId, metadataYaml: "status: open\n" })` from page context, the same door the modal calls.
 - Working-tree proof: put `if (args.clause.kind === "metadata") return { page: [], isDone: true, continueCursor: "" };` at the top of the `search_saved` handler, poll the page-context door until it answers 0 (the Convex watcher pushes in ~10 s; run it only while every uncommitted change in `git status` is yours), check that `metadata.status:open` shows `No files match your search.` while free text still matches, remove the line, and poll until the door answers again. Read `git status --short` after.
-- Restricted-folder check needs a second identity (`second-user-fixtures.md`). The owner creates `tasks/public-task.md` and `private/secret-task.md` with the same `status` key, restricts `private`, and sees both files and both values. The member must see only the public file in the tree and in `search_saved`, and must not open the secret file. The member does see both values in the `Values` suggestions and the key in the key list: that is the accepted leak (`file-metadata` skill, "Suggestions"), not a bug. Search results and opening a file stay permission-checked.
+- Restricted-folder check needs a second identity (`second-user-fixtures.md`). The owner creates `tasks/public-task.md` and `private/secret-task.md` with the same `status` key, restricts `private`, and sees both files and both values. The member must see only the public file in the tree and in `search_saved`, and must not open the secret file. A member with workspace read (for example the `member` role) does see both values in the `Values` suggestions and the key in the key list: that is the accepted leak (`file-metadata` skill, "Suggestions"), not a bug. A guest (no workspace read) gets no key or value suggestions at all; the menu shows `Suggestions need access to the whole workspace. You can still type a filter, like metadata.status:open.` instead. Search results and opening a file stay permission-checked.
 
 ### Global Search Palette
 

@@ -17,7 +17,8 @@ const { savedArgsSeen, savedPages, queryPushListeners, navigateMock } = vi.hoist
 	navigateMock: vi.fn().mockResolvedValue(undefined),
 }));
 
-const saved_key = (clause: SavedArgs["clause"], folderPath?: string) => JSON.stringify([clause, folderPath ?? null]);
+const saved_key = (clause: SavedArgs["clause"], folderPath?: string) =>
+	JSON.stringify([clause, folderPath ?? null, { kind: "normal", generation: 0 }, 0]);
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -35,14 +36,17 @@ vi.mock("convex/react", async (importOriginal) => {
 	return {
 		...(await importOriginal<typeof import("convex/react")>()),
 		useConvex: () => ({ query: async () => [] }),
-		// Only the input's suggestions use `useQueries` and `useQuery` here. They stay empty.
+		useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") => {
+			if (args === "skip") return undefined;
+			const name = getFunctionName(query);
+			if (name === "files_nodes:get_workspace_move_view") {
+				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
+			}
+			if (name === "files_metadata:get_search_field") return null;
+			throw new Error(`Unexpected query: ${name}`);
+		},
+		// Only the input's suggestions use `useQueries` here. They stay empty.
 		useQueries: (queries: Record<string, unknown>) => Object.fromEntries(Object.keys(queries).map((key) => [key, []])),
-		useQuery: (query: FunctionReference<"query">, args: unknown) =>
-			args === "skip"
-				? undefined
-				: getFunctionName(query) === "files_nodes:get_workspace_move_view"
-					? { generation: 1, cohortId: null, view: null, searchGeneration: 1 }
-					: null,
 		usePaginatedQuery: (query: FunctionReference<"query">, args: SavedArgs | "skip") => {
 			const [, forceRender] = useState(0);
 			useEffect(() => {
@@ -52,13 +56,22 @@ vi.mock("convex/react", async (importOriginal) => {
 					queryPushListeners.delete(listener);
 				};
 			}, []);
-			const key = args === "skip" ? "skip" : saved_key(args.clause, args.folderPath);
+			const key = args === "skip"
+				? "skip"
+				: JSON.stringify([args.clause, args.folderPath ?? null, args.savedStream, args.searchGeneration]);
 			const [loaded, setLoaded] = useState({ key, pageCount: 1 });
 			const pageCount = loaded.key === key ? loaded.pageCount : 1;
 			// The input's key and value suggestions page the metadata catalog. They stay empty.
-			if (getFunctionName(query).startsWith("files_metadata:")) {
-				return { results: [], status: "Exhausted", isLoading: false, loadMore: () => {} };
+			const name = getFunctionName(query);
+			if (name === "files_metadata:list_search_fields" || name === "files_metadata:list_search_values") {
+				return {
+					results: [],
+					status: args === "skip" ? "LoadingFirstPage" : "Exhausted",
+					isLoading: args === "skip",
+					loadMore: () => {},
+				};
 			}
+			if (name !== "files_nodes:search_saved") throw new Error(`Unexpected paginated query: ${name}`);
 			if (args === "skip") {
 				return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} };
 			}

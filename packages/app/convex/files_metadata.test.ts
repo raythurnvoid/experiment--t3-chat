@@ -100,6 +100,7 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 		return await asOwner.query(api.files_metadata.list_folder_fields, {
 			membershipId: scope.membershipId,
 			parentId,
+			restricted: false,
 			prefix,
 			paginationOpts: { numItems: 50, cursor },
 		});
@@ -134,6 +135,7 @@ describe("table metadata caller", () => {
 					asCaller.query(api.files_metadata.list_folder_fields, {
 						membershipId: scope.membershipId,
 						parentId,
+						restricted: false,
 						prefix: "",
 						paginationOpts: { numItems: 50, cursor: null },
 					}),
@@ -170,6 +172,7 @@ describe("table metadata caller", () => {
 				asAnonymous.query(api.files_metadata.list_folder_fields, {
 					membershipId: scope.membershipId,
 					parentId,
+					restricted: false,
 					prefix: "",
 					paginationOpts: { numItems: 50, cursor: null },
 				}),
@@ -212,7 +215,7 @@ describe("list_folder_fields", () => {
 		expect((await catalog()).page).toEqual(["metadata.late"]);
 	});
 
-	test("lists the keys of restricted children to every member (user, 2026-10-08)", async () => {
+	test("lists the keys of restricted children only to the owner, in the restricted twin", async () => {
 		const { scope, asOwner, viewer, asViewer, parentId, child, catalog } = await fixture();
 		await child({ name: "public.md", entries: [{ key: "public", value: true }] });
 		const hidden = await child({ name: "hidden.md", entries: [{ key: "hidden", value: "secret" }] });
@@ -220,17 +223,26 @@ describe("list_folder_fields", () => {
 			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId: hidden }))
 				._nay,
 		).toBeUndefined();
-		expect((await catalog()).page).toEqual(["metadata.hidden", "metadata.public"]);
-		expect(
+		const read = async (
+			asWho: typeof asOwner,
+			membershipId: Id<"organizations_workspaces_users">,
+			restricted: boolean,
+		) =>
 			(
-				await asViewer.query(api.files_metadata.list_folder_fields, {
-					membershipId: viewer.membershipId,
+				await asWho.query(api.files_metadata.list_folder_fields, {
+					membershipId,
 					parentId,
+					restricted,
 					prefix: "",
 					paginationOpts: { numItems: 50, cursor: null },
 				})
-			).page,
-		).toEqual(["metadata.hidden", "metadata.public"]);
+			).page;
+
+		expect((await catalog()).page).toEqual(["metadata.public"]);
+		expect(await read(asOwner, scope.membershipId, true)).toEqual(["metadata.hidden"]);
+		// A viewer reads the folder, but not the keys of a child they cannot open.
+		expect(await read(asViewer, viewer.membershipId, false)).toEqual(["metadata.public"]);
+		expect(await read(asViewer, viewer.membershipId, true)).toEqual([]);
 	});
 
 	test("a prefix ignores case, keeps index order, and pages", async () => {
@@ -279,6 +291,7 @@ describe("list_folder_fields", () => {
 			asViewer.query(api.files_metadata.list_folder_fields, {
 				membershipId,
 				parentId: folderId,
+				restricted: false,
 				prefix: "",
 				paginationOpts: { numItems: 50, cursor: null },
 			});

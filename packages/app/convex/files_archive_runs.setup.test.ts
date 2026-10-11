@@ -220,10 +220,8 @@ export async function expect_consistent(f: Fixture) {
 
 	// Proposal side docs follow their proposal, not the saved node.
 	const savedScopeNodeIds = new Set(state.savedScopeJobs.map((job) => job.key));
-	const committedSideDocs = [...state.chunks, ...state.metadataDocs].filter(
-		(sideDoc) => sideDoc.sourceKind === "committed" && !savedScopeNodeIds.has(sideDoc.fileNodeId),
-	);
-	const sideDocMismatches = committedSideDocs.flatMap((sideDoc) => {
+	const sideDocMismatches = [...state.chunks, ...state.metadataDocs].flatMap((sideDoc) => {
+		if (sideDoc.sourceKind !== "committed" || savedScopeNodeIds.has(sideDoc.fileNodeId)) return [];
 		const node = nodeById.get(sideDoc.fileNodeId)!;
 		const archiveOperationId = sideDoc.archiveOperationId ?? null;
 		return archiveOperationId === node.archiveOperationId && sideDoc.path === node.path

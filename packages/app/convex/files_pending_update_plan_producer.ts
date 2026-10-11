@@ -17,7 +17,7 @@ import {
 import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
 import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
-import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
+import { files_pending_review_facts_db_pin_structure } from "../server/files-pending-review-facts.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import {
 	files_saved_placement_db_get_node,
@@ -305,33 +305,37 @@ async function db_destination(ctx: MutationCtx, run: Run, plan: Plan, item: Item
 		if (occupant && (item.target.kind !== "saved" || occupant._id !== item.target.id)) {
 			const selected = await db_selected(ctx, plan, { kind: "saved", id: occupant._id });
 			// A selected move or delete frees the name, so both changes publish in one group.
-			if (selected?.structuralKind === "move" || selected?.structuralKind === "archive")
-				plan = await db_link(ctx, plan, item, selected, "structure");
+			if (selected?.structuralKind === "move") plan = await db_link(ctx, plan, item, selected, "structure");
+			else if (selected?.structuralKind === "archive") plan = await db_link(ctx, plan, item, selected, "archive");
 			else if ((!replaced || replaced.kind !== "saved" || replaced.id !== occupant._id) && item.errorCode === null) {
 				const current = (await ctx.db.get("files_pending_update_plan_items", item._id))!;
-				const proposal = await ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_organization_workspace_user_target", (q) =>
-						q
-							.eq("organizationId", run.organizationId)
-							.eq("workspaceId", run.workspaceId)
-							.eq("userId", run.userId)
-							.eq("target.kind", "saved")
-							.eq("target.id", occupant._id),
-					)
-					.unique();
-				// The owner's unselected move or delete of the occupant would free this name. Ask for both.
-				if (proposal?.pendingMove || proposal?.pendingArchive)
-					await db_error(ctx, current, "This action also affects an unselected change. Review them together.", {
-						runId: run._id,
-						pendingUpdateId: proposal._id,
-					});
 				// Keep an earlier error found while checking this destination.
-				else if (current.errorCode === null)
-					await ctx.db.patch("files_pending_update_plan_items", item._id, {
-						errorCode: "destination_changed",
-						errorMessage: "The destination name is already used. Review it again.",
-					});
+				if (current.errorCode === null) {
+					const proposal = selected
+						? null
+						: await ctx.db
+								.query("files_pending_updates")
+								.withIndex("by_organization_workspace_user_target", (q) =>
+									q
+										.eq("organizationId", run.organizationId)
+										.eq("workspaceId", run.workspaceId)
+										.eq("userId", run.userId)
+										.eq("target.kind", "saved")
+										.eq("target.id", occupant._id),
+								)
+								.unique();
+					// The owner's unselected move or delete of the occupant would free this name. Ask for both.
+					if (proposal?.pendingMove || proposal?.pendingArchive)
+						await db_error(ctx, current, "This action also affects an unselected change. Review them together.", {
+							runId: run._id,
+							pendingUpdateId: proposal._id,
+						});
+					else
+						await ctx.db.patch("files_pending_update_plan_items", item._id, {
+							errorCode: "destination_changed",
+							errorMessage: "The destination name is already used. Review it again.",
+						});
+				}
 			}
 		}
 	}
@@ -486,14 +490,14 @@ export const advance = internalMutation({
 		if (run.planEpoch !== args.planEpoch)
 			return Result({ _nay: { name: "stopped", message: "The review plan changed." } });
 		if (plan.producerPhase === "sealed") return Result({ _yay: { plan, media: null, waiting: false } });
-		const state = await files_pending_review_facts_db_get_state(ctx.db, run);
+		const state = await files_pending_review_facts_db_pin_structure(ctx.db, run);
 		const subtree = await files_subtree_ops_db_find_repair(ctx, run);
 		// Check the Move first. Overlay jobs parked behind it count as pending until it ends.
 		const parked = await files_move_reservations_db_pause_worker(ctx, {
 			worker: { kind: "review", id: run._id, fence: args.fence },
 			check: { wholeWorkspace: run },
 		});
-		if (parked || subtree || (state?.pendingJobCount ?? 0) > 0) {
+		if (parked || subtree || state.pendingJobCount > 0) {
 			// Another Move or folder-wide job can run past the review deadline. Keep the review alive while it waits.
 			if (parked || subtree) {
 				const activity = await activities_db_require_by_source_id(ctx, run._id);
@@ -509,7 +513,7 @@ export const advance = internalMutation({
 				q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId).eq("userId", run.userId),
 			)
 			.unique();
-		const structureRevision = state?.structureRevision ?? 0;
+		const structureRevision = state.structureRevision;
 		const reviewVersion = review?.revision ?? 0;
 		if (
 			plan.factsStructureRevision !== null &&
@@ -558,7 +562,12 @@ export const advance = internalMutation({
 					: header.content && header.target.kind === "saved"
 						? (await files_saved_placement_db_get_node(ctx.db, header.target.id))?.textKind
 						: null;
-			if (textKind !== "rich_text" || next.settlementOnly || next.structuralKind === "archive") {
+			if (
+				textKind !== "rich_text" ||
+				next.settlementOnly ||
+				next.structuralKind === "archive" ||
+				(!item.mediaDependencySet && run.expectedItemCount === 1)
+			) {
 				plan = await db_save(ctx, plan, { producerOrder: next.order, producerItemId: null, producerMediaOffset: 0 });
 				continue;
 			}
@@ -646,6 +655,9 @@ export const stage_media = internalMutation({
 				? await files_pending_nodes_db_resolve_read_target(ctx, { ...run, target: original })
 				: null;
 			let selected = target ? await db_selected(ctx, plan, target) : null;
+			if (!selected && original) selected = await db_selected(ctx, plan, original);
+			// Ordinary links outside this selection stay text. Readers check their access.
+			if (!item.mediaDependencySet && !selected) continue;
 			if (selected?.structuralKind === "archive")
 				reviewedArchiveIds.add((await db_input(ctx, selected)).pendingUpdateId);
 			const visible = target ? await reader.resolveTargetForSave(target) : null;
@@ -653,7 +665,6 @@ export const stage_media = internalMutation({
 				await db_error(ctx, vertex, "The reviewed media is no longer available.");
 				continue;
 			}
-			selected ??= await db_selected(ctx, plan, original);
 			if (selected)
 				plan = await db_link(ctx, plan, vertex, selected, vertex.mode === "copy" ? "copy_media" : "ordinary_media");
 			else if (target?.kind === "private")

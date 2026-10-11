@@ -28,6 +28,7 @@ import {
 } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { async_all_settled_with_limit } from "../shared/async-utils.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import {
 	files_normalize_file_rename_name,
@@ -147,13 +148,13 @@ const FILES_READ_MANY_MAX_CONTENT_BYTES = 384_000;
 const FILES_DOWNLOAD_URL_MAX_TTL_SECONDS = 15 * 60;
 // The signer timestamps after our pre-sign check, so leave one full second inside plugin authority.
 const FILES_DOWNLOAD_URL_SIGNING_MARGIN_SECONDS = 1;
-// Must stay <= the public_api_principal bucket capacity: a batch charges one unit per URL.
+// Must stay <= the public_api_files_download_bulk bucket capacity: a batch charges one unit per URL.
 const FILES_DOWNLOAD_URLS_MAX_ITEMS = 20;
 // Keep unauthenticated validation work small while still allowing a truncated client batch.
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS = 100;
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES = 32_000;
 const FILES_TOUCH_MAX_PATHS = 8;
-// Must stay <= the public_api_principal bucket capacity: a batch charges one unit per minted URL.
+// Must stay <= the public_api_files_upload_bulk bucket capacity: a batch charges one unit per minted URL.
 const FILES_UPLOAD_URLS_MAX_ITEMS = 20;
 
 /**
@@ -161,8 +162,14 @@ const FILES_UPLOAD_URLS_MAX_ITEMS = 20;
  * no longer upload another object.
  */
 const FILES_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
-// Must stay <= the public_api_files_write_bulk bucket capacity: the batch charges one token per file.
+// The batch charges one token per file in the sharded public_api_files_write_bulk bucket. Must stay
+// <= capacity / shards = 25, because the first charge on an unused shard reads only that shard. A
+// bigger batch on a fresh key is refused forever.
 const FILES_WRITE_MANY_MAX_ITEMS = 20;
+// Files of one batch that are written at the same time. Saves no longer share one hot doc per
+// workspace or key. At most one mutation and two R2 PUTs per file are in flight. A basic Convex
+// plan runs 16 mutations at once, so keep this small.
+const FILES_WRITE_MANY_CONCURRENCY = 4;
 // Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
 const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
 const INVALID_WRITE_FILE_NAME_MESSAGE = "Path must end in a valid file name.";
@@ -1193,6 +1200,10 @@ export const api_credentials_list = query({
 					const account = credential.serviceAccountId
 						? await ctx.db.get("access_control_service_accounts", credential.serviceAccountId)
 						: null;
+					const usage = await ctx.db
+						.query("api_credentials_last_used")
+						.withIndex("by_credential", (q) => q.eq("credentialId", credential._id))
+						.first();
 					return {
 						credentialId: credential._id,
 						serviceAccountId: credential.serviceAccountId,
@@ -1207,7 +1218,7 @@ export const api_credentials_list = query({
 						scopes: credential.scopes,
 						createdAt: credential.createdAt,
 						revokedAt: credential.revokedAt,
-						lastUsedAt: credential.lastUsedAt,
+						lastUsedAt: usage?.lastUsedAt ?? credential.lastUsedAt,
 					};
 				}),
 			),
@@ -2087,14 +2098,29 @@ export const mark_credential_used = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		// Never write the credential doc here: every file publish reads it to check revocation, so a
+		// write there would conflict with parallel publishes. The usage doc has its own table.
+		const usage = await ctx.db
+			.query("api_credentials_last_used")
+			.withIndex("by_credential", (q) => q.eq("credentialId", args.credentialId))
+			.first();
+		if (usage) {
+			// Write at most once per minute, so parallel requests of one key rarely touch this doc.
+			if (args.now - usage.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS) {
+				await ctx.db.patch("api_credentials_last_used", usage._id, { lastUsedAt: args.now });
+			}
+			return null;
+		}
+
 		const credential = await ctx.db.get("api_credentials", args.credentialId);
-		// Frequent timestamp writes make concurrent file writes retry on the same credential doc.
-		if (
-			credential &&
-			(credential.lastUsedAt === null ||
-				args.now - credential.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS)
-		) {
-			await ctx.db.patch("api_credentials", credential._id, { lastUsedAt: args.now });
+		if (credential) {
+			await ctx.db.insert("api_credentials_last_used", {
+				credentialId: credential._id,
+				organizationId: credential.organizationId,
+				workspaceId: credential.workspaceId,
+				userId: credential.userId,
+				lastUsedAt: args.now,
+			});
 		}
 
 		return null;
@@ -5263,9 +5289,10 @@ export async function public_api_write_one_text_file(
 				});
 			}
 
-			// Move the server-built diff through a 30-minute trusted `public_fill` stage and hand
+			// Move the server-built diff through a 5-minute trusted `public_fill` stage and hand
 			// the publish mutation only its id, so the registered call carries one large value
-			// (the content text). An abandoned stage falls to the TTL sweep.
+			// (the content text). The stage holds no storage bytes. A failed publish deletes it, and an
+			// abandoned stage falls to the TTL sweep.
 			let fillUpdateStageId: Id<"files_yjs_trusted_update_stages"> | undefined;
 			if (fillUpdate) {
 				const staged = (await ctx.runMutation(internal.files_pending_updates.stage_trusted_yjs_update, {
@@ -5293,14 +5320,33 @@ export async function public_api_write_one_text_file(
 				fillUpdateStageId = staged._yay.stageId;
 			}
 
-			const published: publish_file_fill_Result = await ctx.runMutation(internal.public_api.publish_file_fill, {
-				stageId: prepared._yay.stageId,
-				content: args.content,
-				expectedNodeId: activeNode._id,
-				expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
-				...(fillUpdateStageId ? { fillUpdateStageId } : {}),
-			});
+			// If the publish refuses or throws, the fill stage can still exist. So delete it here.
+			// The call does nothing when the publish already consumed the stage.
+			const retire_fill_update_stage = async () => {
+				if (!fillUpdateStageId) return;
+				await ctx.runMutation(internal.files_pending_updates.retire_trusted_yjs_update_stage, {
+					stageId: fillUpdateStageId,
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodeId: activeNode._id,
+				});
+			};
+			let published: publish_file_fill_Result;
+			try {
+				published = await ctx.runMutation(internal.public_api.publish_file_fill, {
+					stageId: prepared._yay.stageId,
+					content: args.content,
+					expectedNodeId: activeNode._id,
+					expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
+					...(fillUpdateStageId ? { fillUpdateStageId } : {}),
+				});
+			} catch (error) {
+				await retire_fill_update_stage();
+				throw error;
+			}
 			if (published._nay) {
+				await retire_fill_update_stage();
 				// Conflict is the fallback: structural 409s pass their specific message through,
 				// while the auth and storage failures use fixed literals.
 				const failure =
@@ -6591,17 +6637,27 @@ export async function public_api_http_write_many(args: {
 		nonCollaborative: boolean;
 	}> = [];
 	const seenPaths = new Set<string>();
-	for (const file of body.data.files) {
-		if (!file.path.startsWith("/")) {
+	// Resolve every path at once. The loop below still checks items in request order, so the first
+	// bad item decides the 400.
+	const requestedPaths = await Promise.all(
+		body.data.files.map(async (file) => {
+			if (!file.path.startsWith("/")) {
+				return null;
+			}
+			const literalPath = server_path_normalize(file.path);
+			return await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				path: literalPath,
+				normalizedPath: files_normalize_special_node_path("file", literalPath),
+			});
+		}),
+	);
+	for (const [index, file] of body.data.files.entries()) {
+		const requestedPath = requestedPaths[index];
+		if (requestedPath === null) {
 			return { status: 400, body: { message: "Path must be absolute.", path: file.path } } as const;
 		}
-		const literalPath = server_path_normalize(file.path);
-		const requestedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
-			organizationId: principal.organizationId,
-			workspaceId: principal.workspaceId,
-			path: literalPath,
-			normalizedPath: files_normalize_special_node_path("file", literalPath),
-		});
 		if (requestedPath === "/") {
 			return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
 		}
@@ -6693,8 +6749,93 @@ export async function public_api_http_write_many(args: {
 		credentialId: principal.credentialId,
 	};
 
-	// Sequential on purpose: writes into one workspace share ancestor folders, and
-	// concurrent publishes would conflict on creating them.
+	// Write new files in two waves. Wave 1 writes the first file of each parent folder, so two files
+	// never race to create the same parent. Wave 2 writes the rest, once their parents exist.
+	// Overwrites go last. A fill stages its Yjs update without a storage hold, so it does not write the
+	// user's and the workspace's private storage counters. This lookup only picks the wave: the
+	// per-file write still decides create or fill on its own.
+	const existingNodes = await Promise.all(
+		validatedFiles.map((file) =>
+			ctx.runQuery(internal.files_nodes.get_by_path, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				visibilityUserId: public_api_visibility_user_id(principal),
+				serviceAccountId: principal.serviceAccountId ?? undefined,
+				path: file.path,
+			}),
+		),
+	);
+	const firstWave: number[] = [];
+	const secondWave: number[] = [];
+	const fillWave: number[] = [];
+	const seenParents = new Set<string>();
+	for (const [index, file] of validatedFiles.entries()) {
+		if (existingNodes[index]) {
+			fillWave.push(index);
+			continue;
+		}
+		const parentPath = server_path_parent_of(file.path);
+		(seenParents.has(parentPath) ? secondWave : firstWave).push(index);
+		seenParents.add(parentPath);
+	}
+	const results: Array<Awaited<ReturnType<typeof public_api_write_one_text_file>> | undefined> = [];
+	// A dead credential or a bad item stops the batch. Files already in flight finish; files not
+	// started yet are skipped.
+	let stopped = false;
+	for (const [wave, limit] of [
+		[firstWave, FILES_WRITE_MANY_CONCURRENCY],
+		[secondWave, FILES_WRITE_MANY_CONCURRENCY],
+		[fillWave, FILES_WRITE_MANY_CONCURRENCY],
+	] as const) {
+		const settled = await async_all_settled_with_limit({
+			items: wave,
+			limit,
+			run: async (index) => {
+				if (stopped) {
+					return;
+				}
+				const file = validatedFiles[index]!;
+				try {
+					const result = await public_api_write_one_text_file(ctx, {
+						organizationId: principal.organizationId,
+						workspaceId: principal.workspaceId,
+						userId: principal.userId,
+						visibilityUserId: public_api_visibility_user_id(principal),
+						serviceAccountId: principal.serviceAccountId,
+						principalRef,
+						path: file.path,
+						content: file.content,
+						contentBytes: file.contentBytes,
+						overwrite: file.overwrite,
+						skipIfUnchanged: body.data.skipIfUnchanged ?? false,
+						shape: file.shape,
+						nonCollaborative: file.nonCollaborative ?? false,
+						// Write-many stays a user-key route, and the lock option is a plugin feature.
+						requestReadOnly: false,
+					});
+					if (
+						result._nay &&
+						(result._nay.data.errorCode === "unauthenticated" || result._nay.data.errorCode === "invalid_input")
+					) {
+						stopped = true;
+					}
+					results[index] = result;
+				} catch (error) {
+					stopped = true;
+					throw error;
+				}
+			},
+		});
+		for (const outcome of settled) {
+			if (outcome.status === "rejected") {
+				throw outcome.reason;
+			}
+		}
+		if (stopped) {
+			break;
+		}
+	}
+
 	const written: Array<{
 		path: string;
 		nodeId: Id<"files_nodes">;
@@ -6706,24 +6847,12 @@ export async function public_api_http_write_many(args: {
 		message: string;
 		errorCode: "permission_denied" | "conflict" | "storage_failure";
 	}> = [];
-	for (const file of validatedFiles) {
-		const result = await public_api_write_one_text_file(ctx, {
-			organizationId: principal.organizationId,
-			workspaceId: principal.workspaceId,
-			userId: principal.userId,
-			visibilityUserId: public_api_visibility_user_id(principal),
-			serviceAccountId: principal.serviceAccountId,
-			principalRef,
-			path: file.path,
-			content: file.content,
-			contentBytes: file.contentBytes,
-			overwrite: file.overwrite,
-			skipIfUnchanged: body.data.skipIfUnchanged ?? false,
-			shape: file.shape,
-			nonCollaborative: file.nonCollaborative ?? false,
-			// Write-many stays a user-key route, and the lock option is a plugin feature.
-			requestReadOnly: false,
-		});
+	// Report in request order. Skipped files have no result.
+	for (const [index, file] of validatedFiles.entries()) {
+		const result = results[index];
+		if (!result) {
+			continue;
+		}
 		if (result._nay) {
 			// The credential died mid-batch (expired or revoked); every remaining item
 			// would fail the same way, so abort the whole request.
@@ -7210,20 +7339,26 @@ export async function public_api_http_download_urls(args: {
 	const fileNodeIds = body.data.fileNodeIds.slice(0, FILES_DOWNLOAD_URLS_MAX_ITEMS);
 	const truncated = body.data.fileNodeIds.length > fileNodeIds.length;
 
-	// Authorization charged one slot for the request; the rest of the batch
-	// charges here so N URLs cost the same principal budget as N single calls.
-	if (fileNodeIds.length > 1) {
-		const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
-			name: "public_api_principal",
-			key: `${principal.kind}:${principal.principalKey}:${path}`,
-			count: fileNodeIds.length - 1,
+	// Authorization charged one principal slot for the request. The URLs charge their own bulk
+	// bucket, because the sharded principal bucket refuses a charge above 10.
+	const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "public_api_files_download_bulk",
+		key: `${principal.kind}:${principal.principalKey}`,
+		count: fileNodeIds.length,
+	});
+	if (batchRateLimit) {
+		// Settle like `fail` does, but keep the exact message type for the SDK.
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: 429,
+			errorCode: "rate_limited",
+			errorMessage: batchRateLimit.message,
 		});
-		if (batchRateLimit) {
-			return {
-				status: 429,
-				body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
-			} as const;
-		}
+		return {
+			status: 429,
+			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+		} as const;
 	}
 
 	// Per-node queries keep each file in its own Convex cache entry, so one changed
@@ -7505,20 +7640,19 @@ export async function public_api_http_upload_urls(args: {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
 
-	// Authorization charged one slot for the request; the rest of the batch
-	// charges here so N upload URLs cost the same principal budget as N single calls.
-	if (body._yay.files.length > 1) {
-		const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
-			name: "public_api_principal",
-			key: `${principal.kind}:${principal.principalKey}:${path}`,
-			count: body._yay.files.length - 1,
-		});
-		if (batchRateLimit) {
-			return {
-				status: 429,
-				body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
-			} as const;
-		}
+	// Authorization charged one principal slot for the request. The URLs charge their own bulk
+	// bucket, so minting does not eat the write-many budget, and the sharded principal bucket would
+	// refuse a charge above 10.
+	const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "public_api_files_upload_bulk",
+		key: `${principal.kind}:${principal.principalKey}`,
+		count: body._yay.files.length,
+	});
+	if (batchRateLimit) {
+		return {
+			status: 429,
+			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+		} as const;
 	}
 
 	const created = (await ctx.runMutation(internal.public_api.create_file_upload_targets, {

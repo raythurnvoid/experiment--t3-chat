@@ -36,12 +36,16 @@ import {
 import {
 	files_metadata_catalog_key_order,
 	files_metadata_catalog_key_prefixes,
+	files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE,
 	useFilesMetadataCatalogPages,
+	useFilesMetadataHasWorkspaceRead,
 } from "@/hooks/files-metadata-catalog-hooks.ts";
+import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn } from "@/lib/utils.ts";
+import type { files_SavedStream } from "../../../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX, type files_metadata_Value } from "../../../shared/files-metadata.ts";
 import {
 	files_search_query_FILE_FIELDS,
@@ -197,6 +201,8 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 }) {
 	const { membershipId, prefix, stale, onPick, onUnmatched } = props;
 
+	const { workspaceId } = AppTenantProvider.useContext();
+	const hasWorkspaceRead = useFilesMetadataHasWorkspaceRead(workspaceId);
 	const keys = useFilesMetadataCatalogPages({
 		query: app_convex_api.files_metadata.list_search_fields,
 		membershipId,
@@ -257,6 +263,11 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 			})}
 			{isDisabled ? (
 				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
+			) : hasWorkspaceRead === false ? (
+				// The keys come from the whole workspace, so a guest gets none. Say why.
+				<FilesSearchInputSuggestionsMessage>
+					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
+				</FilesSearchInputSuggestionsMessage>
 			) : keys.rows.length === 0 ? (
 				<FilesSearchInputSuggestionsMessage>
 					{prefix === "" ? "No saved keys yet" : `No keys start with ${prefix}`}
@@ -295,6 +306,8 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 }) {
 	const { membershipId, fieldPath, prefix, typed, stale, onPick } = props;
 
+	const { workspaceId } = AppTenantProvider.useContext();
+	const hasWorkspaceRead = useFilesMetadataHasWorkspaceRead(workspaceId);
 	const values = useFilesMetadataCatalogPages({
 		query: app_convex_api.files_metadata.list_search_values,
 		membershipId,
@@ -348,6 +361,10 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 			))}
 			{isDisabled ? (
 				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
+			) : hasWorkspaceRead === false ? (
+				<FilesSearchInputSuggestionsMessage>
+					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
+				</FilesSearchInputSuggestionsMessage>
 			) : rows.length === 0 && values.status === "Exhausted" && field !== undefined ? (
 				// Wait for the key's kinds too: a boolean key adds `true` and `false` when they load.
 				<FilesSearchInputSuggestionsMessage>{`No saved values start with ${prefix}`}</FilesSearchInputSuggestionsMessage>
@@ -509,32 +526,35 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		isFocused && typingFilter?.key.namespace === "file" && typingFilter.key.name === "path"
 			? (typedValueDebounced.split("/").findLast((part) => part.length > 0) ?? "")
 			: "";
+	// Like `useFilesSearchSaved`: search the normal rows and, during a Move, the visible Move view too.
+	const savedView = useFilesSavedView(membershipId, folderQueryText !== "");
+	const savedStreamsJson = JSON.stringify([savedView.normal, savedView.cohort].filter((stream) => stream !== null));
 	// Keep manual `useMemo` here. Convex `useQueries` re-subscribes with a render-phase setState
 	// whenever the queries object identity changes, so an inline object loops the render until
-	// React throws. Build the object once per typed text.
+	// React throws. Build the object once per typed text and saved view.
 	const folderQueries = useMemo(
 		() =>
 			Object.fromEntries(
 				folderQueryText === ""
 					? []
-					: [
-							[
-								"folders",
-								{
-									query: app_convex_api.files_nodes.search_saved,
-									args: {
-										membershipId,
-										clause: { kind: "name", text: folderQueryText, nodeKind: "folder" },
-										paginationOpts: { numItems: FilesSearchInput_FOLDER_MAX_ROWS, cursor: null },
-									},
+					: (JSON.parse(savedStreamsJson) as files_SavedStream[]).map((savedStream) => [
+							savedStream.kind,
+							{
+								query: app_convex_api.files_nodes.search_saved,
+								args: {
+									membershipId,
+									savedStream,
+									searchGeneration: savedView.searchGeneration!,
+									clause: { kind: "name", text: folderQueryText, nodeKind: "folder" },
+									paginationOpts: { numItems: FilesSearchInput_FOLDER_MAX_ROWS, cursor: null },
 								},
-							],
-						],
+							},
+						]),
 			),
-		[membershipId, folderQueryText],
+		[membershipId, folderQueryText, savedStreamsJson, savedView.searchGeneration],
 	);
-	const folderResult: FunctionReturnType<typeof app_convex_api.files_nodes.search_saved> | Error | undefined =
-		useQueries(folderQueries).folders;
+	const folderResults: Array<FunctionReturnType<typeof app_convex_api.files_nodes.search_saved> | Error | undefined> =
+		Object.values(useQueries(folderQueries));
 
 	// A `file.*` value completes here. Saved values show in `FilesSearchInputValueRows`.
 	const fileValueRows = ((/* iife */) => {
@@ -563,8 +583,15 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 
 		if (typingFilter.key.name === "link") {
 			push("public");
-		} else if (typingFilter.key.name === "path" && folderResult && !(folderResult instanceof Error)) {
-			const folderPaths = folderResult.page.flatMap((row) => (row.kind === "folder" ? [row.path] : [])).sort();
+		} else if (typingFilter.key.name === "path") {
+			// `push` keeps a folder that both streams return once.
+			const folderPaths = folderResults
+				.flatMap((result) =>
+					result && !(result instanceof Error)
+						? result.page.flatMap((row) => (row.kind === "folder" ? [row.path] : []))
+						: [],
+				)
+				.sort();
 			for (const path of folderPaths) {
 				push(path);
 			}

@@ -650,6 +650,9 @@ export async function files_db_consume_trusted_yjs_update_stage(
 	}
 
 	await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
-	await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+	// A `public_fill` stage holds no bytes, so there is nothing to release.
+	if (stage.kind !== "public_fill") {
+		await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+	}
 	return Result({ _yay: stage.update });
 }

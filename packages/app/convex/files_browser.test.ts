@@ -12,7 +12,13 @@ import {
 	files_browser_db_delete_user_batch,
 	files_browser_db_purge_workspace_batch,
 } from "./files_browser.ts";
-import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_save_file_pending_update,
+	test_convex,
+	test_create_saved_text_file,
+	test_drain_billing_usage_event_outbox,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
@@ -3977,6 +3983,7 @@ describe("browser billing", () => {
 			sessionId,
 		});
 
+		await test_drain_billing_usage_event_outbox(t);
 		expect(polarEvents()).toEqual([
 			{
 				events: [

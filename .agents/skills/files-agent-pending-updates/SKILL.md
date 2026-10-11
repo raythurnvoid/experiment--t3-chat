@@ -29,7 +29,7 @@ Structural state uses:
 
 - `pendingMove` for move or rename intent.
 - `copiedFrom` for copy or replace provenance.
-- `pendingArchive` for delete intent (bash `rm`): accepting archives the node; a folder archives its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Content branches survive on the doc (accept ignores them; discard restores them as a Modified row).
+- `pendingArchive` for delete intent (bash `rm`): accepting archives the node; a folder archives its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Setting Delete keeps the content branches for Undo. Accept removes the whole proposal without saving its draft text. Discard restores the content branches as a Modified row.
 - `createIntent` for a private file or folder. Missing agent write and copy targets stay private until Save. Removing an owned private create discards that private identity and its approved pending work.
 - `mediaDependencySetId` on copied documents points to sealed, indexed image/video mappings.
   Each set has one owner and a generation. The mappings pin selected destination targets and versions.
@@ -145,11 +145,19 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   Unselected owners' pending plain-text chunks and metadata use the same before/after scope.
   They stage in indexed pages before publication. Their proposal headers stay unselected.
   Exact proposal reservations select the content view until cleanup restores normal indexes.
+  Exact source reservation reads share a Promise within one mutation. Reservation writes clear
+  it before and after the write. Each new step still checks current access and capability fences.
   Existing parent folders that keep their placement do not collect unrelated drafts. Changed
   sources still collect affected owners, including drafts inside a moved folder.
-- Metadata side steps read at most eight docs with a 1 MiB source-byte page. The write guards
+  One node's empty owner ranges share a step through exact `first()` checks. Empty child ranges
+  and empty metadata or plain-text side ranges use the same rule. Each step uses
+  at most one paginated query. Any paginated page ends the step, including an empty cursor tail,
+  even when those owners are already known. Receipt pages keep their own step too.
+  Owner cleanup also shares empty table and view ranges through exact probes. It ends the step
+  after every paginated page or unfinished abort-range completion.
+- Saved metadata side steps read at most 64 docs with a 1 MiB source-byte page. The write guards
   reread old docs, so the count alone is not a byte bound. Tagging, finish and abort drain exact
-  view ranges without storing metadata-key cursors. Owner field joins keep their source docs.
+  view ranges without storing metadata-key cursors. Owner field joins stay at eight docs and keep their source docs.
   They use the metadata identity/view indexes without `fieldPath`, so even a large key gives
   a short stored cursor. Before joins and owner cleanup use the same byte page.
 - Private direct Save uses this same review flow. Its immutable parent-chain input is saved with
@@ -161,6 +169,13 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   uses that saved target. The old private identity stays only as a publish receipt alias.
 - A Discard item can carry `onlyIfEmpty: true`. It is for a hidden parent folder that Pending `Discard all` sends with the shown drafts. An unselected draft inside it does not block the run. Planning puts these folders after the other Discard roots, deepest first. `commit_unit` discards the unit's saved proposals first, then removes such a folder only when it has no active child draft and no draft move into it; otherwise it keeps the folder.
 - `files_pending_review_versions` is the owner's pending-change clock. The normal path seals each unit against the run's current clock. An outside edit enables `revalidateRemaining` for the rest of the run. Every later unit then checks its original IDs, revisions, content states, paths, and dependency scope in pages, even after an earlier unit's own commit advances the run clock.
+- `files_pending_review_fact_state.structureRevision` is the workspace's saved-tree clock for review
+  plans. The plan producer pins it for 10 minutes (`files_pending_review_facts_db_pin_structure`) and
+  renews the pin only when 5 minutes or less are left. The plan restarts when the clock moved. A
+  saved-tree change advances it only while a pin is live, so parallel saves with no review plan do
+  not all write this doc. A pin after a lapse, or a renewal within 60 seconds of the end, advances
+  the clock first, because changes may have skipped it. `files_pending_review_versions` still
+  advances on every proposal write.
 - Every preparation step checks current membership, its lifetime, the parent run and access clocks
   in its own transaction. The final switch checks the same proof. Changed access or input aborts
   unpublished candidates and returns `needs_review`. Completed groups stay saved.
@@ -174,10 +189,16 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   releases a staged whole-file copy to the deletion ledger, like Discard.
 - Every selected content candidate seals before the group's media proof starts. This keeps a
   selected replacement's final asset available even when its document was prepared first.
-  Media proof comes from the exact prepared text, including ordinary private embeds. Each page
+  Media proof comes from the exact prepared text. Ordinary embeds join and prove only media
+  selected in the same Review. Other ordinary links stay text, even when broken or not saved.
+  Readers still check each media file's current access. A one-item ordinary Review skips media
+  parsing. A larger Review selects refs through exact run-target and private-alias indexes,
+  in pages of eight, before creating the proof set. This also checks live links added after planning.
+  Copy-owned sets stay strict, including empty sets and partial Saves after `copiedFrom` clears. Each page
   checks current access and the exact asset version. Selected private media uses its exact after
   receipt. Private embed URLs keep their existing form after Save. The switch checks sealed proof
-  for the current text digest, proposal revision, selection and group attempt.
+  for the current text digest, proposal revision, selection and group attempt. A proof whose
+  accepted text has no embeds needs no version check.
 - Real planning and preparation progress refresh the idle deadline. Waiting for another Move or a
   folder-wide job (Restrict, folder protection, Archive) refreshes it too, because that job can run
   longer than the deadline. Other waits do not. Repair after the switch and abort repair also keep
@@ -223,7 +244,7 @@ Paged pending-state storage (`packages/app/convex/schema.ts`; shared helpers in 
 - Agent archive proposals and Added-draft removal carry the same `agentSource` into their writing transaction. Removal refuses an ended source membership, including after re-invite. This check does not attach a lasting source-access rule to finished proposals.
 - Agent preparation and proposal readback carry `agentSource` too. A rebase creates its own source-bound batch, so revocation during preparation cannot update a home proposal. Human Review and Save keep their own destination checks and do not depend on the source chat.
 - `files_pending_update_text_inputs` — one staged text value (role `staged` or `unstaged`) per batch, with its batch's tagged target, so no registered call carries two large values at once.
-- `files_yjs_trusted_update_stages` — one server-built Yjs update staged ahead of its commit (pending accept, public fill, snapshot restore), so the commit call carries only ids and one bounded text. 30-minute TTL.
+- `files_yjs_trusted_update_stages` — one server-built Yjs update staged ahead of its commit (pending accept, public fill, snapshot restore), so the commit call carries only ids and one bounded text. 30-minute TTL, except `public_fill`: 5 minutes. A `public_fill` stage holds no private storage bytes (it lives under a second), so every delete path (consume, replace, retire, expiry sweep) skips the release for it by `stage.kind`. The other kinds keep their holds, and releasing a deleted stage without a hold throws.
 
 The digest is two FNV-1a 32-bit passes joined as hex (`files_pending_update_yjs_state_digest` in `packages/app/server/files.ts`). It is not cryptographic; it only detects a torn or mixed page family when a state is reassembled.
 
@@ -424,11 +445,14 @@ Important behavior:
 - Connected moves, folder cycles, content, and replacement occupants must appear in the explicit server review selection. Accepting one member never silently selects another member. Each connected Accept unit stages its changes in pages and publishes them with one group switch.
 - Folder Move replaces only an empty folder. Bash requires the explicit `mv -T -f` form. Active saved children, private children, and the owner's pending moves into that folder count as contents. The final Save checks again, so a late saved child keeps its folder. A file never replaces a folder, and a folder never replaces a file. Move never merges nonempty folders.
 - Move Accept uses `files_move_cohorts.ts`. It stages every affected saved header and indexed side doc in pages. Before the switch, readers keep the old IDs, names and content. After it, they read the final group while the worker finishes physical writes and releases holds. See "Create, Rename, Archive, Unarchive" in the [explorer spec](../files-explorer-tree/SKILL.md).
-- A replacement pins the saved occupant ID and content version at proposal time. A later occupant or changed version requires a new review; Save never adopts either automatically. The occupant's own pending changes must be selected too, even when another chat contributed them.
+- A replacement pins the saved occupant ID and content version at proposal time. A later occupant or changed version requires a new review; Save never adopts either automatically. The occupant's own pending changes must be selected too, even when another chat contributed them. Accept archives that occupant and removes its whole proposal without saving its draft text or charging another Save.
+- Accepting Delete or replacement retires the consumed proposal's three content states. Background cleanup removes their pages before releasing the held bytes. Removing the proposal alone must not leave those states active.
+- If that proposal also owns an unused Copy asset, cleanup queues its exact R2 key and deletes its asset doc. Its byte hold stays until R2 deletion finishes. A normal Save keeps the asset adopted by its content step.
 - The only stale literal the client treats as benign is `Stale save` (plus `Not found` on in-flight syncs); both come from multi-second ACTIONS, not from panel clicks.
 - One documented cross-tab edge (accepted editing model): an OPEN diff editor owns a live local draft, and a dead doc id with no replacement doc deliberately falls through to the create path — so a diff tab left open on a file can recreate a proposal that was discarded in another tab. The recreated content is pending only (never committed or billed) and shows up in the panel like any proposal. Making Discard authoritative across tabs would need a separate draft-cancellation design.
 - Every proposal edit refreshes the 4-hour expiry, including identical-content upsert and sync. An identical rewrite still bumps `updatedAt`, moves `expiresAt` later, and records new structural intent. Toggle and restore marking leave both timestamps unchanged. Successful preparation refreshes them normally.
 - Collaborative Save merges both branches against current text with the shared line rule, builds them on current history, and publishes only staged text. It writes the saved-sequence marker, enqueues R2 materialization, and keeps unresolved unstaged work on partial save. It does not replay old branch delete sets onto current content. A branch may contain another Yjs root accepted by the state seal; Save projects only the file's own text shape.
+- Background Save writes text in pages of eight chunks. Markdown pages convert only their own chunks to plain text. They keep the full source's chunk count, positions and flags. The remaining draft uses the same page rule.
 - Save guards the target node before any write: a missing, out-of-scope, or non-file target returns `Not found` and the doc survives. An archived target still saves: the archive only hides the node, its content stays writable, and unarchiving later shows the saved text. The sidebar marks those rows `· Archived`.
 - A save whose action-read base sequence no longer matches the file's CURRENT committed last sequence returns `Stale save` before any write or billing. This one check covers two races: a second tab replaying an old save (no double billing), and another user committing between the action's read and the mutation (the doc's new base can never silently hide that commit).
 - A replace-move Accept archives the reviewed saved occupant and moves or publishes the source into its place. A saved source keeps its saved ID, type, and history; a private source keeps its private identity until it receives its one saved receipt. A partial private Save clears the replacement claim and keeps unresolved content on the same proposal, now targeting the saved source. It does not merge the occupant's content.
@@ -602,7 +626,7 @@ The pending overlay is a set of derived tables. They copy what each user's draft
 - `files_pending_list_rows` and `files_pending_list_keys`: the Pending tab list and its chat choices.
 - `files_pending_overlay_jobs`: one task doc per job, with one scheduled run. A 15-minute cron restarts late tasks.
 
-**The flush rule.** Every mutation imports `mutation` or `internalMutation` from `convex/functions.ts`. That wrapper captures writes to the source tables (`files_nodes`, `files_pending_updates`, `files_pending_nodes`, `files_pending_node_publish_receipts`, `files_metadata_docs`, `access_control_permission_grants`) and flushes once at the end, in the same transaction. The same flush keeps the share rows (`files_share_rows`) true: only file grants and restricted scope roots change them (see "Share rows" in `../access-control/SKILL.md`). Every flush call also inserts the metadata catalog's deltas for the committed metadata writes since the last call, tagged Move docs included, and clears them (see "Catalog" in `../file-metadata/SKILL.md`). Derived writes are diffed, so an unchanged doc is not written. The flush, its jobs, data deletion and fenced cohort staging write derived tables. Cohort workers build both owner views before publication. Work that grows with the number of other users goes to jobs, so another user's derived docs can lag a few seconds. In tests, `t.run` is raw: seed drafts with `test_run_with_flush` from `convex/setup.test.ts`.
+**The flush rule.** Every mutation imports `mutation` or `internalMutation` from `convex/functions.ts`. That wrapper captures writes to the source tables (`files_nodes`, `files_pending_updates`, `files_pending_nodes`, `files_pending_node_publish_receipts`, `files_metadata_docs`, `access_control_permission_grants`) and flushes once at the end, in the same transaction. The same flush keeps the share rows (`files_share_rows`) true: only file grants, restricted scope roots and open nodes with service account rows change them (see "Share rows" in `../access-control/SKILL.md`). Every flush call also inserts the metadata catalog's deltas for the committed metadata writes since the last call, tagged Move docs included, and clears them (see "Catalog" in `../file-metadata/SKILL.md`). Derived writes are diffed, so an unchanged doc is not written. The flush, its jobs, data deletion and fenced cohort staging write derived tables. Cohort workers build both owner views before publication. Work that grows with the number of other users goes to jobs, so another user's derived docs can lag a few seconds. In tests, `t.run` is raw: seed drafts with `test_run_with_flush` from `convex/setup.test.ts`.
 
 **Saved node ancestors.** The same flush writes `files_nodes.ancestor1..ancestor12`: the folders above a node, top-level folder first, so "under folder G" is one equality `ancestor<G.pathDepth> = G` in the `files_nodes.search_name` search index. For every saved node the round inserted or whose parent or `treePath` changed, parents first (shorter `treePath`), it copies the parent's ancestors plus the parent. A node more than 12 folders deep keeps the top 12, so a folder deeper than 12 levels cannot scope a name search. Ordinary creates, restores and path repair use this flush. Move, Rename and Accept also build the AFTER place's ancestors in their fenced cohort stage. Outside fenced cohort materialization, a `files_nodes` patch that writes only ancestor fields marks nothing; a patch that mixes them with other fields throws. `files_pending_overlay:check_ancestors` (`cursor: null`, call again until the cursor is null) reports nodes whose ancestors drifted, for example after a dashboard edit.
 

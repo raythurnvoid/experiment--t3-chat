@@ -270,7 +270,8 @@ export async function files_pending_media_db_require_validation(
 		operationBatchId: args.operationBatchId,
 	});
 	const proof = data?.input.mediaValidation;
-	// An atomic review unit checks all proofs before its own media commits advance the clocks.
+	// An atomic review unit checks all proofs with media before its own media commits advance the clocks.
+	// A proof with no media refs has nothing a later Files or access change can break.
 	if (
 		!data ||
 		!proof ||
@@ -284,11 +285,12 @@ export async function files_pending_media_db_require_validation(
 		proof.reviewSelectionDigest !==
 			(await crypto_sha256_hex(JSON.stringify([...(args.reviewedPendingUpdateIds ?? [])].sort()))) ||
 		proof.reviewRunId !== (args.reviewRunId ?? null) ||
-		(!(
-			args.validated?.ctx === ctx &&
-			args.validated.textInputId === data.input._id &&
-			compareValues(args.validated.proof, proof) === 0
-		) &&
+		(proof.totalCount > 0 &&
+			!(
+				args.validated?.ctx === ctx &&
+				args.validated.textInputId === data.input._id &&
+				compareValues(args.validated.proof, proof) === 0
+			) &&
 			!(await files_media_validation_db_versions_match(ctx, proof)))
 	)
 		return Result({ _nay: { name: "media_validation_changed", message: "Media or access changed. Try Save again." } });

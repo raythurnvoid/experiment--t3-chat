@@ -5,18 +5,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { activities_is_active } from "./activities_db.ts";
+import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
-import {
-	files_subtree_ops_db_delete,
-	files_subtree_ops_db_enqueue_nodes,
-	files_subtree_ops_db_insert,
-} from "./files_subtree_ops.ts";
+import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { test_save_file_pending_update, test_convex, test_rename_node, test_move_nodes, test_create_saved_text_file, test_finish_transfer_run, test_finish_pending_update_run, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
 
@@ -2382,10 +2378,10 @@ describe("advance", () => {
 		const paths = Array.from({ length: 55 }, (_entry, index) => `/source/folder-${index.toString().padStart(2, "0")}`);
 		const fixture = await create_folder_fixture(["/source", ...paths]);
 		const { t, db, asUser, folders } = fixture;
-		const runId = await start_copy(fixture, [folders.get("/source")!]);
-		await t.mutation(internal.files_transfer.advance, { runId });
 		// Copy and Move of one user share one lane, so a teammate moves the child.
 		const member = await add_member(fixture);
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await t.mutation(internal.files_transfer.advance, { runId });
 		expect(
 			(
 				await test_move_nodes(t, member.asUser, {
@@ -4157,13 +4153,8 @@ describe("move", () => {
 		});
 		if (moving._nay) throw new Error(moving._nay.message);
 		const moveArgs = { membershipId: member.membershipId, runId: moving._yay.runId };
-		// Run real steps, one per second, for at most five minutes. A Move takes many small steps. The
-		// other user's choice lasts 24 hours, so it must not expire.
-		for (let step = 0; step < 300; step++) {
-			if ((await member.asUser.query(api.files_transfer.get, moveArgs))?.activity.status === "succeeded") break;
-			vi.advanceTimersByTime(1_000);
-			await t.finishInProgressScheduledFunctions();
-		}
+		// Finish only this Move. The other user's choice must stay open.
+		await test_finish_transfer_run(member.asUser, moving._yay.runId);
 		expect(
 			await member.asUser.query(api.files_transfer.get, moveArgs),
 			"An unrelated paused Copy must not block Move",
@@ -4428,7 +4419,15 @@ describe("move", () => {
 				ctx.db
 					.query("files_metadata_docs")
 					.filter((q) => q.eq(q.field("fileNodeId"), fileNodeId))
-					.collect(),
+					.collect()
+					// Move writes new docs, so their creation order can change.
+					.then((docs) =>
+						docs.sort((a, b) =>
+							a.fieldPath.localeCompare(b.fieldPath) ||
+							a.docKind.localeCompare(b.docKind) ||
+							(a.entryIndex ?? 0) - (b.entryIndex ?? 0),
+						),
+					),
 			);
 		const versionsBefore = await read_versions(sourceId);
 		const metadataDocsBefore = await read_metadata_docs(sourceId);
@@ -4484,11 +4483,20 @@ describe("move", () => {
 		const moved = await t.run((ctx) => ctx.db.get("files_nodes", sourceId));
 		expect(moved).toMatchObject({ path: "/target/notes.md", archiveOperationId: null });
 		expect(await read_versions(sourceId)).toEqual(versionsBefore);
-		// The Move stages new metadata rows at the new path and keeps only them at the switch. The node
-		// keeps the same fields, and no staged copy is left behind.
+		// Move publishes new docs with the same values, node id, and saved version.
 		const metadataDocsAfter = await read_metadata_docs(sourceId);
-		expect(metadataDocsAfter).toHaveLength(metadataDocsBefore.length);
-		expect(metadataDocsAfter.every((doc) => doc.moveView === undefined)).toBe(true);
+		expect(metadataDocsAfter.map(({ _id, _creationTime, ...fields }) => fields)).toEqual(
+			metadataDocsBefore.map(({ _id, _creationTime, ...fields }) => ({
+				...fields,
+				path: moved!.path,
+				treePath: moved!.treePath,
+				...(fields.docKind === "field" ? {
+					parentId: moved!.parentId,
+					name: moved!.name,
+					sortName: moved!.sortName,
+				} : {}),
+			})),
+		);
 		expect(metadataDocsAfter.map((doc) => doc.fieldPath).sort()).toEqual(
 			metadataDocsBefore.map((doc) => doc.fieldPath).sort(),
 		);
@@ -4809,44 +4817,45 @@ describe("move", () => {
 			(await asUser.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: sharedId }))
 				._nay,
 		).toBeUndefined();
-		// Rename /a to /b the way a big folder is renamed: the folder now, its children later. `shared`
-		// still stores /a/shared/, and a new folder takes the free name /a. A Move waits for this op, so
-		// it checks `shared` only after the walk rewrote its path.
-		const newA = await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", folders.get("/a")!, {
-				name: "b",
-				sortName: files_sort_text_key("b"),
-				path: "/b",
-				treePath: "/b/",
-			});
-			const opId = await files_subtree_ops_db_insert(ctx, {
-				op: {
-					kind: "move",
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					userId: db.userId,
-					status: "running",
-					blockedByOpId: null,
-					rootNodeIds: [folders.get("/a")!],
-					treePaths: ["/b/"],
-					oldTreePaths: ["/a/"],
-				},
-				now: Date.now(),
-			});
-			// A real op queues its roots for the walk.
-			await files_subtree_ops_db_enqueue_nodes(ctx, { opId, nodes: [{ nodeId: folders.get("/a")!, nodeDone: true }] });
-			return await ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				createdBy: db.userId,
-				updatedBy: db.userId,
-				name: "a",
-				sortName: files_sort_text_key("a"),
-				path: "/a",
-				treePath: "/a/",
-			});
+		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			requestId: "rename-restricted-descendant",
+			nodeId: folders.get("/a")!,
+			path: "b",
 		});
+		if (!renamed._yay) throw new Error(renamed._nay?.message ?? "Expected a Rename run");
+		let observedOldPath = false;
+		await test_finish_transfer_run(asUser, renamed._yay.runId, async () => {
+			if (observedOldPath) return;
+			const cohort = await t.run(async (ctx) => {
+				const slot = await ctx.db.query("files_move_workspace_slots").withIndex("by_workspace", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
+				).unique();
+				return slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
+			});
+			if (!cohort || cohort.publishedAt === null) return;
+			const stored = await t.run((ctx) => ctx.db.get("files_nodes", sharedId));
+			if (stored?.path !== "/a/shared") return;
+			observedOldPath = true;
+			expect(await asUser.query(api.files_nodes.get_file_node_for_membership, {
+				membershipId: db.membershipId, fileNodeId: String(sharedId),
+			}), "A published Rename shows the new path before stored repair").toMatchObject({ path: "/b/shared" });
+			expect(await member.asUser.query(api.files_nodes.get_file_node_for_membership, {
+				membershipId: member.membershipId, fileNodeId: String(sharedId),
+			})).toBeNull();
+			// The old name stays reserved until the Move repairs its stored docs.
+			expect(await asUser.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId, parentId: files_ROOT_ID, path: "a",
+			})).toMatchObject({ _nay: { name: "move_busy" } });
+		});
+		expect(observedOldPath, "The test sees publication before stored path repair").toBe(true);
+		expect(await asUser.query(api.files_transfer.get, {
+			membershipId: db.membershipId, runId: renamed._yay.runId,
+		})).toMatchObject({ activity: { status: "succeeded" } });
+		const newA = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId, parentId: files_ROOT_ID, path: "a",
+		});
+		if (newA._nay) throw new Error(newA._nay.message);
 		const move = (itemId: Id<"files_nodes">) =>
 			test_move_nodes(t, member.asUser, {
 					membershipId: member.membershipId,
@@ -4856,56 +4865,48 @@ describe("move", () => {
 
 		// The member cannot write in `shared`, so they cannot carry it away inside /b.
 		expect((await move(folders.get("/a")!))._nay).toMatchObject({ message: "Permission denied" });
-		// The new /a only matches the old stored path of `shared`. It does not hold it.
-		expect(await move(newA)).toEqual({ _yay: null });
+		// The new /a reuses the old name. It does not hold the restricted folder.
+		expect(await move(newA._yay.nodeId)).toEqual({ _yay: null });
 	});
 
 	test("checks the restricted folder of an item whose stored scope a running scope op has not written yet", async () => {
-		const fixture = await create_folder_fixture(["/shared", "/shared/item", "/other"]);
-		const { t, db, folders } = fixture;
+		const paths = Array.from({ length: 100 }, (_entry, index) => `/shared/item-${index.toString().padStart(2, "0")}`);
+		const fixture = await create_folder_fixture(["/shared", "/other", ...paths]);
+		const { t, db, asUser, folders } = fixture;
 		const member = await add_member(fixture);
-		// Restrict /shared the way a big folder is restricted: the folder now, its children later.
-		await t.run(async (ctx) => {
-			await files_nodes_db_set_restricted_scope({
-				ctx,
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				nodeId: folders.get("/shared")!,
-				restrictedScopeNodeId: folders.get("/shared")!,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
-			});
-			const opId = await files_subtree_ops_db_insert(ctx, {
-				op: {
-					kind: "scope",
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					userId: db.userId,
-					status: "running",
-					blockedByOpId: null,
-					rootNodeIds: [folders.get("/shared")!],
-					treePaths: ["/shared/"],
-				},
-				now: Date.now(),
-			});
-			// A real op queues its roots for the walk.
-			await files_subtree_ops_db_enqueue_nodes(ctx, { opId, nodes: [{ nodeId: folders.get("/shared")!, nodeDone: true }] });
-		});
-		expect(await t.run((ctx) => ctx.db.get("files_nodes", folders.get("/shared/item")!))).toMatchObject({
+		const itemId = folders.get(paths.at(-1)!)!;
+		expect(await asUser.mutation(api.files_sharing.restrict_node, {
+			membershipId: db.membershipId, nodeId: folders.get("/shared")!,
+		})).toEqual({ _yay: null });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId)), "Restrict leaves the selected child's stored scope for its next step").toMatchObject({
 			restrictedScopeNodeId: null,
 		});
 
-		// The member has no grant on /shared, so the write check refuses the item, like any item inside a
-		// restricted folder. Moving the item out would leave it open for good, because the op walks only
-		// what is still inside /shared. So the Move waits for the op and checks the written scope.
-		expect(
-			(
-				await test_move_nodes(t, member.asUser, {
-						membershipId: member.membershipId,
-						itemIds: [folders.get("/shared/item")!],
-						targetParentId: folders.get("/other")!,
-					})
-			)._nay,
-		).toMatchObject({ message: "Permission denied" });
+		const started = await member.asUser.mutation(api.files_transfer.start, {
+			membershipId: member.membershipId,
+			requestId: "move-during-scope-repair",
+			kind: "move",
+			expectedSourceCount: 1,
+			sourceIds: [itemId],
+			targetParentId: folders.get("/other")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		expect(await member.asUser.mutation(api.files_transfer.seal, {
+			membershipId: member.membershipId, runId,
+		})).toEqual({ _yay: null });
+		await t.mutation(internal.files_transfer.advance, { runId });
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)), "Move waits for the native scope repair before reading its source").toMatchObject({ step: "select" });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({
+			parentId: folders.get("/shared")!, restrictedScopeNodeId: null,
+		});
+		await test_finish_transfer_run(member.asUser, runId);
+		expect(await member.asUser.query(api.files_transfer.get, {
+			membershipId: member.membershipId, runId,
+		})).toMatchObject({ activity: { status: "failed", errorMessage: "Permission denied" } });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({
+			parentId: folders.get("/shared")!, restrictedScopeNodeId: folders.get("/shared")!,
+		});
 	});
 });
 

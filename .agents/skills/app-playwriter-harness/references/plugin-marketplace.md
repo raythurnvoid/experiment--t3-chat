@@ -381,10 +381,19 @@ skill, `mcp-echo`. The server is the public fixture Worker
 `packages/mcp-fixture-worker`). It has the tools `echo` and `picture` and no sign-in. Convex dev runs
 in the cloud, so a server on a laptop cannot be used for live MCP checks. Use this one.
 
-Where it lives (verified 2026-09-28): published as `data-probe@0.3.0` and installed only in
-`chitchat-qa/copy-qa-0922`. The `chitchat-qa` plugin policy allows `data-probe`. `personal/home`
+Where it lives (verified 2026-10-11): published as `data-probe@0.4.1` and installed only in
+`chitchat-qa/copy-qa-0922`. The `chitchat-qa` plugin policy allows `data-probe` up to 0.4.1. `personal/home`
 stays on 0.2.1 on purpose, because every chat in a workspace with the plugin gets the fixture tools.
-Reuse that installation. Do not install 0.3.0 in another workspace.
+Reuse that installation. Do not install it in another workspace.
+
+- **A new version needs the policy first.** The `chitchat-qa` policy allows each plugin only up to an
+  approved version. A version that adds capabilities (0.4.1 added `workspace.files.read` and
+  `plugin.schedule.run`) cannot be installed or updated until the org owner approves it in the
+  policy dialog. This is an owner action, so log it in the qa-data inventory. Verified 2026-10-11.
+- **Its service account needs workspace read to list a folder.** `files/list` on an unrestricted
+  folder checks workspace read for a service account. A grant on that folder alone was not enough
+  for the probe's list check. Give the `Data Probe` account a temporary workspace read grant for the
+  check, then remove it. Verified 2026-10-11.
 
 To set it up again (for example after a data reset):
 

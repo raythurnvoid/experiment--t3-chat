@@ -52,7 +52,6 @@ const {
 	toastErrorMock: vi.fn(),
 }));
 
-vi.mock("@/components/app-auth.tsx", () => ({ AppAuthProvider: { useAuthenticated: () => authState } }));
 vi.mock("@/lib/files-move-intake.ts", () => ({
 	files_move_intake_load: intakeLoadMock,
 	files_move_intake_save: intakeSaveMock,
@@ -264,6 +263,7 @@ function TestClipboard(props: { membershipId?: string; showNavigation?: boolean;
 			membershipId={(props.membershipId ?? "membership") as app_convex_Id<"organizations_workspaces_users">}
 		>
 			<FilesClipboardProvider
+				userId={authState.userId as app_convex_Id<"users">}
 				membershipId={(props.membershipId ?? "membership") as app_convex_Id<"organizations_workspaces_users">}
 			>
 				{props.showNavigation === false ? null : <FileNavigation blocked={props.blocked} />}

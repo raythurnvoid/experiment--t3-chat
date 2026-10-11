@@ -13,6 +13,7 @@ import {
 	run_job,
 	mutation_calls,
 } from "./bash.setup.test.ts";
+import { bash_job_copy_admit_limits } from "./bash.ts";
 
 describe("bash_run_command", () => {
 	describe("jobs", () => {
@@ -508,31 +509,38 @@ describe("bash_run_command", () => {
 					).length;
 				return await mutate(reference, args);
 			});
-			// 3,201 sources need 33 pages. One worker appends at most 32 pages (3,200 sources), then requeues
-			// the job. Each source costs a path lookup, so keep the count just past 3,200.
-			await runner.run({
-				command:
-					"{ cp $(echo once >> count.txt; printf 'docs/readme.md\\n%.0s' $(seq 3201)) copies/; echo after > after.txt; } &",
-			});
+			// The real cap is 32 pages (3,200 sources). Each source costs a path lookup, so lower the cap to
+			// 3 pages: 301 sources need 4 pages, and one worker appends 3 pages (300 sources), then requeues
+			// the job. A frozen clock keeps the transfer deadline away, so only the page cap stops the worker.
+			vi.useFakeTimers({ toFake: ["Date"] });
+			bash_job_copy_admit_limits.maxPages = 3;
+			try {
+				await runner.run({
+					command:
+						"{ cp $(echo once >> count.txt; printf 'docs/readme.md\\n%.0s' $(seq 301)) copies/; echo after > after.txt; } &",
+				});
 
-			const first = await run_job(runner, 1);
-			expect(sourceReadsBeforeCheckpoint, "source resolution begins after saved input").toBe(0);
-			if (first.job.copy?.phase !== "admitting" || first.job.copy.runId === null)
-				throw new Error("Expected a linked Copy admission");
-			const scope = { membershipId: first.membershipId, threadId: first.threadId, runId: first.job.copy.runId };
-			expect(first.job.workerGeneration).toBe(1);
-			expect(first.job.copy.sourcesCount, "the first worker leaves source resolution unfinished").toBe(3200);
-			expect(first.job.copy.input.cursor).toBeLessThan(first.job.copy.input.sourceByteCount);
-			expect(await runner.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({
-				step: "uploading",
-				selection: { expectedCount: 3201, count: 3200 },
-			});
+				const first = await run_job(runner, 1);
+				expect(sourceReadsBeforeCheckpoint, "source resolution begins after saved input").toBe(0);
+				if (first.job.copy?.phase !== "admitting" || first.job.copy.runId === null)
+					throw new Error("Expected a linked Copy admission");
+				const scope = { membershipId: first.membershipId, threadId: first.threadId, runId: first.job.copy.runId };
+				expect(first.job.workerGeneration).toBe(1);
+				expect(first.job.copy.sourcesCount, "the first worker leaves source resolution unfinished").toBe(300);
+				expect(first.job.copy.input.cursor).toBeLessThan(first.job.copy.input.sourceByteCount);
+				expect(await runner.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({
+					step: "uploading",
+					selection: { expectedCount: 301, count: 300 },
+				});
 
-			const second = await run_job(runner, 1);
-			expect(second.job.copy).toMatchObject({ phase: "waiting", runId: scope.runId });
-			expect(await runner.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({
-				selection: { expectedCount: 3201, count: 3201 },
-			});
+				const second = await run_job(runner, 1);
+				expect(second.job.copy).toMatchObject({ phase: "waiting", runId: scope.runId });
+				expect(await runner.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({
+					selection: { expectedCount: 301, count: 301 },
+				});
+			} finally {
+				bash_job_copy_admit_limits.maxPages = 32;
+			}
 			expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(1);
 			expect((await runner.run({ command: "cat count.txt" })).stdout).toBe("once\n");
 			const inputReads = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("bash-inputs"));

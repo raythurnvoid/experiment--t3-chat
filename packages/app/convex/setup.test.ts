@@ -1,5 +1,5 @@
 import "./setup-env.test.ts";
-import { afterEach, vi } from "vitest";
+import { afterEach, expect, vi } from "vitest";
 import { convexTest, type TestConvexRoot } from "convex-test";
 import type { FunctionArgs } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -35,7 +35,7 @@ import {
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { files_nodes_db_insert_committed_text_chunks } from "./files_nodes_create_db.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { path_tree_prefix_upper_bound, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
@@ -43,6 +43,7 @@ import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
 import { activities_db_get_by_source_id, activities_db_require_by_source_id } from "./activities_db.ts";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
 
 // #region helpers
 
@@ -165,6 +166,38 @@ export async function test_compact_metadata_catalog(t: TestConvexRoot<DataModel>
 }
 
 /**
+ * Run the billing outbox drainer until the outbox is empty, so a test sees every signed-in usage
+ * event of its saves as an `ingest_events` job on the usage pool. Only `Date.now` moves past the
+ * drainer's cutoff, and only during these runs.
+ */
+export async function test_drain_billing_usage_event_outbox(t: TestConvexRoot<DataModel>) {
+	// A test may mock `Date.now` itself; put its mock back after.
+	const previous = vi.isMockFunction(Date.now) ? vi.mocked(Date.now).getMockImplementation() : undefined;
+	// convex-test keeps creation times increasing, so a mocked clock in the past can be behind them.
+	const newest = await t.run(async (ctx) => await ctx.db.query("billing_usage_event_outbox").order("desc").first());
+	const now = Math.ceil(Math.max(Date.now(), newest?._creationTime ?? 0)) + 1001;
+	const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+	try {
+		for (let pass = 0; pass < 100; pass++) {
+			const { marker, waiting } = await t.run(async (ctx) => ({
+				marker: await ctx.db.query("billing_usage_event_outbox_drainers").first(),
+				waiting: await ctx.db.query("billing_usage_event_outbox").first(),
+			}));
+			if (!waiting) break;
+			if (!marker) throw new Error("Billing usage events wait in the outbox without a drainer marker");
+			await t.mutation(internal.billing.drain_usage_event_outbox, { markerId: marker._id });
+		}
+		expect(
+			await t.run(async (ctx) => await ctx.db.query("billing_usage_event_outbox").collect()),
+			"the drainer must send every outbox event",
+		).toEqual([]);
+	} finally {
+		if (previous) dateNow.mockImplementation(previous);
+		else dateNow.mockRestore();
+	}
+}
+
+/**
  * Return the real worker result after public paged Move intake.
  */
 export async function test_move_nodes(
@@ -234,6 +267,56 @@ export async function test_move_nodes(
 	}
 }
 
+async function test_run_pending_overlay_job(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	scope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+	allowFuture: boolean,
+	jobs?: Doc<"files_pending_overlay_jobs">[],
+) {
+	jobs ??= await asUser.run(ctx => ctx.db.query("files_pending_overlay_jobs")
+		.withIndex("by_org_ws", q => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId)).collect());
+	const ready = jobs.find(job => !job.blockedByCohortId && job.nextAttemptAt <= Date.now());
+	const job = ready ?? (allowFuture ? jobs.filter(job => !job.blockedByCohortId)
+		.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt)[0] : undefined);
+	if (!job) return false;
+	if (job.nextAttemptAt > Date.now()) {
+		if (!vi.isFakeTimers()) throw new Error("A deferred overlay job needs fake timers");
+		// Change the clock only. Firing timers would also run other users' jobs and expiry handlers.
+		vi.setSystemTime(job.nextAttemptAt);
+	}
+	await asUser.mutation(internal.files_pending_overlay.run_job, {
+		kind: job.kind,
+		key: job.key,
+		nextAttemptAt: job.nextAttemptAt,
+	});
+	const after = await asUser.run(ctx => ctx.db.get("files_pending_overlay_jobs", job._id));
+	if (JSON.stringify(after) === JSON.stringify(job)) throw new Error("Pending overlay job made no progress");
+	return true;
+}
+
+async function test_wake_move_cohort(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	cohortId: Id<"files_move_cohorts">,
+) {
+	// Each native wake page removes waiters or clears their blocked cohort. Do not fire the workers.
+	while (true) {
+		const waiter = await asUser.run(ctx => ctx.db.query("files_move_waiters")
+			.withIndex("by_cohort", q => q.eq("cohortId", cohortId)).first());
+		if (!waiter) break;
+		await asUser.mutation(internal.files_move_cohorts.wake_waiters, { cohortId });
+		if (await asUser.run(ctx => ctx.db.get("files_move_waiters", waiter._id)))
+			throw new Error("Move waiter wake made no progress");
+	}
+	while (true) {
+		const job = await asUser.run(ctx => ctx.db.query("files_pending_overlay_jobs")
+			.withIndex("by_blockedCohort", q => q.eq("blockedByCohortId", cohortId)).first());
+		if (!job) break;
+		await asUser.mutation(internal.files_move_cohorts.wake_owner_jobs, { cohortId });
+		if ((await asUser.run(ctx => ctx.db.get("files_pending_overlay_jobs", job._id)))?.blockedByCohortId === cohortId)
+			throw new Error("Move owner job wake made no progress");
+	}
+}
+
 /**
  * Drive this Transfer and its repairs without running another queued user job.
  */
@@ -242,57 +325,79 @@ export async function test_finish_transfer_run(
 	runId: Id<"files_transfer_runs">,
 	onStep?: () => Promise<void>,
 ) {
-	const progress = test_progress_guard();
-	for (let pass = 0; pass < 50_000; pass++) {
+	let previous: string | undefined;
+	while (true) {
 		await onStep?.();
-		// All reads of one pass in one transaction. Each write below runs alone, like a real worker.
-		const state = await asUser.run(async ctx => {
+		const { run, activity, active, jobs, repair, ownedCohort, discoveryItem } = await asUser.run(async ctx => {
 			const run = await ctx.db.get("files_transfer_runs", runId);
 			if (!run) throw new Error("Missing transfer run");
 			const activity = await activities_db_require_by_source_id(ctx, runId);
-			if (!["queued", "running", "stopping"].includes(activity.status)) return null;
-			const job = await test_db_get_overlay_job(ctx, run);
-			const op = job ? null : await files_subtree_ops_db_find_repair(ctx, run);
+			const active = ["queued", "running", "stopping"].includes(activity.status);
+			const jobs = await ctx.db.query("files_pending_overlay_jobs")
+				.withIndex("by_org_ws", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).collect();
+			const hasOverlayJob = jobs.some(job => !job.blockedByCohortId && (active || job.nextAttemptAt <= Date.now()));
+			const ownedCohort = active && !hasOverlayJob ? await ctx.db.query("files_move_cohorts")
+				.withIndex("by_origin_run", q => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).order("desc").first() : null;
+			const op = active && !hasOverlayJob && (!ownedCohort || ownedCohort.phase === "complete") ? await files_subtree_ops_db_find_repair(ctx, run) : null;
 			if (op?.kind === "archive" || op?.kind === "restore") throw new Error("Transfer waits for Archive or Restore");
 			const walk = op ? await ctx.db.query("files_subtree_op_walks").withIndex("by_op", q => q.eq("opId", op._id)).unique() : null;
 			if (op && !walk) throw new Error("Missing repair walk");
-			const cohort = job || op ? null : await test_db_get_slot_cohort(ctx, run);
-			return { run, activity, job, walk, cohort };
+			const repair = op && walk ? { opId: op._id, step: walk.step } : null;
+			const discoveryItem = active && run.kind === "copy" && run.step === "discover" ? await ctx.db.query("files_transfer_items")
+				.withIndex("by_run_discoveryDone_order", q => q.eq("runId", runId).eq("discoveryDone", false)).first() : null;
+			return { run, activity, active, jobs, repair, ownedCohort, discoveryItem };
 		});
-		if (!state) return;
-		const { run, activity, job, walk } = state;
-		progress(state, `Transfer step ${run.step}, activity ${activity.status}, job ${job?.kind ?? "none"}, repair step ${walk?.step ?? "none"}, Move ${state.cohort ? `${state.cohort.phase}/${state.cohort.workPhase} step ${state.cohort.step}` : "none"}`);
-		if (job) {
-			await asUser.mutation(internal.files_pending_overlay.run_job, {
-				kind: job.kind,
-				key: job.key,
-				nextAttemptAt: job.nextAttemptAt,
-			});
+		if (await test_run_pending_overlay_job(asUser, run, active, jobs)) {
+			previous = undefined;
 			continue;
 		}
-		if (walk) {
-			await asUser.mutation(internal.files_subtree_ops.advance, { opId: walk.opId, step: walk.step });
+		if (!active) return;
+		if (repair) {
+			await asUser.mutation(internal.files_subtree_ops.advance, repair);
+			const walk = await asUser.run(ctx => ctx.db.query("files_subtree_op_walks")
+				.withIndex("by_op", q => q.eq("opId", repair.opId)).unique());
+			if (walk?.step === repair.step) throw new Error("Transfer repair made no progress");
+			previous = undefined;
 			continue;
 		}
-		let cohort = state.cohort;
-		// With its own Move running and no Stop, advance only schedules the Move's next step (see
-		// files_transfer.ts advance), so skip it. Stop still goes through advance.
-		if (
-			cohort?.origin.kind !== "transfer" || cohort.origin.runId !== runId || cohort.phase === "complete" ||
-			activity.status === "stopping" || run.kind !== "move" || run.publication !== "saved"
-		) {
+		// Refreshing a deadline alone does not advance the worker.
+		const current = JSON.stringify({
+			run: { ...run, updatedAt: undefined },
+			activity: { ...activity, updatedAt: undefined, deadlineAt: undefined },
+			cohort: ownedCohort,
+			// An empty Copy page changes the item, not the run.
+			discovery: discoveryItem && {
+				id: discoveryItem._id,
+				cursor: discoveryItem.discoveryCursor,
+				done: discoveryItem.discoveryDone,
+			},
+		});
+		if (previous === current) throw new Error("Transfer made no progress. Finish its waiting work first.");
+		previous = current;
+		// A running cohort schedules its own pages. Stop still needs Transfer.advance.
+		let cohort = activity.status === "running" && ownedCohort?.phase !== "complete" ? ownedCohort : null;
+		if (!cohort) {
 			await asUser.mutation(internal.files_transfer.advance, { runId });
-			cohort = await asUser.run(ctx => test_db_get_slot_cohort(ctx, run));
+			cohort = await asUser.run(async ctx => {
+				const slot = await ctx.db.query("files_move_workspace_slots")
+					.withIndex("by_workspace", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).unique();
+				if (!slot?.cohortId) return null;
+				const cohort = await ctx.db.get("files_move_cohorts", slot.cohortId);
+				if (!cohort) throw new Error("Transfer waits for another Move");
+				return cohort;
+			});
 		}
 		if (cohort) {
 			const cohortId = cohort._id;
 			if (cohort.origin.kind !== "transfer" || cohort.origin.runId !== runId) throw new Error("Transfer waits for another Move");
 			await asUser.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
-			if ((await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete")
+			// Only release can complete the cohort.
+			if (cohort.workPhase === "release" && (await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete") {
+				await test_wake_move_cohort(asUser, cohortId);
 				await asUser.mutation(internal.files_transfer.settle_cohort, { cohortId });
+			}
 		}
 	}
-	throw new Error("Transfer did not finish");
 }
 
 /**
@@ -423,55 +528,96 @@ export async function test_finish_pending_update_run(
 	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
 	runId: Id<"files_pending_update_runs">,
 ) {
-	const progress = test_progress_guard();
-	// The running Move that advance already saw. Until it completes, advance only schedules its next step.
-	let advancedCohortId: Id<"files_move_cohorts"> | null = null;
-	for (let pass = 0; pass < 50_000; pass++) {
-		// All reads of one pass in one transaction. Each write below runs alone, like a real worker.
-		const state = await asUser.run(async ctx => {
-			const review = await test_db_get_review_state(ctx, runId);
-			const op = review.job ? null : await files_subtree_ops_db_find_repair(ctx, review.run);
+	let previous: string | undefined;
+	while (true) {
+		const { run, activity, active, jobs, repair, ...worker } = await asUser.run(async ctx => {
+			const run = await ctx.db.get("files_pending_update_runs", runId);
+			if (!run) throw new Error("Missing review run");
+			const activity = await activities_db_require_by_source_id(ctx, runId);
+			const active = run.step !== "finished";
+			const jobs = await ctx.db.query("files_pending_overlay_jobs")
+				.withIndex("by_org_ws", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).collect();
+			const hasOverlayJob = jobs.some(job => !job.blockedByCohortId && (active || job.nextAttemptAt <= Date.now()));
+			const unit = active && !hasOverlayJob ? await ctx.db.query("files_pending_update_run_units")
+				.withIndex("by_run_status_deleteLast_order", q => q.eq("runId", runId).eq("status", "preparing")).first() : null;
+			const cohort = unit?.cohortId ? await ctx.db.get("files_move_cohorts", unit.cohortId) : null;
+			const op = active && !hasOverlayJob && (!cohort || cohort.phase === "complete") ? await files_subtree_ops_db_find_repair(ctx, run) : null;
+			if (op?.kind === "archive" || op?.kind === "restore") throw new Error("Review waits for Archive or Restore");
 			const walk = op ? await ctx.db.query("files_subtree_op_walks").withIndex("by_op", q => q.eq("opId", op._id)).unique() : null;
 			if (op && !walk) throw new Error("Missing repair walk");
-			return { ...review, walk };
+			const repair = op && walk ? { opId: op._id, step: walk.step } : null;
+			const driveWorker = active && !hasOverlayJob && !repair;
+			const plan = driveWorker && run.graphPlanId ? await ctx.db.get("files_pending_update_plans", run.graphPlanId) : null;
+			let settlingUnit: Doc<"files_pending_update_run_units"> | null = null;
+			// A dependency page can finish before the next unit starts.
+			if (driveWorker && run.step === "running" && !unit && run.finishedUnitCount > 0) {
+				for (const status of ["completed", "blocked", "failed"] as const) {
+					settlingUnit = await ctx.db.query("files_pending_update_run_units")
+						.withIndex("by_run_status_dependentsSettled_order", q =>
+							q.eq("runId", runId).eq("status", status).eq("dependentsSettled", false)).first();
+					if (settlingUnit) break;
+				}
+			}
+			const requiredUnitId = settlingUnit?._id;
+			const dependency = requiredUnitId ? await ctx.db.query("files_pending_update_run_dependencies")
+				.withIndex("by_required_settled", q => q.eq("requiredUnitId", requiredUnitId).eq("settled", false)).first() : null;
+			return { run, activity, active, jobs, repair, plan, unit, cohort, settlingUnit, dependency };
 		});
-		const { run, job, walk } = state;
-		progress(state, `Review step ${run.step}, activity ${state.activity?.status ?? "none"}, job ${job?.kind ?? "none"}, repair step ${walk?.step ?? "none"}, Move ${state.cohort ? `${state.cohort.phase}/${state.cohort.workPhase} step ${state.cohort.step}` : "none"}`);
-		if (job) {
-			await asUser.mutation(internal.files_pending_overlay.run_job, {
-				kind: job.kind,
-				key: job.key,
-				nextAttemptAt: job.nextAttemptAt,
-			});
+		if (await test_run_pending_overlay_job(asUser, run, active, jobs)) {
+			previous = undefined;
 			continue;
 		}
-		if (walk) {
-			await asUser.mutation(internal.files_subtree_ops.advance, { opId: walk.opId, step: walk.step });
+		if (!active) return;
+		if (repair) {
+			await asUser.mutation(internal.files_subtree_ops.advance, repair);
+			const walk = await asUser.run(ctx => ctx.db.query("files_subtree_op_walks")
+				.withIndex("by_op", q => q.eq("opId", repair.opId)).unique());
+			if (walk?.step === repair.step) throw new Error("Review repair made no progress");
+			previous = undefined;
 			continue;
 		}
-		if (run.step === "finished") return;
+		const current = JSON.stringify({
+			run: { ...run, updatedAt: undefined },
+			activity: { ...activity, updatedAt: undefined, deadlineAt: undefined },
+			...worker,
+		});
+		if (previous === current) throw new Error("Review made no progress. Finish its waiting work first.");
+		previous = current;
 		if (run.step === "uploading") await asUser.mutation(internal.files_pending_update_runs.append_single_save_input, { runId, fence: run.fence, offset: run.itemCount });
 		else if (run.step === "planning") await asUser.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
 		else {
-			let { unit, cohort } = state;
-			// advance checks the deadline and access, then only schedules the running Move (see
-			// files_pending_update_runs.ts advance). Nothing here changes access, so skip it until the Move completes.
-			if (!cohort || cohort._id !== advancedCohortId || cohort.phase === "complete" || !state.activity || state.activity.deadlineAt <= Date.now()) {
+			let unit = worker.unit;
+			let cohort = activity.status === "running" && unit?.kind === "cohort" ? worker.cohort : null;
+			// A running cohort schedules its own pages. Atomic retries still need Review.advance.
+			if (!cohort) {
 				await asUser.mutation(internal.files_pending_update_runs.advance, { runId });
-				({ unit, cohort } = await asUser.run(ctx => test_db_get_review_cohort(ctx, runId)));
-				advancedCohortId = cohort && cohort.phase !== "complete" ? cohort._id : null;
+				({ unit, cohort } = await asUser.run(async ctx => {
+					const unit = await ctx.db.query("files_pending_update_run_units")
+						.withIndex("by_run_status_deleteLast_order", q => q.eq("runId", runId).eq("status", "preparing")).first();
+					const cohort = unit?.cohortId ? await ctx.db.get("files_move_cohorts", unit.cohortId) : null;
+					return { unit, cohort };
+				}));
 			}
 			if (unit?.cohortId) {
 				if (!cohort) throw new Error("Missing review cohort");
-				if (cohort.phase === "complete") await asUser.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
-				else await asUser.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
-			} else if (unit && unit.kind !== "cohort") {
-				// Other units run as Workpool work, which the test does not run. Run that step here.
-				await asUser.action(internal.files_pending_update_runs.prepare_unit, { runId, fence: run.fence, unitId: unit._id, attemptFence: unit.attemptFence });
+				const cohortId = cohort._id;
+				if (cohort.phase !== "complete") await asUser.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+				// Only release can complete the cohort.
+				if (cohort.phase === "complete" || (cohort.workPhase === "release" &&
+					(await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete")) {
+					await test_wake_move_cohort(asUser, cohortId);
+					await asUser.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
+				}
+			} else if (unit?.kind === "atomic") {
+				await asUser.action(internal.files_pending_update_runs.prepare_unit, {
+					runId,
+					fence: run.fence,
+					unitId: unit._id,
+					attemptFence: unit.attemptFence,
+				});
 			}
 		}
 	}
-	throw new Error("Review did not finish");
 }
 
 /**
@@ -559,6 +705,178 @@ export function test_spy_handler(
 	const target = registered as { _handler: (ctx: MutationCtx, args: unknown) => Promise<null> };
 	const handler = target._handler;
 	vi.spyOn(target, "_handler").mockImplementation(async (ctx, args) => await wrap(handler, ctx, args));
+}
+
+/**
+ * Check, when a Move phase ends, that its ranges were fully handled. Move steps skip a range after an
+ * empty probe, and later cleanup drains the same tags, so a wrong probe would not change the end state.
+ * - content: no source or pending row of a content is left untagged
+ * - content cleanup: no row of a content keeps the cohort tag
+ * - owner closure: every row of a parent or prefix range has its owner work
+ * The checks are soft: a throw inside the step would make the Move run retry it instead of failing.
+ */
+export function test_spy_move_ranges() {
+	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+		const { cohortId } = args as { cohortId: Id<"files_move_cohorts"> };
+		const from = (await ctx.db.get("files_move_cohorts", cohortId))?.workPhase;
+		const result = await handler(ctx, args);
+		const cohort = (await ctx.db.get("files_move_cohorts", cohortId))!;
+		const contents = await ctx.db
+			.query("files_move_cohort_content")
+			.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohortId))
+			.collect();
+		const scope = { organizationId: cohort.organizationId, workspaceId: cohort.workspaceId };
+		const content_rows = async (
+			content: Doc<"files_move_cohort_content">,
+			tag: { cohortId: Id<"files_move_cohorts">; view: "before" | "after" } | undefined,
+		) => {
+			const rows = [];
+			for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const) {
+				rows.push(
+					...(await ctx.db
+						.query(table)
+						.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("fileNodeId", content.nodeId)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view),
+						)
+						.collect()),
+					...(await ctx.db
+						.query(table)
+						.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+							q
+								.eq("pendingUpdateId", content.pendingUpdateId)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view),
+						)
+						.collect()),
+				);
+			}
+			rows.push(
+				...(await ctx.db
+					.query("files_yjs_updates")
+					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+						q
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId)
+							.eq("fileNodeId", content.nodeId)
+							.eq("moveView.cohortId", tag?.cohortId)
+							.eq("moveView.view", tag?.view),
+					)
+					.collect()),
+				...(await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+						q
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", content.nodeId)
+							.eq("moveView.cohortId", tag?.cohortId)
+							.eq("moveView.view", tag?.view),
+					)
+					.collect()),
+				...(await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_pendingUpdate_fieldPath", (q) =>
+						q
+							.eq("pendingUpdateId", content.pendingUpdateId)
+							.eq("moveView.cohortId", tag?.cohortId)
+							.eq("moveView.view", tag?.view),
+					)
+					.collect()),
+			);
+			return rows;
+		};
+		if (from === "content" && cohort.workPhase === "media")
+			for (const content of contents)
+				expect
+					.soft(await content_rows(content, undefined), "content staging tags every source and pending row")
+					.toEqual([]);
+		if (
+			(from === "finish_content" || from === "abort_content") &&
+			(cohort.workPhase === "finish_owners" || cohort.workPhase === "abort_owners")
+		)
+			for (const content of contents)
+				for (const view of ["before", "after"] as const)
+					expect
+						.soft(await content_rows(content, { cohortId, view }), "content cleanup clears every tagged row")
+						.toEqual([]);
+		if (from === "owners_closure" && cohort.workPhase === "content") {
+			const ranges = await ctx.db
+				.query("files_move_work_ranges")
+				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohortId))
+				.collect();
+			const owners: { userId: Id<"users">; target: files_PendingTarget }[] = [];
+			for (const { range } of ranges) {
+				if (range.kind === "parent") {
+					const { userId, parent } = range;
+					const parentId = parent.kind === "root" ? undefined : parent.id;
+					for (const row of await ctx.db
+						.query("files_pending_nodes")
+						.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("userId", userId)
+								.eq("parent.kind", parent.kind)
+								.eq("parent.id", parentId)
+								.eq("state", "active"),
+						)
+						.collect())
+						owners.push({ userId: row.userId, target: { kind: "private", id: row._id } });
+					for (const row of await ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_org_ws_user_pendingMove_destParent_destName", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("userId", userId)
+								.eq("pendingMove.destParent.kind", parent.kind)
+								.eq("pendingMove.destParent.id", parentId),
+						)
+						.collect())
+						owners.push({ userId: row.userId, target: row.target });
+				} else if (range.kind === "prefix") {
+					const { userId, prefix } = range;
+					for (const row of await ctx.db
+						.query("files_pending_places")
+						.withIndex("by_org_ws_user_ownerTreePath", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("userId", userId)
+								.eq("moveView.cohortId", undefined)
+								.eq("moveView.view", undefined)
+								.gt("ownerTreePath", prefix)
+								.lt("ownerTreePath", path_tree_prefix_upper_bound(prefix)),
+						)
+						.collect())
+						owners.push({ userId: row.userId, target: row.target });
+				}
+			}
+			for (const { userId, target } of owners)
+				expect
+					.soft(
+						await ctx.db
+							.query("files_move_owner_work")
+							.withIndex("by_cohort_owner_target", (q) =>
+								q
+									.eq("cohortId", cohortId)
+									.eq("userId", userId)
+									.eq("target.kind", target.kind)
+									.eq("target.id", target.id),
+							)
+							.unique(),
+						"owner closure adds every owner in its ranges",
+					)
+					.not.toBeNull();
+		}
+		return result;
+	});
 }
 
 export async function test_get_file_yjs_pointers(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {

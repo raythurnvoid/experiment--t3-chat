@@ -30,10 +30,16 @@ import {
 	MyInputIcon,
 	type MyInputArea_Props,
 } from "@/components/my-input.tsx";
-import { useFilesMetadataCatalogPages, useFilesMetadataFolderKeys } from "@/hooks/files-metadata-catalog-hooks.ts";
+import {
+	files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE,
+	useFilesMetadataCatalogPages,
+	useFilesMetadataFolderKeys,
+	useFilesMetadataHasWorkspaceRead,
+} from "@/hooks/files-metadata-catalog-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { cn } from "@/lib/utils.ts";
 import {
 	files_folder_table_query_close_open_quote,
@@ -186,8 +192,9 @@ const FileNodeViewFolderFilterBarKeyRows = memo(function FileNodeViewFolderFilte
 	onPick: (field: string) => void;
 }) {
 	const { membershipId, folderId, prefix, stale, showNoMatch, canPick, onPick } = props;
+	const isOwner = FilesTreeProvider.useIsOwner();
 
-	const keys = useFilesMetadataFolderKeys({ membershipId, folderId, prefix });
+	const keys = useFilesMetadataFolderKeys({ membershipId, folderId, prefix, isOwner });
 	const isDisabled = stale || keys.updating;
 	const rows = keys.rows.filter(canPick);
 
@@ -258,6 +265,8 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 }) {
 	const { membershipId, fieldPath, prefix, typed, stale, onPick } = props;
 
+	const { workspaceId } = AppTenantProvider.useContext();
+	const hasWorkspaceRead = useFilesMetadataHasWorkspaceRead(workspaceId);
 	const values = useFilesMetadataCatalogPages({
 		query: app_convex_api.files_metadata.list_search_values,
 		membershipId,
@@ -294,6 +303,11 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 			))}
 			{isDisabled ? (
 				<FileNodeViewFolderFilterBarSuggestionsMessage>Updating suggestions…</FileNodeViewFolderFilterBarSuggestionsMessage>
+			) : hasWorkspaceRead === false ? (
+				// The values come from the whole workspace, so a guest gets none. Say why.
+				<FileNodeViewFolderFilterBarSuggestionsMessage>
+					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
+				</FileNodeViewFolderFilterBarSuggestionsMessage>
 			) : rows.length === 0 && values.status === "Exhausted" ? (
 				<FileNodeViewFolderFilterBarSuggestionsMessage>
 					{prefix === "" ? "No saved values" : `No saved values start with ${prefix}`}

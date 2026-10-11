@@ -381,14 +381,14 @@ describe("/api/auth/resolve-user", () => {
 			await Promise.all([ctx.db.delete("users_anagraphics", stale.anagraphicId), ctx.db.delete("users", stale.userId)]);
 		});
 
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(JSON.stringify({ id: "clerk-user-resolve-stale-external-id" }), {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			return new Response(JSON.stringify({ id: "clerk-user-resolve-stale-external-id" }), {
 				status: 200,
 				headers: {
 					"Content-Type": "application/json",
 				},
-			}),
-		);
+			});
+		});
 		const enqueueActionSpy = vi
 			.spyOn(Workpool.prototype, "enqueueAction")
 			.mockResolvedValue("work_stale_external_id" as never);
@@ -415,6 +415,20 @@ describe("/api/auth/resolve-user", () => {
 			expect(body._yay?.userId).toBeDefined();
 			expect(body._yay?.userId).not.toBe(stale.userId);
 			expect(body._yay?.restoredDeletedAccount).toBe(false);
+
+			// The same token still has the deleted user ID.
+			const repeated = await asUser.fetch("/api/auth/resolve-user", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			expect(repeated.status, "A second stale token repair succeeds").toBe(200);
+			const repeatedBody = await repeated.json();
+			expect(repeatedBody._yay?.userId, "Both stale token repairs return the same user").toBe(
+				body._yay.userId,
+			);
 			expect(fetchSpy).toHaveBeenCalledWith(
 				"https://api.clerk.com/v1/users/clerk-user-resolve-stale-external-id",
 				expect.objectContaining({

@@ -25,16 +25,31 @@ type Capability = {
 };
 const STATE = Symbol("files_move_reservations");
 type Scope = Pick<Doc<"files_nodes">, "organizationId" | "workspaceId">;
-type State = { capability: Capability | null; securityNodes: Set<Id<"files_nodes">>; knownScopes: Map<string, Scope> };
+type State = {
+	capability: Capability | null;
+	securityNodes: Set<Id<"files_nodes">>;
+	knownScopes: Map<string, Scope>;
+	sourceReads: Map<string, Promise<Doc<"files_move_source_reservations"> | null>>;
+};
 type GuardedDb = MutationCtx["db"] & { [STATE]?: State };
 type Fields = Record<string, unknown>;
 const BUSY = { name: "move_busy", message: "This item is being moved. Try again when the Move ends." };
 
-async function get_reservation(db: QueryCtx["db"], source: Source) {
-	return await db
-		.query("files_move_source_reservations")
-		.withIndex("by_source", (q) => q.eq("source.kind", source.kind).eq("source.id", source.id))
-		.unique();
+/**
+ * Read one source reservation. A mutation reuses it until reservations change.
+ */
+export async function files_move_reservations_db_get_source(db: QueryCtx["db"], source: Source) {
+	const reads = (db as GuardedDb)[STATE]?.sourceReads;
+	const key = `${source.kind}:${source.id}`;
+	let read = reads?.get(key);
+	if (!read) {
+		read = db
+			.query("files_move_source_reservations")
+			.withIndex("by_source", (q) => q.eq("source.kind", source.kind).eq("source.id", source.id))
+			.unique();
+		reads?.set(key, read);
+	}
+	return await read;
 }
 
 async function get_parent(db: QueryCtx["db"], source: Extract<Source, { kind: "saved" | "private" }>) {
@@ -61,7 +76,7 @@ export async function files_move_reservations_db_find_blocker(db: QueryCtx["db"]
 		if (slot?.cohortId) return slot.cohortId;
 	}
 	if (args.source) {
-		const reservation = await get_reservation(db, args.source);
+		const reservation = await files_move_reservations_db_get_source(db, args.source);
 		if (reservation) return reservation.cohortId;
 	}
 	let parent = args.parent?.kind === "root" ? null : (args.parent ?? null);
@@ -69,7 +84,7 @@ export async function files_move_reservations_db_find_blocker(db: QueryCtx["db"]
 		parent = await get_parent(db, args.source);
 	// This walk follows only this item's parent IDs.
 	while (parent) {
-		const reservation = await get_reservation(db, parent);
+		const reservation = await files_move_reservations_db_get_source(db, parent);
 		if (reservation?.mode === "subtree") return reservation.cohortId;
 		parent = await get_parent(db, parent);
 	}
@@ -183,7 +198,7 @@ export function files_move_reservations_db_enter_security(ctx: MutationCtx, args
 }
 
 /**
- * Reuse a known scope for the next exact write. Active workspace guards still apply.
+ * Reuse a known scope while its fields stay unchanged. Active workspace guards still apply.
  */
 export function files_move_reservations_db_note_source(
 	db: MutationCtx["db"],
@@ -340,7 +355,7 @@ export async function files_move_reservations_db_is_rename_allocation(
  */
 export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 	const raw = ctx.db;
-	const state: State = { capability: null, securityNodes: new Set(), knownScopes: new Map() };
+	const state: State = { capability: null, securityNodes: new Set(), knownScopes: new Map(), sourceReads: new Map() };
 	const activeScopes = new Map<string, Promise<boolean>>();
 	const reservationTables = new Set([
 		"files_move_workspace_slots",
@@ -354,7 +369,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 		const key = `${organizationId}:${workspaceId}`;
 		// Keep the read in flight too, like the blockers below.
 		let active = activeScopes.get(key);
-		if (!active) {
+		if (active === undefined) {
 			active = raw
 				.query("files_move_workspace_slots")
 				.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
@@ -376,7 +391,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 		const key = JSON.stringify(check);
 		let blocker = blockers.get(key);
 		if (!blocker) {
-			blocker = files_move_reservations_db_find_blocker(raw, check);
+			blocker = files_move_reservations_db_find_blocker(db, check);
 			blockers.set(key, blocker);
 		}
 		return blocker;
@@ -550,7 +565,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 					next?.moveCohortId === blocker &&
 					typeof next.publishedFromPrivateNodeId === "string"
 				) {
-					const reservation = await get_reservation(raw, {
+					const reservation = await files_move_reservations_db_get_source(db, {
 						kind: "private",
 						id: next.publishedFromPrivateNodeId as Id<"files_pending_nodes">,
 					});
@@ -571,12 +586,18 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 				return async (table: TableNames, value: Fields) => {
 					if (reservationTables.has(table)) {
 						activeScopes.clear();
+						state.sourceReads.clear();
 						forget_blockers();
+						try {
+							return await target.insert(table, value as never);
+						} finally {
+							// A read started during this write must not stay cached after it.
+							state.sourceReads.clear();
+							forget_blockers();
+						}
 					}
 					if (SOURCE_TABLES.has(table) || SIDE_TABLES.has(table)) await guard(table, null, null, value, null);
-					const id = await target.insert(table, value as never);
-					if (reservationTables.has(table)) forget_blockers();
-					return id;
+					return await target.insert(table, value as never);
 				};
 			if (property === "patch" || property === "replace" || property === "delete")
 				return async (...args: unknown[]) => {
@@ -586,14 +607,22 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 						: ([...SOURCE_TABLES, ...SIDE_TABLES].find((name) =>
 								target.normalizeId(name as TableNames, args[0] as string),
 							) as TableNames | undefined);
-					if (table && reservationTables.has(table)) activeScopes.clear();
+					if (table && reservationTables.has(table)) {
+						activeScopes.clear();
+						state.sourceReads.clear();
+						forget_blockers();
+						try {
+							return await Reflect.apply(Reflect.get(target, property), target, args);
+						} finally {
+							state.sourceReads.clear();
+							forget_blockers();
+						}
+					}
 					const value = property === "delete" ? null : (args[tableFirst ? 2 : 1] as Fields);
-					// Reservations and node parents decide the blockers.
+					// A node parent change can change a blocker walk.
 					const changesBlockers =
-						!!table &&
-						(reservationTables.has(table) ||
-							((table === "files_nodes" || table === "files_pending_nodes") &&
-								(property !== "patch" || "parentId" in value! || "parent" in value!)));
+						(table === "files_nodes" || table === "files_pending_nodes") &&
+						(property !== "patch" || "parentId" in value! || "parent" in value!);
 					if (changesBlockers) forget_blockers();
 					const write = async () => {
 						const result: unknown = await Reflect.apply(Reflect.get(target, property), target, args);
@@ -604,7 +633,9 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 						const id = args[tableFirst ? 1 : 0] as Id<TableNames>;
 						const key = `${table}:${id}`;
 						const known = state.knownScopes.get(key);
-						state.knownScopes.delete(key);
+						const keepsScope =
+							property === "patch" && value && !("organizationId" in value) && !("workspaceId" in value);
+						if (!keepsScope) state.knownScopes.delete(key);
 						const nextScope = property === "replace" ? (value as Scope) : ({ ...known, ...value } as Scope);
 						if (
 							known &&

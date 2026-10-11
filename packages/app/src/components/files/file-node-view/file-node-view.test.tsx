@@ -82,7 +82,7 @@ vi.mock("@/hooks/files-search-hooks.ts", async (importOriginal) => {
 
 // Push query changes into memoized children, as the live Convex subscriptions do.
 vi.mock("convex/react", async () => {
-	const { useEffect, useId, useState } = await import("react");
+	const { useEffect, useId, useMemo, useState } = await import("react");
 	return {
 		useConvex: () => ({
 			query: (...args: unknown[]) => Promise.resolve(queryMock(...args)),
@@ -106,7 +106,7 @@ vi.mock("convex/react", async () => {
 		},
 		useQueries: (queries: Record<string, { query: never; args: unknown }>) => {
 			querySetsMock(useId(), queries);
-			const [, forceRender] = useState(0);
+			const [revision, forceRender] = useState(0);
 			useEffect(() => {
 				const listener = () => forceRender((revision) => revision + 1);
 				queryPushListeners.add(listener);
@@ -114,8 +114,13 @@ vi.mock("convex/react", async () => {
 					queryPushListeners.delete(listener);
 				};
 			}, []);
-			return Object.fromEntries(
-				Object.entries(queries).map(([key, request]) => [key, queryMock(request.query, request.args)]),
+			// Convex keeps the same result until the queries or a server answer change.
+			return useMemo(
+				() =>
+					Object.fromEntries(
+						Object.entries(queries).map(([key, request]) => [key, queryMock(request.query, request.args)]),
+					),
+				[queries, revision],
 			);
 		},
 		useQuery: (...args: unknown[]) => {
@@ -398,7 +403,8 @@ let pendingListStatus: "CanLoadMore" | "LoadingMore" | "Exhausted";
  * A page of folder keys: the keys that start with the request's prefix, without case.
  */
 function test_folder_keys(fields: string[], args: unknown) {
-	if (args === "skip") return [];
+	// Like the server for a member, the restricted twin is empty.
+	if (args === "skip" || (args as { restricted: boolean }).restricted) return [];
 	const prefix = (args as { prefix: string }).prefix.toLowerCase();
 	return fields.filter((field) => field.toLowerCase().startsWith(prefix));
 }
@@ -408,6 +414,8 @@ let sharedRows: (typeof NODE)[];
 let hasShared: boolean | null;
 // What `has_drafts_in_folder` answers.
 let hasDrafts: boolean;
+// The caller's permissions in `workspace_1`, from `organizations.list`.
+let workspacePermissions: "all" | string[];
 let folderSort: unknown;
 let privateView:
 	| {
@@ -462,6 +470,7 @@ beforeEach(() => {
 	sharedRows = [];
 	hasShared = false;
 	hasDrafts = false;
+	workspacePermissions = "all";
 	folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: true };
 	browserSession = null;
 	anagraphic = null;
@@ -636,6 +645,8 @@ beforeEach(() => {
 				return pendingChildren;
 			case "files_nodes:has_drafts_in_folder":
 				return hasDrafts;
+			case "organizations:list":
+				return { workspaceIdsPermissionsDict: { workspace_1: workspacePermissions } };
 			case "files_transfer:list_current":
 				return [];
 			case "files_transfer:get":
@@ -706,7 +717,11 @@ function renderFileView(searchParams: FileNodeView_SearchParams = { nodeId: NODE
 	const result = render(<FileNodeView searchParams={searchParams} onNavigateSearch={onNavigateSearch} />, {
 		wrapper: ({ children }) => (
 			<AppActivitiesProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
-				<FilesClipboardProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
+				<FilesClipboardProvider
+					key={tenantContextMock().membershipId}
+					userId={"user_1" as app_convex_Id<"users">}
+					membershipId={tenantContextMock().membershipId}
+				>
 					{children}
 				</FilesClipboardProvider>
 			</AppActivitiesProvider>
@@ -2357,6 +2372,25 @@ describe("FileNodeView folder columns", () => {
 		expect(document.activeElement).toBe(trigger);
 	});
 
+	test("Columns reads the restricted twin until the reader is known not to be the owner", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node];
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) =>
+			getFunctionName(reference) === "files_metadata:list_folder_fields"
+				? // Like the server for the owner: only the twin holds the restricted child's key.
+					args !== "skip" && args.restricted
+					? ["metadata.secret"]
+					: []
+				: previousQuery(reference, args),
+		);
+		renderFileView({ nodeId: node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "Columns" }));
+		const chooser = await screen.findByRole("dialog", { name: "Columns" });
+		// `useIsOwner` is still null here, so the owner sees the key without waiting for it.
+		expect(await within(chooser).findByRole("checkbox", { name: "metadata.secret" })).toBeTruthy();
+	});
+
 	test("searches folder keys on the server, pages them on Show more fields, and retries a failed read", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node];
@@ -2495,9 +2529,10 @@ describe("FileNodeView folder columns", () => {
 		expect(within(actions).queryByRole("button", { name: "Retry values" })).toBeNull();
 	});
 
-	test("caps 1,000 rendered rows at 100 targets and 700 pages and updates visible and focused priority", async () => {
+	test("caps 120 rendered rows at 100 targets and 700 pages and updates visible and focused priority", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
-		const children = Array.from({ length: 1000 }, (_, index) => ({
+		// 120 rows is just past the 100-target cap. Each render of many rows is slow here, so keep it small.
+		const children = Array.from({ length: 120 }, (_, index) => ({
 			...NODE,
 			_id: `file_${index}`,
 			name: `${String(index).padStart(4, "0")}.html`,
@@ -2521,16 +2556,16 @@ describe("FileNodeView folder columns", () => {
 		const view = renderFileView({ nodeId: node._id });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
-		expect(table.querySelectorAll(".FileNodeViewFolderExplorer-row")).toHaveLength(1000);
+		expect(table.querySelectorAll(".FileNodeViewFolderExplorer-row")).toHaveLength(120);
 		const observer = observers[0]!;
 		act(() => observer.emit());
 		await waitFor(() => expect(table.getAttribute("data-value-target-count")).toBe("100"));
 		await waitFor(() => expect(table.getAttribute("data-value-page-count")).toBe("700"));
-		const deferred = table.querySelector<HTMLElement>('[data-file-node-id="file_500"]')!;
+		const deferred = table.querySelector<HTMLElement>('[data-file-node-id="file_110"]')!;
 		expect(deferred.querySelector('[data-column-field="metadata.field0"]')?.getAttribute("data-value-state")).toBe(
 			"deferred",
 		);
-		visibleNodeId = "file_500";
+		visibleNodeId = "file_110";
 		fireEvent.scroll(observer.root!);
 		await waitFor(() =>
 			expect(deferred.querySelector('[data-column-field="metadata.field6"]')).toHaveProperty("textContent", "6"),
@@ -2540,7 +2575,7 @@ describe("FileNodeView folder columns", () => {
 				.querySelector('[data-file-node-id="file_99"] [data-column-field="metadata.field0"]')
 				?.getAttribute("data-value-state"),
 		).toBe("deferred");
-		const focused = table.querySelector<HTMLElement>('[data-file-node-id="file_900"]')!;
+		const focused = table.querySelector<HTMLElement>('[data-file-node-id="file_115"]')!;
 		act(() => within(focused).getByRole("link").focus());
 		await waitFor(() =>
 			expect(focused.querySelector('[data-column-field="metadata.field6"]')).toHaveProperty("textContent", "6"),
@@ -2799,7 +2834,9 @@ describe("FileNodeView folder filter", () => {
 		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
 			wrapper: ({ children }) => (
 				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-					<FilesClipboardProvider membershipId={tenantContextMock().membershipId}>{children}</FilesClipboardProvider>
+					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={tenantContextMock().membershipId}>
+						{children}
+					</FilesClipboardProvider>
 				</AppActivitiesProvider>
 			),
 		});
@@ -2853,6 +2890,36 @@ describe("FileNodeView folder filter", () => {
 		consoleError.mockRestore();
 	});
 
+	test("the bar tells a member without workspace read why no values are suggested", async () => {
+		workspacePermissions = ["files.read"];
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) =>
+			// Like the server, a guest gets an empty page.
+			getFunctionName(reference) === "files_metadata:list_search_values"
+				? { results: [], status: "Exhausted" }
+				: previousQuery(reference, args),
+		);
+		// Render by hand: the debounce writes from an effect, and the harness would rerender inside it.
+		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
+			wrapper: ({ children }) => (
+				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
+					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={tenantContextMock().membershipId}>
+						{children}
+					</FilesClipboardProvider>
+				</AppActivitiesProvider>
+			),
+		});
+		const input = await screen.findByRole("combobox", { name: "Filter and sort this folder" });
+		act(() => input.focus());
+		fireEvent.change(input, { target: { value: "metadata.status:is:" } });
+		expect(
+			await screen.findByRole("option", {
+				name: "Suggestions need access to the whole workspace. You can still type a filter, like metadata.status:open.",
+			}),
+		).toBeTruthy();
+		expect(screen.queryByRole("option", { name: "No saved values" })).toBeNull();
+	});
+
 	test.each([
 		{ surface: "Columns", text: null, group: "Metadata", more: { role: "button", name: "Show more fields" } },
 		{ surface: "filter keys", text: "", group: "Filter by", more: { role: "option", name: "Show more keys" } },
@@ -2875,7 +2942,9 @@ describe("FileNodeView folder filter", () => {
 		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
 			wrapper: ({ children }) => (
 				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-					<FilesClipboardProvider membershipId={tenantContextMock().membershipId}>{children}</FilesClipboardProvider>
+					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={tenantContextMock().membershipId}>
+						{children}
+					</FilesClipboardProvider>
 				</AppActivitiesProvider>
 			),
 		});
@@ -2951,7 +3020,12 @@ describe("FileNodeView folder filter", () => {
 			{
 				wrapper: ({ children }) => (
 					<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-						<FilesClipboardProvider membershipId={tenantContextMock().membershipId}>{children}</FilesClipboardProvider>
+						<FilesClipboardProvider
+							userId={"user_1" as app_convex_Id<"users">}
+							membershipId={tenantContextMock().membershipId}
+						>
+							{children}
+						</FilesClipboardProvider>
 					</AppActivitiesProvider>
 				),
 			},

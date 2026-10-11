@@ -307,6 +307,8 @@ describe("Move owner views", () => {
 				}),
 			);
 			expect(result._nay).toBeUndefined();
+			if (!result._yay!.done)
+				expect(result._yay!.cursor, "each unfinished field page advances its native cursor").not.toBe(cursor);
 			cursor = result._yay!.cursor;
 			done = result._yay!.done;
 			pages++;

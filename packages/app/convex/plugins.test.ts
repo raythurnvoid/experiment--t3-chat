@@ -15,6 +15,7 @@ import * as activities from "./activities_db.ts";
 import plugin_runner, { type Env as PluginRunnerEnv } from "../../plugin-runner/src/index.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_mcp_destination_fingerprint } from "./plugins_mcp.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	plugins_REVIEW_POLICY_VERSION,
@@ -1951,6 +1952,36 @@ describe("plugins Phase 0", () => {
 			body: JSON.stringify({ fileNodeIds: [String(upload.nodeId)] }),
 		});
 		expect(response.status).toBe(401);
+	});
+
+	test("settles the run call when the download bulk bucket refuses", async () => {
+		const t = test_convex();
+		const { runId, upload, apiToken } = await start_running_plugin_run(t, { tokenSeed: "5" });
+		// Freeze the limiter clock, so the drained bucket does not refill on a slow machine.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now());
+		const drained = await t.run((ctx) =>
+			rate_limiter_limit_by_key(ctx, {
+				name: "public_api_files_download_bulk",
+				key: `plugin_run:plugin_run:${runId}`,
+				count: 20,
+			}),
+		);
+		expect(drained).toBeNull();
+
+		const response = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ fileNodeIds: [String(upload.nodeId)] }),
+		});
+		expect(response.status).toBe(429);
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({ status: "failed", responseStatus: 429, errorCode: "rate_limited" });
 	});
 
 	test("suppresses a signed source url when the plugin run becomes terminal during signing", async () => {
@@ -5369,6 +5400,7 @@ describe("plugins Phase 0", () => {
 				writePolicy: _writePolicy,
 				newChildWritePolicy: _newChildWritePolicy,
 				moveCohortId: _moveCohortId,
+				archivedPathLength: _archivedPathLength,
 				...header
 			} = node;
 			const before = {
@@ -5376,8 +5408,8 @@ describe("plugins Phase 0", () => {
 				view: "before" as const,
 				nodeId: node._id,
 				nodeCreationTime: node._creationTime,
-				organizationId: node.organizationId,
-				workspaceId: node.workspaceId,
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
 				...header,
 				contentId: null,
 			};
@@ -14949,6 +14981,29 @@ describe("plugins metadata file doors", () => {
 			(await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe", limit: 0 } }))
 				.status,
 		).toBe(400);
+		expect(
+			(await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/missing" } })).status,
+		).toBe(404);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/tail.md", content: "# Tail\n" },
+				})
+			).status,
+		).toBe(200);
+		const listFile = await door_call({
+			t,
+			path: "/api/v1/files/list",
+			apiToken: run.apiToken,
+			body: { path: "/probe/tail.md" },
+		});
+		expect([listFile.status, await listFile.json()]).toEqual([
+			400,
+			{ message: "Path must point to a folder: /probe/tail.md" },
+		]);
 
 		// Same slot accounting as the read door above. The list door admits plugin_run, so authorizing
 		// consumes a slot here too, and the door owns settling it on the success path as well.
@@ -14962,8 +15017,18 @@ describe("plugins metadata file doors", () => {
 			"/api/v1/files/plugin-folders/ensure",
 			"/api/v1/files/list",
 			"/api/v1/files/list",
+			"/api/v1/files/list",
+			"/api/v1/files/write",
+			"/api/v1/files/list",
 		]);
-		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded", "failed"]);
+		expect(calls.map((call) => [call.status, call.errorCode])).toEqual([
+			["succeeded", undefined],
+			["succeeded", undefined],
+			["failed", "invalid_input"],
+			["failed", "not_found"],
+			["succeeded", undefined],
+			["failed", "invalid_input"],
+		]);
 	});
 
 	test("a run without workspace.files.read is refused the read doors it just wrote through", async () => {

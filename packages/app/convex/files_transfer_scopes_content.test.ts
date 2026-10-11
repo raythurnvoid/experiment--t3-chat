@@ -4,9 +4,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { applyUpdate, Doc as YjsDoc, encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_save_file_pending_update,
+import {
+	test_save_file_pending_update,
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_pending_update_run,
+	test_finish_transfer_run,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
@@ -343,8 +346,10 @@ describe("cross-workspace Move refusal", () => {
 				holds: await ctx.db.query("files_private_storage_reservations").collect(),
 				pendingNodes: await ctx.db.query("files_pending_nodes").collect(),
 				pendingUpdates: await ctx.db.query("files_pending_updates").collect(),
-				// The fixture saves the source through a review job, which has its own Activity.
+				transferRuns: await ctx.db.query("files_transfer_runs").collect(),
+				transferItems: await ctx.db.query("files_transfer_items").collect(),
 				activities: await ctx.db.query("activities").collect(),
+				invocationTransfers: await ctx.db.query("ai_chat_bash_invocation_transfers").collect(),
 			}));
 			const result = await f.t.mutation(internal.files_transfer.start_for_agent, {
 				membershipId: f.current.membershipId,
@@ -373,13 +378,10 @@ describe("cross-workspace Move refusal", () => {
 				expect(await ctx.db.query("files_private_storage_reservations").collect()).toEqual(before.holds);
 				expect(await ctx.db.query("files_pending_nodes").collect()).toEqual(before.pendingNodes);
 				expect(await ctx.db.query("files_pending_updates").collect()).toEqual(before.pendingUpdates);
+				expect(await ctx.db.query("files_transfer_runs").collect()).toEqual(before.transferRuns);
+				expect(await ctx.db.query("files_transfer_items").collect()).toEqual(before.transferItems);
 				expect(await ctx.db.query("activities").collect()).toEqual(before.activities);
-				for (const table of [
-					"files_transfer_runs",
-					"files_transfer_items",
-					"ai_chat_bash_invocation_transfers",
-				] as const)
-					expect(await ctx.db.query(table).collect(), table).toEqual([]);
+				expect(await ctx.db.query("ai_chat_bash_invocation_transfers").collect()).toEqual(before.invocationTransfers);
 			});
 		},
 	);
@@ -960,6 +962,223 @@ describe("copy_transfer_file scopes", () => {
 			expect(asset!.r2Key).toBe(r2_create_asset_key({ ...f.current, assetId: asset!._id }));
 		});
 	});
+
+	test("keeps a Copy replacement asset after Move and Save", async () => {
+		const f = await fixture();
+		const sourceId = await test_create_saved_text_file(f.t, {
+			membershipId: f.personal.membershipId,
+			path: "/source.txt",
+			textContent: "Replacement\n",
+		});
+		const destinationId = await test_create_saved_text_file(f.t, {
+			membershipId: f.current.membershipId,
+			path: "/copy.txt",
+			textContent: "Destination\n",
+		});
+		expect(
+			await f.asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+				membershipId: f.current.membershipId,
+				nodeId: destinationId,
+				acknowledgeDropCollaborativeHistory: true,
+			}),
+		).toEqual({ _yay: null });
+		const copy = await start_copy({ f, source: { kind: "saved", id: sourceId } });
+		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
+			itemId: copy.item._id,
+			attempt: copy.item.attempt,
+		});
+		await f.t.mutation(internal.files_transfer.handle_copy_complete, {
+			workId: copy.claim.workId,
+			context: { itemId: copy.item._id, attempt: copy.item.attempt },
+			result: { kind: "success", returnValue: null },
+		});
+		await test_finish_transfer_run(f.asUser, copy.runId);
+		const replacement = await get_proposal({ f, workspace: "current", target: { kind: "saved", id: destinationId } });
+		if (!replacement.pendingReplacement) throw new Error("Expected the Copy replacement");
+		const copiedAsset = {
+			assetId: replacement.pendingReplacement.assetId,
+			r2Key: r2_create_asset_key({ ...f.current, assetId: replacement.pendingReplacement.assetId }),
+		};
+		// Move sends this replacement through the real cohort worker.
+		expect(
+			await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				organizationId: f.current.organizationId,
+				workspaceId: f.current.workspaceId,
+				userId: f.current.userId,
+				threadId: f.threadId,
+				target: { kind: "saved", id: destinationId },
+				destParent: { kind: "root" },
+				destName: "saved-copy.txt",
+			}),
+		).toMatchObject({ _yay: { destPath: "/saved-copy.txt", appliedImmediately: false } });
+		const proposal = await get_proposal({ f, workspace: "current", target: { kind: "saved", id: destinationId } });
+		expect(proposal).toMatchObject({ pendingReplacement: { assetId: copiedAsset.assetId }, pendingMove: {} });
+		expect(
+			await test_save_file_pending_update(f.asUser, {
+				membershipId: f.current.membershipId,
+				target: { kind: "saved", id: destinationId },
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+			}),
+		).toMatchObject({ _yay: { target: { kind: "saved", id: destinationId } } });
+		await f.t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", destinationId)).toMatchObject({
+				path: "/saved-copy.txt",
+				assetId: copiedAsset.assetId,
+				collaborationEnabled: false,
+			});
+			expect(
+				await ctx.db.get("files_r2_assets", copiedAsset.assetId),
+				"Saving the Copy through Move keeps its exact replacement asset",
+			).toMatchObject({ _id: copiedAsset.assetId, r2Key: copiedAsset.r2Key });
+			const receipt = await ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", copiedAsset.assetId))
+				.unique();
+			expect(receipt).toMatchObject({
+				settlement: { kind: "saved", savedNodeId: destinationId },
+				cohortContentId: expect.any(String),
+			});
+			expect(
+				await ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", copiedAsset.r2Key))
+					.unique(),
+			).toBeNull();
+			expect(await ctx.db.get("files_pending_updates", proposal._id)).toBeNull();
+		});
+	}, 120_000);
+
+	test("cleans a Copy replacement asset when a selected Delete frees a Move destination", async () => {
+		const f = await fixture();
+		const sourceId = await test_create_saved_text_file(f.t, {
+			membershipId: f.personal.membershipId,
+			path: "/source.txt",
+			textContent: "Replacement\n",
+		});
+		const destinationId = await test_create_saved_text_file(f.t, {
+			membershipId: f.current.membershipId,
+			path: "/copy.txt",
+			textContent: "Destination\n",
+		});
+		const movedId = await test_create_saved_text_file(f.t, {
+			membershipId: f.current.membershipId,
+			path: "/moved.txt",
+			textContent: "Moved\n",
+		});
+		expect(
+			await f.asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+				membershipId: f.current.membershipId,
+				nodeId: destinationId,
+				acknowledgeDropCollaborativeHistory: true,
+			}),
+		).toEqual({ _yay: null });
+		const destination = await f.t.run((ctx) => ctx.db.get("files_nodes", destinationId));
+		if (!destination?.assetId) throw new Error("Expected the saved destination asset");
+		const copy = await start_copy({ f, source: { kind: "saved", id: sourceId } });
+		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
+			itemId: copy.item._id,
+			attempt: copy.item.attempt,
+		});
+		await f.t.mutation(internal.files_transfer.handle_copy_complete, {
+			workId: copy.claim.workId,
+			context: { itemId: copy.item._id, attempt: copy.item.attempt },
+			result: { kind: "success", returnValue: null },
+		});
+		await test_finish_transfer_run(f.asUser, copy.runId);
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", destinationId))).toEqual(destination);
+		const replacement = await get_proposal({ f, workspace: "current", target: { kind: "saved", id: destinationId } });
+		if (!replacement.pendingReplacement) throw new Error("Expected the Copy replacement");
+		const assetId = replacement.pendingReplacement.assetId;
+		const r2Key = r2_create_asset_key({ ...f.current, assetId });
+		const asset = await f.t.run((ctx) => ctx.db.get("files_r2_assets", assetId));
+		expect(asset).toMatchObject({ r2Key });
+		expect(asset?.unfinalizedExpiresAt).toBeUndefined();
+		const reservation = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", assetId))
+				.unique(),
+		);
+		if (!reservation) throw new Error("Expected the replacement storage hold");
+		expect(reservation.settlement).toEqual({ kind: "held" });
+		const scope = {
+			organizationId: f.current.organizationId,
+			workspaceId: f.current.workspaceId,
+			userId: f.current.userId,
+			threadId: f.threadId,
+		};
+		expect(
+			await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+				...scope,
+				target: { kind: "saved", id: destinationId },
+			}),
+		).toMatchObject({ _yay: { outcome: "proposed" } });
+		expect(
+			await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				...scope,
+				target: { kind: "saved", id: movedId },
+				destParent: { kind: "root" },
+				destName: "copy.txt",
+			}),
+		).toMatchObject({ _yay: { destPath: "/copy.txt", appliedImmediately: false } });
+		const deleted = await get_proposal({ f, workspace: "current", target: { kind: "saved", id: destinationId } });
+		const moved = await get_proposal({ f, workspace: "current", target: { kind: "saved", id: movedId } });
+		expect(deleted).toMatchObject({ pendingArchive: { fromPath: "/copy.txt" }, pendingReplacement: { assetId } });
+		const started = await f.asUser.mutation(api.files_pending_update_runs.start, {
+			membershipId: f.current.membershipId,
+			requestId: "delete-copy-replacement",
+			kind: "accept",
+			expectedItemCount: 2,
+			items: [moved, deleted].map((proposal) => ({
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+				selectedContentStateId: null,
+			})),
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(
+			await f.asUser.mutation(api.files_pending_update_runs.seal, {
+				membershipId: f.current.membershipId,
+				runId: started._yay.runId,
+			}),
+		).toEqual({ _yay: null });
+		await test_finish_pending_update_run(f.asUser, started._yay.runId);
+		const review = await f.asUser.query(api.files_pending_update_runs.get, {
+			membershipId: f.current.membershipId,
+			runId: started._yay.runId,
+		});
+		expect(review?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
+		expect(review?.run.unitCount).toBe(1);
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", movedId))).toMatchObject({
+			path: "/copy.txt",
+			archiveOperationId: null,
+		});
+		const archived = await f.t.run((ctx) => ctx.db.get("files_nodes", destinationId));
+		expect(archived).toMatchObject({ archiveOperationId: expect.any(String), assetId: destination.assetId });
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", deleted._id))).toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", moved._id))).toBeNull();
+		const job = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.withIndex("by_r2_key", (q) => q.eq("r2Key", r2Key))
+				.unique(),
+		);
+		expect(job, "Accepting the selected Delete queues its exact replacement asset for cleanup").toMatchObject({
+			organizationId: f.current.organizationId,
+			workspaceId: f.current.workspaceId,
+			r2Key,
+			reason: "discarded_replacement",
+			privateStorageReservationId: reservation._id,
+		});
+		expect(
+			await f.t.run((ctx) => ctx.db.get("files_r2_assets", assetId)),
+			"The consumed replacement asset loses its database doc",
+		).toBeNull();
+		// Its bytes stay charged until the R2 deletion is confirmed.
+		const held = await f.t.run((ctx) => ctx.db.get("files_private_storage_reservations", reservation._id));
+		expect(held?.settlement).toEqual({ kind: "held" });
+	}, 120_000);
 
 	test("checks the personal destination plan before copying stored team bytes", async () => {
 		const f = await fixture();

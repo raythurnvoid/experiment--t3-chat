@@ -7,7 +7,7 @@ import {
 	files_stored_uploads_db_settle,
 } from "./files_stored_uploads.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_drain_billing_usage_event_outbox, test_mocks_fill_db_with } from "./setup.test.ts";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -198,6 +198,7 @@ describe("files_stored_uploads_db_settle", () => {
 				expect(snapshot?.meter?.consumedUnits).toBe(signedIn ? 0 : 2);
 				return assetId;
 			});
+			await test_drain_billing_usage_event_outbox(t);
 			if (!signedIn) {
 				expect(enqueue).not.toHaveBeenCalled();
 				return;

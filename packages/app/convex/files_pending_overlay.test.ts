@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
-import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { access_control_db_ensure_role_assignment, access_control_db_set_service_account_grant } from "./access_control.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { quotas_db_ensure } from "./quotas.ts";
@@ -27,7 +27,6 @@ import {
 	files_pending_overlay_db_flush,
 	files_pending_overlay_db_mark_target,
 	files_pending_overlay_db_set_acting_user,
-	files_pending_overlay_db_wrap,
 	files_pending_overlay_list,
 	files_pending_overlay_search_name,
 } from "../server/files-pending-overlay.ts";
@@ -510,6 +509,7 @@ async function share_rows(f: Fixture, nodeId: Id<"files_nodes">) {
 			archiveOperationId: row.archiveOperationId,
 			sortName: row.sortName,
 			name: row.name,
+			treePath: row.treePath,
 			updatedAt: row.updatedAt,
 			lowercaseExtension: row.lowercaseExtension,
 			contentByteSize: row.contentByteSize,
@@ -520,6 +520,7 @@ async function share_rows(f: Fixture, nodeId: Id<"files_nodes">) {
 			archiveOperationId: node?.archiveOperationId,
 			sortName: node?.sortName,
 			name: node?.name,
+			treePath: node?.treePath,
 			updatedAt: node?.updatedAt,
 			lowercaseExtension: node?.lowercaseExtension ?? null,
 			contentByteSize: node?.contentByteSize ?? null,
@@ -1902,20 +1903,16 @@ describe("files_pending_overlay flush", () => {
 	test("two writes of one private node in Promise.all read its old doc once", async () => {
 		const f = await fixture();
 		const p = await f.create_private("/p.md");
-		// Wrap with the overlay only. The Move guard of the real wrapper adds its own checks.
-		const ranges = await f.t.run(async (raw) => {
-			const ctx = { ...raw, ...files_pending_overlay_db_wrap(raw) };
+		const ranges = await test_run_with_flush(f.t, async (ctx) => {
 			const before = await ctx.meta.getTransactionMetrics();
 			const privateNodeId = p.id as Id<"files_pending_nodes">;
 			await Promise.all([
 				ctx.db.patch("files_pending_nodes", privateNodeId, { name: "q.md" }),
 				ctx.db.patch("files_pending_nodes", privateNodeId, { structuralRevision: 5 }),
 			]);
-			const used = (await ctx.meta.getTransactionMetrics()).databaseQueries.used - before.databaseQueries.used;
-			await files_pending_overlay_db_flush(ctx);
-			return used;
+			return (await ctx.meta.getTransactionMetrics()).databaseQueries.used - before.databaseQueries.used;
 		});
-		expect(ranges).toBe(1);
+		expect(ranges, "Concurrent writes reuse the old node and the workspace check").toBe(2);
 		expect((await f.overlay(p)).place).toMatchObject({ name: "q.md", ownerTreePath: "/q.md" });
 	});
 });
@@ -2024,15 +2021,14 @@ describe("files_pending_overlay jobs", () => {
 			});
 		});
 
-		// Rename x with one direct write. A public rename runs as a Move, and the Move restages the overlay itself.
-		await test_run_with_flush(f.t, async (ctx) => {
-			await ctx.db.patch("files_nodes", x._id, {
-				name: "y.md",
-				sortName: files_sort_text_key("y.md"),
-				path: x.path.replace(/x\.md$/, "y.md"),
-				treePath: x.treePath.replace(/x\.md$/, "y.md"),
-			});
-		});
+		// Change the ordinary source without driving its queued overlay job.
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", x._id, {
+			name: "y.md",
+			sortName: files_sort_text_key("y.md"),
+			path: "/a/y.md",
+			treePath: "/a/y.md",
+			updatedAt: x.updatedAt + 1,
+		}));
 		const job = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_overlay_jobs")
@@ -2316,8 +2312,16 @@ describe("files_pending_overlay jobs", () => {
 			if ((args as { kind: string }).kind === "parent") parentRuns++;
 			return await handler(ctx, args);
 		});
-		// V's archive of the top folder changes every place under the deepest one.
-		await f.v_archive({ id: top._id });
+		// Use an ordinary source write. Move stages its own owner views.
+		const renamedPath = `${path.slice(0, path.lastIndexOf("/"))}/bottom`;
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", folder._id, {
+			name: "bottom",
+			sortName: files_sort_text_key("bottom"),
+			path: renamedPath,
+			treePath: `${renamedPath}/`,
+			updatedAt: folder.updatedAt + 1,
+		}));
+		await f.settle();
 		// Places, incoming moves and private children each have their own native page.
 		expect(parentRuns).toBe(3);
 		await f.expect_overlay_true();
@@ -2384,24 +2388,43 @@ describe("files_share_rows", () => {
 		const membershipId = f.db.membershipId;
 
 		await f.as_u(() => test_rename_node(f.t, f.asU, { membershipId, nodeId: s._id, path: "t" }));
-		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: a._id }]);
+		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: a._id, treePath: "/a/t/" }]);
+		// The parent's rename writes the shared folder's new `treePath`.
 		await f.as_u(() => test_rename_node(f.t, f.asU, { membershipId, nodeId: a._id, path: "a2" }));
-		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: a._id }]);
+		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: a._id, treePath: "/a2/t/" }]);
 		await f.as_u(() =>
 			test_move_nodes(f.t, f.asU, { membershipId, itemIds: [s._id], targetParentId: b._id }),
 		);
-		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: b._id }]);
+		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: b._id, treePath: "/b/t/" }]);
 		await f.expect_share_rows_true();
 
 		// Archiving the parent archives the shared folder too. Archived rows stay.
 		await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [b._id] }));
 		expect((await share_rows(f, s._id))[0]?.archiveOperationId).not.toBe(null);
 		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [b._id] }));
-		expect(await share_rows(f, s._id)).toMatchObject([{ archiveOperationId: null }]);
+		expect(await share_rows(f, s._id)).toMatchObject([{ archiveOperationId: null, treePath: "/b/t/" }]);
 		await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [s._id] }));
 		expect((await share_rows(f, s._id))[0]?.archiveOperationId).not.toBe(null);
 		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [s._id] }));
 		expect(await share_rows(f, s._id)).toMatchObject([{ archiveOperationId: null }]);
+		await f.expect_share_rows_true();
+	});
+
+	test("rows follow a restore that lands the folder above a shared folder at a new path", async () => {
+		const f = await fixture();
+		const a = await f.saved(null, "a", "folder");
+		const b = await f.saved(a, "b", "folder");
+		const s = await f.saved(b, "s", "folder");
+		await f.restrict(s);
+		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
+		const membershipId = f.db.membershipId;
+
+		// `s` has its own archive, so the restore of `b` only moves it. `a` stays archived, so `b` lands
+		// at the root, and the restore's job writes the new `treePath` of `s` through the flush.
+		for (const node of [s, b, a])
+			await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [node._id] }));
+		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [b._id] }));
+		expect(await share_rows(f, s._id)).toMatchObject([{ treePath: "/b/s/", archiveOperationId: expect.any(String) }]);
 		await f.expect_share_rows_true();
 	});
 
@@ -2498,12 +2521,14 @@ describe("files_share_rows", () => {
 		await f.expect_share_rows_true(secondWorkspaceId);
 	});
 
-	test("service account and public grants on a shared folder get no row", async () => {
+	test("a service account grant gets a row on a shared folder and on an open node, a public grant none", async () => {
 		const f = await fixture();
 		const s = await f.saved(null, "s", "folder");
+		const o = await f.saved(null, "o", "folder");
+		const x = await f.saved(o, "x.md");
 		await f.restrict(s);
 		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
-		await test_run_with_flush(f.t, async (ctx) => {
+		const serviceAccountId = await test_run_with_flush(f.t, async (ctx) => {
 			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
 				organizationId: f.u.organizationId,
 				workspaceId: f.u.workspaceId,
@@ -2527,14 +2552,42 @@ describe("files_share_rows", () => {
 					createdAt: Date.now(),
 					updatedAt: Date.now(),
 				});
+			// An account may read one open node through its own grant.
+			const granted = await access_control_db_set_service_account_grant(ctx, {
+				...f.u,
+				serviceAccountId,
+				resource: { kind: "file", nodeId: x._id },
+				level: "read",
+			});
+			if (granted._nay) throw new Error(granted._nay.message);
+			return serviceAccountId;
 		});
-		expect(await share_keys(f, s._id)).toEqual([`user:${f.v.userId}`]);
+		const accountKey = `service_account:${serviceAccountId}`;
+		expect(await share_keys(f, s._id)).toEqual([accountKey, `user:${f.v.userId}`]);
+		expect(await share_rows(f, x._id)).toMatchObject([{ principalKey: accountKey, treePath: "/o/x.md" }]);
 
-		// A node write reads every `content.read` grant of the node again.
+		// The open node's row follows a rename of the node and above it and an archive, and goes when the
+		// node moves into a restricted folder, where only a grant on the folder reads it.
 		await f.as_u(() =>
-			test_rename_node(f.t, f.asU, { membershipId: f.db.membershipId, nodeId: s._id, path: "t" }),
+			test_rename_node(f.t, f.asU, { membershipId: f.db.membershipId, nodeId: x._id, path: "y.md" }),
 		);
-		expect(await share_keys(f, s._id)).toEqual([`user:${f.v.userId}`]);
+		expect(await share_rows(f, x._id)).toMatchObject([{ principalKey: accountKey, treePath: "/o/y.md" }]);
+		await f.as_u(() =>
+			test_rename_node(f.t, f.asU, { membershipId: f.db.membershipId, nodeId: o._id, path: "o2" }),
+		);
+		expect(await share_rows(f, x._id)).toMatchObject([{ principalKey: accountKey, treePath: "/o2/y.md" }]);
+		await f.as_u(() =>
+			f.asU.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [x._id] }),
+		);
+		expect((await share_rows(f, x._id))[0]?.archiveOperationId).not.toBe(null);
+		await f.as_u(() =>
+			f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId: f.db.membershipId, nodeIds: [x._id] }),
+		);
+		expect(await share_rows(f, x._id)).toMatchObject([{ archiveOperationId: null }]);
+		await f.as_u(() =>
+			test_move_nodes(f.t, f.asU, { membershipId: f.db.membershipId, itemIds: [x._id], targetParentId: s._id }),
+		);
+		expect(await share_keys(f, x._id)).toEqual([]);
 		await f.expect_share_rows_true();
 	});
 

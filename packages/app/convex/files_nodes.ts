@@ -115,8 +115,8 @@ import {
 } from "../server/files-move-reservations.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import {
-	files_media_validation_db_advance_content_version,
 	files_media_validation_db_advance_version,
+	files_media_validation_db_can_back_media,
 } from "./files_media_validation.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
 import { components, internal } from "./_generated/api.js";
@@ -1982,7 +1982,8 @@ async function db_insert_node(
 					: null,
 		}),
 	);
-	await files_media_validation_db_advance_content_version(ctx, args);
+	// No media validation advance: a new node has a new ID, so no checked proof names it. It starts in
+	// its parent's scope and is never a restricted root. Move reservations block creation inside a moving folder.
 	await files_updated_by_db_sync_node(ctx, { nodeId });
 
 	if (args.kind === "folder") {
@@ -4617,8 +4618,8 @@ export async function files_nodes_db_rebuild_node(
 // #region archive nodes
 /**
  * Archive one node under `archiveOperationId`. Its saved chunks and metadata docs follow in a job,
- * so one big file costs this mutation little. The caller advances the media validation
- * version once after its writes.
+ * so one big file costs this mutation little. The caller decides whether to advance the media
+ * validation version (see `files_nodes_db_archive_nodes`).
  *
  * It also deletes the node's own public link. A folder's links below it are the caller's job, because
  * this archives only the one node.
@@ -4714,6 +4715,15 @@ export async function files_nodes_db_archive_nodes(args: {
 		archivedWorkspaces.set(fileNode.workspaceId, fileNode.organizationId);
 	}
 
+	// Archiving a file that cannot back media cannot break a media proof, so it skips the advance. A
+	// folder hides everything below it.
+	const proofWorkspaces = new Set<Doc<"files_nodes">["workspaceId"]>();
+	for (const fileNode of fileNodes) {
+		if (proofWorkspaces.has(fileNode.workspaceId)) continue;
+		if (fileNode.kind === "folder" || (await files_media_validation_db_can_back_media(ctx, fileNode)))
+			proofWorkspaces.add(fileNode.workspaceId);
+	}
+
 	// Archive stamps only the named nodes. Delete the public links below them too, once per workspace.
 	for (const [workspaceId, organizationId] of archivedWorkspaces) {
 		await files_share_links_db_delete_for_roots({
@@ -4738,7 +4748,8 @@ export async function files_nodes_db_archive_nodes(args: {
 
 	// Advance each workspace once, after its parallel Archive writes finish.
 	for (const [workspaceId, organizationId] of archivedWorkspaces)
-		await files_media_validation_db_advance_version(ctx, { organizationId, workspaceId });
+		if (proofWorkspaces.has(workspaceId))
+			await files_media_validation_db_advance_version(ctx, { organizationId, workspaceId });
 }
 
 /**
@@ -5113,6 +5124,7 @@ function get_public_node_fields(fileNode: Doc<"files_nodes">, writeBlockedReason
 		moveCohortId: _moveCohortId,
 		contentTypeEssence: _contentTypeEssence,
 		contentTypeFamily: _contentTypeFamily,
+		archivedPathLength: _archivedPathLength,
 		...fields
 	} = fileNode;
 	// Leave `ancestor1..12` out too. Only the name search index reads them.
@@ -7238,6 +7250,8 @@ export const list_subtree = internalQuery({
 
 		// The access check can make a page shorter. The cursor still walks the whole subtree; only the
 		// page size varies.
+		// The frontier is read before the access check, so it can be a hidden doc. It must never reach a
+		// caller as plain text: `files_saved_list_page` seals it inside the public cursor.
 		const last = result.page.at(-1);
 		const frontier = last
 			? {

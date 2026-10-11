@@ -1,4 +1,5 @@
 import { createCommandContext, InMemoryFs } from "just-bash/browser";
+import { getFunctionName, type FunctionReference } from "convex/server";
 import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server";
@@ -21,21 +22,35 @@ const ctxData = {
 };
 
 function create_command_runner() {
-	// One generic response covers the queries `meta search` makes: the pending path overlay read
-	// (empty = no pending moves) and the metadata streams (empty and done).
-	const runQuery = vi.fn(async (_ref: unknown, _args: unknown) => ({
-		pendingUpdates: [],
-		referencedNodes: [],
-		_yay: {
-			root: null,
-			rows: [],
-			frontier: null,
-			position: { rangeStart: null, cursor: null, lastKey: null },
-			done: true,
-			decided: 0,
-			overBudget: false,
-		},
-	}));
+	// Keep the real merge. The saved view is normal, and each metadata stream is empty and done.
+	const runQuery = vi.fn(async (ref: FunctionReference<"query">, _args: unknown) => {
+		switch (getFunctionName(ref)) {
+			case "files_visible:internal_get_move_view":
+				return {
+					cohortId: null,
+					view: null,
+					generation: 0,
+					searchGeneration: 0,
+					migrationDirection: null,
+				};
+			case "files_visible:internal_search_metadata_saved":
+			case "files_visible:internal_search_metadata_places":
+			case "files_visible:internal_search_metadata_pending":
+				return {
+					_yay: {
+						root: null,
+						rows: [],
+						frontier: null,
+						position: { rangeStart: null, cursor: null, lastKey: null },
+						done: true,
+						decided: 0,
+						overBudget: false,
+					},
+				};
+			default:
+				throw new Error(`Unexpected query: ${getFunctionName(ref)}`);
+		}
+	});
 	const ctx = {
 		runQuery,
 		runMutation: vi.fn(),
@@ -148,10 +163,17 @@ describe("bash_meta_command_create", () => {
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stderr).toBe("");
-			// The overlay read runs first and the Move view check runs last. Only the metadata stream has a plan.
-			expect(runQuery.mock.calls.find(([, args]) => (args as { plan?: unknown }).plan)?.[1]).toMatchObject({
-				plan: item.plan,
-			});
+			const metadataCalls = runQuery.mock.calls.filter(([ref]) =>
+				getFunctionName(ref).startsWith("files_visible:internal_search_metadata_"),
+			);
+			expect(metadataCalls.map(([ref]) => getFunctionName(ref)).sort()).toEqual([
+				"files_visible:internal_search_metadata_pending",
+				"files_visible:internal_search_metadata_places",
+				"files_visible:internal_search_metadata_saved",
+			]);
+			for (const [, args] of metadataCalls) {
+				expect(args).toMatchObject({ plan: item.plan, savedStream: { kind: "normal", generation: 0 } });
+			}
 		}
 	});
 

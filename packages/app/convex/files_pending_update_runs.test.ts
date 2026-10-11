@@ -3,7 +3,15 @@ import { Workpool } from "@convex-dev/workpool";
 import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_convex, test_move_nodes, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_finish_pending_update_run,
+	test_move_nodes,
+	test_mocks,
+	test_mocks_fill_db_with,
+	test_spy_handler,
+} from "./setup.test.ts";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	files_pending_update_runs_db_delete_run_batch,
@@ -113,36 +121,8 @@ async function start_review(args: {
 }
 
 async function finish_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_pending_update_runs">) {
-	for (let pass = 0; pass < 10_000; pass++) {
-		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
-		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		if (!run) throw new Error("Expected the review run");
-		if (run.step === "finished")
-			return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
-		const unit = await f.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_update_run_units")
-				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
-				.first(),
-		);
-		if (!unit) continue;
-		if (unit.kind === "cohort") {
-			if (!unit.cohortId) continue;
-			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
-			if (!cohort) throw new Error("Expected the review cohort");
-			if (cohort.phase === "complete")
-				await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
-			else await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
-			continue;
-		}
-		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
-			runId,
-			fence: run.fence,
-			unitId: unit._id,
-			attemptFence: unit.attemptFence,
-		});
-	}
-	throw new Error("Review did not finish");
+	await test_finish_pending_update_run(f.asUser, runId);
+	return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
 }
 
 describe("review jobs", () => {
@@ -874,12 +854,13 @@ describe("review jobs", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 
-	test("a reviewed delete of a folder with many side docs archives the whole folder in group steps", async () => {
+	test("a reviewed folder delete archives its files and metadata docs within the unit budget", async () => {
 		const f = await fixture();
 		const parentId = await saved_folder(f, "big");
-		// 24 files with 4 metadata docs each: the group worker pages them 8 at a time, so it takes many steps.
-		await f.t.run(async (ctx) => {
-			for (let index = 0; index < 24; index++) {
+		// Keep all 150 files and 3,000 metadata docs across the cohort's small steps.
+		const fileIds = await f.t.run(async (ctx) => {
+			const ids: Id<"files_nodes">[] = [];
+			for (let index = 0; index < 150; index++) {
 				const name = `f${String(index).padStart(3, "0")}.md`;
 				const fileNodeId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
@@ -895,7 +876,8 @@ describe("review jobs", () => {
 					treePath: `/big/${name}`,
 					pathDepth: 2,
 				});
-				for (let field = 0; field < 4; field++) {
+				ids.push(fileNodeId);
+				for (let field = 0; field < 20; field++) {
 					await ctx.db.insert("files_metadata_docs", {
 						organizationId: f.scope.organizationId,
 						workspaceId: f.scope.workspaceId,
@@ -909,6 +891,7 @@ describe("review jobs", () => {
 					});
 				}
 			}
+			return ids;
 		});
 		expect(
 			(
@@ -921,20 +904,103 @@ describe("review jobs", () => {
 		const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 
 		const { runId } = await start_review({ f, kind: "accept", proposals });
-		await finish_review(f, runId);
+		const stagePages: number[] = [];
+		const cleanupPages = { before: [] as number[], after: [] as number[] };
+		const originals = new Set((await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect())).map((row) => row._id));
+		const copies = new Set<Id<"files_metadata_docs">>();
+		test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+			const patch = vi.spyOn(ctx.db, "patch");
+			const insert = vi.spyOn(ctx.db, "insert");
+			const remove = vi.spyOn(ctx.db, "delete");
+			try {
+				const result = await handler(ctx, args);
+				let staged = 0;
+				let copied = 0;
+				let before = 0;
+				let after = 0;
+				for (const [index, call] of insert.mock.calls.entries()) {
+					const fields = call[1] as Partial<Doc<"files_metadata_docs">>;
+					if (call[0] !== "files_metadata_docs" || fields.sourceKind !== "committed" || fields.moveView?.view !== "after") continue;
+					copies.add(await insert.mock.results[index]!.value as Id<"files_metadata_docs">);
+					copied++;
+				}
+				// Vitest uses the old ID-only overload. The worker passes the table too.
+				for (const [table, id, fields] of patch.mock.calls as unknown as [string, Id<"files_metadata_docs">, Partial<Doc<"files_metadata_docs">>][]) {
+					if (table !== "files_metadata_docs") continue;
+					const view = fields.moveView;
+					if (originals.has(id as Id<"files_metadata_docs">) && view?.view === "before") staged++;
+					else if (copies.has(id as Id<"files_metadata_docs">) && "moveView" in fields && view === undefined) after++;
+				}
+				for (const [table, id] of remove.mock.calls as unknown as [string, Id<"files_metadata_docs">][]) if (table === "files_metadata_docs" && originals.has(id as Id<"files_metadata_docs">)) before++;
+				if (staged) {
+					expect(copied).toBe(staged);
+					stagePages.push(staged);
+				}
+				if (before) cleanupPages.before.push(before);
+				if (after) cleanupPages.after.push(after);
+				return result;
+			} finally {
+				patch.mockRestore();
+				insert.mockRestore();
+				remove.mockRestore();
+			}
+		});
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const firstUnit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units")
+			.withIndex("by_run_order", (q) => q.eq("runId", runId)).first());
+		if (!firstUnit?.cohortId) throw new Error("Expected the review cohort");
+		// Check a real page early. The old page size must fail here, before the full job finishes.
+		for (let pass = 0; pass < 10_000; pass++) {
+			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", firstUnit.cohortId!));
+			if (!cohort) throw new Error("Missing review cohort");
+			if (stagePages.length) expect(stagePages[0], "Saved metadata staging moves all 20 fields in its first page").toBe(20);
+			if (cleanupPages.before.length) {
+				expect(cohort.publishedAt).not.toBeNull();
+				expect(cleanupPages.before[0], "Saved metadata cleanup takes 64 rows when they fit").toBe(64);
+				break;
+			}
+			if (cohort.phase === "complete") throw new Error("Review completed without metadata cleanup");
+			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			if (pass === 9999) throw new Error("Review did not reach metadata cleanup");
+		}
+		const result = await finish_review(f, runId);
+		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
+		expect(stagePages, "Reviewed Delete stages metadata in one page per file").toHaveLength(150);
+		expect(cleanupPages, "Reviewed Delete cleans both metadata views in 94 pages").toMatchObject({
+			before: Array.from({ length: 47 }, (_, index) => index === 46 ? 56 : 64),
+			after: Array.from({ length: 47 }, (_, index) => index === 46 ? 56 : 64),
+		});
 
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
-			{ status: "completed", errorMessage: null },
+		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
+		expect(units).toMatchObject([{ status: "completed", errorMessage: null }]);
+		const unit = units[0];
+		if (!unit?.cohortId) throw new Error("Expected the review cohort");
+		const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
+		expect(cohort).toMatchObject({ phase: "complete", visibleView: "after" });
+		expect(cohort?.publishedAt).not.toBeNull();
+		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+		expect(saved.map((node) => [node._id, node.path, node.treePath])).toEqual([
+			[parentId, "/big", "/big/"],
+			...fileIds.map((id, index) => {
+				const path = `/big/f${String(index).padStart(3, "0")}.md`;
+				return [id, path, path];
+			}),
 		]);
-		// The group worker stages the folder in pages, then archives all of it under one operation id.
-		const archived = await f.t.run(async (ctx) => ({
-			nodes: await ctx.db.query("files_nodes").collect(),
-			metadata: await ctx.db.query("files_metadata_docs").collect(),
-		}));
-		const operationId = archived.nodes.find((node) => node._id === parentId)?.archiveOperationId;
-		expect(operationId).toBeTruthy();
-		expect(archived.nodes.filter((node) => node.archiveOperationId === operationId)).toHaveLength(25);
-		expect(archived.metadata.every((doc) => doc.archiveOperationId === operationId)).toBe(true);
+		expect(saved.every((node) => node.archiveOperationId === unit.cohortId && node.moveCohortId === undefined)).toBe(true);
+		const metadata = await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect());
+		expect(metadata.map((row) => [row.sourceKind === "committed" ? row.fileNodeId : undefined, row.fieldPath]).sort()).toEqual(
+			fileIds.flatMap((id) => Array.from({ length: 20 }, (_, field) => [id, `frontmatter.tag${field}`])).sort(),
+		);
+		expect(
+			metadata.every((row) => row.archiveOperationId === unit.cohortId),
+			"Reviewed Delete archives every metadata field",
+		).toBe(true);
+		expect(
+			metadata.every((row) => row.sourceKind === "committed" && row.yjsSequence === 1 && row.moveView === undefined),
+		).toBe(true);
+		const paths = new Map(saved.map((node) => [node._id, node.path]));
+		expect(metadata.every((row) => row.sourceKind === "committed" && row.path === paths.get(row.fileNodeId) && row.treePath === row.path)).toBe(true);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 
 	test("does not discard an unselected ready child", async () => {

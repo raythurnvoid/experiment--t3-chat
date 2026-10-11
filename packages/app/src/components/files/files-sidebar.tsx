@@ -169,7 +169,7 @@ import { format_relative_time } from "@/lib/date.ts";
 import { objects_equal_shallow } from "@/lib/object.ts";
 import { files_search_query_parse } from "../../../shared/files-search-query.ts";
 import { files_sort_text_key } from "../../../shared/files-sort.ts";
-import { async_all_settled_with_limit } from "@/lib/async.ts";
+import { async_all_settled_with_limit } from "../../../shared/async-utils.ts";
 import { files_prepare_image_upload_file } from "@/lib/files-image-compression.ts";
 
 // Only the DOM controls subscribe, so global busy updates leave row menus and tooltips cached.
@@ -8064,12 +8064,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { ConvexProvider } = await import("convex/react");
 			const { app_convex } = await import("@/lib/app-convex-client.ts");
 			const { AppActivitiesProvider } = await import("@/lib/app-activities-context.tsx");
-			const { AppAuthProvider } = await import("@/components/app-auth.tsx");
 			const moveIntake = await import("@/lib/files-move-intake.ts");
-			vi.spyOn(AppAuthProvider, "useAuthenticated").mockReturnValue({
-				userId: "user" as app_convex_Id<"users">,
-				isAnonymous: false,
-			});
 			vi.spyOn(moveIntake, "files_move_intake_load").mockResolvedValue(null);
 			const emptyResult: never[] = [];
 			vi.spyOn(app_convex, "watchQuery").mockReturnValue({
@@ -8151,7 +8146,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					<ConvexProvider client={app_convex}>
 						{/* The clipboard provider reads pending Stops from the Activity provider. */}
 						<AppActivitiesProvider membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}>
-							<FilesClipboardProvider membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}>
+							<FilesClipboardProvider
+								userId={"user" as app_convex_Id<"users">}
+								membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}
+							>
 								<div ref={scrollElementRef}>
 									<FilesSidebarTree
 										tree={tree}

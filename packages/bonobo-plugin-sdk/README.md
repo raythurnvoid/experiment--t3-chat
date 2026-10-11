@@ -12,7 +12,7 @@ Backend run (`fetch(request, env, ctx)`):
 - `outbound.fetch` — native `fetch` to third-party HTTPS origins listed in the manifest's `outboundOrigins`.
 - `plugin.data.read` — read the plugin's own document store.
 - `plugin.data.write` — create, change, and delete documents in that store. Declaring it also requires `plugin.data.read`.
-- `workspace.files.read` — the run's host token also carries `files:list` and `files:read`, so a backend run can call `/api/v1/files/list` and `/api/v1/files/read` with the acting member's visibility: a file or folder that member cannot see answers `404` or an empty page. `files/download-urls` stays bound to the triggering upload.
+- `workspace.files.read` — the run's host token also carries `files:list` and `files:read`, so a backend run can call `/api/v1/files/list` and `/api/v1/files/read` with the acting member's visibility: a file or folder that member cannot see answers `404`, and items it cannot see are left out of a listed folder. `files/download-urls` stays bound to the triggering upload.
 - `workspace.files.own-write` — an invoke run may create, update, and archive files and folders marked for this plugin. Only exact string `plugin-name` metadata matching the installed plugin name selects an existing node. Members may edit or remove the label through ordinary metadata controls. Actor permissions and current locks still apply. Declaring it also requires `workspace.files.write`.
 - `workspace.files.own-access` — an invoke run may set locks and readers on matching files and folders through `/api/v1/files/plugin-access/set`. Members with manage permission may change them. Declaring it also requires `workspace.files.own-write`.
 - `workspace.volumes.write` — write the installation's external Mounts through the five `/api/v1/volumes/*` routes. Workspace readers and the chat agent get read-only access.
@@ -193,6 +193,8 @@ type WriteOk = BonoboHttpApi["/api/v1/files/write"]["POST"]["response"][200]["bo
 // response against.
 type WriteAnswer = BonoboHttpResponse<"/api/v1/files/write">;
 ```
+
+0.21.1 adds `errorCode: "invalid_cursor"` to the `files/list` `400` for a cursor that no longer opens, and documents the rate limits. It also carries the generated types and docs changed since 0.21.0.
 
 0.20.6 documents that `archive-destination` also archives a destination folder the sealed grant created through `/api/v1/files/write` alone. The runtime and types are unchanged.
 
@@ -618,11 +620,13 @@ Omitting it or passing `false` keeps the normal safe media preview headers. Stor
 filename encoding, file permissions, and URL expiry checks stay the same. Use a normal `<a download>`
 for a download, without `target="_blank"`; plugin frames allow downloads but block popups. Check
 `expiresAt` before following a saved link and request a fresh URL when it has expired.
-Each of the first 20 requested files consumes one call from the route's principal rate-limit
-bucket. One inaccessible file appears in `errors` without discarding the other successful URLs.
+Each requested file consumes one token from its own download bucket (120/min, burst 20, per
+token); the request itself also charges the route's principal bucket once. One inaccessible file appears in `errors` without discarding the other successful URLs.
 Duplicate file IDs are rejected with `400` before they consume route capacity or start file work.
 
-Pagination of `/api/v1/files/list` (`{ items, cursor, isDone }`): `contentTypePrefixes` takes up to 8 whole families like `image/` or exact types like `image/png`, and needs `recursive: true` and no `extension`. Any other value, like `image` or `image/png;charset=utf-8`, answers `400`; `image/p` means the exact type `image/p`, not a prefix. The server reads these types from indexes, so a page is full unless the access check drops files you may not read. A page can still come back short while `isDone` is `false` — keep passing `cursor` until `isDone` is `true` or you have enough items. `scanLimit` is ignored. List with `limit: 100` and `kind: "file"`; bound the requests advanced per user action, buffer overflow items for the next action, and retry a `429` on the same cursor.
+Pagination of `/api/v1/files/list` (`{ items, cursor, isDone }`): `contentTypePrefixes` takes up to 8 whole families like `image/` or exact types like `image/png`, and needs `recursive: true` and no `extension`. Any other value, like `image` or `image/png;charset=utf-8`, answers `400`; `image/p` means the exact type `image/p`, not a prefix. The server reads these types from indexes, so a page is full unless the access check drops files you may not read. A page can still come back short while `isDone` is `false` — keep passing `cursor` until `isDone` is `true` or you have enough items. `scanLimit` is ignored. List with `limit: 100` and `kind: "file"`; bound the requests advanced per user action, buffer overflow items for the next action, and retry a `429` on the same cursor. `path` must be a folder: a missing, archived, or hidden folder answers `404` `{ "message": "Folder not found: <path>" }` on any page, and a file answers `400`. The `cursor` is sealed and opaque. Send it back unchanged with the same body; an edited cursor, one from another request, or one from before a host update answers `400` `{ "message": "This list cursor changed. Start a new page.", "errorCode": "invalid_cursor" }`. Any Move or Rename in the workspace also ends open cursors, so this is a normal answer. Check `"errorCode" in body && body.errorCode === "invalid_cursor"`, not the message, start again with `cursor: null`, and skip the ids you already showed.
+
+Rate limits: each token gets 120 requests per minute per route, with a burst of 20. A `429` body has `retryAfterMs`: wait that long plus a small random delay, then send the same body and cursor again. A `429` can come a little before the limit, and two parallel calls on one token can collide; that `429` says `retryAfterMs: 1000`. Keep about 4 calls in flight per route. `Plugin API call limit exceeded` (no `retryAfterMs`) does not clear inside the same run, so stop.
 
 ### Using your own fetch
 

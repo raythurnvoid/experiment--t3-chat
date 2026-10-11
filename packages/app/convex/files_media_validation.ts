@@ -3,7 +3,8 @@ import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 
-// Writers advance this in the same transaction as the access or structure change.
+// Writers advance this in the same transaction as the access or structure change. Archiving a file that
+// cannot back media skips it (see `files_nodes_db_archive_nodes`).
 export async function files_media_validation_db_advance_version(
 	ctx: MutationCtx,
 	args: {
@@ -34,8 +35,10 @@ export async function files_media_validation_db_advance_version(
 }
 
 /**
- * A new file or replaced content changes only what media proofs see. Access and structure changes use
- * `files_media_validation_db_advance_version`, which a Move also pins.
+ * Replaced content of a file that can back media changes only what media proofs see. Access and
+ * structure changes use `files_media_validation_db_advance_version`, which a Move also pins.
+ *
+ * Creating a node never advances either clock. A new node has a new ID, so no checked proof names it.
  */
 export async function files_media_validation_db_advance_content_version(
 	ctx: MutationCtx,
@@ -59,6 +62,38 @@ export async function files_media_validation_db_advance_content_version(
 	} else {
 		await ctx.db.insert("files_content_versions", { organizationId, workspaceId: scope.workspaceId, revision: 1 });
 	}
+}
+
+/**
+ * Whether a file version can be a checked media ref. Media proofs accept only stored images and
+ * videos. `files_transfer_media_db_get_ready_media` uses this rule too, so the writers that skip the
+ * clocks cannot drift from it.
+ */
+export function files_media_validation_is_media_version(version: {
+	textKind: Doc<"files_nodes">["textKind"];
+	contentType: string | null;
+}) {
+	return (
+		version.textKind === null &&
+		version.contentType !== null &&
+		(version.contentType.startsWith("image/") || version.contentType.startsWith("video/"))
+	);
+}
+
+/**
+ * Whether a change to this saved file's bytes, type, or placement can break a proof that checked it.
+ * A member's proof can check a saved file through their pending replacement, so that counts too.
+ * Read this before the caller changes the file's proposals.
+ */
+export async function files_media_validation_db_can_back_media(ctx: MutationCtx, node: Doc<"files_nodes">) {
+	if (node.kind !== "file") return false;
+	if (files_media_validation_is_media_version(node)) return true;
+	// A user has at most one proposal per target, so this range holds one doc per member at most.
+	for await (const proposal of ctx.db
+		.query("files_pending_updates")
+		.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", node._id)))
+		if (proposal.pendingReplacement !== undefined) return true;
+	return false;
 }
 
 /**

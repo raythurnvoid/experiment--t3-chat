@@ -13,8 +13,10 @@ import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js"
 import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
 import type { CustomerState } from "@polar-sh/sdk/models/components/customerstate.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
+import { HTTPValidationError } from "@polar-sh/sdk/models/errors/httpvalidationerror.js";
 import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
+import { SDKError } from "@polar-sh/sdk/models/errors/sdkerror.js";
 import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlocked.js";
 import { v } from "convex/values";
 import { z } from "zod";
@@ -36,7 +38,12 @@ import { billing_POLAR_METER_EVENT, billing_event, billing_polar_client } from "
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	billing_db_check_credits,
+	billing_db_drain_usage_event_outbox,
+	billing_db_enqueue_usage_events,
 	billing_db_ingest_anonymous_user_events,
+	billing_db_recover_usage_event_outbox,
+	billing_db_requeue_rate_limited_usage_events,
+	billing_db_resend_rejected_usage_events,
 	billing_ingest_events,
 	billing_pick_billed_user_id,
 } from "./billing_db.ts";
@@ -46,7 +53,7 @@ import {
 	should_never_happen,
 } from "../server/server-utils.ts";
 import { convertToDatabaseSubscription } from "../vendor/polar/src/component/util.ts";
-import app_convex_schema, { ai_model_call_purpose_validator } from "./schema.ts";
+import app_convex_schema, { billing_event_validator } from "./schema.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { billing_polar } from "./billing_polar.ts";
 
@@ -1796,143 +1803,25 @@ export const cancel_current_subscription = action({
 });
 
 // #region event ingestion
-const billing_event_validator = v.union(
-	v.object({
-		name: v.literal("manual_credit"),
-		externalCustomerId: v.id("users"),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-		}),
-	}),
-	v.object({
-		name: v.literal("file_save"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.string(),
-			workspaceId: v.string(),
-			nodeId: v.string(),
-			/**
-			 * See the `version` tuple item in `AppCompositeIds.billing`.
-			 */
-			version: v.string(),
-		}),
-	}),
-	v.object({
-		name: v.literal("file_upload"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.id("organizations"),
-			workspaceId: v.id("organizations_workspaces"),
-			nodeId: v.union(v.id("files_nodes"), v.null()),
-			assetId: v.id("files_r2_assets"),
-			bytes: v.number(),
-		}),
-	}),
-	v.object({
-		name: v.literal("plugin_volume_file_write"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.id("organizations"),
-			workspaceId: v.id("organizations_workspaces"),
-			assetId: v.id("files_r2_assets"),
-		}),
-	}),
-	v.object({
-		name: v.literal("monthly_credit"),
-		externalCustomerId: v.id("users"),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			subscriptionId: v.string(),
-			productId: v.string(),
-			productName: v.string(),
-			periodStart: v.string(),
-		}),
-	}),
-	v.object({
-		name: v.literal("ai_usage"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.string(),
-			workspaceId: v.string(),
-			modelId: v.string(),
-			/**
-			 * The provider request this charge belongs to (`ai_model_call_receipts`).
-			 */
-			modelCallId: v.string(),
-			purpose: ai_model_call_purpose_validator,
-			/**
-			 * `tokens` bills the request's tokens. `image` bills one finished picture.
-			 */
-			component: v.union(v.literal("tokens"), v.literal("image")),
-			imageCallId: v.union(v.string(), v.null()),
-			responseId: v.union(v.string(), v.null()),
-			providerModelId: v.union(v.string(), v.null()),
-			/**
-			 * Null on an image charge. A tokens charge always has the reported numbers.
-			 */
-			inputTokens: v.union(v.number(), v.null()),
-			outputTokens: v.union(v.number(), v.null()),
-			/**
-			 * `1` on an image charge, `0` on a tokens charge.
-			 */
-			generatedImages: v.number(),
-			/**
-			 * Null for inline AI, which has no chat thread.
-			 */
-			threadId: v.union(v.string(), v.null()),
-		}),
-	}),
-	v.object({
-		name: v.literal("browser_usage"),
-		externalCustomerId: v.id("users"),
-		externalMemberId: v.optional(v.id("users")),
-		externalId: v.string(),
-		metadata: v.object({
-			amount: v.number(),
-			actorUserId: v.id("users"),
-			billedUserId: v.id("users"),
-			organizationId: v.string(),
-			workspaceId: v.string(),
-			sessionId: v.string(),
-			mode: v.union(v.literal("file"), v.literal("web")),
-			/**
-			 * The runner's real browser time for this session. `amount` charges every started minute.
-			 */
-			billedMs: v.number(),
-		}),
-	}),
-);
+/**
+ * Wait this long after a Polar 429 without a `retry-after` header. Polar usually answers 60 seconds.
+ */
+const POLAR_RATE_LIMIT_RETRY_MS = 60 * 1000;
 
+/**
+ * Send one batch to Polar. Returns `null` when Polar took it, `"handed_on"` when the events moved
+ * on (a 422 split into new pool jobs, or a 429 back to the outbox), and `"rejected"` when Polar
+ * refused the one event. `on_batch_delivery_complete` reads this to record model call receipt delivery.
+ */
 export const ingest_events = internalAction({
 	args: {
 		events: v.array(billing_event_validator),
 	},
-	handler: async (_ctx, args) => {
+	returns: v.union(v.null(), v.literal("handed_on"), v.literal("rejected")),
+	handler: async (ctx, args) => {
 		// Skip direct Polar calls in tests; tests usually assert the queued payload.
 		if (process.env.NODE_ENV === "test") {
-			return;
+			return null;
 		}
 
 		// Polar uses one meter event; keep the app event name in metadata.
@@ -1952,8 +1841,41 @@ export const ingest_events = internalAction({
 			}),
 		});
 		if (!ingestResult.ok) {
+			// Polar checks the whole batch before it saves any event, so one bad event refuses all of
+			// them (422), and a retry would fail forever. Split the batch in halves until the bad event
+			// is alone, then log it and keep it in `billing_usage_event_rejected`, so a code bug that
+			// makes every event invalid loses no charge. Other errors throw, so the pool retries.
+			if (ingestResult.error instanceof HTTPValidationError) {
+				if (args.events.length === 1) {
+					console.error("Polar refused a usage event; it waits in billing_usage_event_rejected", {
+						event: args.events[0],
+						detail: ingestResult.error.detail,
+					});
+					await ctx.runMutation(internal.billing.save_rejected_usage_event, {
+						event: args.events[0],
+						error: ingestResult.error.message.slice(0, 1000),
+					});
+					return "rejected";
+				}
+				const half = Math.ceil(args.events.length / 2);
+				for (const events of [args.events.slice(0, half), args.events.slice(half)])
+					await billing_db_enqueue_usage_events(ctx, { events });
+				return "handed_on";
+			}
+			// Polar's limit is per organization, so a 429 here also slows checkout and portal calls.
+			// Put the batch back in the outbox and pause the drainer as long as Polar asks, so the one
+			// drainer chain paces every call. A new pool job per 429 would not be paced.
+			if (ingestResult.error instanceof SDKError && ingestResult.error.statusCode === 429) {
+				const retryAfterSeconds = Number(ingestResult.error.headers.get("retry-after"));
+				await ctx.runMutation(internal.billing.requeue_rate_limited_usage_events, {
+					events: args.events,
+					retryAfterMs: retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : POLAR_RATE_LIMIT_RETRY_MS,
+				});
+				return "handed_on";
+			}
 			throw new Error(JSON.stringify(ingestResult.error));
 		}
+		return null;
 	},
 });
 
@@ -1970,6 +1892,66 @@ export const ingest_anonymous_user_events = internalMutation({
 	handler: async (ctx, args) => {
 		await billing_db_ingest_anonymous_user_events(ctx, args);
 		return null;
+	},
+});
+
+/**
+ * One run of the usage event outbox drainer (`billing_db_drain_usage_event_outbox`).
+ */
+export const drain_usage_event_outbox = internalMutation({
+	args: { markerId: v.id("billing_usage_event_outbox_drainers"), idleSince: v.optional(v.number()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await billing_db_drain_usage_event_outbox(ctx, args);
+		return null;
+	},
+});
+
+/**
+ * 5-minute cron. Restarts the outbox drainer when its chain stopped.
+ */
+export const recover_usage_event_outbox = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		await billing_db_recover_usage_event_outbox(ctx);
+		return null;
+	},
+});
+
+/**
+ * Keep one usage event Polar refused (422), so it can be sent again after a fix.
+ */
+export const save_rejected_usage_event = internalMutation({
+	args: { event: billing_event_validator, error: v.string() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await ctx.db.insert("billing_usage_event_rejected", { ...args, rejectedAt: Date.now() });
+		return null;
+	},
+});
+
+/**
+ * Put a batch Polar rate limited (429) back in the outbox and pause the drainer.
+ */
+export const requeue_rate_limited_usage_events = internalMutation({
+	args: { events: v.array(billing_event_validator), retryAfterMs: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await billing_db_requeue_rate_limited_usage_events(ctx, args);
+		return null;
+	},
+});
+
+/**
+ * Move up to 500 refused usage events back to the outbox, after the cause is fixed. Run it again
+ * until it returns 0. An event Polar still refuses comes back to `billing_usage_event_rejected`.
+ */
+export const resend_rejected_usage_events = internalMutation({
+	args: {},
+	returns: v.number(),
+	handler: async (ctx) => {
+		return await billing_db_resend_rejected_usage_events(ctx);
 	},
 });
 

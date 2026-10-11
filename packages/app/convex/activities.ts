@@ -557,9 +557,15 @@ export const cleanup_history = internalMutation({
 		let deletedCount = 0;
 		let bashJobCount = 0;
 		let pendingCleanup = false;
+		let reviewCleanupProgress = false;
 
 		for (const status of ["succeeded", "partial", "failed", "canceled", "timed_out"] as const) {
-			if (processedCount >= batchSize || deletedCount >= 50 || bashJobCount >= ACTIVITIES_BASH_JOB_ROWS_MAX) break;
+			if (
+				processedCount >= batchSize ||
+				deletedCount >= 50 ||
+				bashJobCount >= ACTIVITIES_BASH_JOB_ROWS_MAX ||
+				reviewCleanupProgress
+			) break;
 
 			const activities = await ctx.db
 				.query("activities")
@@ -622,6 +628,11 @@ export const cleanup_history = internalMutation({
 				deletedCount += deletion.deletedCount;
 				pendingCleanup ||= !deletion.done;
 				processedCount += 1;
+				// Review graph cleanup may have used this transaction's one paginated query.
+				if (activity.source.kind === "files_pending_update_run" && !deletion.done && deletion.deletedCount > 0) {
+					reviewCleanupProgress = true;
+					break;
+				}
 			}
 		}
 

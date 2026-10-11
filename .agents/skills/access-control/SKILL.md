@@ -81,14 +81,20 @@ not permission caches. Final publication still checks current access.
   policy changes advance the workspace version. Unchanged or refused writes do not advance it.
 - Plugin mirrored human readers follow the same rule, including rollback and empty-reader root
   restriction. Store-only changes and independent service-account grants are not human media access.
-- New saved files and replaced content advance a separate content version (`files_content_versions`),
-  not the workspace version. Copy and Save pin it too. A Move group pins only the organization,
-  workspace and review versions, so a new file elsewhere does not stop it. Data deletion removes it
-  with the workspace.
+- Replaced content advances a separate content version (`files_content_versions`), not the
+  workspace version. Copy and Save pin it too. A Move group pins only the organization, workspace
+  and review versions. Data deletion removes it with the workspace.
+- For a plain file with no pending replacement, `files_nodes_db_archive_nodes` skips the workspace
+  version and `db_install_file_content_replacement` skips the content version. A plain file is not a
+  stored image or video. Creating a node advances neither. Move cohorts, archive runs and subtree jobs
+  always advance.
+- A Copy or Save proof with no media refs skips the version check. The folder Move check and the
+  Move cohort keep their pins, because the same pins catch write policy and access changes.
 - Purge fencing invalidates proofs before docs are removed. A removed version doc also invalidates
   its proof. Never recreate a missing doc while checking an old proof.
 
-When adding a writer, check both Copy adoption and final Save. See the pending and transfer specs.
+Advance only for a change that can turn a passing proof into a failing one. Check all four readers:
+Copy, pending Save, folder Move check, and Move cohort. See the pending and transfer specs.
 
 ## Service accounts
 
@@ -771,7 +777,10 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
   restricted twin as `list_tree_children_sorted` below. A missing, foreign, or hidden parent gets the
   same empty, done page as any other refusal, so the answer does not tell the caller that a hidden
   folder exists. A grant-only member gets nothing for the root: their root rows come from
-  `list_tree_children_shared` and `list_tree_shared_roots`.
+  `list_tree_children_shared` and `list_tree_shared_roots`. The public `files/list` route keeps the
+  same rule with a different answer: a missing, archived, or hidden folder gets one 404 `Folder not
+  found: <path>` (see the public-api skill). A member who can read only `/Clients/Acme` gets that 404
+  for `/Clients` too.
 - `get_tree_ancestors` takes a raw id string, so a bad `?nodeId=` returns `null` instead of an argument
   error. It walks up from the node and stops at the first folder the caller cannot read, because the
   tree cannot show a row under a hidden folder. This hides no names: every tree row carries its
@@ -835,16 +844,20 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
 - `files_metadata.list_folder_fields` checks active membership and folder `content.read`, then reads
   one range of the metadata catalog's `parent` family. The root needs workspace read; a grant-only
   member gets an empty, done page there. A readable archived folder, a missing folder and a denied
-  folder get the same empty, done page. The catalog has no restriction flag, so the keys of
-  restricted children show to every member who can read the folder.
-- **Accepted leak in metadata suggestions (user, 2026-10-08).** `list_search_fields`,
-  `get_search_field`, `list_search_values` and `list_folder_fields` read the metadata catalog, which
-  counts saved keys and values with no access data. So any member, guests included, sees every saved
-  key and short string value of the workspace, also from files they cannot open. Search results,
-  opening a file, and the folder gate stay access-checked. This is temporary: Convex has no
-  "distinct values" search. A search engine must fix it by counting keys and values over only the
-  files the caller can read. Do not copy this pattern to other data. See the `file-metadata` skill,
-  "Suggestions".
+  folder get the same empty, done page. Like the folder table, it has a restricted twin
+  (`restricted: true`, the `parent_restricted` family) that only the owner reads. So the keys of a
+  restricted child show to the owner only, also when the child is shared with a member. A field doc
+  without the `isRestrictedScopeRoot` copy counts in the twin (fail closed).
+- **Accepted leak in metadata suggestions (user, 2026-10-08, narrowed 2026-10-10).**
+  `list_search_fields`, `get_search_field`, `list_search_values` and `list_folder_fields` read the
+  metadata catalog, which counts saved keys and values with no access data. The first three need
+  workspace-wide `content.read` (`hasWorkspaceRead`), so a guest gets an empty answer, also inside a
+  folder shared with them. A member with workspace read still sees every saved key and short string
+  value of the workspace, also from restricted files they cannot open. `list_folder_fields` shows
+  restricted children's keys to the owner only (see above). Search results, opening a
+  file, and the folder gate stay access-checked. This is temporary: Convex has no "distinct values"
+  search. A search engine must fix it by counting keys and values over only the files the caller can
+  read. Do not copy this pattern to other data. See the `file-metadata` skill, "Suggestions".
 - `files_metadata.list_node_fields` and `get_field_values` check the node on every call: they load
   the saved node, check tenant and active state, then `access_control_db_authorize_membership(...,
   { fileNode })` with `content.read`. A private target or a refusal returns null, including after a
@@ -938,22 +951,29 @@ Five rules that look like details and are not:
 ### Share rows
 
 `files_share_rows` holds one row per share, so a member's shared items can be paged with indexes like
-the folder table. Code: `packages/app/server/files-share-rows.ts`.
+the folder table, and a reader can list the restricted folders it may read in path order (see
+"Readable scopes" below). Code: `packages/app/server/files-share-rows.ts`.
 
-- A share is a file `content.read` grant to a user or a role. Its row lives while the grant lives and
-  its node is a restricted scope root in the grant's organization and workspace, active or archived.
-  Service account and public grants have no row.
-- `principalKey` is `user:<userId>` or `role:<role>`. A role share is one row, not one row per member.
-- A row copies the node's list fields (parent, kind, archive, names, `updatedAt`, extension, size,
-  creation time) and the grant's `externalPluginMembershipLifetime` (`null` when missing).
+- A share is a file `content.read` grant to a user, a role or a service account. Its row lives while
+  the grant lives and its node is a restricted scope root in the grant's organization and workspace,
+  active or archived. A service account grant also has a row while its node is open, because an
+  account reads one open node through its own grant. A public grant has no row.
+- `principalKey` is `user:<userId>`, `role:<role>` or `service_account:<serviceAccountId>`. A role
+  share is one row, not one row per member.
+- A row copies the node's list fields (parent, kind, archive, names, `treePath`, `updatedAt`,
+  extension, size, creation time) and the grant's `externalPluginMembershipLifetime` (`null` when
+  missing).
 - Nothing writes rows by hand. The pending overlay flush keeps them true in the writer's transaction
   (grants are one of its source tables): a file grant insert, patch or delete syncs that grant's row,
-  and a write to a node that is or was a restricted root syncs the node's rows. A move, rename or
-  archive of an ancestor changes no copied field.
+  and a write to a node that is or was a restricted root syncs the node's rows. Another node syncs
+  when it opens or closes, or when it has rows and a copied field changed (one `by_node` range,
+  skipped for a node that stays inside a restricted folder outside a Move). A restore or scope job
+  writes a new `treePath` through the flush. A move or rename of an ancestor changes `treePath`, and its Move cohort syncs each node it writes.
 - A node sync reads the node's `content.read` grants in the node's own workspace with one range
   (`by_resource_permission`). The share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people and roles, in
-  `files_sharing.ts`, and `MAX_READERS`, 50 plugin readers, in `plugins_external_files.ts`) bound it
-  to about 100 rows.
+  `files_sharing.ts`, the same 50 with service accounts in
+  `access_control_db_set_service_account_grant`, and `MAX_READERS`, 50 plugin readers, in
+  `plugins_external_files.ts`) bound it to about 100 rows.
 - Move stages share docs in pages before the group switch. Ordinary selections and connected
   Pending Save groups use the same worker. Share docs count in each transaction's measured
   budget. They do not create a total selection cap.
@@ -962,6 +982,32 @@ the folder table. Code: `packages/app/server/files-share-rows.ts`.
   There is no repair door. To fix drift, write a one-time mutation that calls
   `files_share_rows_db_sync_grant` (`server/files-share-rows.ts`) for each reported grant.
 - Data deletion: see `../data-deletion/SKILL.md`.
+
+### Readable scopes
+
+`server/files-readable-scopes.ts` tells a file list which rows it may read, so a list never reads a
+hidden row only to drop it. Rows are split by their stored `restrictedScopeNodeId`: open content
+(null) and one partition per restricted folder. No list reads it yet.
+
+- `files_readable_scopes_db_reader` is the one flat-mode decision. The owner without a service
+  account, plugin volumes and GLOBAL reserved workspaces read flat with `filter: false`: every row is
+  readable. A member acting through a service account reads flat with `filter: true`: the per-row
+  filter checks every row, because an intersection of the account's and the member's folders has
+  no bounded read yet (a known gap until the user decides). Everyone else is `scoped`, with the share row principals
+  to read (the member and their roles, or the account when the owner acts through it).
+- `files_readable_scopes_db_enumerate_by_path` pages one principal's rows on
+  `by_org_ws_principal_archive_treePath` under a folder, after a `treePath`, and checks each row
+  again like the share streams. It gives `scope` items (restricted folders) and `node` items (open
+  nodes an account reads by its own grant). The caller merges the principals by `treePath`. Folder
+  `/` walks the whole workspace (the plan's `enumerate_all`).
+- `files_readable_scopes_db_plan` gives the partitions open at a list's last key: open content, the
+  folder's own stored scope, the readable restricted folders that hold the key, and the
+  **transitional partitions** of running unrestrict jobs. A child of an unrestricted folder keeps the
+  dead pointer until its job writes it, so the plan opens that pointer's partition, readable like its
+  live scope. It skips an op whose `treePaths` miss the folder before it reads the op's roots. It
+  reads at most 500 scope ops of the workspace. Past that, the children of the other jobs stay hidden
+  until their job runs (closed, never open), and the plan returns `truncated: true`. A reader that
+  needs a whole folder, like `cp -r`, must stop then instead of copying part of it.
 
 ## Public file links
 
@@ -1420,7 +1466,7 @@ Consequences the UI has to carry, each of which is a server rule and not a style
 - `packages/app/convex/schema.ts`
 - `packages/app/convex/organizations.ts`
 - `packages/app/convex/data_deletion.ts`
-- `packages/app/convex/files_share_links.ts`, `packages/app/convex/files_share_links_db.ts` (+ `files_share_links.test.ts`)
+- `packages/app/convex/files_share_links.ts`, `packages/app/convex/files_share_links_db.ts` (+ `files_share_links*.test.ts`)
 - `packages/app/convex/access_control.test.ts`
 - `packages/app/convex/organizations.test.ts`
 - `packages/app/convex/data_deletion.test.ts`

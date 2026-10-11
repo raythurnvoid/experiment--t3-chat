@@ -44,9 +44,9 @@ import {
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { convex_error } from "./convex-utils.ts";
 import {
+	files_share_rows_db_node_changed,
 	files_share_rows_db_sync_grant,
 	files_share_rows_db_sync_node,
-	files_share_rows_node_changed,
 	files_share_rows_NODE_FIELDS,
 } from "./files-share-rows.ts";
 import { files_visible_resolve_db_create } from "./files-visible-resolve.ts";
@@ -68,13 +68,13 @@ import {
 } from "./files-saved-placement.ts";
 import {
 	files_pending_review_facts_db_change_state,
-	files_pending_review_facts_db_get_state,
 	files_pending_review_facts_db_sync,
 } from "./files-pending-review-facts.ts";
 import { path_tree_prefix_upper_bound, server_path_normalize } from "./server-utils.ts";
 import {
 	files_move_reservations_db_enter,
 	files_move_reservations_db_find_blocker,
+	files_move_reservations_db_get_source,
 	files_move_reservations_db_note_source,
 	files_move_reservations_db_is_rename_allocation,
 } from "./files-move-reservations.ts";
@@ -137,6 +137,7 @@ const SOURCE_FIELDS: Record<string, string[]> = {
 		// The metadata catalog's fields.
 		"archiveOperationId",
 		"parentId",
+		"isRestrictedScopeRoot",
 		"docKind",
 		"fieldPath",
 		"valueKind",
@@ -298,7 +299,6 @@ type FlushMarks = {
 		| null;
 	factScopes: Map<string, Omit<Scope, "userId">>;
 	factScopesChanged: Set<string>;
-	factStructureRevisions: Map<string, number>;
 	/**
 	 * The last known source fields of each source doc, for the whole mutation.
 	 */
@@ -457,7 +457,6 @@ function new_state(): FlushMarks {
 		allocatingPrivateSource: null,
 		factScopes: new Map(),
 		factScopesChanged: new Set(),
-		factStructureRevisions: new Map(),
 		lastKnown: new Map(),
 		savedOld: new Map(),
 		oldReads: new Map(),
@@ -776,10 +775,7 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 									? { kind: "proposal" as const, id: value.pendingUpdateId }
 									: null;
 		if (!source) return false;
-		const reservation = await raw
-			.query("files_move_source_reservations")
-			.withIndex("by_source", (q) => q.eq("source.kind", source.kind).eq("source.id", source.id))
-			.unique();
+		const reservation = await files_move_reservations_db_get_source(raw, source);
 		return reservation?.cohortId === state.materializingCohortId;
 	};
 
@@ -1553,18 +1549,11 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 	if (place) pendingUpdateIds.add(place.pendingUpdateId);
 	if (pendingUpdate) pendingUpdateIds.add(pendingUpdate._id);
 	for (const pendingUpdateId of pendingUpdateIds) {
-		const scopeKey = `${scope.organizationId}:${scope.workspaceId}`;
-		let structureRevision = state.factStructureRevisions.get(scopeKey);
-		if (structureRevision === undefined) {
-			structureRevision = (await files_pending_review_facts_db_get_state(ctx.db, scope))?.structureRevision ?? 0;
-			state.factStructureRevisions.set(scopeKey, structureRevision);
-		}
 		await files_pending_review_facts_db_sync(ctx.db, {
 			pendingUpdateId,
 			source: {
 				proposal: pendingUpdateId === pendingUpdate?._id ? pendingUpdate : null,
 				savedNode: desired.savedNode,
-				structureRevision,
 			},
 		});
 		const rows = await ctx.db
@@ -1778,6 +1767,7 @@ export async function files_pending_overlay_db_stage_owner_lists(
 	const proposal = work.pendingUpdateId
 		? await files_saved_placement_db_get_proposal(ctx.db, work.pendingUpdateId, { cohortId: cohort._id, view: "after" })
 		: null;
+	const paged = cursor.phase === "before" && !!work.pendingUpdateId;
 	if (cursor.phase === "before" && work.pendingUpdateId) {
 		const page = await ctx.db
 			.query("files_pending_list_rows")
@@ -1818,7 +1808,7 @@ export async function files_pending_overlay_db_stage_owner_lists(
 	}
 	const next = JSON.stringify(cursor);
 	await ctx.db.patch("files_move_owner_work", work._id, { dependencyCursor: next });
-	return Result({ _yay: { cursor: next, done: cursor.phase === "done" } });
+	return Result({ _yay: { cursor: next, done: cursor.phase === "done", paged } });
 }
 
 /**
@@ -1845,8 +1835,10 @@ export async function files_pending_overlay_db_stage_owner_fields(
 		: { phase: "before" as const, page: null };
 	const before = { cohortId: cohort._id, view: "before" as const };
 	const after = { cohortId: cohort._id, view: "after" as const };
+	let paged = false;
 	if (cursor.phase === "before") {
 		if (work.beforePlaceId) {
+			paged = true;
 			const page = await ctx.db
 				.query("files_pending_place_fields")
 				.withIndex("by_place", (q) =>
@@ -1886,6 +1878,7 @@ export async function files_pending_overlay_db_stage_owner_fields(
 						);
 			// Source docs stay in place. These identity-only indexes keep the stored cursor short.
 			const page = await source.paginate({ cursor: cursor.page, numItems: 8, maximumBytesRead: 1024 * 1024 });
+			paged = true;
 			for (const doc of page.page) {
 				if (
 					doc.sourceKind === "pending" &&
@@ -1918,7 +1911,7 @@ export async function files_pending_overlay_db_stage_owner_fields(
 	}
 	const next = JSON.stringify(cursor);
 	await ctx.db.patch("files_move_owner_work", work._id, { fieldCursor: next });
-	return Result({ _yay: { cursor: next, done: cursor.phase === "done" } });
+	return Result({ _yay: { cursor: next, done: cursor.phase === "done", paged } });
 }
 
 // #endregion recompute
@@ -2223,9 +2216,9 @@ async function db_flush_saved_node(
 			if (Object.keys(patch).length > 0) await ctx.db.patch("files_pending_places", place._id, patch);
 		}
 
-	// Only a node that is or was a restricted scope root has share rows. An ancestor's move, rename or
-	// archive changes no copied field: an archive or restore writes the node itself too.
-	if (files_share_rows_node_changed(nodeId, old, node))
+	// An ancestor's move or rename changes the copied `treePath`, and its Move cohort syncs each node it
+	// writes. An archive or restore writes the node itself too.
+	if (await files_share_rows_db_node_changed(ctx.db, nodeId, old, node))
 		await files_share_rows_db_sync_node(ctx.db, { ...scope, nodeId, node });
 
 	const changed =
@@ -2547,8 +2540,7 @@ export async function files_pending_overlay_db_flush(ctx: MutationCtx) {
 		}
 		for (const [key, scope] of state.factScopes) {
 			if (!state.factScopesChanged.has(key)) {
-				const facts = await files_pending_review_facts_db_change_state(ctx.db, scope, { structural: true });
-				state.factStructureRevisions.set(key, facts.structureRevision);
+				await files_pending_review_facts_db_change_state(ctx.db, scope, { structural: true });
 				state.factScopesChanged.add(key);
 			}
 		}
@@ -2693,6 +2685,17 @@ export function files_pending_overlay_list_over_budget(metrics: TransactionMetri
 		metrics.documentsRead.used > LIST_BUDGET.documents ||
 		metrics.bytesRead.used > LIST_BUDGET.bytes
 	);
+}
+
+/**
+ * Whether a Move step may join one more small sub-step of the same unit. It flushes first, so the next
+ * sub-step reads fresh derived docs and the metrics count the derived writes. A joined step stays
+ * under 1/16 of every Convex transaction limit.
+ */
+export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx) {
+	await files_pending_overlay_db_flush(ctx);
+	const metrics = await ctx.meta.getTransactionMetrics();
+	return Object.values(metrics).every((metric) => metric.used * 16 < metric.used + metric.remaining);
 }
 
 const saved_source_schema = z.discriminatedUnion("kind", [

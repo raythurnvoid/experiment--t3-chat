@@ -174,6 +174,7 @@ async function data_deletion_test_seed_shared_folder(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		readerIds: Id<"users">[];
+		name: string;
 	},
 ) {
 	return await test_run_with_flush(t, async (ctx) => {
@@ -184,11 +185,11 @@ async function data_deletion_test_seed_shared_folder(
 			createdBy: args.userId,
 			updatedBy: args.userId,
 			parentId: files_ROOT_ID,
-			name: "shared",
-			sortName: files_sort_text_key("shared"),
+			name: args.name,
+			sortName: files_sort_text_key(args.name),
 			kind: "folder",
-			path: "/shared",
-			treePath: "/shared/",
+			path: `/${args.name}`,
+			treePath: `/${args.name}/`,
 			pathDepth: 1,
 		});
 		await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId, isRestrictedScopeRoot: true });
@@ -2141,7 +2142,7 @@ describe("init_user_deletion", () => {
 				displayName: "Owned Share Rows Limits",
 			}),
 		);
-		// Two owned organizations, each with a folder shared with 1,050 users.
+		// Two owned organizations, each with 1,050 direct user grants.
 		const shared: {
 			organizationId: Id<"organizations">;
 			workspaceId: Id<"organizations_workspaces">;
@@ -2167,18 +2168,23 @@ describe("init_user_deletion", () => {
 				for (let index = 0; index < 1050; index += 1) ids.push(await ctx.db.insert("users", { clerkUserId: null }));
 				return ids;
 			});
-			const nodeId = await data_deletion_test_seed_shared_folder(t, {
-				userId: owner.userId,
-				organizationId: organization.organizationId,
-				workspaceId: organization.defaultWorkspaceId,
-				readerIds,
-			});
-			shared.push({
-				organizationId: organization.organizationId,
-				workspaceId: organization.defaultWorkspaceId,
-				nodeId,
-				readerId: readerIds[0]!,
-			});
+			// Keep one share slot for the public grant below. Seed one folder per transaction.
+			for (let start = 0; start < readerIds.length; start += 49) {
+				const nodeId = await data_deletion_test_seed_shared_folder(t, {
+					userId: owner.userId,
+					organizationId: organization.organizationId,
+					workspaceId: organization.defaultWorkspaceId,
+					readerIds: readerIds.slice(start, start + 49),
+					name: `shared-${start}`,
+				});
+				if (start === 0)
+					shared.push({
+						organizationId: organization.organizationId,
+						workspaceId: organization.defaultWorkspaceId,
+						nodeId,
+						readerId: readerIds[0]!,
+					});
+			}
 		}
 		const organizationIds = shared.map((item) => item.organizationId);
 		const first = shared[0]!;
@@ -3856,6 +3862,7 @@ describe("process_user_deletion_request", () => {
 			organizationId: owner.defaultOrganizationId,
 			workspaceId: owner.defaultWorkspaceId,
 			readerIds: [owner.userId, deletedUser.userId],
+			name: "shared",
 		});
 
 		const requestId = await t.run((ctx) =>
@@ -6261,7 +6268,7 @@ describe("process_workspace_deletion_request", () => {
 			workspaceId: user.defaultWorkspaceId,
 			userId: user.userId,
 		};
-		const nodeId = await data_deletion_test_seed_shared_folder(t, { ...scope, readerIds: [user.userId] });
+		const nodeId = await data_deletion_test_seed_shared_folder(t, { ...scope, readerIds: [user.userId], name: "shared" });
 		// A stray row, like one a dashboard edit leaves behind: no flush ever reaches it again.
 		await t.run(async (ctx) => {
 			const { _id, _creationTime, ...row } = (await ctx.db

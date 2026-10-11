@@ -135,6 +135,7 @@ test("metadata reads merge normal and selected facts before and after the switch
 					membershipId: f.db.membershipId,
 					savedStream,
 					parentId: "root",
+					restricted: false,
 					prefix: "",
 					paginationOpts,
 				})

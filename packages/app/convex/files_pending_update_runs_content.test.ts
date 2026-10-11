@@ -1,19 +1,27 @@
-import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api, components, internal } from "./_generated/api.js";
-import type { Doc, Id } from "./_generated/dataModel.js";
-import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
-import { quotas_db_ensure } from "./quotas.ts";
+import { api, internal } from "./_generated/api.js";
 import {
-	test_convex,
-	test_db_get_review_state,
-	test_finish_pending_update_run,
+	test_drain_billing_usage_event_outbox,
 	test_mocks,
-	test_mocks_fill_db_with,
 	test_progress_guard,
+	test_spy_handler,
+	test_spy_move_ranges,
 } from "./setup.test.ts";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
+import type { Id } from "./_generated/dataModel.js";
+import {
+	attach_media,
+	finish_review,
+	fixture,
+	mock_review_storage,
+	private_media,
+	private_node,
+	saved_text,
+	stage_text,
+	start_review,
+} from "./files_pending_update_runs_content.setup.test.ts";
 import {
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_patch_pending_update,
@@ -21,356 +29,14 @@ import {
 } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
-import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
-import { files_media_build_private_src } from "../shared/files-media.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
-import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
-import { r2_server_side_copy } from "./r2_client.ts";
-import {
-	files_media_dependencies_db_create,
-	files_media_dependencies_db_append,
-	files_media_dependencies_db_seal,
-} from "./files_media_dependencies.ts";
 
-const r2Objects = new Map<string, string | ArrayBuffer>();
-let uploadDurationMs = 0;
-
-beforeEach(() => {
-	vi.useFakeTimers();
-	r2Objects.clear();
-	uploadDurationMs = 0;
-	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
-		async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
-	);
-	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key = "review-test-upload") => ({
-		key,
-		url: `https://r2.test/upload?key=${encodeURIComponent(key)}`,
-	}));
-	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
-	vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
-		const body = r2Objects.get(args.sourceKey);
-		if (body === undefined) throw new Error("Expected source bytes");
-		r2Objects.set(args.destinationKey, body);
-		return { outcome: "copied", size: (await new Response(body).arrayBuffer()).byteLength, etag: "copied" };
-	});
-	vi.stubGlobal(
-		"fetch",
-		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-			const key = url.searchParams.get("key");
-			if (url.origin !== "https://r2.test" || !key) return new Response(null, { status: 404 });
-			if (url.pathname === "/upload") {
-				vi.setSystemTime(Date.now() + uploadDurationMs);
-				const body = init?.body;
-				if (typeof body === "string" || body instanceof ArrayBuffer) r2Objects.set(key, body);
-				else if (body instanceof Uint8Array) r2Objects.set(key, files_u8_to_array_buffer(body));
-				else throw new Error("Expected text or bytes in the upload");
-				return new Response(null, { status: 200 });
-			}
-			const body = r2Objects.get(key);
-			return body === undefined ? new Response(null, { status: 404 }) : new Response(body);
-		}),
-	);
-});
+beforeEach(mock_review_storage);
 
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
 });
-
-async function fixture(anonymous = false) {
-	const t = test_convex({ transactionLimits: true });
-	const db = await t.run(async (ctx) => {
-		const userId = await ctx.db.insert("users", { clerkUserId: anonymous ? null : "clerk_review_content" });
-		const membership = await test_mocks_fill_db_with.membership(ctx, {
-			userId,
-			organizationName: "personal",
-			workspaceName: "home",
-			plan: "Free",
-		});
-		if (anonymous) {
-			const snapshot = await ctx.db
-				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
-				.unique();
-			if (snapshot) await ctx.db.delete("billing_usage_snapshots", snapshot._id);
-			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now: Date.now() });
-		}
-		return membership;
-	});
-	const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
-	const asUser = t.withIdentity(
-		anonymous
-			? { issuer: process.env.VITE_CONVEX_HTTP_URL, subject: db.userId }
-			: { issuer: "https://clerk.test", external_id: db.userId },
-	);
-	return { t, db, scope, asUser };
-}
-
-async function stage_text(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	target: Doc<"files_pending_updates">["target"];
-	operationBatchId: Id<"files_pending_update_operation_batches">;
-	text: string;
-	pendingUpdateId?: Id<"files_pending_updates">;
-	unstagedText?: string;
-}) {
-	const { f, target, text, unstagedText = text, operationBatchId, pendingUpdateId } = args;
-
-	for (const role of ["staged", "unstaged"] as const) {
-		const staged = await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-			...f.scope,
-			operationBatchId,
-			role,
-			text: role === "staged" ? text : unstagedText,
-		});
-		if (staged._nay) throw new Error(staged._nay.message);
-	}
-	const ready = await f.asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-		...f.scope,
-		target,
-		operationBatchId,
-		pendingUpdateId,
-	});
-	if (ready._nay) throw new Error(ready._nay.message);
-	const proposal = await f.t.run((ctx) =>
-		ctx.db
-			.query("files_pending_updates")
-			.withIndex("by_organization_workspace_user_target", (q) =>
-				q
-					.eq("organizationId", f.scope.organizationId)
-					.eq("workspaceId", f.scope.workspaceId)
-					.eq("userId", f.scope.userId)
-					.eq("target.kind", target.kind)
-					.eq("target.id", target.id),
-			)
-			.unique(),
-	);
-	if (!proposal) throw new Error("Expected the text proposal");
-	return proposal;
-}
-
-async function private_node(args: { f: Awaited<ReturnType<typeof fixture>>; path: string; text?: string }) {
-	const { f, text, path } = args;
-
-	const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
-		...f.scope,
-		path,
-		kind: text === undefined ? "folder" : "file",
-	});
-	if (created._nay || !created._yay.pendingUpdateId) throw new Error("Expected a private proposal");
-	const { target, operationBatchId, pendingUpdateId } = created._yay;
-	if (text !== undefined) {
-		if (!operationBatchId) throw new Error("Expected the text batch");
-		return await stage_text({ f, target, operationBatchId, text, pendingUpdateId });
-	}
-	const proposal = await f.t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
-	if (!proposal) throw new Error("Expected the folder proposal");
-	return proposal;
-}
-
-async function start_review(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	proposals: Doc<"files_pending_updates">[];
-	selected?: "staged" | "unstaged";
-}) {
-	const { f, proposals, selected = "unstaged" } = args;
-
-	const items = proposals.map((proposal) => ({
-		pendingUpdateId: proposal._id,
-		reviewedRevision: proposal.revision,
-		selectedContentStateId:
-			(selected === "staged" ? proposal.content?.stagedStateId : proposal.content?.unstagedStateId) ?? null,
-	}));
-	const started = await f.asUser.mutation(api.files_pending_update_runs.start, {
-		membershipId: f.db.membershipId,
-		requestId: crypto.randomUUID(),
-		kind: "accept",
-		expectedItemCount: proposals.length,
-		items: items.slice(0, 100),
-	});
-	if (started._nay) throw new Error(started._nay.message);
-	const runId = started._yay.runId;
-	for (let offset = 100; offset < items.length; offset += 100)
-		expect(
-			await f.asUser.mutation(api.files_pending_update_runs.append_items, {
-				membershipId: f.db.membershipId,
-				runId,
-				offset,
-				items: items.slice(offset, offset + 100),
-			}),
-		).toEqual({ _yay: null });
-	expect(
-		await f.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: f.db.membershipId, runId }),
-	).toEqual({ _yay: null });
-	const progress = test_progress_guard();
-	for (let pass = 0; pass < 50_000; pass++) {
-		const state = await f.t.run((ctx) => test_db_get_review_state(ctx, runId));
-		const { job } = state;
-		progress(state, `Review planning, job ${job?.kind ?? "none"}`);
-		if (job) {
-			await f.t.mutation(internal.files_pending_overlay.run_job, {
-				kind: job.kind,
-				key: job.key,
-				nextAttemptAt: job.nextAttemptAt,
-			});
-			continue;
-		}
-		await f.t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
-		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
-		if (run?.step !== "planning") return runId;
-	}
-	throw new Error("Review planning did not finish");
-}
-
-async function finish_review(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	runId: Id<"files_pending_update_runs">;
-	stepMs?: number;
-}) {
-	const { f, runId, stepMs = 0 } = args;
-
-	if (stepMs) vi.setSystemTime(Date.now() + stepMs);
-	await test_finish_pending_update_run(f.asUser, runId);
-	return await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
-}
-
-async function saved_text(f: Awaited<ReturnType<typeof fixture>>, nodeId: Id<"files_nodes">) {
-	return await f.t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", nodeId);
-		if (!node?.yjsSnapshotId) throw new Error("Expected the saved Yjs snapshot");
-		const snapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
-		if (!snapshot) throw new Error("Expected the snapshot");
-		const asset = await ctx.db.get("files_r2_assets", snapshot.assetId);
-		const bytes = asset?.r2Key ? r2Objects.get(asset.r2Key) : null;
-		if (!(bytes instanceof ArrayBuffer)) throw new Error("Expected snapshot bytes");
-		const updates = await ctx.db
-			.query("files_yjs_updates")
-			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q.eq("organizationId", f.scope.organizationId).eq("workspaceId", f.scope.workspaceId).eq("fileNodeId", nodeId),
-			)
-			.order("asc")
-			.collect();
-		const yjsDoc = files_yjs_doc_create_from_array_buffer_update(bytes, {
-			additionalIncrementalArrayBufferUpdates: updates
-				.filter((update) => update.sequence > snapshot.sequence)
-				.map((update) => update.update),
-		});
-		const text = files_yjs_doc_get_text({ yjsDoc, rootKind: node.textKind ?? "plain_text" });
-		if (text._nay) throw new Error(text._nay.message);
-		return text._yay;
-	});
-}
-
-async function private_media(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	path: string;
-	sourceId?: Id<"files_nodes">;
-}) {
-	const { f, path, sourceId } = args;
-
-	await f.t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: f.scope.userId, plan: "Pay As You Go" }));
-	const prepared = await f.t.mutation(internal.files_ingestion.prepare_file, {
-		...f.scope,
-		membershipId: f.db.membershipId,
-		requestId: path,
-		attemptId: "review-media",
-		path,
-		size: 4,
-		contentType: "image/png",
-		digest: "a".repeat(64),
-		content: { kind: "stored" },
-	});
-	if (prepared._nay) throw new Error(prepared._nay.message);
-	if (prepared._yay.kind !== "stored") throw new Error("Expected the media upload");
-	const assetId = prepared._yay.assetId;
-	r2Objects.set(prepared._yay.r2Key, new Uint8Array([1, 2, 3, 4]).buffer);
-	const ready = await f.t.mutation(internal.files_ingestion.finalize_file, {
-		...f.scope,
-		membershipId: f.db.membershipId,
-		receiptId: prepared._yay.receiptId,
-		attemptId: "review-media",
-	});
-	if (ready._nay || ready._yay.target.kind !== "private") throw new Error("Expected the private media");
-	return await f.t.run(async (ctx) => {
-		const reader = await files_visible_db_create_reader(ctx, f.scope);
-		const entry = await reader.resolveTarget(ready._yay.target);
-		if (entry?.kind !== "private") throw new Error("Expected the media proposal");
-		if (sourceId)
-			await files_db_patch_pending_update({
-				ctx,
-				pendingUpdateId: entry.pendingUpdate._id,
-				value: {
-					copiedFrom: { target: { kind: "saved", id: sourceId }, path: "/source", sourceWritePolicy: null },
-				},
-			});
-		const pending = (await ctx.db.get("files_pending_updates", entry.pendingUpdate._id))!;
-		const version = await files_transfer_db_get_entry_version(ctx, { ...entry, pendingUpdate: pending });
-		if (!version) throw new Error("Expected the ready media version");
-		return {
-			pending,
-			dependency: {
-				src: files_media_build_private_src(entry.node._id),
-				target: pending.target,
-				assetId,
-				version,
-			},
-		};
-	});
-}
-
-async function attach_media(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	pending: Doc<"files_pending_updates">;
-	images: Awaited<ReturnType<typeof private_media>>[];
-	sourceId?: Id<"files_nodes">;
-}) {
-	const { f, pending, images, sourceId } = args;
-
-	const set = await f.t.run((ctx) =>
-		files_media_dependencies_db_create(ctx, {
-			...f.scope,
-			owner: { kind: "proposal", pendingUpdateId: pending._id },
-			expectedCount: images.length,
-		}),
-	);
-	if (set._nay) throw new Error(set._nay.message);
-	for (let offset = 0; offset < images.length; offset += 50)
-		expect(
-			await f.t.run((ctx) =>
-				files_media_dependencies_db_append(ctx, {
-					setId: set._yay,
-					generation: 0,
-					offset,
-					mappings: images
-						.slice(offset, offset + 50)
-						.map(({ dependency }) => ({ sourceSrc: dependency.src, dependency })),
-				}),
-			),
-		).toEqual({ _yay: null });
-	return await f.t.run(async (ctx) => {
-		expect(await files_media_dependencies_db_seal(ctx, { setId: set._yay, generation: 0 })).toEqual({ _yay: null });
-		// Only the captured mapping is seeded; text and media use their normal producer doors.
-		await files_db_patch_pending_update({
-			ctx,
-			pendingUpdateId: pending._id,
-			value: {
-				mediaDependencySetId: set._yay,
-				...(sourceId
-					? {
-							copiedFrom: {
-								target: { kind: "saved" as const, id: sourceId },
-								path: "/source",
-								sourceWritePolicy: null,
-							},
-						}
-					: {}),
-			},
-		});
-		return (await ctx.db.get("files_pending_updates", pending._id))!;
-	});
-}
 
 describe("review job content", () => {
 	test("rebinds only the exact partial Save remainder hold to its published target", async () => {
@@ -686,6 +352,8 @@ describe("review job content", () => {
 			expect(await saved_text(f, before.find((node) => node.path === `/target/${name}.txt`)!._id)).toBe(
 				`target ${name}\n`,
 			);
+		// Send the earlier saves first, so the spy below sees only this review's charges.
+		await test_drain_billing_usage_event_outbox(f.t);
 		const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
 		const runId = await start_review({ f, proposals });
 		expect(
@@ -714,8 +382,14 @@ describe("review job content", () => {
 				`source ${name}\n`,
 			);
 		}
-		const billing = () => enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
-		expect(billing()).toHaveLength(2);
+		// Billed events, after the outbox drainer sent them.
+		const billing = async () => {
+			await test_drain_billing_usage_event_outbox(f.t);
+			return enqueue.mock.calls
+				.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")
+				.flatMap((call) => (call[2] as { events: unknown[] }).events);
+		};
+		expect(await billing()).toHaveLength(2);
 		const units = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_update_run_units")
@@ -729,7 +403,7 @@ describe("review job content", () => {
 				unitId: unit._id,
 				attemptFence: unit.attemptFence - 1,
 			});
-		expect(billing()).toHaveLength(2);
+		expect(await billing()).toHaveLength(2);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 		expect((await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).map((node) => node._id)).toEqual(
 			before.map((node) => node._id),
@@ -852,60 +526,6 @@ describe("review job content", () => {
 			);
 		},
 	);
-
-	// The mock database makes these large cases slow.
-	test("saves more than 100 Copy media before its document and keeps one unit per output", async () => {
-		const f = await fixture();
-		const source = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...f.scope, path: "/source" });
-		if (source._nay) throw new Error(source._nay.message);
-		const images = [];
-		// 101 media and the document need 2 selection pages of 100, 3 dependency pages of 50, 5 media
-		// validation pages of 25, and 13 plan pages of 8.
-		for (let index = 0; index < 101; index++)
-			images.push(await private_media({ f, path: `/image-${index}.png`, sourceId: source._yay.nodeId }));
-		const text = images.map(({ dependency }) => `![Image](${dependency.src})`).join("\n\n") + "\n";
-		const document = await attach_media({
-			f,
-			pending: await private_node({ f, path: "/document.md", text }),
-			images,
-			sourceId: source._yay.nodeId,
-		});
-		const runId = await start_review({ f, proposals: [document, ...images.map(({ pending }) => pending)] });
-		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
-		expect(units).toHaveLength(102);
-		expect(units.every((unit) => unit.kind === "cohort" && unit.itemCount === 1)).toBe(true);
-		expect(units.find((unit) => unit.order === 0)).toMatchObject({
-			status: "waiting",
-			remainingPrerequisiteCount: 101,
-		});
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_dependencies").collect())).toHaveLength(101);
-		const result = await finish_review({ f, runId, stepMs: 1_200 });
-		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 102 } });
-		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-		expect(saved).toHaveLength(103);
-		expect(await saved_text(f, saved.find((node) => node.path === "/document.md")!._id)).toBe(text);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(102);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
-		const documentUnit = await f.t.run((ctx) =>
-			ctx.db.get("files_pending_update_run_units", units.find((unit) => unit.order === 0)!._id),
-		);
-		if (!documentUnit?.cohortId) throw new Error("Expected the completed document group");
-		const content = await f.t.run((ctx) =>
-			ctx.db
-				.query("files_move_cohort_content")
-				.withIndex("by_cohort_proposal", (q) =>
-					q.eq("cohortId", documentUnit.cohortId!).eq("pendingUpdateId", document._id),
-				)
-				.unique(),
-		);
-		expect(content?.mediaProof).toMatchObject({
-			reviewedRevision: document.revision,
-			selectedContentStateId: document.content?.unstagedStateId,
-			expectedCount: 101,
-			validatedCount: 101,
-			sealed: true,
-		});
-	}, 10_800_000);
 
 	test("resumes the exact reviewed-embed cursor without adding duplicate prerequisites", async () => {
 		const f = await fixture();
@@ -1110,6 +730,7 @@ describe("review job content", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual(proposals);
+		await test_drain_billing_usage_event_outbox(f.t);
 		expect(enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")).toEqual([]);
 		const failedUnit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").unique());
 		await f.t.mutation(internal.files_pending_update_runs.retire_unit_preparation, { unitId: failedUnit!._id });
@@ -1134,9 +755,12 @@ describe("review job content", () => {
 				.unique(),
 		);
 		expect(balance?.meter?.balance).toBe(anonymous ? 0 : 2);
-		expect(enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")).toHaveLength(
-			anonymous ? 0 : 2,
-		);
+		await test_drain_billing_usage_event_outbox(f.t);
+		expect(
+			enqueue.mock.calls
+				.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")
+				.flatMap((call) => (call[2] as { events: unknown[] }).events),
+		).toHaveLength(anonymous ? 0 : 2);
 	});
 
 	test("publishes private text before archiving its selected saved parent", async () => {
@@ -1210,7 +834,7 @@ describe("review job content", () => {
 				...(await ctx.db.query("files_plain_text_chunks").collect()),
 				...(await ctx.db.query("files_text_chunks").collect()),
 				...(await ctx.db.query("files_metadata_docs").collect()),
-			].filter((row) => row.pendingUpdateId === proposal._id),
+			].filter((row) => "pendingUpdateId" in row && row.pendingUpdateId === proposal._id),
 		);
 		expect(indexDocs, "no pending index doc outlives the draft").toEqual([]);
 	});
@@ -1261,6 +885,7 @@ describe("review job content", () => {
 	});
 
 	test("publishes mixed private folders and text in parent order", async () => {
+		test_spy_move_ranges();
 		const f = await fixture();
 		const parent = await private_node({ f, path: "/parent" });
 		const nested = await private_node({ f, path: "/parent/nested" });
@@ -1285,6 +910,7 @@ describe("review job content", () => {
 	});
 
 	test("keeps private metadata key order after Save", async () => {
+		test_spy_move_ranges();
 		const f = await fixture();
 		const proposal = await private_node({ f, path: "/metadata" });
 		const entries = [
@@ -1315,249 +941,21 @@ describe("review job content", () => {
 		).toEqual(entries);
 	});
 
-	test.each([false, true])(
-		"saves text above private storage caps and settles its holds (anonymous: %s)",
-		async (anonymous) => {
-			const f = await fixture(anonymous);
-			const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
-			const proposal = await private_node({ f, path: "/draft.txt", text: "selected content\n" });
-			const beforeBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
-			await f.t.run(async (ctx) => {
-				for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes"] as const) {
-					const id = await quotas_db_ensure(ctx, { ...f.scope, quotaName, now: Date.now() });
-					await ctx.db.patch("quotas", id, { maxCount: 0 });
-				}
-			});
-			const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
-				membershipId: f.db.membershipId,
-				target: proposal.target,
-			});
-			if (batch._nay) throw new Error(batch._nay.message);
-			expect(
-				(
-					await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-						...f.scope,
-						operationBatchId: batch._yay.operationBatchId,
-						role: "unstaged",
-						text: "extra bytes",
-					})
-				)._nay?.name,
-			).toBe("storage_full");
-			await f.t.mutation(internal.files_pending_updates.retire_file_pending_update_operation_batch, {
-				operationBatchId: batch._yay.operationBatchId,
-			});
-			const runId = await start_review({ f, proposals: [proposal] });
-			const result = await finish_review({ f, runId });
-			expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
-			const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").unique());
-			if (!saved) throw new Error("Expected the saved text");
-			expect(await saved_text(f, saved._id)).toBe("selected content\n");
-			const content = await f.t.run((ctx) => ctx.db.query("files_move_cohort_content").unique());
-			expect(content).toMatchObject({ nodeId: saved._id, sealed: true });
-			const holds = await f.t.run((ctx) => ctx.db.query("files_private_storage_reservations").collect());
-			const publicationHolds = holds.filter((hold) => hold.cohortContentId === content!._id && hold.publicationBatchId);
-			expect(publicationHolds.length).toBeGreaterThan(0);
-			for (const hold of publicationHolds) expect(hold.publicationBatchId).toBe(content!.operationBatchId);
-			const savedAssets = publicationHolds.filter((hold) => hold.resource.kind === "asset");
-			expect(savedAssets.length).toBeGreaterThan(0);
-			for (const hold of savedAssets) expect(hold.settlement).toMatchObject({ kind: "saved", savedNodeId: saved._id });
-			const quotas = await f.t.run((ctx) => ctx.db.query("quotas").collect());
-			for (const quota of quotas.filter(
-				(quota) =>
-					quota.quotaName === "files_private_user_bytes" || quota.quotaName === "files_private_workspace_bytes",
-			)) {
-				const heldBytes = holds
-					.filter(
-						(hold) =>
-							hold.settlement.kind === "held" &&
-							hold.cohortContentId === undefined &&
-							hold.resource.kind !== "node" &&
-							(hold.userQuotaId === quota._id || hold.workspaceQuotaId === quota._id),
-					)
-					.reduce((total, hold) => total + hold.byteCount, 0);
-				expect(quota.usedCount).toBe(heldBytes);
-			}
-			const billingCalls = enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
-			const afterBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
-			if (anonymous) {
-				expect(billingCalls).toHaveLength(0);
-				expect(afterBilling?.meter?.consumedUnits).toBe(beforeBilling!.meter!.consumedUnits + 1);
-				expect(afterBilling?.meter?.balance).toBe(beforeBilling!.meter!.balance - 1);
-			} else {
-				expect(billingCalls).toHaveLength(1);
-				expect(billingCalls[0]![2]).toMatchObject({
-					events: [{ name: "file_save", metadata: { amount: 1, nodeId: saved._id } }],
-				});
-				expect(afterBilling).toEqual(beforeBilling);
-				const index = enqueue.mock.calls.indexOf(billingCalls[0]!);
-				const workId = await enqueue.mock.results[index]!.value;
-				expect(
-					await f.t.query((ctx) => new Workpool(components.billing_workpool_usage_event, {}).status(ctx, workId)),
-				).toMatchObject({ state: "pending" });
-			}
-		},
-	);
-
-	test("saves a connected text unit above the old 20 MiB preparation allowance", async () => {
+	test.each([1, 10])("a Save of %i private text files keeps its Move step count", async (count) => {
 		const f = await fixture();
-		const parent = await private_node({ f, path: "/full" });
-		const children = [];
-		const text = "x".repeat(files_MAX_TEXT_CONTENT_BYTES);
-		for (let index = 0; index < 12; index++)
-			children.push(await private_node({ f, path: `/full/file-${index}.txt`, text }));
-		const proposals = [parent, ...children];
-		const beforeBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
-		const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
-		await f.t.run(async (ctx) => {
-			for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes"] as const) {
-				const id = await quotas_db_ensure(ctx, { ...f.scope, quotaName, now: Date.now() });
-				await ctx.db.patch("quotas", id, { maxCount: 0 });
-			}
+		const proposals = [];
+		for (let index = 0; index < count; index++)
+			proposals.push(await private_node({ f, path: `/file-${index}.txt`, text: `file ${index}\n` }));
+		let steps = 0;
+		test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+			const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
+			if ((await ctx.db.get("files_move_cohorts", cohortId))?.step === step) steps++;
+			return await handler(ctx, args);
 		});
 		const result = await finish_review({ f, runId: await start_review({ f, proposals }) });
-		expect(result?.activity, "the whole connected Save passes the old preparation allowance").toMatchObject({
-			status: "succeeded",
-			progress: { completed: 13, blocked: 0 },
-		});
-		expect(result?.run.unitCount).toBe(1);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
-			{ kind: "cohort", status: "completed", itemCount: 13 },
-		]);
-		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-		expect(saved).toHaveLength(13);
-		expect(saved.find((node) => node.path === "/full")).toMatchObject({ kind: "folder", parentId: "root" });
-		for (let index = 0; index < 12; index++) {
-			const node = saved.find((node) => node.path === `/full/file-${index}.txt`);
-			expect(node).toMatchObject({ kind: "file", parentId: saved.find((row) => row.path === "/full")!._id });
-			expect(await saved_text(f, node!._id)).toBe(text);
-		}
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(13);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
-		expect(await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(beforeBilling);
-		const billingCalls = enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
-		expect(billingCalls).toHaveLength(12);
-		expect(billingCalls.map((call) => call[2])).toEqual(
-			expect.arrayContaining(
-				saved
-					.filter((node) => node.kind === "file")
-					.map((node) =>
-						expect.objectContaining({
-							events: [
-								expect.objectContaining({
-									name: "file_save",
-									metadata: expect.objectContaining({ amount: 1, nodeId: node._id }),
-								}),
-							],
-						}),
-					),
-			),
-		);
-		const holds = await f.t.run((ctx) => ctx.db.query("files_private_storage_reservations").collect());
-		const contents = await f.t.run((ctx) => ctx.db.query("files_move_cohort_content").collect());
-		expect(contents).toHaveLength(13);
-		const publicationHolds = holds.filter((hold) => hold.publicationBatchId && hold.cohortContentId);
-		const publicationBytes = publicationHolds.reduce((sum, hold) => sum + hold.byteCount, 0);
-		expect(publicationBytes, "cohort output is not capped by the one-Save allowance").toBeGreaterThan(20 * 1024 * 1024);
-		for (const hold of publicationHolds) {
-			const content = contents.find((row) => row._id === hold.cohortContentId);
-			expect(hold.publicationBatchId).toBe(content?.operationBatchId);
-			if (hold.resource.kind === "asset")
-				expect(hold.settlement).toMatchObject({ kind: "saved", savedNodeId: content?.nodeId });
-		}
-		const quotas = await f.t.run((ctx) => ctx.db.query("quotas").collect());
-		for (const quota of quotas.filter(
-			(quota) => quota.quotaName === "files_private_user_bytes" || quota.quotaName === "files_private_workspace_bytes",
-		)) {
-			const heldBytes = holds
-				.filter(
-					(hold) =>
-						hold.settlement.kind === "held" &&
-						hold.cohortContentId === undefined &&
-						hold.resource.kind !== "node" &&
-						(hold.userQuotaId === quota._id || hold.workspaceQuotaId === quota._id),
-				)
-				.reduce((sum, hold) => sum + hold.byteCount, 0);
-			expect(quota.usedCount).toBe(heldBytes);
-		}
-	}, 7_200_000);
-
-	test.each([false, true])(
-		"saves a connected content unit above the old commit budget (anonymous: %s)",
-		async (anonymous) => {
-			const f = await fixture(anonymous);
-			const parent = await private_node({ f, path: "/large" });
-			const children = [];
-			for (let index = 0; index < 64; index++)
-				children.push(await private_node({ f, path: `/large/file-${index}.txt`, text: `file ${index}\n` }));
-			const proposals = [parent, ...children];
-			const beforeBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
-			const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
-			// Each upload advances time while the same reviewed group stays active.
-			uploadDurationMs = 1_200;
-			const runId = await start_review({ f, proposals });
-			const startedAt = Date.now();
-			const result = await finish_review({ f, runId });
-			expect(Date.now() - startedAt).toBeGreaterThan(0);
-			expect(Date.now() - startedAt).toBeLessThan(5 * 60 * 1000);
-			expect(result?.activity, "the whole connected Save passes the old commit budget").toMatchObject({
-				status: "succeeded",
-				progress: { completed: 65, blocked: 0 },
-			});
-			expect(result?.run.unitCount).toBe(1);
-			expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
-				{ kind: "cohort", status: "completed", itemCount: 65 },
-			]);
-			const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-			expect(saved).toHaveLength(65);
-			const savedParent = saved.find((node) => node.path === "/large");
-			expect(savedParent).toMatchObject({ kind: "folder", parentId: "root" });
-			for (let index = 0; index < 64; index++) {
-				const node = saved.find((row) => row.path === `/large/file-${index}.txt`);
-				expect(node).toMatchObject({ kind: "file", parentId: savedParent!._id });
-				expect(await saved_text(f, node!._id)).toBe(`file ${index}\n`);
-			}
-			expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(65);
-			expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
-			const holds = await f.t.run((ctx) => ctx.db.query("files_private_storage_reservations").collect());
-			const publicationHolds = holds.filter((hold) => hold.publicationBatchId && hold.cohortContentId);
-			expect(publicationHolds.length).toBeGreaterThan(0);
-			expect(
-				publicationHolds.filter((hold) => hold.resource.kind === "asset" && hold.settlement.kind === "saved"),
-			).toHaveLength(128);
-			const billingCalls = enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
-			const afterBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
-			if (anonymous) {
-				expect(billingCalls).toHaveLength(0);
-				expect(afterBilling?.meter?.consumedUnits).toBe(beforeBilling!.meter!.consumedUnits + 64);
-				expect(afterBilling?.meter?.balance).toBe(beforeBilling!.meter!.balance - 64);
-			} else {
-				expect(billingCalls).toHaveLength(64);
-				expect(afterBilling).toEqual(beforeBilling);
-				expect(billingCalls.map((call) => call[2])).toEqual(
-					expect.arrayContaining(
-						saved
-							.filter((node) => node.kind === "file")
-							.map((node) =>
-								expect.objectContaining({
-									events: [
-										expect.objectContaining({
-											name: "file_save",
-											metadata: expect.objectContaining({ amount: 1, nodeId: node._id }),
-										}),
-									],
-								}),
-							),
-					),
-				);
-				for (const call of billingCalls) {
-					const index = enqueue.mock.calls.indexOf(call);
-					const workId = await enqueue.mock.results[index]!.value;
-					expect(
-						await f.t.query((ctx) => new Workpool(components.billing_workpool_usage_event, {}).status(ctx, workId)),
-					).toMatchObject({ state: "pending" });
-				}
-			}
-		},
-		7_200_000,
-	);
+		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: count } });
+		// Each Move step is one scheduled transaction, so it adds latency to every Save.
+		// Steps that only find an empty range must not come back. Lower this when a change removes steps.
+		expect(steps, "one private text file takes at most 40 Move steps").toBeLessThanOrEqual(count * 40);
+	});
 });

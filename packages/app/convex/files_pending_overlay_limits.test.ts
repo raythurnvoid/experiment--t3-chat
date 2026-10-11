@@ -1,887 +1,43 @@
-// Measure paged Move and Accept cohort steps and the private Discard core, including
-// the pending overlay flush. Keep a 25% margin when choosing each Move step's size.
+// Measure the private Discard core, hard delete, the metadata catalog and content Save, including
+// the pending overlay flush. Paged Move and Accept cohort steps are in the .move and .accept files.
 //
 // Vitest hides the logs of passing tests. Run with `--silent=false --reporter=default` to see the
 // numbers. In an agent shell Vitest picks a reporter that hides them even with `--silent=false`.
-// The mock scans each indexed table. The full maximum Move fixture can take an hour here, so it
-// runs only with `test:files:full-size`. Two smaller Move tests split its sizes for the default run.
 
-import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { advance as advance_review } from "./files_pending_update_runs.ts";
-import { upsert_file_pending_archive_in_db } from "./files_pending_updates.ts";
-import { archive_nodes, unarchive_nodes } from "./files_nodes.ts";
+import { archive_nodes, files_nodes_db_rebuild_node, unarchive_nodes } from "./files_nodes.ts";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { files_metadata_committed_field_sort_fields } from "./files_metadata.ts";
-import { advance as advance_cohort } from "./files_move_cohorts.ts";
-import {
-	advance as advance_transfer,
-	start as start_transfer,
-	append_sources as append_transfer_sources,
-	seal as seal_transfer,
-} from "./files_transfer.ts";
-import { advance as advance_subtree } from "./files_subtree_ops.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
-	test_mocks,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 	test_spy_handler,
 } from "./setup.test.ts";
-import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
-import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
+import { files_ROOT_ID } from "../server/files.ts";
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
-import { access_control_FILE_SHARE_LEVELS } from "../shared/access-control.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_MAX_TEXT_CONTENT_BYTES, files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
+import {
+	add_member,
+	budget_recorder,
+	expect_under_convex_limits,
+	insert_saved_node,
+	mock_overlay_limits_storage,
+	share_100_times,
+	transaction_cost,
+} from "./files_pending_overlay_limits.setup.test.ts";
 
-beforeEach(() => {
-	vi.useFakeTimers();
-	const objects = new Map<string, string | ArrayBuffer>();
-	vi.spyOn(r2_confirmed_object_delete, "delete_object").mockImplementation(async (_ctx, key) => {
-		objects.delete(key);
-	});
-	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
-		async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
-	);
-	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey) => {
-		const key = customKey ?? crypto.randomUUID();
-		return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
-	});
-	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
-	vi.stubGlobal(
-		"fetch",
-		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-			const path = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
-			if (path.startsWith("https://r2.test/upload?key=")) {
-				const key = decodeURIComponent(path.slice("https://r2.test/upload?key=".length));
-				const body = init?.body;
-				if (typeof body === "string" || body instanceof ArrayBuffer) objects.set(key, body);
-				else if (body instanceof Uint8Array) objects.set(key, files_u8_to_array_buffer(body));
-				else return new Response(null, { status: 400 });
-				return new Response(null, { status: 200 });
-			}
-			if (!path.startsWith("https://r2.test/object?key=")) return new Response(null, { status: 404 });
-			const body = objects.get(decodeURIComponent(path.slice("https://r2.test/object?key=".length)));
-			return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
-		}),
-	);
-});
+beforeEach(mock_overlay_limits_storage);
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
-});
-
-type Db = Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
-type Metrics = Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>;
-type Cost = ReturnType<typeof transaction_cost>;
-
-const zero: Cost = {
-	databaseQueries: 0,
-	documentsRead: 0,
-	bytesRead: 0,
-	documentsWritten: 0,
-	bytesWritten: 0,
-	functionsScheduled: 0,
-};
-
-/**
- * The work done between two metric reads in one transaction.
- */
-function transaction_cost(before: Metrics, after: Metrics) {
-	return {
-		databaseQueries: after.databaseQueries.used - before.databaseQueries.used,
-		documentsRead: after.documentsRead.used - before.documentsRead.used,
-		bytesRead: after.bytesRead.used - before.bytesRead.used,
-		documentsWritten: after.documentsWritten.used - before.documentsWritten.used,
-		bytesWritten: after.bytesWritten.used - before.bytesWritten.used,
-		functionsScheduled: after.functionsScheduled.used - before.functionsScheduled.used,
-	};
-}
-
-/**
- * Check one transaction against the Convex limits. `transactionLimits: true` already throws past
- * them, so these asserts show the numbers and keep the check if that option goes away.
- */
-function expect_under_convex_limits(cost: ReturnType<typeof transaction_cost>) {
-	expect(cost.databaseQueries, "databaseQueries").toBeLessThan(4096);
-	expect(cost.documentsRead, "documentsRead").toBeLessThan(32_000);
-	expect(cost.bytesRead, "bytesRead").toBeLessThan(16 * 1024 * 1024);
-	expect(cost.documentsWritten, "documentsWritten").toBeLessThan(16_000);
-	expect(cost.bytesWritten, "bytesWritten").toBeLessThan(16 * 1024 * 1024);
-	expect(cost.functionsScheduled, "functionsScheduled").toBeLessThan(1000);
-}
-
-/**
- * Peak cost per phase. A measured transaction includes the overlay flush, so also the metadata
- * catalog's deltas and marker.
- */
-function budget_recorder() {
-	const peaks = new Map<string, { measured: Cost; calls: number }>();
-	const record = (phase: string, measured: Cost) => {
-		const peak = peaks.get(phase) ?? { measured: { ...zero }, calls: 0 };
-		for (const key of Object.keys(zero) as Array<keyof Cost>)
-			peak.measured[key] = Math.max(peak.measured[key], measured[key]);
-		peak.calls++;
-		peaks.set(phase, peak);
-		if (peak.calls === 1 || peak.calls % 500 === 0) console.info("Move budget phase", phase, peak.calls);
-		expect_under_convex_limits(measured);
-		for (const [key, limit] of Object.entries({
-			databaseQueries: 4096,
-			documentsRead: 32_000,
-			bytesRead: 16 * 1024 * 1024,
-			documentsWritten: 16_000,
-			bytesWritten: 16 * 1024 * 1024,
-			functionsScheduled: 1000,
-		}) as Array<[keyof Cost, number]>)
-			expect(measured[key], `${phase}: ${key}`).toBeLessThan(limit * 0.75);
-	};
-	return { peaks, record };
-}
-
-function measure_cohort(record: ReturnType<typeof budget_recorder>["record"]) {
-	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
-		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
-		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
-		const phase = cohort?.step === step ? cohort.workPhase : "stale";
-		const before = await ctx.meta.getTransactionMetrics();
-		const result = await handler(ctx, args);
-		// The registered handler includes the mutation wrapper and its overlay flush.
-		const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
-		record(`cohort/${phase}`, cost);
-		return result;
-	});
-}
-
-async function finish_scheduled(t: ReturnType<typeof test_convex>, isDone: () => Promise<boolean>) {
-	for (let step = 0; step < 50_000; step++) {
-		vi.advanceTimersByTime(0);
-		await t.finishInProgressScheduledFunctions();
-		if (await isDone()) return;
-		// Each scheduled worker has a fake timer. Reading `_scheduled_functions` here would be slow:
-		// that table keeps finished jobs, so each read grows with the steps already run.
-		if (vi.getTimerCount() === 0) throw new Error("The accepted job has no scheduled worker");
-		// Advance between workers, never while an async worker is still reading or writing.
-		vi.advanceTimersToNextTimer();
-	}
-	throw new Error("The scheduled job did not finish");
-}
-
-async function add_member(ctx: MutationCtx, db: Db, clerkUserId: string) {
-	const userId = await ctx.db.insert("users", { clerkUserId });
-	await ctx.db.insert("organizations_workspaces_users", {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId,
-		active: true,
-		pendingOrganizationRemoval: false,
-		updatedAt: Date.now(),
-	});
-	await access_control_db_ensure_role_assignment(ctx, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId,
-		role: "member",
-		now: Date.now(),
-	});
-	return userId;
-}
-
-async function insert_saved_node(
-	ctx: MutationCtx,
-	db: Db,
-	args: { parent: Doc<"files_nodes"> | null; name: string; kind: "file" | "folder"; createdBy?: Id<"users"> },
-) {
-	const path = `${args.parent?.path ?? ""}/${args.name}`;
-	const nodeId = await ctx.db.insert("files_nodes", {
-		...test_mocks.files.base(),
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		createdBy: args.createdBy ?? db.userId,
-		updatedBy: args.createdBy ?? db.userId,
-		parentId: args.parent?._id ?? files_ROOT_ID,
-		name: args.name,
-		sortName: files_sort_text_key(args.name),
-		kind: args.kind,
-		path,
-		treePath: args.kind === "folder" ? `${path}/` : path,
-		pathDepth: path.split("/").length - 1,
-	});
-	return (await ctx.db.get("files_nodes", nodeId))!;
-}
-
-describe("paged Move transaction budgets", () => {
-	// MAX_OTHER_USERS_DOCS_PER_SAVED_NODE in files-pending-overlay.ts is 32, one hide and one place
-	// per user. So at most 16 users can draft on one saved node.
-	const MAX_DRAFT_OWNERS = 16;
-
-	// Moves a heavy file with `keys` frontmatter and metadata keys (128 is the maximum) and `lines`
-	// lines of text while `owners` users draft a move of it. Also moves a folder with restricted
-	// folders and a file with a link.
-	const measure_paged_move = async (args: { owners: number; keys: number; lines: number }) => {
-		const t = test_convex({ transactionLimits: true });
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const dates = Array.from({ length: args.keys }, (_, index) =>
-			new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
-		);
-		const frontmatter = [
-			"---",
-			...dates.map((date, index) => `field${index}: ["distinct-${index}", "${date}"]`),
-			"---",
-			"",
-		].join("\n");
-		const body = "A large saved file keeps its text chunks beside both metadata sources.\n".repeat(args.lines);
-		const heavyId = await test_create_saved_text_file(t, {
-			membershipId: db.membershipId,
-			path: "/project/heavy.md",
-			textContent: frontmatter + body,
-		});
-		expect(
-			await asOwner.mutation(api.files_metadata.set_entries, {
-				membershipId: db.membershipId,
-				fileNodeId: heavyId,
-				metadataYaml: dates.map((date, index) => `key${index}: "${date}"`).join("\n"),
-			}),
-		).toEqual({ _yay: null });
-		await t.finishAllScheduledFunctions(vi.runAllTimers);
-		console.info("Move budget fixture: committed text and maximum metadata ready");
-
-		const seeded = await t.run(async (ctx) => {
-			const heavy = (await ctx.db.get("files_nodes", heavyId))!;
-			const project = (await ctx.db.get("files_nodes", heavy.parentId as Id<"files_nodes">))!;
-			const target = await insert_saved_node(ctx, db, { parent: null, name: "target", kind: "folder" });
-			const drafts = await insert_saved_node(ctx, db, { parent: null, name: "drafts", kind: "folder" });
-			const shared = await insert_saved_node(ctx, db, { parent: project, name: "shared", kind: "folder" });
-			const light: Doc<"files_nodes">[] = [];
-			const links: Doc<"files_nodes">[] = [];
-			const users: Id<"users">[] = [];
-			for (let index = 0; index < 51; index++) users.push(await add_member(ctx, db, `clerk_move_budget_${index}`));
-			const metadata = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId),
-				)
-				.collect();
-			return { heavy, project, target, drafts, shared, light, links, users, metadata };
-		});
-		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(args.keys * 4);
-		expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("metadata."))).toHaveLength(args.keys * 3);
-		// Owner steps page these docs 8 at a time (PAGE_SIZE in files_move_owner_work.ts). Use full pages.
-		expect(seeded.metadata.length, "the metadata fills more than one owner page").toBeGreaterThan(8);
-		let extraLinkId: Id<"files_nodes"> | null = null;
-		for (const [parentId, count] of [
-			[seeded.project._id, 99],
-			[files_ROOT_ID, 402],
-		] as const) {
-			for (let offset = 0; offset < count; offset += 50) {
-				vi.setSystemTime(Date.now() + 60_000);
-				const uploaded = await asOwner.mutation(api.files_nodes.create_upload_nodes, {
-					membershipId: db.membershipId,
-					parentId,
-					onConflict: "skip",
-					items: Array.from({ length: Math.min(50, count - offset) }, (_, index) => ({
-						relativePath: `link-${offset + index}.bin`,
-						size: 1,
-						contentType: "application/octet-stream",
-					})),
-				});
-				if (uploaded._nay) throw new Error(uploaded._nay.message);
-				expect(uploaded._yay.skipped).toHaveLength(0);
-				for (const item of uploaded._yay.created) {
-					expect(await fetch(item.url, { method: "PUT", body: "x" })).toHaveProperty("status", 200);
-					expect(
-						await t.mutation(internal.r2.process_uploaded_asset_event, {
-							assetId: item.assetId,
-							r2Key: r2_create_asset_key({ ...db, assetId: item.assetId }),
-							size: 1,
-							eventId: `move-budget-${item.assetId}`,
-						}),
-					).toEqual({ _yay: null });
-					const node = (await t.run((ctx) => ctx.db.get("files_nodes", item.nodeId)))!;
-					if (seeded.links.length < 500) seeded.links.push(node);
-					else extraLinkId = node._id;
-					if (parentId === seeded.project._id) seeded.light.push(node);
-				}
-			}
-		}
-		if (!extraLinkId) throw new Error("Expected one extra link target");
-		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
-		console.info("Move budget fixture: native upload targets ready");
-
-		// Advance only the clock: setup should not run expiry jobs between fixture writes.
-		const refill_sharing = () => vi.setSystemTime(Date.now() + 3_000);
-		refill_sharing();
-		expect(
-			await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: heavyId }),
-		).toEqual({ _yay: null });
-		for (const userId of seeded.users.slice(0, 50)) {
-			refill_sharing();
-			expect(
-				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: db.membershipId,
-					nodeId: heavyId,
-					principal: { kind: "user", userId },
-					level: "manage",
-				}),
-			).toEqual({ _yay: null });
-		}
-		refill_sharing();
-		expect(
-			(
-				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: db.membershipId,
-					nodeId: heavyId,
-					principal: { kind: "user", userId: seeded.users[50]! },
-					level: "manage",
-				})
-			)._nay?.message,
-		).toContain("at most 50");
-		for (let index = 0; index < 9; index++) {
-			const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: db.userId,
-				path: `${seeded.shared.path}/restricted-${index}`,
-			});
-			if (created._nay) throw new Error(created._nay.message);
-			refill_sharing();
-			expect(
-				await asOwner.mutation(api.files_sharing.restrict_node, {
-					membershipId: db.membershipId,
-					nodeId: created._yay.nodeId,
-				}),
-			).toEqual({ _yay: null });
-		}
-		for (const node of seeded.links) {
-			refill_sharing();
-			expect(
-				await asOwner.mutation(api.files_sharing.set_node_share_link, {
-					membershipId: db.membershipId,
-					nodeId: node._id,
-					enabled: true,
-				}),
-			).toEqual({ _yay: null });
-			if ((seeded.links.indexOf(node) + 1) % 100 === 0)
-				console.info("Move budget fixture: public links ready", seeded.links.indexOf(node) + 1);
-		}
-		refill_sharing();
-		expect(
-			(
-				await asOwner.mutation(api.files_sharing.set_node_share_link, {
-					membershipId: db.membershipId,
-					nodeId: extraLinkId,
-					enabled: true,
-				})
-			)._nay?.message,
-		).toContain("at most 500");
-		await t.finishAllScheduledFunctions(vi.runAllTimers);
-		for (const userId of seeded.users.slice(0, args.owners)) {
-			expect(
-				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					userId,
-					target: { kind: "saved", id: heavyId },
-					destParent: { kind: "saved", id: seeded.drafts._id },
-					destName: seeded.heavy.name,
-				}),
-			).toMatchObject({
-				_yay: { fromPath: seeded.heavy.path, destPath: `${seeded.drafts.path}/${seeded.heavy.name}` },
-			});
-		}
-		if (args.owners === MAX_DRAFT_OWNERS)
-			await expect(
-				t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					userId: seeded.users[MAX_DRAFT_OWNERS]!,
-					target: { kind: "saved", id: heavyId },
-					destParent: { kind: "saved", id: seeded.drafts._id },
-					destName: seeded.heavy.name,
-				}),
-				"the cap refuses one more owner draft",
-			).rejects.toThrow("Too many people have pending changes");
-		console.info("Move budget fixture: shares, links and owner drafts ready");
-		await t.run(async (ctx) => {
-			expect(
-				await ctx.db
-					.query("files_pending_hides")
-					.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", heavyId))
-					.collect(),
-			).toHaveLength(args.owners);
-			expect(
-				await ctx.db
-					.query("files_pending_places")
-					.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", heavyId))
-					.collect(),
-			).toHaveLength(args.owners);
-			expect(
-				await ctx.db
-					.query("files_share_rows")
-					.withIndex("by_node", (q) => q.eq("nodeId", heavyId))
-					.collect(),
-			).toHaveLength(50);
-			expect(await ctx.db.query("files_share_links").collect()).toHaveLength(500);
-		});
-
-		const { peaks, record } = budget_recorder();
-		measure_cohort(record);
-		// The metadata catalog's compactor runs in its own transactions while the Move goes on.
-		test_spy_handler(compact_metadata_catalog, async (handler, ctx, args) => {
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await handler(ctx, args);
-			record("catalog/compactor", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
-			return result;
-		});
-		for (const [phase, registered] of [
-			["start", start_transfer],
-			["append", append_transfer_sources],
-			["seal", seal_transfer],
-		] as const) {
-			test_spy_handler(registered, async (handler, ctx, args) => {
-				const before = await ctx.meta.getTransactionMetrics();
-				const result = await handler(ctx, args);
-				record(phase, transaction_cost(before, await ctx.meta.getTransactionMetrics()));
-				return result;
-			});
-		}
-		// The native 140-root test covers selection size. These roots keep the maximum per-node cost.
-		const sources = [heavyId, seeded.shared._id, seeded.light[0]!._id];
-		const started = await asOwner.mutation(api.files_transfer.start, {
-			membershipId: db.membershipId,
-			requestId: "move-budget",
-			kind: "move",
-			expectedSourceCount: sources.length,
-			sourceIds: sources.slice(0, 1),
-			targetParentId: seeded.target._id,
-		});
-		if (started._nay) throw new Error(started._nay.message);
-		const { runId } = started._yay;
-		test_spy_handler(advance_transfer, async (handler, ctx, args) => {
-			const run = (await ctx.db.get("files_transfer_runs", runId))!;
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await handler(ctx, args);
-			const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
-			record(`transfer/${run.step}`, cost);
-			return result;
-		});
-		test_spy_handler(advance_subtree, async (handler, ctx, args) => {
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await handler(ctx, args);
-			record("subtree", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
-			return result;
-		});
-		test_spy_handler(run_overlay_job, async (handler, ctx, args) => {
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await handler(ctx, args);
-			record("overlay", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
-			return result;
-		});
-		expect(
-			await asOwner.mutation(api.files_transfer.append_sources, {
-				membershipId: db.membershipId,
-				runId,
-				offset: 1,
-				sourceIds: sources.slice(1),
-			}),
-		).toEqual({ _yay: null });
-		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
-			_yay: null,
-		});
-		await finish_scheduled(
-			t,
-			async () =>
-				(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !==
-				undefined,
-		);
-		// The compactor applies only deltas older than 5 s (COMPACT_CUTOFF_MS), and a smaller Move ends
-		// first. Run on until its chain ends, so it applies all the Move's catalog deltas.
-		await finish_scheduled(
-			t,
-			async () => !(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").first())),
-		);
-		console.info(
-			"paged Move phase peaks, with the metadata catalog",
-			JSON.stringify({ args, phases: Object.fromEntries(peaks) }),
-		);
-		expect(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId })).toMatchObject({
-			activity: { status: "succeeded", progress: { completed: 3, failed: 0, canceled: 0 } },
-		});
-		expect(peaks.get("cohort/publish")?.calls, "every saved Move root reaches cohort publication").toBe(sources.length);
-		expect(
-			peaks.get("catalog/compactor")?.measured.documentsWritten,
-			"the compactor applies the Move's catalog deltas",
-		).toBeGreaterThan(0);
-		expect(peaks.get("cohort/descendants")?.calls).toBeGreaterThan(0);
-		expect(peaks.get("cohort/finish_owners")?.calls).toBeGreaterThan(0);
-	};
-
-	// The full size: 16 owners with 896 metadata docs each and a large text make about 8,700 Move steps
-	// over large tables, more than an hour here. It runs only in `test:files:full-size`. The steps
-	// work in pages, so one step's cost does not grow with the owner count, the doc count or the text
-	// size. The two tests below split these sizes and reach the same peak per phase (checked once
-	// against this test).
-	test(
-		"measures scheduled phases with maximum metadata, draft copies, shares and links",
-		{ tags: ["full-size"], timeout: 7_200_000 },
-		async () => {
-			await measure_paged_move({ owners: MAX_DRAFT_OWNERS, keys: 128, lines: 12_000 });
-		},
-	);
-
-	// The maximum metadata with one owner. 200 lines make about 12 text chunks, more than one page of
-	// 8. A larger text only adds steps, and saving it takes most of the full test's fixture time.
-	test("measures scheduled phases with maximum metadata, shares, links and one draft copy", async () => {
-		await measure_paged_move({ owners: 1, keys: 128, lines: 200 });
-	}, 1_200_000);
-
-	// The owner cap with two keys: 14 metadata docs, two pages per owner.
-	test("measures scheduled phases with the most draft copies, shares and links", async () => {
-		await measure_paged_move({ owners: MAX_DRAFT_OWNERS, keys: 2, lines: 200 });
-	}, 600_000);
-
-	test("moves one saved file while six owners have large pending content", async () => {
-		const t = test_convex({ transactionLimits: true });
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const nodeId = await test_create_saved_text_file(t, {
-			membershipId: db.membershipId,
-			path: "/project/heavy.md",
-			textContent: "Saved content.\n",
-		});
-		const seeded = await t.run(async (ctx) => {
-			const target = await insert_saved_node(ctx, db, { parent: null, name: "target", kind: "folder" });
-			const users: Id<"users">[] = [];
-			for (let index = 0; index < 6; index++) users.push(await add_member(ctx, db, `clerk_heavy_content_${index}`));
-			return { target, users };
-		});
-		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
-		const text = "x".repeat(800 * 1024);
-		for (const userId of seeded.users) {
-			const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId };
-			const batch = await t.mutation(
-				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
-				{
-					...scope,
-					target: { kind: "saved", id: nodeId },
-				},
-			);
-			if (batch._nay) throw new Error(batch._nay.message);
-			expect(
-				await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-					...scope,
-					operationBatchId: batch._yay.operationBatchId,
-					role: "unstaged",
-					text,
-				}),
-			).toEqual({ _yay: null });
-			expect(
-				await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-					...scope,
-					target: { kind: "saved", id: nodeId },
-					operationBatchId: batch._yay.operationBatchId,
-				}),
-			).toEqual({ _yay: null });
-		}
-		const read_pending_chunks = async (ctx: MutationCtx) =>
-			await ctx.db
-				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
-					q
-						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId)
-						.eq("target.kind", "saved")
-						.eq("target.id", nodeId),
-				)
-				.collect();
-		await t.run(async (ctx) => {
-			const chunks = await read_pending_chunks(ctx);
-			expect(new Set(chunks.map((chunk) => (chunk.sourceKind === "pending" ? chunk.userId : null))).size).toBe(6);
-			expect(
-				chunks.reduce((sum, chunk) => sum + new TextEncoder().encode(chunk.plainTextChunk).byteLength, 0),
-			).toBeGreaterThan(4 * 1024 * 1024);
-		});
-		const started = await asOwner.mutation(api.files_transfer.start, {
-			membershipId: db.membershipId,
-			requestId: "move-six-heavy-drafts",
-			kind: "move",
-			expectedSourceCount: 1,
-			sourceIds: [nodeId],
-			targetParentId: seeded.target._id,
-		});
-		if (started._nay) throw new Error(started._nay.message);
-		const { runId } = started._yay;
-		const { peaks, record } = budget_recorder();
-		measure_cohort(record);
-		test_spy_handler(advance_transfer, async (handler, ctx, args) => {
-			const run = (await ctx.db.get("files_transfer_runs", runId))!;
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await handler(ctx, args);
-			const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
-			record(`transfer/${run.step}`, cost);
-			return result;
-		});
-		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
-			_yay: null,
-		});
-		await finish_scheduled(
-			t,
-			async () =>
-				(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !==
-				undefined,
-		);
-		const receipt = await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
-		console.info(
-			"singleton Move with six native 800KiB drafts",
-			JSON.stringify({ phases: Object.fromEntries(peaks), receipt }),
-		);
-		expect(receipt, "one saved root must move with six supported pending content branches").toMatchObject({
-			activity: { status: "succeeded", progress: { completed: 1, failed: 0, canceled: 0 } },
-		});
-		await t.run(async (ctx) => {
-			const chunks = await read_pending_chunks(ctx);
-			expect(new Set(chunks.map((chunk) => (chunk.sourceKind === "pending" ? chunk.userId : null))).size).toBe(6);
-			expect(chunks.every((chunk) => chunk.path === "/target/heavy.md")).toBe(true);
-		});
-	}, 900_000);
-});
-
-describe("cohort Accept transaction budgets", () => {
-	test("measures a linked public Accept through publication and cleanup", async () => {
-		const t = test_convex({ transactionLimits: true });
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
-		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const nodes: Id<"files_nodes">[] = [];
-		for (let index = 0; index < 3; index++) {
-			const nodeId = await test_create_saved_text_file(t, {
-				membershipId: db.membershipId,
-				path: `/inbox/note-${index}.md`,
-				textContent: [
-					"---",
-					...Array.from({ length: 20 }, (_, key) => `field${key}: value-${key}`),
-					"---",
-					"",
-					"Saved text.",
-				].join("\n"),
-			});
-			nodes.push(nodeId);
-		}
-		await t.finishAllScheduledFunctions(vi.runAllTimers);
-		const parentId = (await t.run((ctx) => ctx.db.get("files_nodes", nodes[0]!)))!.parentId;
-		if (parentId === files_ROOT_ID) throw new Error("Expected the native inbox folder");
-		const draft = async (index: number, destName: string) => {
-			const proposal = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-				...scope,
-				target: { kind: "saved", id: nodes[index]! },
-				destParent: { kind: "saved", id: parentId },
-				destName,
-			});
-			if (proposal._nay) throw new Error(proposal._nay.message);
-		};
-		await draft(0, "temporary-draft-name.md");
-		await draft(2, "note-0.md");
-		await draft(1, "note-2.md");
-		await draft(0, "note-1.md");
-		const proposals = await t.run((ctx) =>
-			Promise.all(
-				nodes.map((nodeId) =>
-					ctx.db
-						.query("files_pending_updates")
-						.withIndex("by_user_target", (q) =>
-							q.eq("userId", db.userId).eq("target.kind", "saved").eq("target.id", nodeId),
-						)
-						.unique(),
-				),
-			),
-		);
-		const { peaks, record } = budget_recorder();
-		measure_cohort(record);
-		test_spy_handler(advance_review, async (handler, ctx, args) => {
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await handler(ctx, args);
-			record("review/advance", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
-			return result;
-		});
-		const started = await asOwner.mutation(api.files_pending_update_runs.start, {
-			membershipId: db.membershipId,
-			requestId: crypto.randomUUID(),
-			kind: "accept",
-			expectedItemCount: 3,
-			items: proposals.map((proposal) => ({
-				pendingUpdateId: proposal!._id,
-				reviewedRevision: proposal!.revision,
-				selectedContentStateId: null,
-			})),
-		});
-		if (started._nay) throw new Error(started._nay.message);
-		const { runId } = started._yay;
-		expect(
-			await asOwner.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId }),
-		).toEqual({ _yay: null });
-		await finish_scheduled(
-			t,
-			async () =>
-				(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.run.step ===
-				"finished",
-		);
-		expect(
-			(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.activity,
-			"the measured linked Accept completes through native cohort workers",
-		).toMatchObject({ status: "succeeded", progress: { completed: 3 } });
-		expect(peaks.get("cohort/publish")?.calls, "linked Accept uses one cohort switch").toBe(1);
-		expect(peaks.get("cohort/finish_nodes")?.calls).toBeGreaterThan(0);
-		const saved = await t.run((ctx) => Promise.all(nodes.map((nodeId) => ctx.db.get("files_nodes", nodeId))));
-		expect(saved.map((node) => node?.name)).toEqual(["note-1.md", "note-2.md", "note-0.md"]);
-		expect(saved.every((node) => node?.moveCohortId === undefined)).toBe(true);
-		console.info(
-			"linked public Accept phase peaks, with the metadata catalog",
-			JSON.stringify(Object.fromEntries(peaks)),
-		);
-	}, 180_000);
-
-	test("measures an accepted delete of a file with a full-size text edit", async () => {
-		const t = test_convex({ transactionLimits: true });
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
-		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const nodeId = await test_create_saved_text_file(t, {
-			membershipId: db.membershipId,
-			path: "/inbox/edited.md",
-			textContent: "Saved text.\n",
-		});
-		await t.finishAllScheduledFunctions(vi.runAllTimers);
-		const target = { kind: "saved", id: nodeId } as const;
-		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
-			...scope,
-			target,
-		});
-		if (batch._nay) throw new Error(batch._nay.message);
-		// A full-size edit of short lines, so the text makes many chunks.
-		const text = Array.from({ length: files_MAX_TEXT_CONTENT_BYTES / 16 }, (_, index) =>
-			index.toString(36).padStart(15, "-"),
-		).join("\n");
-		expect(
-			await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-				...scope,
-				operationBatchId: batch._yay.operationBatchId,
-				role: "unstaged",
-				text,
-			}),
-		).toEqual({ _yay: null });
-		expect(
-			await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-				...scope,
-				target,
-				operationBatchId: batch._yay.operationBatchId,
-			}),
-		).toEqual({ _yay: null });
-		expect(
-			(await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...scope, target }))._nay,
-		).toBeUndefined();
-		const proposal = (await t.run((ctx) => ctx.db.query("files_pending_updates").collect())).find(
-			(row) => row.target.id === nodeId,
-		)!;
-		expect(proposal.pendingArchive && proposal.content).toBeTruthy();
-		const pendingDocs = async () =>
-			await t.run(async (ctx) =>
-				[
-					...(await ctx.db.query("files_plain_text_chunks").collect()),
-					...(await ctx.db.query("files_text_chunks").collect()),
-				].filter((row) => "pendingUpdateId" in row && row.pendingUpdateId === proposal._id),
-			);
-		expect((await pendingDocs()).length).toBeGreaterThan(1000);
-		const { peaks, record } = budget_recorder();
-		measure_cohort(record);
-		const started = await asOwner.mutation(api.files_pending_update_runs.start, {
-			membershipId: db.membershipId,
-			requestId: crypto.randomUUID(),
-			kind: "accept",
-			expectedItemCount: 1,
-			items: [
-				{
-					pendingUpdateId: proposal._id,
-					reviewedRevision: proposal.revision,
-					selectedContentStateId: proposal.content?.unstagedStateId ?? null,
-				},
-			],
-		});
-		if (started._nay) throw new Error(started._nay.message);
-		const { runId } = started._yay;
-		expect(
-			await asOwner.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId }),
-		).toEqual({ _yay: null });
-		await finish_scheduled(
-			t,
-			async () =>
-				(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.run.step ===
-				"finished",
-		);
-		expect(
-			(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.activity,
-		).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
-		expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.archiveOperationId).not.toBeNull();
-		// The finish deletes a few chunks with the draft. A background drain deletes the rest after the Move.
-		await finish_scheduled(t, async () => (await pendingDocs()).length === 0);
-		expect(await pendingDocs(), "no pending index doc outlives the draft").toEqual([]);
-		expect(peaks.get("cohort/finish_nodes")?.calls).toBeGreaterThan(0);
-		console.info("accepted delete with a full-size edit, phase peaks", JSON.stringify(Object.fromEntries(peaks)));
-	}, 900_000);
-
-	test("keeps the draft delete of a full-size edit at the longest path under the budget", async () => {
-		const t = test_convex({ transactionLimits: true });
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
-		// Every plain text chunk stores this path, and the delete patches every chunk.
-		const path = `/${Array.from({ length: 3 }, (_, index) => String(index).repeat(files_NAME_MAX_LENGTH)).join("/")}/${"e".repeat(files_NAME_MAX_LENGTH - 3)}.md`;
-		expect(path).toHaveLength(files_PATH_MAX_LENGTH);
-		const nodeId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path, textContent: "Saved." });
-		await t.finishAllScheduledFunctions(vi.runAllTimers);
-		const target = { kind: "saved", id: nodeId } as const;
-		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
-			...scope,
-			target,
-		});
-		if (batch._nay) throw new Error(batch._nay.message);
-		const text = Array.from({ length: files_MAX_TEXT_CONTENT_BYTES / 16 }, (_, index) =>
-			index.toString(36).padStart(15, "-"),
-		).join("\n");
-		expect(
-			await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-				...scope,
-				operationBatchId: batch._yay.operationBatchId,
-				role: "unstaged",
-				text,
-			}),
-		).toEqual({ _yay: null });
-		expect(
-			await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-				...scope,
-				target,
-				operationBatchId: batch._yay.operationBatchId,
-			}),
-		).toEqual({ _yay: null });
-		const { peaks, record } = budget_recorder();
-		test_spy_handler(upsert_file_pending_archive_in_db, async (handler, ctx, args) => {
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await handler(ctx, args);
-			record("draft delete", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
-			return result;
-		});
-		expect(
-			(await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...scope, target }))._nay,
-		).toBeUndefined();
-		expect(peaks.get("draft delete")?.calls).toBe(1);
-		console.info("draft delete at the longest path", JSON.stringify(Object.fromEntries(peaks)));
-	}, 300_000);
 });
 
 describe("discard_file_pending_update", () => {
@@ -1249,9 +405,7 @@ describe("metadata catalog", () => {
 
 describe("content save", () => {
 	// A content save patches the file node, so the flush rewrites every share row of a shared file
-	// that is a restricted root. The share caps allow 50 shares on one node (MAX_FILE_SHARE_PRINCIPALS
-	// in files_sharing.ts, MAX_READERS in plugins_external_files.ts). This measures twice that: 50
-	// users and 50 roles, each with the three grants of a "manage" share.
+	// that is a restricted root (see `share_100_times`).
 	test("saves a shared file with 100 shares", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -1260,37 +414,7 @@ describe("content save", () => {
 			await ctx.db.patch("files_nodes", file._id, { restrictedScopeNodeId: file._id, isRestrictedScopeRoot: true });
 			return file;
 		});
-		await test_run_with_flush(t, async (ctx) => {
-			const principals: Array<
-				{ principalKind: "user"; userId: Id<"users"> } | { principalKind: "role"; role: Id<"access_control_roles"> }
-			> = [];
-			for (let index = 0; index < 50; index++) {
-				const userId = await ctx.db.insert("users", { clerkUserId: `clerk_reader_${index}` });
-				const role = await ctx.db.insert("access_control_roles", {
-					organizationId: db.organizationId,
-					name: `Readers ${index}`,
-					normalizedName: `readers ${index}`,
-					description: "",
-					permissions: ["content.read"],
-					createdBy: db.userId,
-					createdAt: Date.now(),
-					updatedAt: Date.now(),
-				});
-				principals.push({ principalKind: "user", userId }, { principalKind: "role", role });
-			}
-			for (const principal of principals)
-				for (const permission of access_control_FILE_SHARE_LEVELS.manage.permissions)
-					await ctx.db.insert("access_control_permission_grants", {
-						organizationId: db.organizationId,
-						workspaceId: db.workspaceId,
-						resourceKind: "file",
-						resourceId: String(file._id),
-						...principal,
-						permission,
-						createdAt: Date.now(),
-						updatedAt: Date.now(),
-					});
-		});
+		await share_100_times(t, db, file._id);
 
 		const cost = await test_run_with_flush(t, async (ctx) => {
 			const before = await ctx.meta.getTransactionMetrics();
@@ -1308,6 +432,43 @@ describe("content save", () => {
 		const rows = await t.run((ctx) => ctx.db.query("files_share_rows").collect());
 		expect(rows).toHaveLength(100);
 		expect(rows.every((row) => row.contentByteSize === 2048)).toBe(true);
+		expect_under_convex_limits(cost);
+	}, 120_000);
+
+	// A rename of a folder changes the `treePath` of every node below it. A job that writes a shared
+	// folder's new path (a restore, a scope job) does it through the flush, which rewrites every share
+	// row of the folder.
+	test("rewrites the paths of a shared folder with 100 shares after its parent's rename", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const { parent, shared } = await t.run(async (ctx) => {
+			const parent = await insert_saved_node(ctx, db, { parent: null, name: "p", kind: "folder" });
+			const shared = await insert_saved_node(ctx, db, { parent, name: "shared", kind: "folder" });
+			await ctx.db.patch("files_nodes", shared._id, { restrictedScopeNodeId: shared._id, isRestrictedScopeRoot: true });
+			return { parent, shared };
+		});
+		await share_100_times(t, db, shared._id);
+		const renamed = await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", parent._id, {
+				name: "p2",
+				sortName: files_sort_text_key("p2"),
+				path: "/p2",
+				treePath: "/p2/",
+			});
+			return (await ctx.db.get("files_nodes", parent._id))!;
+		});
+
+		const cost = await test_run_with_flush(t, async (ctx) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			await files_nodes_db_rebuild_node(ctx, { node: (await ctx.db.get("files_nodes", shared._id))!, parent: renamed });
+			await files_pending_overlay_db_flush(ctx);
+			return transaction_cost(before, await ctx.meta.getTransactionMetrics());
+		});
+		console.info("path rewrite, a shared folder with 100 shares", cost);
+
+		const rows = await t.run((ctx) => ctx.db.query("files_share_rows").collect());
+		expect(rows).toHaveLength(100);
+		expect(rows.every((row) => row.treePath === "/p2/shared/")).toBe(true);
 		expect_under_convex_limits(cost);
 	}, 120_000);
 });

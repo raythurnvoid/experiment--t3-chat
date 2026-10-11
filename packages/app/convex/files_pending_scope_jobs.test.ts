@@ -166,6 +166,8 @@ test("pending scope pages follow the latest saved path and archive state without
 	});
 	expect(initial.proposal).not.toBeNull();
 	expect(initial.proposal?.pendingMove).toBeUndefined();
+	const stagedCounts = { chunks: 0, metadata: 0 };
+	const scopePages = { chunks: 0, metadata: 0 };
 	const started = await asUser.mutation(api.files_transfer.start, {
 		membershipId: db.membershipId,
 		requestId: "pending-scope-parent-move",
@@ -179,21 +181,53 @@ test("pending scope pages follow the latest saved path and archive state without
 	expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
 		_yay: null,
 	});
-	// The Move runs its group steps as scheduled workers, and it restages pending search docs itself.
-	// Watch its owner stage cursor to see that those docs span several pages.
-	let reachedScopePage = false;
+	// The Move may stage owner docs in its own step or in a worker. Check each step from outside.
 	await test_finish_transfer_run(asUser, runId, async () => {
-		const ranges = await t.run((ctx) => ctx.db.query("files_move_work_ranges").collect());
-		reachedScopePage ||= ranges.some((range) => {
-			const cursor =
-				range.phase === "stage" && range.cursor
-					? (JSON.parse(range.cursor) as { phase: string; page: string | null })
-					: null;
-			return cursor?.phase === "pending_plain" && cursor.page !== null;
+		const staged = await t.run(async (ctx) => {
+			const pendingUpdateId = initial.proposal!._id;
+			const chunks = (
+				await ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId))
+					.collect()
+			).filter((doc) => doc.moveView?.view === "after");
+			const metadata = (
+				await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", pendingUpdateId))
+					.collect()
+			).filter((doc) => doc.moveView?.view === "after");
+			const cohortId = [...chunks, ...metadata][0]?.moveView?.cohortId;
+			return {
+				chunks,
+				metadata,
+				cohort: cohortId ? await ctx.db.get("files_move_cohorts", cohortId) : null,
+				path: (await ctx.db.get("files_nodes", nodeId))?.path,
+			};
 		});
+		let grew = false;
+		for (const key of ["chunks", "metadata"] as const) {
+			const count = staged[key].length;
+			if (count > stagedCounts[key]) {
+				expect(count - stagedCounts[key], `${key} stage in native pages`).toBeLessThanOrEqual(8);
+				scopePages[key]++;
+				stagedCounts[key] = count;
+				grew = true;
+			}
+		}
+		if (!grew) return;
+		expect(staged.cohort?.publishedAt, "pending scope pages stage before publication").toBeNull();
+		expect(staged.path, "the saved path stays visible while scope pages stage").toBe("/project/note.md");
+		expect([...staged.chunks, ...staged.metadata].every((doc) => doc.path === "/destination/project/note.md")).toBe(
+			true,
+		);
 	});
+	expect((await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
+		"succeeded",
+	);
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/destination/project/note.md");
-	expect(reachedScopePage, "pending search docs span several scope pages").toBe(true);
+	expect(scopePages.chunks, "pending search docs span several scope pages").toBeGreaterThan(1);
+	expect(scopePages.metadata, "pending metadata docs span several scope pages").toBeGreaterThan(1);
 	expect(
 		await test_rename_node(t, asUser, {
 			membershipId: db.membershipId,

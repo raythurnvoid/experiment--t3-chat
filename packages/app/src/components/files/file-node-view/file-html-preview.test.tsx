@@ -210,8 +210,15 @@ function Preview(props: {
 	);
 }
 
+// happy-dom fires one `load` a moment after each iframe mounts, for its first empty page. If that
+// `load` came after start_frame clears the spy, it would send a second hello. So remember the frames
+// that had it, and let start_frame wait for it.
+const loadedFrames = new WeakSet<EventTarget>();
+document.addEventListener("load", (event) => loadedFrames.add(event.target!), true);
+
 async function start_frame() {
 	const frame = await screen.findByTitle<HTMLIFrameElement>("HTML preview: brief.html");
+	await waitFor(() => expect(loadedFrames.has(frame)).toBe(true));
 	const post = vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(() => {});
 	post.mockClear();
 	fireEvent.load(frame);

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useRef, useState } from "react";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -9,13 +9,15 @@ vi.mock("convex/react", async (importOriginal) => ({
 	useQuery: (query: FunctionReference<"query">, args: Record<string, string> | "skip") =>
 		args === "skip"
 			? undefined
-			: getFunctionName(query) === "files_nodes:get_workspace_move_view"
-				? test_catalog.cohortKeys
-					? { generation: 1, cohortId: "cohort_1", view: "after", searchGeneration: 1 }
-					: { generation: 1, cohortId: null, view: null, searchGeneration: 1 }
-				: test_catalog.loading.has(args.fieldPath!)
-					? undefined
-					: test_catalog_field(args.fieldPath!),
+			: getFunctionName(query) === "organizations:list"
+				? { workspaceIdsPermissionsDict: { "test-workspace": test_catalog.permissions } }
+				: getFunctionName(query) === "files_nodes:get_workspace_move_view"
+					? test_catalog.cohortKeys
+						? { generation: 1, cohortId: "cohort_1", view: "after", searchGeneration: 1 }
+						: { generation: 1, cohortId: null, view: null, searchGeneration: 1 }
+					: test_catalog.loading.has(args.fieldPath!)
+						? undefined
+						: test_catalog_field(args.fieldPath!),
 	usePaginatedQuery: (query: FunctionReference<"query">, args: Record<string, string> | "skip") => {
 		// Show more adds one page, like the real pager. A new request starts again at one page.
 		const request = JSON.stringify(args);
@@ -25,18 +27,26 @@ vi.mock("convex/react", async (importOriginal) => ({
 			setLoaded({ request, pageCount: pageCount + 1 }),
 		);
 	},
-	useQueries: (queries: Record<string, { args: { clause?: { text: string } } }>) =>
-		queries.folders ? { folders: test_folder_page(queries.folders.args.clause!.text) } : {},
+	useQueries: (queries: Record<string, { args: { clause: { text: string }; savedStream?: { kind: string } } }>) =>
+		Object.fromEntries(
+			Object.entries(queries).map(([key, { args }]) => [key, test_folder_page(args.clause.text, args.savedStream?.kind)]),
+		),
 }));
 
-/** The saved folders a `file.path` value completes from. */
-const test_folder_page = (text: string) => ({
-	page: ["/Projects/tasks", "/archive", "/tasks"]
-		.filter((path) => path.toLowerCase().includes(text.toLowerCase()))
-		.map((path) => ({ kind: "folder", nodeId: `id${path}`, path })),
-	isDone: true,
-	continueCursor: "",
-});
+/**
+ * The saved folders a `file.path` value completes from, in the normal or the Move view stream. Like
+ * the server, a search with no stream fails while a Move runs.
+ */
+const test_folder_page = (text: string, streamKind: string | undefined) =>
+	streamKind === undefined && test_catalog.cohortKeys
+		? new Error("A saved listing has no Move view")
+		: {
+				page: (streamKind === "cohort" ? ["/tasks", "/tasks-moved"] : ["/Projects/tasks", "/archive", "/tasks"])
+					.filter((path) => path.toLowerCase().includes(text.toLowerCase()))
+					.map((path) => ({ kind: "folder", nodeId: `id${path}`, path })),
+				isDone: true,
+				continueCursor: "",
+			};
 
 const test_catalog_KEYS = [
 	{ fieldPath: "frontmatter.status", valueKinds: ["string"] },
@@ -57,6 +67,8 @@ const test_catalog = {
 	error: null as Error | null,
 	loadMore: vi.fn(),
 	requests: [] as Array<Record<string, string>>,
+	/** The caller's permissions in the workspace, from `organizations.list`. */
+	permissions: "all" as "all" | string[],
 };
 
 const test_catalog_page = (
@@ -108,7 +120,7 @@ const test_labels = (heading: string) =>
 	);
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
-	AppTenantProvider: { useContext: () => ({ membershipId: "test-membership" }) },
+	AppTenantProvider: { useContext: () => ({ membershipId: "test-membership", workspaceId: "test-workspace" }) },
 }));
 
 const props: FilesSearchInput_Props = {
@@ -131,6 +143,7 @@ describe("FilesSearchInput", () => {
 		test_catalog.error = null;
 		test_catalog.loadMore.mockClear();
 		test_catalog.requests = [];
+		test_catalog.permissions = "all";
 	});
 
 	test("updates chips and text when another route query arrives", async () => {
@@ -193,6 +206,29 @@ describe("FilesSearchInput", () => {
 		expect(screen.getByRole("option", { name: "metadata.status text, boolean" })).toBeTruthy();
 		fireEvent.change(input, { target: { value: "metadata.status:" } });
 		await waitFor(() => expect(test_labels("Values for metadata.status")).toEqual(["* (any value)", "true", "false", "fixed", "open", "opened"]));
+	});
+
+	test("a member without workspace read sees why no keys or values are suggested", async () => {
+		// Like the server, a guest gets empty pages.
+		test_catalog.permissions = ["files.read"];
+		test_catalog.keys = [];
+		test_catalog.values = [];
+		const message =
+			"Suggestions need access to the whole workspace. You can still type a filter, like metadata.status:open.";
+		render(<FilesSearchInput {...props} />);
+		const input = screen.getByRole<HTMLInputElement>("combobox");
+		act(() => input.focus());
+		fireEvent.change(input, { target: { value: "metadata.st" } });
+		expect(await screen.findByRole("option", { name: message })).toBeTruthy();
+		expect(screen.queryByRole("option", { name: "No keys start with metadata.st" })).toBeNull();
+		fireEvent.change(input, { target: { value: "metadata.status:op" } });
+		await waitFor(() =>
+			expect(
+				within(screen.getByRole("group", { name: "Values for metadata.status" }))
+					.getAllByRole("option")
+					.map((option) => option.textContent),
+			).toEqual([message]),
+		);
 	});
 
 	test("held values of one key do not show for another key", async () => {
@@ -260,6 +296,15 @@ describe("FilesSearchInput", () => {
 			expect(await screen.findByRole("option", { name: "/Projects/tasks" })).toBeTruthy();
 			expect(screen.getByRole("option", { name: "/tasks" })).toBeTruthy();
 			expect(screen.queryByRole("option", { name: "/archive" })).toBeNull();
+		});
+
+		test("during a Move, completes a file.path value from both streams, each folder once", async () => {
+			test_catalog.cohortKeys = [];
+			render(<FilesSearchInput {...props} variant={variant} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			fireEvent.change(input, { target: { value: "file.path:tas" } });
+			await waitFor(() => expect(test_labels("Values for file.path")).toEqual(["/Projects/tasks", "/tasks", "/tasks-moved"]));
 		});
 
 		test("reopens on a new visit but keeps dismissal when returning from chips or results", async () => {

@@ -315,20 +315,25 @@ both field and value docs. File copy does not copy metadata; folder copy is unsu
 
 # Folder Table Fields
 
-The table's key list reads the catalog's `parent` family: the saved keys on the direct children of
-the open folder (see "Catalog" and "Suggestions"). It never pages the file rows or scans another
-folder.
+The table's key list reads the catalog's `parent` and `parent_restricted` families: the saved keys
+on the direct children of the open folder (see "Catalog" and "Suggestions"). It never pages the file
+rows or scans another folder.
 
 The three public queries live in the `folder table fields` region of `convex/files_metadata.ts`.
 Like the folder table, they are saved-only: they read committed docs and never pending docs (see
 the `files-explorer-tree` skill, "Saved-only lists").
 
-- `list_folder_fields({ membershipId, savedStream?, parentId, prefix, paginationOpts })` returns a
-  page of field paths (at most 50) on the folder's children that start with `prefix`, ignoring case. It is
-  one range of the `parent` family in one stream (see "Suggestions" for streams). The folder must be
-  a readable, active folder of the membership's workspace; `"root"` needs workspace-wide
-  `content.read`. Every refusal gives the same empty, done page. Keys of restricted children count
-  for every member too (the accepted leak in "Suggestions").
+- `list_folder_fields({ membershipId, savedStream?, parentId, restricted, prefix, paginationOpts })`
+  returns a page of field paths (at most 50) on the folder's children that start with `prefix`,
+  ignoring case. It is one range of one family in one stream (see "Suggestions" for streams). Like
+  the folder table, it has an open stream and a restricted twin: `restricted: false` reads the
+  `parent` family (children that are not their own restricted root), `restricted: true` the
+  `parent_restricted` family. Only the owner gets twin rows; anyone else gets an empty, done page.
+  `useFilesMetadataFolderKeys` merges the twin in once `FilesTreeProvider.useIsOwner()` is true. So
+  a member never sees the keys of a restricted child, also one shared with them, like a metadata
+  sort or filter never shows it. The folder must be a readable, active folder of the membership's
+  workspace; `"root"` needs workspace-wide `content.read`. Every refusal gives the same empty, done
+  page.
 - `list_node_fields({ membershipId, target, cursor })` returns
   `{ fields, continueCursor, isDone }`. It seeks distinct committed field paths of one saved node,
   so a 400-item list costs one key candidate. The cursor belongs to the membership and target.
@@ -505,7 +510,8 @@ answers its empty shape for a membership that is not the caller's.
   them: `search_saved` passes the tree reader's `hasWorkspaceRead` to the readable-nodes filter
   instead of refusing. The other way round holds too: a member whose role reads the workspace never gets a
   file of a restricted folder from `search_saved` until it is shared with them. The suggestion
-  doors do not follow this rule (the accepted leak in "Suggestions").
+  doors do not follow this rule: they need workspace-wide `content.read`, and then they show keys
+  and values of restricted files too (the accepted leak in "Suggestions").
 - Archiving a file removes it from every door: `search_saved` reads `archiveOperationId: undefined`
   docs only, and the catalog counts active docs only, so an archived file's keys and values
   disappear with it (after the catalog lag). `search_saved` reads saved, active rows only, so the
@@ -519,15 +525,18 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
 
 - **Families.** `key`: one row per field path, with `count` (field docs) and `kindCounts` (value docs per
   kind). `value`: one row per field path and string value. `parent`: one row per folder (or `"root"`) and
-  field path of its children's field docs, for the folder Columns menu. Each row also keeps
-  `fieldPathLower`, so a key prefix matches without case.
+  field path of its open children's field docs, for the folder Columns menu. `parent_restricted`: the
+  same for the children that are their own restricted root, from the field doc's
+  `isRestrictedScopeRoot` copy. A field doc without the flag counts there too (fail closed). Each row
+  also keeps `fieldPathLower`, so a key prefix matches without case.
 - **What counts.** Saved (`committed`), active (no `archiveOperationId`) docs of real workspaces, whose path
   passes `files_search_query_field_path_is_valid` (the grammar and at most 160 characters). Only string
   values whose encoded payload is at most 1,024 bytes get a value row (UTF-8 bytes plus one byte per
   U+0000, `files_metadata_catalog_value_is_short`): longer index keys share a buffered prefix group in
   Convex, so a page of them is not a real read bound. A long value still counts in its key's string kind.
-  Drafts, global and plugin volume workspaces never count. Restriction is not part of any row, so a
-  restrict writes nothing here, and Columns shows keys of restricted children to every member too.
+  Drafts, global and plugin volume workspaces never count. A restrict or an unrestrict patches the
+  flag on the node's own field docs (`files_nodes_db_set_restricted_scope`), so its keys move between
+  `parent` and `parent_restricted`. The `key` and `value` rows do not change.
 - **Move views.** A doc tagged with a Move cohort's `moveView` counts in the rows of that view, like share
   rows. Readers merge the normal rows with the visible view's rows, so a key never disappears or doubles
   while a Move stages, publishes, cleans up or aborts. Publication writes nothing here.
@@ -558,15 +567,17 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
   `by_organization_workspace_source_fileNode` (100 docs or 1 MiB per page). A file's key deltas wait for
   its last doc, so no key row shows kinds without its field count between two pages. The compactor runs between pages and
   keeps a `seeding` marker; the last page sets it to `draining`. Mode `catalog` replaces every row and
-  fixes drift. Mode `check` counts into the shadow families `check_key`, `check_value` and
-  `check_parent`; then page `check_metadata_catalog` to the end (it compares each row with its shadow
-  and each shadow with its row, and names ids, paths and counts, never a value), and run mode
+  fixes drift. Mode `check` counts into the shadow families `check_key`, `check_value`,
+  `check_parent` and `check_parent_restricted`; then page `check_metadata_catalog` to the end (it
+  compares each row with its shadow and each shadow with its row, and names ids, paths and counts,
+  never a value), and run mode
   `clear_check` to delete the shadows. Suggestion reads never read the `check_*` families.
 - **Cost.** About one delta insert per changed row, then one row write per distinct row per compactor
   batch. At the largest node (896 docs, 160-character keys, 1,024-byte values) a full replacement in one
   transaction measured 4,097 writes and 3.7 MB written, and a compactor run 2,002 docs read and 1,000
   writes (`files_pending_overlay_limits.test.ts`, "metadata catalog").
-- **Accepted leak.** Every member reads every row. See "Suggestions".
+- **Accepted leak.** Every member who reads the workspace reads every `key` and `value` row. See
+  "Suggestions".
 
 # Suggestions
 
@@ -580,9 +591,18 @@ and values from the catalog. Each read is one index range, so it costs the same 
     row in the normal stream and the visible Move view. The search box uses it to offer `true` and `false`.
   - `list_search_values({ membershipId, savedStream?, fieldPath, prefix, paginationOpts })` → a page of
     string values from the `value` family.
-  - `list_folder_fields` (see "Folder Table Fields") → a page of keys from the `parent` family.
+  - `list_folder_fields` (see "Folder Table Fields") → a page of keys from the `parent` family, or
+    for the owner's restricted twin from `parent_restricted`.
   - Pages hold at most 50 rows (`SEARCH_PAGE_MAX_ITEMS`). A prefix longer than 160 characters (keys) or
     200 (values) matches nothing and gets an empty, done page. So does a membership that is not the caller's.
+  - `list_search_fields`, `get_search_field` and `list_search_values` need workspace-wide
+    `content.read` (the tree reader's `hasWorkspaceRead`). A member without it (a guest who reads
+    only shared folders) gets an empty, done page or null, also inside a shared folder: the rows
+    count the whole workspace. A typed filter still searches (`search_saved` checks each row).
+    `list_folder_fields` keeps its folder gate, so a guest keeps the Columns keys of a shared folder.
+    The search box keys and values and the folder filter bar values then say why
+    (`files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE`, read from `organizations.list` by
+    `useFilesMetadataHasWorkspaceRead`).
 - **Matching.** A key matches by its start, ignoring case (`fieldPathLower`,
   `files_metadata_catalog_lower`). A value matches by its start in exact case: `d` does not list
   `Denys`. Rows come in index order; `files_metadata_catalog_key_order` gives the same order in the
@@ -614,12 +634,14 @@ and values from the catalog. Each read is one index range, so it costs the same 
   `usePaginatedQuery`, because the hook throws query errors. The error view says "Could not load
   suggestions." (Columns: "Fields could not be loaded") with a Retry that resets the boundary. The
   boundary also resets when the request changes. The typed text stays.
-- **Accepted leak until a search engine arrives (user, 2026-10-08).** Any member, guests included,
-  sees every catalog row of the workspace: keys and values of files they cannot open, and keys of
-  restricted children in Columns. Search results, opening a file and the folder gate stay
-  access-checked. This replaces the old rule that a restricted file's keys and values stay hidden. A
-  search engine must fix this: it counts keys and values over only the files the caller can read
-  (owner: all; member: open files plus shared restricted files; guest: files in shared folders).
+- **Accepted leak until a search engine arrives (user, 2026-10-08, narrowed 2026-10-10).** A member
+  who reads the whole workspace sees every `key` and `value` row: keys and values of restricted
+  files they cannot open too. Columns shows the keys of a folder's restricted children to the owner
+  only. Guests (no workspace read) get no key or value suggestions. Search results, opening a
+  file and the folder gate stay access-checked. This replaces the old rule that a restricted file's
+  keys and values stay hidden. A search engine must fix this: it counts keys and values over only the
+  files the caller can read (owner: all; member: open files plus shared restricted files; guest:
+  files in shared folders).
   Then delete the catalog tables, the leaf module, the overlay hook, the compactor, its cron, the
   rebuild and check tools and the data deletion pass. "Starts with" can become "contains" again.
 
@@ -682,7 +704,7 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 # Tests
 
 - `packages/app/shared/files-metadata.test.ts` — parse, stringify, validate, apply-changes, index docs.
-- `packages/app/convex/files_nodes.test.ts` — the `metadata` tests: search next to frontmatter,
+- `packages/app/convex/files_nodes.search_metadata.test.ts` — the `metadata` tests: search next to frontmatter,
   surviving a content save, the pending-overlay exemption, refusals, and the agent door on an upload.
   The `create-time metadata` describe covers the create-flow stamps: an upload's keys, a
   folder import's relative path with empty folders, the plugin source

@@ -12,6 +12,7 @@ import {
 	test_mocks_fill_db_with,
 	test_save_file_pending_update,
 	test_spy_handler,
+	test_spy_move_ranges,
 } from "./setup.test.ts";
 import {
 	r2_create_asset_key,
@@ -367,8 +368,7 @@ async function prepare_agent_replacement(
 }
 
 /**
- * Accept one proposal the way the sidebar does: a review run, not the direct action. An accept
- * run applies the change through the Move cohort steps, which is a different code path.
+ * Accept one proposal through the sidebar's real Review workers.
  */
 async function accept_through_review_run(
 	fixture: Awaited<ReturnType<typeof create_file_fixture>>,
@@ -394,11 +394,14 @@ async function accept_through_review_run(
 	const runId = started._yay.runId;
 	const sealed = await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId });
 	if (sealed._nay) throw new Error(sealed._nay.message);
-	// `prepare_unit` skips a cohort unit, so use the shared driver that runs the cohort steps. Fake
-	// timers stop scheduled jobs, such as R2 deletes, from running on their own during the run.
+	// Keep scheduled deletes paused while the Review driver runs.
+	const hadFakeTimers = vi.isFakeTimers();
 	vi.useFakeTimers();
-	await test_finish_pending_update_run(asUser, runId);
-	vi.useRealTimers();
+	try {
+		await test_finish_pending_update_run(asUser, runId);
+	} finally {
+		if (!hadFakeTimers) vi.useRealTimers();
+	}
 	return await asUser.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId });
 }
 
@@ -657,7 +660,7 @@ describe("private text publication", () => {
 });
 
 describe("copy_transfer_file", () => {
-	test("publishes both copies when another worker changes the media clock after validation", async () => {
+	test("publishes both copies once when another worker publishes after validation", async () => {
 		vi.useFakeTimers();
 		const fixture = await create_file_fixture("rich_text", "First file\n");
 		const { t, db, asUser, nodeId } = fixture;
@@ -709,7 +712,7 @@ describe("copy_transfer_file", () => {
 		let validationCalls = 0;
 		let publicationCalls = 0;
 		// Hold the first two finished pages outside their transactions. Both proofs then pin the
-		// same clock, and the first publication makes the other worker's proof stale.
+		// same clocks. No embeds, so publication skips the clock check.
 		test_spy_handler(copy_transfer_file, async (handler, ctx, args) => {
 			const runMutation = ctx.runMutation.bind(ctx);
 			vi.spyOn(ctx, "runMutation").mockImplementation(async (...mutationArgs) => {
@@ -741,65 +744,11 @@ describe("copy_transfer_file", () => {
 				index === 0 ? "First file\n" : "Second file\n",
 			);
 		}
-		expect(validationCalls).toBe(3);
-		expect(publicationCalls).toBe(3);
+		expect(validationCalls).toBe(2);
+		expect(publicationCalls).toBe(2);
 		expect(
 			await t.run(async (ctx) => Promise.all([nodeId, secondId].map((id) => ctx.db.get("files_nodes", id)))),
 		).toEqual(sources);
-	});
-
-	test("fails and retires the capture when the media clock changes before every publication", async () => {
-		vi.useFakeTimers();
-		const fixture = await create_file_fixture("rich_text");
-		const { t, db, asUser, nodeId } = fixture;
-		const copy = await create_transfer_copy_item(fixture);
-		const source = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-		let publicationCalls = 0;
-		const assetIds: Id<"files_r2_assets">[] = [];
-		const setIds: Id<"files_media_dependency_sets">[] = [];
-		test_spy_handler(copy_transfer_file, async (handler, ctx, args) => {
-			const runMutation = ctx.runMutation.bind(ctx);
-			vi.spyOn(ctx, "runMutation").mockImplementation(async (...mutationArgs) => {
-				const reference = mutationArgs[0];
-				if (getFunctionName(reference) === "files_nodes_content:finalize_transfer_file_copy") {
-					publicationCalls += 1;
-					if (publicationCalls === 1) {
-						const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
-						assetIds.push(item!.capture!.artifact!.contentAssetId, item!.capture!.artifact!.yjsSnapshotAssetId!);
-						setIds.push(item!.capture!.mediaDependencySetId!);
-					}
-					expect(
-						await asUser.mutation(api.files_nodes.create_folder_node, {
-							membershipId: db.membershipId,
-							parentId: files_ROOT_ID,
-							path: "/clock-change-" + publicationCalls,
-						}),
-					).toHaveProperty("_yay");
-				}
-				return await runMutation(reference, mutationArgs[1], mutationArgs[2]);
-			});
-			return await handler(ctx, args);
-		});
-		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
-		expect(publicationCalls).toBe(3);
-		const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
-		expect(item).toMatchObject({
-			state: "failed",
-			outputTarget: null,
-			errorMessage: "Media access kept changing during validation. Try again.",
-			stagedAssetIds: [],
-		});
-		expect(item!.capture!.artifact).toBeNull();
-		const jobs = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
-		for (const assetId of assetIds) {
-			expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
-			const job = jobs.find((job) => job.r2Key === r2_create_asset_key({ ...fixture.scope, assetId }));
-			expect(job?.putMayArriveUntil).toBeGreaterThan(Date.now());
-		}
-		expect(await t.run((ctx) => ctx.db.get("files_media_dependency_sets", setIds[0]!))).toMatchObject({
-			owner: { kind: "cleanup" },
-		});
-		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(source);
 	});
 
 	test.each(["saved", "private"] as const)(
@@ -3458,12 +3407,12 @@ describe("copy_transfer_file saved replacement", () => {
 					})
 				)?.content,
 			).toBe("Replacement text\n");
-			// Replaced content advances the workspace content clock, the third pin.
-			const contentPin = mediaPins.versions[2]!;
+			// The old file is plain text with no pending replacement, so no media proof can check it.
+			const contentClock = mediaPins.versions[2]!;
 			expect(
-				(await t.run((ctx) => ctx.db.get("files_content_versions", contentPin.id as Id<"files_content_versions">)))
+				(await t.run((ctx) => ctx.db.get("files_content_versions", contentClock.id as Id<"files_content_versions">)))
 					?.revision,
-			).toBeGreaterThan(contentPin.revision);
+			).toBe(contentClock.revision);
 			expect(
 				await asUser.query(api.files_metadata.get_entries, {
 					membershipId: db.membershipId,
@@ -3539,6 +3488,8 @@ describe("accept_file_pending_replacement", () => {
 					})
 				)._nay,
 			).toBeUndefined();
+			const contentClocks = () => t.run((ctx) => ctx.db.query("files_content_versions").collect());
+			const beforeRestore = await contentClocks();
 			expect(
 				(
 					await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
@@ -3550,6 +3501,8 @@ describe("accept_file_pending_replacement", () => {
 				)._nay,
 			).toBeUndefined();
 			expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.textKind).toBeNull();
+			// The old text file could not back media, so no proof could have checked it.
+			expect(await contentClocks()).toEqual(beforeRestore);
 			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual({
 				...pending,
 				revision: pending.revision + 2,
@@ -3604,12 +3557,12 @@ describe("accept_file_pending_replacement", () => {
 						.collect(),
 				).toHaveLength(0);
 			});
-			// Replaced content advances the workspace content clock, the third pin.
-			const contentPin = mediaPins.versions[2]!;
+			// The accepted proposal was a pending replacement, so a proof could check the file through it.
+			const contentClock = mediaPins.versions[2]!;
 			expect(
-				(await t.run((ctx) => ctx.db.get("files_content_versions", contentPin.id as Id<"files_content_versions">)))
+				(await t.run((ctx) => ctx.db.get("files_content_versions", contentClock.id as Id<"files_content_versions">)))
 					?.revision,
-			).toBeGreaterThan(contentPin.revision);
+			).toBeGreaterThan(contentClock.revision);
 		},
 	);
 
@@ -3722,11 +3675,12 @@ describe("accept_file_pending_replacement", () => {
 	});
 
 	test("accepts the replacement through a review run and keeps the replaced bytes in history", async () => {
+		test_spy_move_ranges();
 		const fixture = await create_file_fixture();
 		const { t, db, asUser } = fixture;
 		// Use stored files on both sides. A text file already has a version row for its current
 		// asset from its first save, so only a stored destination proves the run adds the row.
-		const upload = async (filename: string, bytes: Uint8Array) => {
+		const upload = async (filename: string, bytes: Uint8Array<ArrayBuffer>) => {
 			const created = await asUser.mutation(api.files_nodes.create_upload_node, {
 				membershipId: db.membershipId,
 				parentId: files_ROOT_ID,
@@ -3736,7 +3690,7 @@ describe("accept_file_pending_replacement", () => {
 			});
 			if (created._nay) throw new Error(created._nay.message);
 			const key = `test/${filename}`;
-			objects.set(key, bytes);
+			objects.set(key, files_u8_to_array_buffer(bytes));
 			await t.run((ctx) => ctx.db.patch("files_r2_assets", created._yay.assetId, { r2Key: key }));
 			return created._yay;
 		};
@@ -3764,7 +3718,10 @@ describe("accept_file_pending_replacement", () => {
 
 		const finished = await accept_through_review_run(fixture, staged);
 
-		expect(finished?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
+		expect(finished?.activity, "Reviewed replacement completes through its background steps").toMatchObject({
+			status: "succeeded",
+			progress: { completed: 1 },
+		});
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", staged._id))).toBeNull();
 		const after = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 		const afterAsset = await t.run((ctx) => ctx.db.get("files_r2_assets", after!.assetId!));
@@ -3780,7 +3737,7 @@ describe("accept_file_pending_replacement", () => {
 		const { t, db, asUser } = fixture;
 		// The deletion job may run from the scheduler too. Never call real R2.
 		const deleted = vi.spyOn(r2_confirmed_object_delete, "delete_object").mockResolvedValue(undefined);
-		const upload = async (filename: string, bytes: Uint8Array) => {
+		const upload = async (filename: string, bytes: Uint8Array<ArrayBuffer>) => {
 			const created = await asUser.mutation(api.files_nodes.create_upload_node, {
 				membershipId: db.membershipId,
 				parentId: files_ROOT_ID,

@@ -1,7 +1,7 @@
 import { Result } from "common/errors-as-values-utils.ts";
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -108,8 +108,8 @@ async function db_current(
 		workspace.pluginDataPurgeStartedAt !== undefined
 	)
 		return Result({ _nay: { name: "permission_denied", message: "This review is no longer available." } });
+	const run = cohort.origin.kind === "review" ? await ctx.db.get("files_pending_update_runs", cohort.origin.runId) : null;
 	if (cohort.origin.kind === "review") {
-		const run = await ctx.db.get("files_pending_update_runs", cohort.origin.runId);
 		const unit = await ctx.db.get("files_pending_update_run_units", cohort.origin.unitId);
 		if (
 			!run ||
@@ -125,6 +125,7 @@ async function db_current(
 			return changed();
 	}
 	const pins = cohort.clockPins;
+	// Keep this check even with no media: the same pins catch write policy and access changes while staging.
 	if (
 		!(await files_media_validation_db_versions_match(ctx, {
 			versions: [pins.organization, pins.workspace],
@@ -146,11 +147,11 @@ async function db_current(
 			set.workspaceId !== cohort.workspaceId)
 	)
 		return changed();
-	return Result({ _yay: { cohort, content, item, proposal, membership, set } });
+	return Result({ _yay: { cohort, content, item, proposal, membership, set, run } });
 }
 
 async function db_text(ctx: QueryCtx | MutationCtx, data: NonNullable<Awaited<ReturnType<typeof db_current>>["_yay"]>) {
-	const { cohort, content } = data;
+	const { cohort, content, item, run } = data;
 	if (!content.acceptedTextInputId)
 		return content.acceptedTextDigest === null ? Result({ _yay: { text: null, digest: "" } }) : changed();
 	const input = await ctx.db.get("files_pending_update_text_inputs", content.acceptedTextInputId);
@@ -185,8 +186,10 @@ async function db_text(ctx: QueryCtx | MutationCtx, data: NonNullable<Awaited<Re
 		return changed();
 	const node = await files_saved_placement_db_get_node(ctx.db, content.nodeId, { cohortId: cohort._id, view: "after" });
 	if (!node) return changed();
+	// One selected item cannot include another selected media file.
+	const ordinarySingle = !item.mediaDependencySet && run?.expectedItemCount === 1;
 	return Result({
-		_yay: { text: node.textKind === "rich_text" ? input.text : null, digest: content.acceptedTextDigest! },
+		_yay: { text: node.textKind === "rich_text" && !ordinarySingle ? input.text : null, digest: content.acceptedTextDigest! },
 	});
 }
 
@@ -195,13 +198,18 @@ export const read = internalQuery({
 	handler: async (
 		ctx,
 		args,
-	): Promise<MediaResult<{ text: string | null; digest: string; sealed: boolean; offset: number }>> => {
+	): Promise<MediaResult<{ text: string | null; digest: string; sealed: boolean; offset: number; ordinary: boolean }>> => {
 		const checked = await db_current(ctx, args);
 		if (checked._nay) return checked;
 		const text = await db_text(ctx, checked._yay);
 		if (text._nay) return text;
 		return Result({
-			_yay: { ...text._yay, sealed: checked._yay.set?.sealed ?? false, offset: checked._yay.set?.count ?? 0 },
+			_yay: {
+				...text._yay,
+				sealed: checked._yay.set?.sealed ?? false,
+				offset: checked._yay.set?.count ?? 0,
+				ordinary: !checked._yay.item.mediaDependencySet && checked._yay.cohort.origin.kind === "review",
+			},
 		});
 	},
 });
@@ -240,6 +248,60 @@ export const start = internalMutation({
 		});
 		if (args.expectedCount === 0) await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 });
 		return Result({ _yay: { setId: created._yay, generation: 0, count: 0, sealed: args.expectedCount === 0 } });
+	},
+});
+
+async function db_selected(
+	ctx: QueryCtx | MutationCtx,
+	runId: Id<"files_pending_update_runs">,
+	original: Doc<"files_pending_update_run_items">["target"],
+	target: Doc<"files_pending_update_run_items">["target"] | null,
+) {
+	let selected = await ctx.db
+		.query("files_pending_update_run_items")
+		.withIndex("by_run_target", (q) =>
+			q.eq("runId", runId).eq("target.kind", original.kind).eq("target.id", original.id),
+		)
+		.unique();
+	// A published private link may target a selected saved replacement.
+	if (!selected && original.kind === "private" && target?.kind === "saved")
+		selected = await ctx.db
+			.query("files_pending_update_run_items")
+			.withIndex("by_run_target", (q) =>
+				q.eq("runId", runId).eq("target.kind", target.kind).eq("target.id", target.id),
+			)
+			.unique();
+	return selected;
+}
+
+export const select_refs = internalQuery({
+	args: { ...context_validator, refs: v.array(v.string()) },
+	handler: async (ctx, args): Promise<MediaResult<string[]>> => {
+		if (args.refs.length === 0 || args.refs.length > PAGE_SIZE) return changed();
+		const checked = await db_current(ctx, args);
+		if (checked._nay) return checked;
+		const { cohort } = checked._yay;
+		if (cohort.origin.kind !== "review" || checked._yay.item.mediaDependencySet) return changed();
+		const refs = [];
+		for (const src of args.refs) {
+			const parsed = files_media_parse_src(src);
+			const savedId = parsed.kind === "file" ? ctx.db.normalizeId("files_nodes", parsed.fileNodeId) : null;
+			const privateId = parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
+			const original = savedId
+				? { kind: "saved" as const, id: savedId }
+				: privateId
+					? { kind: "private" as const, id: privateId }
+					: null;
+			if (!original) continue;
+			const target = original.kind === "private"
+				? await files_saved_placement_db_resolve_read_target(ctx.db, { ...cohort, target: original }, {
+					cohortId: cohort._id,
+					view: "after",
+				})
+				: original;
+			if (await db_selected(ctx, cohort.origin.runId, original, target)) refs.push(src);
+		}
+		return Result({ _yay: refs });
 	},
 });
 
@@ -283,21 +345,7 @@ async function db_ref(
 	const target = await files_saved_placement_db_resolve_read_target(ctx.db, { ...cohort, target: original }, fixedView);
 	if (target?.kind !== "saved") return changed();
 	if (cohort.origin.kind === "review") {
-		const runId = cohort.origin.runId;
-		let selected = await ctx.db
-			.query("files_pending_update_run_items")
-			.withIndex("by_run_target", (q) =>
-				q.eq("runId", runId).eq("target.kind", original.kind).eq("target.id", original.id),
-			)
-			.unique();
-		// A published private link may target a selected saved replacement.
-		if (!selected && original.kind === "private")
-			selected = await ctx.db
-				.query("files_pending_update_run_items")
-				.withIndex("by_run_target", (q) =>
-					q.eq("runId", runId).eq("target.kind", target.kind).eq("target.id", target.id),
-				)
-				.unique();
+		const selected = await db_selected(ctx, cohort.origin.runId, original, target);
 		if (selected?.unitId && selected.unitId !== cohort.origin.unitId) {
 			const unit = await ctx.db.get("files_pending_update_run_units", selected.unitId);
 			if (unit?.status !== "completed") return changed();
@@ -416,6 +464,7 @@ export async function files_move_media_action_prepare_refs(ctx: ActionCtx, args:
 		digest: string;
 		sealed: boolean;
 		offset: number;
+		ordinary: boolean;
 	}>;
 	if (checked._nay) return checked;
 	if (checked._yay.sealed) return Result({ _yay: null });
@@ -429,6 +478,18 @@ export async function files_move_media_action_prepare_refs(ctx: ActionCtx, args:
 		} finally {
 			editor._yay.destroy();
 		}
+	}
+	if (checked._yay.ordinary) {
+		const selected = [];
+		for (let offset = 0; offset < refs.length; offset += PAGE_SIZE) {
+			const page = (await ctx.runQuery(internal.files_move_media.select_refs, {
+				...args,
+				refs: refs.slice(offset, offset + PAGE_SIZE),
+			})) as MediaResult<string[]>;
+			if (page._nay) return page;
+			selected.push(...page._yay);
+		}
+		refs = selected;
 	}
 	const started = (await ctx.runMutation(internal.files_move_media.start, {
 		...args,
@@ -457,7 +518,7 @@ export async function files_move_media_db_validate_next(
 		proofEpoch: number;
 		cursor: string | null;
 	},
-): Promise<MediaResult<{ done: boolean; cursor: string }>> {
+): Promise<MediaResult<{ done: boolean; cursor: string; paged: boolean }>> {
 	const checked = await db_current(ctx, args);
 	if (checked._nay) return checked;
 	const { content, set, cohort } = checked._yay;
@@ -473,13 +534,16 @@ export async function files_move_media_db_validate_next(
 			previous.dependencySet.generation !== set.generation)
 	)
 		return changed();
-	if (previous?.sealed) return Result({ _yay: { done: true, cursor: args.cursor ?? "" } });
-	const page = await ctx.db
-		.query("files_media_dependencies")
-		.withIndex("by_set_order", (q) => q.eq("setId", set._id))
-		.paginate({ cursor: args.cursor, numItems: PAGE_SIZE });
+	if (previous?.sealed) return Result({ _yay: { done: true, cursor: args.cursor ?? "", paged: false } });
+	const range = () => ctx.db.query("files_media_dependencies").withIndex("by_set_order", (q) => q.eq("setId", set._id));
+	// An empty set reads no page, so the caller may still check its next work in this step.
+	const page =
+		args.cursor === null && !(await range().first())
+			? null
+			: await range().paginate({ cursor: args.cursor, numItems: PAGE_SIZE });
+	const isDone = page?.isDone ?? true;
 	let validatedCount = previous?.validatedCount ?? 0;
-	for (const row of page.page) {
+	for (const row of page?.page ?? []) {
 		if (row.order !== validatedCount) return changed();
 		const current = await db_ref(ctx, checked._yay, row.sourceSrc);
 		if (current._nay) return current;
@@ -492,7 +556,7 @@ export async function files_move_media_db_validate_next(
 			return changed();
 		validatedCount++;
 	}
-	if (page.isDone && validatedCount !== set.expectedCount) return changed();
+	if (isDone && validatedCount !== set.expectedCount) return changed();
 	await ctx.db.patch("files_move_cohort_content", content._id, {
 		mediaProof: {
 			proofEpoch: cohort.proofEpoch,
@@ -502,8 +566,8 @@ export async function files_move_media_db_validate_next(
 			dependencySet: { setId: set._id, generation: set.generation },
 			expectedCount: set.expectedCount,
 			validatedCount,
-			sealed: page.isDone,
+			sealed: isDone,
 		},
 	});
-	return Result({ _yay: { done: page.isDone, cursor: page.continueCursor } });
+	return Result({ _yay: { done: isDone, cursor: page?.continueCursor ?? "", paged: page !== null } });
 }

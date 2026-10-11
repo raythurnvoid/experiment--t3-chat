@@ -36,17 +36,17 @@ vi.mock("convex/react", async (importOriginal) => {
 				loadMore: vi.fn(),
 			};
 		},
-		// Only the workspace view (no Move running) and the popup's folder lookup answer. The other
-		// queries stay loading.
-		useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") =>
-			args === "skip"
-				? undefined
-				: getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.get_workspace_move_view)
-					? { cohortId: null, view: null, generation: 0, searchGeneration: 0 }
-					: getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.get_authorized_by_path) &&
-						  args.path === "/docs"
-						? { nodeId: "docs", name: "docs", kind: "folder", assetId: null }
-						: undefined,
+		// The saved view and popup's folder lookup answer. The other queries stay loading.
+		useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") => {
+			if (args === "skip") return undefined;
+			if (getFunctionName(query) === "files_nodes:get_workspace_move_view") {
+				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
+			}
+			return getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.get_authorized_by_path) &&
+				args.path === "/docs"
+				? { nodeId: "docs", name: "docs", kind: "folder", assetId: null }
+				: undefined;
+		},
 		// The popup asks no file checks.
 		useQueries: () => ({}),
 	};
@@ -78,6 +78,7 @@ Element.prototype.scrollIntoView = vi.fn();
 function render_with_tenant(ui: ReactElement) {
 	return render(
 		<AppTenantProvider
+			userId={"user_1" as app_convex_Id<"users">}
 			membershipId={"membership-1" as app_convex_Id<"organizations_workspaces_users">}
 			workspaceId={"workspace-1" as app_convex_Id<"organizations_workspaces">}
 			workspaceName="home"

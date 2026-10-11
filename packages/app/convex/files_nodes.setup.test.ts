@@ -1,11 +1,22 @@
 // Fixtures shared by the files_nodes test files.
-import type { FunctionReturnType } from "convex/server";
-import { expect } from "vitest";
+import { R2 } from "@convex-dev/r2";
+import type { FunctionArgs, FunctionReturnType } from "convex/server";
+import { expect, vi } from "vitest";
+import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_metadata_db_write_entries } from "./files_metadata.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
-import { files_ROOT_ID } from "../server/files.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_get_file_yjs_pointers,
+	test_mocks,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
+import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
+import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import type { files_metadata_Entry } from "../shared/files-metadata.ts";
@@ -515,4 +526,231 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 		add_member,
 		grant_read,
 	};
+}
+
+export async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
+	// The shared membership fixture puts every seeded user on a paying plan. Move this one to
+	// `Free`, which is what every caller here is asking for.
+	await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Free" });
+}
+
+/**
+ * Run the agent upsert flow the way the server does: stage the one text under a server-side
+ * batch, then run the finishing internal action that carries only ids.
+ */
+export async function upsert_pending_update_internal_for_test(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		unstagedMarkdown: string;
+	},
+) {
+	const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		target: { kind: "saved", id: args.nodeId },
+	});
+	if (batch._nay) {
+		return batch;
+	}
+
+	const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		operationBatchId: batch._yay.operationBatchId,
+		role: "unstaged",
+		text: args.unstagedMarkdown,
+	});
+	if (staged._nay) {
+		return staged;
+	}
+
+	return await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		target: { kind: "saved", id: args.nodeId },
+		operationBatchId: batch._yay.operationBatchId,
+	});
+}
+
+export async function propose_move_for_test(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		destParent:
+			| { kind: "saved"; id: Id<"files_nodes"> }
+			| { kind: "private"; id: Id<"files_pending_nodes"> }
+			| { kind: "root" };
+		destName: string;
+		replace?: boolean;
+	},
+) {
+	const target = { kind: "saved" as const, id: args.nodeId };
+	const proposed = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		target,
+		destParent: args.destParent,
+		destName: args.destName,
+		replace: args.replace,
+	});
+	if (proposed._nay) throw new Error(proposed._nay.message);
+	const proposal = await t.run(async (ctx) =>
+		ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_target", (q) =>
+				q.eq("userId", args.userId).eq("target.kind", "saved").eq("target.id", args.nodeId),
+			)
+			.unique(),
+	);
+	if (!proposal) throw new Error("Expected the move proposal");
+	return { target, pendingUpdateId: proposal._id, reviewedRevision: proposal.revision };
+}
+
+// Wire R2 so materialization round-trips through an in-memory bucket keyed by the per-file upload key:
+// generateUploadUrl/getURL/fetch all read and write the returned `r2Writes` map. Returned so a test
+// can recover the exact committed markdown a file's content asset points at (the chunk-read oracle).
+export function test_setup_r2_capture() {
+	const r2Writes = new Map<string, BodyInit>();
+	// Each test file spies on generateUploadUrl in beforeEach; spyOn returns that same spy.
+	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey?: string) => {
+		const key = customKey ?? "test-upload-key";
+		return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
+	});
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlString.startsWith("https://r2.test/upload") && init?.method === "PUT") {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+				r2Writes.set(key, init.body ?? "");
+				return new Response(null, { status: 200 });
+			}
+			if (urlString.startsWith("https://r2.test/object?key=")) {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+				const body = r2Writes.get(key);
+				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+			}
+			return new Response(null, { status: 404 });
+		}),
+	);
+	return r2Writes;
+}
+
+// Create a file at `path`, push its markdown as the first Yjs update, and materialize it (sequence 1)
+// so its content lands in R2 + the markdown/plain-text chunk tables. Returns the node id.
+export async function test_materialize_markdown_file(args: {
+	t: ReturnType<typeof test_convex>;
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+	path: string;
+	markdown: string;
+}) {
+	const { t, asUser, db, path, markdown } = args;
+
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
+		path,
+	});
+	const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: markdown });
+	if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
+	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+		sessionId: `mat-${path}`,
+	});
+	yjsDoc.destroy();
+	if (pushResult._nay) throw new Error(pushResult._nay.message);
+	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		nodeId,
+		userId: db.userId,
+		targetSequence: 1,
+	});
+	if (materialized._nay) throw new Error(materialized._nay.message);
+	return nodeId;
+}
+
+/** Content search reads the caller's pending chunks, then the committed ones, so read every page. */
+export async function text_search_files_all_pages(
+	t: Pick<ReturnType<typeof test_convex>, "query">,
+	args: FunctionArgs<typeof internal.files_nodes.text_search_files>,
+) {
+	const items: FunctionReturnType<typeof internal.files_nodes.text_search_files>["items"] = [];
+	let cursor = args.cursor;
+	for (;;) {
+		const page: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await t.query(
+			internal.files_nodes.text_search_files,
+			{ ...args, cursor },
+		);
+		items.push(...page.items);
+		if (page.isDone) return { items, isDone: true };
+		cursor = page.continueCursor;
+	}
+}
+
+/**
+ * Two unpublished asset docs for R2 uploads that already finished.
+ * Their `r2Key` is not set yet, and their normal cleanup time is still set.
+ */
+export async function seed_unpublished_asset_pair(
+	t: ReturnType<typeof test_convex>,
+	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
+) {
+	return await t.run(async (ctx) => {
+		const now = Date.now();
+		const [yjsSnapshotAssetId, contentSnapshotAssetId] = await Promise.all([
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "yjs_snapshot",
+				r2Bucket: "test-files-bucket",
+				size: 2,
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 1000,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-files-bucket",
+				size: 2,
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 1000,
+				updatedAt: now,
+			}),
+		]);
+		return { yjsSnapshotAssetId, contentSnapshotAssetId };
+	});
+}
+
+export function read_deletion_jobs(t: ReturnType<typeof test_convex>) {
+	return t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+}
+
+/** The R2 keys that deletion jobs must own for these assets, sorted for comparison. */
+export function expected_ledger_keys(
+	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+	assetIds: ReadonlyArray<Id<"files_r2_assets">>,
+) {
+	return assetIds
+		.map((assetId) => r2_create_asset_key({ organizationId: db.organizationId, workspaceId: db.workspaceId, assetId }))
+		.sort();
 }

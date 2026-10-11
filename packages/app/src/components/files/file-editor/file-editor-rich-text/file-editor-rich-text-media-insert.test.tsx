@@ -102,6 +102,7 @@ function render_picker() {
 	render(
 		<ConvexProvider client={client}>
 			<AppTenantProvider
+				userId={"user_1" as app_convex_Id<"users">}
 				membershipId={MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">}
 				workspaceId={"workspace_1" as app_convex_Id<"organizations_workspaces">}
 				workspaceName="home"
@@ -120,6 +121,10 @@ function render_picker() {
 
 beforeEach(() => {
 	results.clear();
+	results.set(
+		watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+		{ cohortId: null, view: null, generation: 0, searchGeneration: 0 },
+	);
 	insertContent.mockReset();
 	onClose.mockReset();
 	// The saved streams wait for the workspace view. No Move is running.

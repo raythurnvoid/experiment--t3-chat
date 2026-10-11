@@ -57,9 +57,9 @@ describe("saved list action", () => {
 			numItems: 1,
 			cursorScope: "stage",
 		};
-		const first = await files_saved_list_page(ctx, { ...args, cursor: null });
+		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
 		expect(first.page.map((node) => node.path)).toEqual(["/a.txt"]);
-		const second = await files_saved_list_page(ctx, { ...args, cursor: first.continueCursor });
+		const second = (await files_saved_list_page(ctx, { ...args, cursor: first.continueCursor }))._yay!;
 		expect(
 			second.page.map((node) => node.path),
 			"a row staged behind the old selected cursor is still returned",
@@ -94,9 +94,9 @@ describe("saved list action", () => {
 			numItems: 1,
 			cursorScope: "cleanup",
 		};
-		const first = await files_saved_list_page(ctx, { ...args, cursor: null });
+		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
 		expect(first.page.map((node) => node.path)).toEqual(["/a.txt"]);
-		const second = await files_saved_list_page(ctx, { ...args, cursor: first.continueCursor });
+		const second = (await files_saved_list_page(ctx, { ...args, cursor: first.continueCursor }))._yay!;
 		expect(
 			second.page.map((node) => node.path),
 			"a row cleaned up behind the old normal cursor is still returned",
@@ -146,7 +146,7 @@ describe("saved list action", () => {
 			body: JSON.stringify({ path: "/", cursor: "broken" }),
 		});
 		expect(response.status).toBe(400);
-		expect(await response.json()).toEqual({ message: "This list cursor changed. Start a new page." });
+		expect(await response.json()).toEqual({ message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" });
 	});
 
 	test("does not resume a cursor under a new membership lifetime", async () => {
@@ -172,7 +172,7 @@ describe("saved list action", () => {
 		const ctx: Pick<ActionCtx, "runQuery"> = {
 			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
 		};
-		const first = await files_saved_list_page(ctx, { ...args, cursor: null });
+		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
 		// Use the same lifetime producer as removal and reinvitation. The membership ID stays the same.
 		await f.t.run(async (ctx) => {
 			const membership = await ctx.db
@@ -211,14 +211,14 @@ describe("saved list action", () => {
 		const ctx: Pick<ActionCtx, "runQuery"> = {
 			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
 		};
-		const first = await files_saved_list_page(ctx, { ...args, cursor: null });
+		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
 		expect(first.page.map((node) => node.path)).toEqual(["/a.txt", "/b.txt"]);
-		const second = await files_saved_list_page(ctx, { ...args, cursor: first.continueCursor });
+		const second = (await files_saved_list_page(ctx, { ...args, cursor: first.continueCursor }))._yay!;
 		expect(
 			second.page.map((node) => node.path),
 			"unused cohort rows survive the public page boundary",
 		).toEqual(["/old.txt", "/target"]);
-		const third = await files_saved_list_page(ctx, { ...args, cursor: second.continueCursor });
+		const third = (await files_saved_list_page(ctx, { ...args, cursor: second.continueCursor }))._yay!;
 		expect(third.page.map((node) => node.path)).toEqual(["/z.txt"]);
 		expect(third.isDone).toBe(true);
 	});
@@ -238,7 +238,7 @@ describe("saved list action", () => {
 		const ctx: Pick<ActionCtx, "runQuery"> = {
 			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
 		};
-		const first = await files_saved_list_page(ctx, { ...args, cursor: null });
+		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
 		await expect(
 			files_saved_list_page(ctx, { ...args, cursorScope: "other", cursor: first.continueCursor }),
 		).rejects.toThrow("scope changed");
@@ -246,7 +246,8 @@ describe("saved list action", () => {
 		await expect(files_saved_list_page(ctx, { ...args, cursor: first.continueCursor })).rejects.toThrow(
 			"scope changed",
 		);
-		const after = await files_saved_list_page(ctx, { ...args, folderPath: "/target", numItems: 2, cursor: null });
+		const after = (await files_saved_list_page(ctx, { ...args, folderPath: "/target", numItems: 2, cursor: null }))
+			._yay!;
 		expect(after.page.map((node) => node.path)).toEqual(["/target/new.txt"]);
 	});
 
@@ -279,7 +280,8 @@ describe("saved list action", () => {
 		const walk = async () => {
 			const paths: string[] = [];
 			for (let cursor: string | null = null; ;) {
-				const page = await files_saved_list_page(ctx, { ...args, cursor });
+				const listed = await files_saved_list_page(ctx, { ...args, cursor });
+				const page = listed._yay!;
 				paths.push(...page.page.map((node) => node.path));
 				if (page.isDone) return paths;
 				cursor = page.continueCursor;
@@ -288,7 +290,7 @@ describe("saved list action", () => {
 
 		// Before publication, with `/z.txt` staged between two reads.
 		expect(await walk(), "a filtered row shows once in the before view").toEqual(["/old.txt", "/z.txt"]);
-		const first = await files_saved_list_page(ctx, { ...args, cursor: null });
+		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
 		await f.publish();
 		await expect(files_saved_list_page(ctx, { ...args, cursor: first.continueCursor })).rejects.toThrow(
 			"scope changed",
@@ -298,6 +300,52 @@ describe("saved list action", () => {
 		await f.materializeNode(f.nodeId);
 		expect(await walk(), "the cleaned up rows come back from the normal stream").toEqual(["/target/new.txt", "/z.txt"]);
 	}, 120_000);
+
+	test("checks the folder once on every page, never for the root, and in the selected Move view", async () => {
+		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.txt", "/target/a.txt"] });
+		const calls: string[] = [];
+		const ctx: Pick<ActionCtx, "runQuery"> = {
+			runQuery: (query, args) => {
+				calls.push(getFunctionName(query));
+				return f.t.action((ctx) => ctx.runQuery(query, args));
+			},
+		};
+		const args = {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			visibilityUserId: f.db.userId,
+			minDepth: 1,
+			maxDepth: 1,
+			numItems: 1,
+			cursorScope: "folder",
+		};
+		const count = (name: string) => calls.filter((call) => call === `files_nodes:${name}`).length;
+
+		const missing = await files_saved_list_page(ctx, { ...args, folderPath: "/missing", cursor: null });
+		expect(missing._nay?.name).toBe("folder_unavailable");
+		expect([count("get_by_path"), count("list_subtree")], "a missing folder reads no list range").toEqual([1, 0]);
+		const file = await files_saved_list_page(ctx, { ...args, folderPath: "/old.txt", cursor: null });
+		expect(file._nay?.name).toBe("not_a_folder");
+
+		calls.length = 0;
+		await files_saved_list_page(ctx, { ...args, folderPath: "/", cursor: null });
+		expect(count("get_by_path"), "the root has no doc to check").toBe(0);
+
+		await f.publish();
+		const moved = await files_saved_list_page(ctx, { ...args, folderPath: "/old.txt", cursor: null });
+		expect(moved._nay?.name, "the check reads the Move view after publication").toBe("folder_unavailable");
+		calls.length = 0;
+		const pages: string[][] = [];
+		for (let cursor: string | null = null; ;) {
+			const listed = await files_saved_list_page(ctx, { ...args, folderPath: "/target", cursor });
+			const page = listed._yay!;
+			pages.push(page.page.map((node) => node.path));
+			if (page.isDone) break;
+			cursor = page.continueCursor;
+		}
+		expect(pages.flat()).toEqual(["/target/a.txt", "/target/new.txt"]);
+		expect(count("get_by_path"), "one folder check per page").toBe(pages.length);
+	});
 
 	test("refuses a seek key outside its recursive source range", async () => {
 		const f = await test_create_saved_placement_fixture();

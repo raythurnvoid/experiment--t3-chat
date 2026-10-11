@@ -6,6 +6,16 @@ import babel from "@rolldown/plugin-babel";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
+	plugins: [
+		{
+			// Vite writes the `VITE_*` values from `.env` into the transformed code, and the fs module
+			// cache key does not include them. Add them, so a changed `.env` does not run old code.
+			name: "fs-module-cache-env-key",
+			configureVitest({ experimental_defineCacheKeyGenerator }) {
+				experimental_defineCacheKeyGenerator(({ environment }) => JSON.stringify(environment.config.env));
+			},
+		},
+	],
 	resolve: {
 		alias: {
 			"@": fileURLToPath(new URL("./src", import.meta.url)),
@@ -23,7 +33,16 @@ export default defineConfig({
 		// pass there. London has summer time, so local and UTC differ for most of the year.
 		env: { TZ: "Europe/London" },
 		passWithNoTests: true,
+		// Keep transformed modules on disk, so the next run skips most transforms (Babel with the React
+		// Compiler in src, the vendored TypeScript packages everywhere). The key is the file path, its
+		// content, the config and the lockfile. Run `vitest --clearCache` if a vendored package changes
+		// how its imports resolve without a lockfile change.
+		experimental: {
+			fsModuleCache: true,
+		},
 		silent: "passed-only",
+		// Keep fewer copies of app code in memory at once.
+		maxWorkers: "50%",
 		testTimeout: 30_000,
 		// Slow full-size checks carry this tag and run only with test:files:full-size (vitest.full-size.config.ts).
 		// A tag does not depend on the test name, and `-t` cannot select a tagged test here.
@@ -114,6 +133,13 @@ export default defineConfig({
 			},
 			{
 				extends: true,
+				resolve: {
+					alias: [
+						// The package index also loads every other locale, 0.4 s to 1.7 s more in each test file.
+						// `locale/en` exports the same `faker` object, and the tests use only that.
+						{ find: /^@faker-js\/faker$/, replacement: "@faker-js/faker/locale/en" },
+					],
+				},
 				test: {
 					include: ["convex/**/*.test.ts", "server/**/*.test.ts", "shared/**/*.test.ts"],
 					includeSource: ["convex/**/*.ts", "server/bash.ts", "server/server-ai-tools.ts"],

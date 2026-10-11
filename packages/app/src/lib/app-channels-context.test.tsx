@@ -61,6 +61,7 @@ function Workspace(props: { membershipId: string }) {
 	return (
 		<ConvexProvider client={client}>
 			<AppTenantProvider
+				userId={"user_1" as app_convex_Id<"users">}
 				membershipId={props.membershipId as app_convex_Id<"organizations_workspaces_users">}
 				workspaceId={"workspace" as app_convex_Id<"organizations_workspaces">}
 				workspaceName="home"

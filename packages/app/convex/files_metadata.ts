@@ -657,13 +657,15 @@ export const list_search_fields = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		// Accepted leak until a search engine arrives: any member sees every eligible saved key and
-		// value of the workspace, also from files they cannot open. See the file-metadata skill,
+		// The catalog has no access data: its rows count the keys and values of the whole workspace. So
+		// only a member who reads the whole workspace gets suggestions. A member without it (a guest)
+		// would see keys and values of files outside their shares. A workspace reader still sees the
+		// keys and values of restricted files (accepted, user 2026-10-08). See the file-metadata skill,
 		// "Suggestions".
 		const refused = { page: [], isDone: true, continueCursor: "" };
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
 		// No key is longer than this, so a longer prefix matches nothing.
-		if (!reader || args.prefix.length > files_search_query_FIELD_PATH_MAX_LENGTH) {
+		if (!reader?.hasWorkspaceRead || args.prefix.length > files_search_query_FIELD_PATH_MAX_LENGTH) {
 			return refused;
 		}
 
@@ -717,11 +719,9 @@ export const get_search_field = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		// Accepted leak until a search engine arrives: any member sees every eligible saved key and
-		// value of the workspace, also from files they cannot open. See the file-metadata skill,
-		// "Suggestions".
+		// Like `list_search_fields`, only a member who reads the whole workspace gets suggestions.
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
-		if (!reader || !search_field_path_is_valid(args.fieldPath)) {
+		if (!reader?.hasWorkspaceRead || !search_field_path_is_valid(args.fieldPath)) {
 			return null;
 		}
 
@@ -771,13 +771,11 @@ export const list_search_values = query({
 	},
 	returns: paginationResultValidator(v.string()),
 	handler: async (ctx, args) => {
-		// Accepted leak until a search engine arrives: any member sees every eligible saved key and
-		// value of the workspace, also from files they cannot open. See the file-metadata skill,
-		// "Suggestions".
+		// Like `list_search_fields`, only a member who reads the whole workspace gets suggestions.
 		const refused = { page: [], isDone: true, continueCursor: "" };
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
 		if (
-			!reader ||
+			!reader?.hasWorkspaceRead ||
 			!search_field_path_is_valid(args.fieldPath) ||
 			args.prefix.length > SEARCH_VALUE_PREFIX_MAX_LENGTH
 		) {
@@ -953,30 +951,38 @@ export async function files_metadata_db_get_table_field(
 
 /**
  * One page of the keys on a folder's saved children whose path starts with `prefix`, ignoring case,
- * for the folder's Columns menu and filter bar. The page is one range of the catalog's `parent`
- * family, in one stream (`savedStream`). Keys of restricted children count for every member too
- * (user, 2026-10-08).
+ * for the folder's Columns menu and filter bar. The page is one range of the catalog, in one stream
+ * (`savedStream`).
+ *
+ * Like `list_tree_children`, the keys come in an open stream and a restricted twin. The open stream
+ * (`parent` rows) holds the keys of the children that are not their own restricted root. Only the
+ * owner reads the twin (`parent_restricted` rows), so a member never sees the keys of a restricted
+ * child, also one shared with them. The client merges the streams.
  */
 export const list_folder_fields = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		savedStream: v.optional(files_saved_stream_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+		/**
+		 * Read the keys of the children that are their own restricted root. Only the owner gets rows.
+		 */
+		restricted: v.boolean(),
 		prefix: v.string(),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(v.string()),
 	handler: async (ctx, args) => {
-		// Accepted leak until a search engine arrives: any member sees every eligible saved key and
-		// value of the workspace, also from files they cannot open. See the file-metadata skill,
-		// "Suggestions".
-
 		// Every refusal gives this one answer, like `list_tree_children`. A different answer for a
 		// missing, foreign, or hidden folder would tell the caller that a hidden folder exists.
 		const refused = { page: [], isDone: true, continueCursor: "" };
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
 		// No key is longer than this, so a longer prefix matches nothing.
 		if (!reader || args.prefix.length > files_search_query_FIELD_PATH_MAX_LENGTH) {
+			return refused;
+		}
+		// Only the owner reads the restricted twin. Refuse before the folder read, so it costs nothing.
+		if (args.restricted && !reader.isOwner) {
 			return refused;
 		}
 		const { membership, userAuth } = reader;
@@ -1012,7 +1018,7 @@ export const list_folder_fields = query({
 					.eq("workspaceId", membership.workspaceId)
 					.eq("moveView.cohortId", tag?.cohortId)
 					.eq("moveView.view", tag?.view)
-					.eq("family", "parent")
+					.eq("family", args.restricted ? "parent_restricted" : "parent")
 					.eq("parentId", args.parentId)
 					.gte("fieldPathLower", lower);
 				return upperBound === null ? keys : keys.lt("fieldPathLower", upperBound);

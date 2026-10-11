@@ -317,6 +317,7 @@ describe("FilesSidebar", () => {
 				>
 					<FilesClipboardProvider
 						key={membershipId}
+						userId={"user" as app_convex_Id<"users">}
 						membershipId={membershipId as app_convex_Id<"organizations_workspaces_users">}
 					>
 						<FilesSidebar
@@ -1115,6 +1116,7 @@ describe("FilesSidebar", () => {
 						>
 							<FilesClipboardProvider
 								key={membershipId}
+								userId={"user" as app_convex_Id<"users">}
 								membershipId={membershipId as app_convex_Id<"organizations_workspaces_users">}
 							>
 								<FilesSidebar

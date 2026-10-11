@@ -161,11 +161,12 @@ the same producer with private proposals. `files_pending_updates.ts` and
   in the publication transaction. Cleanup deletes mapping docs in pages and never owns their assets.
   Capture and Save proofs pin the exact text, set generation, proposal or attempt, and organization,
   workspace, and owner-proposal validation versions. A changed version invalidates the proof.
-  Copy retries validation and final publication together, with at most three attempts. Another
-  copy can change that version after the last validation page, even with no media embeds.
+  Copy retries validation and final publication together, with at most three attempts. A change
+  that can break a checked embed can still advance the version after the last validation page. A
+  document with no embeds skips the version check.
   Each retry keeps the captured bytes and mappings. Lost access still refuses publication.
-  Final publication still checks direct access. Do not remove a validation writer without checking
-  both paged proof consumers.
+  Final publication still checks direct access. Before you remove or narrow a validation writer,
+  check all four pinned readers: Copy, pending Save, folder Move check, and the Move cohort.
 - Stored files get new R2 assets through server-side object copy. Never share asset ownership.
   Copies do not dispatch upload-completed plugin events. Empty copied folders are normal output.
 - A file whose upload is still saving can fail after its parent folder was copied. Keep completed
@@ -328,18 +329,19 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - `convex/files_nodes_content.test.ts`: saved content, new assets, comments, billing, and races.
 - `convex/files_transfer_selection.test.ts` and `convex/files_transfer_holds.test.ts`: paged intake,
   large discovery, exact replay, long-running output, and retry retention.
-- `convex/files_transfer_media*.test.ts` and `convex/files_pending_media_save.test.ts`: selected media,
+- `convex/files_transfer_media*.test.ts` and `convex/files_pending_media_save*.test.ts`: selected media,
   exact versions, partial Save, and linked review units.
 - `convex/files_nodes.test.ts`: public Move and Rename permissions, scope and names.
 - `convex/files_move_cohorts.test.ts`: linked cycles, one group switch, Stop and cleanup.
-- `convex/files_pending_overlay_limits.test.ts`: full transaction costs and catalog reserve.
+- `convex/files_pending_overlay_limits*.test.ts`: full transaction costs and catalog reserve.
 - `convex/files_pending_updates.test.ts`: all saved/private Move pairs, exact replacements,
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.
 - `convex/files_pending_update_runs*.test.ts`: selected connected units, transaction bounds,
   preparation, retry, Stop, and cleanup.
-- The normal test commands omit only four checks: "saves 1,000 Copy outputs beside one ordinary
+- The normal test commands omit only five checks: "saves 1,000 Copy outputs beside one ordinary
   edit", "plans 10,001 unrelated saved Move proposals as 10,001 units", the 2,001-descendant Move
-  scale check and the 16-owner overlay budget check. They carry the `full-size` tag, and
+  scale check, the 16-owner overlay budget check and the Copy that adopts 101 media files (the
+  normal run lowers the media page from 50 to 3 and adopts 4). They carry the `full-size` tag, and
   `vitest.config.ts` filters that tag out, so `-t` cannot pick them by accident.
   `vitest.full-size.config.ts` flips the filter. Run them with
   `vp env exec pnpm --dir packages/app run test:files:full-size`.

@@ -167,22 +167,26 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 	});
 
-	test("explains large background Copy and its bounded shell forms", () => {
+	test("explains large background Copy and Move and their bounded shell forms", () => {
 		const { ctx } = makeCtx(async () => null);
 		const tool = ai_chat_tool_create_bash({
 			ctx,
 			ctxData: server_ai_tools_test_ctx_data,
 			options: { allowDbFilesMkdir: true },
 		});
-		expect(tool.description).toContain("cp -R src dest & or mv src dest &");
+		expect(tool.description).toContain("cp -R src dest &");
+		expect(tool.description).toContain("mv src dest &");
 		expect(tool.description).toContain("{ first; mv src dest; next; } &");
 		expect(tool.description).toContain("Verified intake and Copy or Move waiting time is excluded");
+		expect(tool.description).toContain("repeated Copy or Move commands do not reset its ordinary allowance");
 		expect(tool.description).toContain(
-			"Loops, functions, logical chains, pipelines, redirects, nested shells, and foreground commands keep the current call's or job run's time limit. A timeout stops the Copy or Move and reports 124.",
+			"Loops, functions, logical chains, pipelines, redirects, nested shells, and foreground commands keep the current call's or job run's time limit.",
 		);
+		expect(tool.description).toContain("A timeout stops the Copy or Move and reports 124.");
 		expect(tool.description).toContain(
 			"Copies still wait for the user's Review and Save in the destination workspace.",
 		);
+		expect(tool.description).toContain("Completed output stays if later work fails or stops.");
 		expect(tool.description).toContain("Select linked app images and videos explicitly");
 		expect(tool.description).not.toContain("pending copy (one source only)");
 	});
@@ -371,7 +375,7 @@ describe("ai_chat_tool_create_bash", () => {
 		]) {
 			expect(tool.description).toContain(sentence);
 		}
-		expect(tool.description).not.toContain("transfer");
+		expect(tool.description).not.toContain("repeated Copy or Move commands reset its ordinary allowance");
 		expect(tool.description).not.toContain("frees a slot");
 	});
 

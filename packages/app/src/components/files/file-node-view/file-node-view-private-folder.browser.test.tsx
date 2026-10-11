@@ -161,7 +161,7 @@ describe("FileNodeView draft folder", () => {
 		render(
 			<RouterContextProvider router={router}>
 				<AppActivitiesProvider membershipId={MEMBERSHIP_ID}>
-					<FilesClipboardProvider membershipId={MEMBERSHIP_ID}>
+					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={MEMBERSHIP_ID}>
 						<FileNodeView searchParams={{ pendingNodeId: VIEW.entry.node._id }} onNavigateSearch={() => {}} />
 					</FilesClipboardProvider>
 				</AppActivitiesProvider>

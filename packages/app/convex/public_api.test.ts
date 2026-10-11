@@ -6,6 +6,7 @@ import { getFunctionName } from "convex/server";
 import type { Id } from "./_generated/dataModel";
 import {
 	test_convex,
+	test_drain_billing_usage_event_outbox,
 	test_fill_saved_file_with_max_chunks,
 	test_LIMITS_AT_75_PERCENT,
 	test_mocks,
@@ -35,7 +36,7 @@ import {
 import type { api_schemas_Main } from "../shared/api-schemas.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
-import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
@@ -1288,27 +1289,92 @@ describe("mark_credential_used", () => {
 		if (created._nay) throw new Error(created._nay.message);
 		const credentialId = created._yay.credentialId;
 		const now = Date.now();
+		const credentialBefore = await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId));
+		const usedAt = async () =>
+			(
+				await t.run(async (ctx) =>
+					ctx.db
+						.query("api_credentials_last_used")
+						.withIndex("by_credential", (q) => q.eq("credentialId", credentialId))
+						.first(),
+				)
+			)?.lastUsedAt;
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now });
-		const firstUse = await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId));
-		expect(firstUse?.lastUsedAt).toBe(now);
+		expect(await usedAt()).toBe(now);
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 59_999 });
-		expect(await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId))).toEqual(firstUse);
+		expect(await usedAt()).toBe(now);
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 60_000 });
-		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(
-			now + 60_000,
-		);
+		expect(await usedAt()).toBe(now + 60_000);
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 30_000 });
-		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(
-			now + 60_000,
-		);
+		expect(await usedAt()).toBe(now + 60_000);
+
+		// Every file publish reads the credential doc, so marking use must never write it.
+		expect(await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId))).toEqual(credentialBefore);
+	});
+
+	test("the key list shows the usage time and falls back to the old field", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-key-usage-list" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const create = async (name: string) => {
+			const created = await asUser.mutation(api.public_api.api_credential_create, {
+				membershipId: db.membershipId,
+				serviceAccountId: null,
+				name,
+				scopes: ["files:read"],
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.credentialId;
+		};
+		const usedId = await create("Used");
+		const legacyId = await create("Legacy");
+		await t.run((ctx) => ctx.db.patch("api_credentials", legacyId, { lastUsedAt: 1_000 }));
+		await t.mutation(internal.public_api.mark_credential_used, { credentialId: usedId, now: 2_000 });
+
+		const listed = await asUser.query(api.public_api.api_credentials_list, { membershipId: db.membershipId });
+		if (listed._nay) throw new Error(listed._nay.message);
+		expect(
+			Object.fromEntries(listed._yay.map((credential) => [credential.credentialId, credential.lastUsedAt])),
+		).toEqual({ [usedId]: 2_000, [legacyId]: 1_000 });
 	});
 });
 
 describe("public files API", () => {
+	test("download-urls charges its own bulk bucket, even for one file", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-download-urls-charge" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId: null,
+			name: "Downloader",
+			scopes: ["files:download"],
+		});
+		if (created._nay) throw new Error(created._nay.message);
+
+		// Freeze the limiter clock, so the drained bucket does not refill on a slow machine.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now());
+		const drained = await t.run(async (ctx) =>
+			rate_limiter_limit_by_key(ctx, {
+				name: "public_api_files_download_bulk",
+				key: `user_api_key:${created._yay.credential.split(".")[0]}`,
+				count: 20,
+			}),
+		);
+		expect(drained).toBeNull();
+
+		const response = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(created._yay.credential),
+			body: JSON.stringify({ fileNodeIds: ["missing"] }),
+		});
+		expect(response.status).toBe(429);
+	});
+
 	test.each(["😀", "\uffff"])("lists %s descendants and content type suffixes", async (suffix) => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -1501,7 +1567,6 @@ describe("public files API", () => {
 		const afterUse = await t.run(async (ctx) => {
 			return await ctx.db.get("api_credentials", created._yay!.credentialId);
 		});
-		expect(afterUse?.lastUsedAt).toEqual(expect.any(Number));
 		expect(afterUse?.serviceAccountId).toBeNull();
 
 		const listed = await asUser.query(api.public_api.api_credentials_list, {
@@ -1515,6 +1580,7 @@ describe("public files API", () => {
 				keyId: created._yay!.keyId,
 				obfuscatedValue: expect.stringContaining("****"),
 				scopes: ["files:list", "files:read"],
+				lastUsedAt: expect.any(Number),
 			}),
 		]);
 
@@ -3132,9 +3198,8 @@ describe("public files API", () => {
 				headers: auth_headers(token),
 				body: JSON.stringify({ path, recursive: true }),
 			});
-			expect(listMount.status).toBe(200);
-			const listMountBody = (await listMount.json()) as { items: Array<{ path: string }> };
-			expect(listMountBody.items).toEqual([]);
+			expect(listMount.status).toBe(404);
+			expect(await listMount.json()).toEqual({ message: `Folder not found: ${path}` });
 		}
 
 		for (const path of ["/t3-chat/README.md", "/.mounts/t3-chat/README.md"]) {
@@ -3483,6 +3548,9 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/anything.md" }),
 		});
 		expect(readResponse.status).toBe(403);
+		// The principal bucket has 4 shards. A random pick of two can refuse early and leave tokens in
+		// the others, so the last call could pass. A fixed `Math.random` reads the same two shards.
+		vi.spyOn(Math, "random").mockReturnValue(0);
 		let lastWrongScopeStatus = readResponse.status;
 		for (let index = 0; index < 20; index += 1) {
 			const response = await t.fetch("/api/v1/files/read", {
@@ -3821,6 +3889,247 @@ describe("public files API", () => {
 	});
 });
 
+describe("files list hidden paths", () => {
+	/**
+	 * `/secret` is a restricted folder with 12 files the member cannot read, and `/hidden.md` is a
+	 * restricted file. The member can read `/b.md`, the empty `/notes`, and `/secret/shared`, which
+	 * has its own grant. The owner passes every node check, so only the member proves a refusal.
+	 */
+	async function seed_hidden_folder(t: ReturnType<typeof test_convex>) {
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_list_hidden" as never);
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-list-hidden-owner" });
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "list-hidden-owner",
+			external_id: db.userId,
+		});
+		const create_folder = async (path: string) => {
+			const created = await asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				path,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.nodeId;
+		};
+		const create_file = (path: string) => seed_markdown_file({ t, ...db, path, committedMarkdown: `# ${path}` });
+
+		const secretId = await create_folder("/secret");
+		const sharedId = await create_folder("/secret/shared");
+		await create_folder("/notes");
+		await create_file("/b.md");
+		const hiddenFileId = await create_file("/hidden.md");
+		const hiddenIds = [secretId, hiddenFileId];
+		for (let index = 1; index <= 12; index++) {
+			hiddenIds.push(await create_file(`/secret/h${String(index).padStart(2, "0")}.md`));
+		}
+		const sharedFileId = await create_file("/secret/shared/ok.md");
+
+		const member = await t.run(async (ctx) => {
+			const now = Date.now();
+			// Every node in a subtree carries the scope, the way `restrict_node` stamps it.
+			for (const nodeId of hiddenIds) {
+				const scopeId = nodeId === hiddenFileId ? hiddenFileId : secretId;
+				await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: scopeId });
+			}
+			for (const nodeId of [sharedId, sharedFileId]) {
+				await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: sharedId });
+			}
+
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-list-hidden-member" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				resourceKind: "file",
+				resourceId: String(sharedId),
+				principalKind: "user",
+				userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				now,
+			});
+			return { userId, membershipId };
+		});
+
+		const create_key = async (asUser: typeof asOwner, membershipId: Id<"organizations_workspaces_users">) => {
+			const created = await asUser.mutation(api.public_api.api_credential_create, {
+				serviceAccountId: null,
+				membershipId,
+				name: "List reader",
+				scopes: ["files:list"],
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.credential;
+		};
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "list-hidden-member",
+			external_id: member.userId,
+		});
+		return {
+			asOwner,
+			db,
+			secretId,
+			hiddenIds,
+			ownerCredential: await create_key(asOwner, db.membershipId),
+			memberCredential: await create_key(asMember, member.membershipId),
+		};
+	}
+
+	async function list(t: ReturnType<typeof test_convex>, credential: string, body: Record<string, unknown>) {
+		const response = await t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify(body),
+		});
+		return {
+			status: response.status,
+			body: (await response.json()) as {
+				message?: string;
+				items: Array<{ path: string }>;
+				cursor: string;
+				isDone: boolean;
+			},
+		};
+	}
+
+	test("seals the cursor, so it never shows a hidden path or id", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const walk = async (credential: string) => {
+			const paths: string[] = [];
+			const cursors: string[] = [];
+			for (let cursor: string | null = null; ;) {
+				const page = await list(t, credential, { path: "/", recursive: true, limit: 1, cursor });
+				expect(page.status).toBe(200);
+				paths.push(...page.body.items.map((item) => item.path));
+				if (page.body.isDone) return { paths, cursors };
+				cursors.push(page.body.cursor);
+				cursor = page.body.cursor;
+			}
+		};
+
+		const member = await walk(f.memberCredential);
+		expect(member.paths).toEqual(["/b.md", "/notes", "/secret/shared", "/secret/shared/ok.md"]);
+		// One request reads at most 8 docs per stream, so some pages end inside the hidden block.
+		const cursors = member.cursors.join("\n");
+		expect(cursors, "no cursor shows a hidden path").not.toContain("/secret/h");
+		for (const id of f.hiddenIds) expect(cursors, "no cursor shows a hidden id").not.toContain(id);
+		for (const cursor of member.cursors) expect(() => JSON.parse(cursor)).toThrow();
+		// Control: the owner walks the same tree and reads every doc.
+		expect((await walk(f.ownerCredential)).paths).toHaveLength(18);
+
+		const cursor = member.cursors[0]!;
+		const edited = `${cursor.slice(0, 10)}${cursor[10] === "A" ? "B" : "A"}${cursor.slice(11)}`;
+		expect(await list(t, f.memberCredential, { path: "/", recursive: true, limit: 1, cursor: edited })).toEqual({
+			status: 400,
+			body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+		});
+		// A plain JSON cursor from before the seal, like a caller may still hold after the deploy.
+		const old = JSON.stringify({ scope: "[]", lastKey: { value: "/b.md", createdAt: 0, nodeId: "node" } });
+		expect(await list(t, f.memberCredential, { path: "/", recursive: true, limit: 1, cursor: old })).toEqual({
+			status: 400,
+			body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+		});
+		const huge = await list(t, f.memberCredential, { path: "/", cursor: `c1.${"A".repeat(16384)}` });
+		expect(huge, "the body check refuses an over-long cursor before the server decodes it").toEqual({
+			status: 400,
+			body: { message: "Request body validation failed" },
+		});
+	});
+
+	test("answers 404 for a missing or hidden folder and 400 for a readable file", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+
+		for (const recursive of [false, true]) {
+			// Git Bash turns `/c/...` arguments into Windows paths. The 404 shows the path the server read.
+			expect(await list(t, f.memberCredential, { path: "C:/Program Files/Git/", recursive })).toEqual({
+				status: 404,
+				body: { message: "Folder not found: /C:/Program Files/Git" },
+			});
+			// A hidden folder or file answers exactly like a missing folder, and names no child.
+			for (const path of ["/secret", "/hidden.md"]) {
+				expect(await list(t, f.memberCredential, { path, recursive })).toEqual({
+					status: 404,
+					body: { message: `Folder not found: ${path}` },
+				});
+			}
+			expect(await list(t, f.memberCredential, { path: "/b.md", recursive })).toEqual({
+				status: 400,
+				body: { message: "Path must point to a folder: /b.md" },
+			});
+		}
+
+		// Controls: the owner lists `/secret`, and the member lists the shared folder inside it, an
+		// empty folder, and the root in every spelling.
+		expect((await list(t, f.ownerCredential, { path: "/secret" })).status).toBe(200);
+		expect(await list(t, f.memberCredential, { path: "/secret/shared" })).toMatchObject({
+			status: 200,
+			body: { items: [{ path: "/secret/shared/ok.md" }] },
+		});
+		expect(await list(t, f.memberCredential, { path: "/notes" })).toMatchObject({
+			status: 200,
+			body: { items: [], isDone: true },
+		});
+		for (const body of [{}, { path: "" }, { path: "/" }]) {
+			expect((await list(t, f.memberCredential, body)).status).toBe(200);
+		}
+	});
+
+	test("answers 404 when the folder is archived between pages, and 400 when it is replaced", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const first = await list(t, f.ownerCredential, { path: "/secret", limit: 1 });
+		expect(first.body.isDone).toBe(false);
+		const next = { path: "/secret", limit: 1, cursor: first.body.cursor };
+
+		const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: f.db.membershipId,
+			nodeIds: [f.secretId],
+		});
+		expect(archived._nay).toBeUndefined();
+		expect(await list(t, f.ownerCredential, next)).toEqual({
+			status: 404,
+			body: { message: "Folder not found: /secret" },
+		});
+
+		// A new folder at the same path is a different list, so the old cursor must not continue in it.
+		const recreated = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: f.db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "/secret",
+		});
+		expect(recreated._nay).toBeUndefined();
+		expect(await list(t, f.ownerCredential, next)).toEqual({
+			status: 400,
+			body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+		});
+	});
+});
+
 describe("files upload-urls", () => {
 	async function seed_write_credential(args: {
 		t: ReturnType<typeof test_convex>;
@@ -3968,6 +4277,7 @@ describe("files upload-urls", () => {
 			(await asUser.query(api.quotas.get, { quotaName: "stored_file_bytes", membershipId: db.membershipId }))
 				?.usedCount,
 		).toBe(64);
+		await test_drain_billing_usage_event_outbox(t);
 		const billingCalls = enqueueActionSpy.mock.calls.filter(
 			(call) => getFunctionName(call[1] as never) === getFunctionName(internal.billing.ingest_events),
 		);
@@ -4786,36 +5096,31 @@ describe("files upload-urls", () => {
 		expect(await response.json()).toEqual({ message: "Request body validation failed" });
 	});
 
-	test("a multi-file mint charges one principal unit per minted URL", async () => {
+	test("upload-urls charges its own bulk bucket, even for one file", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-charge" });
 		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-charge" });
 
+		// Freeze the limiter clock, so the drained bucket does not refill on a slow machine.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now());
+		const drained = await t.run(async (ctx) =>
+			rate_limiter_limit_by_key(ctx, {
+				name: "public_api_files_upload_bulk",
+				key: `user_api_key:${credential.split(".")[0]}`,
+				count: 20,
+			}),
+		);
+		expect(drained).toBeNull();
+
 		const response = await t.fetch("/api/v1/files/upload-urls", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({
-				files: [
-					{ path: "/charge/a.bin", contentType: "application/octet-stream", size: 8 },
-					{ path: "/charge/b.bin", contentType: "application/octet-stream", size: 8 },
-					{ path: "/charge/c.bin", contentType: "application/octet-stream", size: 8 },
-				],
+				files: [{ path: "/charge/a.bin", contentType: "application/octet-stream", size: 8 }],
 			}),
 		});
-		expect(response.status).toBe(200);
-
-		// Auth charged 1 and the batch charged 2 more on the same route-scoped key, so of the
-		// bucket's capacity of 20 exactly 17 remain: a 17-token check passes, an 18-token one fails.
-		const chargeKey = `user_api_key:${credential.split(".")[0]}:/api/v1/files/upload-urls`;
-		const canTakeRemaining = await t.run(async (ctx) =>
-			rate_limiter_check_by_key(ctx, { name: "public_api_principal", key: chargeKey, count: 17 }),
-		);
-		expect(canTakeRemaining).toBeNull();
-		const canTakeOneMore = await t.run(async (ctx) =>
-			rate_limiter_check_by_key(ctx, { name: "public_api_principal", key: chargeKey, count: 18 }),
-		);
-		expect(canTakeOneMore).not.toBeNull();
+		expect(response.status).toBe(429);
 	});
 });
 
@@ -4919,6 +5224,227 @@ describe("files write-many", () => {
 		}
 	});
 
+	test("writing and overwriting a plain text file moves no shared clock", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-clocks" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-clocks" });
+		// Parallel load-test writers in one workspace conflict on these docs when every write touches them.
+		const clocks = () =>
+			t.run(async (ctx) => ({
+				media: await ctx.db.query("files_media_validation_versions").collect(),
+				content: await ctx.db.query("files_content_versions").collect(),
+				facts: await ctx.db.query("files_pending_review_fact_state").collect(),
+			}));
+		const before = await clocks();
+		for (const content of ["First version\n", "Second version\n"]) {
+			const response = await t.fetch("/api/v1/files/write-many", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ files: [{ path: "/load/notes.txt", content }] }),
+			});
+			expect(response.status).toBe(200);
+			expect(((await response.json()) as { errors: unknown[] }).errors).toEqual([]);
+		}
+		expect((await find_active_node({ t, db, path: "/load/notes.txt" }))?.textKind).toBe("plain_text");
+		expect(await clocks()).toEqual(before);
+	});
+
+	test("writes files of different folders at the same time, one per folder first", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-waves" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-waves" });
+		const files = [
+			{ path: "/a/1.md", content: "# a1\n" },
+			{ path: "/a/2.md", content: "# a2\n" },
+			{ path: "/b/1.md", content: "# b1\n" },
+			{ path: "/b/2.md", content: "# b2\n" },
+		];
+		const pathByContent = new Map(files.map((file) => [file.content, file.path]));
+
+		// Hold each file content PUT until a second file is in flight too, or a short while passed.
+		// Record which files were in flight when each PUT started.
+		const inFlight = new Set<string>();
+		const startedWith: string[][] = [];
+		let release = Promise.withResolvers<void>();
+		const stubbedFetch = globalThis.fetch;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			const path = typeof init?.body === "string" ? pathByContent.get(init.body) : undefined;
+			if (init?.method !== "PUT" || path === undefined) {
+				return await stubbedFetch(url, init);
+			}
+			inFlight.add(path);
+			startedWith.push([...inFlight].sort());
+			if (inFlight.size >= 2) {
+				release.resolve();
+			}
+			await Promise.race([release.promise, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+			try {
+				return await stubbedFetch(url, init);
+			} finally {
+				inFlight.delete(path);
+				if (inFlight.size === 0) {
+					release = Promise.withResolvers<void>();
+				}
+			}
+		});
+
+		const response = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ files }),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { written: Array<{ path: string }>; errors: unknown[] };
+		expect(body.errors).toEqual([]);
+		expect(body.written.map((item) => item.path)).toEqual(files.map((file) => file.path));
+		// Wave 1 writes one file per folder, both at once. Wave 2 writes the rest.
+		expect(startedWith).toHaveLength(4);
+		expect(startedWith[1]).toEqual(["/a/1.md", "/b/1.md"]);
+		expect(startedWith[3]).toEqual(["/a/2.md", "/b/2.md"]);
+		// Each new folder was created once.
+		const folders = await t.run(async (ctx) =>
+			(await ctx.db.query("files_nodes").collect()).filter((node) => node.kind === "folder" && !node.archiveOperationId),
+		);
+		expect(folders.map((folder) => folder.path).sort()).toEqual(["/a", "/b"]);
+	});
+
+	test("overwrites existing files in parallel", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-fills" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-fills" });
+		const paths = ["/x/old.md", "/y/old.md", "/z/old.md"];
+		for (const path of paths) {
+			const first = await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ path, content: "# Old\n" }),
+			});
+			expect(first.status).toBe(200);
+		}
+		const files = paths.map((path) => ({ path, content: `# New ${path}\n` }));
+		const fillContents = new Set(files.map((file) => file.content));
+
+		// Hold each fill's first content PUT until a second fill is in flight too, or a short while
+		// passed. Later PUTs of the same text come from background materialization and pass through.
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let release = Promise.withResolvers<void>();
+		const stubbedFetch = globalThis.fetch;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			if (init?.method !== "PUT" || typeof init.body !== "string" || !fillContents.delete(init.body)) {
+				return await stubbedFetch(url, init);
+			}
+			inFlight += 1;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			if (inFlight >= 2) {
+				release.resolve();
+			}
+			await Promise.race([release.promise, new Promise((resolve) => setTimeout(resolve, 1_000))]);
+			try {
+				return await stubbedFetch(url, init);
+			} finally {
+				inFlight -= 1;
+				if (inFlight === 0) {
+					release = Promise.withResolvers<void>();
+				}
+			}
+		});
+
+		const response = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ files }),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { written: Array<{ path: string }>; errors: unknown[] };
+		expect(body.errors).toEqual([]);
+		expect(body.written.map((item) => item.path)).toEqual(paths);
+		// A fill holds no private storage bytes, so parallel fills do not conflict on the quota docs.
+		expect(maxInFlight).toBeGreaterThan(1);
+		// No fill wrote a private byte counter.
+		const privateQuotas = await t.run(async (ctx) =>
+			(await ctx.db.query("quotas").collect()).filter((quota) => quota.quotaName.startsWith("files_private_")),
+		);
+		expect(privateQuotas.map((quota) => quota.usedCount)).toEqual(privateQuotas.map(() => 0));
+	});
+
+	test("an overwrite does not need free private storage and leaves the byte counters alone", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-fill-no-hold" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "fill-no-hold" });
+		const created = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/fill-no-hold.md", content: "# Old\n" }),
+		});
+		expect(created.status).toBe(200);
+
+		// Full private storage: a new hold would be refused.
+		await t.run(async (ctx) => {
+			for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes"] as const) {
+				const id = await quotas_db_ensure(ctx, { ...db, quotaName, now: Date.now() });
+				await ctx.db.patch("quotas", id, { maxCount: 0 });
+			}
+		});
+		const before = await t.run(async (ctx) =>
+			(await ctx.db.query("quotas").collect()).filter((quota) => quota.quotaName.startsWith("files_private_")),
+		);
+
+		const overwritten = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/fill-no-hold.md", content: "# New\n", overwrite: "replace" }),
+		});
+		expect(overwritten.status).toBe(200);
+
+		const after = await t.run(async (ctx) =>
+			(await ctx.db.query("quotas").collect()).filter((quota) => quota.quotaName.startsWith("files_private_")),
+		);
+		expect(after).toEqual(before);
+		expect(await t.run(async (ctx) => await ctx.db.query("files_private_storage_reservations").collect())).toEqual([]);
+	});
+
+	test("a refused fill publish deletes its trusted fill stage", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-fill-refused" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "fill-refused" });
+		const created = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/fill-refused.md", content: "# Old\n" }),
+		});
+		expect(created.status).toBe(200);
+		const node = await find_active_node({ t, db, path: "/fill-refused.md" });
+
+		// Turn collaboration off while the content PUT runs. The publish then refuses with "The file
+		// changed during the write", after the fill update was already staged.
+		const stubbedFetch = globalThis.fetch;
+		let changed = false;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			if (!changed && init?.method === "PUT" && init.body === "# New\n") {
+				changed = true;
+				await t.run(async (ctx) => {
+					await ctx.db.patch("files_nodes", node!._id, { collaborationEnabled: false });
+				});
+			}
+			return await stubbedFetch(url, init);
+		});
+
+		const refused = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/fill-refused.md", content: "# New\n", overwrite: "replace" }),
+		});
+		expect(changed).toBe(true);
+		expect(refused.status).toBe(409);
+		expect(await t.run(async (ctx) => await ctx.db.query("files_yjs_trusted_update_stages").collect())).toEqual([]);
+	});
+
 	test("refuses an oversized or overfull batch", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-limits" });
@@ -4947,6 +5473,18 @@ describe("files write-many", () => {
 		for (const path of ["/big.md", "/cap/file-0.md"]) {
 			expect(await find_active_node({ t, db, path })).toBeNull();
 		}
+
+		// A full batch passes as the first charge on this unused key. The sharded bulk bucket reads one
+		// fresh shard on that charge, so a batch cap above capacity / shards would be refused here.
+		install_r2_object_reads();
+		const full = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: Array.from({ length: 20 }, (_, index) => ({ path: `/cap/file-${index}.md`, content: "# Cap\n" })),
+			}),
+		});
+		expect(full.status).toBe(200);
 	});
 
 	test("a credential revoked mid-batch aborts the request with 401", async () => {
@@ -5194,15 +5732,19 @@ describe("files write-many", () => {
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-rate" });
 		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-rate" });
 
-		// Drain the whole bulk bucket for this credential's principal key up front.
-		const drained = await t.run(async (ctx) =>
-			rate_limiter_limit_by_key(ctx, {
-				name: "public_api_files_write_bulk",
-				key: `user_api_key:${credential.split(".")[0]}`,
-				count: 100,
-			}),
-		);
-		expect(drained).toBeNull();
+		// The bucket has 4 shards of 25 tokens. With a fixed `Math.random`, every charge reads the
+		// same two shards, so two charges of 25 spend every token this key can reach.
+		vi.spyOn(Math, "random").mockReturnValue(0);
+		for (let index = 0; index < 2; index += 1) {
+			const drained = await t.run(async (ctx) =>
+				rate_limiter_limit_by_key(ctx, {
+					name: "public_api_files_write_bulk",
+					key: `user_api_key:${credential.split(".")[0]}`,
+					count: 25,
+				}),
+			);
+			expect(drained).toBeNull();
+		}
 
 		const blocked = await t.fetch("/api/v1/files/write-many", {
 			method: "POST",
@@ -5351,6 +5893,7 @@ describe("files write billing", () => {
 		// committed write, in order.
 		const snapshotAssetIds = await read_version_snapshot_asset_ids({ t, db, nodeId: writtenBody.nodeId });
 		expect(snapshotAssetIds).toHaveLength(2);
+		await test_drain_billing_usage_event_outbox(t);
 		const events = file_save_events();
 		expect(events).toHaveLength(2);
 		for (const [index, event] of events.entries()) {
@@ -5383,6 +5926,7 @@ describe("files write billing", () => {
 			body: JSON.stringify({ path: "/billing/skip.md", content: "# Same\n" }),
 		});
 		expect(written.status).toBe(200);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 
 		const unchanged = await t.fetch("/api/v1/files/write", {
@@ -5393,6 +5937,7 @@ describe("files write billing", () => {
 		expect(unchanged.status).toBe(200);
 		expect(((await unchanged.json()) as { unchanged?: boolean }).unchanged).toBe(true);
 		// No publish happened, so no second event.
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 
 		// The gate runs before the unchanged comparison: a broke Free payer is refused even for a
@@ -5422,6 +5967,7 @@ describe("files write billing", () => {
 		expect(touched.status).toBe(200);
 		const touchedBody = (await touched.json()) as { files: Array<{ path: string; created: boolean }> };
 		expect(touchedBody.files).toEqual([expect.objectContaining({ path: "/billing/placeholder.md", created: true })]);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(0);
 	});
 
@@ -5474,6 +6020,7 @@ describe("files write billing", () => {
 			body: JSON.stringify({ path: "/billing/existing.md", content: "# Existing\n" }),
 		});
 		expect(first.status).toBe(200);
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(1);
 
 		const response = await t.fetch("/api/v1/files/write-many", {
@@ -5496,6 +6043,7 @@ describe("files write billing", () => {
 		expect(body.errors).toEqual([expect.objectContaining({ path: "/billing/existing.md", errorCode: "conflict" })]);
 
 		// One event per committed item; the refused item emits nothing.
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events()).toHaveLength(3);
 	});
 
@@ -5533,6 +6081,7 @@ describe("files write billing", () => {
 		});
 		expect(written.status).toBe(200);
 
+		await test_drain_billing_usage_event_outbox(t);
 		const events = file_save_events();
 		expect(events).toHaveLength(1);
 		expect(events[0]).toEqual(

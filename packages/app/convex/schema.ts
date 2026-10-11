@@ -284,6 +284,138 @@ const ai_model_call_charge_validator = v.object({
 });
 
 /**
+ * One app usage event for Polar. `billing.ingest_events` sends it; see the billing-system skill.
+ */
+export const billing_event_validator = v.union(
+	v.object({
+		name: v.literal("manual_credit"),
+		externalCustomerId: v.id("users"),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+		}),
+	}),
+	v.object({
+		name: v.literal("file_save"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.string(),
+			workspaceId: v.string(),
+			nodeId: v.string(),
+			/**
+			 * See the `version` tuple item in `AppCompositeIds.billing`.
+			 */
+			version: v.string(),
+		}),
+	}),
+	v.object({
+		name: v.literal("file_upload"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			nodeId: v.union(v.id("files_nodes"), v.null()),
+			assetId: v.id("files_r2_assets"),
+			bytes: v.number(),
+		}),
+	}),
+	v.object({
+		name: v.literal("plugin_volume_file_write"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			assetId: v.id("files_r2_assets"),
+		}),
+	}),
+	v.object({
+		name: v.literal("monthly_credit"),
+		externalCustomerId: v.id("users"),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			subscriptionId: v.string(),
+			productId: v.string(),
+			productName: v.string(),
+			periodStart: v.string(),
+		}),
+	}),
+	v.object({
+		name: v.literal("ai_usage"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.string(),
+			workspaceId: v.string(),
+			modelId: v.string(),
+			/**
+			 * The provider request this charge belongs to (`ai_model_call_receipts`).
+			 */
+			modelCallId: v.string(),
+			purpose: ai_model_call_purpose_validator,
+			/**
+			 * `tokens` bills the request's tokens. `image` bills one finished picture.
+			 */
+			component: v.union(v.literal("tokens"), v.literal("image")),
+			imageCallId: v.union(v.string(), v.null()),
+			responseId: v.union(v.string(), v.null()),
+			providerModelId: v.union(v.string(), v.null()),
+			/**
+			 * Null on an image charge. A tokens charge always has the reported numbers.
+			 */
+			inputTokens: v.union(v.number(), v.null()),
+			outputTokens: v.union(v.number(), v.null()),
+			/**
+			 * `1` on an image charge, `0` on a tokens charge.
+			 */
+			generatedImages: v.number(),
+			/**
+			 * Null for inline AI, which has no chat thread.
+			 */
+			threadId: v.union(v.string(), v.null()),
+		}),
+	}),
+	v.object({
+		name: v.literal("browser_usage"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.string(),
+			workspaceId: v.string(),
+			sessionId: v.string(),
+			mode: v.union(v.literal("file"), v.literal("web")),
+			/**
+			 * The runner's real browser time for this session. `amount` charges every started minute.
+			 */
+			billedMs: v.number(),
+		}),
+	}),
+);
+
+/**
  * The one agent run in progress on a thread: a `/api/chat` request streaming, or a
  * `run_job_wakeup` action. A thread has at most one. The run clears it at its end; `expiresAt`
  * covers a run whose action was killed.
@@ -705,18 +837,23 @@ const files_metadata_catalog_row_fields = {
 		v.literal("key"),
 		v.literal("value"),
 		v.literal("parent"),
+		v.literal("parent_restricted"),
 		v.literal("check_key"),
 		v.literal("check_value"),
 		v.literal("check_parent"),
+		v.literal("check_parent_restricted"),
 	),
-	/** Family `parent` only: the folder whose children have the key. */
+	/**
+	 * Families `parent` and `parent_restricted` only: the folder whose children have the key. `parent`
+	 * counts the open children, `parent_restricted` the children that are their own restricted root.
+	 */
 	parentId: v.optional(v.union(v.id("files_nodes"), v.literal("root"))),
 	/** `fieldPath` lowered one character at a time (`files_metadata_catalog_lower`), so a key prefix matches without case. */
 	fieldPathLower: v.string(),
 	fieldPath: v.string(),
 	/** Family `value` (and `check_value`) only. */
 	stringValue: v.optional(v.string()),
-	/** Field docs (`key`, `parent`) or string value docs (`value`). */
+	/** Field docs (`key`, `parent`, `parent_restricted`) or string value docs (`value`). */
 	count: v.number(),
 	/** Family `key` (and `check_key`) only: value docs of each kind. */
 	kindCounts: v.optional(
@@ -1912,12 +2049,31 @@ const app_convex_schema = defineSchema({
 		),
 		createdAt: v.number(),
 		revokedAt: v.union(v.number(), v.null()),
+		/**
+		 * Old usage time. New uses are written to `api_credentials_last_used`. The key list shows
+		 * this value only when the key has no usage doc yet.
+		 */
 		lastUsedAt: v.union(v.number(), v.null()),
 	})
 		.index("by_keyId", ["keyId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
 		.index("by_organization_workspace_user_revokedAt", ["organizationId", "workspaceId", "userId", "revokedAt"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * When an API key was last used. It has its own table, so the once-a-minute write never touches
+	 * the `api_credentials` doc that every file publish reads.
+	 */
+	api_credentials_last_used: defineTable({
+		credentialId: v.id("api_credentials"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		lastUsedAt: v.number(),
+	})
+		.index("by_credential", ["credentialId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_user", ["userId"]),
 
 	/**
@@ -2305,6 +2461,12 @@ const app_convex_schema = defineSchema({
 		),
 		phaseCursor: v.union(v.string(), v.null()),
 		nextChunkIndex: v.number(),
+		/**
+		 * The bounds of every chunk of the text that the current text phase saves, as 5 Uint32 values per
+		 * chunk: start, end, first line, last line and flags. The first page chunks the whole text once, and
+		 * later pages read their bounds here. Cleared when the phase moves on.
+		 */
+		chunkBounds: v.optional(v.bytes()),
 		acceptedTextInputId: v.union(v.id("files_pending_update_text_inputs"), v.null()),
 		unstagedTextInputId: v.union(v.id("files_pending_update_text_inputs"), v.null()),
 		acceptedTextDigest: v.union(v.string(), v.null()),
@@ -2771,7 +2933,11 @@ const app_convex_schema = defineSchema({
 		destinationPath: v.union(v.string(), v.null()),
 		destinationTreePath: v.union(v.string(), v.null()),
 		structuralKind: v.union(v.literal("none"), v.literal("move"), v.literal("archive")),
-		sourcePlacementRevision: v.number(),
+		/**
+		 * No longer written: filling it read the fact state, which conflicted with review pin renewals.
+		 * Old docs may still have it. Remove it in a later cleanup.
+		 */
+		sourcePlacementRevision: v.optional(v.number()),
 	})
 		.index("by_proposal_view", ["pendingUpdateId", "cohortId", "view"])
 		.index("by_cohort_view", ["cohortId", "view"])
@@ -2815,6 +2981,11 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		structureRevision: v.number(),
 		pendingJobCount: v.number(),
+		/**
+		 * When a review plan's pin on `structureRevision` ends. Saved-tree changes advance the revision
+		 * only while a pin is live. Missing means no plan has pinned it yet.
+		 */
+		structurePinnedUntil: v.optional(v.number()),
 	}).index("by_workspace", ["organizationId", "workspaceId"]),
 
 	files_pending_holds: defineTable({
@@ -3969,10 +4140,11 @@ const app_convex_schema = defineSchema({
 		.index("by_user", ["userId"]),
 
 	/**
-	 * One doc per share: a file `content.read` grant to a user or a role, while its node is a restricted
-	 * scope root in the grant's workspace, active or archived. The other fields copy the node, so each
-	 * index mirrors a folder table sort index for one principal. A role share is one doc, not one per
-	 * member, so a role membership change writes nothing.
+	 * One doc per share: a file `content.read` grant to a user, a role or a service account, while its
+	 * node is a restricted scope root in the grant's workspace, active or archived. A service account
+	 * grant also has a doc while its node is open. The other fields copy the node, so each index mirrors
+	 * a folder table sort index for one principal. A role share is one doc, not one per member, so a
+	 * role membership change writes nothing.
 	 *
 	 * Derived docs: only the overlay flush (`server/files-pending-overlay.ts`, with the helpers in
 	 * `server/files-share-rows.ts`) and data deletion write them.
@@ -3982,7 +4154,8 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		/**
-		 * `"user:<userId>"` or `"role:<role ref>"`, so one index serves both principals.
+		 * `"user:<userId>"`, `"role:<role ref>"` or `"service_account:<serviceAccountId>"`, so one index
+		 * serves every principal.
 		 */
 		principalKey: v.string(),
 		grantId: v.id("access_control_permission_grants"),
@@ -3992,6 +4165,7 @@ const app_convex_schema = defineSchema({
 		archiveOperationId: v.union(v.string(), v.null()),
 		sortName: v.string(),
 		name: v.string(),
+		treePath: v.string(),
 		updatedAt: v.number(),
 		lowercaseExtension: v.union(v.string(), v.null()),
 		contentByteSize: v.union(v.number(), v.null()),
@@ -4080,18 +4254,32 @@ const app_convex_schema = defineSchema({
 			"sortName",
 			"name",
 		])
+		// The restricted folders and service account nodes one principal may read, in path order
+		// (`server/files-readable-scopes.ts`).
+		.index("by_org_ws_principal_archive_treePath", [
+			"organizationId",
+			"workspaceId",
+			"principalKey",
+			"moveView.cohortId",
+			"moveView.view",
+			"archiveOperationId",
+			"treePath",
+		])
 		.index("by_node", ["nodeId", "moveView.cohortId", "moveView.view"])
 		.index("by_grant", ["grantId", "moveView.cohortId", "moveView.view"]),
 
 	/**
 	 * The metadata catalog: saved metadata keys and short string values of one workspace, counted, so
 	 * suggestion reads are one index range. Families: `key` (one row per key, with its kinds), `value`
-	 * (one row per key and string value) and `parent` (one row per folder and key of its children).
-	 * Rows of a Move cohort's view carry its `moveView`, like share rows.
+	 * (one row per key and string value), `parent` (one row per folder and key of its open children)
+	 * and `parent_restricted` (the same for its restricted children). Rows of a Move cohort's view
+	 * carry its `moveView`, like share rows.
 	 *
-	 * Derived docs: only the compactor writes them. Savers insert deltas instead. Any member sees
-	 * every row of the workspace, also from files they cannot open: an accepted leak until a search
-	 * engine arrives. See `server/files-metadata-catalog.ts`.
+	 * Derived docs: only the compactor writes them. Savers insert deltas instead. Rows carry no
+	 * access data, so only a member who reads the whole workspace reads the `key` and `value` rows,
+	 * and only the owner reads `parent_restricted` rows. Workspace readers still see keys and values
+	 * of restricted files they cannot open: an accepted leak until a search engine arrives. See
+	 * `server/files-metadata-catalog.ts`.
 	 */
 	files_metadata_catalog: defineTable(files_metadata_catalog_row_fields).index(
 		"by_org_ws_family_parent_lower_field_value",
@@ -4243,19 +4431,6 @@ const app_convex_schema = defineSchema({
 			"valueKind",
 			"booleanValue",
 			"treePath",
-		])
-		// Distinct fields on direct children, split by `isRestrictedScopeRoot`. Committed field docs only.
-		.index("by_org_ws_source_archive_docKind_parent_restricted_field", [
-			"organizationId",
-			"workspaceId",
-			"sourceKind",
-			"moveView.cohortId",
-			"moveView.view",
-			"archiveOperationId",
-			"docKind",
-			"parentId",
-			"isRestrictedScopeRoot",
-			"fieldPath",
 		])
 		// The children of one folder that have one key, by value. Committed field docs only.
 		.index("by_org_ws_source_archive_docKind_field_parent_restricted_sort", [
@@ -5041,7 +5216,7 @@ const app_convex_schema = defineSchema({
 	/**
 	 * One server-built Yjs update staged ahead of its commit mutation (pending Accept, public
 	 * fill, snapshot restore), so the commit call carries only ids and one bounded text value.
-	 * Consumed on commit; abandoned stages expire after 30 minutes and the sweeper deletes them.
+	 * Consumed on commit; abandoned stages expire after 30 minutes (5 for `public_fill`, which holds no storage bytes) and the sweeper deletes them.
 	 */
 	files_yjs_trusted_update_stages: defineTable({
 		cohortContentId: v.optional(v.id("files_move_cohort_content")),
@@ -8730,6 +8905,41 @@ const app_convex_schema = defineSchema({
 		jobId: vWorkId,
 		updatedAt: v.number(),
 	}).index("by_user", ["userId"]),
+
+	/**
+	 * Signed-in usage events that wait for Polar. Saves only insert here, so parallel saves never write
+	 * the same doc. The drainer sends them in batches (`billing_db_drain_usage_event_outbox`).
+	 */
+	billing_usage_event_outbox: defineTable({
+		event: billing_event_validator,
+	}),
+
+	/**
+	 * At most one doc, while the drainer chain runs. Each run gets its id, so deleting it stops the
+	 * chain. Savers insert it when it is missing and never patch it.
+	 */
+	billing_usage_event_outbox_drainers: defineTable({
+		/**
+		 * The last time a run stamped it, at most once a minute. A stale stamp tells the recovery cron
+		 * that the chain stopped.
+		 */
+		lastRunAt: v.number(),
+		/**
+		 * Set after a Polar 429. The chain sends nothing until then.
+		 */
+		pausedUntil: v.optional(v.number()),
+	}),
+
+	/**
+	 * Usage events Polar refused (422) one by one. Kept so no charge is lost: after a fix,
+	 * `billing.resend_rejected_usage_events` moves them back to the outbox.
+	 */
+	billing_usage_event_rejected: defineTable({
+		event: billing_event_validator,
+		/** Polar's error text, trimmed. */
+		error: v.string(),
+		rejectedAt: v.number(),
+	}),
 
 	/**
 	 * One receipt per billed provider request: chat steps, titles and inline AI. A receipt is saved

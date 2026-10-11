@@ -978,6 +978,17 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: aiChatThreads.length };
 	}
 
+	const apiCredentialUsages = await ctx.db
+		.query("api_credentials_last_used")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (apiCredentialUsages.length > 0) {
+		await Promise.all(apiCredentialUsages.map((doc) => ctx.db.delete("api_credentials_last_used", doc._id)));
+		return { done: false, deletedCount: apiCredentialUsages.length };
+	}
+
 	const apiCredentials = await ctx.db
 		.query("api_credentials")
 		.withIndex("by_organization_workspace", (q) =>
@@ -3042,6 +3053,15 @@ async function db_drain_user_finalization_batch(
 	if (quotaDocs.length > 0) {
 		await Promise.all(quotaDocs.map((doc) => quotas_db_delete(ctx, doc)));
 		return { done: false, deletedCount: quotaDocs.length };
+	}
+
+	const apiCredentialUsages = await ctx.db
+		.query("api_credentials_last_used")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (apiCredentialUsages.length > 0) {
+		await Promise.all(apiCredentialUsages.map((doc) => ctx.db.delete("api_credentials_last_used", doc._id)));
+		return { done: false, deletedCount: apiCredentialUsages.length };
 	}
 
 	const apiCredentials = await ctx.db

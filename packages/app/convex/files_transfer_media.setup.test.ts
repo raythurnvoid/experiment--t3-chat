@@ -13,6 +13,7 @@ import {
 } from "./setup.test.ts";
 import { files_transfer_db_prepare_copy_item } from "./files_transfer.ts";
 import { files_transfer_media_db_map_refs } from "./files_transfer_media.ts";
+import { files_media_dependencies_PAGE_SIZE } from "./files_media_dependencies.ts";
 import { r2_server_side_copy, r2_create_asset_key } from "./r2_client.ts";
 import { files_media_build_file_src, files_media_build_private_src } from "../shared/files-media.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
@@ -260,8 +261,31 @@ export async function fixture(
 	const documentId = await test_create_saved_text_file(t, {
 		membershipId: source.membershipId,
 		path: "/document.md",
-		textContent: documentText,
+		textContent: options.sourceKind === "private" ? "Before\n\nAfter\n" : documentText,
 	});
+	if (options.sourceKind === "private") {
+		// Copy reads this private media link from the user's draft.
+		const scope = { organizationId: source.organizationId, workspaceId: source.workspaceId, userId: source.userId };
+		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			...scope,
+			target: { kind: "saved", id: documentId },
+		});
+		if (batch._nay) throw new Error(batch._nay.message);
+		const { operationBatchId } = batch._yay;
+		for (const role of ["staged", "unstaged"] as const) {
+			expect(await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+				...scope,
+				operationBatchId,
+				role,
+				text: documentText,
+			})).toEqual({ _yay: null });
+		}
+		expect(await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			...scope,
+			target: { kind: "saved", id: documentId },
+			operationBatchId,
+		})).toEqual({ _yay: null });
+	}
 	if (options.documentReplacement)
 		await test_create_saved_text_file(t, {
 			membershipId: destination.membershipId,
@@ -413,13 +437,13 @@ export async function prepare_document_capture(f: Awaited<ReturnType<typeof fixt
 		const refs =
 			files_transfer_rewrite_media_refs({ mut_editor: editor._yay, referenceMap: new Map() })._nay?.data
 				.unresolvedRefs ?? [];
-		for (let offset = 0; offset < Math.max(1, refs.length); offset += 50) {
+		for (let offset = 0; offset < Math.max(1, refs.length); offset += files_media_dependencies_PAGE_SIZE) {
 			const args = {
 				...claim,
 				sourceTextDigest,
 				expectedCount: refs.length,
 				offset,
-				refs: refs.slice(offset, offset + 50),
+				refs: refs.slice(offset, offset + files_media_dependencies_PAGE_SIZE),
 			};
 			const page = await f.t.mutation(internal.files_nodes_content.prepare_transfer_file_media, args);
 			if (page._nay || !page._yay) throw new Error(page._nay?.message ?? "Expected mappings");

@@ -24,6 +24,7 @@ import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.
 import { files_db_load_pending_update_yjs_state_bytes, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
+import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 
 const objects = new Map<string, string | ArrayBuffer>();
 
@@ -340,27 +341,138 @@ test("each content page checks current membership before changing any side", asy
 	expect(await f.chunks(), "the refused page keeps the old saved content").toBe("old text");
 });
 
-test("publication keeps a partial Save allowed at the private cap and books its growth once", async () => {
+test("pages a long text from one chunking, also after a page loses the kept bounds", async () => {
+	// Long lines are cut mid-line, and a cut never splits an emoji. The text needs several pages.
+	const staged = `${Array.from({ length: 30 }, (_, index) => `${index} ${"😀 words ".repeat(index * 9)}`).join("\n")}\n`;
+	const f = await fixture({ staged, unstaged: `${staged}later draft` });
+	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.context))).toEqual({ _yay: null });
+	const chunker = vi.spyOn(await import("../server/files-plain-text-chunking.ts"), "files_chunk_plain_text");
+	// One page per step, so a step can end inside the text phase. A step may otherwise run many pages.
+	vi.spyOn(await import("./files_subtree_ops.ts"), "files_subtree_ops_db_is_near_limits").mockResolvedValue(true);
+	let dropped = false;
+	for (let i = 0; i < 200; i++) {
+		const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId)))!;
+		// Content staged before the bounds were kept has none in the middle of a phase.
+		if (!dropped && content.phase === "text" && content.nextChunkIndex > 0) {
+			expect(content.chunkBounds, "a text phase keeps its chunk bounds between pages").toBeDefined();
+			await f.t.run((ctx) => ctx.db.patch("files_move_cohort_content", content._id, { chunkBounds: undefined }));
+			dropped = true;
+		}
+		const staged = await test_run_with_flush(f.t, (ctx) => files_move_content_db_stage(ctx, f.context));
+		if (staged._nay) throw new Error(staged._nay.message);
+		if (staged._yay.done) break;
+		if (i === 199) throw new Error("Content did not seal");
+	}
+	expect(dropped, "the text phase had more than one page").toBe(true);
+	expect(chunker, "each text is chunked once, plus once again for the page that lost its bounds").toHaveBeenCalledTimes(
+		3,
+	);
+	const { content, inputs, text, plain } = await f.t.run(async (ctx) => {
+		const content = (await ctx.db.get("files_move_cohort_content", f.context.contentId))!;
+		const after = (row: { moveView?: { view: string } }) => row.moveView?.view === "after";
+		return {
+			content,
+			inputs: {
+				committed: (await ctx.db.get("files_pending_update_text_inputs", content.acceptedTextInputId!))!.text,
+				pending: (await ctx.db.get("files_pending_update_text_inputs", content.unstagedTextInputId!))!.text,
+			},
+			text: (await ctx.db.query("files_text_chunks").collect()).filter(after),
+			plain: (await ctx.db.query("files_plain_text_chunks").collect()).filter(after),
+		};
+	});
+	expect(content.chunkBounds, "the bounds go away with their phase").toBeUndefined();
+	for (const sourceKind of ["committed", "pending"] as const) {
+		const expected = files_chunk_plain_text(inputs[sourceKind]);
+		expect(expected.length, "the text needs several pages").toBeGreaterThan(16);
+		const rows = <T extends { sourceKind: string; chunkIndex: number }>(list: T[]) =>
+			list.filter((row) => row.sourceKind === sourceKind).sort((a, b) => a.chunkIndex - b.chunkIndex);
+		expect(
+			rows(text).map(({ chunkIndex, textChunk, startIndex, endIndex, lineStart, lineEnd, chunkFlags }) => ({
+				chunkIndex,
+				textChunk,
+				startIndex,
+				endIndex,
+				lineStart,
+				lineEnd,
+				chunkFlags,
+			})),
+			`the ${sourceKind} rows match one full chunking`,
+		).toEqual(expected.map(({ plainTextChunk: _plain, ...chunk }) => chunk));
+		expect(
+			rows(plain).map(({ chunkIndex, plainTextChunk, hasChunkAbove, hasChunkBelow }) => ({
+				chunkIndex,
+				plainTextChunk,
+				hasChunkAbove,
+				hasChunkBelow,
+			})),
+			`the ${sourceKind} plain rows match one full chunking`,
+		).toEqual(
+			expected.map((chunk) => ({
+				chunkIndex: chunk.chunkIndex,
+				plainTextChunk: chunk.plainTextChunk,
+				hasChunkAbove: chunk.chunkIndex > 0,
+				hasChunkBelow: chunk.chunkIndex < expected.length - 1,
+			})),
+		);
+	}
+});
+
+test("a reviewed partial Save publishes at full private byte quotas and charges once", async () => {
 	const f = await fixture();
 	await f.stage();
 	const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId)))!;
 	expect(content.privateByteDelta).toBeGreaterThan(0);
-	const read_quota = () =>
-		f.t.run((ctx) =>
-			ctx.db
-				.query("quotas")
-				.withIndex("by_workspace_quotaName", (q) =>
-					q.eq("workspaceId", f.db.workspaceId).eq("quotaName", "files_private_workspace_bytes"),
-				)
-				.unique(),
-		);
-	const quota = await read_quota();
-	if (!quota) throw new Error("Expected private quota");
-	await f.t.run((ctx) => ctx.db.patch("quotas", quota._id, { maxCount: quota.usedCount }));
-	// The remainder only copies text the draft already holds, so Save does not need new quota.
-	expect(await f.publish()).toEqual({ _yay: null });
-	expect((await read_quota())?.usedCount, "the growth is booked once").toBe(quota.usedCount + content.privateByteDelta);
-	expect(await f.chunks(), "the switch serves accepted content").toBe("accepted text");
+	expect(content.privateNodeDelta).toBe(0);
+	const balances = await f.t.run(async (ctx) => {
+		const quotaDocs = [];
+		for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes", "files_private_nodes"] as const) {
+			const id = await quotas_db_ensure(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				...(quotaName === "files_private_workspace_bytes" ? { quotaName } : { quotaName, userId: f.db.userId }),
+				now: Date.now(),
+			});
+			const quota = (await ctx.db.get("quotas", id))!;
+			if (quotaName !== "files_private_nodes") await ctx.db.patch("quotas", id, { maxCount: quota.usedCount });
+			quotaDocs.push((await ctx.db.get("quotas", id))!);
+		}
+		return quotaDocs;
+	});
+	const expectBalances = (assertion: string) =>
+		f.t.run(async (ctx) => {
+			for (const quota of balances)
+				expect(await ctx.db.get("quotas", quota._id), assertion).toMatchObject({
+					usedCount: quota.usedCount + (quota.quotaName === "files_private_nodes" ? 0 : content.privateByteDelta),
+					maxCount: quota.maxCount,
+				});
+		});
+	expect(await f.publish(), "Reviewed partial Save publishes at full private byte quotas").toEqual({ _yay: null });
+	await expectBalances("Save applies both exact byte deltas and keeps the caps and node count");
+	expect(await f.chunks(), "Save publishes the accepted text").toBe("accepted text");
+	const proposal = await f.t.run((ctx) => files_saved_placement_db_get_proposal(ctx.db, f.proposal._id));
+	const bytes = await f.t.run(async (ctx) => {
+		const state = await ctx.db.get("files_pending_update_yjs_states", proposal!.content!.unstagedStateId);
+		if (!state) throw new Error("Expected the remaining draft state");
+		const loaded = await files_db_load_pending_update_yjs_state_bytes(ctx, { stateDoc: state });
+		if (loaded._nay) throw new Error(loaded._nay.message);
+		return files_u8_to_array_buffer(loaded._yay);
+	});
+	const doc = files_yjs_doc_create_from_array_buffer_update(bytes);
+	expect(files_yjs_doc_get_text({ yjsDoc: doc, rootKind: "plain_text" })).toEqual({
+		_yay: "accepted text\nlater draft",
+	});
+	doc.destroy();
+	expect(await test_run_with_flush(f.t, (ctx) => files_move_content_db_publish_accounting(ctx, f.context))).toEqual({
+		_yay: null,
+	});
+	await expectBalances("Replaying Save does not charge either byte quota again");
+	for (let pass = 0; pass < 100; pass++) {
+		const result = await test_run_with_flush(f.t, (ctx) => files_move_content_db_finish(ctx, f.context));
+		if (result._nay) throw new Error(result._nay.message);
+		if (result._yay.done) break;
+		if (pass === 99) throw new Error("Content repair did not finish");
+	}
+	await expectBalances("Physical repair keeps the published byte balances, caps and node count");
 });
 
 test("publication still refuses private node growth at the node cap", async () => {

@@ -194,6 +194,8 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   its own receipts. Transfer and review producers also release their proposal holds first. Dismissal docs drain first. The Activity and its producer are then deleted together.
 - Deleting history does not delete saved files or pending proposals. Asset deletion jobs retain
   exact R2 keys and late-upload deadlines independently of Activity history.
+- A history pass stops after a Review graph cleanup deletes a page. Convex allows only one
+  paginated query in that transaction. The next pass continues the same Review before later jobs.
 - Transfer and review history cleanup wait for active cohort repair before releasing holds.
   Completed cohort docs stay after their parent is gone only while delayed storage resources or
   parked workers still need them. Their own indexed cleanup drains child docs, then the cohort.

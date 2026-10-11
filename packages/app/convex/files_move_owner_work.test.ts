@@ -3,7 +3,8 @@ import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
-import type { Doc } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { files_u8_to_array_buffer, type files_PendingParent } from "../shared/files.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
@@ -12,6 +13,8 @@ import {
 	test_finish_pending_update_run,
 	test_finish_transfer_run,
 	test_mocks_fill_db_with,
+	test_spy_handler,
+	test_spy_move_ranges,
 } from "./setup.test.ts";
 import {
 	files_move_owner_work_db_abort,
@@ -302,6 +305,86 @@ async function pending_scope_docs(
 			.collect(),
 	}));
 }
+
+test("public Move joins empty owner phases in one step", async () => {
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const source = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: "root",
+		path: "/source",
+	});
+	if (source._nay) throw new Error(source._nay.message);
+	const target = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: "root",
+		path: "/target",
+	});
+	if (target._nay) throw new Error(target._nay.message);
+	const sourceId = source._yay.nodeId;
+	let ownerSteps = 0;
+	let sideSteps = 0;
+	let childSteps = 0;
+	let cleanupSteps = 0;
+	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
+		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
+		if (cohort?.step === step && cohort.workPhase === "finish_owners") cleanupSteps++;
+		if (cohort?.step === step && (cohort.workPhase === "owners_collect" || cohort.workPhase === "sides")) {
+			const cursor = cohort.stagingCursor
+				? (JSON.parse(cohort.stagingCursor) as { order: number })
+				: { order: -1 };
+			const record = await ctx.db.query("files_move_cohort_nodes")
+				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohortId).gt("order", cursor.order))
+				.first();
+			if (record?.nodeId === sourceId) {
+				if (cohort.workPhase === "owners_collect") ownerSteps++;
+				else sideSteps++;
+			}
+		}
+		if (cohort?.step === step && cohort.workPhase === "descendants" && cohort.planningCursor === "trees") {
+			let range = await ctx.db.query("files_move_work_ranges")
+				.withIndex("by_cohort_phase_status_order", (q) =>
+					q.eq("cohortId", cohortId).eq("phase", "collect").eq("status", "running"),
+				)
+				.first();
+			range ??= await ctx.db.query("files_move_work_ranges")
+				.withIndex("by_cohort_phase_status_order", (q) =>
+					q.eq("cohortId", cohortId).eq("phase", "collect").eq("status", "queued"),
+				)
+				.first();
+			if (range?.kind === "saved_subtree" && range.range.kind === "node" && range.range.nodeId === sourceId)
+				childSteps++;
+		}
+		return await handler(ctx, args);
+	});
+	const started = await asUser.mutation(api.files_transfer.start, {
+		membershipId: db.membershipId,
+		requestId: crypto.randomUUID(),
+		kind: "move",
+		expectedSourceCount: 1,
+		sourceIds: [sourceId],
+		targetParentId: target._yay.nodeId,
+	});
+	if (started._nay) throw new Error(started._nay.message);
+	const { runId } = started._yay;
+	expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
+		_yay: null,
+	});
+	await test_finish_transfer_run(asUser, runId);
+	expect((await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.status)
+		.toBe("succeeded");
+	expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toMatchObject({
+		_id: sourceId,
+		parentId: target._yay.nodeId,
+		path: "/target/source",
+	});
+	expect(ownerSteps, "A node without owner or receipt docs needs one owner collection step").toBe(1);
+	expect.soft(sideSteps, "An empty folder needs one side staging step").toBe(1);
+	expect.soft(childSteps, "An empty folder needs one child collection step").toBe(1);
+	expect(cleanupSteps, "An empty folder needs one owner cleanup step").toBe(1);
+});
 
 test("public Move seals unselected pending scope before the switch and keeps each branch", async () => {
 	const f = await native_pending_scope();
@@ -874,6 +957,7 @@ test("collects and stages several native owner pages once, then keeps chosen IDs
 });
 
 test("closes after-only private parent aliases and restores partial owner staging on abort", async () => {
+	test_spy_move_ranges();
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -1145,6 +1229,7 @@ test("source marker staging does not flush native crowded owner copies", async (
 
 test("owner collection rejects stale attempts and stale page replies", async () => {
 	const f = await fixture();
+	await add_owners(f, 1);
 	await phase(f, "owners_collect");
 	const args = { ...step_args(f), nodeRecordId: f.recordId, cursor: null };
 	expect(

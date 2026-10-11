@@ -6,6 +6,7 @@ import {
 	test_convex,
 	test_rename_node,
 	test_move_nodes,
+	test_finish_transfer_run,
 	test_get_file_yjs_pointers,
 	test_mocks_cancel_pending_home_file_seeds,
 	test_mocks_fill_db_with,
@@ -2063,6 +2064,15 @@ describe("enforcement", () => {
 		});
 
 		expect(saved._nay?.message).toBe("Permission denied");
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.id))).toMatchObject({
+			name: "notes",
+			path: "/notes",
+			parentId: files_ROOT_ID,
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toMatchObject({
+			revision: pending.revision,
+			pendingMove: pending.pendingMove,
+		});
 	});
 
 	test("an editor gets the read-only message when Save meets a protected item", async () => {
@@ -9556,7 +9566,7 @@ describe("file sharing", () => {
 			expect(await filterChild()).toEqual([childId]);
 		});
 
-		test("a member without a grant cannot move out an item that a move put into a restricted folder", async () => {
+		test("a member without a grant cannot move out an item that a move into a restricted folder has not reached", async () => {
 			const t = test_convex();
 			const fixture = await access_control_test_seed_enforcement_fixture(t, {
 				name: "mj-org",
@@ -9579,7 +9589,7 @@ describe("file sharing", () => {
 					treePath: "/open/",
 				});
 				let childId: Id<"files_nodes"> | null = null;
-				for (let index = 0; index < 3; index += 1) {
+				for (let index = 0; index < 150; index += 1) {
 					const id = await ctx.db.insert("files_nodes", {
 						...base,
 						parentId: openId,
@@ -9589,26 +9599,67 @@ describe("file sharing", () => {
 						treePath: `/open/child-${index}/`,
 						pathDepth: 2,
 					});
-					if (index === 1) childId = id;
+					if (index === 99) childId = id;
 				}
 				return { openId, childId: childId! };
 			});
 
+			let observedUnrepairedChild = false;
+			let memberRunId: Id<"files_transfer_runs"> | null = null;
 			const moved = await test_move_nodes(t, fixture.asOwner, {
 				membershipId: fixture.ownerMembershipId,
 				itemIds: [openId],
 				targetParentId: closedId,
+				onStep: async () => {
+					if (observedUnrepairedChild) return;
+					const cohort = await t.run(async (ctx) => {
+						const slot = await ctx.db.query("files_move_workspace_slots").withIndex("by_workspace", (q) =>
+							q.eq("organizationId", fixture.organizationId).eq("workspaceId", fixture.defaultWorkspaceId),
+						).unique();
+						return slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
+					});
+					if (!cohort || cohort.publishedAt === null) return;
+					const child = await t.run((ctx) => ctx.db.get("files_nodes", childId));
+					if (child?.restrictedScopeNodeId !== null) return;
+					observedUnrepairedChild = true;
+					// The selected view must hide the child before its stored scope is repaired.
+					expect(await fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+						membershipId: fixture.memberMembershipId,
+						fileNodeId: String(childId),
+					}), "A published Move hides unrepaired descendants").toBeNull();
+					const started = await fixture.asMember.mutation(api.files_transfer.start, {
+						membershipId: fixture.memberMembershipId,
+						requestId: "move-unrepaired-child-out",
+						kind: "move",
+						expectedSourceCount: 1,
+						sourceIds: [childId],
+						targetParentId: files_ROOT_ID,
+					});
+					if (started._nay) throw new Error(started._nay.message);
+					memberRunId = started._yay.runId;
+					expect(await fixture.asMember.mutation(api.files_transfer.seal, {
+						membershipId: fixture.memberMembershipId,
+						runId: memberRunId,
+					})).toEqual({ _yay: null });
+					await t.mutation(internal.files_transfer.advance, { runId: memberRunId });
+					expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", memberRunId!)),
+						"A Move requested during repair waits before selection").toMatchObject({ step: "select" });
+					expect(await t.run((ctx) => ctx.db.get("files_nodes", childId))).toMatchObject({ parentId: openId });
+				},
 			});
 			expect(moved._nay).toBeUndefined();
-			// A saved Move switches the whole folder at once. Its children have the new scope when it ends.
+			expect(observedUnrepairedChild, "The test sees publication before stored scope repair").toBe(true);
+			// The Move ends with the new scope on every child.
 			expect((await t.run((ctx) => ctx.db.get("files_nodes", childId)))?.restrictedScopeNodeId).toBe(closedId);
 
-			const movedOut = await test_move_nodes(t, fixture.asMember, {
+			if (!memberRunId) throw new Error("Expected the member's waiting Move");
+			await test_finish_transfer_run(fixture.asMember, memberRunId);
+			expect(await fixture.asMember.query(api.files_transfer.get, {
 				membershipId: fixture.memberMembershipId,
-				itemIds: [childId],
-				targetParentId: files_ROOT_ID,
+				runId: memberRunId,
+			}), "The waiting Move checks access after repair").toMatchObject({
+				activity: { status: "failed", errorMessage: "Permission denied" },
 			});
-			expect(movedOut._nay?.message).toBe("Permission denied");
 			expect(await t.run((ctx) => ctx.db.get("files_nodes", childId))).toMatchObject({ parentId: openId });
 		});
 	});
@@ -10059,10 +10110,9 @@ describe("file sharing", () => {
 				})
 				.then((result) => result.page),
 		]);
-		// The owner also sees the Activity of their own Move. Check only the seeded file Activities.
-		expect(
-			ownerListed.filter((activity) => activity.source.kind !== "files_transfer_run").map((activity) => activity._id),
-		).toEqual([currentActivityId]);
+		const moveActivity = ownerListed.find((activity) => activity.source.kind === "files_transfer_run");
+		expect(moveActivity).toMatchObject({ visibility: "requester", userId: fixture.ownerId, status: "succeeded" });
+		expect(ownerListed.map((activity) => activity._id)).toEqual([currentActivityId, moveActivity!._id]);
 		expect(memberListed.map((activity) => activity._id)).toEqual([currentActivityId]);
 
 		const archivedStale = await fixture.asMember.mutation(api.activities.archive_activity, {
