@@ -10487,16 +10487,17 @@ export const start_single_save_review = internalMutation({
 		// Private creation bounds each whole chain at 256 nodes, including its leaf.
 		const reader = await files_visible_db_create_reader(ctx, { ...membership, userId: args.userId, readLimit: 2048 });
 		const view = await files_pending_updates_db_get_target_view(ctx, { membership, target: args.target, reader });
+		// A saved file that the user cannot write gets the same refusal as the direct Save path: the
+		// protection's own message for a read-only item, else the usual access refusal.
+		if (args.target.kind === "saved" && view?.entry.kind === "saved" && !view.canEdit) {
+			const policy = await files_nodes_db_require_user_writable(ctx, { node: view.entry.node, userId: args.userId });
+			return Result({ _nay: policy._nay ?? { message: "Permission denied" } });
+		}
 		if (!view || view.readiness !== "ready" || !view.canAcceptWithParents)
 			return Result({
 				_nay: {
 					message:
-						view?.readiness === "preparing"
-							? "This draft is still preparing"
-							: // A saved file that the user cannot write gets the usual access refusal.
-								args.target.kind === "saved" && view && !view.canEdit
-								? "Permission denied"
-								: "This draft cannot be saved here",
+						view?.readiness === "preparing" ? "This draft is still preparing" : "This draft cannot be saved here",
 				},
 			});
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "save_file_pending_update", key: args.userId });

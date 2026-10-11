@@ -2065,6 +2065,53 @@ describe("enforcement", () => {
 		expect(saved._nay?.message).toBe("Permission denied");
 	});
 
+	test("an editor gets the read-only message when Save meets a protected item", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "locked-save-org",
+			suffix: "locked-save",
+		});
+
+		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: files_ROOT_ID,
+			path: "notes",
+		});
+		expect(folder._nay).toBeUndefined();
+		const target = { kind: "saved" as const, id: folder._yay!.nodeId };
+		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			target,
+			destParent: { kind: "root" },
+			destName: "moved-notes",
+		});
+		expect(moved._nay).toBeUndefined();
+		const pending = await fixture.asMember.query(api.files_pending_updates.get_file_pending_update, {
+			membershipId: fixture.memberMembershipId,
+			target,
+		});
+		if (!pending) throw new Error("Expected the member's proposal");
+
+		// The editor keeps write access. Only the folder protection refuses the Save.
+		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: target.id,
+			writePolicy: { mode: "read_only" },
+		});
+		expect(locked._nay).toBeUndefined();
+
+		const saved = await test_save_file_pending_update(fixture.asMember, {
+			membershipId: fixture.memberMembershipId,
+			target,
+			pendingUpdateId: pending._id,
+			reviewedRevision: pending.revision,
+		});
+
+		expect(saved._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
+	});
+
 	test("a viewer can start a chat thread and dismiss their feed but cannot comment", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
