@@ -27,6 +27,8 @@ All emails end with `+clerk_test@example.com` and all accept the code `424242`.
 
 **Agent chat needs a different account.** The `example.com` accounts above have no billing state (see "These accounts cannot hold billing state" below), so every agent chat request answers 402. For a second user who must drive agent chat, use `ray-test-1+clerk_test@gmail.com` (Convex `users` id `m570f2kgg8jq3qka7snprkpeks8cme94`, code `424242`). It holds the `member` role in `chitchat-qa/home` and has credits. Verified 2026-10-08. Read its membership back before you build on it, like the others.
 
+**A guest must be a member.** A "guest" is a workspace member whose role has no `content.read`. `set_node_share_grant` refuses a user who is not a member (`This person is not a member of this workspace`), so `ray-test-1` cannot get a share in `qa-browser/home` as it is. On 2026-10-11 the owner invited it, then gave it a temporary custom role with only `workspace.mcp.use` (`access_control.create_role` + `set_user_role`), and `get_current_user_workspace_permission(content.read)` answered `false`. Undo it after the check: `organizations.remove_user_from_organization`, then `access_control.delete_role`.
+
 Do not infer membership or role from the account name. Before building a check on an account, read its membership back: `organizations.get_membership_by_organization_workspace_name` from its signed-in tab, or the `organizations_workspaces_users` table over the Convex CLI. Since the 2026-08-16 reseed, `qa-browser` has exactly two members (`qa.perm.owner` as owner, `qa.perm.viewer` with the `member` role) — the fake members named `Bob Reader`, `New Owner` and charlie were artifacts of an older DB seed and no longer exist; do not expect them and do not recreate them.
 
 These accounts have no display name: the dev Clerk instance has both the name and the username attributes disabled (`Clerk.user.update` rejects `first_name`/`username` with `form_param_unknown`), and the app has no anagraphic edit UI, so `resolve_user` stores the fallback `User <clerkUserId>` as the display name on every sign-in. Build locators on emails and ids, never on display names.
@@ -91,6 +93,8 @@ $chrome = "C:\Users\rt0\.playwriter\browsers\chrome-<version>\chrome-win64\chrom
 Start-Process $chrome -ArgumentList @("--remote-debugging-port=9223", "--user-data-dir=$prof", "--no-first-run", "--no-default-browser-check", "http://localhost:5173/")
 vp env exec pnpx playwriter session new --direct 127.0.0.1:9223
 ```
+
+Check that the port is free first (`netstat -ano | Select-String ":9223" | Select-String LISTEN`). Other agents use the same recipe, so 9223 can already hold another agent's scratch Chrome (seen 2026-10-11). Never attach to it; pick a free port such as 9224. After you kill your own Chrome, WMI and `netstat` can still list its old PIDs and a `LISTENING` socket for minutes, while `Get-Process` cannot find them and the port no longer answers. They are gone; do not kill anything else to clear them.
 
 If the relay restarts between calls, the session dies (`Session <id> not found`) but the scratch Chrome keeps running. Recreate with `session new --direct 127.0.0.1:9223` and rebind `state.page` from `context.pages()`.
 
