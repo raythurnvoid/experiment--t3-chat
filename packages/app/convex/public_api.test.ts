@@ -4,7 +4,13 @@ import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { getFunctionName } from "convex/server";
 import type { Id } from "./_generated/dataModel";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_fill_saved_file_with_max_chunks,
+	test_LIMITS_AT_75_PERCENT,
+	test_mocks,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
@@ -20,6 +26,7 @@ import {
 	files_get_utf8_byte_size,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_NAME_MAX_LENGTH,
+	files_PATH_MAX_LENGTH,
 } from "../shared/files.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -7964,6 +7971,28 @@ describe("service file writes", () => {
 		expect(absent.status).toBe(200);
 		expect(await absent.json()).toEqual({ archivedNodes: 0 });
 	});
+
+	test("the plugin archive door archives a 3,000-chunk file at the longest path within 75% of the limits", async () => {
+		const t = test_convex({ transactionLimits: test_LIMITS_AT_75_PERCENT });
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-archive-budget" });
+		const service = await seed_sealed_service({ t, db });
+		// Each plain text chunk stores the path, and a 900 KB file can have about 3,000 chunks.
+		const folder = `/meetings/${["0", "1", "2"].map((digit) => digit.repeat(files_NAME_MAX_LENGTH)).join("/")}/`;
+		const path = `${folder}${"a".repeat(files_PATH_MAX_LENGTH - folder.length - 3)}.md`;
+		expect((await service_write({ t, token: service.token, path, content: "# S\n" })).status).toBe(200);
+		const node = await find_active_node({ t, db, path });
+		expect(await test_fill_saved_file_with_max_chunks(t, node!._id)).toBeGreaterThan(2900);
+
+		const archived = await t.fetch("/api/v1/files/plugin-archive", {
+			method: "POST",
+			headers: auth_headers(service.token),
+			body: JSON.stringify({ path }),
+		});
+		expect(archived.status, await archived.clone().text()).toBe(200);
+		expect(await archived.json()).toEqual({ archivedNodes: 1 });
+		expect(await find_active_node({ t, db, path })).toBeNull();
+	}, 120_000);
 
 	test("the plugin archive door refuses everything that is not its own live file", async () => {
 		const t = test_convex();
