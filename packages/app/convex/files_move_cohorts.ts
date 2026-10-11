@@ -242,7 +242,13 @@ async function db_begin(
 		errorMessage: null,
 		conflictItemId: null,
 	});
-	const fields = { cohortId, generation, searchGeneration: (slot?.searchGeneration ?? 0) + 1 };
+	const fields = {
+		cohortId,
+		generation,
+		searchGeneration: (slot?.searchGeneration ?? 0) + 1,
+		visibleView: "before" as const,
+		migrationDirection: "to_cohort" as const,
+	};
 	if (slot) await ctx.db.patch("files_move_workspace_slots", slot._id, fields);
 	else
 		await ctx.db.insert("files_move_workspace_slots", {
@@ -499,7 +505,7 @@ export async function files_move_cohorts_db_request_stop(
 ) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (!cohort || cohort.phase === "complete") return;
-	if (cohort.publishedAt === null && cohort.phase !== "aborting")
+	if (cohort.publishedAt === null && cohort.phase !== "aborting") {
 		await ctx.db.patch("files_move_cohorts", cohort._id, {
 			phase: "aborting",
 			workPhase: "abort_content",
@@ -508,6 +514,8 @@ export async function files_move_cohorts_db_request_stop(
 			errorCode: "stopped",
 			errorMessage: "This Move stopped before it was saved.",
 		});
+		await db_save_slot_abort(ctx, cohort);
+	}
 	await files_move_cohorts_db_schedule(ctx, args);
 }
 
@@ -1821,7 +1829,11 @@ async function db_publish(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, o
 		.unique();
 	if (slot?.cohortId !== cohort._id || slot.generation !== cohort.slotGeneration)
 		throw should_never_happen("Move lost its workspace slot", { cohortId: cohort._id });
-	await ctx.db.patch("files_move_workspace_slots", slot._id, { searchGeneration: slot.searchGeneration + 1 });
+	await ctx.db.patch("files_move_workspace_slots", slot._id, {
+		searchGeneration: slot.searchGeneration + 1,
+		visibleView: "after",
+		migrationDirection: "to_normal",
+	});
 	await files_media_validation_db_advance_version(ctx, cohort);
 	if (cohort.origin.kind === "review")
 		await files_pending_update_runs_db_record_cohort_publication(ctx, { cohortId: cohort._id });
@@ -1981,6 +1993,8 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 		await ctx.db.patch("files_move_workspace_slots", slot._id, {
 			cohortId: null,
 			searchGeneration: slot.searchGeneration + 1,
+			visibleView: undefined,
+			migrationDirection: undefined,
 		});
 	await ctx.db.patch("files_move_cohorts", cohort._id, {
 		phase: "complete",
@@ -2063,6 +2077,21 @@ async function db_abort(
 		errorCode: error.name ?? "needs_review",
 		errorMessage: error.message,
 	});
+	await db_save_slot_abort(ctx, cohort);
+}
+
+/**
+ * An abort turns the saved view back to normal docs. Copy that onto the slot, which view reads use.
+ */
+async function db_save_slot_abort(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
+	const slot = await ctx.db
+		.query("files_move_workspace_slots")
+		.withIndex("by_workspace", (q) =>
+			q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
+		)
+		.unique();
+	if (slot?.cohortId === cohort._id)
+		await ctx.db.patch("files_move_workspace_slots", slot._id, { migrationDirection: "to_normal" });
 }
 
 /**

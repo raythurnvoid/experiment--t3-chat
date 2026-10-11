@@ -151,7 +151,13 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 			.unique();
 		if (slot?.cohortId) throw new Error("Expected finished fixture Save jobs");
 		if (slot)
-			await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId, generation: 1, searchGeneration: 2 });
+			await ctx.db.patch("files_move_workspace_slots", slot._id, {
+				cohortId,
+				generation: 1,
+				searchGeneration: 2,
+				visibleView: "before",
+				migrationDirection: "to_cohort",
+			});
 		else
 			await ctx.db.insert("files_move_workspace_slots", {
 				organizationId: db.organizationId,
@@ -159,6 +165,8 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 				cohortId,
 				generation: 1,
 				searchGeneration: 2,
+				visibleView: "before",
+				migrationDirection: "to_cohort",
 			});
 		return cohortId;
 	});
@@ -227,14 +235,26 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 		});
 		return recordId;
 	});
+	// Move code copies the view onto the slot in the same write, so these do both too.
+	const setView = (
+		cohortPatch: Partial<Doc<"files_move_cohorts">>,
+		slotPatch: Pick<Doc<"files_move_workspace_slots">, "visibleView" | "migrationDirection">,
+	) =>
+		t.run(async (ctx) => {
+			await ctx.db.patch("files_move_cohorts", cohortId, cohortPatch);
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+				.unique();
+			if (!slot) throw new Error("Expected the fixture slot");
+			await ctx.db.patch("files_move_workspace_slots", slot._id, slotPatch);
+		});
 	const publish = () =>
-		t.run((ctx) =>
-			ctx.db.patch("files_move_cohorts", cohortId, {
-				phase: "published",
-				visibleView: "after",
-				publishedAt: Date.now(),
-			}),
+		setView(
+			{ phase: "published", visibleView: "after", publishedAt: Date.now() },
+			{ visibleView: "after", migrationDirection: "to_normal" },
 		);
+	const abort = () => setView({ phase: "aborting" }, { migrationDirection: "to_normal" });
 	const stageNode = (nodeId: Id<"files_nodes">) =>
 		t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
@@ -308,6 +328,7 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 		before,
 		after,
 		publish,
+		abort,
 		normalNodes,
 		stageNode,
 		materializeNode,

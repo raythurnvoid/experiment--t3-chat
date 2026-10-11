@@ -2014,6 +2014,10 @@ const app_convex_schema = defineSchema({
 		cohortId: v.union(v.id("files_move_cohorts"), v.null()),
 		generation: v.number(),
 		searchGeneration: v.number(),
+		// Copies of the cohort's view. Every Move step patches the cohort, so view reads use these
+		// instead, and open trees do not run again on each step. Older slots read the cohort.
+		visibleView: v.optional(files_move_view_validator),
+		migrationDirection: v.optional(v.union(v.literal("to_cohort"), v.literal("to_normal"))),
 	}).index("by_workspace", ["organizationId", "workspaceId"]),
 
 	files_move_cohorts: defineTable({
