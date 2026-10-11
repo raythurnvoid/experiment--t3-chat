@@ -116,6 +116,12 @@ const CHOICE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MAX_ROOT_LANDINGS = 500;
 
 /**
+ * Restore keeps the longest path inside at most this many top items, for Keep both. Past that, Keep
+ * both uses the longest path of the whole job.
+ */
+const MAX_TOP_PATH_LENGTHS = 500;
+
+/**
  * An archive or restore marks at most this many paths busy. Every op check reads each of them.
  */
 const MAX_DISCOVER_TREE_PATHS = 64;
@@ -845,22 +851,22 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 }
 
 /**
- * How many characters longer an item's path gets when the restore lands it. A top item lands in its
- * active parent, or at the workspace root when `rootNodeIds` has it. An item inside follows its top
- * item. `growths` keeps the answers, so each folder is read once per step.
+ * How many characters longer an item's path gets when the restore lands it, and its top item. A top
+ * item lands in its active parent, or at the workspace root when `rootNodeIds` has it. An item inside
+ * follows its top item. `landings` keeps the answers, so each folder is read once per step.
  */
-async function db_get_restore_growth(
+async function db_get_restore_landing(
 	ctx: MutationCtx,
 	args: {
 		run: RunFields;
 		node: Doc<"files_nodes">;
 		parents: Map<Id<"files_nodes">, Doc<"files_nodes"> | null>;
-		growths: Map<Id<"files_nodes">, number>;
+		landings: Map<Id<"files_nodes">, { growth: number; topId: Id<"files_nodes"> }>;
 	},
-): Promise<number> {
-	const { run, node, parents, growths } = args;
+): Promise<{ growth: number; topId: Id<"files_nodes"> }> {
+	const { run, node, parents, landings } = args;
 
-	const known = growths.get(node._id);
+	const known = landings.get(node._id);
 	if (known !== undefined) return known;
 	const parentId = node.parentId;
 	let parent = parentId === files_ROOT_ID ? null : parents.get(parentId);
@@ -868,18 +874,22 @@ async function db_get_restore_growth(
 		parent = await ctx.db.get("files_nodes", parentId);
 		parents.set(parentId, parent);
 	}
-	const growth = !parent
-		? 0
-		: parent.archiveOperationId === run.archiveOperationId
-			? await db_get_restore_growth(ctx, { ...args, node: parent })
-			: parent.archiveOperationId === null
-				? path_join(parent.path, node.name).length - node.path.length
-				: run.rootNodeIds.includes(node._id)
-					? path_join("/", node.name).length - node.path.length
-					: // The item joins the restore of its folder. The landing check catches a path that got too long.
-						0;
-	growths.set(node._id, growth);
-	return growth;
+	const landing =
+		parent && parent.archiveOperationId === run.archiveOperationId
+			? await db_get_restore_landing(ctx, { ...args, node: parent })
+			: {
+					growth: !parent
+						? 0
+						: parent.archiveOperationId === null
+							? path_join(parent.path, node.name).length - node.path.length
+							: run.rootNodeIds.includes(node._id)
+								? path_join("/", node.name).length - node.path.length
+								: // The item joins the restore of its folder. The landing check catches a path that got too long.
+									0,
+					topId: node._id,
+				};
+	landings.set(node._id, landing);
+	return landing;
 }
 
 /**
@@ -905,6 +915,18 @@ function get_long_paths_text(longPaths: NonNullable<RunFields["longPaths"]>) {
 }
 
 /**
+ * Say which items stayed archived because their paths got too long after the check, or null.
+ */
+function get_long_paths_end_text(run: Pick<RunFields, "longPaths" | "longPathOperationId">) {
+	const longPaths = run.longPaths;
+	if (!longPaths || run.longPathOperationId === undefined) return null;
+	const example = `…/${longPaths.name} (${longPaths.length.toLocaleString("en-US")} characters)`;
+	return longPaths.count === 1
+		? `1 item stayed archived because its path would be too long: ${example}. Shorten a folder name, then restore it again.`
+		: `${longPaths.count} items stayed archived because their paths would be too long, like ${example}. Shorten a folder name, then restore them again.`;
+}
+
+/**
  * Check every node of the operation before the restore writes anything. Also check each top item: an
  * item whose parent is not in the operation. Keep the top items whose folder is archived by another
  * operation in `rootNodeIds`. They land at the workspace root. This list is fixed here. A folder
@@ -914,7 +936,7 @@ function get_long_paths_text(longPaths: NonNullable<RunFields["longPaths"]>) {
 async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	const { run, progress } = args;
 	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
-	const growths = new Map<Id<"files_nodes">, number>();
+	const landings = new Map<Id<"files_nodes">, { growth: number; topId: Id<"files_nodes"> }>();
 	let readCount = 0;
 
 	while (true) {
@@ -1012,12 +1034,21 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 		}
 
 		// The top items of this page know where they land now. A path over the limit is refused only when
-		// it gets longer, so an older long path can still come back where it was.
+		// it gets longer than when it was archived. A child archived on its own may have taken a longer path
+		// from its folder since then, and it cannot come back with it.
 		for (const node of page) {
-			const growth = await db_get_restore_growth(ctx, { run, node, parents, growths });
+			const { growth, topId } = await db_get_restore_landing(ctx, { run, node, parents, landings });
 			const length = node.path.length + growth;
 			run.maxPathLength = Math.max(run.maxPathLength ?? 0, length);
-			if (growth > 0 && length > files_PATH_MAX_LENGTH) add_long_path(run, { name: node.name, length });
+			// Keep the longest path inside each top item too, for a Keep both of that folder.
+			const top = run.topMaxPathLengths?.find((item) => item.nodeId === topId);
+			if (top) top.length = Math.max(top.length, length);
+			else if ((run.topMaxPathLengths?.length ?? 0) < MAX_TOP_PATH_LENGTHS) {
+				run.topMaxPathLengths = [...(run.topMaxPathLengths ?? []), { nodeId: topId, length }];
+			}
+			if (length > files_PATH_MAX_LENGTH && length > (node.archivedPathLength ?? node.path.length)) {
+				add_long_path(run, { name: node.name, length });
+			}
 		}
 
 		if (isLastPage && run.longPaths) {
@@ -1037,15 +1068,18 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 /**
  * The longest Keep both name for `node` next to `occupant`. A path already over the limit may stay as
  * long as it was. A folder's new name makes each path inside longer too, so the name may grow only by
- * what the longest path of the job leaves free.
+ * what the longest path inside it leaves free. A folder that is not a top item, or one past the
+ * `topMaxPathLengths` list, uses the longest path of the whole job.
  */
 function get_keep_both_max_length(args: { run: RunFields; node: Doc<"files_nodes">; occupant: Doc<"files_nodes"> }) {
 	const { run, node, occupant } = args;
 
 	const parentLength = occupant.path.length - occupant.name.length;
-	const maxLength = Math.min(files_NAME_MAX_LENGTH, Math.max(files_PATH_MAX_LENGTH, node.path.length) - parentLength);
+	const oldLength = node.archivedPathLength ?? node.path.length;
+	const maxLength = Math.min(files_NAME_MAX_LENGTH, Math.max(files_PATH_MAX_LENGTH, oldLength) - parentLength);
+	const longest = run.topMaxPathLengths?.find((item) => item.nodeId === node._id)?.length ?? run.maxPathLength ?? 0;
 	return node.kind === "folder"
-		? Math.min(maxLength, node.name.length + Math.max(0, files_PATH_MAX_LENGTH - (run.maxPathLength ?? 0)))
+		? Math.min(maxLength, node.name.length + Math.max(0, files_PATH_MAX_LENGTH - longest))
 		: maxLength;
 }
 
@@ -1223,18 +1257,27 @@ async function db_land_node(
 		}
 	}
 
-	// Keep both cut the name to fit, so only a parent renamed after the check can make the path too long.
-	// That item stays archived like a skipped one, and the job says so when it ends. It never fails partway.
+	// The check refuses paths that get too long, and Keep both cuts its name to fit. Only a job that passed
+	// its check before this check existed, or an item that joined another restore, can still get a path
+	// that is too long here. That item stays archived under its own operation id, so restoring it again
+	// does not ask about the items the person skipped. The job says so when it ends, and never fails
+	// partway for this.
 	const path = path_join(landing?.path ?? "/", name);
-	if (!isSkipped && files_check_name_and_path_length({ path, oldPath: node.path })._nay) {
-		add_long_path(run, { name: node.name, length: path.length });
-		isSkipped = true;
-	}
+	let skipOperationId = null;
 	if (isSkipped) {
 		run.skipOperationId ??= crypto.randomUUID();
+		skipOperationId = run.skipOperationId;
+	} else if (
+		files_check_name_and_path_length({ path, oldPathLength: node.archivedPathLength ?? node.path.length })._nay
+	) {
+		add_long_path(run, { name: node.name, length: path.length });
+		run.longPathOperationId ??= crypto.randomUUID();
+		skipOperationId = run.longPathOperationId;
+	}
+	if (skipOperationId !== null) {
 		await files_nodes_db_archive_node(ctx, {
 			node,
-			archiveOperationId: run.skipOperationId,
+			archiveOperationId: skipOperationId,
 			updatedBy: args.userAuth.id,
 			now: args.now,
 		});
@@ -1541,16 +1584,13 @@ async function db_settle_step(
 			return;
 		}
 		case "done": {
-			// Items whose path got too long after the check stayed archived. Say how to bring them back.
-			const longPaths = args.run.longPaths;
-			const isOne = longPaths?.count === 1;
+			// Items that stayed archived because their path got too long make the job only partly done.
+			const status = activities_get_result_status(args.progress);
 			await db_finish_run({
 				ctx,
 				runId: args.runId,
-				status: activities_get_result_status(args.progress),
-				errorMessage: longPaths
-					? `${get_long_paths_text(longPaths)}, so ${isOne ? "it" : "they"} stayed archived. Shorten a folder name, then restore ${isOne ? "it" : "them"} again.`
-					: null,
+				status: status === "succeeded" && args.run.longPathOperationId !== undefined ? "partial" : status,
+				errorMessage: get_long_paths_end_text(args.run),
 				now: args.now,
 			});
 			return;
@@ -1563,7 +1603,12 @@ async function db_settle_step(
 				ctx,
 				runId: args.runId,
 				status: "failed",
-				errorMessage: isPartway ? `Stopped partway: ${args.outcome.nay.message}` : args.outcome.nay.message,
+				errorMessage: [
+					isPartway ? `Stopped partway: ${args.outcome.nay.message}` : args.outcome.nay.message,
+					get_long_paths_end_text(args.run),
+				]
+					.filter((text) => text !== null)
+					.join(" "),
 				errorCode: "failed",
 				now: args.now,
 			});
@@ -1731,9 +1776,10 @@ export async function files_archive_runs_db_start(
 		!blocker && (await files_subtree_ops_db_pause_for_move(ctx, (await ctx.db.get("files_subtree_ops", opId))!));
 	const outcome = blocker || paused ? null : await db_step(ctx, stepArgs);
 	// Work that ended inside the request, or a refusal before the first write, leaves no job. Work that
-	// refused a named item keeps its job, so its Activity can list what was not archived.
+	// refused a named item keeps its job, so its Activity can list what was not archived. So does a
+	// restore that kept items archived because their paths got too long, so its Activity says so.
 	if (
-		(outcome?.kind === "done" && progress.blocked === 0) ||
+		(outcome?.kind === "done" && progress.blocked === 0 && run.longPathOperationId === undefined) ||
 		(outcome?.kind === "failed" && !stepArgs.writeState.isWritten)
 	) {
 		await files_subtree_ops_db_delete(ctx, { opId, now });
@@ -1913,7 +1959,10 @@ export async function files_archive_runs_db_request_stop(
 		ctx,
 		runId: run._id,
 		status: args.reason === "timeout" ? "timed_out" : "canceled",
-		errorMessage: args.reason === "timeout" ? "The restore waited too long for a choice." : null,
+		errorMessage:
+			[args.reason === "timeout" ? "The restore waited too long for a choice." : null, get_long_paths_end_text(run)]
+				.filter((text) => text !== null)
+				.join(" ") || null,
 		errorCode: args.reason === "timeout" ? "timed_out" : "canceled",
 		now: args.now,
 	});

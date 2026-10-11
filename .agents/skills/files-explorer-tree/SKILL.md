@@ -725,18 +725,22 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   and Restore. Keep both and Copy names cut the base name to fit. Refusals say `Names can have at
   most 255 characters.` or `Paths can have at most 1,024 characters.`. Lookups never check, and a
   node stored before the limits keeps its longer name until a write changes it.
-- When a node's path changes (Move, Rename, Restore), pass `oldPath` too. A path over 1,024 is then
-  refused only when it gets longer, so an older long path can always get shorter. A Move or Rename
-  refusal names the item and its length and says `Shorten a folder name or move it higher.`.
+- When a node's path changes (Move, Rename, agent Move, Restore), pass `oldPathLength` too. A path
+  over 1,024 is then refused only when it gets longer, so an older long path can always get shorter.
+  With `oldPathLength`, the refusal names the item and its length and says `Shorten a folder name or
+  move it higher.`.
 - Restore checks paths before its first write. The check walk works out how much longer each item's
   path gets where it lands and refuses the whole restore when any path would pass 1,024:
   `Can't restore. 3 items would have paths over 1,024 characters, like …/report.md (1,031). Shorten
-  a folder name, then restore again.`. Keep both cuts the name so every path inside a folder stays
-  inside the limit. When no name fits, the clash asks again without Keep both (`canKeepBoth`). An item
-  whose path gets too long after the check (a parent renamed meanwhile) stays archived and counts as
-  skipped, and the finished job says how many. A child archived on its own follows its restored
-  folder's path even a few characters over the limit (`files_nodes_db_rebuild_node` does not check)
-  and keeps that path when it is restored later.
+  a folder name, then restore again.`. Keep both cuts the name so every path inside the folder stays
+  inside the limit (the check keeps the longest path inside each top item). When no name fits, the
+  clash asks again without Keep both (`canKeepBoth`).
+- Archive stores `archivedPathLength`. A child archived on its own follows its restored folder's path
+  even a few characters over the limit (`files_nodes_db_rebuild_node` does not check), but its own
+  restore checks the limit against `archivedPathLength`, so it never comes back longer than it was.
+- An item whose path still gets too long while it lands (a job checked before this rule, or an item
+  that joined another restore) stays archived under `longPathOperationId`, not the Skip operation.
+  The job ends `partial` and its end text (also on failed, stopped or timed out) says how many.
 - Only an active folder takes new children. Every create door with a parent id answers `Not found`
   when the parent is a file or an archived folder: `create_folder_node`, `create_text_node` (its
   preflight refuses before any R2 write), `create_upload_node(s)`, and the shared

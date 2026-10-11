@@ -4456,7 +4456,7 @@ export async function files_nodes_db_validate_pending_move_target_for_proposal(
 	const tooLong = files_check_name_and_path_length({
 		names: args.destName === node.name ? [] : [args.destName],
 		path: destPath,
-		oldPath: node.path,
+		oldPathLength: node.path.length,
 	});
 	if (tooLong._nay) return tooLong;
 	const visibleNodePath = (await reader.resolveTarget({ kind: "saved", id: node._id }))?.path;
@@ -4572,7 +4572,7 @@ export async function files_nodes_db_live_scope_reader(
  *
  * It does not check the path limit. A restore gives a child that was archived on its own the path of
  * its restored folder, even when that path is a few characters over the limit. The child stays
- * archived, and its own restore later keeps that path, which the limit allows.
+ * archived. Its own restore checks the limit against `archivedPathLength`, so it cannot come back longer.
  */
 export async function files_nodes_db_rebuild_node(
 	ctx: MutationCtx,
@@ -4638,6 +4638,8 @@ export async function files_nodes_db_archive_node(
 	});
 	await ctx.db.patch("files_nodes", args.node._id, {
 		archiveOperationId: args.archiveOperationId,
+		// A node archived again, like a skipped one, keeps the length from its first archive.
+		archivedPathLength: args.node.archiveOperationId === null ? args.node.path.length : args.node.archivedPathLength,
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});

@@ -1031,18 +1031,27 @@ export const files_PATH_MAX_LENGTH = 1024;
 /**
  * Refuse a name or a path over the limits. Pass only the names and the path a write sets: an old
  * node may keep a longer name, so lookups and unchanged names are never checked.
- * Pass `oldPath` when a node moves or is renamed. A path over the limit is then refused only when it
- * gets longer, so an older long path can always get shorter.
+ * Pass `oldPathLength` when a node moves or is renamed. A path over the limit is then refused only when
+ * it gets longer, so an older long path can always get shorter. The refusal names the item.
  */
-export function files_check_name_and_path_length(args: { names?: string[]; path?: string; oldPath?: string }) {
+export function files_check_name_and_path_length(args: { names?: string[]; path?: string; oldPathLength?: number }) {
 	if (args.names?.some((name) => name.length > files_NAME_MAX_LENGTH)) {
 		return Result({ _nay: { name: "name_too_long", message: "Names can have at most 255 characters." } });
 	}
 	if (
 		args.path !== undefined &&
 		args.path.length > files_PATH_MAX_LENGTH &&
-		(args.oldPath === undefined || args.path.length > args.oldPath.length)
+		(args.oldPathLength === undefined || args.path.length > args.oldPathLength)
 	) {
+		if (args.oldPathLength !== undefined) {
+			const name = args.path.slice(args.path.lastIndexOf("/") + 1);
+			return Result({
+				_nay: {
+					name: "path_too_long",
+					message: `…/${name} would have a path of ${args.path.length.toLocaleString("en-US")} characters. Paths can have at most 1,024 characters. Shorten a folder name or move it higher.`,
+				},
+			});
+		}
 		return Result({ _nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters." } });
 	}
 	return Result({ _yay: null });

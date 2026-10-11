@@ -4856,6 +4856,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			const tooLong = files_check_name_and_path_length({
 				names: args.destName === source.entry.node.name ? [] : [args.destName],
 				path: destPath,
+				oldPathLength: source.entry.path.length,
 			});
 			if (tooLong._nay) return tooLong;
 			if (
