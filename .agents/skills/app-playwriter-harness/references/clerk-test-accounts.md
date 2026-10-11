@@ -25,7 +25,7 @@ All emails end with `+clerk_test@example.com` and all accept the code `424242`.
 | `qa.perm.viewer`   | `m572qhnpq7xw34askfcy6w97h18ck1f8` | Member of `qa-browser` holding the `member` role (the name is misleading; see `app-map.md`).      |
 | `import-qa-member` | `m5754ckhv5yrt02vjf1dt2v4hd8cjsy4` | Accounts-only import QA fixture: no extra memberships.                                            |
 
-**Agent chat needs a different account.** The `example.com` accounts above have no billing state (see "These accounts cannot hold billing state" below), so every agent chat request answers 402. For a second user who must drive agent chat, use `ray-test-1+clerk_test@gmail.com` (Convex `users` id `m570f2kgg8jq3qka7snprkpeks8cme94`, code `424242`). It holds the `member` role in `chitchat-qa/home` and has credits. Verified 2026-10-08. Read its membership back before you build on it, like the others.
+**Check billing before agent chat.** On 2026-10-11, `qa.perm.owner` had a subscription, a usage snapshot and available credit. Its native Agent Bash check passed in `qa-browser/home`. This seeded state does not prove Polar can bootstrap an `example.com` account. For a second user, `ray-test-1+clerk_test@gmail.com` (Convex `users` id `m570f2kgg8jq3qka7snprkpeks8cme94`, code `424242`) held the `member` role in `chitchat-qa/home` and had credits on 2026-10-08. Read back billing and membership before using either fixture.
 
 **A guest must be a member.** A "guest" is a workspace member whose role has no `content.read`. `set_node_share_grant` refuses a user who is not a member (`This person is not a member of this workspace`), so `ray-test-1` cannot get a share in `qa-browser/home` as it is. On 2026-10-11 the owner invited it, then gave it a temporary custom role with only `workspace.mcp.use` (`access_control.create_role` + `set_user_role`), and `get_current_user_workspace_permission(content.read)` answered `false`. Undo it after the check: `organizations.remove_user_from_organization`, then `access_control.delete_role`.
 
@@ -42,7 +42,7 @@ Recreating dropped accounts is a sign-UP flow, done only when the user explicitl
 
 After sign-up, the app upgrades the tab's current anonymous user in place (`resolve_user` branch 3), and Clerk's `external_id` is backfilled asynchronously — a token read right after sign-up can show `external_id: null`. Wait a few seconds and read again with `getToken({ template: "convex", skipCache: true })`.
 
-## These accounts cannot hold billing state, and why
+## Polar bootstrap and seeded billing
 
 Polar's sandbox refuses the whole `example.com` domain, so the Free-subscription bootstrap that runs
 on every sign-in fails for all of them:
@@ -53,10 +53,10 @@ qa.perm.owner+clerk_test@example.com is not a valid email address:
 The domain name example.com does not accept email.
 ```
 
-The consequence is easy to misread: these accounts have **no** `billing_usage_snapshots` row at all,
-so `billing_db_check_credits` refuses them through its "no subscription" branch. That looks like a
-drained account but is not one — do not use it to test the drained-Free branch. Verified 2026-09-01;
-at that point no signed-in user anywhere in the dev deployment had a Polar customer.
+On 2026-09-01, these accounts had no `billing_usage_snapshots` row. The credit check refused them
+because they had no subscription. That is different from a Free account with no credit. Later QA
+can seed billing through the app's billing handler below. Check the current state; do not infer it
+from the email domain. The owner fixture had billing and could use Agent chat on 2026-10-11.
 
 Two drain routes that do NOT work here, so do not spend time on them:
 
