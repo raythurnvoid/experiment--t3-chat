@@ -19,10 +19,12 @@
 // The server answers one clause at a time, so every other chip gets a `problem` and runs nothing.
 // So do a negated chip (`!metadata.status:done`) and the `file.*` chips the box no longer runs.
 import {
+	files_metadata_FIELD_PATH_MAX_LENGTH,
 	files_metadata_FIELD_SEGMENT_REGEX,
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_METADATA_FIELD_PREFIX,
 	files_metadata_METADATA_KEY_REGEX,
+	files_metadata_SEARCH_VALUE_MAX_LENGTH,
 	files_metadata_parse_maybe_date,
 	type files_metadata_SearchPlan,
 } from "./files-metadata.ts";
@@ -31,7 +33,7 @@ import {
  * Longest qualified field path (`metadata.<key>`, `frontmatter.<path>`) the search and sort doors
  * accept.
  */
-export const files_search_query_FIELD_PATH_MAX_LENGTH = 160;
+export const files_search_query_FIELD_PATH_MAX_LENGTH = files_metadata_FIELD_PATH_MAX_LENGTH;
 
 export const files_search_query_FILE_FIELDS = ["path", "link"] as const;
 
@@ -108,6 +110,8 @@ const ONE_CLAUSE_PROBLEM = "Search for words or one filter, not both. You can al
 const FOLDER_RANGE_PROBLEM =
 	"A folder works with words, exact values and any value. Remove the folder to compare numbers or dates";
 const FOLDER_TOO_DEEP_PROBLEM = "This folder is too deep to search inside. Search a folder higher up";
+// The index cuts longer metadata strings, so a longer value could match the wrong files.
+const VALUE_TOO_LONG_PROBLEM = "Search values can have at most 1,024 characters";
 // The server can search inside a folder only up to this many levels below the root.
 const FOLDER_SEARCH_MAX_DEPTH = 12;
 const RANGE_COMPARATORS = [
@@ -410,7 +414,12 @@ export function files_search_query_parse(query: string): ParsedQuery {
 			(parsedKey.key.namespace === "file" ? REMOVED_FILE_FIELD_PROBLEMS.get(parsedKey.key.name) : null) ??
 			parsedKey.problem ??
 			(parsedKey.key.namespace === "file" ? file_field_problem(parsedKey.key.name, parsedValue.match) : null) ??
-			parsedValue.problem;
+			parsedValue.problem ??
+			(parsedKey.key.namespace !== "file" &&
+			parsedValue.match.op !== "exists" &&
+			parsedValue.match.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
+				? VALUE_TOO_LONG_PROBLEM
+				: null);
 
 		filters.push({
 			raw: closedToken,

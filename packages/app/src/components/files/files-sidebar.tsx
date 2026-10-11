@@ -151,6 +151,7 @@ import {
 	files_IMPORT_MAX_ITEMS_PER_CALL,
 	files_is_node,
 	files_MAX_UPLOADS_BYTES,
+	files_NAME_MAX_LENGTH,
 	files_name_input_select_stem,
 	files_node_has_editable_text_content,
 	files_normalize_name,
@@ -494,6 +495,10 @@ function build_import_plan(entries: FilesImportEntry[]) {
 				}
 				normalizedSegments.push(normalizedLeaf);
 			}
+		}
+		// The server refuses the whole chunk for a name over the limit, so skip the file here.
+		if (!skipReason && normalizedSegments.some((segment) => segment.length > files_NAME_MAX_LENGTH)) {
+			skipReason = "invalid_name";
 		}
 		if (skipReason) {
 			if (skillRoot !== undefined) {
@@ -7886,6 +7891,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(plan.items).toEqual([]);
 			expect(plan.skipped).toEqual([{ relativePath: longPath, reason: "too_deep" }]);
+		});
+
+		test("build_import_plan skips a name over 255 characters", () => {
+			const longName = `${"n".repeat(252)}.pdf`;
+			const long = test_file_with_path({ name: longName, path: `/docs/${longName}` });
+
+			const plan = build_import_plan(get_import_file_entries([long]));
+
+			expect(plan.items).toEqual([]);
+			expect(plan.skipped).toEqual([{ relativePath: `docs/${longName}`, reason: "invalid_name" }]);
 		});
 
 		test("chunk_import_items bounds chunks by count and by declared bytes", () => {

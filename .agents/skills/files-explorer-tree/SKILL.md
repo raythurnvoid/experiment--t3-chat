@@ -716,6 +716,15 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - File rows do not show child-creation actions.
 - Default generated names are sibling-aware: `new-file.md`, `new-file-1.md`, `new-file-2.md`, and the matching `new-folder`, `new-folder-1`, `new-folder-2` sequence.
 - File and folder create support path-like names: missing parent folders are created first, then the final file/folder is created at that path.
+- Limits: a name has at most 255 characters and a full path at most 4,096
+  (`files_NAME_MAX_LENGTH`, `files_PATH_MAX_LENGTH`, checked by `files_check_name_and_path_length` in
+  `shared/files.ts`). Every write that sets a new name or path checks them: create and upload
+  (`files_nodes_db_create_node_recursively_at_path`, and the batch doors before their first write),
+  drafts (`files_pending_nodes_db_create`, private create by path, draft moves), Move, Rename and Copy
+  (`files_transfer` start and plan, and the Move header step for every node below a moved folder),
+  and Restore. Keep both and Copy names cut the base name to fit. Refusals say `Names can have at
+  most 255 characters.` or `Paths can have at most 4,096 characters.`. Lookups never check, and a
+  node stored before the limits keeps its longer name until a write changes it.
 - Only an active folder takes new children. Every create door with a parent id answers `Not found`
   when the parent is a file or an archived folder: `create_folder_node`, `create_text_node` (its
   preflight refuses before any R2 write), `create_upload_node(s)`, and the shared
@@ -879,7 +888,7 @@ the tree. The link rules live in the "Public file links" section of `../access-c
 - While an import runs, the upload/import entry points and external file drops are disabled, but moving existing nodes in the tree stays enabled — an import can take minutes and node moves conflict with nothing in it. Only the short single-file upload blocks node moves.
 - Client-side prepare: junk filter, image compression, segment normalization with the shared name normalizers (the `.markdown` → `.md` alias runs first, then the name's type hint picks the name rule), and first-wins dedupe of fully normalized target paths. Client skip reasons: `invalid_name`, `missing_extension`, `too_large`, `too_deep`, `duplicate_after_normalization`.
 - A bundle containing `SKILL.md` has stricter path preflight in `build_import_plan`. Conventional SKILL.md and `.agents` casing is allowed, but resource paths must survive normalization unchanged. A changed, invalid, or colliding bundle path stops the whole import before upload and lists the paths to fix. The user must rename resources and update their references first. Ordinary uploads keep the normalization and dedupe behavior above. See the [workspace skills spec](../ai-chat-skills/SKILL.md).
-- Caps: 1,000 files per import; 50 items and 1 GiB declared bytes per `create_upload_nodes` call; path depth 32; path length 1,024 characters.
+- Caps: 1,000 files per import; 50 items and 1 GiB declared bytes per `create_upload_nodes` call; path depth 32; path length 1,024 characters; names 255 characters (a longer one is skipped as `invalid_name`, because the server refuses the whole call).
 - `create_upload_nodes` charges `files_tree_write` once per call and the `files_bulk_import` bucket once per item; the client waits `_nay.data.retryAfterMs` and retries the chunk on "Rate limit exceeded".
 - Server-side per-item skip reasons are only `conflict` (an existing file was kept, or a permission check refused — deliberately indistinguishable so the payload does not reveal restricted paths) and `path_blocked` (a folder holds the target path, a file holds an ancestor segment, or another batch item collided). `path_blocked` names the blocking node's kind, so it is only used when the caller can `content.read` that node; a hidden blocker answers `conflict` instead.
 - Before any write, the client asks `files_nodes.get_upload_conflicts` which target paths already exist and confirms replace/skip once in `FilesSidebarImportConflictModal`. The query filters by per-node `content.read`, so it reveals nothing the tree pages (`list_tree_children` and the share streams) would not show.

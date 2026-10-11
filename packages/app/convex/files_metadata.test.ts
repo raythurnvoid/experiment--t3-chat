@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { getDocumentSize } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
@@ -328,6 +329,28 @@ describe("list_folder_fields", () => {
 		const node = await child({ name: "fields.md", entries: [{ key: "status", value: 1 }] });
 		await frontmatter(node, Array.from({ length: 50 }, (_, i) => `${"a".repeat(300)}${i}: true`).join("\n"));
 		expect(await catalog()).toMatchObject({ page: ["metadata.status"], isDone: true });
+	});
+});
+
+describe("frontmatter index", () => {
+	test("indexes no key over 160 characters and cuts a long string value, so each doc stays small", async () => {
+		const { t, child, frontmatter } = await fixture();
+		const nodeId = await child({ name: "long.md" });
+		const longValue = "v".repeat(890_000);
+		await frontmatter(nodeId, `${"k".repeat(200)}: [1, 2]\ntitle: ${longValue}`);
+
+		const docs = await t.run(async (ctx) =>
+			(await ctx.db.query("files_metadata_docs").collect()).filter(
+				(doc) => "fileNodeId" in doc && doc.fileNodeId === nodeId,
+			),
+		);
+		expect(docs.map((doc) => `${doc.docKind} ${doc.fieldPath}`).sort()).toEqual([
+			"field frontmatter.title",
+			"value frontmatter.title",
+		]);
+		// One character more than a search value can have, so search stays exact.
+		expect(docs.find((doc) => doc.docKind === "value")?.stringValue).toBe(longValue.slice(0, 1025));
+		expect(Math.max(...docs.map((doc) => getDocumentSize(doc))), "largest index doc").toBeLessThan(8 * 1024);
 	});
 });
 

@@ -445,7 +445,9 @@ The whole batch validates before any write. Existing literal paths select their 
 Replacement archives that target and creates the upload at the same path; it never changes a different canonical sibling.
 New paths get conventional README/AGENTS/SKILL basename casing and `.agents` folder casing. The batch checks names, sizes, collisions, per-path
 actor/account ACL including restricted ancestors, current write policies on replacement files and destination folders,
-and quota. It also refuses a path a Move holds (409 `This item is being moved. Try again when the Move ends.`).
+and quota. It also refuses a path a Move holds (409 `This item is being moved. Try again when the Move ends.`),
+and a new path with a name over 255 characters or over 4,096 characters in total (400 `Names can have at
+most 255 characters.` or `Paths can have at most 4,096 characters.`). A replace keeps its path.
 One bad item returns 400, 403, or 409 with its `path`, and creates nothing. Each asset stores
 `uploadUrlExpiresAt`, like `create_upload_node`. Creating these docs accepts
 the upload. A later policy change does not cancel publication or processing. The finished node keeps its current policy.

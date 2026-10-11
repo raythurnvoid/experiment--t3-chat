@@ -35,6 +35,7 @@ import {
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
+	files_check_name_and_path_length,
 } from "../shared/files.ts";
 import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
@@ -4391,6 +4392,14 @@ export const create_file_upload_targets = internalMutation({
 			// New conventional names are cased above. Other cleanup remains invalid.
 			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {
 				return Result({ _nay: { message: "Path must be absolute and normalized", data: { path: item.path } } });
+			}
+			// A replace keeps the path it has.
+			if (!existingNode) {
+				const tooLong = files_check_name_and_path_length({
+					names: path_extract_segments_from(item.path),
+					path: item.path,
+				});
+				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
 			}
 
 			// Upload names, not Markdown names: files_normalize_name("file", ...) only accepts .md,

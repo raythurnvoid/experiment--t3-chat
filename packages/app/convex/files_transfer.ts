@@ -107,6 +107,8 @@ import {
 	type files_PendingParent,
 	type files_PendingTarget,
 	type files_VisibleEntry,
+	files_check_name_and_path_length,
+	files_NAME_MAX_LENGTH,
 } from "../shared/files.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -777,8 +779,9 @@ function copy_candidate_name(args: { kind: "file" | "folder"; name: string; coun
 	// the extension separator if that ever changes.
 	const dot = kind === "file" ? name.indexOf(".", 1) : -1;
 	const base = dot < 0 ? name : name.slice(0, dot);
-	const extension = dot < 0 ? "" : name.slice(dot);
-	const candidate = `${base}-copy-${counter}${extension}`;
+	const suffix = `-copy-${counter}${dot < 0 ? "" : name.slice(dot)}`;
+	// Cut the base, so a long name still gets a copy name inside the limit.
+	const candidate = `${base.slice(0, Math.max(1, files_NAME_MAX_LENGTH - suffix.length))}${suffix}`;
 	return kind === "folder" ? files_normalize_name("folder", candidate) : files_normalize_file_rename_name(candidate);
 }
 
@@ -814,6 +817,13 @@ async function db_resolve_name(
 		}
 
 		const path = path_join(args.parentPath, name);
+		// A Copy checks every item here, so a folder copied deeper refuses before any write. A Move
+		// keeps an older long name.
+		const tooLong = files_check_name_and_path_length({
+			names: args.run.kind === "move" && name === args.item.sourceName ? [] : [name],
+			path,
+		});
+		if (tooLong._nay) return tooLong;
 		const claims =
 			args.item.parentItemId === null
 				? await ctx.db
@@ -1715,6 +1725,12 @@ async function db_start(
 		const normalized = files_normalize_name("folder", name);
 		if (normalized._nay || normalized._yay !== name) return Result({ _nay: { message: "Invalid folder name" } });
 	}
+	const newNames = args.targetName === null ? args.missingParentNames : [...args.missingParentNames, args.targetName];
+	const tooLong = files_check_name_and_path_length({
+		names: newNames,
+		path: newNames.reduce(path_join, args.targetPath),
+	});
+	if (tooLong._nay) return tooLong;
 
 	const requestHash = await crypto_sha256_hex(
 		JSON.stringify([

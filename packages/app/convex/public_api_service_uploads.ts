@@ -55,6 +55,7 @@ import {
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
+	files_check_name_and_path_length,
 } from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
@@ -992,6 +993,10 @@ export const create_upload_target = internalMutation({
 		});
 		if (writable._nay) {
 			return writable;
+		}
+		const tooLong = files_check_name_and_path_length({ names: segments, path: args.path });
+		if (tooLong._nay) {
+			return tooLong;
 		}
 		// Refuse before the asset insert below: the create meets a Move only after it.
 		const busy = await files_nodes_db_check_create_busy(ctx, {

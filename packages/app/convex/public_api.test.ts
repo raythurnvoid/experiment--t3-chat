@@ -4305,6 +4305,31 @@ describe("files upload-urls", () => {
 		expect(written).toEqual({ nodes: ["/dir"], assets: [] });
 	});
 
+	test("a name over 255 characters refuses the whole batch with 400 before any item is written", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-long-name" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-long-name" });
+		const longPath = `/dir/${"n".repeat(252)}.png`;
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/free.png", contentType: "image/png", size: 64 },
+					{ path: longPath, contentType: "image/png", size: 64 },
+				],
+			}),
+		});
+		expect(response.status, "upload-urls with a long name").toBe(400);
+		expect(await response.json()).toEqual({ message: "Names can have at most 255 characters.", path: longPath });
+		const written = await t.run(async (ctx) => ({
+			nodes: await ctx.db.query("files_nodes").collect(),
+			assets: await ctx.db.query("files_r2_assets").collect(),
+		}));
+		expect(written).toEqual({ nodes: [], assets: [] });
+	});
+
 	test("rejects an invalid content type before writing any upload files or assets", async () => {
 		const t = test_convex();
 		install_r2_object_reads();

@@ -157,6 +157,7 @@ import {
 	files_TEXT_SEARCH_MAX_RESULTS,
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	type files_VisibleEntry,
+	files_check_name_and_path_length,
 } from "../shared/files.ts";
 import {
 	files_metadata_db_patch_file_scope,
@@ -2220,6 +2221,9 @@ export async function files_nodes_db_create_node_recursively_at_path(
 
 	const missingNames = segments.slice(firstMissing);
 	const intendedPath = missingNames.reduce((path, name) => path_join(path, name), parentPath);
+	// Check only the names this create adds: an older folder on the way may keep a longer name.
+	const tooLong = files_check_name_and_path_length({ names: missingNames, path: intendedPath });
+	if (tooLong._nay) return tooLong;
 	if (writeContext) {
 		const target = { kind: "create" as const, parentNode, path: intendedPath };
 		if (
@@ -2648,6 +2652,9 @@ export async function files_nodes_db_plan_private_node_by_path(
 		const policy = await files_nodes_db_require_user_writable(ctx, { node: savedParent, userId: args.userId });
 		if (policy._nay) return policy;
 	}
+
+	const tooLong = files_check_name_and_path_length({ names: segments.slice(missingFrom) });
+	if (tooLong._nay) return tooLong;
 
 	const missingCount = segments.length - missingFrom;
 	// Bound the ancestor checks and writes of one implicit-parent create.
@@ -3392,6 +3399,11 @@ export const create_upload_node = mutation({
 		// nothing has been written yet. Only folders that already exist can carry a restriction, which
 		// is the same set the create walk checks.
 		const nameSegments = path_extract_segments_from(args.filename);
+		// Refuse before the archive and asset writes below. A replace keeps its path.
+		if (!existingNode) {
+			const tooLong = files_check_name_and_path_length({ names: nameSegments, path });
+			if (tooLong._nay) return tooLong;
+		}
 		let intermediateParentId = args.parentId;
 		for (const name of nameSegments.slice(0, -1)) {
 			const intermediate = await ctx.db
@@ -3758,6 +3770,10 @@ export const create_upload_nodes = mutation({
 			}
 
 			const targetPath = path_join(parentPath, item.relativePath);
+			const tooLong = files_check_name_and_path_length({ names: segments, path: targetPath });
+			if (tooLong._nay) {
+				return Result({ _nay: { message: tooLong._nay.message, data: { path: item.relativePath } } });
+			}
 			if (targetPaths.has(targetPath)) {
 				return Result({ _nay: { message: "Duplicate path in batch", data: { path: item.relativePath } } });
 			}
@@ -4451,6 +4467,11 @@ export async function files_nodes_db_validate_pending_move_target_for_proposal(
 
 	const destPath = path_join(destParentPath, args.destName);
 	const visibleDestPath = path_join(visibleDestParentPath, args.destName);
+	const tooLong = files_check_name_and_path_length({
+		names: args.destName === node.name ? [] : [args.destName],
+		path: destPath,
+	});
+	if (tooLong._nay) return tooLong;
 	const visibleNodePath = (await reader.resolveTarget({ kind: "saved", id: node._id }))?.path;
 	if (reader.exhausted) return Result({ _nay: { message: "Move path lookup exceeded its read limit." } });
 	if (!visibleNodePath) return Result({ _nay: { message: "Not found" } });

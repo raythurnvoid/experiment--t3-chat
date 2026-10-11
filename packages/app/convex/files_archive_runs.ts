@@ -77,7 +77,8 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { files_db_get_pending_update, files_ROOT_ID } from "../server/files.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { files_check_name_and_path_length, files_NAME_MAX_LENGTH } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -967,7 +968,9 @@ async function db_find_free_name(
 	const base = dot < 0 ? node.name : node.name.slice(0, dot);
 	const extension = dot < 0 ? "" : node.name.slice(dot);
 	for (let counter = 2; counter <= MAX_NAME_ATTEMPTS; counter++) {
-		const name = `${base}-${counter}${extension}`;
+		const suffix = `-${counter}${extension}`;
+		// Cut the base, so a long name still gets a free name inside the limit.
+		const name = `${base.slice(0, Math.max(1, files_NAME_MAX_LENGTH - suffix.length))}${suffix}`;
 		const occupant = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
@@ -1117,6 +1120,14 @@ async function db_land_node(
 			replacedNode = occupant;
 		}
 	}
+
+	// A Keep both name or a parent renamed during the archive makes a new name or path.
+	const path = path_join(landing?.path ?? "/", name);
+	const tooLong = files_check_name_and_path_length({
+		names: name === node.name ? [] : [name],
+		path: path === node.path ? undefined : path,
+	});
+	if (tooLong._nay) return { kind: "failed", nay: tooLong._nay };
 
 	await files_nodes_db_restore_node(ctx, {
 		node,

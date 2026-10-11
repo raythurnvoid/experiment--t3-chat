@@ -13376,6 +13376,18 @@ describe("upsert_file_pending_move_in_db", () => {
 		});
 		expect(samePath._nay?.message).toBe("Source and destination are the same");
 
+		// A name over the limit is refused, so no draft doc stores it.
+		const longName = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: `${"n".repeat(253)}.md`,
+		});
+		expect(longName._nay?.message).toBe("Names can have at most 255 characters.");
+
 		// Active sibling already owns the destination name.
 		const siblingConflict = await upsert_file_pending_move_for_test({
 			t,

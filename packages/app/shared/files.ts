@@ -1018,6 +1018,28 @@ const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set<string>([
 	"skill",
 ] satisfies Lowercase<files_SpecialFileBaseName>[]);
 
+/**
+ * Limits for a new or renamed node. A normalized name is ASCII, so 255 characters are 255 bytes and
+ * the name survives an export to disk. Each node, draft and index doc stores its full path, and some
+ * stored cursors keep a few copies of it, so the path limit keeps those docs small.
+ */
+export const files_NAME_MAX_LENGTH = 255;
+export const files_PATH_MAX_LENGTH = 4096;
+
+/**
+ * Refuse a name or a path over the limits. Pass only the names and the path a write sets: an old
+ * node may keep a longer name, so lookups and unchanged names are never checked.
+ */
+export function files_check_name_and_path_length(args: { names?: string[]; path?: string }) {
+	if (args.names?.some((name) => name.length > files_NAME_MAX_LENGTH)) {
+		return Result({ _nay: { name: "name_too_long", message: "Names can have at most 255 characters." } });
+	}
+	if (args.path !== undefined && args.path.length > files_PATH_MAX_LENGTH) {
+		return Result({ _nay: { name: "path_too_long", message: "Paths can have at most 4,096 characters." } });
+	}
+	return Result({ _yay: null });
+}
+
 export function files_normalize_name_input(args: {
 	kind: app_convex_Doc<"files_nodes">["kind"];
 	previousText: string;
@@ -1212,13 +1234,6 @@ export function files_normalize_special_node_path(kind: "file" | "folder", path:
 		.join("/");
 }
 
-// TODO: decide a maximum name length and enforce it here. Nothing limits a name today, not this
-// normalizer, not the schema, and not any door, so a paste can store a name of any length. Keep-both
-// makes it grow: every retry appends `-copy-N` to a name that is already too long. Investigate what
-// the limit should be before choosing one. 255 bytes matches most filesystems and survives an export
-// to disk, while 255 characters is easier to explain but lets a CJK name reach about 765 bytes. The
-// truncation also has to keep the extension and the `-copy-N` suffix, or two different sources would
-// cut down to the same name.
 function files_normalize_file_name_parts(args: {
 	fileName: string;
 	pathSeparators: "dash" | "leaf";

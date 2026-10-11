@@ -4,8 +4,10 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_metadata_get_by_path_Result } from "../convex/files_metadata.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
+	files_metadata_FIELD_PATH_MAX_LENGTH,
 	files_metadata_FIELD_SEGMENT_REGEX,
 	files_metadata_METADATA_KEY_REGEX,
+	files_metadata_SEARCH_VALUE_MAX_LENGTH,
 	files_metadata_parse_maybe_date,
 	type files_metadata_SearchPlan,
 } from "../shared/files-metadata.ts";
@@ -36,6 +38,10 @@ function is_record(value: unknown): value is Record<string, unknown> {
 function parse_field_path(value: unknown) {
 	if (typeof value !== "string") {
 		return Result({ _nay: { message: "meta search fields must be strings." } });
+	}
+	// The index keeps no longer field, so a search for one would wrongly find nothing.
+	if (value.length > files_metadata_FIELD_PATH_MAX_LENGTH) {
+		return Result({ _nay: { message: "meta search fields can have at most 160 characters." } });
 	}
 	const dotIndex = value.indexOf(".");
 	if (dotIndex <= 0 || dotIndex === value.length - 1) {
@@ -101,6 +107,10 @@ function parse_binary_args(value: unknown, operator: string) {
 	const fieldPath = parse_field_path(value[0]);
 	if (fieldPath._nay) {
 		return fieldPath;
+	}
+	// The index cuts longer strings, so a longer value could match the wrong files.
+	if (typeof value[1] === "string" && value[1].length > files_metadata_SEARCH_VALUE_MAX_LENGTH) {
+		return Result({ _nay: { message: "meta search values can have at most 1,024 characters." } });
 	}
 	return Result({ _yay: { fieldPath: fieldPath._yay, value: value[1] } });
 }

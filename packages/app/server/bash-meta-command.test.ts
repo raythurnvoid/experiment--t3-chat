@@ -153,7 +153,7 @@ describe("bash_meta_command_create", () => {
 		}
 	});
 
-	test("rejects boolean, negative, unqualified, unknown-kind, and non-primitive filters", async () => {
+	test("rejects boolean, negative, unqualified, unknown-kind, non-primitive, and too long filters", async () => {
 		const cases = [
 			{ where: '{"and":[{"exists":"frontmatter.cc"}]}', message: "one indexed field predicate" },
 			{ where: '{"neq":["frontmatter.cc","bob"]}', message: "positive predicates" },
@@ -163,6 +163,9 @@ describe("bash_meta_command_create", () => {
 			{ where: '{"exists":"metadata.owner.name"}', message: "metadata keys are flat" },
 			{ where: '{"eq":["frontmatter.cc",["bob"]]}', message: "not searchable" },
 			{ where: '{"prefix":["frontmatter.amount",12]}', message: "string values only" },
+			// The index keeps no longer field and cuts longer strings, so these could not answer right.
+			{ where: `{"exists":"frontmatter.${"a".repeat(149)}"}`, message: "at most 160 characters" },
+			{ where: `{"prefix":["frontmatter.title","${"a".repeat(1025)}"]}`, message: "at most 1,024 characters" },
 		];
 
 		for (const item of cases) {

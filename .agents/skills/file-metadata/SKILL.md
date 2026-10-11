@@ -47,6 +47,18 @@ range search over dates works. Value docs carry `entryIndex`, the key's position
 typed — reading the map back in index order would reorder the dialog's lines on every save.
 Frontmatter docs leave `entryIndex` unset.
 
+Frontmatter indexing has two size limits, in `shared/files-metadata.ts`. The Markdown always keeps
+the full text.
+
+- A field path over 160 characters (`files_metadata_FIELD_PATH_MAX_LENGTH`) gets no docs, and neither
+  do the keys nested in it. Search and sort never ask for one, and every value doc copies the path.
+- A string value over 1,025 characters is stored cut to 1,025 (`index_string_value`; one more when
+  the cut would split a surrogate pair). Search values have at most 1,024 characters
+  (`files_metadata_SEARCH_VALUE_MAX_LENGTH`): the search box and `meta search` refuse longer ones,
+  and `meta search` also refuses a field over 160. So no search value can equal a cut value, and a
+  prefix search reads the same start as the full value: both stay exact. Readers of the index docs
+  (`meta get`, sort and the folder table) show the cut value.
+
 Committed `field` docs, of both sources, also carry the folder table's sort fields: `parentId`,
 `nodeKind`, `isRestrictedScopeRoot`, `name`, `sortName`, `sortValue`, and `sortDisplayValue` (built
 by `committed_field_sort_fields` in `files_metadata.ts`). Value docs and pending docs never carry
