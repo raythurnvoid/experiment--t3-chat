@@ -971,9 +971,6 @@ the folder table, and a reader can list the restricted folders it may read in pa
   `files_sharing.ts`, the same 50 with service accounts in
   `access_control_db_set_service_account_grant`, and `MAX_READERS`, 50 plugin readers, in
   `plugins_external_files.ts`) bound it to about 100 rows.
-- `treePath` is optional only until `migrations:run_backfill_files_share_rows_tree_path` has run and
-  `check_share_rows` finds no difference. Until then the share streams accept a row with no
-  `treePath`.
 - Move stages share docs in pages before the group switch. Ordinary selections and connected
   Pending Save groups use the same worker. Share docs count in each transaction's measured
   budget. They do not create a total selection cap.

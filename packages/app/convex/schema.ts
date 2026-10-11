@@ -4128,11 +4128,7 @@ const app_convex_schema = defineSchema({
 		archiveOperationId: v.union(v.string(), v.null()),
 		sortName: v.string(),
 		name: v.string(),
-		/**
-		 * The node's `treePath`. Optional only until `backfill_files_share_rows_tree_path` has run;
-		 * every write sets it.
-		 */
-		treePath: v.optional(v.string()),
+		treePath: v.string(),
 		updatedAt: v.number(),
 		lowercaseExtension: v.union(v.string(), v.null()),
 		contentByteSize: v.union(v.number(), v.null()),
