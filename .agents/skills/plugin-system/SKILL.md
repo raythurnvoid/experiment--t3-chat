@@ -857,6 +857,14 @@ a plugin build that runs `prettier --write dist` without its own config now writ
 (about 8% bigger). Gallery got a local `.prettierrc` like Council's. Chitchat and Video Player have
 no local config yet; add one before their next build.
 
+Gmail 0.2.4 was published and installed in `personal/home` on 2026-10-11 the same way (plugin commit
+`4a756dbff2b042eeb6711ad37bf9f74fa45c72ba`, version doc `hn7qf8eb759fkf1s6ennhc5pah8g2yh7`). Its page
+files are byte-identical to 0.2.3; the bump only lets the gitlink move past 71 backend, parser and
+test commits. Its own Convex backend `kindhearted-mallard-511` was deployed from the same commit.
+Gmail's build and its page test need `VITE_CONVEX_SITE_URL=https://kindhearted-mallard-511.convex.site`
+(normally in the plugin's ignored `.env.local`); without it the page test fails to load and the built
+page has no backend. 429 tests, two byte-identical builds.
+
 SDK 0.21.0 was mirrored on 2026-09-28 at
 `973457877210fec8908f26fe17c8d727572aa54d`. All 12 SDK files match the reviewed
 Press tree at `2a154f8459438ef3cbaf5b323b72f07ece686dad`. It adds the Mounts API,
