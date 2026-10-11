@@ -10,6 +10,7 @@ import { files_saved_placement_db_get_slot } from "../server/files-saved-placeme
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { activities_db_require_by_source_id, activities_get_controls } from "./activities_db.ts";
 import { files_pending_update_runs_db_request_stop } from "./files_pending_update_runs.ts";
+import { files_transfer_db_request_stop } from "./files_transfer.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -766,8 +767,8 @@ describe("Move cohort repair retries", () => {
 		expect((await cohort()).step, "the delayed try runs on time").toBe(waiting.step + 1);
 	});
 
-	// Publish a Move, then fail its repair three times in a row.
-	async function stuck_move() {
+	// Publish a Move, then fail its repair three times in a row. `stop` stops the Move before the third failure.
+	async function stuck_move(stop?: "user" | "timeout") {
 		const w = await transfer_workspace();
 		const a = await w.folder("/a");
 		await w.folder("/a/c1");
@@ -785,6 +786,21 @@ describe("Move cohort repair retries", () => {
 		await fail();
 		await fail();
 		expect((await activity()).errorCode, "two failures do not ask for help yet").toBeUndefined();
+		if (stop === "user")
+			expect(
+				await w.asUser.mutation(api.files_transfer.stop, {
+					membershipId: w.db.membershipId,
+					runId: runId as Id<"files_transfer_runs">,
+				}),
+			).toEqual({ _yay: null });
+		if (stop === "timeout")
+			await w.t.run((ctx) =>
+				files_transfer_db_request_stop(ctx, {
+					runId: runId as Id<"files_transfer_runs">,
+					reason: "timeout",
+					now: Date.now(),
+				}),
+			);
 		await fail();
 		return { w, cohortId, cohort, activity };
 	}
@@ -805,6 +821,17 @@ describe("Move cohort repair retries", () => {
 			undefined,
 			null,
 		]);
+	});
+
+	test.each([
+		["user", "canceled"],
+		["timeout", "timed_out"],
+	] as const)("a %s Stop keeps its result when the repair then gets stuck", async (stop, status) => {
+		const { w, cohortId, cohort, activity } = await stuck_move(stop);
+		expect((await activity()).errorCode, "the stuck notice does not replace the Stop code").toBe(status);
+		await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error: null });
+		await w.finish();
+		expect((await activity()).status).toBe(status);
 	});
 
 	test("Try again now is refused for another user and tries at once for the starter", async () => {

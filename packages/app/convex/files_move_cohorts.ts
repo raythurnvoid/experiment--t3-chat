@@ -1987,11 +1987,12 @@ async function db_save_step(
 		cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;
 	if (activities_is_active(activity.status) && activity.deadlineAt > now && !transfer?.fixedDeadline)
 		await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + delayMs + RUN_TIMEOUT_MS });
-	// A good step takes the notice away.
+	// A good step takes the notice away. Only set or clear the notice itself: a Stop's "canceled" or
+	// "timed_out" code picks the final status, so it must stay.
 	const needsHelp = (patch.repairFailureCount ?? 0) >= REPAIR_HELP_COUNT;
 	if (
 		activities_is_active(activity.status) &&
-		needsHelp !== (activity.errorCode === files_move_cohorts_REPAIR_STUCK_CODE)
+		(needsHelp ? activity.errorCode == null : activity.errorCode === files_move_cohorts_REPAIR_STUCK_CODE)
 	)
 		await ctx.db.patch(
 			"activities",
