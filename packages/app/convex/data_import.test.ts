@@ -10,6 +10,7 @@ import {
 	files_NAME_MAX_LENGTH,
 	files_NEW_FOLDER_DEPTH_MAX,
 	files_REQUEST_FOLDER_PREFIXES_MAX,
+	files_STORED_PATH_MAX_LENGTH,
 } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
@@ -60,6 +61,22 @@ describe("data_import.create_upload_targets", () => {
 				assets: await ctx.db.query("files_r2_assets").collect(),
 			})),
 		).toEqual({ nodes: [], assets: [] });
+	});
+
+	test("a path over 4,096 characters refuses the batch before any lookup", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const longPath = `/${"d/".repeat(files_STORED_PATH_MAX_LENGTH / 2)}f.pdf`;
+
+		const created = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			items: [{ path: longPath, contentType: "application/pdf", size: 10 }],
+		});
+		expect(created, "a path over the stored path cap").toEqual({
+			_nay: { message: "Path is too long", data: { path: longPath } },
+		});
 	});
 
 	test("50 files that use every folder slot fit the real read limits, and one folder more refuses before any write", async () => {

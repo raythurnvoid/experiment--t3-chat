@@ -37,14 +37,14 @@ import {
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	files_check_name_and_path_length,
 	files_check_new_folder_count,
-	files_check_request_folder_count,
+	files_STORED_PATH_MAX_LENGTH,
 } from "../shared/files.ts";
 import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
-	files_db_find_existing_parent,
+	files_db_create_path_lookups,
 	files_db_get_visible_node_by_path,
 	files_default_text_shape_for_name,
 	files_editable_text_content_type_of,
@@ -70,6 +70,7 @@ import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_get_write_policy_management_state,
+	files_nodes_db_live_scope_reader,
 	files_nodes_db_set_write_policy,
 	files_nodes_db_require_writable,
 	files_nodes_db_require_write_policy_management,
@@ -4400,13 +4401,11 @@ export const create_file_upload_targets = internalMutation({
 			collidingNodeId: Id<"files_nodes"> | null;
 			writePolicy?: Doc<"files_nodes">["writePolicy"];
 		}> = [];
+		// One set of lookups for the whole call: during a Move, each folder on the way is read once.
+		const lookups = await files_db_create_path_lookups(ctx, args);
 		for (const rawItem of args.items) {
 			// Existing literal targets win, including hidden files. Only missing paths are cased.
-			let existingNode = await files_db_get_visible_node_by_path(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				path: rawItem.path,
-			});
+			let existingNode = await lookups.get(rawItem.path);
 			const item = {
 				...rawItem,
 				path: existingNode ? rawItem.path : files_normalize_special_node_path("file", rawItem.path),
@@ -4438,11 +4437,7 @@ export const create_file_upload_targets = internalMutation({
 			leafPaths.add(item.path);
 
 			if (item.path !== rawItem.path) {
-				existingNode = await files_db_get_visible_node_by_path(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					path: item.path,
-				});
+				existingNode = await lookups.get(item.path);
 			}
 			if (existingNode) {
 				// This lookup is raw on purpose, like publish_file_write: a path holds one active
@@ -4514,9 +4509,10 @@ export const create_file_upload_targets = internalMutation({
 		// ACL check matters because an API key is not the organization owner: the create helper
 		// itself refuses restricted folders, and by then earlier items are already written. Asking
 		// here turns that case into a clean per-path refusal before anything is written.
-		// Each path checks its deepest existing folder, found from the bottom up, so a file can go into an
-		// existing folder at any depth. The lookups are shared by the call, and the folder caps bound them.
-		const ancestors = new Map<string, Doc<"files_nodes"> | null>();
+		// Each path checks its deepest existing folder, so a file can go into an existing folder at any depth.
+		// Every answer that depends on what exists below that folder comes after its access check, so a
+		// hidden folder does not reveal its names.
+		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
 		const parents = new Map<string, { node: Doc<"files_nodes"> | null; depth: number }>();
 		for (const item of validated) {
 			const segments = path_extract_segments_from(item.path);
@@ -4527,12 +4523,11 @@ export const create_file_upload_targets = internalMutation({
 					});
 				}
 			}
-			const found = await files_db_find_existing_parent(ctx, { ...args, path: item.path, known: ancestors });
-			if (found._nay) return Result({ _nay: { ...found._nay, data: { path: item.path } } });
-			const folderCount = files_check_request_folder_count(ancestors.size);
-			if (folderCount._nay) return folderCount;
-			const { node: parentNode, depth: parentDepth } = found._yay;
-			parents.set(item.path, found._yay);
+			const found = await lookups.find_existing_parent(item.path);
+			// A scope job may not have reached this folder yet, so check the scope its parents give it.
+			const parentNode = found.node && (await withLiveScope(found.node));
+			const parentDepth = found.depth;
+			parents.set(item.path, found);
 			// Check access before checking whether this node is a file or folder. This stops a hidden file
 			// from revealing why the path failed.
 			if (
@@ -4552,15 +4547,6 @@ export const create_file_upload_targets = internalMutation({
 					_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
 				});
 			}
-			// Check only the names this item adds: an older folder on the way and a replaced file keep their
-			// names.
-			if (!item.collidingNodeId) {
-				const tooLong = files_check_name_and_path_length({
-					names: segments.slice(parentDepth),
-					path: item.path,
-				});
-				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
-			}
 			if (
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: args.organizationId,
@@ -4572,6 +4558,17 @@ export const create_file_upload_targets = internalMutation({
 				}))
 			) {
 				return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
+			}
+			const folderCounts = lookups.check_folder_counts(item.path, parentDepth);
+			if (folderCounts._nay) return Result({ _nay: { ...folderCounts._nay, data: { path: item.path } } });
+			// Check only the names this item adds: an older folder on the way and a replaced file keep their
+			// names.
+			if (!item.collidingNodeId) {
+				const tooLong = files_check_name_and_path_length({
+					names: segments.slice(parentDepth),
+					path: item.path,
+				});
+				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
 			}
 			// The write pass meets a Move only after it wrote the earlier items, so refuse the batch here.
 			const busy = item.collidingNodeId
@@ -7494,7 +7491,8 @@ const upload_urls_body_validator = z.object({
 	files: z
 		.array(
 			z.object({
-				path: z.string(),
+				// Bound the work for each path. The handler refuses a new path over the lower cap.
+				path: z.string().max(files_STORED_PATH_MAX_LENGTH),
 				contentType: z.string().min(1).max(200),
 				size: z.number().int().min(1),
 			}),

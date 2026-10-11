@@ -1027,6 +1027,11 @@ const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set<string>([
  */
 export const files_NAME_MAX_LENGTH = 255;
 export const files_PATH_MAX_LENGTH = 1024;
+/**
+ * The path cap before it was lowered to 1,024. Older paths can be this long, so a request may still name
+ * one to replace it. Request bodies use it to bound the work for each path.
+ */
+export const files_STORED_PATH_MAX_LENGTH = 4096;
 
 /**
  * Refuse a name or a path over the limits. Pass only the names and the path a write sets: an old

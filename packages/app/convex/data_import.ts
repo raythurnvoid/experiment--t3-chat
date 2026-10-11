@@ -11,15 +11,15 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_db_find_existing_parent, files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
+import { files_db_create_path_lookups, files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import {
 	files_check_name_and_path_length,
-	files_check_request_folder_count,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_normalize_content_type,
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
+	files_STORED_PATH_MAX_LENGTH,
 } from "../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
@@ -95,6 +95,10 @@ export const create_upload_targets = internalMutation({
 			collidingNodeId: Id<"files_nodes"> | null;
 		}> = [];
 		for (const rawItem of args.items) {
+			// Bound the work for each path. The ancestor pass refuses a new path over the lower cap.
+			if (rawItem.path.length > files_STORED_PATH_MAX_LENGTH) {
+				return Result({ _nay: { message: "Path is too long", data: { path: rawItem.path } } });
+			}
 			const item = { ...rawItem, path: files_normalize_special_node_path("file", rawItem.path) };
 			// Conventional names are cased above. Every other path must already be canonical.
 			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {
@@ -164,9 +168,9 @@ export const create_upload_targets = internalMutation({
 		}
 
 		// An ancestor folder that already exists as a file would make the recursive create fail
-		// mid-write, so check each path's deepest existing folder up front too. It is found from the bottom
-		// up, so a file can go into an existing folder at any depth, and the folder caps bound the lookups.
-		const ancestors = new Map<string, Doc<"files_nodes"> | null>();
+		// mid-write, so check each path's deepest existing folder up front too. A file can go into an existing
+		// folder at any depth. The folder caps come after the checks on that folder, like the API doors.
+		const lookups = await files_db_create_path_lookups(ctx, args);
 		const parents = new Map<string, { node: Doc<"files_nodes"> | null; depth: number }>();
 		for (const item of validated) {
 			const segments = path_extract_segments_from(item.path);
@@ -177,12 +181,9 @@ export const create_upload_targets = internalMutation({
 					});
 				}
 			}
-			const found = await files_db_find_existing_parent(ctx, { ...args, path: item.path, known: ancestors });
-			if (found._nay) return Result({ _nay: { ...found._nay, data: { path: item.path } } });
-			const folderCount = files_check_request_folder_count(ancestors.size);
-			if (folderCount._nay) return folderCount;
-			const { node: ancestor, depth: existingDepth } = found._yay;
-			parents.set(item.path, found._yay);
+			const found = await lookups.find_existing_parent(item.path);
+			const { node: ancestor, depth: existingDepth } = found;
+			parents.set(item.path, found);
 			if (ancestor && ancestor.kind !== "folder") {
 				return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
 			}
@@ -196,6 +197,8 @@ export const create_upload_targets = internalMutation({
 					return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
 				}
 			}
+			const folderCounts = lookups.check_folder_counts(item.path, existingDepth);
+			if (folderCounts._nay) return Result({ _nay: { ...folderCounts._nay, data: { path: item.path } } });
 			// Check only the names this item adds: an older folder on the way and a replaced file keep their
 			// names.
 			if (!item.collidingNodeId) {

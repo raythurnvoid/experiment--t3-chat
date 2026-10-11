@@ -25,7 +25,12 @@ import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import { files_NAME_MAX_LENGTH, files_NEW_FOLDER_DEPTH_MAX, files_PATH_MAX_LENGTH } from "../shared/files.ts";
+import {
+	files_NAME_MAX_LENGTH,
+	files_NEW_FOLDER_DEPTH_MAX,
+	files_PATH_MAX_LENGTH,
+	files_STORED_PATH_MAX_LENGTH,
+} from "../shared/files.ts";
 
 const SEAL_PROCESSING_PATH = "/api/v1/plugins/service-grants/seal-processing";
 const CREATE_TARGET_PATH = "/api/v1/files/service-uploads/create-target";
@@ -1371,7 +1376,7 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
-	test("folder limits: a file goes into an existing folder about 500 levels deep during a Move, and a new path over 1,024 characters answers 400", async () => {
+	test("folder limits: a file and 32 new folders go into an existing folder about 470 levels deep during a Move, and a new path over 1,024 characters answers 400", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
@@ -1402,8 +1407,9 @@ describe("service upload targets", () => {
 			});
 			return ids[0]!;
 		});
-		// The deepest chain of one-letter folders that still leaves room for the file name.
-		const depth = Math.floor((files_PATH_MAX_LENGTH - "/meetings".length - "/x.mp4".length) / 2);
+		// The deepest chain of one-letter folders that still leaves room for 32 new folders and the file name.
+		const depth =
+			Math.floor((files_PATH_MAX_LENGTH - "/meetings".length - "/x.mp4".length) / 2) - files_NEW_FOLDER_DEPTH_MAX;
 		// Raw inserts in pages, so seeding the chain stays under the limits too.
 		let parentId = meetingsId;
 		let deepPath = "/meetings";
@@ -1439,16 +1445,140 @@ describe("service upload targets", () => {
 			body: target_body({ path: `${deepPath}/x.mp4` }),
 		});
 		expect(fits.status, "a file in the deep folder").toBe(200);
-		expect(await read_targets(t)).toHaveLength(1);
+		const newFolders = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: sealed,
+			body: target_body({
+				targetKey: "new-folders",
+				path: `${deepPath}/${Array<string>(files_NEW_FOLDER_DEPTH_MAX).fill("b").join("/")}/y.mp4`,
+			}),
+		});
+		expect(newFolders.status, "32 new folders below the deep folder").toBe(200);
+		expect(await read_targets(t)).toHaveLength(2);
 		const tooLong = await call({
 			t,
 			path: CREATE_TARGET_PATH,
 			bearer: sealed,
-			body: target_body({ targetKey: "long", path: `${deepPath}/long-name.mp4` }),
+			body: target_body({ targetKey: "long", path: `${deepPath}/${"l".repeat(100)}.mp4` }),
 		});
 		expect(tooLong.status, "a new path over the limit").toBe(400);
 		expect(await tooLong.json()).toEqual({ message: "Paths can have at most 1,024 characters." });
-		expect(await read_targets(t), "a refused path adds no target").toHaveLength(1);
+		expect(await read_targets(t), "a refused path adds no target").toHaveLength(2);
+	});
+
+	// A member grant on /meetings. /meetings/secret is restricted, and /meetings/secret/known is inside it.
+	// With `staleScope`, the inner folder keeps no scope, as while a scope job has not reached it yet.
+	async function seed_hidden_folder_grant(t: ReturnType<typeof test_convex>, staleScope = false) {
+		const fixture = await seed_installation(t);
+		const memberUserId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			// The member cannot see /meetings/secret or the folder inside it.
+			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
+			let path = "";
+			let hiddenId: Id<"files_nodes"> | null = null;
+			for (const name of ["meetings", "secret", "known"]) {
+				path = `${path}/${name}`;
+				parentId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					createdBy: fixture.userId,
+					updatedBy: fixture.userId,
+					parentId,
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "folder",
+					path,
+					treePath: `${path}/`,
+					pathDepth: path.split("/").length - 1,
+				});
+				if (name === "secret") hiddenId = parentId;
+				if (hiddenId && !(staleScope && name === "known"))
+					await ctx.db.patch("files_nodes", parentId, { restrictedScopeNodeId: hiddenId });
+			}
+			if (staleScope)
+				await ctx.db.insert("files_subtree_ops", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					userId: fixture.userId,
+					status: "running",
+					blockedByOpId: null,
+					rootNodeIds: [hiddenId!],
+					treePaths: ["/meetings/secret/"],
+					kind: "scope",
+				});
+			return userId;
+		});
+		return await seal_token({ t, fixture, destinationPathPrefix: "/meetings", actorUserId: memberUserId });
+	}
+
+	test("folder limits answer the same whether a name inside a hidden folder exists or not", async () => {
+		const t = test_convex();
+		const memberGrant = await seed_hidden_folder_grant(t);
+		const guess = async (name: string) => {
+			const response = await call({
+				t,
+				path: CREATE_TARGET_PATH,
+				bearer: memberGrant,
+				body: target_body({
+					targetKey: name,
+					// 32 new folders fit below an existing name, and one too many below a missing one.
+					path: `/meetings/secret/${name}/${Array<string>(files_NEW_FOLDER_DEPTH_MAX).fill("d").join("/")}/f.mp4`,
+				}),
+			});
+			return { status: response.status, body: await response.json() };
+		};
+		const known = await guess("known");
+		expect(known).toEqual({ status: 403, body: { message: "Permission denied" } });
+		expect(await guess("missing"), "a missing name inside a hidden folder answers like an existing one").toEqual(known);
+		expect(await read_targets(t)).toHaveLength(0);
+	});
+
+	test("checks the scope a folder gets from its parents while a scope job runs", async () => {
+		const t = test_convex();
+		const memberGrant = await seed_hidden_folder_grant(t, true);
+		const response = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: memberGrant,
+			body: target_body({ path: "/meetings/secret/known/f.mp4" }),
+		});
+		expect(response.status, "a new file in a folder whose parent was just restricted").toBe(403);
+		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await read_targets(t)).toHaveLength(0);
+	});
+
+	test("refuses a path over 4,096 characters in the body check", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture });
+		const response = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: sealed,
+			body: target_body({ path: `/meetings/${"d/".repeat(files_STORED_PATH_MAX_LENGTH / 2)}f.mp4` }),
+		});
+		expect(response.status).toBe(400);
+		expect(await response.json(), "a path over the stored path cap").toEqual({
+			message: "Request body validation failed",
+		});
 	});
 
 	test("requires both mode flags and rejects non-collaborative binary targets", async () => {

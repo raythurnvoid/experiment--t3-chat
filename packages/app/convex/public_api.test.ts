@@ -23,6 +23,7 @@ import {
 	files_NEW_FOLDER_DEPTH_MAX,
 	files_PATH_MAX_LENGTH,
 	files_REQUEST_FOLDER_PREFIXES_MAX,
+	files_STORED_PATH_MAX_LENGTH,
 } from "../shared/files.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -4312,13 +4313,12 @@ describe("files upload-urls", () => {
 	});
 
 	describe("folder limits under the real read limits, while another folder is in a Move", () => {
-		async function seed_upload_during_move(clerkUserId: string, move = true) {
+		async function seed_upload_during_move(clerkUserId: string) {
 			const t = test_convex({ transactionLimits: true });
 			install_r2_object_reads();
 			const db = await seed_signed_in_membership({ t, clerkUserId });
 			const { credential } = await seed_write_credential({ t, db, clerkSubject: clerkUserId });
 			await t.run(async (ctx) => {
-				if (!move) return;
 				const movingId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: db.organizationId,
@@ -4353,9 +4353,9 @@ describe("files upload-urls", () => {
 		}
 		const chain = (head: string, folders: number) => `/${[head, ...Array<string>(folders - 1).fill("a")].join("/")}`;
 
-		// No Move here: while a Move holds the slot, every path lookup walks the path from the root.
+		// During a Move each path is found by name from the root, so the call must read each folder once.
 		test("20 files fit into an existing folder about 500 levels deep", async () => {
-			const { t, db, post } = await seed_upload_during_move("clerk-upload-urls-deep-folder", false);
+			const { t, db, post } = await seed_upload_during_move("clerk-upload-urls-deep-folder");
 			// The deepest chain of one-letter folders that still leaves room for a file name.
 			const depth = Math.floor((files_PATH_MAX_LENGTH - "/19.bin".length) / 2);
 			expect(depth, "deeper than one call may name").toBeGreaterThan(files_REQUEST_FOLDER_PREFIXES_MAX);
@@ -4401,6 +4401,43 @@ describe("files upload-urls", () => {
 			expect(((await response.json()) as { files: unknown[] }).files).toHaveLength(20);
 		});
 
+		test("the existing parents a batch finds count toward the folder limit", async () => {
+			const { t, db, post } = await seed_upload_during_move("clerk-upload-urls-found-parents");
+			const files = 20;
+			const newFolders = 3;
+			// The new folders alone fit, so only the found parents can push the batch over the limit.
+			expect(files * newFolders).toBeLessThanOrEqual(files_REQUEST_FOLDER_PREFIXES_MAX);
+			expect(files * (newFolders + 1)).toBeGreaterThan(files_REQUEST_FOLDER_PREFIXES_MAX);
+			await t.run(async (ctx) => {
+				for (let index = 0; index < files; index++) {
+					const name = `e${index}`;
+					await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						createdBy: db.userId,
+						updatedBy: db.userId,
+						parentId: files_ROOT_ID,
+						name,
+						sortName: files_sort_text_key(name),
+						kind: "folder",
+						path: `/${name}`,
+						treePath: `/${name}/`,
+						pathDepth: 1,
+					});
+				}
+			});
+			// The file after the one that reaches 64 folders goes over.
+			const over = Math.floor(files_REQUEST_FOLDER_PREFIXES_MAX / (newFolders + 1));
+			const response = await post(Array.from({ length: files }, (_, i) => `/e${i}/a/b/c/f.bin`));
+			expect(response.status, "found parents count toward the limit").toBe(400);
+			expect(await response.json()).toEqual({
+				message: `This request uses too many folders (limit ${files_REQUEST_FOLDER_PREFIXES_MAX}). Send fewer files per request.`,
+				code: "too_many_folders",
+				path: `/e${over}/a/b/c/f.bin`,
+			});
+		});
+
 		test("too many folders answer 400 too_many_folders and write nothing", async () => {
 			const { t, post } = await seed_upload_during_move("clerk-upload-urls-too-many-folders");
 			const count = () =>
@@ -4421,6 +4458,7 @@ describe("files upload-urls", () => {
 			expect(await tooMany.json(), "too many folders in one batch").toEqual({
 				message: `This request uses too many folders (limit ${files_REQUEST_FOLDER_PREFIXES_MAX}). Send fewer files per request.`,
 				code: "too_many_folders",
+				path: "/r/2.bin",
 			});
 
 			const tooDeepPath = `${chain("d", files_NEW_FOLDER_DEPTH_MAX + 1)}/f.bin`;
@@ -4432,6 +4470,23 @@ describe("files upload-urls", () => {
 				code: "too_many_folders",
 			});
 			expect(await count()).toEqual(before);
+		});
+	});
+
+	test("upload-urls refuses a path over 4,096 characters in the body check", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-body-bound" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-body-bound" });
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [{ path: `/${"d/".repeat(files_STORED_PATH_MAX_LENGTH / 2)}f.png`, contentType: "image/png", size: 64 }],
+			}),
+		});
+		expect(response.status).toBe(400);
+		expect(await response.json(), "a path over the stored path cap").toEqual({
+			message: "Request body validation failed",
 		});
 	});
 
@@ -6011,6 +6066,112 @@ describe("files read-only locks", () => {
 			}
 		},
 	);
+
+	test("upload-urls answers the same whether a name inside a hidden folder exists or not", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-hidden-folder-names" });
+		const hiddenId = await seed_restricted_root_folder({ t, db: writer.db, name: "secret" });
+		// Inside the hidden folder: a folder, and an old file whose path is over the length limit.
+		const longFolder = "f".repeat(files_PATH_MAX_LENGTH);
+		await t.run(async (ctx) => {
+			let parentId = hiddenId;
+			let path = "/secret";
+			for (const [name, kind] of [
+				["known", "folder"],
+				[longFolder, "folder"],
+				["old.bin", "file"],
+			] as const) {
+				path = `${path}/${name}`;
+				parentId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: writer.db.organizationId,
+					workspaceId: writer.db.workspaceId,
+					createdBy: writer.db.userId,
+					updatedBy: writer.db.userId,
+					parentId,
+					name,
+					sortName: files_sort_text_key(name),
+					kind,
+					path,
+					treePath: kind === "folder" ? `${path}/` : path,
+					pathDepth: path.split("/").length - 1,
+					restrictedScopeNodeId: hiddenId,
+				});
+			}
+		});
+		const answer = async (paths: string[]) => {
+			const response = await t.fetch("/api/v1/files/upload-urls", {
+				method: "POST",
+				headers: auth_headers(writer.credential),
+				body: JSON.stringify({
+					files: paths.map((path) => ({ path, contentType: "application/octet-stream", size: 1 })),
+				}),
+			});
+			const body = (await response.json()) as { message: string; code?: string };
+			return { status: response.status, message: body.message, code: body.code };
+		};
+		const newChain = (head: string, folders: number) => `/${[head, ...Array<string>(folders - 1).fill("a")].join("/")}`;
+		// Each guess would pass a folder limit only when the guessed name exists.
+		const guesses = async (name: string) => ({
+			newFolders: await answer([
+				`/secret/${name}/${Array<string>(files_NEW_FOLDER_DEPTH_MAX).fill("d").join("/")}/f.bin`,
+			]),
+			batch: await answer([
+				`${newChain("p", files_NEW_FOLDER_DEPTH_MAX)}/0.bin`,
+				`${newChain("q", files_REQUEST_FOLDER_PREFIXES_MAX - files_NEW_FOLDER_DEPTH_MAX - 1)}/1.bin`,
+				`/secret/${name}/2.bin`,
+			]),
+			longPath: await answer([`/secret/${name}/${longFolder}/old.bin`]),
+		});
+		const denied = { status: 403, message: "Permission denied", code: undefined };
+		const known = await guesses("known");
+		expect(known).toEqual({ newFolders: denied, batch: denied, longPath: denied });
+		expect(await guesses("missing"), "a missing name inside a hidden folder answers like an existing one").toEqual(
+			known,
+		);
+	});
+
+	test("upload-urls checks the scope a folder gets from its parents while a scope job runs", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-hidden-stale-scope" });
+		const hiddenId = await seed_restricted_root_folder({ t, db: writer.db, name: "secret" });
+		await t.run(async (ctx) => {
+			// The folder was just restricted. Its child keeps no scope until the scope job reaches it.
+			await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				createdBy: writer.db.userId,
+				updatedBy: writer.db.userId,
+				parentId: hiddenId,
+				name: "child",
+				sortName: files_sort_text_key("child"),
+				kind: "folder",
+				path: "/secret/child",
+				treePath: "/secret/child/",
+				pathDepth: 2,
+			});
+			await ctx.db.insert("files_subtree_ops", {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				userId: writer.db.userId,
+				status: "running",
+				blockedByOpId: null,
+				rootNodeIds: [hiddenId],
+				treePaths: ["/secret/"],
+				kind: "scope",
+			});
+		});
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ files: [{ path: "/secret/child/new.bin", contentType: "image/png", size: 64 }] }),
+		});
+		expect(response.status, "a new file in a folder whose parent was just restricted").toBe(403);
+		expect(await response.json()).toEqual({ message: "Permission denied", path: "/secret/child/new.bin" });
+	});
 
 	test("a locked file answers the public write with a 409 conflict while the internal name stays read_only", async () => {
 		const t = test_convex();

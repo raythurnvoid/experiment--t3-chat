@@ -732,9 +732,11 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   most `files_REQUEST_FOLDER_PREFIXES_MAX` (64) distinct folders. `create_upload_nodes` counts the
   prefixes of its relative paths from the strings before any read
   (`files_check_request_folder_prefixes`). The API doors (upload-urls, service uploads, data import)
-  find each path's deepest existing folder from the bottom up (`files_db_find_existing_parent`) and
-  count the new folders plus the parents found (`files_check_request_folder_count`), so folders above
-  a found parent never count. All refuse the whole call with name `too_many_folders`. Batch doors
+  share one `files_db_create_path_lookups` per call: it finds each path's deepest existing folder (from
+  the bottom up without a Move, one walk from the root during a Move that the call shares). The doors
+  check access on that folder first, then call its `check_folder_counts`, which counts the new folders
+  plus the parents found (`files_check_request_folder_count`), so folders above a found parent never
+  count and a hidden folder does not reveal its names. All refuse the whole call with name `too_many_folders`. Batch doors
   look up and check each folder once per call, start the create helper at the found parent, and pass
   one `folders` map to every `files_nodes_db_create_node_recursively_at_path` call so later items
   reuse found and new folders. Single doors map the helper's `too_many_folders` to 400 (`write`,

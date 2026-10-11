@@ -444,20 +444,25 @@ The R2 finalizer confirms the object and publishes its metadata. Reusing the URL
 The whole batch validates before any write. Existing literal paths select their own target, even when hidden.
 Replacement archives that target and creates the upload at the same path; it never changes a different canonical sibling.
 New paths get conventional README/AGENTS/SKILL basename casing and `.agents` folder casing. The batch checks names, sizes, collisions, per-path
-actor/account ACL including restricted ancestors, current write policies on replacement files and destination folders,
+actor/account ACL on the deepest existing folder (with the scope its parents give it while a scope job runs), current write policies on replacement files and destination folders,
 and quota. It also refuses a path a Move holds (409 `This item is being moved. Try again when the Move ends.`),
 and a new path with a name over 255 characters or over 1,024 characters in total (400 `Names can have at
 most 255 characters.` or `Paths can have at most 1,024 characters.`). A replace keeps its path.
 Folder limits keep one batch under the 4,096 index reads of a mutation. Each path finds its deepest
-existing folder from the bottom up (`files_db_find_existing_parent`): the parent first, then up through
-missing folders only. A path that would add more than 32 new folders (`files_NEW_FOLDER_DEPTH_MAX`) answers
-400 with `code: "too_many_folders"`, its `path`, and `This path creates too many new folders (limit 32).`.
+existing folder with `files_db_create_path_lookups`. Without a Move it looks up the parent first, then walks
+up through missing folders. While a Move holds the workspace slot, or a move op runs, it walks each path
+from the root once, and the whole call shares every folder it read, the file lookups too. The access checks
+on that folder come first, so a hidden folder answers 403 whether a name below it exists or not. Only then
+does a path that would add more than 32 new folders (`files_NEW_FOLDER_DEPTH_MAX`) answer 400 with
+`code: "too_many_folders"`, its `path`, and `This path creates too many new folders (limit 32).`.
 A batch whose new folders plus the existing parents it found number more than 64
 (`files_REQUEST_FOLDER_PREFIXES_MAX`) answers 400
-`{ message: "This request uses too many folders (limit 64). Send fewer files per request.", code: "too_many_folders" }`.
-Folders above a found parent do not count, so a file can go into an existing folder at any depth. While a
-Move holds the workspace slot, every path lookup walks the path from the root, so a large batch into a very
-deep folder can still pass the read limit then.
+`{ message: "This request uses too many folders (limit 64). Send fewer files per request.", code: "too_many_folders", path }`,
+with the path that went over. Folders above a found parent do not count, so a file can go into an existing
+folder at any depth. During a Move, reads grow with the depth of each different folder branch, so a batch
+into many different very deep folders can still pass the read limit. A `path` over 4,096 characters
+(`files_STORED_PATH_MAX_LENGTH`, the older path cap) fails body validation, so older long paths stay
+replaceable while the work per path stays bounded.
 One bad item returns 400, 403, or 409 with its `path`, and creates nothing. Each asset stores
 `uploadUrlExpiresAt`, like `create_upload_node`. Creating these docs accepts
 the upload. A later policy change does not cancel publication or processing. The finished node keeps its current policy.
