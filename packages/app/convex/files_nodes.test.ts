@@ -13544,6 +13544,7 @@ describe("list_tree_children_sorted", () => {
 	test("a page over the byte limit asks for a split, and the halves give every row once", async () => {
 		const { t, db, insert_child, read_page } = await seed_folder_table({ transactionLimits: true });
 		const names = Array.from({ length: 8 }, (_, index) => `large-${index}.md`);
+		const value = "x".repeat(800_000);
 		for (const name of names) {
 			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1 });
 			await t.run((ctx) =>
@@ -13551,11 +13552,23 @@ describe("list_tree_children_sorted", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					nodeId,
-					markdownContent: `---\nvalue: ${"x".repeat(800_000)}\n---\n`,
+					markdownContent: `---\nvalue: ${value}\n---\n`,
 				}),
 			);
 		}
 		const sort = { field: "frontmatter.value", direction: "asc" as const };
+		// New index docs cut long values, so the same rows now fit in one page.
+		expect(
+			(await read_page({ kind: "file", sort, paginationOpts: { numItems: 50, cursor: null } })).page.map(
+				(row) => row.name,
+			),
+		).toEqual(names);
+		// Index docs written before the cut can still hold the whole value. Their page must still split.
+		await t.run(async (ctx) => {
+			for (const doc of await ctx.db.query("files_metadata_docs").collect())
+				if (doc.docKind === "field" && doc.fieldPath === "frontmatter.value")
+					await ctx.db.patch("files_metadata_docs", doc._id, { sortDisplayValue: value });
+		});
 
 		// Read a range like `usePaginatedQuery`: split it until each half fits.
 		const read_range = async (cursor: string | null, endCursor: string, depth = 0): Promise<string[]> => {
