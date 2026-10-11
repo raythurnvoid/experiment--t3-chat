@@ -2000,8 +2000,48 @@ async function db_schedule_job(flush: Flush, scope: Omit<Scope, "userId">, input
 	});
 }
 
+/**
+ * Make a saved node's chunks and metadata docs follow its new path or archive state, in a
+ * job. A job that has not started reads the node when it runs. One in the middle of a pass walks
+ * once more when the pass ends, so steady writes cannot keep it from ending.
+ */
+export async function files_pending_overlay_db_schedule_saved_scope(
+	ctx: MutationCtx,
+	node: Pick<Doc<"files_nodes">, "_id" | "organizationId" | "workspaceId">,
+) {
+	const job = await ctx.db
+		.query("files_pending_overlay_jobs")
+		.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope").eq("key", node._id))
+		.unique();
+	if (job) {
+		const cursor = job.cursor && (JSON.parse(job.cursor) as { rerun?: boolean });
+		if (cursor && !cursor.rerun)
+			await ctx.db.patch("files_pending_overlay_jobs", job._id, { cursor: JSON.stringify({ ...cursor, rerun: true }) });
+		return;
+	}
+	const now = Date.now();
+	const scheduledFunctionId = await ctx.scheduler.runAfter(0, internal.files_pending_overlay.run_job, {
+		kind: "saved_scope",
+		key: node._id,
+		nextAttemptAt: now,
+	});
+	await ctx.db.insert("files_pending_overlay_jobs", {
+		organizationId: node.organizationId,
+		workspaceId: node.workspaceId,
+		kind: "saved_scope",
+		savedNodeId: node._id,
+		key: node._id,
+		cursor: null,
+		nextAttemptAt: now,
+		scheduledFunctionId,
+		attempts: 0,
+	});
+}
+
 export async function files_pending_overlay_db_delete_job(ctx: MutationCtx, job: Doc<"files_pending_overlay_jobs">) {
-	if (job.reviewFactsPending) await files_pending_review_facts_db_change_state(ctx.db, job, { jobs: -1 });
+	// A saved scope job never counts. Its kind check only narrows the workspace type.
+	if (job.reviewFactsPending && job.kind !== "saved_scope")
+		await files_pending_review_facts_db_change_state(ctx.db, job, { jobs: -1 });
 	await ctx.db.delete("files_pending_overlay_jobs", job._id);
 }
 
@@ -2010,7 +2050,10 @@ export async function files_pending_overlay_db_delete_job(ctx: MutationCtx, job:
  */
 export async function files_pending_overlay_db_target_cohort(
 	db: QueryCtx["db"],
-	args: Omit<Scope, "userId"> & { target: files_PendingTarget; currentView?: files_saved_placement_View },
+	args: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId"> & {
+		target: files_PendingTarget;
+		currentView?: files_saved_placement_View;
+	},
 ) {
 	const view = args.currentView ?? (await files_saved_placement_db_get_view(db, args));
 	if (!view.cohortId) return null;

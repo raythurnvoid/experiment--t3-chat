@@ -3889,6 +3889,18 @@ const app_convex_schema = defineSchema({
 				kind: v.literal("saved_node"),
 				savedNodeId: v.id("files_nodes"),
 			}),
+			/**
+			 * Copies a saved node's scope onto its saved plain text chunks and metadata docs. Not a review
+			 * job: it never sets `reviewFactsPending`.
+			 */
+			v.object({
+				...files_pending_overlay_job_fields,
+				// Saved docs also live in read-only mounts.
+				organizationId: files_committed_index_fields.organizationId,
+				workspaceId: files_committed_index_fields.workspaceId,
+				kind: v.literal("saved_scope"),
+				savedNodeId: v.id("files_nodes"),
+			}),
 			v.object({
 				...files_pending_overlay_job_fields,
 				kind: v.literal("parent"),

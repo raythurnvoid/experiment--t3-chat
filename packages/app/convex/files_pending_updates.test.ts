@@ -8,6 +8,7 @@ import type { ActionCtx } from "./_generated/server.js";
 import {
 	test_save_file_pending_update,
 	test_finish_pending_update_run,
+	test_finish_saved_scope_jobs,
 	test_apply_file_pending_move,
 	test_convex,
 	test_rename_node,
@@ -16784,6 +16785,7 @@ describe("apply_file_pending_archive", () => {
 		if (applied._nay) {
 			throw new Error(applied._nay.message);
 		}
+		await test_finish_saved_scope_jobs(t);
 
 		await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", seeded.nodeId);

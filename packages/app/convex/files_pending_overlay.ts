@@ -18,6 +18,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops.ts";
+import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
 import {
 	files_pending_overlay_db_child_ancestors,
 	files_pending_overlay_db_compute_target,
@@ -45,6 +46,7 @@ import {
 } from "../server/files-share-rows.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import { files_ancestor_ids, type files_PendingTarget } from "../shared/files.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -60,6 +62,13 @@ const JOB_PAGE_SIZE = 100;
  * Four full-size docs leave room for their second reads and the current saved node.
  */
 const SCOPE_PAGE_SIZE = 4;
+
+/**
+ * Docs per page of a saved scope job, and the most bytes the page reads. At the longest path a run
+ * reads about 2 MB and writes about 1.3 MB: far from every limit, so it needs no near-limit check.
+ */
+const SAVED_SCOPE_PAGE_SIZE = 256;
+const SAVED_SCOPE_PAGE_BYTES = 2 * 1024 * 1024;
 
 /**
  * A job stops before the next doc when fewer ranges are left. A recompute with a deep reader can
@@ -113,6 +122,7 @@ const ANCESTOR_CHECK_PAGE_SIZE = 1000;
 
 const job_kind_validator = v.union(
 	v.literal("saved_node"),
+	v.literal("saved_scope"),
 	v.literal("parent"),
 	v.literal("owner_path"),
 	v.literal("place_fields"),
@@ -125,7 +135,7 @@ type Scope = {
 	userId: Id<"users">;
 };
 
-type PagedJob = Exclude<Doc<"files_pending_overlay_jobs">, { kind: "place_fields" | "targets" }>;
+type PagedJob = Exclude<Doc<"files_pending_overlay_jobs">, { kind: "place_fields" | "targets" | "saved_scope" }>;
 
 /**
  * Where a paged job goes on: the stream it walks, the Convex cursor of the next page, and the docs
@@ -512,6 +522,108 @@ async function db_continue_job(
 }
 
 /**
+ * One page of a saved scope job: copy the saved node's current scope onto its saved plain text
+ * chunks (phase 0), then onto its saved metadata docs (phase 1). Each run reads the node again, so
+ * a page done twice changes nothing, and the last pass ends with the docs equal to the node.
+ */
+async function db_run_saved_scope_job(
+	ctx: MutationCtx,
+	job: Extract<Doc<"files_pending_overlay_jobs">, { kind: "saved_scope" }>,
+) {
+	const node = await ctx.db.get("files_nodes", job.savedNodeId);
+	if (!node) {
+		await files_pending_overlay_db_delete_job(ctx, job);
+		return;
+	}
+	// A Move copies these docs with the node's new scope itself. Go on when it ends.
+	const cohortId = await files_pending_overlay_db_target_cohort(ctx.db, {
+		...job,
+		target: { kind: "saved", id: node._id },
+	});
+	if (cohortId) {
+		await ctx.db.patch("files_pending_overlay_jobs", job._id, { blockedByCohortId: cohortId });
+		return;
+	}
+
+	const cursor = job.cursor
+		? (JSON.parse(job.cursor) as { phase: number; page: string | null; rerun?: boolean })
+		: { phase: 0, page: null };
+	const archiveOperationId = node.archiveOperationId ?? undefined;
+	const paginationOpts = {
+		cursor: cursor.page,
+		numItems: SAVED_SCOPE_PAGE_SIZE,
+		maximumBytesRead: SAVED_SCOPE_PAGE_BYTES,
+	};
+	// The patches change no key of these indexes, so the page cursor stays valid.
+	let isDone: boolean;
+	if (cursor.phase === 0) {
+		const page = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q
+					.eq("organizationId", node.organizationId)
+					.eq("workspaceId", node.workspaceId)
+					.eq("fileNodeId", node._id)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined),
+			)
+			.paginate(paginationOpts);
+		for (const chunk of page.page) {
+			if (chunk.path === node.path && chunk.archiveOperationId === archiveOperationId) continue;
+			// The page read the chunk, so the Move guard needs no second read before the patch.
+			files_move_reservations_db_note_source(ctx.db, { table: "files_plain_text_chunks", id: chunk._id, old: chunk });
+			await ctx.db.patch("files_plain_text_chunks", chunk._id, { path: node.path, archiveOperationId });
+		}
+		cursor.page = page.continueCursor;
+		isDone = page.isDone;
+	} else {
+		// The overlay wrapper notes the docs this query returns, for its own reads and the Move guard.
+		const page = await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_source_fileNode", (q) =>
+				q
+					.eq("organizationId", node.organizationId)
+					.eq("workspaceId", node.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", node._id)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined),
+			)
+			.paginate(paginationOpts);
+		for (const doc of page.page) {
+			const scope: Partial<Doc<"files_metadata_docs">> = {
+				path: node.path,
+				treePath: node.treePath,
+				archiveOperationId,
+				// Field docs also copy the folder table sort fields, built like
+				// `files_metadata_committed_field_sort_fields`.
+				...(doc.docKind === "field"
+					? {
+							parentId: node.parentId,
+							isRestrictedScopeRoot: node.restrictedScopeNodeId === node._id,
+							name: node.name,
+							sortName: files_sort_text_key(node.name),
+						}
+					: {}),
+			};
+			const patch = Object.fromEntries(
+				Object.entries(scope).filter(([field, value]) => doc[field as keyof typeof doc] !== value),
+			);
+			if (Object.keys(patch).length > 0) await ctx.db.patch("files_metadata_docs", doc._id, patch);
+		}
+		cursor.page = page.continueCursor;
+		isDone = page.isDone;
+	}
+
+	if (!isDone) await db_continue_job(ctx, job, { cursor: JSON.stringify(cursor) });
+	else if (cursor.phase === 0)
+		await db_continue_job(ctx, job, { cursor: JSON.stringify({ ...cursor, phase: 1, page: null }) });
+	// The node changed during the pass: one fresh pass now.
+	else if (cursor.rerun) await db_continue_job(ctx, job, { cursor: null });
+	else await files_pending_overlay_db_delete_job(ctx, job);
+}
+
+/**
  * One run of an overlay job: recompute docs until the transaction is near a limit, then schedule
  * the next run. The last run deletes the task doc.
  */
@@ -541,6 +653,10 @@ export const run_job = internalMutation({
 			args.nextAttemptAt !== job.nextAttemptAt
 		)
 			return null;
+		if (job.kind === "saved_scope") {
+			await db_run_saved_scope_job(ctx, job);
+			return null;
+		}
 		if (!(await ctx.db.get("organizations_workspaces", job.workspaceId))) {
 			await files_pending_overlay_db_delete_job(ctx, job);
 			return null;

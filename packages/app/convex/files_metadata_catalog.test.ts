@@ -8,6 +8,7 @@ import { insert_tree_node } from "./files_nodes.setup.test.ts";
 import {
 	test_compact_metadata_catalog,
 	test_convex,
+	test_finish_saved_scope_jobs,
 	test_finish_transfer_run,
 	test_mocks_fill_db_with,
 	test_move_nodes,
@@ -1023,6 +1024,7 @@ describe("catalog lifecycle", () => {
 			await reset_tree_write_limit(t, db.userId);
 			expect((await asOwner.mutation(api.files_nodes.archive_nodes, { membershipId: db.membershipId, nodeIds: [String(nodeId)] }))._nay).toBeUndefined();
 		}
+		await test_finish_saved_scope_jobs(t);
 		await test_compact_metadata_catalog(t);
 		expect(await list_rows(t)).toEqual([]);
 
@@ -1030,6 +1032,7 @@ describe("catalog lifecycle", () => {
 		expect((await asOwner.mutation(api.files_nodes.unarchive_nodes, { membershipId: db.membershipId, nodeIds: [String(file)] }))._nay).toBeUndefined();
 		const restored = await t.run(async (ctx) => await ctx.db.get("files_nodes", file));
 		expect(restored?.parentId).not.toBe(folder);
+		await test_finish_saved_scope_jobs(t);
 		await test_compact_metadata_catalog(t);
 		expect((await list_rows(t)).filter((row) => row.family === "parent")).toEqual([
 			{ family: "parent", fieldPath: "metadata.status", parentId: restored!.parentId, count: 1 },
@@ -1072,6 +1075,7 @@ describe("catalog lifecycle", () => {
 			nodeIds: [String(shared)],
 		});
 		expect(archived._nay).toBeUndefined();
+		await test_finish_saved_scope_jobs(t);
 		const keyDeltas = (await list_deltas(t)).filter((delta) => delta.family === "key");
 		expect(keyDeltas.reduce((sum, delta) => sum + delta.count, 0)).toBe(-5);
 		await test_compact_metadata_catalog(t);
@@ -1088,6 +1092,7 @@ describe("catalog lifecycle", () => {
 			nodeIds: [String(shared)],
 		});
 		expect(restored._nay).toBeUndefined();
+		await test_finish_saved_scope_jobs(t);
 		await test_compact_metadata_catalog(t);
 		expect((await list_rows(t)).map((row) => row.count)).toEqual([6, 5, 1, 6]);
 	});

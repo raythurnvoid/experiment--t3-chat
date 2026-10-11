@@ -189,12 +189,17 @@ export async function read_state(f: Fixture) {
 		nodes: await ctx.db.query("files_nodes").collect(),
 		chunks: await ctx.db.query("files_plain_text_chunks").collect(),
 		metadataDocs: await ctx.db.query("files_metadata_docs").collect(),
+		savedScopeJobs: await ctx.db
+			.query("files_pending_overlay_jobs")
+			.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope"))
+			.collect(),
 	}));
 }
 
 /**
- * The rules the job must keep after every step: each side doc says the same as its node, no active
- * node sits inside an archived folder, and no two active nodes share a folder and a name. An archive
+ * The rules the job must keep after every step: each side doc says the same as its node unless the
+ * node's saved scope job still runs, no active node sits inside an archived folder, and no two
+ * active nodes share a folder and a name. An archive
  * stamps a folder before its children, so while an archive op runs, its folders may still hold active
  * children.
  */
@@ -214,8 +219,9 @@ export async function expect_consistent(f: Fixture) {
 	const nodeById = new Map(state.nodes.map((node) => [node._id, node]));
 
 	// Proposal side docs follow their proposal, not the saved node.
+	const savedScopeNodeIds = new Set(state.savedScopeJobs.map((job) => job.key));
 	const committedSideDocs = [...state.chunks, ...state.metadataDocs].filter(
-		(sideDoc) => sideDoc.sourceKind === "committed",
+		(sideDoc) => sideDoc.sourceKind === "committed" && !savedScopeNodeIds.has(sideDoc.fileNodeId),
 	);
 	const sideDocMismatches = committedSideDocs.flatMap((sideDoc) => {
 		const node = nodeById.get(sideDoc.fileNodeId)!;

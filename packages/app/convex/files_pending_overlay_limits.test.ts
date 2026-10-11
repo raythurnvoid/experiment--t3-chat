@@ -14,6 +14,9 @@ import type { MutationCtx } from "./_generated/server.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { advance as advance_review } from "./files_pending_update_runs.ts";
 import { upsert_file_pending_archive_in_db } from "./files_pending_updates.ts";
+import { archive_nodes, unarchive_nodes } from "./files_nodes.ts";
+import { db_replace_file_chunks } from "./files_nodes_content.ts";
+import { files_metadata_committed_field_sort_fields } from "./files_metadata.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import {
 	advance as advance_transfer,
@@ -1022,6 +1025,121 @@ describe("hard delete", () => {
 		const many = await hard_delete_cost(20);
 		expect(many.databaseQueries).toBe(few.databaseQueries);
 	}, 120_000);
+});
+
+describe("saved scope job", () => {
+	// Archive and Restore patch only the nodes. The saved scope job then copies the new scope onto each
+	// file's saved chunks and metadata docs, one page per run.
+	test("keeps Archive and Restore of two full-size files at the longest path under the budget", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folder = `/${Array.from({ length: 3 }, (_, index) => String(index).repeat(files_NAME_MAX_LENGTH)).join("/")}`;
+		const body = Array.from({ length: files_MAX_TEXT_CONTENT_BYTES / 16 - 200 }, (_, index) =>
+			index.toString(36).padStart(15, "-"),
+		).join("\n");
+		const nodeIds: Id<"files_nodes">[] = [];
+		for (const letter of ["e", "f"]) {
+			const path = `${folder}/${letter.repeat(files_NAME_MAX_LENGTH - 3)}.md`;
+			expect(path).toHaveLength(files_PATH_MAX_LENGTH);
+			const nodeId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path, textContent: "x" });
+			await t.finishAllScheduledFunctions(vi.runAllTimers);
+			// A real Save of this size is slow in tests.
+			await t.run((ctx) =>
+				db_replace_file_chunks(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					nodeId,
+					textContent: body,
+				}),
+			);
+			// The most metadata one file can have, like the metadata catalog test below.
+			await test_run_with_flush(t, async (ctx) => {
+				const node = (await ctx.db.get("files_nodes", nodeId))!;
+				for (const namespace of ["frontmatter", "metadata"] as const)
+					for (let key = 0; key < 128; key++) {
+						const prefix = `${namespace}.k${key}-`;
+						const base = {
+							organizationId: db.organizationId,
+							workspaceId: db.workspaceId,
+							sourceKind: "committed" as const,
+							fileNodeId: nodeId,
+							path: node.path,
+							treePath: node.treePath,
+							fieldPath: prefix + "x".repeat(160 - prefix.length),
+						};
+						await ctx.db.insert("files_metadata_docs", {
+							...base,
+							docKind: "field",
+							...files_metadata_committed_field_sort_fields(node, []),
+						});
+						for (let value = 0; value < (namespace === "frontmatter" ? 3 : 2); value++) {
+							const head = `k${key}v${value}-`;
+							await ctx.db.insert("files_metadata_docs", {
+								...base,
+								docKind: "value",
+								valueKind: "string",
+								stringValue: head + "v".repeat(1024 - head.length),
+							});
+						}
+					}
+			});
+			nodeIds.push(nodeId);
+		}
+		// Each file's saved docs whose path or archive state differs from the node.
+		const stale_docs = (nodeId: Id<"files_nodes">) =>
+			t.run(async (ctx) => {
+				const node = (await ctx.db.get("files_nodes", nodeId))!;
+				const archiveOperationId = node.archiveOperationId ?? undefined;
+				const chunks = await ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+					)
+					.collect();
+				const metadata = await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_source_fileNode", (q) =>
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", nodeId),
+					)
+					.collect();
+				expect(chunks.length).toBeGreaterThan(700);
+				expect(metadata).toHaveLength(896);
+				return [...chunks, ...metadata].filter(
+					(doc) => doc.path !== node.path || doc.archiveOperationId !== archiveOperationId,
+				).length;
+			});
+
+		const { peaks, record } = budget_recorder();
+		for (const [registered, phase] of [
+			[archive_nodes, "archive"],
+			[unarchive_nodes, "restore"],
+		] as const)
+			test_spy_handler(registered, async (handler, ctx, args) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				const result = await handler(ctx, args);
+				record(phase, transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+				return result;
+			});
+		test_spy_handler(run_overlay_job, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			if ((args as { kind: string }).kind === "saved_scope")
+				record("saved scope job", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
+		for (const mutation of [api.files_nodes.archive_nodes, api.files_nodes.unarchive_nodes]) {
+			expect(await asOwner.mutation(mutation, { membershipId: db.membershipId, nodeIds })).toEqual({ _yay: null });
+			await t.finishAllScheduledFunctions(vi.runAllTimers);
+			for (const nodeId of nodeIds) expect(await stale_docs(nodeId), "every saved doc follows its node").toBe(0);
+		}
+		expect(peaks.get("saved scope job")?.calls).toBeGreaterThan(8);
+		console.info("saved scope job at the longest path", JSON.stringify(Object.fromEntries(peaks)));
+	}, 600_000);
 });
 
 describe("metadata catalog", () => {

@@ -318,6 +318,29 @@ export async function test_db_get_overlay_job(
 }
 
 /**
+ * Run every saved scope job to its end, so saved chunks and metadata docs follow their nodes after
+ * an Archive or Restore. Jobs a Move parks stay.
+ */
+export async function test_finish_saved_scope_jobs(t: TestConvexRoot<DataModel>) {
+	for (let run = 0; run < 1_000; run++) {
+		const job = await t.run((ctx) =>
+			ctx.db
+				.query("files_pending_overlay_jobs")
+				.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope"))
+				.filter((q) => q.eq(q.field("blockedByCohortId"), undefined))
+				.first(),
+		);
+		if (!job) return;
+		await t.mutation(internal.files_pending_overlay.run_job, {
+			kind: job.kind,
+			key: job.key,
+			nextAttemptAt: job.nextAttemptAt,
+		});
+	}
+	throw new Error("Saved scope jobs did not finish");
+}
+
+/**
  * The Move that holds this workspace's Move slot.
  */
 export async function test_db_get_slot_cohort(

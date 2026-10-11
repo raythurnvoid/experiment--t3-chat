@@ -43,6 +43,7 @@ import {
 	test_compact_metadata_catalog,
 	test_convex,
 	test_finish_pending_update_run,
+	test_finish_saved_scope_jobs,
 	test_rename_node,
 	test_move_nodes,
 	test_create_saved_text_file,
@@ -12889,6 +12890,7 @@ describe("folder metadata", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+		await test_finish_saved_scope_jobs(t);
 		await assertScope(["/destination/renamed", "/destination/renamed/inner"], true);
 		await test_compact_metadata_catalog(t);
 		expect((
@@ -12926,6 +12928,7 @@ describe("folder metadata", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+		await test_finish_saved_scope_jobs(t);
 		await assertScope(["/restored-parent/renamed", "/restored-parent/renamed/inner"], false);
 		expect((await search("/destination")).items).toEqual([]);
 		await test_compact_metadata_catalog(t);
@@ -13235,6 +13238,7 @@ describe("folder table sort fields", () => {
 			});
 			expect(archived._nay).toBeUndefined();
 		}
+		await test_finish_saved_scope_jobs(t);
 		const archivedRead = await read_sort_fields(t, childId);
 		expect(archivedRead.fields).toEqual([
 			expect.objectContaining({ parentId, archiveOperationId: expect.any(String), sortValue: "open" }),
@@ -13246,6 +13250,7 @@ describe("folder table sort fields", () => {
 			nodeIds: [childId],
 		});
 		expect(restored._nay).toBeUndefined();
+		await test_finish_saved_scope_jobs(t);
 		const restoredRead = await read_sort_fields(t, childId);
 		expect(restoredRead.fields).toHaveLength(1);
 		expect(restoredRead.fields[0]).toMatchObject({ parentId: files_ROOT_ID, sortValue: "open" });
@@ -13272,6 +13277,7 @@ describe("folder table sort fields", () => {
 			nodeIds: [folderId],
 		});
 		expect(archived._nay).toBeUndefined();
+		await test_finish_saved_scope_jobs(t);
 		const unrestricted = await asOwner.mutation(api.files_sharing.unrestrict_node, {
 			membershipId: db.membershipId,
 			nodeId: folderId,
@@ -15045,6 +15051,7 @@ describe("search box doors", () => {
 			nodeIds: [archiveFolderId],
 		});
 		if (archived._nay) throw new Error(archived._nay.message);
+		await test_finish_saved_scope_jobs(t);
 
 		expect(await keys()).not.toContain("frontmatter.legacy");
 		expect(await keys()).toContain("frontmatter.status");

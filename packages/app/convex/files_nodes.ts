@@ -184,7 +184,10 @@ import {
 import { quotas_db_ensure } from "./quotas.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_share_rows_NODE_FIELDS, files_share_rows_principal_key } from "../server/files-share-rows.ts";
-import { files_pending_overlay_list_over_budget } from "../server/files-pending-overlay.ts";
+import {
+	files_pending_overlay_db_schedule_saved_scope,
+	files_pending_overlay_list_over_budget,
+} from "../server/files-pending-overlay.ts";
 import { quotas } from "../shared/quotas.ts";
 import {
 	r2,
@@ -292,55 +295,6 @@ export async function db_upsert_file_stats(
 	});
 	await ctx.db.patch("files_nodes", args.nodeId, { statsId });
 	return statsId;
-}
-
-async function db_patch_plain_text_chunks_scope(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		nodeId: Id<"files_nodes">;
-		path?: string;
-		archiveOperationId?: string;
-	},
-) {
-	const patch: Partial<Pick<Doc<"files_plain_text_chunks">, "path" | "archiveOperationId">> = {};
-	if ("path" in args) {
-		patch.path = args.path;
-	}
-	if ("archiveOperationId" in args) {
-		patch.archiveOperationId = args.archiveOperationId;
-	}
-	// Saved content is bounded by one file. Other owners' drafts use the overlay job.
-	const chunks = await ctx.db
-		.query("files_plain_text_chunks")
-		.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-		)
-		.collect();
-	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, patch)));
-}
-
-async function db_patch_node_search_scope(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		nodeId: Id<"files_nodes">;
-		kind: Doc<"files_nodes">["kind"];
-		path?: string;
-		archiveOperationId?: string;
-		parentId?: Doc<"files_nodes">["parentId"];
-		name?: string;
-	},
-) {
-	await Promise.all([
-		args.kind === "file" ? db_patch_plain_text_chunks_scope(ctx, args) : undefined,
-		files_metadata_db_patch_file_scope(ctx, {
-			...args,
-			...(args.path === undefined ? {} : { treePath: files_derive_tree_path_for_file_node(args.path, args.kind) }),
-		}),
-	]);
 }
 
 export async function enqueue_file_content_materialization(
@@ -4604,8 +4558,8 @@ export async function files_nodes_db_live_scope_reader(
 }
 
 /**
- * Give a child the path and restricted scope that its live parent implies, with its side docs.
- * A move or restrict job calls this for each child after the parent is right. Returns whether it
+ * Give a child the path and restricted scope that its live parent implies. Its saved chunks and
+ * metadata docs follow in a job. A move or restrict job calls this for each child after the parent is right. Returns whether it
  * wrote anything. The caller advances the media validation version once after its writes.
  *
  * It never writes `archiveOperationId`. An archive job may stamp the same child, and a patch keeps
@@ -4644,15 +4598,7 @@ export async function files_nodes_db_rebuild_node(
 	}
 
 	await ctx.db.patch("files_nodes", node._id, fields);
-	if (node.path !== path) {
-		await db_patch_node_search_scope(ctx, {
-			organizationId: node.organizationId,
-			workspaceId: node.workspaceId,
-			nodeId: node._id,
-			kind: node.kind,
-			path,
-		});
-	}
+	if (node.path !== path) await files_pending_overlay_db_schedule_saved_scope(ctx, node);
 	return true;
 }
 
@@ -4660,8 +4606,9 @@ export async function files_nodes_db_rebuild_node(
 
 // #region archive nodes
 /**
- * Archive one node and its side docs under `archiveOperationId`, in the same mutation.
- * The caller advances the media validation version once after its writes.
+ * Archive one node under `archiveOperationId`. Its saved chunks and metadata docs follow in a job,
+ * so one big file costs this mutation little. The caller advances the media validation
+ * version once after its writes.
  *
  * It also deletes the node's own public link. A folder's links below it are the caller's job, because
  * this archives only the one node.
@@ -4685,19 +4632,13 @@ export async function files_nodes_db_archive_node(
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
-	await db_patch_node_search_scope(ctx, {
-		organizationId: args.node.organizationId,
-		workspaceId: args.node.workspaceId,
-		nodeId: args.node._id,
-		kind: args.node.kind,
-		archiveOperationId: args.archiveOperationId,
-	});
+	await files_pending_overlay_db_schedule_saved_scope(ctx, args.node);
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.node._id });
 }
 
 /**
  * Restore one archived node under `parent`, which is active, or under the workspace root when it is
- * null. The node and its side docs change in the same mutation. The node takes the parent's
+ * null. Its saved chunks and metadata docs follow in a job. The node takes the parent's
  * restricted scope unless it is its own scope root, like a move. The caller advances the media
  * validation version once after its writes.
  *
@@ -4738,16 +4679,7 @@ export async function files_nodes_db_restore_node(
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
-	await db_patch_node_search_scope(ctx, {
-		organizationId: args.node.organizationId,
-		workspaceId: args.node.workspaceId,
-		nodeId: args.node._id,
-		kind: args.node.kind,
-		path,
-		archiveOperationId: undefined,
-		parentId,
-		...(args.name !== args.node.name ? { name: args.name } : {}),
-	});
+	await files_pending_overlay_db_schedule_saved_scope(ctx, args.node);
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.node._id });
 }
 

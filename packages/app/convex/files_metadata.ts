@@ -421,40 +421,12 @@ export async function files_metadata_db_patch_file_scope(
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		nodeId: Id<"files_nodes">;
 		fixedView?: files_saved_placement_FixedView;
-		path?: string;
-		treePath?: string;
-		archiveOperationId?: string;
 		/** Written to committed field docs only, like every folder table sort field. */
-		parentId?: Doc<"files_nodes">["parentId"];
-		/** Written to committed field docs only, like every folder table sort field. */
-		isRestrictedScopeRoot?: boolean;
-		/** Written to committed field docs only, with its `sortName`, like every folder table sort field. */
-		name?: string;
+		isRestrictedScopeRoot: boolean;
 	},
 ) {
-	const patch: Partial<Pick<Doc<"files_metadata_docs">, "path" | "treePath" | "archiveOperationId">> = {};
-	if ("path" in args) {
-		patch.path = args.path;
-	}
-	if ("treePath" in args) {
-		patch.treePath = args.treePath;
-	}
-	if ("archiveOperationId" in args) {
-		patch.archiveOperationId = args.archiveOperationId;
-	}
-	const sortFieldsPatch: Partial<Pick<Doc<"files_nodes">, "parentId" | "isRestrictedScopeRoot" | "name" | "sortName">> =
-		{};
-	if (args.parentId !== undefined) {
-		sortFieldsPatch.parentId = args.parentId;
-	}
-	if (args.isRestrictedScopeRoot !== undefined) {
-		sortFieldsPatch.isRestrictedScopeRoot = args.isRestrictedScopeRoot;
-	}
-	if (args.name !== undefined) {
-		sortFieldsPatch.name = args.name;
-		sortFieldsPatch.sortName = files_sort_text_key(args.name);
-	}
-	// Committed metadata is bounded by its write caps. Other owners' pending docs follow in pages.
+	// Committed metadata is bounded by its write caps. Path and archive scope follow the node in the
+	// saved scope job (`files_pending_overlay_db_schedule_saved_scope`).
 	const docs = await ctx.db
 		.query("files_metadata_docs")
 		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
@@ -467,15 +439,11 @@ export async function files_metadata_db_patch_file_scope(
 		)
 		.collect();
 	await Promise.all(
-		docs.flatMap((doc) => {
-			const docPatch =
-				doc.sourceKind === "committed" && doc.docKind === "field" ? { ...patch, ...sortFieldsPatch } : patch;
-			// A restrict change patches only the field docs, so skip the docs it leaves alone.
-			if (Object.keys(docPatch).length === 0) {
-				return [];
-			}
-			return [ctx.db.patch("files_metadata_docs", doc._id, docPatch)];
-		}),
+		docs.flatMap((doc) =>
+			doc.sourceKind === "committed" && doc.docKind === "field"
+				? [ctx.db.patch("files_metadata_docs", doc._id, { isRestrictedScopeRoot: args.isRestrictedScopeRoot })]
+				: [],
+		),
 	);
 }
 

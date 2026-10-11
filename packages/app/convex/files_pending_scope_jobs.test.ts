@@ -1,15 +1,21 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
+import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
+	test_db_get_slot_cohort,
 	test_finish_transfer_run,
 	test_mocks_fill_db_with,
 	test_rename_node,
 } from "./setup.test.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
+import { files_pending_overlay_db_schedule_saved_scope } from "../server/files-pending-overlay.ts";
+import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -48,6 +54,66 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
 });
+
+/**
+ * A saved file with its saved plain text chunks and metadata docs outside any Move view, and its
+ * saved scope job.
+ */
+async function read_saved_docs(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
+	return await t.run(async (ctx) => {
+		const node = (await ctx.db.get("files_nodes", nodeId))!;
+		const chunks = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q
+					.eq("organizationId", node.organizationId)
+					.eq("workspaceId", node.workspaceId)
+					.eq("fileNodeId", nodeId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined),
+			)
+			.collect();
+		const metadata = await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_source_fileNode", (q) =>
+				q
+					.eq("organizationId", node.organizationId)
+					.eq("workspaceId", node.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", nodeId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined),
+			)
+			.collect();
+		const job = await ctx.db
+			.query("files_pending_overlay_jobs")
+			.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope").eq("key", nodeId))
+			.unique();
+		return { node, chunks, metadata, job };
+	});
+}
+
+/**
+ * The saved docs whose scope differs from their node.
+ */
+function stale_docs({ node, chunks, metadata }: Awaited<ReturnType<typeof read_saved_docs>>) {
+	const archiveOperationId = node.archiveOperationId ?? undefined;
+	return [
+		...chunks.filter((doc) => doc.path !== node.path || doc.archiveOperationId !== archiveOperationId),
+		...metadata.filter(
+			(doc) =>
+				doc.path !== node.path ||
+				doc.treePath !== node.treePath ||
+				doc.archiveOperationId !== archiveOperationId ||
+				(doc.sourceKind === "committed" &&
+					doc.docKind === "field" &&
+					(doc.parentId !== node.parentId ||
+						doc.name !== node.name ||
+						doc.sortName !== files_sort_text_key(node.name) ||
+						doc.isRestrictedScopeRoot !== (node.restrictedScopeNodeId === node._id))),
+		),
+	];
+}
 
 test("pending scope pages follow the latest saved path and archive state without changing reviewed content", async () => {
 	const t = test_convex({ transactionLimits: true });
@@ -189,4 +255,122 @@ test("pending scope pages follow the latest saved path and archive state without
 		).toBe(true);
 		expect(current.proposal).toEqual(initial.proposal);
 	}
+}, 60_000);
+
+test("a saved scope job pages a file's saved docs and ends equal to the node after a fast Archive and Restore", async () => {
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
+		path: "/project/big.md",
+		textContent: "Saved.",
+	});
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	// About 330 chunks: more than one job page. A real Save of this size is slow in tests.
+	const body = Array.from({ length: 25_000 }, (_, index) => index.toString(36).padStart(15, "-")).join("\n");
+	const frontmatter = Array.from({ length: 12 }, (_, index) => `key${index}: value${index}`).join("\n");
+	await t.run((ctx) =>
+		db_replace_file_chunks(ctx, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			textContent: `---\n${frontmatter}\n---\n${body}`,
+		}),
+	);
+	const saved = await read_saved_docs(t, nodeId);
+	expect(saved.chunks.length).toBeGreaterThan(256);
+	expect(saved.metadata.length).toBeGreaterThan(12);
+	expect(stale_docs(saved)).toEqual([]);
+	const reviewJobs = async () =>
+		(await t.run((ctx) => files_pending_review_facts_db_get_state(ctx.db, db)))?.pendingJobCount ?? 0;
+	const reviewJobsBefore = await reviewJobs();
+
+	const args = { membershipId: db.membershipId, nodeIds: [nodeId] };
+	expect(await asUser.mutation(api.files_nodes.archive_nodes, args)).toEqual({ _yay: null });
+	const archived = await read_saved_docs(t, nodeId);
+	expect(archived.node.archiveOperationId).not.toBeNull();
+	expect(stale_docs(archived), "Archive leaves the saved docs to the job").toHaveLength(
+		archived.chunks.length + archived.metadata.length,
+	);
+	expect(archived.job).toMatchObject({ cursor: null });
+	expect(await reviewJobs(), "the saved scope job does not hold up reviews").toBe(reviewJobsBefore);
+
+	// One run: the first page of chunks only.
+	vi.runOnlyPendingTimers();
+	await t.finishInProgressScheduledFunctions();
+	const halfway = await read_saved_docs(t, nodeId);
+	expect(JSON.parse(halfway.job!.cursor!)).toMatchObject({ phase: 0, page: expect.any(String) });
+	const archivedChunks = halfway.chunks.filter((chunk) => chunk.archiveOperationId !== undefined).length;
+	expect(archivedChunks).toBeGreaterThan(0);
+	expect(archivedChunks).toBeLessThan(halfway.chunks.length);
+
+	expect(await asUser.mutation(api.files_nodes.unarchive_nodes, args)).toEqual({ _yay: null });
+	expect(JSON.parse((await read_saved_docs(t, nodeId)).job!.cursor!), "Restore asks for one more pass").toMatchObject({
+		rerun: true,
+	});
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	const restored = await read_saved_docs(t, nodeId);
+	expect(restored.node.archiveOperationId).toBeNull();
+	expect(restored.job).toBeNull();
+	expect(stale_docs(restored), "every saved doc follows the restored node").toEqual([]);
+}, 120_000);
+
+test("a saved scope job waits while a Move holds its file, then follows the moved file", async () => {
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
+		path: "/project/note.md",
+		textContent: "---\ntitle: Note\ntags: [a, b]\n---\nSaved text.\n",
+	});
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	const saved = await read_saved_docs(t, nodeId);
+	expect(saved.chunks.length).toBeGreaterThan(0);
+	expect(saved.metadata.length).toBeGreaterThan(0);
+
+	const renamed = await asUser.mutation(api.files_nodes.rename_node, {
+		membershipId: db.membershipId,
+		requestId: crypto.randomUUID(),
+		nodeId,
+		path: "renamed.md",
+	});
+	if (!renamed._yay) throw new Error(renamed._nay?.message ?? "Expected the Rename job");
+	const { runId } = renamed._yay;
+	// Drive the Rename until its Move holds the file.
+	const holder = () =>
+		t.run(async (ctx) => {
+			const cohort = await test_db_get_slot_cohort(ctx, db);
+			const reservation = await ctx.db
+				.query("files_move_source_reservations")
+				.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", nodeId))
+				.unique();
+			return cohort && reservation?.cohortId === cohort._id ? cohort : null;
+		});
+	for (let pass = 0; pass < 100 && !(await holder()); pass++) {
+		const cohort = await t.run((ctx) => test_db_get_slot_cohort(ctx, db));
+		if (cohort) await asUser.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+		else await t.mutation(internal.files_transfer.advance, { runId });
+	}
+	const cohort = await holder();
+	expect(cohort, "the Move holds the file").not.toBeNull();
+
+	await t.run(async (ctx) =>
+		files_pending_overlay_db_schedule_saved_scope(ctx, (await ctx.db.get("files_nodes", nodeId))!),
+	);
+	const job = (await read_saved_docs(t, nodeId)).job!;
+	await t.mutation(internal.files_pending_overlay.run_job, {
+		kind: job.kind,
+		key: job.key,
+		nextAttemptAt: job.nextAttemptAt,
+	});
+	expect((await read_saved_docs(t, nodeId)).job?.blockedByCohortId, "the job waits for the Move").toBe(cohort!._id);
+
+	await test_finish_transfer_run(asUser, runId);
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	const moved = await read_saved_docs(t, nodeId);
+	expect(moved.node.path).toBe("/project/renamed.md");
+	expect(moved.job, "the Move wakes the job, and the job ends").toBeNull();
+	expect(stale_docs(moved)).toEqual([]);
 }, 60_000);
