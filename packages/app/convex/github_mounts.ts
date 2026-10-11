@@ -32,7 +32,11 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { github_codeload_url, github_fetch_repo_head, github_fetch_with_retry } from "../server/github.ts";
-import { files_MAX_TEXT_CONTENT_BYTES, files_get_utf8_byte_size } from "../shared/files.ts";
+import {
+	files_check_name_and_path_length,
+	files_MAX_TEXT_CONTENT_BYTES,
+	files_get_utf8_byte_size,
+} from "../shared/files.ts";
 import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -308,6 +312,17 @@ async function github_sync_stream_archive(
 
 		const classification = github_mount_classify_rel_path(relPath);
 		if (!classification.keep) {
+			skippedCount++;
+			drainSkippedFile(file);
+			return;
+		}
+		// A name or path over the limit can never be created, and a retry would fail the same way.
+		if (
+			files_check_name_and_path_length({
+				names: relPath.split("/"),
+				path: `/${args.mountName}/${args.commitSha}/${relPath}`,
+			})._nay
+		) {
 			skippedCount++;
 			drainSkippedFile(file);
 			return;

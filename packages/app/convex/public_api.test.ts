@@ -16,7 +16,11 @@ import {
 } from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { files_get_utf8_byte_size, files_INVALID_CONTENT_TYPE_MESSAGE } from "../shared/files.ts";
+import {
+	files_get_utf8_byte_size,
+	files_INVALID_CONTENT_TYPE_MESSAGE,
+	files_NAME_MAX_LENGTH,
+} from "../shared/files.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -4330,6 +4334,54 @@ describe("files upload-urls", () => {
 		expect(written).toEqual({ nodes: [], assets: [] });
 	});
 
+	test("old names over the limit stay usable: replace a long-named file and upload into a long-named folder", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-old-long-name" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-old-long-name" });
+		// Names saved before the limit existed.
+		const folderName = "f".repeat(files_NAME_MAX_LENGTH + 1);
+		const fileName = `${"n".repeat(files_NAME_MAX_LENGTH)}.png`;
+		const oldFileId = await t.run(async (ctx) => {
+			const insert_old = (name: string, kind: "file" | "folder") =>
+				ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: files_ROOT_ID,
+					name,
+					sortName: files_sort_text_key(name),
+					kind,
+					path: `/${name}`,
+					treePath: kind === "folder" ? `/${name}/` : `/${name}`,
+					pathDepth: 1,
+				});
+			await insert_old(folderName, "folder");
+			return await insert_old(fileName, "file");
+		});
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: `/${fileName}`, contentType: "image/png", size: 64 },
+					{ path: `/${folderName}/new.png`, contentType: "image/png", size: 64 },
+				],
+			}),
+		});
+		expect(response.status, "upload-urls under old long names").toBe(200);
+		const nodes = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+		expect(
+			nodes
+				.filter((node) => node.archiveOperationId === null)
+				.map((node) => node.path)
+				.sort(),
+		).toEqual([`/${fileName}`, `/${folderName}`, `/${folderName}/new.png`].sort());
+		expect(nodes.find((node) => node._id === oldFileId)?.archiveOperationId, "the old file is replaced").not.toBeNull();
+	});
+
 	test("rejects an invalid content type before writing any upload files or assets", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -6997,6 +7049,59 @@ describe("files read-only locks", () => {
 		const replaced = await find_active_node({ t, db: writer.db, path: "/stored.md" });
 		expect(replaced).not.toBeNull();
 		expect(replaced!._id).not.toBe(occupantNodeId);
+	});
+
+	test("overwrite=replace keeps an old stored file name over the limit", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-replace-old-long-name" });
+		const occupant = await writer.asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: writer.db.membershipId,
+			parentId: "root",
+			filename: "stored.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 3,
+		});
+		if (occupant._nay) throw new Error(occupant._nay.message);
+		// A name saved before the limit existed.
+		const longName = `${"n".repeat(files_NAME_MAX_LENGTH)}.md`;
+		await t.run((ctx) =>
+			ctx.db.patch("files_nodes", occupant._yay.nodeId, {
+				name: longName,
+				sortName: files_sort_text_key(longName),
+				path: `/${longName}`,
+				treePath: `/${longName}`,
+			}),
+		);
+
+		const written = await write_file({
+			t,
+			credential: writer.credential,
+			path: `/${longName}`,
+			content: "# Replace\n",
+			overwrite: "replace",
+		});
+		expect(written.status, "replace of an old long-named stored file").toBe(200);
+		const replaced = await find_active_node({ t, db: writer.db, path: `/${longName}` });
+		expect(replaced?._id).not.toBe(occupant._yay.nodeId);
+	});
+
+	test("write and touch refuse a new name over the limit with 400, before any upload", async () => {
+		const t = test_convex();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-write-new-long-name" });
+		const path = `/${"n".repeat(files_NAME_MAX_LENGTH + 1)}.md`;
+
+		const written = await write_file({ t, credential: writer.credential, path, content: "# Long\n" });
+		expect(written.status, "a write of a new name over the limit").toBe(400);
+		expect(await written.json()).toEqual({ message: "Names can have at most 255 characters." });
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: [path] }),
+		});
+		expect(touched.status, "a touch of a new name over the limit").toBe(400);
+		// The refusal comes before the stage and its R2 objects.
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
 	});
 });
 

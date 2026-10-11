@@ -87,17 +87,22 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import {
 	files_metadata_MAX_FRONTMATTER_FIELDS,
+	files_metadata_SEARCH_VALUE_MAX_LENGTH,
 	type files_metadata_Entry,
 	type files_metadata_SearchPlan,
 } from "../shared/files-metadata.ts";
-import { files_search_query_parse, files_search_query_to_plans } from "../shared/files-search-query.ts";
+import {
+	files_search_query_parse,
+	files_search_query_to_plans,
+	files_search_query_VALUE_TOO_LONG_PROBLEM,
+} from "../shared/files-search-query.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import { files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } from "../shared/files.ts";
+import { files_NAME_MAX_LENGTH, files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_table_filter_order_field, type files_table_Filter } from "../shared/files-table.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
@@ -2179,6 +2184,27 @@ test("rename_node resolves more than 32 missing parents in worker steps", async 
 		progress: { completed: 1 },
 	});
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", db.files.file_root_1._id)))?.path).toBe(`/${path}`);
+}, 120_000);
+
+test("rename_node refuses a new parent folder name over the limit and keeps the old name", async () => {
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId, name: "Rename User" });
+	const accepted = await test_rename_node(t, asUser, {
+		membershipId: db.membershipId,
+		nodeId: db.files.file_root_1._id,
+		path: `${"n".repeat(files_NAME_MAX_LENGTH + 1)}/renamed`,
+	});
+	if (!accepted._yay) throw new Error("Rename was not accepted", { cause: accepted._nay });
+	expect(await t.run((ctx) => ctx.db.get("activities", accepted._yay!.activityId))).toMatchObject({
+		status: "failed",
+	});
+	const nodes = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+	expect(
+		nodes.filter((node) => node.name.length > files_NAME_MAX_LENGTH),
+		"no folder with a name over the limit",
+	).toEqual([]);
+	expect(nodes.find((node) => node._id === db.files.file_root_1._id)?.path).toBe(db.files.file_root_1.path);
 }, 120_000);
 
 test("rename_node Stop removes staged parents and keeps the old name visible", async () => {
@@ -5008,7 +5034,61 @@ describe("files_nodes.get_authorized_by_path", () => {
 	});
 });
 
+// A root node with a name saved before the length limit existed.
+function insert_old_root_node(
+	ctx: MutationCtx,
+	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
+	name: string,
+	kind: "file" | "folder",
+) {
+	return ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		createdBy: db.userId,
+		updatedBy: db.userId,
+		parentId: files_ROOT_ID,
+		name,
+		sortName: files_sort_text_key(name),
+		kind,
+		path: `/${name}`,
+		treePath: kind === "folder" ? `/${name}/` : `/${name}`,
+		pathDepth: 1,
+	});
+}
+
 describe("files_nodes.create_upload_node", () => {
+	test("old names over the limit stay usable: replace a long-named file and upload into a long-named folder", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folderName = "f".repeat(files_NAME_MAX_LENGTH + 1);
+		const fileName = `${"n".repeat(files_NAME_MAX_LENGTH)}.pdf`;
+		const oldFileId = await t.run(async (ctx) => {
+			await insert_old_root_node(ctx, db, folderName, "folder");
+			return await insert_old_root_node(ctx, db, fileName, "file");
+		});
+		const upload = (filename: string) =>
+			asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				filename,
+				contentType: "application/pdf",
+				size: 10,
+			});
+
+		expect((await upload(fileName))._nay, "replace of an old long-named file").toBeUndefined();
+		expect((await upload(`${folderName}/new.pdf`))._nay, "upload into an old long-named folder").toBeUndefined();
+		const nodes = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+		expect(
+			nodes
+				.filter((node) => node.archiveOperationId === null)
+				.map((node) => node.path)
+				.sort(),
+		).toEqual([`/${fileName}`, `/${folderName}`, `/${folderName}/new.pdf`].sort());
+		expect(nodes.find((node) => node._id === oldFileId)?.archiveOperationId, "the old file is replaced").not.toBeNull();
+	});
+
 	test.each([-1, NaN, 0.5])("refuses invalid %s bytes before a node, asset, or quota write", async (size) => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -5346,6 +5426,37 @@ describe("files_nodes.create_upload_node", () => {
 });
 
 describe("files_nodes.create_upload_nodes", () => {
+	test("old names over the limit stay usable: replace a long-named file and upload into a long-named folder", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folderName = "f".repeat(files_NAME_MAX_LENGTH + 1);
+		const fileName = `${"n".repeat(files_NAME_MAX_LENGTH)}.bin`;
+		const oldFileId = await t.run(async (ctx) => {
+			await insert_old_root_node(ctx, db, folderName, "folder");
+			return await insert_old_root_node(ctx, db, fileName, "file");
+		});
+
+		const result = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "replace",
+			items: [
+				{ relativePath: fileName, size: 5 },
+				{ relativePath: `${folderName}/new.bin`, size: 6 },
+			],
+		});
+		expect(result._nay, "upload batch under old long names").toBeUndefined();
+		const nodes = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+		expect(
+			nodes
+				.filter((node) => node.archiveOperationId === null)
+				.map((node) => node.path)
+				.sort(),
+		).toEqual([`/${fileName}`, `/${folderName}`, `/${folderName}/new.bin`].sort());
+		expect(nodes.find((node) => node._id === oldFileId)?.archiveOperationId, "the old file is replaced").not.toBeNull();
+	});
+
 	test("a full storage cap keeps every replaced file and creates no upload assets", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -14481,14 +14592,40 @@ describe("search box doors", () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		// The upper bound of the scan is built from the value. A spread of that many code points
-		// into `String.fromCodePoint` would throw a RangeError instead of the empty answer.
+		// into `String.fromCodePoint` would throw a RangeError instead of the answer.
 		expect(
 			await search_saved_plans({
 				asWho: seeded.asOwner,
 				membershipId: seeded.db.membershipId,
 				plans: [{ op: "prefix", fieldPath: "frontmatter.title", value: "a".repeat(300_000) }],
 			}),
-		).toEqual(new Set());
+		).toEqual(new Set([files_search_query_VALUE_TOO_LONG_PROBLEM]));
+	});
+
+	test("search_saved refuses a value over the limit, which the cut index value could falsely match", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const limit = files_metadata_SEARCH_VALUE_MAX_LENGTH;
+		// The index keeps only the first characters of this title.
+		const longTitleId = await test_materialize_markdown_file({
+			t,
+			asUser: seeded.asOwner,
+			db: seeded.db,
+			path: "/tasks/long-title.md",
+			markdown: ["---", `title: ${"v".repeat(2 * limit)}`, "---", "Body"].join("\n"),
+		});
+		const search = (op: "eq" | "prefix", value: string) =>
+			search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: [{ op, fieldPath: "frontmatter.title", value }],
+			});
+
+		expect(await search("prefix", "vvv")).toEqual(new Set([longTitleId]));
+		expect(await search("eq", "v".repeat(limit + 1)), "an eq value over the limit").toEqual(
+			new Set([files_search_query_VALUE_TOO_LONG_PROBLEM]),
+		);
+		expect(await search("eq", "v".repeat(limit))).toEqual(new Set());
 	});
 
 	test("every door answers somebody else's membership with its empty shape", async () => {

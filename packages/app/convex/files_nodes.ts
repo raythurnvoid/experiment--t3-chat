@@ -54,7 +54,11 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
-import { files_metadata_apply_set_and_remove, type files_metadata_Entry } from "../shared/files-metadata.ts";
+import {
+	files_metadata_apply_set_and_remove,
+	files_metadata_SEARCH_VALUE_MAX_LENGTH,
+	type files_metadata_Entry,
+} from "../shared/files-metadata.ts";
 import {
 	files_sort_is_valid,
 	files_sort_text_key,
@@ -167,6 +171,7 @@ import {
 import {
 	files_search_query_field_path_is_valid,
 	files_search_query_FIELD_PATH_MAX_LENGTH,
+	files_search_query_VALUE_TOO_LONG_PROBLEM,
 } from "../shared/files-search-query.ts";
 import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
 import { files_transfer_db_start_rename } from "./files_transfer.ts";
@@ -2132,6 +2137,11 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 */
 		keepsReplacedPolicy?: true;
 		/**
+		 * Set only when the caller just archived the file at this same path to replace it. The new file
+		 * keeps that name and path, so an old name over the length limit stays usable.
+		 */
+		replacesArchivedFile?: true;
+		/**
 		 * Set only by a copy run that produced `parentId` itself. The create may proceed while
 		 * the parent's current policy still equals this value, even when the value is a lock.
 		 * Never set this from client input.
@@ -2222,8 +2232,10 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	const missingNames = segments.slice(firstMissing);
 	const intendedPath = missingNames.reduce((path, name) => path_join(path, name), parentPath);
 	// Check only the names this create adds: an older folder on the way may keep a longer name.
-	const tooLong = files_check_name_and_path_length({ names: missingNames, path: intendedPath });
-	if (tooLong._nay) return tooLong;
+	if (!args.replacesArchivedFile) {
+		const tooLong = files_check_name_and_path_length({ names: missingNames, path: intendedPath });
+		if (tooLong._nay) return tooLong;
+	}
 	if (writeContext) {
 		const target = { kind: "create" as const, parentNode, path: intendedPath };
 		if (
@@ -3399,12 +3411,8 @@ export const create_upload_node = mutation({
 		// nothing has been written yet. Only folders that already exist can carry a restriction, which
 		// is the same set the create walk checks.
 		const nameSegments = path_extract_segments_from(args.filename);
-		// Refuse before the archive and asset writes below. A replace keeps its path.
-		if (!existingNode) {
-			const tooLong = files_check_name_and_path_length({ names: nameSegments, path });
-			if (tooLong._nay) return tooLong;
-		}
 		let intermediateParentId = args.parentId;
+		let existingSegmentCount = 0;
 		for (const name of nameSegments.slice(0, -1)) {
 			const intermediate = await ctx.db
 				.query("files_nodes")
@@ -3452,6 +3460,14 @@ export const create_upload_node = mutation({
 			}
 
 			intermediateParentId = intermediate._id;
+			existingSegmentCount++;
+		}
+
+		// Refuse before the archive and asset writes below. Check only the names this upload adds: an
+		// older folder on the way and a replaced file keep their names.
+		if (!existingNode) {
+			const tooLong = files_check_name_and_path_length({ names: nameSegments.slice(existingSegmentCount), path });
+			if (tooLong._nay) return tooLong;
 		}
 
 		if (existingNode) {
@@ -3528,6 +3544,7 @@ export const create_upload_node = mutation({
 			kind: "file",
 			contentType: storedContentType,
 			assetId,
+			...(existingNode ? { replacesArchivedFile: true as const } : {}),
 			// The size and the media type are not stamped here: both are client-declared at this
 			// point. The R2 event publish stamps the real ones.
 			metadata: [
@@ -3770,10 +3787,6 @@ export const create_upload_nodes = mutation({
 			}
 
 			const targetPath = path_join(parentPath, item.relativePath);
-			const tooLong = files_check_name_and_path_length({ names: segments, path: targetPath });
-			if (tooLong._nay) {
-				return Result({ _nay: { message: tooLong._nay.message, data: { path: item.relativePath } } });
-			}
 			if (targetPaths.has(targetPath)) {
 				return Result({ _nay: { message: "Duplicate path in batch", data: { path: item.relativePath } } });
 			}
@@ -3804,6 +3817,7 @@ export const create_upload_nodes = mutation({
 		for (const item of validated) {
 			let itemSkipReason: "conflict" | "path_blocked" | null = null;
 			let walkParentId: Doc<"files_nodes">["parentId"] | null = args.parentId;
+			let existingSegmentCount = 0;
 			for (const [depth, name] of item.segments.slice(0, -1).entries()) {
 				// Another item in this batch wants a file where this item needs a folder.
 				const ancestorTargetPath = path_join(parentPath, item.segments.slice(0, depth + 1).join("/"));
@@ -3870,6 +3884,7 @@ export const create_upload_nodes = mutation({
 					break;
 				}
 				walkParentId = intermediate._id;
+				existingSegmentCount++;
 			}
 			if (itemSkipReason) {
 				skipped.push({ relativePath: item.relativePath, reason: itemSkipReason });
@@ -3928,6 +3943,18 @@ export const create_upload_nodes = mutation({
 				}
 			}
 
+			// Still before any write. Check only the names this item adds: an older folder on the way and a
+			// replaced file keep their names.
+			if (!existingNode) {
+				const tooLong = files_check_name_and_path_length({
+					names: item.segments.slice(existingSegmentCount),
+					path: item.targetPath,
+				});
+				if (tooLong._nay) {
+					return Result({ _nay: { message: tooLong._nay.message, data: { path: item.relativePath } } });
+				}
+			}
+
 			runnable.push({ ...item, existingNodeId: existingNode?._id ?? null });
 		}
 
@@ -3977,6 +4004,7 @@ export const create_upload_nodes = mutation({
 				kind: "file",
 				contentType: item.contentType,
 				assetId,
+				...(item.existingNodeId ? { replacesArchivedFile: true as const } : {}),
 				// A folder import also records the path the file had inside the imported folder. Once
 				// the import is placed under another parent, the stored path no longer shows it.
 				metadata: [
@@ -9762,6 +9790,7 @@ export const search_saved = query({
 				message: v.union(
 					v.literal("Folder not found"),
 					v.literal("This folder is too deep to search inside. Search a folder higher up"),
+					v.literal(files_search_query_VALUE_TOO_LONG_PROBLEM),
 				),
 			}),
 		),
@@ -9957,6 +9986,15 @@ export const search_saved = query({
 				(folder && (plan.op === "prefix" || plan.op === "range"))
 			) {
 				return refused;
+			}
+			// The index cuts long values, so a longer value could match a different one. Refuse it like the
+			// search box does.
+			if (
+				(plan.op === "eq" || plan.op === "prefix") &&
+				typeof plan.value === "string" &&
+				plan.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
+			) {
+				return { ...refused, page: [{ kind: "problem" as const, message: files_search_query_VALUE_TOO_LONG_PROBLEM }] };
 			}
 			const result = await files_metadata_db_query_saved_plan(ctx, {
 				organizationId: membership.organizationId,

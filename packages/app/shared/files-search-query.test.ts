@@ -7,6 +7,7 @@ import {
 	files_search_query_quote,
 	files_search_query_field_path_is_valid,
 	files_search_query_field_paths,
+	files_search_query_FIELD_PATH_MAX_LENGTH,
 	files_search_query_serialize,
 	files_search_query_to_plans,
 	files_search_query_typing_token,
@@ -152,6 +153,16 @@ describe("files_search_query_parse", () => {
 		expect(problems(`frontmatter.title:"${"a".repeat(1024)}"*`)).toEqual([null]);
 		expect(problems(`metadata.title:${"a".repeat(1025)}`)).toEqual([tooLongProblem]);
 		expect(problems(`frontmatter.title:"${"a".repeat(1025)}"*`)).toEqual([tooLongProblem]);
+	});
+
+	test("refuses a field over the field path limit, because the index keeps no docs for it", () => {
+		const problems = (query: string) => files_search_query_parse(query).filters.map((filter) => filter.problem);
+		const atLimit = `frontmatter.${"k".repeat(files_search_query_FIELD_PATH_MAX_LENGTH - "frontmatter.".length)}`;
+
+		expect(problems(`${atLimit}:open`)).toEqual([null]);
+		expect(problems(`${atLimit}k:open`), "a field over the limit").toEqual([
+			`Fields can have at most ${files_search_query_FIELD_PATH_MAX_LENGTH} characters`,
+		]);
 	});
 
 	test("reports why a filter cannot run and still keeps it", () => {

@@ -13,6 +13,7 @@ import { v_result } from "../server/convex-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import {
+	files_check_name_and_path_length,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_normalize_content_type,
 	files_normalize_name,
@@ -165,6 +166,7 @@ export const create_upload_targets = internalMutation({
 		// mid-write, so check every ancestor path up front too.
 		for (const item of validated) {
 			const segments = path_extract_segments_from(item.path);
+			let existingDepth = 0;
 			for (let depth = 1; depth < segments.length; depth++) {
 				const ancestorPath = `/${segments.slice(0, depth).join("/")}`;
 				if (leafPaths.has(ancestorPath)) {
@@ -195,7 +197,14 @@ export const create_upload_targets = internalMutation({
 					if (ancestorWritable._nay) {
 						return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
 					}
+					existingDepth = depth;
 				}
+			}
+			// Check only the names this item adds: an older folder on the way and a replaced file keep their
+			// names.
+			if (!item.collidingNodeId) {
+				const tooLong = files_check_name_and_path_length({ names: segments.slice(existingDepth), path: item.path });
+				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
 			}
 		}
 
@@ -247,6 +256,7 @@ export const create_upload_targets = internalMutation({
 				kind: "file",
 				contentType: item.contentType,
 				assetId,
+				...(item.collidingNodeId ? { replacesArchivedFile: true as const } : {}),
 				// Say the file arrived through an operator import, so `meta search` can tell imported
 				// content from what somebody uploaded here. The size and the media type are
 				// client-declared at this point. The R2 event publish stamps the real ones.

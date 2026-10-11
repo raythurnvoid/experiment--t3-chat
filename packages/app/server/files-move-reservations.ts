@@ -341,7 +341,7 @@ export async function files_move_reservations_db_is_rename_allocation(
 export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 	const raw = ctx.db;
 	const state: State = { capability: null, securityNodes: new Set(), knownScopes: new Map() };
-	const activeScopes = new Map<string, boolean>();
+	const activeScopes = new Map<string, Promise<boolean>>();
 	const reservationTables = new Set([
 		"files_move_workspace_slots",
 		"files_move_source_reservations",
@@ -352,33 +352,33 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 		const workspaceId = raw.normalizeId("organizations_workspaces", value.workspaceId);
 		if (!organizationId || !workspaceId) return false;
 		const key = `${organizationId}:${workspaceId}`;
+		// Keep the read in flight too, like the blockers below.
 		let active = activeScopes.get(key);
-		if (active === undefined) {
-			const slot = await raw
+		if (!active) {
+			active = raw
 				.query("files_move_workspace_slots")
 				.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
-				.unique();
-			active = slot?.cohortId != null;
+				.unique()
+				.then((slot) => slot?.cohortId != null);
 			activeScopes.set(key, active);
 		}
-		return active;
+		return await active;
 	}
 	// One walk per check in this transaction: a bulk side write repeats the same file's check per doc.
 	// A reservation write or a parent change can change an answer, so it clears them all.
-	const blockers = new Map<string, Id<"files_move_cohorts"> | null>();
-	let blockersVersion = 0;
+	// The map keeps the walk in flight too, so writes in a Promise.all share one walk. A write that
+	// clears the map during a walk keeps later checks from reusing it.
+	const blockers = new Map<string, Promise<Id<"files_move_cohorts"> | null>>();
 	function forget_blockers() {
 		blockers.clear();
-		blockersVersion++;
 	}
-	async function find_blocker(check: Check) {
+	function find_blocker(check: Check) {
 		const key = JSON.stringify(check);
-		const cached = blockers.get(key);
-		if (cached !== undefined) return cached;
-		const version = blockersVersion;
-		const blocker = await files_move_reservations_db_find_blocker(raw, check);
-		// A write that ended during this walk may have changed the answer.
-		if (version === blockersVersion) blockers.set(key, blocker);
+		let blocker = blockers.get(key);
+		if (!blocker) {
+			blocker = files_move_reservations_db_find_blocker(raw, check);
+			blockers.set(key, blocker);
+		}
 		return blocker;
 	}
 	async function guard(

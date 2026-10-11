@@ -2961,6 +2961,15 @@ async function db_preflight_file_write_target(
 	if (writable._nay) {
 		return writable;
 	}
+	// Refuse before the caller uploads to R2. Check only the names this create adds: an older folder on
+	// the way may keep a longer name.
+	const tooLong = files_check_name_and_path_length({
+		names: path_extract_segments_from(args.path).slice(ancestor?.pathDepth ?? 0),
+		path: args.path,
+	});
+	if (tooLong._nay) {
+		return Result({ _nay: { name: "invalid_input", message: tooLong._nay.message } });
+	}
 
 	return Result({ _yay: { targetAnchor: { kind: "create" as const } } });
 }
@@ -3477,6 +3486,7 @@ export const publish_file_write = internalMutation({
 			writeContext: createContext,
 			writePolicy,
 			...(keepsReplacedPolicy ? { keepsReplacedPolicy: true as const } : {}),
+			...(activeNode ? { replacesArchivedFile: true as const } : {}),
 			...(pluginName
 				? {
 						createdNodesMetadata: [
@@ -4393,15 +4403,6 @@ export const create_file_upload_targets = internalMutation({
 			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {
 				return Result({ _nay: { message: "Path must be absolute and normalized", data: { path: item.path } } });
 			}
-			// A replace keeps the path it has.
-			if (!existingNode) {
-				const tooLong = files_check_name_and_path_length({
-					names: path_extract_segments_from(item.path),
-					path: item.path,
-				});
-				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
-			}
-
 			// Upload names, not Markdown names: files_normalize_name("file", ...) only accepts .md,
 			// while uploaded binaries keep their real extensions like the app's upload flow.
 			const name = path_name_of(item.path);
@@ -4536,6 +4537,15 @@ export const create_file_upload_targets = internalMutation({
 				}
 				parentNode = ancestor;
 			}
+			// Check only the names this item adds: an older folder on the way and a replaced file keep their
+			// names.
+			if (!item.collidingNodeId) {
+				const tooLong = files_check_name_and_path_length({
+					names: segments.slice(parentNode?.pathDepth ?? 0),
+					path: item.path,
+				});
+				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
+			}
 			if (
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: args.organizationId,
@@ -4640,6 +4650,7 @@ export const create_file_upload_targets = internalMutation({
 				writeContext,
 				writePolicy: item.writePolicy,
 				...(item.writePolicy !== undefined ? { keepsReplacedPolicy: true as const } : {}),
+				...(item.collidingNodeId ? { replacesArchivedFile: true as const } : {}),
 				now,
 			});
 			// The validation pass cleared every failure this helper can hit (collisions, ancestor
@@ -6982,6 +6993,12 @@ export async function public_api_http_touch_files(args: {
 				return {
 					status: 403,
 					body: await fail({ status: 403, message: prepared._nay.message, errorCode: "permission_denied" }),
+				} as const;
+			}
+			if (prepared._nay.name === "invalid_input") {
+				return {
+					status: 400,
+					body: await fail({ status: 400, message: prepared._nay.message, errorCode: "invalid_input" }),
 				} as const;
 			}
 			// A locked parent is a conflict, not a permission error.
