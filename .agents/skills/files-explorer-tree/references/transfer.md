@@ -70,10 +70,10 @@ the same producer with private proposals. `files_pending_updates.ts` and
   their clocks prevent a later publication from using stale permission. New files elsewhere in the
   workspace do not stop a Move. Restrict, folder protection and Archive wait while a Move holds
   the workspace, so they never skip the nodes it holds.
-- Name and path limits (255 and 4,096 characters): `files_transfer` start checks the new names and
+- Name and path limits (255 and 1,024 characters): `files_transfer` start checks the new names and
   the destination path. Copy plan checks every item, so a folder copied deeper stops the run before
   any write. The Move header step visits every node, so a folder moved deeper aborts the Move when a
-  path below it would pass 4,096. No extra scan runs for this. A Move keeps a name stored before the
+  path below it would pass 1,024. No extra scan runs for this. A Move keeps a name stored before the
   limits.
 - Move and Accept have no total selection cap. The limits test measures native worker transactions
   with room for future catalog work. Transaction page sizes never refuse a large selection.

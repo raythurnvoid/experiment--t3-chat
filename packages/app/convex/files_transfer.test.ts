@@ -3893,12 +3893,12 @@ describe("retry_remaining", () => {
 });
 
 describe("move", () => {
-	// 15 names of 255 characters and one of 249 make a path of 4,090 characters. Under /target it
-	// would be 4,097.
+	// 3 names of 255 characters and one of 249 make a path of 1,018 characters. Under /target it
+	// would be 1,025.
 	const topPath = `/${"0".repeat(255)}`;
-	const deepPath = `/${Array.from({ length: 15 }, (_, index) => String(index % 10).repeat(255)).join("/")}/${"z".repeat(249)}`;
+	const deepPath = `/${Array.from({ length: 3 }, (_, index) => String(index % 10).repeat(255)).join("/")}/${"z".repeat(249)}`;
 
-	test("refuses a Move that would push a path inside the folder past 4,096 characters", async () => {
+	test("refuses a Move that would push a path inside the folder past 1,024 characters", async () => {
 		const fixture = await create_folder_fixture([deepPath]);
 		const top = await get_node(fixture, topPath);
 		if (!top) throw new Error("Expected the top folder");
@@ -3909,13 +3909,13 @@ describe("move", () => {
 				itemIds: [top._id],
 				targetParentId: fixture.folders.get("/target")!,
 			}),
-		).toMatchObject({ _nay: { name: "path_too_long", message: "Paths can have at most 4,096 characters." } });
+		).toMatchObject({ _nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters." } });
 		expect((await get_node(fixture, deepPath))?._id, "the deepest folder keeps its path").toBe(
 			fixture.folders.get(deepPath),
 		);
 	});
 
-	test("refuses a Copy that would push a path inside the folder past 4,096 characters, before any write", async () => {
+	test("refuses a Copy that would push a path inside the folder past 1,024 characters, before any write", async () => {
 		const fixture = await create_folder_fixture([deepPath]);
 		const top = await get_node(fixture, topPath);
 		if (!top) throw new Error("Expected the top folder");
@@ -3924,7 +3924,7 @@ describe("move", () => {
 		const runId = await start_copy(fixture, [top._id]);
 		expect((await finish_folder_copy(fixture, runId)).activity).toMatchObject({
 			status: "failed",
-			errorMessage: "Paths can have at most 4,096 characters.",
+			errorMessage: "Paths can have at most 1,024 characters.",
 		});
 		expect(await fixture.t.run((ctx) => ctx.db.query("files_nodes").collect()), "nodes after the refused Copy").toEqual(
 			nodesBefore,

@@ -92,6 +92,7 @@ import { organizations_membership_lifetimes_db_get } from "./organizations_membe
 import {
 	files_move_reservations_db_enter,
 	files_move_reservations_db_find_blocker,
+	files_move_reservations_db_note_source,
 } from "../server/files-move-reservations.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import {
@@ -572,6 +573,14 @@ export async function files_pending_update_db_update_index_revision(
 			)
 			.collect(),
 	]);
+	// Give the read docs to the Move guard, so it does not read each one again before its patch.
+	// A full-size text has about 1,500 chunks, so that read would be a third of what this function reads.
+	for (const [table, docs] of [
+		["files_text_chunks", textChunks],
+		["files_plain_text_chunks", plainTextChunks],
+		["files_metadata_docs", metadataDocs],
+	] as const)
+		for (const doc of docs) files_move_reservations_db_note_source(ctx.db, { table, id: doc._id, old: doc });
 	await Promise.all([
 		...textChunks.map((chunk) =>
 			ctx.db.patch("files_text_chunks", chunk._id, { proposalRevision: args.proposalRevision }),

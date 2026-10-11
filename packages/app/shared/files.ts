@@ -1021,10 +1021,12 @@ const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set<string>([
 /**
  * Limits for a new or renamed node. A normalized name is ASCII, so 255 characters are 255 bytes and
  * the name survives an export to disk. Each node, draft and index doc stores its full path, and some
- * stored cursors keep a few copies of it, so the path limit keeps those docs small.
+ * stored cursors keep a few copies of it, so the path limit keeps those docs small. A full-size text
+ * file has about 750 plain text chunks, each with the path, and some writes patch them all in one
+ * transaction. 1,024 keeps those writes well under the 16 MiB read limit.
  */
 export const files_NAME_MAX_LENGTH = 255;
-export const files_PATH_MAX_LENGTH = 4096;
+export const files_PATH_MAX_LENGTH = 1024;
 
 /**
  * Refuse a name or a path over the limits. Pass only the names and the path a write sets: an old
@@ -1035,7 +1037,7 @@ export function files_check_name_and_path_length(args: { names?: string[]; path?
 		return Result({ _nay: { name: "name_too_long", message: "Names can have at most 255 characters." } });
 	}
 	if (args.path !== undefined && args.path.length > files_PATH_MAX_LENGTH) {
-		return Result({ _nay: { name: "path_too_long", message: "Paths can have at most 4,096 characters." } });
+		return Result({ _nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters." } });
 	}
 	return Result({ _yay: null });
 }
