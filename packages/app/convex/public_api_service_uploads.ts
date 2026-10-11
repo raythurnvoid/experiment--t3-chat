@@ -44,6 +44,7 @@ import {
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
+	files_db_find_existing_parent,
 	files_db_get_visible_node_by_path,
 	files_editable_text_content_type_of,
 	files_normalize_content_type,
@@ -56,7 +57,6 @@ import {
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_check_name_and_path_length,
-	files_check_new_folder_count,
 } from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
@@ -927,34 +927,32 @@ export const create_upload_target = internalMutation({
 		}
 
 		// Ancestor pass, same as `/api/v1/files/upload-urls`: a restricted, file-owned, or read-only
-		// ancestor refuses cleanly before anything is written.
+		// deepest existing folder refuses cleanly before anything is written.
 		const segments = path_extract_segments_from(args.path);
-		let effectiveDestinationAclNode: Doc<"files_nodes"> | null = null;
-		for (let index = 1; index < segments.length; index++) {
-			const ancestorPath = `/${segments.slice(0, index).join("/")}`;
-			const ancestor = await files_db_get_visible_node_by_path(ctx, {
+		const found = await files_db_find_existing_parent(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			path: args.path,
+			known: new Map(),
+		});
+		if (found._nay) {
+			return found;
+		}
+		const { node: effectiveDestinationAclNode, depth: parentDepth } = found._yay;
+		if (
+			effectiveDestinationAclNode &&
+			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.principal.organizationId,
 				workspaceId: args.principal.workspaceId,
-				path: ancestorPath,
-			});
-			if (!ancestor) {
-				continue;
-			}
-			effectiveDestinationAclNode = ancestor;
-			if (
-				!(await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
-					userId: args.principal.actorUserId,
-					fileNode: ancestor,
-					permission: "content.write",
-				}))
-			) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-			if (ancestor.kind !== "folder") {
-				return Result({ _nay: { message: "An intermediate segment is owned by a file" } });
-			}
+				userId: args.principal.actorUserId,
+				fileNode: effectiveDestinationAclNode,
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		if (effectiveDestinationAclNode && effectiveDestinationAclNode.kind !== "folder") {
+			return Result({ _nay: { message: "An intermediate segment is owned by a file" } });
 		}
 
 		const writeContext: files_nodes_WriteContext = {
@@ -997,23 +995,17 @@ export const create_upload_target = internalMutation({
 		}
 		// Check only the names this upload adds: an older folder on the way may keep a longer name.
 		const tooLong = files_check_name_and_path_length({
-			names: segments.slice(effectiveDestinationAclNode?.pathDepth ?? 0),
+			names: segments.slice(parentDepth),
 			path: args.path,
 		});
 		if (tooLong._nay) {
 			return tooLong;
 		}
-		const newFolders = files_check_new_folder_count(
-			segments.length - 1 - (effectiveDestinationAclNode?.pathDepth ?? 0),
-		);
-		if (newFolders._nay) {
-			return newFolders;
-		}
 		// Refuse before the asset insert below: the create meets a Move only after it.
 		const busy = await files_nodes_db_check_create_busy(ctx, {
 			...args.principal,
 			parentNode: effectiveDestinationAclNode,
-			name: segments[effectiveDestinationAclNode?.pathDepth ?? 0]!,
+			name: segments[parentDepth]!,
 		});
 		if (busy._nay) {
 			return busy;
@@ -1088,12 +1080,13 @@ export const create_upload_target = internalMutation({
 			updatedAt: now,
 		});
 
+		// Start at the folder the ancestor pass found, so the create does not walk the folders above it.
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			userId: args.principal.actorUserId,
-			parentId: files_ROOT_ID,
-			path: args.path,
+			parentId: effectiveDestinationAclNode?._id ?? files_ROOT_ID,
+			path: segments.slice(parentDepth).join("/"),
 			kind: "file",
 			contentType,
 			assetId,

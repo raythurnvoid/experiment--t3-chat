@@ -37,14 +37,14 @@ import {
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	files_check_name_and_path_length,
 	files_check_new_folder_count,
-	files_check_request_folder_prefixes,
-	files_PATH_MAX_LENGTH,
+	files_check_request_folder_count,
 } from "../shared/files.ts";
 import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
+	files_db_find_existing_parent,
 	files_db_get_visible_node_by_path,
 	files_default_text_shape_for_name,
 	files_editable_text_content_type_of,
@@ -2966,12 +2966,17 @@ async function db_preflight_file_write_target(
 	}
 	// Refuse before the caller uploads to R2. Check only the names this create adds: an older folder on
 	// the way may keep a longer name.
+	const segments = path_extract_segments_from(args.path);
 	const tooLong = files_check_name_and_path_length({
-		names: path_extract_segments_from(args.path).slice(ancestor?.pathDepth ?? 0),
+		names: segments.slice(ancestor?.pathDepth ?? 0),
 		path: args.path,
 	});
 	if (tooLong._nay) {
 		return Result({ _nay: { name: "invalid_input", message: tooLong._nay.message } });
+	}
+	const newFolders = files_check_new_folder_count(segments.length - 1 - (ancestor?.pathDepth ?? 0));
+	if (newFolders._nay) {
+		return Result({ _nay: { name: "invalid_input", message: newFolders._nay.message } });
 	}
 
 	return Result({ _yay: { targetAnchor: { kind: "create" as const } } });
@@ -4106,7 +4111,11 @@ export const publish_file_touch = internalMutation({
 			now,
 		});
 		if (created._nay) {
-			// An intermediate segment is owned by a file, or an equivalent structural conflict.
+			// Too many new folders is bad input. Anything else here is a structural conflict, like an
+			// intermediate segment owned by a file.
+			if (created._nay.name === "too_many_folders") {
+				return Result({ _nay: { name: created._nay.name, message: created._nay.message } });
+			}
 			return Result({ _nay: { message: created._nay.message } });
 		}
 
@@ -4505,58 +4514,52 @@ export const create_file_upload_targets = internalMutation({
 		// ACL check matters because an API key is not the organization owner: the create helper
 		// itself refuses restricted folders, and by then earlier items are already written. Asking
 		// here turns that case into a clean per-path refusal before anything is written.
-		// Each ancestor is looked up and checked once per call. Items in one folder share it.
+		// Each path checks its deepest existing folder, found from the bottom up, so a file can go into an
+		// existing folder at any depth. The lookups are shared by the call, and the folder caps bound them.
 		const ancestors = new Map<string, Doc<"files_nodes"> | null>();
+		const parents = new Map<string, { node: Doc<"files_nodes"> | null; depth: number }>();
 		for (const item of validated) {
 			const segments = path_extract_segments_from(item.path);
-			let parentNode: Doc<"files_nodes"> | null = null;
 			for (let depth = 1; depth < segments.length; depth++) {
-				const ancestorPath = `/${segments.slice(0, depth).join("/")}`;
-				if (leafPaths.has(ancestorPath)) {
+				if (leafPaths.has(`/${segments.slice(0, depth).join("/")}`)) {
 					return Result({
 						_nay: { message: "Path conflicts with another item in the batch", data: { path: item.path } },
 					});
 				}
-
-				let ancestor = ancestors.get(ancestorPath);
-				if (ancestor === undefined) {
-					ancestor = await files_db_get_visible_node_by_path(ctx, { ...args, path: ancestorPath });
-					// Check access before checking whether this node is a file or folder. This stops a hidden file
-					// from revealing why the path failed.
-					if (
-						ancestor &&
-						!(await access_control_db_can_act_on_file_node(ctx, {
-							organizationId: args.organizationId,
-							workspaceId: args.workspaceId,
-							userId: args.userId,
-							fileNode: ancestor,
-							permission: "content.write",
-						}))
-					) {
-						return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
-					}
-					if (ancestor && ancestor.kind !== "folder") {
-						return Result({
-							_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
-						});
-					}
-					ancestors.set(ancestorPath, ancestor);
-				}
-				if (!ancestor) {
-					continue;
-				}
-				parentNode = ancestor;
+			}
+			const found = await files_db_find_existing_parent(ctx, { ...args, path: item.path, known: ancestors });
+			if (found._nay) return Result({ _nay: { ...found._nay, data: { path: item.path } } });
+			const folderCount = files_check_request_folder_count(ancestors.size);
+			if (folderCount._nay) return folderCount;
+			const { node: parentNode, depth: parentDepth } = found._yay;
+			parents.set(item.path, found._yay);
+			// Check access before checking whether this node is a file or folder. This stops a hidden file
+			// from revealing why the path failed.
+			if (
+				parentNode &&
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					fileNode: parentNode,
+					permission: "content.write",
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
+			}
+			if (parentNode && parentNode.kind !== "folder") {
+				return Result({
+					_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
+				});
 			}
 			// Check only the names this item adds: an older folder on the way and a replaced file keep their
 			// names.
 			if (!item.collidingNodeId) {
 				const tooLong = files_check_name_and_path_length({
-					names: segments.slice(parentNode?.pathDepth ?? 0),
+					names: segments.slice(parentDepth),
 					path: item.path,
 				});
 				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
-				const newFolders = files_check_new_folder_count(segments.length - 1 - (parentNode?.pathDepth ?? 0));
-				if (newFolders._nay) return Result({ _nay: { ...newFolders._nay, data: { path: item.path } } });
 			}
 			if (
 				!(await has_workspace_content_permission(ctx, {
@@ -4576,7 +4579,7 @@ export const create_file_upload_targets = internalMutation({
 				: await files_nodes_db_check_create_busy(ctx, {
 						...args,
 						parentNode,
-						name: segments[parentNode?.pathDepth ?? 0]!,
+						name: segments[parentDepth]!,
 					});
 			if (busy._nay) {
 				return { ...busy, _nay: { ...busy._nay, data: { path: item.path } } };
@@ -4650,12 +4653,14 @@ export const create_file_upload_targets = internalMutation({
 				updatedAt: now,
 			});
 
+			// Start at the folder the ancestor pass found, so the create does not walk the folders above it.
+			const parent = parents.get(item.path)!;
 			const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
-				parentId: files_ROOT_ID,
-				path: item.path,
+				parentId: parent.node?._id ?? files_ROOT_ID,
+				path: path_extract_segments_from(item.path).slice(parent.depth).join("/"),
 				kind: "file",
 				contentType: item.contentType,
 				assetId,
@@ -5470,7 +5475,9 @@ export async function public_api_write_one_text_file(
 					? { status: 403 as const, errorCode: "permission_denied" as const }
 					: published._nay.message === "Write was not published"
 						? { status: 500 as const, errorCode: "storage_failure" as const }
-						: { status: 409 as const, errorCode: "conflict" as const };
+						: published._nay.name === "too_many_folders"
+							? { status: 400 as const, errorCode: "invalid_input" as const }
+							: { status: 409 as const, errorCode: "conflict" as const };
 		// A read-only refusal already cleaned up the stage during publish. Running cleanup again
 		// would change the plugin call to the wrong unpublished_write/500 error.
 		if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
@@ -7089,7 +7096,9 @@ export async function public_api_http_touch_files(args: {
 						? 403
 						: published._nay.message === "Write was not published"
 							? 500
-							: 409;
+							: published._nay.name === "too_many_folders"
+								? 400
+								: 409;
 			const failBody = await fail({
 				status: failedStatus,
 				message: published._nay.message,
@@ -7100,7 +7109,9 @@ export async function public_api_http_touch_files(args: {
 							? "permission_denied"
 							: failedStatus === 401
 								? "unauthenticated"
-								: "storage_failure",
+								: failedStatus === 400
+									? "invalid_input"
+									: "storage_failure",
 			});
 			// A read-only refusal already cleaned up the stage during publish.
 			if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
@@ -7118,6 +7129,9 @@ export async function public_api_http_touch_files(args: {
 			}
 			if (failedStatus === 401) {
 				return { status: 401, body: failBody } as const;
+			}
+			if (failedStatus === 400) {
+				return { status: 400, body: failBody } as const;
 			}
 			return { status: 500, body: failBody } as const;
 		}
@@ -7480,7 +7494,7 @@ const upload_urls_body_validator = z.object({
 	files: z
 		.array(
 			z.object({
-				path: z.string().max(files_PATH_MAX_LENGTH),
+				path: z.string(),
 				contentType: z.string().min(1).max(200),
 				size: z.number().int().min(1),
 			}),
@@ -7517,11 +7531,6 @@ export async function public_api_http_upload_urls(args: {
 	const body = await server_request_json_parse_and_validate(request, upload_urls_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
-	}
-	// Bound the folder lookups of the whole batch before the first one.
-	const folderCount = files_check_request_folder_prefixes(body._yay.files.map((file) => file.path));
-	if (folderCount._nay) {
-		return { status: 400, body: { message: folderCount._nay.message, code: folderCount._nay.name } } as const;
 	}
 
 	// Authorization charged one slot for the request; the rest of the batch

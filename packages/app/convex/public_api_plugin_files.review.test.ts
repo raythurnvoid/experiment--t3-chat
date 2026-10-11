@@ -7,7 +7,7 @@ import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import { files_NAME_MAX_LENGTH } from "../shared/files.ts";
+import { files_NAME_MAX_LENGTH, files_NEW_FOLDER_DEPTH_MAX } from "../shared/files.ts";
 
 describe("ensure_plugin_folder", () => {
 	test.each([
@@ -268,6 +268,14 @@ describe("ensure_plugin_folder", () => {
 				body: JSON.stringify({ path: `/tagged/${"n".repeat(files_NAME_MAX_LENGTH + 1)}` }),
 			});
 			expect(tooLong.status, "a new plugin folder name over the limit").toBe(400);
+
+			const tooDeepFolders = Array<string>(files_NEW_FOLDER_DEPTH_MAX + 1).fill("a");
+			const tooDeepPath = `/tagged/${tooDeepFolders.join("/")}`;
+			const tooDeep = await t.fetch("/api/v1/files/plugin-folders/ensure", {
+				...request,
+				body: JSON.stringify({ path: tooDeepPath }),
+			});
+			expect(tooDeep.status, "a plugin folder path with one new folder too many").toBe(400);
 		},
 	);
 });

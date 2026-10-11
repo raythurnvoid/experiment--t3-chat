@@ -11,11 +11,10 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
+import { files_db_find_existing_parent, files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import {
 	files_check_name_and_path_length,
-	files_check_new_folder_count,
-	files_check_request_folder_prefixes,
+	files_check_request_folder_count,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_normalize_content_type,
 	files_normalize_name,
@@ -83,11 +82,6 @@ export const create_upload_targets = internalMutation({
 		const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
 		if (!workspace || workspace.organizationId !== args.organizationId) {
 			return Result({ _nay: { message: "Not found" } });
-		}
-		// Bound the folder lookups of the whole batch before the first one.
-		const folderCount = files_check_request_folder_prefixes(args.items.map((item) => item.path));
-		if (folderCount._nay) {
-			return folderCount;
 		}
 
 		// Validate the whole batch before any write. A `_nay` return does not roll back earlier
@@ -170,48 +164,36 @@ export const create_upload_targets = internalMutation({
 		}
 
 		// An ancestor folder that already exists as a file would make the recursive create fail
-		// mid-write, so check every ancestor path up front too. Each one is looked up once per call.
+		// mid-write, so check each path's deepest existing folder up front too. It is found from the bottom
+		// up, so a file can go into an existing folder at any depth, and the folder caps bound the lookups.
 		const ancestors = new Map<string, Doc<"files_nodes"> | null>();
+		const parents = new Map<string, { node: Doc<"files_nodes"> | null; depth: number }>();
 		for (const item of validated) {
 			const segments = path_extract_segments_from(item.path);
-			let existingDepth = 0;
 			for (let depth = 1; depth < segments.length; depth++) {
-				const ancestorPath = `/${segments.slice(0, depth).join("/")}`;
-				if (leafPaths.has(ancestorPath)) {
+				if (leafPaths.has(`/${segments.slice(0, depth).join("/")}`)) {
 					return Result({
 						_nay: { message: "Path conflicts with another item in the batch", data: { path: item.path } },
 					});
 				}
-
-				let ancestor = ancestors.get(ancestorPath);
-				if (ancestor === undefined) {
-					ancestor = await ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
-								.eq("path", ancestorPath)
-								.eq("archiveOperationId", null),
-						)
-						.first();
-					if (ancestor && ancestor.kind !== "folder") {
-						return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
-					}
-					// A read-only parent folder stops the whole batch before its first write.
-					if (ancestor) {
-						const ancestorWritable = await files_nodes_db_require_user_writable(ctx, {
-							node: ancestor,
-							userId: args.createdBy,
-						});
-						if (ancestorWritable._nay) {
-							return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
-						}
-					}
-					ancestors.set(ancestorPath, ancestor);
-				}
-				if (ancestor) {
-					existingDepth = depth;
+			}
+			const found = await files_db_find_existing_parent(ctx, { ...args, path: item.path, known: ancestors });
+			if (found._nay) return Result({ _nay: { ...found._nay, data: { path: item.path } } });
+			const folderCount = files_check_request_folder_count(ancestors.size);
+			if (folderCount._nay) return folderCount;
+			const { node: ancestor, depth: existingDepth } = found._yay;
+			parents.set(item.path, found._yay);
+			if (ancestor && ancestor.kind !== "folder") {
+				return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
+			}
+			// A read-only parent folder stops the whole batch before its first write.
+			if (ancestor) {
+				const ancestorWritable = await files_nodes_db_require_user_writable(ctx, {
+					node: ancestor,
+					userId: args.createdBy,
+				});
+				if (ancestorWritable._nay) {
+					return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
 				}
 			}
 			// Check only the names this item adds: an older folder on the way and a replaced file keep their
@@ -219,8 +201,6 @@ export const create_upload_targets = internalMutation({
 			if (!item.collidingNodeId) {
 				const tooLong = files_check_name_and_path_length({ names: segments.slice(existingDepth), path: item.path });
 				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
-				const newFolders = files_check_new_folder_count(segments.length - 1 - existingDepth);
-				if (newFolders._nay) return Result({ _nay: { ...newFolders._nay, data: { path: item.path } } });
 			}
 		}
 
@@ -264,12 +244,14 @@ export const create_upload_targets = internalMutation({
 				updatedAt: now,
 			});
 
+			// Start at the folder the ancestor pass found, so the create does not walk the folders above it.
+			const parent = parents.get(item.path)!;
 			const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.createdBy,
-				parentId: files_ROOT_ID,
-				path: item.path,
+				parentId: parent.node?._id ?? files_ROOT_ID,
+				path: path_extract_segments_from(item.path).slice(parent.depth).join("/"),
 				kind: "file",
 				contentType: item.contentType,
 				assetId,

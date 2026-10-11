@@ -392,8 +392,12 @@ export const ensure_plugin_folder = internalMutation({
 				now,
 			});
 			if (createdResult._nay) {
-				// A name or path over the limit is bad input, not a conflict.
-				if (createdResult._nay.name === "name_too_long" || createdResult._nay.name === "path_too_long") {
+				// A name or path over the limit, or too many new folders, is bad input, not a conflict.
+				if (
+					createdResult._nay.name === "name_too_long" ||
+					createdResult._nay.name === "path_too_long" ||
+					createdResult._nay.name === "too_many_folders"
+				) {
 					return Result({ _nay: { name: "invalid_input", message: createdResult._nay.message } });
 				}
 				return Result({ _nay: { name: "conflict", message: createdResult._nay.message } });

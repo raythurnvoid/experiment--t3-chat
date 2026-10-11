@@ -21,6 +21,7 @@ import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_NAME_MAX_LENGTH,
 	files_NEW_FOLDER_DEPTH_MAX,
+	files_PATH_MAX_LENGTH,
 	files_REQUEST_FOLDER_PREFIXES_MAX,
 } from "../shared/files.ts";
 import {
@@ -4311,12 +4312,13 @@ describe("files upload-urls", () => {
 	});
 
 	describe("folder limits under the real read limits, while another folder is in a Move", () => {
-		async function seed_upload_during_move(clerkUserId: string) {
+		async function seed_upload_during_move(clerkUserId: string, move = true) {
 			const t = test_convex({ transactionLimits: true });
 			install_r2_object_reads();
 			const db = await seed_signed_in_membership({ t, clerkUserId });
 			const { credential } = await seed_write_credential({ t, db, clerkSubject: clerkUserId });
 			await t.run(async (ctx) => {
+				if (!move) return;
 				const movingId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: db.organizationId,
@@ -4347,9 +4349,48 @@ describe("files upload-urls", () => {
 						files: paths.map((path) => ({ path, contentType: "application/octet-stream", size: 1 })),
 					}),
 				});
-			return { t, post };
+			return { t, db, post };
 		}
 		const chain = (head: string, folders: number) => `/${[head, ...Array<string>(folders - 1).fill("a")].join("/")}`;
+
+		// No Move here: while a Move holds the slot, every path lookup walks the path from the root.
+		test("20 files fit into an existing folder about 500 levels deep", async () => {
+			const { t, db, post } = await seed_upload_during_move("clerk-upload-urls-deep-folder", false);
+			// The deepest chain of one-letter folders that still leaves room for a file name.
+			const depth = Math.floor((files_PATH_MAX_LENGTH - "/19.bin".length) / 2);
+			expect(depth, "deeper than one call may name").toBeGreaterThan(files_REQUEST_FOLDER_PREFIXES_MAX);
+			// Raw inserts in pages, so seeding the chain stays under the limits too.
+			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
+			let deepPath = "";
+			for (let start = 1; start <= depth; start += 200) {
+				({ parentId, deepPath } = await t.run(async (ctx) => {
+					let id = parentId;
+					let path = deepPath;
+					for (let pathDepth = start; pathDepth < start + 200 && pathDepth <= depth; pathDepth++) {
+						path = `${path}/a`;
+						id = await ctx.db.insert("files_nodes", {
+							...test_mocks.files.base(),
+							organizationId: db.organizationId,
+							workspaceId: db.workspaceId,
+							createdBy: db.userId,
+							updatedBy: db.userId,
+							parentId: id,
+							name: "a",
+							sortName: files_sort_text_key("a"),
+							kind: "folder",
+							path,
+							treePath: `${path}/`,
+							pathDepth,
+						});
+					}
+					return { parentId: id, deepPath: path };
+				}));
+			}
+
+			const response = await post(Array.from({ length: 20 }, (_, i) => `${deepPath}/${i}.bin`));
+			expect(response.status, "20 files in the deep folder").toBe(200);
+			expect(((await response.json()) as { files: unknown[] }).files).toHaveLength(20);
+		});
 
 		test("20 files in two new chains that use every folder slot fit", async () => {
 			const { post } = await seed_upload_during_move("clerk-upload-urls-folder-slots");
@@ -4369,10 +4410,12 @@ describe("files upload-urls", () => {
 				}));
 			const before = await count();
 
-			// One folder more than a call may name, counted from the strings before any lookup.
+			// One folder more than a call may name. Each path stays under the new-folder cap, so only the
+			// per-call folder cap can refuse this.
 			const tooMany = await post([
 				`${chain("p", files_NEW_FOLDER_DEPTH_MAX)}/0.bin`,
-				`${chain("q", files_REQUEST_FOLDER_PREFIXES_MAX - files_NEW_FOLDER_DEPTH_MAX + 1)}/1.bin`,
+				`${chain("q", files_REQUEST_FOLDER_PREFIXES_MAX - files_NEW_FOLDER_DEPTH_MAX)}/1.bin`,
+				`${chain("r", 1)}/2.bin`,
 			]);
 			expect(tooMany.status).toBe(400);
 			expect(await tooMany.json(), "too many folders in one batch").toEqual({
@@ -4463,6 +4506,56 @@ describe("files upload-urls", () => {
 				.sort(),
 		).toEqual([`/${fileName}`, `/${folderName}`, `/${folderName}/new.png`].sort());
 		expect(nodes.find((node) => node._id === oldFileId)?.archiveOperationId, "the old file is replaced").not.toBeNull();
+	});
+
+	test("an old path over 1,024 characters stays replaceable, and a new one answers 400 with its path", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-old-long-path" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-old-long-path" });
+		// Folders saved before the limits existed. Their path alone is 1,024 characters.
+		const folderName = "f".repeat(files_NAME_MAX_LENGTH);
+		const { folderPath, oldFileId } = await t.run(async (ctx) => {
+			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
+			let path = "";
+			const insert_old = (name: string, kind: "file" | "folder", pathDepth: number) =>
+				ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId,
+					name,
+					sortName: files_sort_text_key(name),
+					kind,
+					path: `${path}/${name}`,
+					treePath: kind === "folder" ? `${path}/${name}/` : `${path}/${name}`,
+					pathDepth,
+				});
+			for (let pathDepth = 1; pathDepth <= 4; pathDepth++) {
+				parentId = await insert_old(folderName, "folder", pathDepth);
+				path = `${path}/${folderName}`;
+			}
+			return { folderPath: path, oldFileId: await insert_old("old.png", "file", 5) };
+		});
+		expect(folderPath.length).toBe(files_PATH_MAX_LENGTH);
+		const post = (path: string) =>
+			t.fetch("/api/v1/files/upload-urls", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ files: [{ path, contentType: "image/png", size: 64 }] }),
+			});
+
+		const created = await post(`${folderPath}/new.png`);
+		expect(created.status, "a new path over the limit").toBe(400);
+		expect(await created.json()).toEqual({
+			message: "Paths can have at most 1,024 characters.",
+			path: `${folderPath}/new.png`,
+		});
+		const replaced = await post(`${folderPath}/old.png`);
+		expect(replaced.status, "a replace keeps its old long path").toBe(200);
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", oldFileId)))?.archiveOperationId).not.toBeNull();
 	});
 
 	test("rejects an invalid content type before writing any upload files or assets", async () => {
@@ -7185,6 +7278,29 @@ describe("files read-only locks", () => {
 		expect(touched.status, "a touch of a new name over the limit").toBe(400);
 		// The refusal comes before the stage and its R2 objects.
 		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
+	});
+
+	test("write and touch refuse a path with too many new folders with 400, before any upload", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-write-too-many-folders" });
+		const folders = Array<string>(files_NEW_FOLDER_DEPTH_MAX + 1).fill("a");
+		const path = `/${folders.join("/")}/f.md`;
+
+		const written = await write_file({ t, credential: writer.credential, path, content: "# Deep\n" });
+		expect(written.status, "a write that adds one new folder too many").toBe(400);
+		expect(await written.json()).toEqual({
+			message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+		});
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: [path] }),
+		});
+		expect(touched.status, "a touch that adds one new folder too many").toBe(400);
+		// The refusal comes before the stage and its R2 objects.
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
+		expect(r2Objects.size, "the refusal comes before any R2 write").toBe(0);
 	});
 });
 

@@ -13,11 +13,13 @@ import type { WithoutSystemFields } from "convex/server";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import {
+	files_check_new_folder_count,
 	files_pending_update_has_asset_content,
 	files_pending_update_has_yjs_content,
 	files_MAX_YJS_WIRE_BYTES,
 	files_ROOT_ID,
 } from "../shared/files.ts";
+import { path_extract_segments_from } from "../shared/paths.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "./server-utils.ts";
@@ -365,6 +367,40 @@ export async function files_db_get_visible_node_by_path(
 				.eq("archiveOperationId", null),
 		)
 		.first();
+}
+
+/**
+ * Find the deepest folder that already exists on a new file path. Look up the parent first and walk up
+ * only through missing folders, like `db_get_deepest_existing_ancestor` in `public_api.ts`. So a file in
+ * an existing deep folder costs one lookup, and a path that would add more than
+ * `files_NEW_FOLDER_DEPTH_MAX` folders stops after that many. `known` keeps the lookups of one request,
+ * so files in one folder share them, and its size counts the folders the request names.
+ */
+export async function files_db_find_existing_parent(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		path: string;
+		known: Map<string, Doc<"files_nodes"> | null>;
+	},
+) {
+	const segments = path_extract_segments_from(args.path);
+	for (let depth = segments.length - 1; depth >= 1; depth--) {
+		// The folders below `depth` are missing, so the path would create them.
+		const newFolders = files_check_new_folder_count(segments.length - 1 - depth);
+		if (newFolders._nay) return newFolders;
+		const path = `/${segments.slice(0, depth).join("/")}`;
+		let node = args.known.get(path);
+		if (node === undefined) {
+			node = await files_db_get_visible_node_by_path(ctx, { ...args, path });
+			args.known.set(path, node);
+		}
+		if (node) return Result({ _yay: { node, depth } });
+	}
+	const newFolders = files_check_new_folder_count(segments.length - 1);
+	if (newFolders._nay) return newFolders;
+	return Result({ _yay: { node: null, depth: 0 } });
 }
 
 /**

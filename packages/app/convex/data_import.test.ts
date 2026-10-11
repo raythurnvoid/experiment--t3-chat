@@ -93,11 +93,11 @@ describe("data_import.create_upload_targets", () => {
 		const fits = await create(Array.from({ length: 50 }, (_, i) => `${chains[i % 2]}/${i}.pdf`));
 		expect(fits._yay, "50 files at the folder limits").toHaveLength(50);
 
-		// An existing chain that names every folder a call may name, so each file has the most ancestors.
+		// An existing chain four times deeper than a call may name. Only its deepest folder counts.
 		const deepPath = await t.run(async (ctx) => {
 			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
 			let path = "";
-			for (let pathDepth = 1; pathDepth <= files_REQUEST_FOLDER_PREFIXES_MAX; pathDepth++) {
+			for (let pathDepth = 1; pathDepth <= files_REQUEST_FOLDER_PREFIXES_MAX * 4; pathDepth++) {
 				path = `${path}/e`;
 				parentId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),

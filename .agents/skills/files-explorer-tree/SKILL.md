@@ -729,12 +729,16 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   of a mutation: one path adds at most `files_NEW_FOLDER_DEPTH_MAX` (32) new folders
   (`files_check_new_folder_count`, in the create helper and in each batch door's check pass; existing
   folders do not count, so a file can still go into an existing deeper folder), and one call names at
-  most `files_REQUEST_FOLDER_PREFIXES_MAX` (64) distinct folder prefixes
-  (`files_check_request_folder_prefixes`, from the strings before any read). `create_upload_nodes`
-  counts prefixes of its relative paths, so files into an existing deep parent count none; the API
-  doors count absolute prefixes. Both refuse the whole call with name `too_many_folders`. Batch doors
-  look up and check each folder once per call, and pass one `folders` map to every
-  `files_nodes_db_create_node_recursively_at_path` call so later items reuse found and new folders.
+  most `files_REQUEST_FOLDER_PREFIXES_MAX` (64) distinct folders. `create_upload_nodes` counts the
+  prefixes of its relative paths from the strings before any read
+  (`files_check_request_folder_prefixes`). The API doors (upload-urls, service uploads, data import)
+  find each path's deepest existing folder from the bottom up (`files_db_find_existing_parent`) and
+  count the new folders plus the parents found (`files_check_request_folder_count`), so folders above
+  a found parent never count. All refuse the whole call with name `too_many_folders`. Batch doors
+  look up and check each folder once per call, start the create helper at the found parent, and pass
+  one `folders` map to every `files_nodes_db_create_node_recursively_at_path` call so later items
+  reuse found and new folders. Single doors map the helper's `too_many_folders` to 400 (`write`,
+  `touch`, plugin folder ensure).
   The Move busy check (`files_move_reservations_db_find_blocker`) reads the workspace Move slot
   first: a Move holds that slot while any of its reservations or slot claims exist, so a free slot
   means no parent walk. During a Move, each parent's answer is kept for the rest of the transaction

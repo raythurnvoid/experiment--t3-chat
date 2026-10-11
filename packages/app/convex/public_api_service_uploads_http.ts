@@ -21,7 +21,6 @@ import type {
 import { public_api_authorize_request } from "./public_api_http_auth.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
-import { files_check_request_folder_prefixes, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 
 // #region shared
 
@@ -126,7 +125,7 @@ const create_target_body_validator = z
 	.object({
 		idempotencyKey: z.string().min(1).max(128),
 		targetKey: z.string().min(1).max(128),
-		path: z.string().min(1).max(files_PATH_MAX_LENGTH),
+		path: z.string().min(1),
 		contentType: z.string().min(1).max(200),
 		size: z.number().int().min(1),
 		readOnly: z.boolean(),
@@ -151,11 +150,6 @@ export async function public_api_service_uploads_http_create_target(args: {
 	const body = await server_request_json_parse_and_validate(request, create_target_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
-	}
-	// Bound the folder lookups before the first one.
-	const folderCount = files_check_request_folder_prefixes([body._yay.path]);
-	if (folderCount._nay) {
-		return upload_failure(folderCount._nay);
 	}
 
 	const created: public_api_service_uploads_create_upload_target_Result = await ctx.runMutation(

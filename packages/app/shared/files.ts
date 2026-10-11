@@ -1052,7 +1052,8 @@ export const files_REQUEST_FOLDER_PREFIXES_MAX = 64;
 
 /**
  * Refuse a call whose paths name too many distinct folders. It reads only the strings, so callers run
- * it before any database read. Pass the paths the call walks: absolute, or relative to its parent.
+ * it before any database read. Pass paths relative to the parent the call starts from, since it walks
+ * every folder on them. Doors that take absolute paths count with `files_check_request_folder_count`.
  */
 export function files_check_request_folder_prefixes(paths: string[]) {
 	const prefixes = new Set<string>();
@@ -1062,15 +1063,24 @@ export function files_check_request_folder_prefixes(paths: string[]) {
 			prefix += `/${segment}`;
 			prefixes.add(prefix);
 			// Stop early, so a huge request does not build a huge set.
-			if (prefixes.size > files_REQUEST_FOLDER_PREFIXES_MAX) {
-				return Result({
-					_nay: {
-						name: "too_many_folders",
-						message: `This request uses too many folders (limit ${files_REQUEST_FOLDER_PREFIXES_MAX}). Send fewer files per request.`,
-					},
-				});
-			}
+			const folderCount = files_check_request_folder_count(prefixes.size);
+			if (folderCount._nay) return folderCount;
 		}
+	}
+	return Result({ _yay: null });
+}
+
+/**
+ * Refuse a call that names too many distinct folders: the new ones plus the existing parents it found.
+ */
+export function files_check_request_folder_count(count: number) {
+	if (count > files_REQUEST_FOLDER_PREFIXES_MAX) {
+		return Result({
+			_nay: {
+				name: "too_many_folders",
+				message: `This request uses too many folders (limit ${files_REQUEST_FOLDER_PREFIXES_MAX}). Send fewer files per request.`,
+			},
+		});
 	}
 	return Result({ _yay: null });
 }

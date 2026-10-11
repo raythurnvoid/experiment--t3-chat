@@ -1012,6 +1012,61 @@ describe("Move write reservations", () => {
 		});
 	});
 
+	test("a Move's own parent change drops the kept parent answers in the same mutation", async () => {
+		const f = await fixture();
+		const outsideId = await f.t.run(async (ctx) => {
+			await ctx.db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source: { kind: "saved", id: f.parentId },
+				mode: "subtree",
+				userId: null,
+				generation: 1,
+			});
+			return await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId: "root",
+				name: "outside",
+				sortName: files_sort_text_key("outside"),
+				kind: "folder",
+				path: "/outside",
+				treePath: "/outside/",
+				pathDepth: 1,
+			});
+		});
+		await f.publish();
+		const create = {
+			parent: { kind: "saved" as const, id: outsideId },
+			slot: {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				parentId: outsideId,
+				name: "new.txt",
+			},
+		};
+		await f.t.run(async (ctx) => {
+			const guarded = { ...ctx, ...files_move_reservations_db_wrap(ctx) };
+			expect(
+				await files_move_reservations_db_enter(guarded, {
+					cohortId: f.cohortId,
+					fence: 1,
+					attemptFence: 1,
+					mode: "finish",
+				}),
+			).toEqual({ _yay: null });
+			expect(await files_move_reservations_db_find_blocker(guarded.db, create)).toBeNull();
+			// The Move itself puts the folder inside its source, so a create there must wait from now on.
+			await guarded.db.patch("files_nodes", outsideId, { parentId: f.parentId });
+			expect(
+				await files_move_reservations_db_find_blocker(guarded.db, create),
+				"a create in the folder after its parent changed",
+			).toBe(f.cohortId);
+		});
+	});
+
 	test("the pending-state sweep does not reschedule a pass that only skipped busy rows", async () => {
 		const f = await fixture();
 		// A full page of tasks in the Move's workspace. Each one is skipped this pass.
