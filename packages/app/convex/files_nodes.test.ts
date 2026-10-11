@@ -13873,6 +13873,43 @@ describe("list_tree_children_sorted", () => {
 		await expect(read_tree(false)).rejects.toThrow("files_nodes tree stream row scope is mismatched");
 		await expect(read_tree(true)).rejects.toThrow("files_nodes tree stream row scope is mismatched");
 	});
+
+	test("a metadata sort leaves out rows whose field docs still wait for the node's new scope", async () => {
+		const { t, insert_children, set_metadata, read_page } = await seed_folder_table();
+		const [archivedId, movedId, restrictedId, keptId] = await insert_children(
+			["archived.md", "moved.md", "restricted.md", "kept.md"].map((name) => ({ name, kind: "file", updatedAt: 1 })),
+		);
+		await set_metadata(
+			[archivedId!, movedId!, restrictedId!, keptId!].map((nodeId) => [nodeId, [{ key: "status", value: "ready" }]]),
+		);
+		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
+		// Archive, Move and restrict change the node first. A background job patches the field docs later.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", archivedId!, { archiveOperationId: "archive-operation-lag" });
+			await ctx.db.patch("files_nodes", movedId!, { parentId: keptId! });
+			await ctx.db.patch("files_nodes", restrictedId!, {
+				isRestrictedScopeRoot: true,
+				restrictedScopeNodeId: restrictedId!,
+			});
+		});
+		const read = () =>
+			read_page({
+				kind: "file",
+				sort: { field: "metadata.status", direction: "asc" },
+				paginationOpts: { numItems: 10, cursor: null },
+			});
+
+		expect((await read()).page.map((row) => row.name)).toEqual(["kept.md"]);
+
+		// A node of another workspace is still a bug, also when its scope changed too.
+		await t.run((ctx) =>
+			ctx.db.patch("files_nodes", archivedId!, {
+				organizationId: other.organizationId,
+				workspaceId: other.workspaceId,
+			}),
+		);
+		await expect(read()).rejects.toThrow("files_nodes tree stream row scope is mismatched");
+	});
 });
 
 describe("list_tree_children_sorted filter", () => {
@@ -14586,6 +14623,27 @@ describe("search box doors", () => {
 		expect(await search([{ op: "exists", fieldPath: "frontmatter.status" }], "/tasks/😀 media")).toEqual(
 			new Set([emojiTaskId]),
 		);
+	});
+
+	test("search_saved checks the folder scope on the node while its docs keep an old path", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		// A move job gives the node its new path first. A background job patches its docs later.
+		await t.run(async (ctx) => {
+			const node = (await ctx.db.get("files_nodes", seeded.openTaskId))!;
+			const path = `/tasks-archive/${node.name}`;
+			await ctx.db.patch("files_nodes", node._id, { path, treePath: path });
+		});
+		const search = (folderPath: string) =>
+			search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: statusOpenPlans,
+				folderPath,
+			});
+
+		expect(await search("/tasks")).toEqual(new Set([seeded.fixedTaskId]));
+		expect(await search("/")).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]));
 	});
 
 	test("search_saved answers a prefix value of any length", async () => {

@@ -5957,6 +5957,18 @@ export const list_tree_children_sorted = query({
 						console.error(errorMessage, errorData);
 						throw should_never_happen(errorMessage, errorData);
 					}
+					// Archive, restrict and Move change the node first, and a background job copies the new
+					// scope onto its field docs later. Until then the row belongs to another stream, so leave
+					// it out, and the page can come back short. A node of another workspace is still a bug.
+					if (
+						node.organizationId === membership.organizationId &&
+						node.workspaceId === membership.workspaceId &&
+						(node.archiveOperationId !== null ||
+							node.parentId !== args.parentId ||
+							node.isRestrictedScopeRoot !== args.restricted)
+					) {
+						return null;
+					}
 					// The field doc copies the node's name and kind. A stale copy would put the row in the
 					// wrong place or the wrong stream, so it must fail loudly.
 					if (fieldDoc.sortName !== node.sortName || fieldDoc.name !== node.name || fieldDoc.nodeKind !== node.kind) {
@@ -5975,7 +5987,10 @@ export const list_tree_children_sorted = query({
 					};
 				}),
 			);
-			return await table_page(result, rows);
+			return await table_page(
+				result,
+				rows.filter((row) => row !== null),
+			);
 		}
 
 		const by_name = (node: Doc<"files_nodes">): files_sort_Key => [node.sortName, node.name];
@@ -10006,16 +10021,19 @@ export const search_saved = query({
 			if (tree_page_needs_split(result, SEARCH_SAVED_SPLIT_GUARD)) {
 				return tree_page_split_required(result);
 			}
+			const nodes = await Promise.all(
+				result.page.map(async (metadataDoc) =>
+					metadataDoc.sourceKind === "committed"
+						? await files_saved_placement_db_get_node(ctx.db, metadataDoc.fileNodeId, saved.tag)
+						: null,
+				),
+			);
 			return {
 				...result,
+				// A move job gives the node its new path first, and its docs get it later. So check the
+				// folder on the node too: a doc with an old path must not show the file in its old folder.
 				page: await readable_rows(
-					await Promise.all(
-						result.page.map(async (metadataDoc) =>
-							metadataDoc.sourceKind === "committed"
-								? await files_saved_placement_db_get_node(ctx.db, metadataDoc.fileNodeId, saved.tag)
-								: null,
-						),
-					),
+					nodes.filter((node) => folderTreePath === null || node?.treePath.startsWith(folderTreePath)),
 				),
 			};
 		}
