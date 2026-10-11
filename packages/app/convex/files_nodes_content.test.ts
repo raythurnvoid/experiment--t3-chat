@@ -3676,7 +3676,7 @@ describe("accept_file_pending_replacement", () => {
 		const { t, db, asUser } = fixture;
 		// Use stored files on both sides. A text file already has a version row for its current
 		// asset from its first save, so only a stored destination proves the run adds the row.
-		const upload = async (filename: string, bytes: Uint8Array) => {
+		const upload = async (filename: string, bytes: Uint8Array<ArrayBuffer>) => {
 			const created = await asUser.mutation(api.files_nodes.create_upload_node, {
 				membershipId: db.membershipId,
 				parentId: files_ROOT_ID,

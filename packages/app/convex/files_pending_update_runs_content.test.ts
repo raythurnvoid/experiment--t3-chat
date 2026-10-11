@@ -1182,7 +1182,7 @@ describe("review job content", () => {
 				...(await ctx.db.query("files_plain_text_chunks").collect()),
 				...(await ctx.db.query("files_text_chunks").collect()),
 				...(await ctx.db.query("files_metadata_docs").collect()),
-			].filter((row) => row.pendingUpdateId === proposal._id),
+			].filter((row) => "pendingUpdateId" in row && row.pendingUpdateId === proposal._id),
 		);
 		expect(indexDocs, "no pending index doc outlives the draft").toEqual([]);
 	});
