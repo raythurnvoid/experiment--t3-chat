@@ -390,6 +390,8 @@ type FilesImportStoreState = {
 	 * Existing upload objects still waiting for server confirmation.
 	 */
 	pendingConfirmation: number;
+	/** Existing files the user chose to skip in the conflict dialog. They are not a problem. */
+	skippedExisting: number;
 	/** Client-side and server-side skips, merged for the final report. */
 	skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }>;
 	/** `reason` is shown to the user next to the file. */
@@ -408,6 +410,7 @@ const FILES_IMPORT_INITIAL_STATE: FilesImportStoreState = {
 	total: 0,
 	done: 0,
 	pendingConfirmation: 0,
+	skippedExisting: 0,
 	skipped: [],
 	failed: [],
 	conflicts: [],
@@ -683,6 +686,9 @@ function finish_import_run() {
 	const summaryParts = [`${state.done} imported`];
 	if (state.pendingConfirmation > 0) {
 		summaryParts.push(`${state.pendingConfirmation} awaiting confirmation`);
+	}
+	if (state.skippedExisting > 0) {
+		summaryParts.push(`${state.skippedExisting} skipped (already exist)`);
 	}
 	if (state.skipped.length > 0) {
 		summaryParts.push(`${state.skipped.length} skipped`);
@@ -968,12 +974,21 @@ async function run_folder_import(args: {
 					return refusedPath !== undefined || result._nay.name === "too_many_folders" ? "continue" : "stop";
 				}
 
-				// The server reports its skips by its own path. Report the browser path, like every other entry.
-				const serverSkipped = result._yay.skipped.map((skip) => ({
-					relativePath: itemByPath.get(skip.relativePath)?.relativePath ?? skip.relativePath,
-					reason: skip.reason,
+				// A file the user chose to skip in the conflict dialog is only counted. A skip the user did not
+				// choose (a blocked path, a file that appeared after the check) is reported by its browser path.
+				const isChosenSkip = (skip: { relativePath: string; reason: string }) =>
+					onConflict === "skip" && skip.reason === "conflict" && existingPaths.has(skip.relativePath);
+				const serverSkipped = result._yay.skipped
+					.filter((skip) => !isChosenSkip(skip))
+					.map((skip) => ({
+						relativePath: itemByPath.get(skip.relativePath)?.relativePath ?? skip.relativePath,
+						reason: skip.reason,
+					}));
+				const chosenSkipCount = result._yay.skipped.length - serverSkipped.length;
+				useFilesImportStore.setState((state) => ({
+					skipped: [...state.skipped, ...serverSkipped],
+					skippedExisting: state.skippedExisting + chosenSkipCount,
 				}));
-				useFilesImportStore.setState((state) => ({ skipped: [...state.skipped, ...serverSkipped] }));
 				createdItems = result._yay.created;
 				for (const created of createdItems) {
 					files_in_flight_uploads_add(created.nodeId);
@@ -8432,6 +8447,59 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				});
 			} finally {
 				warningToast.mockRestore();
+			}
+		});
+
+		test.each([
+			{
+				case: "only the chosen skip",
+				serverSkips: ["a.pdf"],
+				toast: "success" as const,
+				summary: "Import finished: 1 imported, 1 skipped (already exist).",
+				options: undefined,
+			},
+			{
+				// `c.pdf` appeared after the conflict check, so the user did not choose to skip it.
+				case: "a skip the user did not choose",
+				serverSkips: ["a.pdf", "c.pdf"],
+				toast: "warning" as const,
+				summary: "Import finished: 1 imported, 1 skipped (already exist), 1 skipped.",
+				options: { description: "Not imported: c.pdf (Already exists or not writable)." },
+			},
+		])("run_folder_import counts files the user chose to skip, not as a problem ($case)", async (args) => {
+			const convexStub = {
+				// Only `a.pdf` exists when the import asks.
+				query: async () => [{ relativePath: "a.pdf", kind: "file" }],
+				mutation: async () => ({
+					_yay: {
+						created: [{ relativePath: "b.pdf", nodeId: "node-b", url: "https://r2.test/b", headers: {} }],
+						skipped: args.serverSkips.map((relativePath) => ({ relativePath, reason: "conflict" })),
+					},
+				}),
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 200 })),
+			);
+			const shownToast = vi.spyOn(toast, args.toast).mockReturnValue("toast");
+			try {
+				const run = run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries(
+						["a.pdf", "b.pdf", "c.pdf"].map((name) => test_file_with_path({ name, path: `./${name}` })),
+					),
+				});
+				// Choose "Skip existing" in the conflict modal.
+				await vi.waitFor(() => expect(useFilesImportStore.getState().confirmResolver).not.toBeNull());
+				useFilesImportStore.getState().confirmResolver!("skip");
+				await run;
+				expect(shownToast).toHaveBeenCalledWith(args.summary, ...(args.options ? [args.options] : []));
+			} finally {
+				vi.unstubAllGlobals();
+				shownToast.mockRestore();
 			}
 		});
 
