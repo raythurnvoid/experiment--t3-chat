@@ -845,7 +845,17 @@ SDK 0.21.1 was mirrored on 2026-10-11 at
 `e9d22e99db563356780e2073008adc89dae1f2fb`. Its tree equals the folder at host commit
 `c7aa1247`. It adds `errorCode: "invalid_cursor"` to the `files/list` 400, documents the API
 rate limits, and carries the list and MCP docs changed since 0.21.0. Typecheck and 48 SDK tests
-pass. No plugin pins it yet.
+pass.
+
+Gallery 0.1.23 was published and installed in `personal/home` on 2026-10-11 from the CLI with the
+owner's `--identity` (plugin commit `1dab3b7ad93c3b260896084c8d00a3eedb1a14ef`, version doc
+`hn7yv4hx7e5qaf3ey18fkqkdxd8g2fmh`). It is the first plugin on SDK 0.21.1. "Load more" now restarts
+once from the top on `errorCode: "invalid_cursor"` and skips tiles it already shows. 38 tests,
+bundle 248,091 bytes, two builds byte-identical. SDK 0.21.0+ peers want `convex ^1.46.0` and
+`react ^19.3.0`, so the Gallery bumped both. The root dropped its prettier config (`0938c10c`), so
+a plugin build that runs `prettier --write dist` without its own config now writes 2-space dist
+(about 8% bigger). Gallery got a local `.prettierrc` like Council's. Chitchat and Video Player have
+no local config yet; add one before their next build.
 
 SDK 0.21.0 was mirrored on 2026-09-28 at
 `973457877210fec8908f26fe17c8d727572aa54d`. All 12 SDK files match the reviewed
