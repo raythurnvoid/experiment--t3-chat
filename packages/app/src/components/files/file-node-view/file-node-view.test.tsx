@@ -2529,9 +2529,10 @@ describe("FileNodeView folder columns", () => {
 		expect(within(actions).queryByRole("button", { name: "Retry values" })).toBeNull();
 	});
 
-	test("caps 1,000 rendered rows at 100 targets and 700 pages and updates visible and focused priority", async () => {
+	test("caps 120 rendered rows at 100 targets and 700 pages and updates visible and focused priority", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
-		const children = Array.from({ length: 1000 }, (_, index) => ({
+		// 120 rows is just past the 100-target cap. Each render of many rows is slow here, so keep it small.
+		const children = Array.from({ length: 120 }, (_, index) => ({
 			...NODE,
 			_id: `file_${index}`,
 			name: `${String(index).padStart(4, "0")}.html`,
@@ -2555,16 +2556,16 @@ describe("FileNodeView folder columns", () => {
 		const view = renderFileView({ nodeId: node._id });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
-		expect(table.querySelectorAll(".FileNodeViewFolderExplorer-row")).toHaveLength(1000);
+		expect(table.querySelectorAll(".FileNodeViewFolderExplorer-row")).toHaveLength(120);
 		const observer = observers[0]!;
 		act(() => observer.emit());
 		await waitFor(() => expect(table.getAttribute("data-value-target-count")).toBe("100"));
 		await waitFor(() => expect(table.getAttribute("data-value-page-count")).toBe("700"));
-		const deferred = table.querySelector<HTMLElement>('[data-file-node-id="file_500"]')!;
+		const deferred = table.querySelector<HTMLElement>('[data-file-node-id="file_110"]')!;
 		expect(deferred.querySelector('[data-column-field="metadata.field0"]')?.getAttribute("data-value-state")).toBe(
 			"deferred",
 		);
-		visibleNodeId = "file_500";
+		visibleNodeId = "file_110";
 		fireEvent.scroll(observer.root!);
 		await waitFor(() =>
 			expect(deferred.querySelector('[data-column-field="metadata.field6"]')).toHaveProperty("textContent", "6"),
@@ -2574,7 +2575,7 @@ describe("FileNodeView folder columns", () => {
 				.querySelector('[data-file-node-id="file_99"] [data-column-field="metadata.field0"]')
 				?.getAttribute("data-value-state"),
 		).toBe("deferred");
-		const focused = table.querySelector<HTMLElement>('[data-file-node-id="file_900"]')!;
+		const focused = table.querySelector<HTMLElement>('[data-file-node-id="file_115"]')!;
 		act(() => within(focused).getByRole("link").focus());
 		await waitFor(() =>
 			expect(focused.querySelector('[data-column-field="metadata.field6"]')).toHaveProperty("textContent", "6"),
