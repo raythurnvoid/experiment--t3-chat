@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
 import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";
+import { files_NAME_MAX_LENGTH } from "../shared/files.ts";
 import { test_create_saved_placement_fixture as fixture } from "./files-saved-placement.test-fixtures.ts";
 import { files_share_rows_db_compute_all_for_grant } from "./files-share-rows.ts";
 
@@ -167,7 +168,8 @@ describe("share rows during a Move", () => {
 			if (created._nay) throw new Error(created._nay.message);
 			return created._yay.nodeId;
 		};
-		const sourceId = await folder(`/${"n".repeat(19_000)}`);
+		// The longest name allowed, so every share row carries a long path.
+		const sourceId = await folder(`/${"n".repeat(files_NAME_MAX_LENGTH)}`);
 		const targetId = await folder("/target");
 		const userIds = await t.run(async (ctx) => {
 			const ids = [];
