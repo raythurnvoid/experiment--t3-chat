@@ -17,10 +17,19 @@ import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table";
 import { marked, Marked, Lexer, Renderer, Tokenizer, type Links, type MarkedExtension, type Rules } from "marked";
 import type { Doc as YDoc } from "yjs";
-import { Editor, Extension, Node, type Extensions } from "@tiptap/core";
+import {
+	Editor,
+	Extension,
+	Node,
+	getSchema,
+	getText,
+	getTextSerializersFromSchema,
+	type Extensions,
+} from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
 import { EditorState } from "@tiptap/pm/state";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { DOMParser as ProseMirrorDOMParser, type Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { DOMParser as LinkedomDOMParser } from "linkedom/worker";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { is_browser, should_never_happen } from "./shared-utils.ts";
 import { files_CommentsExtension } from "./files-tiptap-comments.ts";
@@ -1953,6 +1962,37 @@ export function files_tiptap_markdown_to_plain_text(args: { markdown: string; bl
 	} finally {
 		editor._yay.destroy();
 	}
+}
+
+/**
+ * Convert many Markdown texts to plain text. Each result is the same as `files_tiptap_markdown_to_plain_text`
+ * on that text.
+ *
+ * Search splits a file into many chunks. A headless editor per chunk cost about 10 ms, so this builds the
+ * schema and parser once and parses each chunk straight into a document. It follows the same steps as
+ * `files_tiptap_markdown_to_json`, the server `generateJSON` and `Editor.getText`.
+ */
+export function files_tiptap_markdown_list_to_plain_text(args: { markdownList: string[] }) {
+	const schema = getSchema(get_tiptap_shared_extensions_list());
+	const parser = ProseMirrorDOMParser.fromSchema(schema);
+	const textSerializers = getTextSerializersFromSchema(schema);
+	const plainTexts: string[] = [];
+	for (const markdown of args.markdownList) {
+		const html = tiptap_markdown_to_html({ markdown });
+		if (html._nay) {
+			return html;
+		}
+
+		const normalizedHtml = html._yay.replace(STRUCTURAL_HTML_WHITESPACE_REGEX, "><").trimEnd();
+		const body = new LinkedomDOMParser().parseFromString(
+			`<!DOCTYPE html><html><body>${normalizedHtml}</body></html>`,
+			"text/html",
+		).body as unknown as HTMLElement;
+		const doc = parser.parse(body, { preserveWhitespace: "full" });
+		plainTexts.push(getText(doc, { blockSeparator: "\n\n", textSerializers }).trim());
+	}
+
+	return Result({ _yay: plainTexts });
 }
 
 /**

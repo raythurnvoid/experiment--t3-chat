@@ -7871,7 +7871,7 @@ describe("save_file_pending_update", () => {
 			: accepted;
 		const draft = await create_private_text_for_test({ path: "/paged-save.md", staged: accepted, unstaged: remaining });
 		const { t, asUser } = draft;
-		const conversion = vi.spyOn(await import("../shared/files-tiptap.ts"), "files_tiptap_markdown_to_plain_text");
+		const conversion = vi.spyOn(await import("../shared/files-tiptap.ts"), "files_tiptap_markdown_list_to_plain_text");
 		const queued = await asUser.action(api.files_pending_updates.save_file_pending_update, {
 			membershipId: draft.membershipId,
 			target: draft.target,
@@ -7918,9 +7918,9 @@ describe("save_file_pending_update", () => {
 			).toBe(remaining);
 		} else expect(pendingChunks).toEqual([]);
 		expect(
-			conversion,
+			conversion.mock.calls.flatMap(([args]) => args.markdownList),
 			"Save converts each accepted and remaining Markdown chunk once across its native pages",
-		).toHaveBeenCalledTimes(chunks.length + pendingChunks.length);
+		).toEqual([...chunks, ...pendingChunks].map((chunk) => chunk.textChunk));
 	});
 
 	test("save_file_pending_update returns Not found when there is no pending doc", async () => {

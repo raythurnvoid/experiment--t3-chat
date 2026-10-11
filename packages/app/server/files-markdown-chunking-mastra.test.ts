@@ -5,6 +5,7 @@ import {
 	files_chunk_markdown,
 	files_chunk_markdown_page,
 } from "./files-markdown-chunking-mastra.ts";
+import { files_tiptap_markdown_to_plain_text } from "../shared/files-tiptap.ts";
 
 describe("files_chunk_markdown", () => {
 	test("builds chunk metadata and flags", async () => {
@@ -185,6 +186,36 @@ describe("files_chunk_markdown", () => {
 			expect(chunk.lineStart).toBeGreaterThanOrEqual(1);
 			expect(chunk.lineEnd).toBeGreaterThanOrEqual(chunk.lineStart);
 		}
+	});
+});
+
+describe("files_chunk_markdown_add_plain_text", () => {
+	test("gives each chunk the same plain text as one editor per chunk", async () => {
+		const markdownContent = [
+			"---\ntitle: Notes\n---",
+			"# Title 😀 中文",
+			"Text with **bold**, _italic_, `code`, ~~strike~~, ==mark== and [a link](https://example.com).",
+			"| Name | Value |\r\n| :--- | ---: |\r\n| one 😀 | `a \\| b` |\r\n| two | 한국어 |",
+			"```ts\nconst x = 1;\n\n\nreturn '🇮🇹';\n```",
+			"~~~\n| not | a | table |\n| --- | --- | --- |\n~~~",
+			"    indented code\n    more code",
+			"- item\n  - nested 👨‍👩‍👧\n- [ ] task\n- [x] done",
+			"> quote\r> old Mac line ending",
+			"hard break  \nnext\\\nafter",
+			'<video src="bonobo-file://abc"></video>',
+			"<div>raw <b>html</b></div>",
+			"\n\n\n",
+			"long line " + "word 中文 😀 ".repeat(40),
+			// The odd start makes a cut land inside an emoji's surrogate pair.
+			"x" + "😀".repeat(100),
+		].join("\n\n");
+		const chunks = await files_chunk_markdown(markdownContent, { maxChunkSize: 60 });
+		if (chunks._nay) throw new Error("Expected Markdown chunks", { cause: chunks._nay });
+		expect(chunks._yay.length).toBeGreaterThan(20);
+		expect(
+			chunks._yay.map((chunk) => chunk.plainTextChunk),
+			"The shared parser matches the editor that Save used before",
+		).toEqual(chunks._yay.map((chunk) => files_tiptap_markdown_to_plain_text({ markdown: chunk.textChunk })._yay));
 	});
 });
 
