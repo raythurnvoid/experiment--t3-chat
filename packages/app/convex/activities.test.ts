@@ -325,7 +325,11 @@ describe("cleanup_history", () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const reviews = [];
+		const reviews: {
+			runId: Id<"files_pending_update_runs">;
+			activityId: Id<"activities">;
+			expiresAt: number;
+		}[] = [];
 		for (let index = 0; index < 2; index++) {
 			const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 				organizationId: db.organizationId,

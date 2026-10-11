@@ -81,6 +81,7 @@ afterEach(() => {
 type Db = Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
 type Metrics = Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>;
 type Cost = ReturnType<typeof transaction_cost>;
+type Metadata = Extract<Doc<"files_metadata_docs">, { sourceKind: "committed" }>;
 
 const zero: Cost = {
 	databaseQueries: 0,
@@ -156,7 +157,7 @@ function budget_recorder() {
 
 function measure_cohort(
 	record: ReturnType<typeof budget_recorder>["record"],
-	metadata: Doc<"files_metadata_docs">[] = [],
+	metadata: Metadata[] = [],
 ) {
 	const rows = new Map(metadata.map((row) => [row._id, { fileNodeId: row.fileNodeId!, view: "before" as "before" | "after" }]));
 	const fileIds = new Set(metadata.map((row) => row.fileNodeId));
@@ -189,19 +190,20 @@ function measure_cohort(
 				rows.set(id, { fileNodeId: fields.fileNodeId!, view: "after" });
 			}
 			const written = new Map<"before" | "after", Id<"files_metadata_docs">[]>();
-			if (patch) for (const [table, id, fields] of patch.mock.calls) {
-				const row = rows.get(id as Id<"files_metadata_docs">);
+			// Vitest infers the older id-only overload. These calls use the table-first overload.
+			if (patch) for (const [table, id, fields] of patch.mock.calls as unknown as [string, Id<"files_metadata_docs">, Partial<Doc<"files_metadata_docs">>][]) {
+				const row = rows.get(id);
 				if (
 					!["sides", "finish_sides", "abort_sides"].includes(phase) ||
 					table !== "files_metadata_docs" || !row || !("moveView" in fields)
 				) continue;
-				if (phase === "sides" && (fields as Partial<Doc<"files_metadata_docs">>).moveView?.view !== "before") continue;
-				written.set(row.view, [...(written.get(row.view) ?? []), id as Id<"files_metadata_docs">]);
+				if (phase === "sides" && fields.moveView?.view !== "before") continue;
+				written.set(row.view, [...(written.get(row.view) ?? []), id]);
 			}
-			if (remove) for (const [table, id] of remove.mock.calls) {
-				const row = rows.get(id as Id<"files_metadata_docs">);
+			if (remove) for (const [table, id] of remove.mock.calls as unknown as [string, Id<"files_metadata_docs">][]) {
+				const row = rows.get(id);
 				if ((phase === "finish_sides" || phase === "abort_sides") && table === "files_metadata_docs" && row)
-					written.set(row.view, [...(written.get(row.view) ?? []), id as Id<"files_metadata_docs">]);
+					written.set(row.view, [...(written.get(row.view) ?? []), id]);
 			}
 			for (const [view, rowIds] of written) pages.push({ cohortId, phase, view, rowIds, fileNodeIds: rowIds.map((id) => rows.get(id)!.fileNodeId) });
 			record(`cohort/${phase}`, cost);
@@ -629,7 +631,7 @@ describe("paged Move transaction budgets", () => {
 						.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 							q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId),
 						)
-						.collect()
+						.collect() as Metadata[]
 				: [];
 		});
 		const savedTextBeforeMove = args.dense
@@ -740,7 +742,7 @@ describe("paged Move transaction budgets", () => {
 			check("Dense metadata Move stays below the budget after the flush");
 			const metadata = await t.run((ctx) => ctx.db.query("files_metadata_docs")
 				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId))
-				.collect());
+				.collect()) as Metadata[];
 			const metadata_fields = (rows: Doc<"files_metadata_docs">[]) => rows.map((row) => Object.fromEntries(Object.entries(row)
 				.filter(([key]) => !["_id", "_creationTime", "moveView", "path", "treePath", "parentId"].includes(key))))
 				.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
@@ -1041,7 +1043,7 @@ describe("cohort Accept transaction budgets", () => {
 		await t.finishAllScheduledFunctions(vi.runAllTimers);
 		const originals = await t.run(async (ctx) => (await Promise.all(nodes.map((node) => ctx.db.query("files_metadata_docs")
 			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", node._id))
-			.collect()))).flat());
+			.collect()))).flat() as Metadata[]);
 		expect(originals, "The native metadata producer creates every expected field and value").toHaveLength(size === "mixed" ? 130 : 5);
 		if (size === "mixed") expect(originals.every((row) => row.fieldPath.length === 160), "Mixed metadata keys reach the catalog cap").toBe(true);
 		else expect(nodes.map((node) => originals.filter((doc) => doc.fileNodeId === node._id).length), "Near-cap text creates the expected metadata docs per file").toEqual([1, 2, 2]);
@@ -1140,7 +1142,7 @@ describe("cohort Accept transaction budgets", () => {
 			return [node._id, folder._id, path, path];
 		}));
 		const metadata = await t.run(async (ctx) => (await Promise.all(nodes.map((node) => ctx.db.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", node._id)).collect()))).flat());
+			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", node._id)).collect()))).flat() as Metadata[]);
 		if (mode === "stop") expect(metadata, "Stop before publication keeps every saved metadata field").toEqual(originals);
 		else {
 			const metadata_fields = (rows: Doc<"files_metadata_docs">[]) => rows.map((row) => Object.fromEntries(Object.entries(row).filter(([key]) => !["_id", "_creationTime", "moveView", "path", "treePath"].includes(key))))

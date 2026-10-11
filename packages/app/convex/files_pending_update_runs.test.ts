@@ -884,13 +884,14 @@ describe("review jobs", () => {
 					copies.add(await insert.mock.results[index]!.value as Id<"files_metadata_docs">);
 					copied++;
 				}
-				for (const [table, id, fields] of patch.mock.calls) {
+				// Vitest uses the old ID-only overload. The worker passes the table too.
+				for (const [table, id, fields] of patch.mock.calls as unknown as [string, Id<"files_metadata_docs">, Partial<Doc<"files_metadata_docs">>][]) {
 					if (table !== "files_metadata_docs") continue;
-					const view = (fields as Partial<Doc<"files_metadata_docs">>).moveView;
+					const view = fields.moveView;
 					if (originals.has(id as Id<"files_metadata_docs">) && view?.view === "before") staged++;
 					else if (copies.has(id as Id<"files_metadata_docs">) && "moveView" in fields && view === undefined) after++;
 				}
-				for (const [table, id] of remove.mock.calls) if (table === "files_metadata_docs" && originals.has(id as Id<"files_metadata_docs">)) before++;
+				for (const [table, id] of remove.mock.calls as unknown as [string, Id<"files_metadata_docs">][]) if (table === "files_metadata_docs" && originals.has(id as Id<"files_metadata_docs">)) before++;
 				if (staged) {
 					expect(copied).toBe(staged);
 					stagePages.push(staged);
@@ -947,7 +948,7 @@ describe("review jobs", () => {
 		]);
 		expect(saved.every((node) => node.archiveOperationId === unit.cohortId && node.moveCohortId === undefined)).toBe(true);
 		const metadata = await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect());
-		expect(metadata.map((row) => [row.fileNodeId, row.fieldPath]).sort()).toEqual(
+		expect(metadata.map((row) => [row.sourceKind === "committed" ? row.fileNodeId : undefined, row.fieldPath]).sort()).toEqual(
 			fileIds.flatMap((id) => Array.from({ length: 20 }, (_, field) => [id, `frontmatter.tag${field}`])).sort(),
 		);
 		expect(
@@ -955,10 +956,10 @@ describe("review jobs", () => {
 			"Reviewed Delete archives every metadata field",
 		).toBe(true);
 		expect(
-			metadata.every((row) => row.yjsSequence === 1 && row.sourceKind === "committed" && row.moveView === undefined),
+			metadata.every((row) => row.sourceKind === "committed" && row.yjsSequence === 1 && row.moveView === undefined),
 		).toBe(true);
 		const paths = new Map(saved.map((node) => [node._id, node.path]));
-		expect(metadata.every((row) => row.path === paths.get(row.fileNodeId!) && row.treePath === row.path)).toBe(true);
+		expect(metadata.every((row) => row.sourceKind === "committed" && row.path === paths.get(row.fileNodeId) && row.treePath === row.path)).toBe(true);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 
