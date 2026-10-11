@@ -979,7 +979,7 @@ export async function files_move_content_db_publish_accounting(ctx: MutationCtx,
 			throw should_never_happen("Invalid Move private balance", { cohortId: cohort._id, quotaName });
 		// Save stays allowed at the private byte caps. A partial Save can grow private bytes, but only by
 		// copying text its draft already holds into the remainder. New draft bytes still need quota.
-		// Private nodes must never grow here, so that cap still refuses.
+		// A Move only removes private nodes today. Any node growth must still fit the node cap.
 		if (quotaName === "files_private_nodes" && delta > 0 && quota.usedCount + delta > quota.maxCount)
 			return Result({ _nay: { name: "storage_full", message: quotas[quotaName].disabledReason } });
 		balances.push({ quota, delta });
