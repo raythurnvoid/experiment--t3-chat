@@ -100,8 +100,37 @@ describe("unarchive_nodes", () => {
 		}
 
 		/**
+		 * Put saved files into a folder by moving their rows and side docs directly. A Move waits for a
+		 * running restore, and a Move of 100 files takes many steps.
+		 */
+		async function place_files(f: Fixture, nodeIds: Array<Id<"files_nodes">>, folderId: Id<"files_nodes">) {
+			await f.t.run(async (ctx) => {
+				const folder = (await ctx.db.get("files_nodes", folderId))!;
+				const sideDocs = [
+					...(await ctx.db.query("files_plain_text_chunks").collect()),
+					...(await ctx.db.query("files_metadata_docs").collect()),
+				];
+				for (const nodeId of nodeIds) {
+					const node = (await ctx.db.get("files_nodes", nodeId))!;
+					const path = `${folder.path}/${node.name}`;
+					await ctx.db.patch("files_nodes", nodeId, {
+						parentId: folderId,
+						path,
+						treePath: path,
+						pathDepth: folder.pathDepth + 1,
+					});
+					for (const sideDoc of sideDocs) {
+						if (sideDoc.fileNodeId !== nodeId) continue;
+						if ("treePath" in sideDoc) await ctx.db.patch("files_metadata_docs", sideDoc._id, { path, treePath: path });
+						else await ctx.db.patch("files_plain_text_chunks", sideDoc._id, { path });
+					}
+				}
+			});
+		}
+
+		/**
 		 * Archive `/inside` with two folders of 100 files and restore it until `/inside/d1` is back, before
-		 * its files. Then move new files with the names in `names` into d1. The restore waits on the first
+		 * its files. Then put new files with the names in `names` into d1. The restore waits on the first
 		 * clash inside d1.
 		 */
 		async function seed_clash_inside(f: Fixture, names: string[]) {
@@ -113,13 +142,7 @@ describe("unarchive_nodes", () => {
 
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 100 });
 			const occupantIds = names.map((name) => occupants.fileIds[Number(name.slice(1, 4))]!);
-			expect(
-				await test_move_nodes(f.t, f.asOwner, {
-					membershipId: f.db.membershipId,
-					itemIds: occupantIds,
-					targetParentId: tree.folderIds[1]!,
-				}),
-			).toEqual({ _yay: null });
+			await place_files(f, occupantIds, tree.folderIds[1]!);
 			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
 			return { tree, occupantIds, job };
 		}
@@ -269,13 +292,7 @@ describe("unarchive_nodes", () => {
 			expect(archived._nay).toBeUndefined();
 			if (archived._yay) await run_to_end(f, archived._yay);
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 100 });
-			expect(
-				await test_move_nodes(f.t, f.asOwner, {
-					membershipId: f.db.membershipId,
-					itemIds: occupants.fileIds,
-					targetParentId: tree.folderIds[0]!,
-				}),
-			).toEqual({ _yay: null });
+			await place_files(f, occupants.fileIds, tree.folderIds[0]!);
 			const restored = await restore(f, [tree.fileIds[0]!]);
 			const job = restored._yay!;
 
@@ -425,13 +442,7 @@ describe("unarchive_nodes", () => {
 			const queuedFileId = tree.fileIds[tree.folderIds.indexOf(queuedId)]!;
 			expect((await read_node(f, queuedFileId)).archiveOperationId).not.toBeNull();
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 1 });
-			expect(
-				await test_move_nodes(f.t, f.asOwner, {
-					membershipId: f.db.membershipId,
-					itemIds: occupants.fileIds,
-					targetParentId: queuedId,
-				}),
-			).toEqual({ _yay: null });
+			await place_files(f, occupants.fileIds, queuedId);
 
 			// A choice counts only until the next clash. So `d50` must come back before that clash asks.
 			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });

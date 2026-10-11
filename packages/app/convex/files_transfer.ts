@@ -798,7 +798,8 @@ async function db_resolve_name(
 		run: Doc<"files_transfer_runs">;
 		item: Doc<"files_transfer_items">;
 		membership: Doc<"organizations_workspaces_users">;
-		parent: files_PendingParent;
+		/** Null means a folder this run has not created yet, so nothing saved can be in it. */
+		parent: files_PendingParent | null;
 		parentPath: string;
 		reader?: Awaited<ReturnType<typeof files_visible_db_create_reader>>;
 		reserved?: Set<string>;
@@ -841,7 +842,7 @@ async function db_resolve_name(
 		}
 
 		const savedOccupant =
-			args.run.sourceView === "saved" && args.parent.kind !== "private"
+			args.run.sourceView === "saved" && args.parent && args.parent.kind !== "private"
 				? await files_saved_placement_db_get_slot(ctx.db, {
 						organizationId: scope.organizationId,
 						workspaceId: scope.workspaceId,
@@ -3279,7 +3280,9 @@ async function db_plan(args: {
 			run,
 			item,
 			membership,
-			parent: run.targetParent,
+			// A child goes in the folder its parent item makes. A paste never merges folders, so a parent
+			// folder that is only planned is new and empty.
+			parent: parent ? (parent.state === "completed" ? parent.outputTarget : null) : run.targetParent,
 			parentPath,
 			nameLookups,
 		});

@@ -343,6 +343,8 @@ describe("cross-workspace Move refusal", () => {
 				holds: await ctx.db.query("files_private_storage_reservations").collect(),
 				pendingNodes: await ctx.db.query("files_pending_nodes").collect(),
 				pendingUpdates: await ctx.db.query("files_pending_updates").collect(),
+				// The fixture saves the source through a review job, which has its own Activity.
+				activities: await ctx.db.query("activities").collect(),
 			}));
 			const result = await f.t.mutation(internal.files_transfer.start_for_agent, {
 				membershipId: f.current.membershipId,
@@ -371,10 +373,10 @@ describe("cross-workspace Move refusal", () => {
 				expect(await ctx.db.query("files_private_storage_reservations").collect()).toEqual(before.holds);
 				expect(await ctx.db.query("files_pending_nodes").collect()).toEqual(before.pendingNodes);
 				expect(await ctx.db.query("files_pending_updates").collect()).toEqual(before.pendingUpdates);
+				expect(await ctx.db.query("activities").collect()).toEqual(before.activities);
 				for (const table of [
 					"files_transfer_runs",
 					"files_transfer_items",
-					"activities",
 					"ai_chat_bash_invocation_transfers",
 				] as const)
 					expect(await ctx.db.query(table).collect(), table).toEqual([]);

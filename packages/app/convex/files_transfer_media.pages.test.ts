@@ -7,6 +7,7 @@ import {
 	mock_media_storage,
 	create_media,
 	save_media,
+	save_all_media,
 	fixture,
 	read_dependencies,
 	prepare_document_capture,
@@ -210,13 +211,12 @@ describe("copy_transfer_file media", () => {
 			});
 			for (const dependency of dependencies) expect(read?.content).toContain(`![Photo](${dependency.src})`);
 			for (const src of f.sourceRefs) expect(read?.content).not.toContain(src);
-			for (const media of f.selectedMediaItems)
-				await save_media({
-					t: f.t,
-					membershipId: f.destination.membershipId,
-					userId: f.destination.userId,
-					target: media.outputTarget!,
-				});
+			await save_all_media({
+				t: f.t,
+				membershipId: f.destination.membershipId,
+				userId: f.destination.userId,
+				targets: f.selectedMediaItems.map((media) => media.outputTarget!),
+			});
 			expect(
 				await test_save_file_pending_update(f.asUser, {
 					membershipId: f.destination.membershipId,
