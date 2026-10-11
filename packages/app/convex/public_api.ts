@@ -36,6 +36,9 @@ import {
 	files_normalize_upload_file_name,
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	files_check_name_and_path_length,
+	files_check_new_folder_count,
+	files_check_request_folder_prefixes,
+	files_PATH_MAX_LENGTH,
 } from "../shared/files.ts";
 import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
@@ -4502,6 +4505,8 @@ export const create_file_upload_targets = internalMutation({
 		// ACL check matters because an API key is not the organization owner: the create helper
 		// itself refuses restricted folders, and by then earlier items are already written. Asking
 		// here turns that case into a clean per-path refusal before anything is written.
+		// Each ancestor is looked up and checked once per call. Items in one folder share it.
+		const ancestors = new Map<string, Doc<"files_nodes"> | null>();
 		for (const item of validated) {
 			const segments = path_extract_segments_from(item.path);
 			let parentNode: Doc<"files_nodes"> | null = null;
@@ -4513,27 +4518,32 @@ export const create_file_upload_targets = internalMutation({
 					});
 				}
 
-				const ancestor = await files_db_get_visible_node_by_path(ctx, { ...args, path: ancestorPath });
+				let ancestor = ancestors.get(ancestorPath);
+				if (ancestor === undefined) {
+					ancestor = await files_db_get_visible_node_by_path(ctx, { ...args, path: ancestorPath });
+					// Check access before checking whether this node is a file or folder. This stops a hidden file
+					// from revealing why the path failed.
+					if (
+						ancestor &&
+						!(await access_control_db_can_act_on_file_node(ctx, {
+							organizationId: args.organizationId,
+							workspaceId: args.workspaceId,
+							userId: args.userId,
+							fileNode: ancestor,
+							permission: "content.write",
+						}))
+					) {
+						return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
+					}
+					if (ancestor && ancestor.kind !== "folder") {
+						return Result({
+							_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
+						});
+					}
+					ancestors.set(ancestorPath, ancestor);
+				}
 				if (!ancestor) {
 					continue;
-				}
-				// Check access before checking whether this node is a file or folder. This stops a hidden file
-				// from revealing why the path failed.
-				if (
-					!(await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						userId: args.userId,
-						fileNode: ancestor,
-						permission: "content.write",
-					}))
-				) {
-					return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
-				}
-				if (ancestor.kind !== "folder") {
-					return Result({
-						_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
-					});
 				}
 				parentNode = ancestor;
 			}
@@ -4545,6 +4555,8 @@ export const create_file_upload_targets = internalMutation({
 					path: item.path,
 				});
 				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
+				const newFolders = files_check_new_folder_count(segments.length - 1 - (parentNode?.pathDepth ?? 0));
+				if (newFolders._nay) return Result({ _nay: { ...newFolders._nay, data: { path: item.path } } });
 			}
 			if (
 				!(await has_workspace_content_permission(ctx, {
@@ -4612,6 +4624,7 @@ export const create_file_upload_targets = internalMutation({
 		}> = [];
 		// Share one link cleanup across the replaced files, so the workspace links load only once.
 		const shareLinkCleanup = files_share_links_create_cleanup_state();
+		const folders = new Map<string, Doc<"files_nodes">>();
 		for (const item of validated) {
 			// Uploading over a name archives whatever holds it, like create_upload_node, so re-runs
 			// replace the previous upload instead of failing.
@@ -4651,6 +4664,7 @@ export const create_file_upload_targets = internalMutation({
 				writePolicy: item.writePolicy,
 				...(item.writePolicy !== undefined ? { keepsReplacedPolicy: true as const } : {}),
 				...(item.collidingNodeId ? { replacesArchivedFile: true as const } : {}),
+				folders,
 				now,
 			});
 			// The validation pass cleared every failure this helper can hit (collisions, ancestor
@@ -7466,7 +7480,7 @@ const upload_urls_body_validator = z.object({
 	files: z
 		.array(
 			z.object({
-				path: z.string(),
+				path: z.string().max(files_PATH_MAX_LENGTH),
 				contentType: z.string().min(1).max(200),
 				size: z.number().int().min(1),
 			}),
@@ -7503,6 +7517,11 @@ export async function public_api_http_upload_urls(args: {
 	const body = await server_request_json_parse_and_validate(request, upload_urls_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	// Bound the folder lookups of the whole batch before the first one.
+	const folderCount = files_check_request_folder_prefixes(body._yay.files.map((file) => file.path));
+	if (folderCount._nay) {
+		return { status: 400, body: { message: folderCount._nay.message, code: folderCount._nay.name } } as const;
 	}
 
 	// Authorization charged one slot for the request; the rest of the batch
@@ -7557,6 +7576,12 @@ export async function public_api_http_upload_urls(args: {
 		}
 		if (failedStatus === 409) {
 			return { status: 409, body: { message: created._nay.message, path: failedPath } } as const;
+		}
+		if (created._nay.name === "too_many_folders") {
+			return {
+				status: 400,
+				body: { message: created._nay.message, path: failedPath, code: created._nay.name },
+			} as const;
 		}
 		return { status: 400, body: { message: created._nay.message, path: failedPath } } as const;
 	}

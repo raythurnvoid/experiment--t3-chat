@@ -7,13 +7,15 @@
 import { v } from "convex/values";
 import { internalQuery } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import {
 	files_check_name_and_path_length,
+	files_check_new_folder_count,
+	files_check_request_folder_prefixes,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_normalize_content_type,
 	files_normalize_name,
@@ -81,6 +83,11 @@ export const create_upload_targets = internalMutation({
 		const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
 		if (!workspace || workspace.organizationId !== args.organizationId) {
 			return Result({ _nay: { message: "Not found" } });
+		}
+		// Bound the folder lookups of the whole batch before the first one.
+		const folderCount = files_check_request_folder_prefixes(args.items.map((item) => item.path));
+		if (folderCount._nay) {
+			return folderCount;
 		}
 
 		// Validate the whole batch before any write. A `_nay` return does not roll back earlier
@@ -163,7 +170,8 @@ export const create_upload_targets = internalMutation({
 		}
 
 		// An ancestor folder that already exists as a file would make the recursive create fail
-		// mid-write, so check every ancestor path up front too.
+		// mid-write, so check every ancestor path up front too. Each one is looked up once per call.
+		const ancestors = new Map<string, Doc<"files_nodes"> | null>();
 		for (const item of validated) {
 			const segments = path_extract_segments_from(item.path);
 			let existingDepth = 0;
@@ -175,28 +183,34 @@ export const create_upload_targets = internalMutation({
 					});
 				}
 
-				const ancestor = await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
-							.eq("path", ancestorPath)
-							.eq("archiveOperationId", null),
-					)
-					.first();
-				if (ancestor && ancestor.kind !== "folder") {
-					return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
-				}
-				// A read-only parent folder stops the whole batch before its first write.
-				if (ancestor) {
-					const ancestorWritable = await files_nodes_db_require_user_writable(ctx, {
-						node: ancestor,
-						userId: args.createdBy,
-					});
-					if (ancestorWritable._nay) {
-						return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
+				let ancestor = ancestors.get(ancestorPath);
+				if (ancestor === undefined) {
+					ancestor = await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
+								.eq("path", ancestorPath)
+								.eq("archiveOperationId", null),
+						)
+						.first();
+					if (ancestor && ancestor.kind !== "folder") {
+						return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
 					}
+					// A read-only parent folder stops the whole batch before its first write.
+					if (ancestor) {
+						const ancestorWritable = await files_nodes_db_require_user_writable(ctx, {
+							node: ancestor,
+							userId: args.createdBy,
+						});
+						if (ancestorWritable._nay) {
+							return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
+						}
+					}
+					ancestors.set(ancestorPath, ancestor);
+				}
+				if (ancestor) {
 					existingDepth = depth;
 				}
 			}
@@ -205,6 +219,8 @@ export const create_upload_targets = internalMutation({
 			if (!item.collidingNodeId) {
 				const tooLong = files_check_name_and_path_length({ names: segments.slice(existingDepth), path: item.path });
 				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
+				const newFolders = files_check_new_folder_count(segments.length - 1 - existingDepth);
+				if (newFolders._nay) return Result({ _nay: { ...newFolders._nay, data: { path: item.path } } });
 			}
 		}
 
@@ -219,6 +235,7 @@ export const create_upload_targets = internalMutation({
 		}> = [];
 		// Share one link cleanup across the replaced files, so the workspace links load only once.
 		const shareLinkCleanup = files_share_links_create_cleanup_state();
+		const folders = new Map<string, Doc<"files_nodes">>();
 		for (const item of validated) {
 			// Importing over a name archives whatever holds it, like create_upload_node, so re-runs
 			// replace the previous import instead of failing.
@@ -257,6 +274,7 @@ export const create_upload_targets = internalMutation({
 				contentType: item.contentType,
 				assetId,
 				...(item.collidingNodeId ? { replacesArchivedFile: true as const } : {}),
+				folders,
 				// Say the file arrived through an operator import, so `meta search` can tell imported
 				// content from what somebody uploaded here. The size and the media type are
 				// client-declared at this point. The R2 event publish stamps the real ones.

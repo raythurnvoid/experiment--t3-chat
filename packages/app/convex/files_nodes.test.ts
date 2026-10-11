@@ -46,6 +46,7 @@ import {
 	test_rename_node,
 	test_move_nodes,
 	test_create_saved_text_file,
+	test_db_hold_move_slot,
 	test_get_file_yjs_pointers,
 	test_mocks,
 	test_meta_search,
@@ -102,7 +103,14 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import { files_NAME_MAX_LENGTH, files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } from "../shared/files.ts";
+import {
+	files_IMPORT_MAX_ITEMS_PER_CALL,
+	files_NAME_MAX_LENGTH,
+	files_NEW_FOLDER_DEPTH_MAX,
+	files_PATH_MAX_LENGTH,
+	files_REQUEST_FOLDER_PREFIXES_MAX,
+	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
+} from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_table_filter_order_field, type files_table_Filter } from "../shared/files-table.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
@@ -5425,7 +5433,182 @@ describe("files_nodes.create_upload_node", () => {
 	});
 });
 
+/**
+ * Real read limits. A member who may write only in the restricted folder `/l`, a chain of folders
+ * named `a` below it, `depth` levels deep with `/l`, and optionally a Move that holds the workspace
+ * slot and the folder `/moving`, so every write guard runs.
+ */
+async function seed_upload_folder_limits(args: { depth: number; move: boolean }) {
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const member = await t.run(async (ctx) => {
+		const userId = await ctx.db.insert("users", { clerkUserId: "upload-folder-limits-member" });
+		const now = Date.now();
+		const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId,
+			active: true,
+			pendingOrganizationRemoval: false,
+			updatedAt: now,
+		});
+		await access_control_db_ensure_role_assignment(ctx, { ...db, userId, role: "member", now });
+		await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+		return { userId, membershipId };
+	});
+	const folder = async (path: string) => {
+		const created = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		return created._yay.nodeId;
+	};
+	const lockedId = await folder("/l");
+	expect(
+		(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: lockedId }))._nay,
+	).toBeUndefined();
+	expect(
+		(
+			await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: db.membershipId,
+				nodeId: lockedId,
+				principal: { kind: "user", userId: member.userId },
+				level: "write",
+			})
+		)._nay,
+	).toBeUndefined();
+	// Raw inserts in pages, so seeding a deep chain stays under the limits too.
+	let deepId = lockedId;
+	let deepPath = "/l";
+	for (let start = 2; start <= args.depth; start += 200) {
+		({ deepId, deepPath } = await t.run(async (ctx) => {
+			let parentId = deepId;
+			let path = deepPath;
+			for (let pathDepth = start; pathDepth < start + 200 && pathDepth <= args.depth; pathDepth++) {
+				path = `${path}/a`;
+				parentId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId,
+					name: "a",
+					sortName: files_sort_text_key("a"),
+					kind: "folder",
+					path,
+					treePath: `${path}/`,
+					pathDepth,
+					restrictedScopeNodeId: lockedId,
+				});
+			}
+			return { deepId: parentId, deepPath: path };
+		}));
+	}
+	if (args.move) {
+		const movingId = await folder("/moving");
+		await t.run(async (ctx) => {
+			await ctx.db.insert("files_move_source_reservations", {
+				cohortId: await test_db_hold_move_slot(ctx, db),
+				source: { kind: "saved", id: movingId },
+				mode: "subtree",
+				userId: null,
+				generation: 1,
+			});
+		});
+	}
+	const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+	return { t, asMember, membershipId: member.membershipId, lockedId, deepId };
+}
+
 describe("files_nodes.create_upload_nodes", () => {
+	// The deepest folder whose path still fits the short names "/0" to "/49".
+	const deepestFolder = Math.floor((files_PATH_MAX_LENGTH - "/49".length) / 2);
+	const chain = (head: string, folders: number) => [head, ...Array<string>(folders - 1).fill("a")].join("/");
+
+	test.each([false, true])("fits 50 files into a restricted folder 510 levels deep (Move: %s)", async (move) => {
+		const f = await seed_upload_folder_limits({ depth: deepestFolder, move });
+		const result = await f.asMember.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: f.membershipId,
+			parentId: f.deepId,
+			onConflict: "skip",
+			items: Array.from({ length: files_IMPORT_MAX_ITEMS_PER_CALL }, (_, i) => ({
+				relativePath: `${i}`,
+				contentType: "application/octet-stream",
+				size: 1,
+			})),
+		});
+		expect(result._yay?.created, "every file in the deep folder").toHaveLength(files_IMPORT_MAX_ITEMS_PER_CALL);
+	});
+
+	test.each([false, true])("fits 50 files into new chains that use every folder slot (Move: %s)", async (move) => {
+		const f = await seed_upload_folder_limits({ depth: 1, move });
+		// Two new chains of the most new folders a path may add name every folder a call may name.
+		const chains = [chain("p", files_NEW_FOLDER_DEPTH_MAX), chain("q", files_NEW_FOLDER_DEPTH_MAX)];
+		expect(chains.length * files_NEW_FOLDER_DEPTH_MAX).toBe(files_REQUEST_FOLDER_PREFIXES_MAX);
+		const result = await f.asMember.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: f.membershipId,
+			parentId: f.lockedId,
+			onConflict: "skip",
+			items: Array.from({ length: files_IMPORT_MAX_ITEMS_PER_CALL }, (_, i) => ({
+				relativePath: `${chains[i % 2]}/${i}.bin`,
+				size: 1,
+			})),
+		});
+		expect(result._yay?.created, "every file in the new chains").toHaveLength(files_IMPORT_MAX_ITEMS_PER_CALL);
+	});
+
+	test("fits 50 files into an existing chain that uses every folder slot during a Move", async () => {
+		const f = await seed_upload_folder_limits({ depth: files_REQUEST_FOLDER_PREFIXES_MAX + 1, move: true });
+		const result = await f.asMember.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: f.membershipId,
+			parentId: f.lockedId,
+			onConflict: "skip",
+			items: Array.from({ length: files_IMPORT_MAX_ITEMS_PER_CALL }, (_, i) => ({
+				relativePath: `${chain("a", files_REQUEST_FOLDER_PREFIXES_MAX)}/${i}.bin`,
+				size: 1,
+			})),
+		});
+		expect(result._yay?.created, "every file at the end of the existing chain").toHaveLength(
+			files_IMPORT_MAX_ITEMS_PER_CALL,
+		);
+	});
+
+	test("refuses a call with too many folders before any write, during a Move", async () => {
+		const f = await seed_upload_folder_limits({ depth: 1, move: true });
+		const count = () =>
+			f.t.run(async (ctx) => ({
+				nodes: (await ctx.db.query("files_nodes").collect()).length,
+				assets: (await ctx.db.query("files_r2_assets").collect()).length,
+			}));
+		const before = await count();
+		const upload = (relativePaths: string[]) =>
+			f.asMember.mutation(api.files_nodes.create_upload_nodes, {
+				membershipId: f.membershipId,
+				parentId: f.lockedId,
+				onConflict: "skip",
+				items: relativePaths.map((relativePath) => ({ relativePath, size: 1 })),
+			});
+		// Each file in its own new chain of the most new folders a path may add.
+		const ownChains = await upload(
+			Array.from(
+				{ length: files_IMPORT_MAX_ITEMS_PER_CALL },
+				(_, i) => `${chain(`c${i}`, files_NEW_FOLDER_DEPTH_MAX)}/f.bin`,
+			),
+		);
+		expect(ownChains._nay, "50 new chains").toMatchObject({ name: "too_many_folders" });
+		const tooDeepPath = `${chain("d", files_NEW_FOLDER_DEPTH_MAX + 1)}/f.bin`;
+		const tooDeep = await upload([tooDeepPath]);
+		expect(tooDeep._nay, "one path with one new folder too many").toMatchObject({
+			name: "too_many_folders",
+			data: { path: tooDeepPath },
+		});
+		expect(await count()).toEqual(before);
+	});
+
 	test("old names over the limit stay usable: replace a long-named file and upload into a long-named folder", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
