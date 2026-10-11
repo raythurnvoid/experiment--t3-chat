@@ -6675,6 +6675,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			})
 			.catch((error) => {
 				console.error("[FilesSidebar.handleUnarchive] Error unarchiving file", { error, nodeId });
+				toast.error("Failed to restore. Try again.");
 			})
 			.finally(() => {
 				unmarkFileAsPending(nodeId);
