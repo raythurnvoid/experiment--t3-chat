@@ -8,7 +8,7 @@ import { r2_create_asset_key } from "../convex/r2_client.ts";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { MutationCtx } from "../convex/_generated/server.js";
 import { files_private_storage_db_reserve } from "../convex/files_private_storage.ts";
-import { test_mocks, test_run_with_flush } from "../convex/setup.test.ts";
+import { test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { test_create_saved_placement_fixture as fixture } from "./files-saved-placement.test-fixtures.ts";
 import {
@@ -916,5 +916,108 @@ describe("Move write reservations", () => {
 			}),
 		).rejects.toThrow("This item is being moved");
 		expect(written, "only the write before the reservation passes").toEqual(["metadata.a"]);
+	});
+
+	test("the pending-state sweep does not reschedule a pass that only skipped busy rows", async () => {
+		const f = await fixture();
+		// A full page of tasks in the Move's workspace. Each one is skipped this pass.
+		await f.t.run(async (ctx) => {
+			for (let index = 0; index < 32; index++)
+				await ctx.db.insert("files_pending_update_state_cleanup_tasks", {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdAt: Date.now(),
+				});
+		});
+		const read_sweeps = () =>
+			f.t.run(async (ctx) =>
+				(await ctx.db.system.query("_scheduled_functions").collect())
+					.filter((job) => job.name.includes("cleanup_expired_pending_state_rows"))
+					.map((job) => job._id),
+			);
+		const read_tasks = () => f.t.run((ctx) => ctx.db.query("files_pending_update_state_cleanup_tasks").collect());
+		const tasks = await read_tasks();
+		const before = await read_sweeps();
+		const result = await f.t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {});
+		expect(await read_sweeps(), "a pass that walked past every skipped row has nothing to continue").toEqual(before);
+		expect(result).toEqual({ deletedCount: 0, done: true });
+		expect(await read_tasks(), "every busy task stays for a later pass").toEqual(tasks);
+	});
+
+	test("busy rows at the head of the sweep do not block another workspace", async () => {
+		const f = await fixture();
+		const other = await f.t.run(async (ctx) => {
+			// Six old expired text inputs in the Move's workspace use the whole large-value budget.
+			const busy = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
+			const target = { kind: "saved" as const, id: f.nodeId };
+			const operationBatchId = await ctx.db.insert("files_pending_update_operation_batches", {
+				...busy,
+				target,
+				expectedPendingUpdateId: null,
+				expectedRevision: null,
+				expectedPrivateVersion: null,
+				updatedAt: Date.now(),
+				lastActivityAt: Date.now(),
+			});
+			for (let index = 0; index < 6; index++)
+				await ctx.db.insert("files_pending_update_text_inputs", {
+					...busy,
+					target,
+					operationBatchId,
+					role: "staged",
+					text: "busy",
+					expiresAt: 1,
+				});
+			// Another workspace has a retired state waiting in its cleanup task.
+			const db = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" });
+			const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId };
+			const cleanupTaskId = await ctx.db.insert("files_pending_update_state_cleanup_tasks", {
+				...scope,
+				createdAt: Date.now(),
+			});
+			const stateId = await ctx.db.insert("files_pending_update_yjs_states", {
+				...scope,
+				userId: db.userId,
+				target,
+				owner: { kind: "retired", cleanupTaskId },
+				sealed: true,
+				pageCount: 0,
+				totalBytes: 0,
+				digest: "",
+			});
+			const held = await files_private_storage_db_reserve(ctx, {
+				...scope,
+				userId: db.userId,
+				resource: { kind: "state", id: stateId },
+				byteCount: 0,
+			});
+			if (held._nay) throw new Error(held._nay.message);
+			return { cleanupTaskId, stateId };
+		});
+		// Follow the self-scheduled chain like the scheduler would.
+		const used = new Set(
+			(await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).map((job) => job._id),
+		);
+		let args: Record<string, unknown> = {};
+		for (let pass = 0; pass < 10; pass++) {
+			const result = await f.t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, args);
+			if (result.done) break;
+			const next = (await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter(
+				(job) => job.name.includes("cleanup_expired_pending_state_rows") && !used.has(job._id),
+			)[0];
+			if (!next) throw new Error("Expected the next sweep pass");
+			used.add(next._id);
+			args = next.args[0] as Record<string, unknown>;
+		}
+		const left = await f.t.run(async (ctx) => ({
+			otherState: (await ctx.db.get("files_pending_update_yjs_states", other.stateId)) !== null,
+			otherTask: (await ctx.db.get("files_pending_update_state_cleanup_tasks", other.cleanupTaskId)) !== null,
+			busyInputs: (await ctx.db.query("files_pending_update_text_inputs").collect()).length,
+		}));
+		expect(left, "the other workspace's retired state is cleaned").toEqual({
+			otherState: false,
+			otherTask: false,
+			busyInputs: 6,
+		});
 	});
 });
