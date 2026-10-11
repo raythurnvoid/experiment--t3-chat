@@ -50,7 +50,7 @@ import {
 } from "lucide-react";
 import { useConvex, useQueries, useQuery, type ConvexReactClient } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import { compareValues } from "convex/values";
+import { compareValues, ConvexError } from "convex/values";
 import {
 	buildProxiedInstance,
 	dragAndDropFeature,
@@ -344,6 +344,33 @@ type FilesImportSkipReason =
 	| "conflict"
 	| "path_blocked";
 
+const FILES_IMPORT_SKIP_REASON_TEXT: Record<FilesImportSkipReason, string> = {
+	invalid_name: "Name not allowed",
+	missing_extension: "No file extension",
+	too_large: "File too large",
+	too_deep: `More than ${files_NEW_FOLDER_DEPTH_MAX} new folders`,
+	path_too_long: `Path over ${files_PATH_MAX_LENGTH.toLocaleString("en-US")} characters`,
+	duplicate_after_normalization: "Same name as another file",
+	// The server uses "conflict" for an existing file and for a refused permission alike.
+	conflict: "Already exists or not writable",
+	path_blocked: "Another item is in the way",
+};
+
+/**
+ * Plain words for a server refusal or error. Unknown texts pass through without the final period.
+ */
+function files_import_failure_reason(message: string) {
+	if (message.endsWith("Send fewer files per request.")) return "Too many folders in one request";
+	const plain: Record<string, string> = {
+		"Not found": "The target folder no longer exists",
+		"Duplicate path in batch": "Same path as another file",
+		"Path must be relative and normalized": "Path not allowed",
+		"Path contains an invalid folder name": "Folder name not allowed",
+		"Path ends in an invalid file name": "Name not allowed",
+	};
+	return plain[message] ?? message.replace(/\.$/, "");
+}
+
 type FilesImportConflict = {
 	relativePath: string;
 	kind: files_TreeItem["kind"];
@@ -365,8 +392,8 @@ type FilesImportStoreState = {
 	pendingConfirmation: number;
 	/** Client-side and server-side skips, merged for the final report. */
 	skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }>;
-	/** `reason` is the server's message, when the server gave one. */
-	failed: Array<{ relativePath: string; reason?: string }>;
+	/** `reason` is shown to the user next to the file. */
+	failed: Array<{ relativePath: string; reason: string }>;
 	/**
 	 * Non-empty exactly while the confirm modal is open.
 	 */
@@ -448,6 +475,11 @@ type FilesImportPlanItem = {
 	/** Fully normalized path sent to the server, which requires already-normalized segments. */
 	normalizedPath: string;
 	contentType: string | undefined;
+	/**
+	 * The full path is over the length limit. The server still takes it when it replaces an existing
+	 * file, so the import skips it only after the conflict check says nothing is there.
+	 */
+	pathTooLong?: true;
 };
 
 /**
@@ -527,12 +559,14 @@ function build_import_plan(entries: FilesImportEntry[], parentPath: string) {
 			invalidSkillPaths.push(entry.relativePath);
 		}
 		// The server refuses the whole call for a path over these limits, so skip the file here. Every
-		// folder on the relative path counts as new: the client does not know which ones exist.
-		const fullPathLength = (parentPath === "/" ? 0 : parentPath.length) + 1 + normalizedPath.length;
+		// folder on the relative path counts as new: the client does not know which ones exist. A long
+		// path that replaces an existing file is allowed, so a non-skill one is only marked here.
+		const pathTooLong =
+			(parentPath === "/" ? 0 : parentPath.length) + 1 + normalizedPath.length > files_PATH_MAX_LENGTH;
 		const depthOrLengthSkip =
 			normalizedSegments.length - 1 > files_NEW_FOLDER_DEPTH_MAX
 				? "too_deep"
-				: fullPathLength > files_PATH_MAX_LENGTH
+				: pathTooLong && skillRoot !== undefined
 					? "path_too_long"
 					: null;
 		if (depthOrLengthSkip) {
@@ -556,7 +590,13 @@ function build_import_plan(entries: FilesImportEntry[], parentPath: string) {
 		}
 		seenPaths.add(normalizedPath);
 
-		items.push({ file: entry.file, relativePath: entry.relativePath, normalizedPath, contentType });
+		items.push({
+			file: entry.file,
+			relativePath: entry.relativePath,
+			normalizedPath,
+			contentType,
+			...(pathTooLong ? { pathTooLong: true as const } : {}),
+		});
 	}
 
 	return { items: invalidSkillPaths.length > 0 ? [] : items, skipped, invalidSkillPaths };
@@ -651,22 +691,34 @@ function finish_import_run() {
 		summaryParts.push(`${state.failed.length} failed`);
 	}
 	const summary = summaryParts.join(", ");
-	// Name the first failed files, so the user knows what to import again. The console has them all.
-	// Paths are the browser paths the user picked. A long one keeps only its end.
-	const failedPaths = state.failed
+	// Name the first files that did not import, each with its own reason, so the user knows what to
+	// import again. Failures come first. The console has them all. Paths are the browser paths the
+	// user picked, and a long one keeps only its end.
+	const notImported = [
+		...state.failed,
+		...state.skipped.map((item) => ({
+			relativePath: item.relativePath,
+			reason: FILES_IMPORT_SKIP_REASON_TEXT[item.reason],
+		})),
+	];
+	const listed = notImported
 		.slice(0, FILES_IMPORT_TOAST_FAILED_PATHS)
-		.map((item) => (item.relativePath.length > 60 ? `…${item.relativePath.slice(-59)}` : item.relativePath));
-	const moreFailedCount = state.failed.length - failedPaths.length;
-	const failedReasons = [...new Set(state.failed.flatMap((item) => (item.reason ? [item.reason] : [])))].slice(0, 2);
+		.map(
+			(item) =>
+				`${item.relativePath.length > 60 ? `…${item.relativePath.slice(-59)}` : item.relativePath} (${item.reason})`,
+		);
+	const moreCount = notImported.length - listed.length;
 	const description =
-		failedPaths.length > 0
-			? `Not imported: ${failedPaths.join(", ")}${moreFailedCount > 0 ? ` and ${moreFailedCount} more` : ""}.${failedReasons.map((reason) => ` ${reason}`).join("")}`
+		listed.length > 0
+			? `Not imported: ${listed.join(", ")}${moreCount > 0 ? ` and ${moreCount} more` : ""}.`
 			: undefined;
 
 	if (state.cancelRequested) {
 		toast.info(`Import cancelled: ${summary}.`, { description });
 	} else if (state.failed.length > 0) {
 		toast.error(`Import finished: ${summary}.`, { description });
+	} else if (state.skipped.length > 0) {
+		toast.warning(`Import finished: ${summary}.`, { description });
 	} else if (state.pendingConfirmation > 0) {
 		toast.info(`Import finished: ${summary}.`);
 	} else {
@@ -744,17 +796,35 @@ async function run_folder_import(args: {
 		}
 
 		// Ask once which target paths already exist, so the user decides before any write. The check
-		// reads one path per file and walks no folders. It reuses the create chunks only because they
-		// hold at most `files_IMPORT_MAX_ITEMS_PER_CALL` files, its own limit too.
-		const chunks = chunk_import_items(uploadItems);
+		// reads one path per file and walks no folders. It reuses the create chunking only because a
+		// chunk holds at most `files_IMPORT_MAX_ITEMS_PER_CALL` files, its own limit too.
 		const conflicts: FilesImportConflict[] = [];
-		for (const itemChunk of chunks) {
+		for (const itemChunk of chunk_import_items(uploadItems)) {
 			const chunkConflicts = await args.convex.query(app_convex_api.files_nodes.get_upload_conflicts, {
 				membershipId: args.membershipId,
 				parentId: args.parentId,
 				relativePaths: itemChunk.map((item) => item.normalizedPath),
 			});
 			conflicts.push(...chunkConflicts);
+		}
+
+		// A path over the length limit imports only over an existing file, which the server then
+		// replaces or skips. Skip the other long paths now.
+		const existingPaths = new Set(conflicts.map((conflict) => conflict.relativePath));
+		const createItems = uploadItems.filter((item) => !item.pathTooLong || existingPaths.has(item.normalizedPath));
+		if (createItems.length < uploadItems.length) {
+			useFilesImportStore.setState((state) => ({
+				skipped: [
+					...state.skipped,
+					...uploadItems
+						.filter((item) => !createItems.includes(item))
+						.map((item) => ({ relativePath: item.relativePath, reason: "path_too_long" as const })),
+				],
+			}));
+		}
+		if (createItems.length === 0) {
+			finish_import_run();
+			return;
 		}
 
 		let onConflict: "replace" | "skip" = "skip";
@@ -771,7 +841,7 @@ async function run_folder_import(args: {
 			onConflict = choice;
 		}
 
-		useFilesImportStore.setState({ phase: "uploading", total: uploadItems.length });
+		useFilesImportStore.setState({ phase: "uploading", total: createItems.length });
 		show_import_progress_toast();
 
 		const discard_unuploaded_node = async (
@@ -821,12 +891,19 @@ async function run_folder_import(args: {
 			}
 			if (opts.reportFailed) {
 				useFilesImportStore.setState((state) => ({
-					failed: [...state.failed, { relativePath: created.relativePath }],
+					failed: [...state.failed, { relativePath: created.relativePath, reason: "Upload failed" }],
 				}));
 			}
 		};
 
-		const process_chunk = async (chunk: FilesImportPlanItem[]): Promise<"continue" | "stop"> => {
+		const process_chunk = async (chunkItems: FilesImportPlanItem[]): Promise<"continue" | "stop"> => {
+			const itemByPath = new Map(chunkItems.map((item) => [item.normalizedPath, item]));
+			const fail = (items: FilesImportPlanItem[], reason: string) =>
+				useFilesImportStore.setState((state) => ({
+					failed: [...state.failed, ...items.map((item) => ({ relativePath: item.relativePath, reason }))],
+				}));
+			let chunk = chunkItems;
+			let retriedWithoutRefusedPath = false;
 			// Create the chunk's nodes, waiting out rate limits instead of failing the run. The
 			// bulk bucket refills at a fixed rate, so big imports pause between chunks by design.
 			let createdItems: FilesImportCreatedItem[] | null = null;
@@ -835,6 +912,7 @@ async function run_folder_import(args: {
 					return "stop";
 				}
 
+				let thrownReason = "Server error";
 				const result = await args.convex
 					.mutation(app_convex_api.files_nodes.create_upload_nodes, {
 						membershipId: args.membershipId,
@@ -848,14 +926,16 @@ async function run_folder_import(args: {
 					})
 					.catch((error: unknown) => {
 						console.error("[FilesSidebar.runFolderImport] Create upload nodes threw", { error });
+						// A ConvexError carries a message for people, like the Move busy refusal.
+						if (error instanceof ConvexError && typeof error.data?.message === "string") {
+							thrownReason = error.data.message;
+						}
 						return null;
 					});
 				// A thrown call wrote nothing, like a refusal. It fails only its own files: the later calls
 				// name other files and folders, so they can still pass.
 				if (!result) {
-					useFilesImportStore.setState((state) => ({
-						failed: [...state.failed, ...chunk.map((item) => ({ relativePath: item.relativePath }))],
-					}));
+					fail(chunk, files_import_failure_reason(thrownReason));
 					return "continue";
 				}
 				if (result._nay) {
@@ -867,23 +947,39 @@ async function run_folder_import(args: {
 					}
 
 					console.error("[FilesSidebar.runFolderImport] Failed to create upload nodes", { error: result._nay });
-					const reason = result._nay.message;
-					useFilesImportStore.setState((state) => ({
-						failed: [...state.failed, ...chunk.map((item) => ({ relativePath: item.relativePath, reason }))],
-					}));
+					const reason = files_import_failure_reason(result._nay.message);
+					const refusedPath = result._nay.data?.path;
+					const refused = chunk.find((item) => item.normalizedPath === refusedPath);
+					if (refused) {
+						// The server checks every input before its first write, so the call wrote nothing. Only
+						// the named file fails with this reason. Retry once without it, so the others import.
+						fail([refused], reason);
+						chunk = chunk.filter((item) => item !== refused);
+						if (!retriedWithoutRefusedPath && chunk.length > 0) {
+							retriedWithoutRefusedPath = true;
+							continue;
+						}
+						fail(chunk, "Another file in the same request was refused");
+						return "continue";
+					}
+					fail(chunk, reason);
 					// A refusal about one path or the folder count fails only this call. Any other refusal
 					// (sign-in, target folder, storage) would refuse every later call too, so stop.
-					return result._nay.data?.path !== undefined || result._nay.name === "too_many_folders" ? "continue" : "stop";
+					return refusedPath !== undefined || result._nay.name === "too_many_folders" ? "continue" : "stop";
 				}
 
-				useFilesImportStore.setState((state) => ({ skipped: [...state.skipped, ...result._yay.skipped] }));
+				// The server reports its skips by its own path. Report the browser path, like every other entry.
+				const serverSkipped = result._yay.skipped.map((skip) => ({
+					relativePath: itemByPath.get(skip.relativePath)?.relativePath ?? skip.relativePath,
+					reason: skip.reason,
+				}));
+				useFilesImportStore.setState((state) => ({ skipped: [...state.skipped, ...serverSkipped] }));
 				createdItems = result._yay.created;
 				for (const created of createdItems) {
 					files_in_flight_uploads_add(created.nodeId);
 				}
 			}
 
-			const itemByPath = new Map(chunk.map((item) => [item.normalizedPath, item]));
 			// Each task reports its own failure and never rejects, so the settled results are unused.
 			await async_all_settled_with_limit({
 				items: createdItems,
@@ -928,7 +1024,7 @@ async function run_folder_import(args: {
 							error,
 							relativePath: created.relativePath,
 						});
-						// Report the browser path, like every other failure in the summary.
+						// Report the browser path, like every other entry in the summary.
 						await discard_unuploaded_node(
 							{ nodeId: created.nodeId, relativePath: item.relativePath },
 							{ reportFailed: true },
@@ -940,6 +1036,7 @@ async function run_folder_import(args: {
 			return "continue";
 		};
 
+		const chunks = chunk_import_items(createItems);
 		for (const [chunkIndex, chunk] of chunks.entries()) {
 			if (useFilesImportStore.getState().cancelRequested) {
 				break;
@@ -950,7 +1047,8 @@ async function run_folder_import(args: {
 				const remainingItems = chunks.slice(chunkIndex + 1).flat();
 				if (remainingItems.length > 0 && !useFilesImportStore.getState().cancelRequested) {
 					useFilesImportStore.setState((state) => {
-						const reason = state.failed.at(-1)?.reason;
+						// The refusal that stopped the run was reported last.
+						const reason = state.failed.at(-1)!.reason;
 						return {
 							failed: [...state.failed, ...remainingItems.map((item) => ({ relativePath: item.relativePath, reason }))],
 						};
@@ -7951,7 +8049,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(plan.skipped).toEqual([{ relativePath: `${folders(33)}/leaf.pdf`, reason: "too_deep" }]);
 		});
 
-		test("build_import_plan skips a path over 1,024 characters with the target folder's path", () => {
+		test("build_import_plan marks a path over 1,024 characters with the target folder's path", () => {
 			const parentPath = `/${"p".repeat(900)}`;
 			// With the parent and its `/`, this path is exactly 1,024 characters.
 			const fitsPath = `${"d".repeat(116)}/a.pdf`;
@@ -7961,10 +8059,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const plan = build_import_plan(get_import_file_entries([fits, long]), parentPath);
 
-			expect(plan.items.map((item) => item.normalizedPath)).toEqual([fitsPath]);
-			expect(plan.skipped).toEqual([{ relativePath: `${"d".repeat(116)}/ab.pdf`, reason: "path_too_long" }]);
+			// The run skips the long one only when no existing file is there to replace.
+			expect(plan.items.map((item) => [item.normalizedPath, item.pathTooLong])).toEqual([
+				[fitsPath, undefined],
+				[`${"d".repeat(116)}/ab.pdf`, true],
+			]);
+			expect(plan.skipped).toEqual([]);
 			// At the root the same relative path fits.
-			expect(build_import_plan(get_import_file_entries([long]), "/").items).toHaveLength(1);
+			expect(build_import_plan(get_import_file_entries([long]), "/").items[0]!.pathTooLong).toBeUndefined();
 		});
 
 		test("build_import_plan skips a name over 255 characters", () => {
@@ -8067,44 +8169,113 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(useFilesImportStore.getState().phase).toBe("idle");
 		});
 
-		test.each([
+		test.each<{
+			failure: string;
+			/** Answers to the first create calls, in order. Later calls succeed. */
+			answers: Array<(paths: string[]) => unknown>;
+			calls: number;
+			imported: number;
+			/** Index into `paths`, and the reason the toast shows. */
+			failed: Array<readonly [number, string]>;
+		}>([
 			{
 				failure: "throws",
 				// Like a call over a Convex limit: it throws and writes nothing.
-				answer: () => Promise.reject(new Error("Too many index ranges read")),
-				calls: 3,
-				summary: "3 imported, 2 failed",
-				failedIndexes: [2, 3],
-				reason: "",
+				answers: [() => Promise.reject(new Error("Too many index ranges read"))],
+				calls: 2,
+				imported: 2,
+				failed: [
+					[0, "Server error"],
+					[1, "Server error"],
+					[2, "Server error"],
+				],
+			},
+			{
+				failure: "throws a ConvexError",
+				answers: [
+					() => Promise.reject(new ConvexError({ message: "This item is being moved. Try again when the Move ends." })),
+				],
+				calls: 2,
+				imported: 2,
+				failed: [
+					[0, "This item is being moved. Try again when the Move ends"],
+					[1, "This item is being moved. Try again when the Move ends"],
+					[2, "This item is being moved. Try again when the Move ends"],
+				],
 			},
 			{
 				failure: "refuses one path",
-				answer: () =>
-					Promise.resolve({ _nay: { message: "Paths can have at most 1,024 characters.", data: { path: "c" } } }),
+				answers: [
+					(paths: string[]) => ({
+						_nay: { message: "Paths can have at most 1,024 characters.", data: { path: paths[0] } },
+					}),
+				],
+				// The retry without the refused file imports the other two.
 				calls: 3,
-				summary: "3 imported, 2 failed",
-				failedIndexes: [2, 3],
-				reason: " Paths can have at most 1,024 characters.",
+				imported: 4,
+				failed: [[0, "Paths can have at most 1,024 characters"]],
+			},
+			{
+				failure: "refuses one path, then another",
+				answers: [
+					(paths: string[]) => ({
+						_nay: { message: "Paths can have at most 1,024 characters.", data: { path: paths[0] } },
+					}),
+					(paths: string[]) => ({ _nay: { message: "Duplicate path in batch", data: { path: paths[1] } } }),
+				],
+				calls: 3,
+				imported: 2,
+				failed: [
+					[0, "Paths can have at most 1,024 characters"],
+					[1, "Same path as another file"],
+					[2, "Another file in the same request was refused"],
+				],
+			},
+			{
+				failure: "names too many folders",
+				answers: [
+					() => ({
+						_nay: {
+							name: "too_many_folders",
+							message: "This request uses too many folders (limit 64). Send fewer files per request.",
+						},
+					}),
+				],
+				calls: 2,
+				imported: 2,
+				failed: [
+					[0, "Too many folders in one request"],
+					[1, "Too many folders in one request"],
+					[2, "Too many folders in one request"],
+				],
 			},
 			{
 				failure: "refuses the whole import",
-				answer: () => Promise.resolve({ _nay: { message: "Not found" } }),
-				calls: 2,
-				summary: "2 imported, 3 failed",
-				failedIndexes: [2, 3, 4],
-				reason: " Not found",
+				answers: [() => ({ _nay: { message: "Not found" } })],
+				// The run stops, and the files it never sent get the same reason.
+				calls: 1,
+				imported: 0,
+				failed: [0, 1, 2, 3, 4].map((index) => [index, "The target folder no longer exists"] as const),
+			},
+			{
+				failure: "is out of storage",
+				answers: [() => ({ _nay: { name: "storage_full", message: "This workspace has reached its storage limit." } })],
+				calls: 1,
+				imported: 0,
+				failed: [0, 1, 2, 3, 4].map((index) => [index, "This workspace has reached its storage limit"] as const),
 			},
 		])("run_folder_import keeps the other chunks when a create call $failure", async (args) => {
-			// Five files in their own 31-folder chains: two per call, so three calls.
+			// Five files in their own 21-folder chains: three, then two per call.
 			const paths = ["a", "b", "c", "d", "e"].map(
-				(root) => `${root}/${Array.from({ length: 30 }, (_, index) => `d${index}`).join("/")}/f.pdf`,
+				(root) => `${root}/${Array.from({ length: 20 }, (_, index) => `d${index}`).join("/")}/f.pdf`,
 			);
 			let createCalls = 0;
 			const convexStub = {
 				query: async () => [],
 				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
 					createCalls += 1;
-					if (createCalls === 2) return await args.answer();
+					const answer = args.answers[createCalls - 1];
+					if (answer) return await answer(paths);
 					return {
 						_yay: {
 							created: mutationArgs.items.map((item) => ({
@@ -8133,11 +8304,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						paths.map((path) => test_file_with_path({ name: "f.pdf", path: `/${path}` })),
 					),
 				});
-				// Check before the restore, which clears the recorded calls. Long paths keep only their end.
-				const failedPaths = args.failedIndexes.map((index) => `…${paths[index]!.slice(-59)}`);
-				expect(errorToast).toHaveBeenCalledWith(`Import finished: ${args.summary}.`, {
-					description: `Not imported: ${failedPaths.join(", ")}.${args.reason}`,
-				});
+				// Check before the restore, which clears the recorded calls. Each file keeps its own reason,
+				// and a long path keeps only its end.
+				const listed = args.failed.map(([index, reason]) => `…${paths[index]!.slice(-59)} (${reason})`);
+				expect(errorToast).toHaveBeenCalledWith(
+					`Import finished: ${args.imported} imported, ${args.failed.length} failed.`,
+					{ description: `Not imported: ${listed.join(", ")}.` },
+				);
 			} finally {
 				vi.unstubAllGlobals();
 				errorToast.mockRestore();
@@ -8145,6 +8318,121 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(createCalls).toBe(args.calls);
 			expect(useFilesImportStore.getState().phase).toBe("idle");
+		});
+
+		test("run_folder_import names skipped and failed files by their browser path", async () => {
+			const convexStub = {
+				query: async () => [],
+				mutation: async (_fn: unknown, mutationArgs: Record<string, unknown>) => {
+					if ("items" in mutationArgs) {
+						return {
+							_yay: {
+								created: [{ relativePath: "a.pdf", nodeId: "node-a", url: "https://r2.test/a", headers: {} }],
+								// The server reports its skips by the path it got.
+								skipped: [{ relativePath: "b.pdf", reason: "conflict" }],
+							},
+						};
+					}
+					// The failed upload's node is gone.
+					return { _yay: { removed: true } };
+				},
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 500 })),
+			);
+			const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries([
+						test_file_with_path({ name: "A.PDF", path: "./A.PDF" }),
+						test_file_with_path({ name: "B.PDF", path: "./B.PDF" }),
+						test_file_with_path({ name: "no-extension", path: "./no-extension" }),
+					]),
+				});
+				expect(errorToast).toHaveBeenCalledWith("Import finished: 0 imported, 2 skipped, 1 failed.", {
+					description:
+						"Not imported: A.PDF (Upload failed), no-extension (No file extension), B.PDF (Already exists or not writable).",
+				});
+			} finally {
+				vi.unstubAllGlobals();
+				errorToast.mockRestore();
+			}
+		});
+
+		test("run_folder_import warns, not succeeds, when it skipped a file", async () => {
+			const convexStub = {
+				query: async () => [],
+				mutation: async () => ({
+					_yay: {
+						created: [{ relativePath: "a.pdf", nodeId: "node-a", url: "https://r2.test/a", headers: {} }],
+						skipped: [],
+					},
+				}),
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 200 })),
+			);
+			const warningToast = vi.spyOn(toast, "warning").mockReturnValue("warning");
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries([
+						test_file_with_path({ name: "a.pdf", path: "./a.pdf" }),
+						test_file_with_path({ name: "no-extension", path: "./no-extension" }),
+					]),
+				});
+				expect(warningToast).toHaveBeenCalledWith("Import finished: 1 imported, 1 skipped.", {
+					description: "Not imported: no-extension (No file extension).",
+				});
+			} finally {
+				vi.unstubAllGlobals();
+				warningToast.mockRestore();
+			}
+		});
+
+		test("run_folder_import sends a path over 1,024 characters only to replace an existing file", async () => {
+			const parentPath = `/${"p".repeat(1020)}`;
+			const sent: string[] = [];
+			const convexStub = {
+				// Only `old.pdf` already exists.
+				query: async () => [{ relativePath: "old.pdf", kind: "file" }],
+				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
+					sent.push(...mutationArgs.items.map((item) => item.relativePath));
+					return { _yay: { created: [], skipped: [] } };
+				},
+			} as unknown as ConvexReactClient;
+			const warningToast = vi.spyOn(toast, "warning").mockReturnValue("warning");
+			try {
+				const run = run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: "parent" as app_convex_Id<"files_nodes">,
+					parentPath,
+					entries: get_import_file_entries([
+						test_file_with_path({ name: "old.pdf", path: "./old.pdf" }),
+						test_file_with_path({ name: "new-file.pdf", path: "./new-file.pdf" }),
+					]),
+				});
+				// Choose "replace" in the conflict modal.
+				await vi.waitFor(() => expect(useFilesImportStore.getState().confirmResolver).not.toBeNull());
+				useFilesImportStore.getState().confirmResolver!("replace");
+				await run;
+				expect(sent).toEqual(["old.pdf"]);
+				expect(warningToast).toHaveBeenCalledWith("Import finished: 0 imported, 1 skipped.", {
+					description: "Not imported: new-file.pdf (Path over 1,024 characters).",
+				});
+			} finally {
+				warningToast.mockRestore();
+			}
 		});
 
 		test("run_folder_import keeps an existing upload pending after a 412", async () => {
