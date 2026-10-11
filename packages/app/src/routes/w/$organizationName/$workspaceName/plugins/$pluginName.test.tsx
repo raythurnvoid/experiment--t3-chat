@@ -1,5 +1,5 @@
 /**
- * @vitest-environment jsdom
+ * @vitest-environment happy-dom
  *
  * The consent modal promises an admin what a plugin reaches before install, and the Access screen
  * repeats that promise afterwards. Both are covered by rendering the route, not by reading the JSX.
@@ -198,7 +198,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	},
 }));
 
-// Monaco cannot run in jsdom, so the stub is a textarea honoring `value` and `onChange`. That is
+// Monaco cannot run in happy-dom, so the stub is a textarea honoring `value` and `onChange`. That is
 // enough for the configuration tests to edit the draft; everything else about the editor is out of
 // scope here.
 vi.mock("@monaco-editor/react", () => ({
@@ -2281,7 +2281,7 @@ describe("RoutePluginsPlugin", () => {
 
 		// The mocked modal cannot model Ariakit's focus restore. In the real app the closing modal
 		// puts the focus back on the Install button, and the reactive installations update then
-		// unmounts that button, dropping the focus to the page body. jsdom already has the focus on
+		// unmounts that button, dropping the focus to the page body. happy-dom already has the focus on
 		// the body here, so this test pins the app's own landing effect, not the Ariakit step
 		// before it.
 		expect(document.activeElement).toBe(document.body);
@@ -2321,7 +2321,7 @@ describe("RoutePluginsPlugin", () => {
 			resolveRemove({ _yay: null });
 		});
 
-		// Same honesty note as the install test: jsdom leaves the focus on the body, which is where
+		// Same honesty note as the install test: happy-dom leaves the focus on the body, which is where
 		// the unmounting trigger drops it in the real app, so this pins the app's landing effect.
 		expect(document.activeElement).toBe(document.body);
 
@@ -2363,7 +2363,7 @@ describe("RoutePluginsPlugin", () => {
 			resolveRemove({ _yay: null });
 		});
 
-		// Same honesty note as the test above: jsdom leaves the focus on the body, which is where
+		// Same honesty note as the test above: happy-dom leaves the focus on the body, which is where
 		// the unmounting trigger drops it in the real app, so this pins the app's landing effect.
 		expect(document.activeElement).toBe(document.body);
 
@@ -2437,7 +2437,7 @@ describe("RoutePluginsPlugin", () => {
 
 describe("app.css normalize summary", () => {
 	// The route's Activity section is a <details>/<summary>, so its focus ring depends on this
-	// app-wide rule. jsdom does not paint outlines, so pin the stylesheet text instead, the way the
+	// app-wide rule. happy-dom does not paint outlines, so pin the stylesheet text instead, the way the
 	// council plugin's app.test.tsx reads its css off disk. Vitest's root is packages/app, so
 	// process.cwd() reaches src/app.css directly; a css import would be stubbed to an empty string.
 	test("keeps the summary outline restorable by the global focus ring", () => {

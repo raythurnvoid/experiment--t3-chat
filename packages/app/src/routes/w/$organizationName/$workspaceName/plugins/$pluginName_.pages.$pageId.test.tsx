@@ -1,12 +1,15 @@
 /**
- * @vitest-environment jsdom
+ * @vitest-environment happy-dom
+ * @vitest-environment-options {"happyDOM": {"settings": {"disableIframePageLoading": true}}}
+ *
+ * By default happy-dom fetches each iframe page over the network. The option above turns that off,
+ * so the iframe stays empty and the tests stub its `contentWindow`.
  *
  * These tests cover the route's state machine and message fields. WindowProxy identity,
  * sandbox navigation, concrete-origin delivery, and what `inert` does to focus and clicks all need
- * the browser-project coverage instead. jsdom implements no part of `inert`: `"inert" in
- * HTMLElement.prototype` is false, and `.focus()` inside `<div inert>` still moves
- * `document.activeElement`. So a test in this file can pin where the attribute sits and nothing
- * more.
+ * the browser-project coverage instead. happy-dom only reflects the `inert` attribute:
+ * `.focus()` inside `<div inert>` still moves `document.activeElement`. So a test in this file can
+ * pin where the attribute sits and nothing more.
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
@@ -170,7 +173,7 @@ function read_number_constant(filePath: string, name: string) {
 	return value;
 }
 
-// jsdom loads no stylesheet, so the root element carries the values inline and `getComputedStyle`
+// happy-dom loads no stylesheet, so the root element carries the values inline and `getComputedStyle`
 // reads them back.
 function paint_host_theme(mode: "light" | "dark") {
 	for (const [property, value] of Object.entries(APP_COLOR_SCALES)) {
@@ -2107,7 +2110,7 @@ describe("RoutePluginsPluginPage", () => {
 	});
 
 	test("the covered iframe is inert while the placeholder is up, and the placeholder is not", async () => {
-		// jsdom implements no part of `inert`, so this test cannot show that focus and clicks are
+		// happy-dom does not apply `inert`, so this test cannot show that focus and clicks are
 		// really kept out of the frame. What it does show is where the attribute sits, which is the
 		// half that is easy to move by accident. The browser does the rest: in a real browser the
 		// iframe under the cover is still a tab stop and still takes clicks, so without the attribute
@@ -2339,7 +2342,7 @@ describe("RoutePluginsPluginPage", () => {
 		const { container, rerender } = render(<PageComponent />);
 		await act(async () => post_ready(bridge_for(container).nonce));
 		const main = container.querySelector("main");
-		// jsdom cannot put focus inside an iframe, so focus sits on the body. A real browser leaves it
+		// happy-dom cannot put focus inside an iframe, so focus sits on the body. A real browser leaves it
 		// there too once the iframe holding it is removed, which is the state this pins the move out of.
 		expect(document.activeElement).toBe(document.body);
 
@@ -2421,7 +2424,7 @@ describe("RoutePluginsPluginPage", () => {
 		const main = container.querySelector("main");
 		const describedBy = main?.getAttribute("aria-describedby") ?? "";
 		expect(document.getElementById(describedBy)).toBe(alert);
-		// jsdom cannot put focus inside the iframe, so focus sits on the body when the page vanishes.
+		// happy-dom cannot put focus inside the iframe, so focus sits on the body when the page vanishes.
 		// That is the state a real browser leaves behind too, because it drops focus to the body when
 		// the focused iframe is removed. What this pins is the move out of that state.
 		expect(document.activeElement).toBe(main);
