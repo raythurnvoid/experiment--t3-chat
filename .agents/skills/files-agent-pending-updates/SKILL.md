@@ -153,6 +153,8 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   and empty metadata or plain-text side ranges use the same rule. Each step uses
   at most one paginated query. Any paginated page ends the step, including an empty cursor tail,
   even when those owners are already known. Receipt pages keep their own step too.
+  Owner cleanup also shares empty table and view ranges through exact probes. It ends the step
+  after every paginated page or unfinished abort-range completion.
 - Saved metadata side steps read at most 64 docs with a 1 MiB source-byte page. The write guards
   reread old docs, so the count alone is not a byte bound. Tagging, finish and abort drain exact
   view ranges without storing metadata-key cursors. Owner field joins stay at eight docs and keep their source docs.

@@ -1189,14 +1189,20 @@ describe("compactor drift", () => {
 		const errors = vi.spyOn(console, "error");
 		const a = await create_folder(t, scope, "/a");
 		const dst = await create_folder(t, scope, "/dst");
-		// Nine docs in path order: `a` has three (a date string adds a `maybe_date` doc), `b` and `c`
-		// two each, then the field doc of `d` is the 8th. A Move tags 8 docs per transaction, so the
-		// value doc of `d` falls on the next page.
+		// The date has three docs. The next 30 keys have two each, so d's field is doc 64.
+		// Its value falls on the next Move page.
 		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
 		const written = await asOwner.mutation(api.files_metadata.set_entries, {
 			membershipId: db.membershipId,
 			fileNodeId: a,
-			metadataYaml: 'a: "2026-01-01"\nb: x\nc: y\nd: z\n',
+			metadataYaml: [
+				'a: "2026-01-01"',
+				"b: x",
+				"c: y",
+				...Array.from({ length: 28 }, (_, index) => `c${String(index).padStart(2, "0")}: value`),
+				"d: z",
+				"",
+			].join("\n"),
 		});
 		expect(written).toEqual({ _yay: null });
 		await test_compact_metadata_catalog(t);

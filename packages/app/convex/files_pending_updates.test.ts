@@ -2272,6 +2272,7 @@ describe("private pending text", () => {
 		expect(incomplete?.run.needsReviewIds).toEqual([occupantProposal._id]);
 		expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(savedBefore);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", occupantProposal._id))).toEqual(occupantProposal);
+		await test_drain_billing_usage_event_outbox(t);
 		const savesBefore = file_save_events().length;
 		const saved = await save_pending_review_for_test(draft, [proposal, occupantProposal]);
 		expect(saved?.activity, "The reviewed replacement publishes the source and removes the selected occupant").toMatchObject({
@@ -2303,6 +2304,7 @@ describe("private pending text", () => {
 				.unique();
 		});
 		expect(occupantContent, "Replacement does not prepare the occupant's draft text for Save").toBeNull();
+		await test_drain_billing_usage_event_outbox(t);
 		expect(file_save_events(), "Only the published source has a Save charge").toHaveLength(savesBefore + 1);
 		expect(file_save_events().at(-1)?.[2]).toMatchObject({
 			events: [{ name: "file_save", metadata: { nodeId: output._id } }],

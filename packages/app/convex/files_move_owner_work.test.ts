@@ -325,9 +325,11 @@ test("public Move joins empty owner phases in one step", async () => {
 	let ownerSteps = 0;
 	let sideSteps = 0;
 	let childSteps = 0;
+	let cleanupSteps = 0;
 	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
 		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
 		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
+		if (cohort?.step === step && cohort.workPhase === "finish_owners") cleanupSteps++;
 		if (cohort?.step === step && (cohort.workPhase === "owners_collect" || cohort.workPhase === "sides")) {
 			const cursor = cohort.stagingCursor
 				? (JSON.parse(cohort.stagingCursor) as { order: number })
@@ -380,6 +382,7 @@ test("public Move joins empty owner phases in one step", async () => {
 	expect(ownerSteps, "A node without owner or receipt docs needs one owner collection step").toBe(1);
 	expect.soft(sideSteps, "An empty folder needs two side staging steps").toBe(2);
 	expect.soft(childSteps, "An empty folder needs one child collection step").toBe(1);
+	expect(cleanupSteps, "An empty folder needs two owner cleanup steps").toBe(2);
 });
 
 test("public Move seals unselected pending scope before the switch and keeps each branch", async () => {

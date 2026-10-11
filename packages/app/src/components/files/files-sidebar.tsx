@@ -8048,12 +8048,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { ConvexProvider } = await import("convex/react");
 			const { app_convex } = await import("@/lib/app-convex-client.ts");
 			const { AppActivitiesProvider } = await import("@/lib/app-activities-context.tsx");
-			const { AppAuthProvider } = await import("@/components/app-auth.tsx");
 			const moveIntake = await import("@/lib/files-move-intake.ts");
-			vi.spyOn(AppAuthProvider, "useAuthenticated").mockReturnValue({
-				userId: "user" as app_convex_Id<"users">,
-				isAnonymous: false,
-			});
 			vi.spyOn(moveIntake, "files_move_intake_load").mockResolvedValue(null);
 			const emptyResult: never[] = [];
 			vi.spyOn(app_convex, "watchQuery").mockReturnValue({
