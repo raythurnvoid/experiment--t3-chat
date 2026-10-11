@@ -45,6 +45,15 @@ export async function files_saved_placement_db_get_view(
 			searchGeneration: slot?.searchGeneration ?? 0,
 			migrationDirection: null,
 		};
+	// Every Move step patches the cohort. Read the slot's copy, so open trees do not run again per step.
+	if (slot.visibleView && slot.migrationDirection)
+		return {
+			cohortId: slot.cohortId,
+			view: slot.visibleView,
+			generation: slot.generation,
+			searchGeneration: slot.searchGeneration,
+			migrationDirection: slot.migrationDirection,
+		};
 	const { cohort } = await get_cohort(db, slot.cohortId);
 	if (
 		cohort.organizationId !== args.organizationId ||

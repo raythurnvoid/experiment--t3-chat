@@ -111,7 +111,7 @@ describe("saved list action", () => {
 				const result = await f.t.action((ctx) => ctx.runQuery(query, args));
 				if (!aborted && getFunctionName(query) === "files_nodes:list_subtree") {
 					aborted = true;
-					await f.t.run((ctx) => ctx.db.patch("files_move_cohorts", f.cohortId, { phase: "aborting" }));
+					await f.abort();
 				}
 				return result;
 			},

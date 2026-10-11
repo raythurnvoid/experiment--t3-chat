@@ -4,10 +4,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { r2_create_asset_key } from "./r2_client.ts";
 import { test_create_saved_placement_fixture as fixture } from "../server/files-saved-placement.test-fixtures.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { files_saved_placement_db_get_slot } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_slot,
+	files_saved_placement_db_get_view,
+} from "../server/files-saved-placement.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import { list_tree_children } from "./files_nodes.ts";
 import { activities_db_require_by_source_id, activities_get_controls } from "./activities_db.ts";
 import { files_pending_update_runs_db_request_stop } from "./files_pending_update_runs.ts";
 import { files_transfer_db_request_stop } from "./files_transfer.ts";
@@ -237,6 +241,27 @@ async function finish_cohort(
 	throw new Error("Rotation cohort did not finish");
 }
 
+/**
+ * View reads use the slot's copy of the cohort view, so the copy must say what the cohort says.
+ */
+async function expect_slot_copies_view(f: Awaited<ReturnType<typeof native_rotation>>) {
+	const { slot, cohort } = await f.t.run(async (ctx) => {
+		const slot = await ctx.db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) =>
+				q.eq("organizationId", f.scope.organizationId).eq("workspaceId", f.scope.workspaceId),
+			)
+			.unique();
+		return { slot, cohort: slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null };
+	});
+	const toNormal = ["published", "finishing", "aborting", "complete"];
+	expect({ view: slot?.visibleView ?? null, direction: slot?.migrationDirection ?? null }).toEqual(
+		cohort
+			? { view: cohort.visibleView, direction: toNormal.includes(cohort.phase) ? "to_normal" : "to_cohort" }
+			: { view: null, direction: null },
+	);
+}
+
 describe("Move cohort publication", () => {
 	test("moves 140 linked items without a selection cap", async () => {
 		const f = await native_rotation(140);
@@ -463,6 +488,69 @@ describe("Move cohort publication", () => {
 			"every due group is cleaned, not only the first page",
 		).toBe(0);
 	}, 120_000);
+
+	test.each(["finish", "stop", "abort"] as const)(
+		"the slot copies the cohort's view at every step (%s)",
+		async (end) => {
+			const f = await native_rotation(3);
+			await expect_slot_copies_view(f);
+			await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: 0 });
+			if (end === "stop") {
+				const activity = await f.t.run((ctx) => activities_db_require_by_source_id(ctx, f.runId));
+				expect(
+					await f.asUser.mutation(api.activities.request_stop, {
+						membershipId: f.db.membershipId,
+						activityId: activity._id,
+					}),
+				).toEqual({ _yay: null });
+			}
+			// A changed access clock makes the Move abort before it publishes.
+			if (end === "abort") await f.t.run((ctx) => files_media_validation_db_advance_version(ctx, f.scope));
+			const phases = new Set<string>();
+			const finished = await finish_cohort(f, async (cohort) => {
+				phases.add(cohort.phase);
+				await expect_slot_copies_view(f);
+			});
+			expect(finished.errorCode).toBe(end === "finish" ? null : end === "stop" ? "stopped" : "needs_review");
+			expect(phases, "the checks saw each view change").toContain(end === "finish" ? "published" : "aborting");
+		},
+		120_000,
+	);
+
+	test("a tree page does not read the Move cohort, so a Move step does not run it again", async () => {
+		const f = await native_rotation(3);
+		const outside = await f.asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: f.db.membershipId,
+			parentId: "root",
+			path: "/outside",
+		});
+		if (outside._nay) throw new Error(outside._nay.message);
+		await f.asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: f.db.membershipId,
+			parentId: outside._yay.nodeId,
+			path: "inner",
+		});
+		// Convex runs a query again when a doc it read changes, and every Move step patches the cohort.
+		const cohortReads: unknown[][] = [];
+		test_spy_handler(list_tree_children, async (handler, ctx, args) => {
+			const get = vi.spyOn(ctx.db, "get");
+			const result = await handler(ctx, args);
+			cohortReads.push(...get.mock.calls.filter((call) => call.includes(f.cohortId)));
+			return result;
+		});
+		const view = await f.t.run((ctx) => files_saved_placement_db_get_view(ctx.db, f.scope));
+		const page = await f.asUser.query(api.files_nodes.list_tree_children, {
+			membershipId: f.db.membershipId,
+			savedStream: { kind: "normal", generation: view.generation },
+			parentId: outside._yay.nodeId,
+			kind: "folder",
+			archived: false,
+			restricted: false,
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		expect(page.page.map((row) => row.name)).toEqual(["inner"]);
+		expect(cohortReads, "the page reads the view from the slot").toEqual([]);
+	});
 });
 
 async function transfer_workspace() {
