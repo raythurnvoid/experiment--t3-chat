@@ -5202,6 +5202,18 @@ describe("files write-many", () => {
 		for (const path of ["/big.md", "/cap/file-0.md"]) {
 			expect(await find_active_node({ t, db, path })).toBeNull();
 		}
+
+		// A full batch passes as the first charge on this unused key. The sharded bulk bucket reads one
+		// fresh shard on that charge, so a batch cap above capacity / shards would be refused here.
+		install_r2_object_reads();
+		const full = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: Array.from({ length: 20 }, (_, index) => ({ path: `/cap/file-${index}.md`, content: "# Cap\n" })),
+			}),
+		});
+		expect(full.status).toBe(200);
 	});
 
 	test("a credential revoked mid-batch aborts the request with 401", async () => {

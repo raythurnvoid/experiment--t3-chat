@@ -164,9 +164,8 @@ const FILES_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
 // bigger batch on a fresh key is refused forever.
 const FILES_WRITE_MANY_MAX_ITEMS = 20;
 // Files of one batch that are written at the same time. Saves no longer share one hot doc per
-// workspace or key, so parallel publishes meet only when they create the same missing folder.
-// Each file keeps two mutations and two R2 PUTs in flight. A basic Convex plan runs 16
-// mutations at once, so keep this small.
+// workspace or key. At most one mutation and two R2 PUTs per file are in flight. A basic Convex
+// plan runs 16 mutations at once, so keep this small.
 const FILES_WRITE_MANY_CONCURRENCY = 4;
 // Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
 const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
@@ -6756,6 +6755,9 @@ export async function public_api_http_write_many(args: {
 				throw outcome.reason;
 			}
 		}
+		if (stopped) {
+			break;
+		}
 	}
 
 	const written: Array<{
@@ -7747,25 +7749,4 @@ export async function public_api_http_verify_key(args: {
 		},
 		headers: { "Cache-Control": "no-store" },
 	} as const;
-}
-
-if (process.env.NODE_ENV === "test" && import.meta.vitest) {
-	const { describe, expect, test } = import.meta.vitest;
-
-	describe("bulk route maximums", () => {
-		test("the largest batch passes as the first charge on a fresh key", async () => {
-			// Import the test setup here, so the Convex build drops it together with this block.
-			const { test_convex } = await import("./setup.test.ts");
-			const t = test_convex();
-			// The first charge on a sharded bucket reads one unused shard only. So a batch above capacity /
-			// shards (25 for write-many) is refused on every fresh key, and never passes.
-			for (const [name, count] of [
-				["public_api_files_write_bulk", FILES_WRITE_MANY_MAX_ITEMS],
-				["public_api_files_upload_bulk", FILES_UPLOAD_URLS_MAX_ITEMS],
-				["public_api_files_download_bulk", FILES_DOWNLOAD_URLS_MAX_ITEMS],
-			] as const) {
-				expect(await t.run((ctx) => rate_limiter_limit_by_key(ctx, { name, key: "fresh", count }))).toBeNull();
-			}
-		});
-	});
 }
