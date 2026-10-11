@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_run_with_flush } from "./setup.test.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import {
 	files_move_content_action_prepare,
 	files_move_content_db_abort,
@@ -358,6 +359,30 @@ test("publication keeps a partial Save allowed at the private cap and books its 
 	expect(await f.publish()).toEqual({ _yay: null });
 	expect((await read_quota())?.usedCount, "the growth is booked once").toBe(quota.usedCount + content.privateByteDelta);
 	expect(await f.chunks(), "the switch serves accepted content").toBe("accepted text");
+});
+
+test("publication still refuses private node growth at the node cap", async () => {
+	const f = await fixture();
+	await f.stage();
+	// No real Move adds private nodes. Force one to prove the node cap still guards the switch.
+	await f.t.run(async (ctx) => {
+		const id = await quotas_db_ensure(ctx, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			quotaName: "files_private_nodes",
+			now: Date.now(),
+		});
+		const quota = (await ctx.db.get("quotas", id))!;
+		await ctx.db.patch("quotas", id, { maxCount: quota.usedCount });
+		await ctx.db.patch("files_move_cohorts", f.cohortId, { privateNodeDelta: 1 });
+	});
+	const balances = await f.t.run((ctx) => ctx.db.query("quotas").collect());
+	expect(await f.publish()).toMatchObject({ _nay: { name: "storage_full" } });
+	expect(await f.t.run((ctx) => ctx.db.query("quotas").collect()), "a refused switch changes no balance").toEqual(
+		balances,
+	);
+	expect(await f.chunks(), "the refusal leaves the old content visible").toBe("old text");
 });
 
 test("a lost preparation keeps held output and fences the next attempt", async () => {
