@@ -301,20 +301,6 @@ export async function files_chunk_markdown(markdown: string, options?: { maxChun
 	return files_chunk_markdown_add_plain_text(chunks._yay);
 }
 
-export async function files_chunk_markdown_page(
-	markdown: string,
-	options: { startChunkIndex: number; chunkCount: number; maxChunkSize?: number },
-) {
-	const chunks = await files_chunk_markdown_bounds(markdown, options);
-	if (chunks._nay) return chunks;
-	// Save converts only this page. Indexes and flags still describe the whole file.
-	const page = files_chunk_markdown_add_plain_text(
-		chunks._yay.slice(options.startChunkIndex, options.startChunkIndex + options.chunkCount),
-	);
-	if (page._nay) return page;
-	return Result({ _yay: { chunks: page._yay, totalChunkCount: chunks._yay.length } });
-}
-
 export function files_chunk_has_bitmask_flag(chunkFlags: number, flag: number) {
 	return (chunkFlags & flag) === flag;
 }

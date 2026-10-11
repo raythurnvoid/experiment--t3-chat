@@ -2437,6 +2437,12 @@ const app_convex_schema = defineSchema({
 		),
 		phaseCursor: v.union(v.string(), v.null()),
 		nextChunkIndex: v.number(),
+		/**
+		 * The bounds of every chunk of the text that the current text phase saves, as 5 Uint32 values per
+		 * chunk: start, end, first line, last line and flags. The first page chunks the whole text once, and
+		 * later pages read their bounds here. Cleared when the phase moves on.
+		 */
+		chunkBounds: v.optional(v.bytes()),
 		acceptedTextInputId: v.union(v.id("files_pending_update_text_inputs"), v.null()),
 		unstagedTextInputId: v.union(v.id("files_pending_update_text_inputs"), v.null()),
 		acceptedTextDigest: v.union(v.string(), v.null()),

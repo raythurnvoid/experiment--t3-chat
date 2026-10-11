@@ -22,6 +22,7 @@ import { files_saved_content_collect, files_saved_content_db_text_chunks } from 
 import { files_db_load_pending_update_yjs_state_bytes, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
+import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 
 const objects = new Map<string, string | ArrayBuffer>();
 
@@ -336,6 +337,80 @@ test("each content page checks current membership before changing any side", asy
 	).toEqual({ _nay: { message: "Unauthorized" } });
 	expect(await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId))).toEqual(before);
 	expect(await f.chunks(), "the refused page keeps the old saved content").toBe("old text");
+});
+
+test("pages a long text from one chunking, also after a page loses the kept bounds", async () => {
+	// Long lines are cut mid-line, and a cut never splits an emoji. The text needs several pages.
+	const staged = `${Array.from({ length: 30 }, (_, index) => `${index} ${"😀 words ".repeat(index * 9)}`).join("\n")}\n`;
+	const f = await fixture({ staged, unstaged: `${staged}later draft` });
+	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.context))).toEqual({ _yay: null });
+	const chunker = vi.spyOn(await import("../server/files-plain-text-chunking.ts"), "files_chunk_plain_text");
+	let dropped = false;
+	for (let i = 0; i < 200; i++) {
+		const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId)))!;
+		// Content staged before the bounds were kept has none in the middle of a phase.
+		if (!dropped && content.phase === "text" && content.nextChunkIndex > 0) {
+			expect(content.chunkBounds, "a text phase keeps its chunk bounds between pages").toBeDefined();
+			await f.t.run((ctx) => ctx.db.patch("files_move_cohort_content", content._id, { chunkBounds: undefined }));
+			dropped = true;
+		}
+		const staged = await test_run_with_flush(f.t, (ctx) => files_move_content_db_stage(ctx, f.context));
+		if (staged._nay) throw new Error(staged._nay.message);
+		if (staged._yay.done) break;
+		if (i === 199) throw new Error("Content did not seal");
+	}
+	expect(dropped, "the text phase had more than one page").toBe(true);
+	expect(chunker, "each text is chunked once, plus once again for the page that lost its bounds").toHaveBeenCalledTimes(
+		3,
+	);
+	const { content, inputs, text, plain } = await f.t.run(async (ctx) => {
+		const content = (await ctx.db.get("files_move_cohort_content", f.context.contentId))!;
+		const after = (row: { moveView?: { view: string } }) => row.moveView?.view === "after";
+		return {
+			content,
+			inputs: {
+				committed: (await ctx.db.get("files_pending_update_text_inputs", content.acceptedTextInputId!))!.text,
+				pending: (await ctx.db.get("files_pending_update_text_inputs", content.unstagedTextInputId!))!.text,
+			},
+			text: (await ctx.db.query("files_text_chunks").collect()).filter(after),
+			plain: (await ctx.db.query("files_plain_text_chunks").collect()).filter(after),
+		};
+	});
+	expect(content.chunkBounds, "the bounds go away with their phase").toBeUndefined();
+	for (const sourceKind of ["committed", "pending"] as const) {
+		const expected = files_chunk_plain_text(inputs[sourceKind]);
+		expect(expected.length, "the text needs several pages").toBeGreaterThan(16);
+		const rows = <T extends { sourceKind: string; chunkIndex: number }>(list: T[]) =>
+			list.filter((row) => row.sourceKind === sourceKind).sort((a, b) => a.chunkIndex - b.chunkIndex);
+		expect(
+			rows(text).map(({ chunkIndex, textChunk, startIndex, endIndex, lineStart, lineEnd, chunkFlags }) => ({
+				chunkIndex,
+				textChunk,
+				startIndex,
+				endIndex,
+				lineStart,
+				lineEnd,
+				chunkFlags,
+			})),
+			`the ${sourceKind} rows match one full chunking`,
+		).toEqual(expected.map(({ plainTextChunk: _plain, ...chunk }) => chunk));
+		expect(
+			rows(plain).map(({ chunkIndex, plainTextChunk, hasChunkAbove, hasChunkBelow }) => ({
+				chunkIndex,
+				plainTextChunk,
+				hasChunkAbove,
+				hasChunkBelow,
+			})),
+			`the ${sourceKind} plain rows match one full chunking`,
+		).toEqual(
+			expected.map((chunk) => ({
+				chunkIndex: chunk.chunkIndex,
+				plainTextChunk: chunk.plainTextChunk,
+				hasChunkAbove: chunk.chunkIndex > 0,
+				hasChunkBelow: chunk.chunkIndex < expected.length - 1,
+			})),
+		);
+	}
 });
 
 test("a reviewed partial Save publishes at full private byte quotas and charges once", async () => {
