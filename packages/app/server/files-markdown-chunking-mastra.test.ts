@@ -4,7 +4,10 @@ import {
 	files_chunk_BITMASK_FLAGS,
 	files_chunk_markdown,
 } from "./files-markdown-chunking-mastra.ts";
-import { files_tiptap_markdown_to_plain_text } from "../shared/files-tiptap.ts";
+import {
+	files_tiptap_markdown_list_to_plain_text,
+	files_tiptap_markdown_to_plain_text,
+} from "../shared/files-tiptap.ts";
 
 describe("files_chunk_markdown", () => {
 	test("builds chunk metadata and flags", async () => {
@@ -215,5 +218,24 @@ describe("files_chunk_markdown_add_plain_text", () => {
 			chunks._yay.map((chunk) => chunk.plainTextChunk),
 			"The shared parser matches the editor that Save used before",
 		).toEqual(chunks._yay.map((chunk) => files_tiptap_markdown_to_plain_text({ markdown: chunk.textChunk })._yay));
+	});
+
+	test("gives the same plain text as one editor per text for raw HTML details", () => {
+		const markdownList = [
+			"&nbsp; &amp; &lt; &gt; &quot; &#39; &#x1F600; &copy; &unknown;",
+			"a b\tc‍d 👨‍👩‍👧",
+			"line<br>two<br/>three",
+			"before <!-- hidden --> after <!-- open",
+			"<script>var a = '<b>';</script>\n\n<style>.x{}</style><template><p>in</p></template>text",
+			"<details><summary>Title</summary>\n\nBody\n\n</details>",
+			"<div><p>bad <b>nest</div></b> tail <i>open",
+			"1 < 2 & 3 > 2 <",
+			"<https://example.com/?q=1&r=2> Footnote[^1] $x$\n\n[^1]: note",
+			'Has <span data-type="comment" data-lb-thread-id="th_1">a comment</span> and [a file](bonobo-file://k57a).',
+		];
+		const plainTexts = files_tiptap_markdown_list_to_plain_text({ markdownList });
+		expect(plainTexts._yay, "One parser for many texts matches one editor per text").toEqual(
+			markdownList.map((markdown) => files_tiptap_markdown_to_plain_text({ markdown })._yay),
+		);
 	});
 });
