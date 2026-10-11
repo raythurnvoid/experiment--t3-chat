@@ -994,7 +994,11 @@ export const create_upload_target = internalMutation({
 		if (writable._nay) {
 			return writable;
 		}
-		const tooLong = files_check_name_and_path_length({ names: segments, path: args.path });
+		// Check only the names this upload adds: an older folder on the way may keep a longer name.
+		const tooLong = files_check_name_and_path_length({
+			names: segments.slice(effectiveDestinationAclNode?.pathDepth ?? 0),
+			path: args.path,
+		});
 		if (tooLong._nay) {
 			return tooLong;
 		}

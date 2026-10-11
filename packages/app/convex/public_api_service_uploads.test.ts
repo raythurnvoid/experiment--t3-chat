@@ -19,6 +19,7 @@ import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_NAME_MAX_LENGTH } from "../shared/files.ts";
 
 const SEAL_PROCESSING_PATH = "/api/v1/plugins/service-grants/seal-processing";
 const CREATE_TARGET_PATH = "/api/v1/files/service-uploads/create-target";
@@ -1267,6 +1268,42 @@ describe("service upload targets", () => {
 		expect(await response.json()).toEqual({ message: "This item is being moved. Try again when the Move ends." });
 		expect(await read_targets(t)).toHaveLength(0);
 		expect(await t.run(async (ctx) => await ctx.db.query("files_r2_assets").collect())).toHaveLength(0);
+	});
+
+	test("an old folder name over the limit still takes new uploads", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture });
+		// A folder name saved before the limit existed.
+		const longName = "n".repeat(files_NAME_MAX_LENGTH + 1);
+		await t.run(async (ctx) => {
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId: fixture.userId,
+				parentId: files_ROOT_ID,
+				path: "/meetings/old",
+				kind: "folder",
+				now: Date.now(),
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+			await ctx.db.patch("files_nodes", created._yay, {
+				name: longName,
+				sortName: files_sort_text_key(longName),
+				path: `/meetings/${longName}`,
+				treePath: `/meetings/${longName}/`,
+			});
+		});
+		const response = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: sealed,
+			body: target_body({ path: `/meetings/${longName}/recording.mp4` }),
+		});
+		expect(response.status, "a service upload into an old long-named folder").toBe(200);
+		expect(await read_targets(t)).toHaveLength(1);
 	});
 
 	test("requires both mode flags and rejects non-collaborative binary targets", async () => {
