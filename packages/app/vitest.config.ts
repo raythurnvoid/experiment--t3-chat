@@ -4,6 +4,9 @@ import tailwindcss from "@tailwindcss/vite";
 import { reactCompilerPreset } from "@vitejs/plugin-react";
 import babel from "@rolldown/plugin-babel";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export default defineConfig({
 	plugins: [
@@ -39,6 +42,17 @@ export default defineConfig({
 		// how its imports resolve without a lockfile change.
 		experimental: {
 			fsModuleCache: true,
+			// Worktrees often link `node_modules` to the main checkout, so the default cache folder in
+			// `node_modules` is shared by every checkout. On Windows a cache write fails with EPERM while
+			// another run reads the same file, so keep one cache folder per checkout.
+			fsModuleCachePath: join(
+				tmpdir(),
+				"vitest-fs-module-cache",
+				createHash("sha256")
+					.update(fileURLToPath(new URL(".", import.meta.url)))
+					.digest("hex")
+					.slice(0, 16),
+			),
 		},
 		silent: "passed-only",
 		// Keep fewer copies of app code in memory at once.
