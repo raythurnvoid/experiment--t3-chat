@@ -49,6 +49,20 @@ export const files_metadata_MAX_FRONTMATTER_FIELDS = 128;
  */
 export const files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS = 512;
 
+/**
+ * Longest field path the index keeps. Search and sort never ask for a longer one, and every value
+ * doc copies the path, so a longer frontmatter key keeps its Markdown but gets no index docs.
+ */
+export const files_metadata_FIELD_PATH_MAX_LENGTH = 160;
+
+/**
+ * Longest string value a search can ask for. The index keeps a longer frontmatter string cut to one
+ * character more, so an equal or prefix search stays exact: no search value can equal a cut value,
+ * and a cut value starts with the same text as the original. 1,024 characters is at most about
+ * 4 KB, and matches the limit on metadata values and table filters.
+ */
+export const files_metadata_SEARCH_VALUE_MAX_LENGTH = 1024;
+
 export type files_metadata_Value =
 	| { fieldPath: string; valueKind: "string"; value: string }
 	| { fieldPath: string; valueKind: "number"; value: number }
@@ -218,7 +232,7 @@ function scalar_metadata_value(fieldPath: string, node: YamlNode | null): files_
 	}
 	const value = node.value;
 	if (typeof value === "string") {
-		return { fieldPath, valueKind: "string", value };
+		return { fieldPath, valueKind: "string", value: index_string_value(value) };
 	}
 	if (typeof value === "number" && Number.isFinite(value)) {
 		return { fieldPath, valueKind: "number", value };
@@ -227,6 +241,17 @@ function scalar_metadata_value(fieldPath: string, node: YamlNode | null): files_
 		return { fieldPath, valueKind: "boolean", value };
 	}
 	return null;
+}
+
+// Cut a long string to one character more than a search value can have. Never end on half of a
+// surrogate pair: the cut value must stay longer than any search value.
+function index_string_value(value: string) {
+	const end = files_metadata_SEARCH_VALUE_MAX_LENGTH + 1;
+	if (value.length <= end) {
+		return value;
+	}
+	const last = value.charCodeAt(end - 1);
+	return value.slice(0, last >= 0xd800 && last <= 0xdbff ? end + 1 : end);
 }
 
 function primitive_value_key(value: files_metadata_Value) {
@@ -260,6 +285,10 @@ function collect_metadata_from_node(args: {
 	mut_fields: Set<string>;
 	mut_values: Map<string, files_metadata_Value>;
 }) {
+	// A longer key is never searched, and its nested keys are longer still.
+	if (args.fieldPath.length > files_metadata_FIELD_PATH_MAX_LENGTH) {
+		return;
+	}
 	// Every visited field is searchable by presence; only plain scalars and scalar array items add value indexes.
 	args.mut_fields.add(args.fieldPath);
 

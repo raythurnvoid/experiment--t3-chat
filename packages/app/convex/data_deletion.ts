@@ -55,6 +55,8 @@ import { files_write_policy_runs_db_delete_run_batch } from "./files_write_polic
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_delete } from "./files_subtree_ops.ts";
 import { files_db_delete_pending_update, files_db_expire_pending_update_operation_batch } from "../server/files.ts";
+import { files_pending_overlay_db_delete_job } from "../server/files-pending-overlay.ts";
+import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { users_db_delete_auth_billing_and_activity_docs } from "./users.ts";
 import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
@@ -402,7 +404,8 @@ async function db_drain_pending_overlay_docs_batch(
 					)
 					.take(args.batchSize);
 	if (jobs.length > 0) {
-		for (const job of jobs) await ctx.db.delete("files_pending_overlay_jobs", job._id);
+		// Lower the review job count too: the plan producer waits while it is above 0.
+		for (const job of jobs) await files_pending_overlay_db_delete_job(ctx, job);
 		return jobs.length;
 	}
 
@@ -1563,7 +1566,12 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.unique();
 	if (contentVersion) await ctx.db.delete("files_content_versions", contentVersion._id);
-	return { done: true, deletedCount: (mediaVersion ? 1 : 0) + (contentVersion ? 1 : 0) };
+	const reviewFactState = await files_pending_review_facts_db_get_state(ctx.db, { organizationId, workspaceId });
+	if (reviewFactState) await ctx.db.delete("files_pending_review_fact_state", reviewFactState._id);
+	return {
+		done: true,
+		deletedCount: (mediaVersion ? 1 : 0) + (contentVersion ? 1 : 0) + (reviewFactState ? 1 : 0),
+	};
 }
 
 /**

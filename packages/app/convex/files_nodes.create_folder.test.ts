@@ -34,6 +34,28 @@ async function fixture() {
 }
 
 describe("create_folder_node", () => {
+	test("refuses a name over 255 characters or a path over 4,096 characters before any write", async () => {
+		const { db, asOwner, folder, readState } = await fixture();
+		const create = (path: string) =>
+			asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				path,
+			});
+		expect(await create(`a/${"n".repeat(256)}`)).toMatchObject({
+			_nay: { name: "name_too_long", message: "Names can have at most 255 characters." },
+		});
+		// 16 names of 255 characters make a path of exactly 4,096 characters.
+		const fullPath = Array.from({ length: 16 }, (_, index) => String(index % 10).repeat(255)).join("/");
+		expect(await create(`${fullPath}/x`)).toMatchObject({
+			_nay: { name: "path_too_long", message: "Paths can have at most 4,096 characters." },
+		});
+		expect((await readState()).nodes, "nodes after the refused creates").toEqual([]);
+
+		await folder(fullPath);
+		expect((await readState()).nodes.map((node) => node.path.length).at(-1)).toBe(4096);
+	});
+
 	test("creates every missing path part with folder fields and media versions", async () => {
 		const { t, db, asOwner } = await fixture();
 		const before = await t.run((ctx) => ctx.db.query("files_content_versions").collect());

@@ -47,6 +47,7 @@ import {
 	files_content_type_index_fields,
 	files_derive_tree_path_for_file_node,
 	files_lowercase_extension,
+	files_check_name_and_path_length,
 } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { path_join, path_extract_segments_from } from "../server/server-utils.ts";
@@ -1229,6 +1230,12 @@ async function db_headers(
 		}
 	}
 	const path = path_join(parent?.path ?? "/", name);
+	// This step visits every node of the Move, so a folder moved deeper refuses here for any path below it.
+	const tooLong = files_check_name_and_path_length({
+		names: name === old?.name ? [] : [name],
+		path: path === old?.path ? undefined : path,
+	});
+	if (tooLong._nay) return tooLong;
 	const scope = physical.isRestrictedScopeRoot ? physical._id : (parent?.restrictedScopeNodeId ?? null);
 	if (selected) {
 		const run = cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;

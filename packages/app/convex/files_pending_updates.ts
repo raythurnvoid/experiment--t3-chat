@@ -157,6 +157,7 @@ import {
 	type files_VisibleEntry,
 	type files_ContentType,
 	type files_YjsRootKind,
+	files_check_name_and_path_length,
 } from "../shared/files.ts";
 import {
 	files_metadata_frontmatter_exceeds_index_caps,
@@ -4711,6 +4712,11 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			}
 
 			const destPath = path_join(parentPath, args.destName);
+			const tooLong = files_check_name_and_path_length({
+				names: args.destName === source.entry.node.name ? [] : [args.destName],
+				path: destPath,
+			});
+			if (tooLong._nay) return tooLong;
 			if (
 				source.entry.node.kind === "folder" &&
 				(parentPath === source.entry.path || parentPath.startsWith(`${source.entry.path}/`))

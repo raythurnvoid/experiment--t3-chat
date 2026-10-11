@@ -11,6 +11,7 @@ import {
 	test_mocks_cancel_pending_home_file_seeds,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
+	test_apply_file_pending_move,
 } from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
@@ -31,6 +32,7 @@ import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_db_insert_pending_update, files_ROOT_ID } from "../server/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops.ts";
+import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1285,6 +1287,69 @@ async function data_deletion_test_hard_delete_user_data_until_done(
 	}
 
 	throw new Error("User data hard delete did not finish");
+}
+
+/**
+ * A "replace" draft (draft delete of /p/x.md plus a private /p/x.md) and a draft move of /p/y.md.
+ * No scheduled function runs here, so the overlay jobs these drafts start stay queued.
+ */
+async function data_deletion_test_seed_overlay_drafts(
+	t: ReturnType<typeof test_convex>,
+	scope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
+) {
+	const nodes = await test_run_with_flush(t, async (ctx) => {
+		const base = {
+			...test_mocks.files.base(),
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			createdBy: scope.userId,
+			updatedBy: scope.userId,
+		};
+		const folderId = await ctx.db.insert("files_nodes", {
+			...base,
+			parentId: files_ROOT_ID,
+			name: "p",
+			sortName: files_sort_text_key("p"),
+			kind: "folder",
+			path: "/p",
+			treePath: "/p/",
+			pathDepth: 1,
+		});
+		const fileIds = [];
+		for (const name of ["x.md", "y.md"])
+			fileIds.push(
+				await ctx.db.insert("files_nodes", {
+					...base,
+					parentId: folderId,
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "file",
+					path: `/p/${name}`,
+					treePath: `/p/${name}`,
+					pathDepth: 2,
+					lowercaseExtension: "md",
+				}),
+			);
+		return { folderId, x: fileIds[0]!, y: fileIds[1]! };
+	});
+	const deleted = await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+		...scope,
+		target: { kind: "saved", id: nodes.x },
+	});
+	expect(deleted._nay).toBeUndefined();
+	const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+		...scope,
+		path: "/p/x.md",
+		kind: "file",
+	});
+	expect(created._nay).toBeUndefined();
+	const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+		...scope,
+		target: { kind: "saved", id: nodes.y },
+		destParent: { kind: "root" },
+		destName: "y.md",
+	});
+	expect(moved._nay).toBeUndefined();
 }
 
 /**
@@ -6157,60 +6222,7 @@ describe("process_workspace_deletion_request", () => {
 			workspaceId: user.defaultWorkspaceId,
 			userId: user.userId,
 		};
-		const nodes = await test_run_with_flush(t, async (ctx) => {
-			const base = {
-				...test_mocks.files.base(),
-				organizationId: scope.organizationId,
-				workspaceId: scope.workspaceId,
-				createdBy: user.userId,
-				updatedBy: user.userId,
-			};
-			const folderId = await ctx.db.insert("files_nodes", {
-				...base,
-				parentId: files_ROOT_ID,
-				name: "p",
-				sortName: files_sort_text_key("p"),
-				kind: "folder",
-				path: "/p",
-				treePath: "/p/",
-				pathDepth: 1,
-			});
-			const fileIds = [];
-			for (const name of ["x.md", "y.md"])
-				fileIds.push(
-					await ctx.db.insert("files_nodes", {
-						...base,
-						parentId: folderId,
-						name,
-						sortName: files_sort_text_key(name),
-						kind: "file",
-						path: `/p/${name}`,
-						treePath: `/p/${name}`,
-						pathDepth: 2,
-						lowercaseExtension: "md",
-					}),
-				);
-			return { folderId, x: fileIds[0]!, y: fileIds[1]! };
-		});
-		// A "replace" draft (draft delete of /p/x.md plus a private /p/x.md) and a draft move.
-		const deleted = await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
-			...scope,
-			target: { kind: "saved", id: nodes.x },
-		});
-		expect(deleted._nay).toBeUndefined();
-		const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
-			...scope,
-			path: "/p/x.md",
-			kind: "file",
-		});
-		expect(created._nay).toBeUndefined();
-		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-			...scope,
-			target: { kind: "saved", id: nodes.y },
-			destParent: { kind: "root" },
-			destName: "y.md",
-		});
-		expect(moved._nay).toBeUndefined();
+		await data_deletion_test_seed_overlay_drafts(t, scope);
 
 		const count_overlay_docs = () =>
 			t.run(async (ctx) => {
@@ -6232,6 +6244,8 @@ describe("process_workspace_deletion_request", () => {
 		// No scheduled function runs here, so the overlay jobs the purge's own writes start stay queued.
 		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
 		expect(await count_overlay_docs()).toBe(0);
+		const factState = await t.run((ctx) => files_pending_review_facts_db_get_state(ctx.db, scope));
+		expect(factState, "review fact state of the purged workspace").toBeNull();
 	});
 
 	test("deletes the share rows, also a row whose grant and node are gone", async () => {
@@ -6734,6 +6748,81 @@ describe("process_organization_deletion_request", () => {
 });
 
 describe("hard_delete_user_data", () => {
+	test("lowers the review job count with the overlay jobs it deletes, so a later Accept still plans", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-review-jobs",
+				displayName: "Reset Review Jobs",
+			}),
+		);
+		const scope = {
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			userId: user.userId,
+		};
+		await data_deletion_test_seed_overlay_drafts(t, scope);
+
+		await data_deletion_test_hard_delete_user_data_until_done(t, { userId: user.userId });
+
+		const after = await t.run(async (ctx) => ({
+			workspace: await ctx.db.get("organizations_workspaces", scope.workspaceId),
+			jobs: (await ctx.db.query("files_pending_overlay_jobs").collect()).filter((job) => job.reviewFactsPending),
+			state: await files_pending_review_facts_db_get_state(ctx.db, scope),
+		}));
+		expect(after.workspace).not.toBeNull();
+		// The plan producer waits while this count is above 0.
+		expect(after.state?.pendingJobCount ?? 0, "review job count after the reset").toBe(after.jobs.length);
+
+		// A new draft move in the kept workspace, then Accept.
+		const nodeId = await test_run_with_flush(t, (ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				parentId: files_ROOT_ID,
+				name: "a.md",
+				sortName: files_sort_text_key("a.md"),
+				kind: "file",
+				path: "/a.md",
+				treePath: "/a.md",
+				pathDepth: 1,
+				lowercaseExtension: "md",
+			}),
+		);
+		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...scope,
+			target: { kind: "saved", id: nodeId },
+			destParent: { kind: "root" },
+			destName: "b.md",
+		});
+		expect(moved._nay).toBeUndefined();
+		const seeded = await t.run(async (ctx) => ({
+			membership: await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", scope.workspaceId).eq("userId", user.userId).eq("active", true),
+				)
+				.unique(),
+			proposal: (await ctx.db.query("files_pending_updates").collect()).find(
+				(proposal) => proposal.target.kind === "saved" && proposal.target.id === nodeId,
+			),
+		}));
+		const accepted = await test_apply_file_pending_move(
+			t.withIdentity({ issuer: "https://clerk.test", subject: user.userId, external_id: user.userId }),
+			{
+				membershipId: seeded.membership!._id,
+				target: { kind: "saved", id: nodeId },
+				pendingUpdateId: seeded.proposal!._id,
+				reviewedRevision: seeded.proposal!.revision,
+			},
+		);
+		expect(accepted._nay).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({ path: "/b.md" });
+	});
+
 	test("keeps stale plugin frames closed after private scope rows and fences drain", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>

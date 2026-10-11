@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_move_nodes } from "./setup.test.ts";
+import { test_move_nodes, test_rename_node } from "./setup.test.ts";
 import {
 	fixture,
 	type Fixture,
@@ -214,6 +214,26 @@ describe("unarchive_nodes", () => {
 				archiveOperationId: null,
 				name: "f000-2.md",
 				path: "/clash/d0/f000-2.md",
+			});
+		});
+
+		test("Keep both cuts a long name, so the new name stays inside the limit", async () => {
+			const f = await fixture();
+			const tree = await seed_tree(f, { name: "long", folderCount: 1, filesPerFolder: 2 });
+			const longName = `${"n".repeat(252)}.md`;
+			// The second file takes the longest name while the first one is archived.
+			const rename = (nodeId: Id<"files_nodes">) =>
+				test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId, path: longName });
+			expect((await rename(tree.fileIds[0]!))._nay).toBeUndefined();
+			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
+			expect((await rename(tree.fileIds[1]!))._nay).toBeUndefined();
+			const job = (await restore(f, [tree.fileIds[0]!]))._yay!;
+
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
+			await run_to_end(f, job);
+			expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({
+				archiveOperationId: null,
+				name: `${"n".repeat(250)}-2.md`,
 			});
 		});
 

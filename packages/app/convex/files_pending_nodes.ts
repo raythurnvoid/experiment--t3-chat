@@ -6,6 +6,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_check_name_and_path_length } from "../shared/files.ts";
 import {
 	files_private_storage_db_release,
 	files_private_storage_db_release_deleted_resource,
@@ -340,6 +341,8 @@ export async function files_pending_nodes_db_create(
 			return Result({ _nay: { name: "too_large", message: "This draft has too many parent folders" } });
 		}
 	}
+	const tooLong = files_check_name_and_path_length({ names: [args.name] });
+	if (tooLong._nay) return tooLong;
 	const occupant = await ctx.db
 		.query("files_pending_nodes")
 		.withIndex("by_organization_workspace_user_parent_state_name", (q) =>

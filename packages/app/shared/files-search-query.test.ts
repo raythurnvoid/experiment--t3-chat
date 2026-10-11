@@ -144,6 +144,16 @@ describe("files_search_query_parse", () => {
 		expect(problems(`file.path:${twelveLevels}/f12`)).toEqual([null]);
 	});
 
+	test("refuses a metadata value over 1,024 characters, because the index cuts longer values", () => {
+		const problems = (query: string) => files_search_query_parse(query).filters.map((filter) => filter.problem);
+		const tooLongProblem = "Search values can have at most 1,024 characters";
+
+		expect(problems(`metadata.title:${"a".repeat(1024)}`)).toEqual([null]);
+		expect(problems(`frontmatter.title:"${"a".repeat(1024)}"*`)).toEqual([null]);
+		expect(problems(`metadata.title:${"a".repeat(1025)}`)).toEqual([tooLongProblem]);
+		expect(problems(`frontmatter.title:"${"a".repeat(1025)}"*`)).toEqual([tooLongProblem]);
+	});
+
 	test("reports why a filter cannot run and still keeps it", () => {
 		// `metadata.status: open` is the YAML habit. The message says where the value has to go.
 		expect(parse_one("metadata.status:").problem).toBe(

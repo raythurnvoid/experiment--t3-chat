@@ -363,6 +363,24 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 		}
 		return active;
 	}
+	// One walk per check in this transaction: a bulk side write repeats the same file's check per doc.
+	// A reservation write or a parent change can change an answer, so it clears them all.
+	const blockers = new Map<string, Id<"files_move_cohorts"> | null>();
+	let blockersVersion = 0;
+	function forget_blockers() {
+		blockers.clear();
+		blockersVersion++;
+	}
+	async function find_blocker(check: Check) {
+		const key = JSON.stringify(check);
+		const cached = blockers.get(key);
+		if (cached !== undefined) return cached;
+		const version = blockersVersion;
+		const blocker = await files_move_reservations_db_find_blocker(raw, check);
+		// A write that ended during this walk may have changed the answer.
+		if (version === blockersVersion) blockers.set(key, blocker);
+		return blocker;
+	}
 	async function guard(
 		table: string,
 		id: string | null,
@@ -420,7 +438,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 				checks.push({ parent: doc.parent as files_PendingParent });
 		}
 		for (const check of checks) {
-			const blocker = await files_move_reservations_db_find_blocker(raw, check);
+			const blocker = await find_blocker(check);
 			if (!blocker) continue;
 			const nodeId = table === "files_nodes" ? id : value.fileNodeId;
 			if (patch && state.securityNodes.has(nodeId as Id<"files_nodes">)) {
@@ -551,9 +569,14 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 			if (property === STATE) return state;
 			if (property === "insert")
 				return async (table: TableNames, value: Fields) => {
-					if (reservationTables.has(table)) activeScopes.clear();
+					if (reservationTables.has(table)) {
+						activeScopes.clear();
+						forget_blockers();
+					}
 					if (SOURCE_TABLES.has(table) || SIDE_TABLES.has(table)) await guard(table, null, null, value, null);
-					return await target.insert(table, value as never);
+					const id = await target.insert(table, value as never);
+					if (reservationTables.has(table)) forget_blockers();
+					return id;
 				};
 			if (property === "patch" || property === "replace" || property === "delete")
 				return async (...args: unknown[]) => {
@@ -564,9 +587,21 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 								target.normalizeId(name as TableNames, args[0] as string),
 							) as TableNames | undefined);
 					if (table && reservationTables.has(table)) activeScopes.clear();
+					const value = property === "delete" ? null : (args[tableFirst ? 2 : 1] as Fields);
+					// Reservations and node parents decide the blockers.
+					const changesBlockers =
+						!!table &&
+						(reservationTables.has(table) ||
+							((table === "files_nodes" || table === "files_pending_nodes") &&
+								(property !== "patch" || "parentId" in value! || "parent" in value!)));
+					if (changesBlockers) forget_blockers();
+					const write = async () => {
+						const result: unknown = await Reflect.apply(Reflect.get(target, property), target, args);
+						if (changesBlockers) forget_blockers();
+						return result;
+					};
 					if (table && (SOURCE_TABLES.has(table) || SIDE_TABLES.has(table))) {
 						const id = args[tableFirst ? 1 : 0] as Id<TableNames>;
-						const value = property === "delete" ? null : (args[tableFirst ? 2 : 1] as Fields);
 						const key = `${table}:${id}`;
 						const known = state.knownScopes.get(key);
 						state.knownScopes.delete(key);
@@ -576,12 +611,21 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 							!(await scope_is_active(known)) &&
 							(property === "delete" || !(await scope_is_active(nextScope)))
 						)
-							return await Reflect.apply(Reflect.get(target, property), target, args);
-						const old = (await target.get(table, id)) as Fields | null;
+							return await write();
+						// A metadata delete's guard reads only the owner fields, and the overlay notes them all.
+						const old = (
+							property === "delete" &&
+							table === "files_metadata_docs" &&
+							known &&
+							"fileNodeId" in known &&
+							"pendingUpdateId" in known
+								? known
+								: await target.get(table, id)
+						) as Fields | null;
 						const next = property === "patch" ? { ...old, ...value } : value;
 						await guard(table, id, old, next, property === "patch" ? value : null);
 					}
-					return await Reflect.apply(Reflect.get(target, property), target, args);
+					return await write();
 				};
 			const value = Reflect.get(target, property) as unknown;
 			return typeof value === "function" ? value.bind(target) : value;

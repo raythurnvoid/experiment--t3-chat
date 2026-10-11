@@ -35,6 +35,7 @@ import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts"
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
 import { access_control_FILE_SHARE_LEVELS } from "../shared/access-control.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -742,6 +743,93 @@ describe("cohort Accept transaction budgets", () => {
 			JSON.stringify(Object.fromEntries(peaks)),
 		);
 	}, 180_000);
+
+	test("measures an accepted delete of a file with a full-size text edit", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/inbox/edited.md",
+			textContent: "Saved text.\n",
+		});
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		const target = { kind: "saved", id: nodeId } as const;
+		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			...scope,
+			target,
+		});
+		if (batch._nay) throw new Error(batch._nay.message);
+		// A full-size edit of short lines, so the text makes many chunks.
+		const text = Array.from({ length: files_MAX_TEXT_CONTENT_BYTES / 16 }, (_, index) =>
+			index.toString(36).padStart(15, "-"),
+		).join("\n");
+		expect(
+			await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+				...scope,
+				operationBatchId: batch._yay.operationBatchId,
+				role: "unstaged",
+				text,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				...scope,
+				target,
+				operationBatchId: batch._yay.operationBatchId,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			(await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...scope, target }))._nay,
+		).toBeUndefined();
+		const proposal = (await t.run((ctx) => ctx.db.query("files_pending_updates").collect())).find(
+			(row) => row.target.id === nodeId,
+		)!;
+		expect(proposal.pendingArchive && proposal.content).toBeTruthy();
+		const pendingDocs = async () =>
+			await t.run(async (ctx) =>
+				[
+					...(await ctx.db.query("files_plain_text_chunks").collect()),
+					...(await ctx.db.query("files_text_chunks").collect()),
+				].filter((row) => "pendingUpdateId" in row && row.pendingUpdateId === proposal._id),
+			);
+		// The finish step deletes these untagged chunks in one transaction.
+		expect((await pendingDocs()).length).toBeGreaterThan(1000);
+		const { peaks, record } = budget_recorder();
+		measure_cohort(record);
+		const started = await asOwner.mutation(api.files_pending_update_runs.start, {
+			membershipId: db.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "accept",
+			expectedItemCount: 1,
+			items: [
+				{
+					pendingUpdateId: proposal._id,
+					reviewedRevision: proposal.revision,
+					selectedContentStateId: proposal.content?.unstagedStateId ?? null,
+				},
+			],
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const { runId } = started._yay;
+		expect(
+			await asOwner.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId }),
+		).toEqual({ _yay: null });
+		await finish_scheduled(
+			t,
+			async () =>
+				(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.run.step ===
+				"finished",
+		);
+		expect(
+			(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.activity,
+		).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.archiveOperationId).not.toBeNull();
+		expect(await pendingDocs(), "no pending index doc outlives the draft").toEqual([]);
+		expect(peaks.get("cohort/finish_nodes")?.calls).toBeGreaterThan(0);
+		console.info("accepted delete with a full-size edit, phase peaks", JSON.stringify(Object.fromEntries(peaks)));
+	}, 900_000);
 });
 
 describe("discard_file_pending_update", () => {

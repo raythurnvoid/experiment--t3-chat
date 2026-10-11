@@ -239,8 +239,8 @@ Current purge coverage includes:
   and proposal owners handle assets first. Both user and workspace finalization reach this drain.
 - Relevant access changes advance the organization or workspace media-validation version in the
   same transaction. The workspace purge fence invalidates earlier proofs. Delete its version row
-  only after content and quotas are gone, together with its `files_content_versions` row; final
-  organization deletion also removes its version row.
+  only after content and quotas are gone, together with its `files_content_versions` row and its
+  `files_pending_review_fact_state` row; final organization deletion also removes its version row.
 - `files_pending_update_yjs_state_pages`, `files_pending_update_yjs_states`, `files_pending_update_state_cleanup_tasks`, `files_pending_update_text_inputs`, `files_pending_update_operation_batches`, `files_yjs_trusted_update_stages` — the paged pending-state family and its operation scaffolding, child docs first (pages before states, text inputs before batches), all before the pending-update docs they belong to
 - `files_pending_update_expiry_checks`, then `files_pending_updates`. Delete the checks first, so no
   expiry job works on drafts during the purge. A job whose check is gone does nothing.
@@ -250,7 +250,11 @@ Current purge coverage includes:
   `files_pending_list_keys`. This is a last pass, after the drafts, private nodes, receipts and `files_nodes` are
   gone. Purge mutations run through the wrapper, so the flush recomputes derived docs from the source docs still
   left; an earlier pass could see them written again. The flush deletes most of them by itself; the pass removes
-  the rest. A deleted job task needs no scheduler cancel: its run exits when the task is gone.
+  the rest. A deleted job task needs no scheduler cancel: its run exits when the task is gone. Delete jobs
+  with `files_pending_overlay_db_delete_job`, never a raw delete: it also lowers the workspace's review
+  job count, and the review plan producer waits while that count is above 0. A data reset keeps the
+  workspace, and user deletion drains jobs in shared workspaces, so a leaked count would stop every later
+  Accept there.
 - `files_share_rows`, right after the overlay docs and for the same reason. The flush deletes a row with
   its grant or node; this pass deletes rows no flush reaches again, for example after a dashboard edit.
   The organization purge reaches it through each workspace purge.

@@ -22,6 +22,7 @@ import { billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
 import {
 	files_nodes_db_archive_nodes,
+	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
 	files_nodes_db_require_writable,
@@ -54,6 +55,7 @@ import {
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
+	files_check_name_and_path_length,
 } from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
@@ -991,6 +993,19 @@ export const create_upload_target = internalMutation({
 		});
 		if (writable._nay) {
 			return writable;
+		}
+		const tooLong = files_check_name_and_path_length({ names: segments, path: args.path });
+		if (tooLong._nay) {
+			return tooLong;
+		}
+		// Refuse before the asset insert below: the create meets a Move only after it.
+		const busy = await files_nodes_db_check_create_busy(ctx, {
+			...args.principal,
+			parentNode: effectiveDestinationAclNode,
+			name: segments[effectiveDestinationAclNode?.pathDepth ?? 0]!,
+		});
+		if (busy._nay) {
+			return busy;
 		}
 		const writePolicy = args.readOnly ? { mode: "writer" as const, writers: [writeContext.writer] } : undefined;
 
