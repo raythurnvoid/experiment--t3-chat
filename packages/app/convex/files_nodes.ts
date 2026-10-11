@@ -54,7 +54,11 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
-import { files_metadata_apply_set_and_remove, type files_metadata_Entry } from "../shared/files-metadata.ts";
+import {
+	files_metadata_apply_set_and_remove,
+	files_metadata_SEARCH_VALUE_MAX_LENGTH,
+	type files_metadata_Entry,
+} from "../shared/files-metadata.ts";
 import {
 	files_sort_is_valid,
 	files_sort_text_key,
@@ -167,6 +171,7 @@ import {
 import {
 	files_search_query_field_path_is_valid,
 	files_search_query_FIELD_PATH_MAX_LENGTH,
+	files_search_query_VALUE_TOO_LONG_PROBLEM,
 } from "../shared/files-search-query.ts";
 import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
 import { files_transfer_db_start_rename } from "./files_transfer.ts";
@@ -9785,6 +9790,7 @@ export const search_saved = query({
 				message: v.union(
 					v.literal("Folder not found"),
 					v.literal("This folder is too deep to search inside. Search a folder higher up"),
+					v.literal(files_search_query_VALUE_TOO_LONG_PROBLEM),
 				),
 			}),
 		),
@@ -9980,6 +9986,15 @@ export const search_saved = query({
 				(folder && (plan.op === "prefix" || plan.op === "range"))
 			) {
 				return refused;
+			}
+			// The index cuts long values, so a longer value could match a different one. Refuse it like the
+			// search box does.
+			if (
+				(plan.op === "eq" || plan.op === "prefix") &&
+				typeof plan.value === "string" &&
+				plan.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
+			) {
+				return { ...refused, page: [{ kind: "problem" as const, message: files_search_query_VALUE_TOO_LONG_PROBLEM }] };
 			}
 			const result = await files_metadata_db_query_saved_plan(ctx, {
 				organizationId: membership.organizationId,

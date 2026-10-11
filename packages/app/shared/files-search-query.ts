@@ -111,7 +111,7 @@ const FOLDER_RANGE_PROBLEM =
 	"A folder works with words, exact values and any value. Remove the folder to compare numbers or dates";
 const FOLDER_TOO_DEEP_PROBLEM = "This folder is too deep to search inside. Search a folder higher up";
 // The index cuts longer metadata strings, so a longer value could match the wrong files.
-const VALUE_TOO_LONG_PROBLEM = "Search values can have at most 1,024 characters";
+export const files_search_query_VALUE_TOO_LONG_PROBLEM = "Search values can have at most 1,024 characters" as const;
 // The server can search inside a folder only up to this many levels below the root.
 const FOLDER_SEARCH_MAX_DEPTH = 12;
 const RANGE_COMPARATORS = [
@@ -418,7 +418,7 @@ export function files_search_query_parse(query: string): ParsedQuery {
 			(parsedKey.key.namespace !== "file" &&
 			parsedValue.match.op !== "exists" &&
 			parsedValue.match.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
-				? VALUE_TOO_LONG_PROBLEM
+				? files_search_query_VALUE_TOO_LONG_PROBLEM
 				: null);
 
 		filters.push({

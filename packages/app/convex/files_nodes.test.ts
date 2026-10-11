@@ -87,10 +87,15 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import {
 	files_metadata_MAX_FRONTMATTER_FIELDS,
+	files_metadata_SEARCH_VALUE_MAX_LENGTH,
 	type files_metadata_Entry,
 	type files_metadata_SearchPlan,
 } from "../shared/files-metadata.ts";
-import { files_search_query_parse, files_search_query_to_plans } from "../shared/files-search-query.ts";
+import {
+	files_search_query_parse,
+	files_search_query_to_plans,
+	files_search_query_VALUE_TOO_LONG_PROBLEM,
+} from "../shared/files-search-query.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -14587,14 +14592,40 @@ describe("search box doors", () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		// The upper bound of the scan is built from the value. A spread of that many code points
-		// into `String.fromCodePoint` would throw a RangeError instead of the empty answer.
+		// into `String.fromCodePoint` would throw a RangeError instead of the answer.
 		expect(
 			await search_saved_plans({
 				asWho: seeded.asOwner,
 				membershipId: seeded.db.membershipId,
 				plans: [{ op: "prefix", fieldPath: "frontmatter.title", value: "a".repeat(300_000) }],
 			}),
-		).toEqual(new Set());
+		).toEqual(new Set([files_search_query_VALUE_TOO_LONG_PROBLEM]));
+	});
+
+	test("search_saved refuses a value over the limit, which the cut index value could falsely match", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const limit = files_metadata_SEARCH_VALUE_MAX_LENGTH;
+		// The index keeps only the first characters of this title.
+		const longTitleId = await test_materialize_markdown_file({
+			t,
+			asUser: seeded.asOwner,
+			db: seeded.db,
+			path: "/tasks/long-title.md",
+			markdown: ["---", `title: ${"v".repeat(2 * limit)}`, "---", "Body"].join("\n"),
+		});
+		const search = (op: "eq" | "prefix", value: string) =>
+			search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: [{ op, fieldPath: "frontmatter.title", value }],
+			});
+
+		expect(await search("prefix", "vvv")).toEqual(new Set([longTitleId]));
+		expect(await search("eq", "v".repeat(limit + 1)), "an eq value over the limit").toEqual(
+			new Set([files_search_query_VALUE_TOO_LONG_PROBLEM]),
+		);
+		expect(await search("eq", "v".repeat(limit))).toEqual(new Set());
 	});
 
 	test("every door answers somebody else's membership with its empty shape", async () => {
