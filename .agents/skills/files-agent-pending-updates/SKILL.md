@@ -228,7 +228,7 @@ Paged pending-state storage (`packages/app/convex/schema.ts`; shared helpers in 
 - Agent archive proposals and Added-draft removal carry the same `agentSource` into their writing transaction. Removal refuses an ended source membership, including after re-invite. This check does not attach a lasting source-access rule to finished proposals.
 - Agent preparation and proposal readback carry `agentSource` too. A rebase creates its own source-bound batch, so revocation during preparation cannot update a home proposal. Human Review and Save keep their own destination checks and do not depend on the source chat.
 - `files_pending_update_text_inputs` — one staged text value (role `staged` or `unstaged`) per batch, with its batch's tagged target, so no registered call carries two large values at once.
-- `files_yjs_trusted_update_stages` — one server-built Yjs update staged ahead of its commit (pending accept, public fill, snapshot restore), so the commit call carries only ids and one bounded text. 30-minute TTL.
+- `files_yjs_trusted_update_stages` — one server-built Yjs update staged ahead of its commit (pending accept, public fill, snapshot restore), so the commit call carries only ids and one bounded text. 30-minute TTL, except `public_fill`: 5 minutes. A `public_fill` stage holds no private storage bytes (it lives under a second), so every delete path (consume, replace, retire, expiry sweep) skips the release for it by `stage.kind`. The other kinds keep their holds, and releasing a deleted stage without a hold throws.
 
 The digest is two FNV-1a 32-bit passes joined as hex (`files_pending_update_yjs_state_digest` in `packages/app/server/files.ts`). It is not cryptographic; it only detects a torn or mixed page family when a state is reassembled.
 

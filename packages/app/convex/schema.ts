@@ -5179,7 +5179,7 @@ const app_convex_schema = defineSchema({
 	/**
 	 * One server-built Yjs update staged ahead of its commit mutation (pending Accept, public
 	 * fill, snapshot restore), so the commit call carries only ids and one bounded text value.
-	 * Consumed on commit; abandoned stages expire after 30 minutes and the sweeper deletes them.
+	 * Consumed on commit; abandoned stages expire after 30 minutes (5 for `public_fill`, which holds no storage bytes) and the sweeper deletes them.
 	 */
 	files_yjs_trusted_update_stages: defineTable({
 		cohortContentId: v.optional(v.id("files_move_cohort_content")),

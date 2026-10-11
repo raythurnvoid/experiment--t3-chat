@@ -12986,6 +12986,40 @@ describe("pending update state seal door 2", () => {
 // #endregion door 2 shape checks
 
 // #region pending state TTL sweep
+describe("stage_trusted_yjs_update", () => {
+	test("a public_fill stage holds no bytes, expires in 5 minutes, and a restage replaces it", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({ ctx, path: "/stage-fill", name: "stage-fill", markdown: "# Stage" }),
+		);
+		const stage = async () => {
+			const staged = await t.mutation(internal.files_pending_updates.stage_trusted_yjs_update, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+				kind: "public_fill",
+				update: files_u8_to_array_buffer(new Uint8Array([1, 2, 3])),
+			});
+			if (staged._nay) throw new Error(staged._nay.message);
+			return staged._yay.stageId;
+		};
+
+		const before = Date.now();
+		const firstStageId = await stage();
+		// The second call replaces the first stage. The first stage has no hold to release.
+		const secondStageId = await stage();
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_yjs_trusted_update_stages", firstStageId)).toBeNull();
+			const secondStage = await ctx.db.get("files_yjs_trusted_update_stages", secondStageId);
+			expect(secondStage!.expiresAt!).toBeGreaterThanOrEqual(before + 5 * 60 * 1000);
+			expect(secondStage!.expiresAt!).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000);
+			expect(await ctx.db.query("files_private_storage_reservations").collect()).toEqual([]);
+		});
+	});
+});
+
 describe("cleanup_expired_pending_state_rows", () => {
 	async function seed_state_family(args: {
 		t: ReturnType<typeof test_convex>;
@@ -13266,6 +13300,34 @@ describe("cleanup_expired_pending_state_rows", () => {
 			expect(await ctx.db.get("files_pending_update_operation_batches", expiredBatchId)).toBeNull();
 			expect(await ctx.db.get("files_pending_update_operation_batches", liveBatchId)).not.toBeNull();
 			expect(await ctx.db.get("files_pending_update_text_inputs", expiredTextInputId)).toBeNull();
+			expect(await ctx.db.get("files_yjs_trusted_update_stages", expiredStageId)).toBeNull();
+		});
+	});
+
+	test("sweeps an expired public_fill stage that holds no bytes", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({ ctx, path: "/sweep-fill", name: "sweep-fill", markdown: "# Sweep" }),
+		);
+		const now = Date.now();
+		const expiredStageId = await t.run(async (ctx) =>
+			ctx.db.insert("files_yjs_trusted_update_stages", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				fileNodeId: seeded.nodeId,
+				kind: "public_fill",
+				update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
+				expiresAt: now - 1000,
+			}),
+		);
+
+		await t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {
+			_test_now: now,
+			_test_disableReschedule: true,
+		});
+
+		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_yjs_trusted_update_stages", expiredStageId)).toBeNull();
 		});
 	});

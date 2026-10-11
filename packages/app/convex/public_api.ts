@@ -5256,9 +5256,10 @@ export async function public_api_write_one_text_file(
 				});
 			}
 
-			// Move the server-built diff through a 30-minute trusted `public_fill` stage and hand
+			// Move the server-built diff through a 5-minute trusted `public_fill` stage and hand
 			// the publish mutation only its id, so the registered call carries one large value
-			// (the content text). An abandoned stage falls to the TTL sweep.
+			// (the content text). The stage holds no storage bytes. A failed publish deletes it, and an
+			// abandoned stage falls to the TTL sweep.
 			let fillUpdateStageId: Id<"files_yjs_trusted_update_stages"> | undefined;
 			if (fillUpdate) {
 				const staged = (await ctx.runMutation(internal.files_pending_updates.stage_trusted_yjs_update, {
@@ -5286,14 +5287,33 @@ export async function public_api_write_one_text_file(
 				fillUpdateStageId = staged._yay.stageId;
 			}
 
-			const published: publish_file_fill_Result = await ctx.runMutation(internal.public_api.publish_file_fill, {
-				stageId: prepared._yay.stageId,
-				content: args.content,
-				expectedNodeId: activeNode._id,
-				expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
-				...(fillUpdateStageId ? { fillUpdateStageId } : {}),
-			});
+			// If the publish refuses or throws, the fill stage can still exist. So delete it here.
+			// The call does nothing when the publish already consumed the stage.
+			const retire_fill_update_stage = async () => {
+				if (!fillUpdateStageId) return;
+				await ctx.runMutation(internal.files_pending_updates.retire_trusted_yjs_update_stage, {
+					stageId: fillUpdateStageId,
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodeId: activeNode._id,
+				});
+			};
+			let published: publish_file_fill_Result;
+			try {
+				published = await ctx.runMutation(internal.public_api.publish_file_fill, {
+					stageId: prepared._yay.stageId,
+					content: args.content,
+					expectedNodeId: activeNode._id,
+					expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
+					...(fillUpdateStageId ? { fillUpdateStageId } : {}),
+				});
+			} catch (error) {
+				await retire_fill_update_stage();
+				throw error;
+			}
 			if (published._nay) {
+				await retire_fill_update_stage();
 				// Conflict is the fallback: structural 409s pass their specific message through,
 				// while the auth and storage failures use fixed literals.
 				const failure =
@@ -6698,10 +6718,9 @@ export async function public_api_http_write_many(args: {
 
 	// Write new files in two waves. Wave 1 writes the first file of each parent folder, so two files
 	// never race to create the same parent. Wave 2 writes the rest, once their parents exist.
-	// Overwrites go last, one at a time: a fill stages its Yjs update under a hold on the user's and
-	// the workspace's private storage counters, and its publish gives the hold back. Parallel fills
-	// conflict on those two docs until Convex gives up. This lookup only picks the wave: the per-file
-	// write still decides create or fill on its own.
+	// Overwrites go last. A fill stages its Yjs update without a storage hold, so it does not write the
+	// user's and the workspace's private storage counters. This lookup only picks the wave: the
+	// per-file write still decides create or fill on its own.
 	const existingNodes = await Promise.all(
 		validatedFiles.map((file) =>
 			ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -6733,7 +6752,7 @@ export async function public_api_http_write_many(args: {
 	for (const [wave, limit] of [
 		[firstWave, FILES_WRITE_MANY_CONCURRENCY],
 		[secondWave, FILES_WRITE_MANY_CONCURRENCY],
-		[fillWave, 1],
+		[fillWave, FILES_WRITE_MANY_CONCURRENCY],
 	] as const) {
 		const settled = await async_all_settled_with_limit({
 			items: wave,

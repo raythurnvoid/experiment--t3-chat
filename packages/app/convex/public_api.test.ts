@@ -5174,7 +5174,7 @@ describe("files write-many", () => {
 		expect(folders.map((folder) => folder.path).sort()).toEqual(["/a", "/b"]);
 	});
 
-	test("overwrites existing files one at a time", async () => {
+	test("overwrites existing files in parallel", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-fills" });
@@ -5226,14 +5226,87 @@ describe("files write-many", () => {
 		const body = (await response.json()) as { written: Array<{ path: string }>; errors: unknown[] };
 		expect(body.errors).toEqual([]);
 		expect(body.written.map((item) => item.path)).toEqual(paths);
-		// Each fill holds the user's and the workspace's private storage counters while it stages its
-		// update. Parallel fills conflict on those two docs, so they must run one at a time.
-		expect(maxInFlight).toBe(1);
-		// Every hold was given back.
+		// A fill holds no private storage bytes, so parallel fills do not conflict on the quota docs.
+		expect(maxInFlight).toBeGreaterThan(1);
+		// No fill wrote a private byte counter.
 		const privateQuotas = await t.run(async (ctx) =>
 			(await ctx.db.query("quotas").collect()).filter((quota) => quota.quotaName.startsWith("files_private_")),
 		);
 		expect(privateQuotas.map((quota) => quota.usedCount)).toEqual(privateQuotas.map(() => 0));
+	});
+
+	test("an overwrite does not need free private storage and leaves the byte counters alone", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-fill-no-hold" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "fill-no-hold" });
+		const created = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/fill-no-hold.md", content: "# Old\n" }),
+		});
+		expect(created.status).toBe(200);
+
+		// Full private storage: a new hold would be refused.
+		await t.run(async (ctx) => {
+			for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes"] as const) {
+				const id = await quotas_db_ensure(ctx, { ...db, quotaName, now: Date.now() });
+				await ctx.db.patch("quotas", id, { maxCount: 0 });
+			}
+		});
+		const before = await t.run(async (ctx) =>
+			(await ctx.db.query("quotas").collect()).filter((quota) => quota.quotaName.startsWith("files_private_")),
+		);
+
+		const overwritten = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/fill-no-hold.md", content: "# New\n", overwrite: "replace" }),
+		});
+		expect(overwritten.status).toBe(200);
+
+		const after = await t.run(async (ctx) =>
+			(await ctx.db.query("quotas").collect()).filter((quota) => quota.quotaName.startsWith("files_private_")),
+		);
+		expect(after).toEqual(before);
+		expect(await t.run(async (ctx) => await ctx.db.query("files_private_storage_reservations").collect())).toEqual([]);
+	});
+
+	test("a refused fill publish deletes its trusted fill stage", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-fill-refused" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "fill-refused" });
+		const created = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/fill-refused.md", content: "# Old\n" }),
+		});
+		expect(created.status).toBe(200);
+		const node = await find_active_node({ t, db, path: "/fill-refused.md" });
+
+		// Turn collaboration off while the content PUT runs. The publish then refuses with "The file
+		// changed during the write", after the fill update was already staged.
+		const stubbedFetch = globalThis.fetch;
+		let changed = false;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			if (!changed && init?.method === "PUT" && init.body === "# New\n") {
+				changed = true;
+				await t.run(async (ctx) => {
+					await ctx.db.patch("files_nodes", node!._id, { collaborationEnabled: false });
+				});
+			}
+			return await stubbedFetch(url, init);
+		});
+
+		const refused = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/fill-refused.md", content: "# New\n", overwrite: "replace" }),
+		});
+		expect(changed).toBe(true);
+		expect(refused.status).toBe(409);
+		expect(await t.run(async (ctx) => await ctx.db.query("files_yjs_trusted_update_stages").collect())).toEqual([]);
 	});
 
 	test("refuses an oversized or overfull batch", async () => {

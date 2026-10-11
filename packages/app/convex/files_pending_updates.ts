@@ -267,6 +267,12 @@ const PENDING_REPLACEMENT_BLOCKS_WRITE_MESSAGE =
 const PENDING_OPERATION_BATCH_TTL_MS = 30 * 60 * 1000;
 
 /**
+ * Lifetime of a `public_fill` stage. It lives under one second in normal use, so a crashed
+ * write frees its stage after a few minutes instead of 30.
+ */
+const PUBLIC_FILL_STAGE_TTL_MS = 5 * 60 * 1000;
+
+/**
  * How long a batch may sit with no staging or sealing before a new batch-create by the same
  * user takes it over. A live client stages page after page within seconds, so two minutes of
  * silence means the old client crashed or lost its network; without the takeover the user would
@@ -2311,7 +2317,10 @@ export const stage_trusted_yjs_update = internalMutation({
 			if (stage.kind !== args.kind) continue;
 			if (stage.cohortContentId) continue;
 			await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
-			await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+			// A `public_fill` stage holds no bytes, so there is nothing to release.
+			if (stage.kind !== "public_fill") {
+				await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+			}
 		}
 
 		const stageId = await ctx.db.insert("files_yjs_trusted_update_stages", {
@@ -2321,26 +2330,32 @@ export const stage_trusted_yjs_update = internalMutation({
 			fileNodeId: args.nodeId,
 			kind: args.kind,
 			update: new ArrayBuffer(0),
-			expiresAt: args.cohortContent ? undefined : Date.now() + PENDING_OPERATION_BATCH_TTL_MS,
+			expiresAt: args.cohortContent
+				? undefined
+				: Date.now() + (args.kind === "public_fill" ? PUBLIC_FILL_STAGE_TTL_MS : PENDING_OPERATION_BATCH_TTL_MS),
 			cohortContentId: args.cohortContent?.contentId,
 		});
 		if (operationBatchId)
 			await ctx.db.patch("files_pending_update_operation_batches", operationBatchId, {
 				publication: { kind: "update", trustedStageId: stageId },
 			});
-		const reserved = await files_private_storage_db_reserve(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			resource: { kind: "trusted_stage", id: stageId },
-			byteCount: args.update.byteLength,
-			publicationBatchId: operationBatchId,
-			cohortContentId: args.cohortContent?.contentId,
-		});
-		if (reserved._nay) {
-			await ctx.db.delete("files_yjs_trusted_update_stages", stageId);
-			if (operationBatchId) await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId });
-			return reserved;
+		// A `public_fill` stage reserves no bytes. It lives under a second, and a hold would make every
+		// overwrite write the user and workspace quota docs twice, so parallel overwrites would conflict.
+		if (args.kind !== "public_fill") {
+			const reserved = await files_private_storage_db_reserve(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				resource: { kind: "trusted_stage", id: stageId },
+				byteCount: args.update.byteLength,
+				publicationBatchId: operationBatchId,
+				cohortContentId: args.cohortContent?.contentId,
+			});
+			if (reserved._nay) {
+				await ctx.db.delete("files_yjs_trusted_update_stages", stageId);
+				if (operationBatchId) await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId });
+				return reserved;
+			}
 		}
 		await ctx.db.patch("files_yjs_trusted_update_stages", stageId, { update: args.update });
 		if (args.cohortContent)
@@ -2378,7 +2393,9 @@ export const retire_trusted_yjs_update_stage = internalMutation({
 			stage.fileNodeId === args.nodeId
 		) {
 			await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
-			await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+			if (stage.kind !== "public_fill") {
+				await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+			}
 		}
 		return null;
 	},
@@ -2941,7 +2958,9 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 		remainingLargeValues -= expiredTrustedStages.length;
 		for (const stage of expiredTrustedStages) {
 			await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
-			await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+			if (stage.kind !== "public_fill") {
+				await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+			}
 		}
 		deletedCount += expiredTrustedStages.length;
 		sawFullBatch ||= expiredTrustedStages.length === trustedStageLimit;
