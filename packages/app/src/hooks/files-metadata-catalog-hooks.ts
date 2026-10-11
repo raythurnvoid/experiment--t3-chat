@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
 	usePaginatedQuery,
+	useQuery,
 	type PaginatedQueryArgs,
 	type PaginatedQueryItem,
 	type PaginatedQueryReference,
@@ -96,7 +97,12 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 	];
 	const merges = groups.slice(0, requests?.length ?? 0).map(([normal, cohort, twinNormal, twinCohort]) => {
 		// A skipped stream never ends, so only the streams that are read join the merge.
-		const pairs = restricted ? [[normal, cohort], [twinNormal, twinCohort]] : [[normal, cohort]];
+		const pairs = restricted
+			? [
+					[normal, cohort],
+					[twinNormal, twinCohort],
+				]
+			: [[normal, cohort]];
 		const streams = pairs.flatMap(([normalStream, cohortStream]) =>
 			view.cohort ? [normalStream!, cohortStream!] : [normalStream!],
 		);
@@ -175,7 +181,27 @@ export function useFilesMetadataFolderKeys(args: {
 		scope: `${membershipId}\n${folderId}`,
 		order: files_metadata_catalog_key_order,
 		rowKey: (fieldPath) => fieldPath,
-		// Read the twin only once the reader is known to be the owner: anyone else gets an empty page.
-		restricted: isOwner === true,
+		// Like the tree's twin, read it until the reader is known not to be the owner, so the owner does
+		// not see restricted keys late. Anyone else gets an empty page.
+		restricted: isOwner !== false,
 	});
+}
+
+/**
+ * Shown to a member without workspace read in place of the workspace-wide suggestions.
+ */
+export const files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE =
+	"Suggestions need access to the whole workspace. You can still type a filter, like metadata.status:open.";
+
+/**
+ * Whether the caller reads the whole workspace, or null while that loads. `list_search_fields`,
+ * `get_search_field` and `list_search_values` count the whole workspace, so a member without it (a
+ * guest) gets empty pages.
+ */
+export function useFilesMetadataHasWorkspaceRead(workspaceId: app_convex_Id<"organizations_workspaces">) {
+	const organizationList = useQuery(app_convex_api.organizations.list);
+	const permissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];
+	return organizationList === undefined
+		? null
+		: permissions === "all" || permissions?.includes("content.read") === true;
 }

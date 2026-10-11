@@ -15005,11 +15005,13 @@ describe("search box doors", () => {
 			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans });
 		expect(await searchAsMember([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(new Set());
 		expect(await searchAsMember(statusOpenPlans)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+		// A draft never reaches the catalog, so even the author's suggestions skip it. (The member reads
+		// no workspace, so they get no suggestions at all.)
 		expect(
 			await list_values({
 				t,
-				asWho: member.asMember,
-				membershipId: member.membershipId,
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
 				fieldPath: "frontmatter.status",
 				prefix: "t",
 			}),

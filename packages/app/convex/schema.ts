@@ -853,7 +853,7 @@ const files_metadata_catalog_row_fields = {
 	fieldPath: v.string(),
 	/** Family `value` (and `check_value`) only. */
 	stringValue: v.optional(v.string()),
-	/** Field docs (`key`, `parent`) or string value docs (`value`). */
+	/** Field docs (`key`, `parent`, `parent_restricted`) or string value docs (`value`). */
 	count: v.number(),
 	/** Family `key` (and `check_key`) only: value docs of each kind. */
 	kindCounts: v.optional(

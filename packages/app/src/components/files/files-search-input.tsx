@@ -36,7 +36,9 @@ import {
 import {
 	files_metadata_catalog_key_order,
 	files_metadata_catalog_key_prefixes,
+	files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE,
 	useFilesMetadataCatalogPages,
+	useFilesMetadataHasWorkspaceRead,
 } from "@/hooks/files-metadata-catalog-hooks.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
@@ -199,6 +201,8 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 }) {
 	const { membershipId, prefix, stale, onPick, onUnmatched } = props;
 
+	const { workspaceId } = AppTenantProvider.useContext();
+	const hasWorkspaceRead = useFilesMetadataHasWorkspaceRead(workspaceId);
 	const keys = useFilesMetadataCatalogPages({
 		query: app_convex_api.files_metadata.list_search_fields,
 		membershipId,
@@ -259,6 +263,11 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 			})}
 			{isDisabled ? (
 				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
+			) : hasWorkspaceRead === false ? (
+				// The keys come from the whole workspace, so a guest gets none. Say why.
+				<FilesSearchInputSuggestionsMessage>
+					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
+				</FilesSearchInputSuggestionsMessage>
 			) : keys.rows.length === 0 ? (
 				<FilesSearchInputSuggestionsMessage>
 					{prefix === "" ? "No saved keys yet" : `No keys start with ${prefix}`}
@@ -297,6 +306,8 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 }) {
 	const { membershipId, fieldPath, prefix, typed, stale, onPick } = props;
 
+	const { workspaceId } = AppTenantProvider.useContext();
+	const hasWorkspaceRead = useFilesMetadataHasWorkspaceRead(workspaceId);
 	const values = useFilesMetadataCatalogPages({
 		query: app_convex_api.files_metadata.list_search_values,
 		membershipId,
@@ -350,6 +361,10 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 			))}
 			{isDisabled ? (
 				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
+			) : hasWorkspaceRead === false ? (
+				<FilesSearchInputSuggestionsMessage>
+					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
+				</FilesSearchInputSuggestionsMessage>
 			) : rows.length === 0 && values.status === "Exhausted" && field !== undefined ? (
 				// Wait for the key's kinds too: a boolean key adds `true` and `false` when they load.
 				<FilesSearchInputSuggestionsMessage>{`No saved values start with ${prefix}`}</FilesSearchInputSuggestionsMessage>

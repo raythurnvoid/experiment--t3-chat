@@ -587,6 +587,9 @@ and values from the catalog. Each read is one index range, so it costs the same 
     only shared folders) gets an empty, done page or null, also inside a shared folder: the rows
     count the whole workspace. A typed filter still searches (`search_saved` checks each row).
     `list_folder_fields` keeps its folder gate, so a guest keeps the Columns keys of a shared folder.
+    The search box keys and values and the folder filter bar values then say why
+    (`files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE`, read from `organizations.list` by
+    `useFilesMetadataHasWorkspaceRead`).
 - **Matching.** A key matches by its start, ignoring case (`fieldPathLower`,
   `files_metadata_catalog_lower`). A value matches by its start in exact case: `d` does not list
   `Denys`. Rows come in index order; `files_metadata_catalog_key_order` gives the same order in the
