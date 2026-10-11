@@ -5587,20 +5587,17 @@ export const drain_pending_update_docs = internalMutation({
 		const tableIndex = args.tableIndex ?? 0;
 		const table = DRAIN_TABLES[tableIndex];
 		if (!table) return null;
-		// The Move guard refuses side doc writes while the workspace has a Move, and a Stop puts the docs
-		// it tagged back in the range. So wait while any doc of the table, tagged or not, has a Move. Like expiry.
-		const anyDoc = await (
-			table === "files_metadata_docs"
-				? ctx.db.query(table).withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
-				: ctx.db
-						.query(table)
-						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
-		).first();
+		// The Move guard refuses these deletes only while a Move holds this proposal. Other drafts in the
+		// workspace drain at once. So wait for that Move, like expiry. Then start again from the first
+		// table: a Stop puts the docs it tagged back in the range, maybe behind the cursor.
 		if (
-			anyDoc?.sourceKind === "pending" &&
-			(await files_move_reservations_db_find_blocker(ctx.db, { wholeWorkspace: anyDoc }))
+			await files_move_reservations_db_find_blocker(ctx.db, {
+				source: { kind: "proposal", id: args.pendingUpdateId },
+			})
 		) {
-			await ctx.scheduler.runAfter(EXPIRY_RETRY_MS, internal.files_pending_updates.drain_pending_update_docs, args);
+			await ctx.scheduler.runAfter(EXPIRY_RETRY_MS, internal.files_pending_updates.drain_pending_update_docs, {
+				pendingUpdateId: args.pendingUpdateId,
+			});
 			return null;
 		}
 		// A cursor holds the index key of its last doc, and a `fieldPath` key can be too long to store.
