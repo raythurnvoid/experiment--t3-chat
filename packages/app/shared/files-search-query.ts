@@ -112,6 +112,8 @@ const FOLDER_RANGE_PROBLEM =
 const FOLDER_TOO_DEEP_PROBLEM = "This folder is too deep to search inside. Search a folder higher up";
 // The index cuts longer metadata strings, so a longer value could match the wrong files.
 export const files_search_query_VALUE_TOO_LONG_PROBLEM = "Search values can have at most 1,024 characters" as const;
+// The index keeps no docs for a longer field, so the search would always find nothing.
+const FIELD_TOO_LONG_PROBLEM = `Fields can have at most ${files_search_query_FIELD_PATH_MAX_LENGTH} characters`;
 // The server can search inside a folder only up to this many levels below the root.
 const FOLDER_SEARCH_MAX_DEPTH = 12;
 const RANGE_COMPARATORS = [
@@ -413,6 +415,9 @@ export function files_search_query_parse(query: string): ParsedQuery {
 		const problem =
 			(parsedKey.key.namespace === "file" ? REMOVED_FILE_FIELD_PROBLEMS.get(parsedKey.key.name) : null) ??
 			parsedKey.problem ??
+			(parsedKey.key.namespace !== "file" && keyValue.key.length > files_search_query_FIELD_PATH_MAX_LENGTH
+				? FIELD_TOO_LONG_PROBLEM
+				: null) ??
 			(parsedKey.key.namespace === "file" ? file_field_problem(parsedKey.key.name, parsedValue.match) : null) ??
 			parsedValue.problem ??
 			(parsedKey.key.namespace !== "file" &&
