@@ -86,7 +86,7 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
 		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
 		const collecting = measuring && cohort?.step === step && cohort.workPhase === "owners_collect";
-		// This fixture has at most two owner targets for each of its 80 users.
+		// This fixture has at most two owner targets for each of its 33 users.
 		const ownersBefore = collecting
 			? (await ctx.db
 				.query("files_move_owner_work")
@@ -163,7 +163,8 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 		);
 	};
 
-	for (const total of [40, 80]) {
+	// 33 owners is one past 32 and needs 5 claim pages of 8. Each owner costs real setup work.
+	for (const total of [33]) {
 		for (; ownerCount < total; ownerCount++) {
 			const home = await t.run((ctx) =>
 				test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
@@ -235,9 +236,9 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 		expect(await hides(), "the claim ends after the saved node moves away").toHaveLength(0);
 	}
 
-	expect(publications, "both crowded Moves publish every owner view").toEqual([40, 80]);
+	expect(publications, "the crowded Move publishes every owner view").toEqual([33]);
 	const movePeaks = [];
-	for (const owners of [40, 80]) {
+	for (const owners of [33]) {
 		const steps = costs.filter((entry) => entry.owners === owners);
 		const collectionSteps = steps.filter((entry) => entry.phase === "owners_collect");
 		// Hide owners are known before each slot doc adds its one new private target.

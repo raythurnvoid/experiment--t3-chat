@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 
-import { api, internal } from "./_generated/api.js";
+import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
 	access_control_db_ensure_role_assignment,
@@ -256,6 +256,22 @@ async function call(args: { t: ReturnType<typeof test_convex>; path: string; bea
 		method: "POST",
 		headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
 		body: JSON.stringify(body),
+	});
+}
+
+/**
+ * Give the service grant its tokens back for one route. The route bucket holds 20 tokens in 4 shards,
+ * and each call takes its token from one of 2 random shards. So 16 or more calls in a row can get a
+ * random 429 before the cap a test checks. Fake timers stop the refill.
+ */
+async function reset_route_rate_limit(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_installation>>,
+	path: string,
+) {
+	await t.mutation(components.rate_limiter.lib.resetRateLimit, {
+		name: "public_api_principal",
+		key: `plugin_service:plugin_service:${fixture.organizationId}:${fixture.workspaceId}:${fixture.installationId}:${path}`,
 	});
 }
 
@@ -1696,6 +1712,7 @@ describe("service upload targets", () => {
 		);
 
 		for (const body of bodies) {
+			await reset_route_rate_limit(t, fixture, CREATE_TARGET_PATH);
 			expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status).toBe(200);
 		}
 		expect(await read_targets(t)).toHaveLength(16);
@@ -2704,6 +2721,7 @@ describe("service upload delete", () => {
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
 		for (let index = 0; index < 16; index += 1) {
+			await reset_route_rate_limit(t, fixture, CREATE_TARGET_PATH);
 			const response = await call({
 				t,
 				path: CREATE_TARGET_PATH,
@@ -3267,6 +3285,7 @@ describe("service upload delete", () => {
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
 		for (let index = 0; index < 16; index += 1) {
+			await reset_route_rate_limit(t, fixture, CREATE_TARGET_PATH);
 			const created = await call({
 				t,
 				path: CREATE_TARGET_PATH,
@@ -3973,6 +3992,8 @@ describe("service upload archive", () => {
 		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
 
 		for (let index = 0; index < 17; index += 1) {
+			await reset_route_rate_limit(t, fixture, CREATE_TARGET_PATH);
+			await reset_route_rate_limit(t, fixture, ARCHIVE_PATH);
 			const created = await call({
 				t,
 				path: CREATE_TARGET_PATH,

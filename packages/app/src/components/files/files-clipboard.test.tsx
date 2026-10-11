@@ -1075,7 +1075,8 @@ describe("FilesClipboardProvider", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
 		await press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
-		fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+		// The page call goes out before React renders the dialog, so wait for its button.
+		fireEvent.click(await screen.findByRole("button", { name: "Hide" }));
 		expect(await press_paste()).toBe(true);
 		expect(mutationMock).toHaveBeenCalledTimes(2);
 		await act(async () => page.resolve({ _yay: null }));
