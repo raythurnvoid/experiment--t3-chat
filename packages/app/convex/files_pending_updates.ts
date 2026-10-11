@@ -2809,8 +2809,10 @@ export const recover_file_pending_update_expiry_checks = internalMutation({
 	},
 });
 
-/** How many docs each expired-pending-state sweep surface handles per run before rescheduling. */
+/** How many retired states one cleanup task drains per pass. */
 const PENDING_STATE_SWEEP_BATCH_SIZE = 32;
+/** How many rows one sweep pass reads, handled or skipped, before it continues in a new pass. */
+const PENDING_STATE_SWEEP_ROW_LIMIT = 128;
 
 /**
  * 15-minute cron sweep for the crash/abandon fallback of the paged pending-state machinery:
@@ -2818,9 +2820,23 @@ const PENDING_STATE_SWEEP_BATCH_SIZE = 32;
  * families), orphaned expired text inputs, expired trusted-update stages, and retired-state
  * cleanup tasks. Every handled refusal retires its family immediately; this sweep only covers
  * the paths a crash or an abandoned tab left behind.
+ *
+ * Each pass walks the five tables in order from `cursor`. A pass that stops early schedules the
+ * next one from where it stopped. A running Move refuses writes to its rows with `move_busy`, and
+ * one throw would undo the whole pass. So rows in a workspace with a running Move are skipped,
+ * like draft expiry does, and the cursor moves past them. The next cron run starts from the top
+ * again and deletes them after the Move ends.
  */
 export const cleanup_expired_pending_state_rows = internalMutation({
 	args: {
+		cursor: v.optional(
+			v.object({
+				/** The table the walk is in. Earlier tables are finished for this chain. */
+				table: v.number(),
+				/** The last row passed in that table's index order, or null before its first row. */
+				after: v.union(v.object({ expiresAt: v.number(), creationTime: v.number() }), v.null()),
+			}),
+		),
 		_test_now: v.optional(v.number()),
 		_test_disableReschedule: v.optional(v.boolean()),
 	},
@@ -2831,12 +2847,9 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 	handler: async (ctx, args) => {
 		const now = args._test_now ?? Date.now();
 		let deletedCount = 0;
-		let sawFullBatch = false;
 		// Pages, text inputs, and trusted updates can each approach 1 MB.
 		let remainingLargeValues = 6;
-		// A running Move refuses writes to its rows with `move_busy`, and one throw would undo the
-		// whole sweep. Skip that workspace's rows this pass, like draft expiry does. A later run
-		// deletes them after the Move ends.
+		let remainingRows = PENDING_STATE_SWEEP_ROW_LIMIT;
 		const busyWorkspaces = new Map<string, boolean>();
 		const isBusy = async (scope: {
 			organizationId: Id<"organizations">;
@@ -2852,10 +2865,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 		};
 
 		const deleteStateFamily = async (stateId: Id<"files_pending_update_yjs_states">) => {
-			if (remainingLargeValues === 0) {
-				sawFullBatch = true;
-				return false;
-			}
+			if (remainingLargeValues === 0) return false;
 			const pageLimit = remainingLargeValues;
 			const pages = await ctx.db
 				.query("files_pending_update_yjs_state_pages")
@@ -2864,136 +2874,248 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 			await Promise.all(pages.map((page) => ctx.db.delete("files_pending_update_yjs_state_pages", page._id)));
 			remainingLargeValues -= pages.length;
 			deletedCount += pages.length;
-			if (pages.length === pageLimit) {
-				sawFullBatch = true;
-				return false;
-			}
+			if (pages.length === pageLimit) return false;
 			await ctx.db.delete("files_pending_update_yjs_states", stateId);
 			await files_private_storage_db_release_deleted_resource(ctx, { kind: "state", id: stateId });
 			deletedCount += 1;
 			return true;
 		};
 
-		// Expired temporary states. Only the `temporary` owner variant has `owner.expiresAt`, and
-		// docs without the field sort BEFORE every number on this index — the range MUST bound
-		// from below (`gte(0)`), or the sweep would also return (and delete) every active and
-		// retired state.
-		const expiredStates = await ctx.db
-			.query("files_pending_update_yjs_states")
-			.withIndex("by_owner_expiresAt", (q) => q.gte("owner.expiresAt", 0).lte("owner.expiresAt", now))
-			.take(PENDING_STATE_SWEEP_BATCH_SIZE);
-		for (const state of expiredStates) {
-			if (await isBusy(state)) continue;
-			await deleteStateFamily(state._id);
-		}
-		sawFullBatch ||= expiredStates.length === PENDING_STATE_SWEEP_BATCH_SIZE;
+		type After = { expiresAt: number; creationTime: number } | null;
+		type Scope = Parameters<typeof isBusy>[0];
+		/**
+		 * Walk one table from `after` in index order. A large table spends one large value per row
+		 * it reads, even a skipped one. `handle` returns false to retry its row in the next pass.
+		 * Returns "end", or the last row passed when the pass must stop.
+		 */
+		const walk = async <Row extends Scope & { _creationTime: number }>(walkArgs: {
+			after: After;
+			large: boolean;
+			read: (after: After, limit: number) => Promise<Row[]>;
+			expiresAt: (row: Row) => number;
+			handle: (row: Row) => Promise<boolean>;
+		}): Promise<After | "end"> => {
+			let after = walkArgs.after;
+			for (;;) {
+				const limit = walkArgs.large ? Math.min(remainingLargeValues, remainingRows) : remainingRows;
+				if (limit === 0) return after;
+				const rows = await walkArgs.read(after, limit);
+				remainingRows -= rows.length;
+				if (walkArgs.large) remainingLargeValues -= rows.length;
+				for (const row of rows) {
+					if (!(await isBusy(row)) && !(await walkArgs.handle(row))) return after;
+					after = { expiresAt: walkArgs.expiresAt(row), creationTime: row._creationTime };
+				}
+				if (rows.length < limit) return "end";
+			}
+		};
+		// Read an expiry index after `after`: the same expiry created later first, then later expiries.
+		const readAfter = async <Row>(
+			after: After,
+			limit: number,
+			same: (after: NonNullable<After>) => Promise<Row[]>,
+			later: (after: After, limit: number) => Promise<Row[]>,
+		) => {
+			const first = after ? await same(after) : [];
+			return first.length === limit ? first : [...first, ...(await later(after, limit - first.length))];
+		};
 
-		// Expired operation batches: delete the batch with its text inputs and any temporary
-		// state families still owned by it.
-		const expiredBatches = await ctx.db
-			.query("files_pending_update_operation_batches")
-			.withIndex("by_expiresAt", (q) => q.gte("expiresAt", 0).lte("expiresAt", now))
-			.take(PENDING_STATE_SWEEP_BATCH_SIZE);
-		for (const batch of expiredBatches) {
-			if (await isBusy(batch)) continue;
-			if (remainingLargeValues === 0) {
-				sawFullBatch = true;
+		const tables: Array<(after: After) => Promise<After | "end">> = [
+			// Expired temporary states. Only the `temporary` owner variant has `owner.expiresAt`, and
+			// docs without the field sort BEFORE every number on this index — the range MUST bound
+			// from below (`gte(0)`), or the sweep would also return (and delete) every active and
+			// retired state.
+			(after) =>
+				walk({
+					after,
+					large: false,
+					read: (after, limit) =>
+						readAfter(
+							after,
+							limit,
+							(after) =>
+								ctx.db
+									.query("files_pending_update_yjs_states")
+									.withIndex("by_owner_expiresAt", (q) =>
+										q.eq("owner.expiresAt", after.expiresAt).gt("_creationTime", after.creationTime),
+									)
+									.take(limit),
+							(after, limit) =>
+								ctx.db
+									.query("files_pending_update_yjs_states")
+									.withIndex("by_owner_expiresAt", (q) =>
+										(after ? q.gt("owner.expiresAt", after.expiresAt) : q.gte("owner.expiresAt", 0)).lte(
+											"owner.expiresAt",
+											now,
+										),
+									)
+									.take(limit),
+						),
+					expiresAt: (state) => (state.owner.kind === "temporary" ? state.owner.expiresAt : 0),
+					handle: (state) => deleteStateFamily(state._id),
+				}),
+			// Expired operation batches: delete the batch with its text inputs and any temporary
+			// state families still owned by it.
+			(after) =>
+				walk({
+					after,
+					large: false,
+					read: (after, limit) =>
+						readAfter(
+							after,
+							limit,
+							(after) =>
+								ctx.db
+									.query("files_pending_update_operation_batches")
+									.withIndex("by_expiresAt", (q) =>
+										q.eq("expiresAt", after.expiresAt).gt("_creationTime", after.creationTime),
+									)
+									.take(limit),
+							(after, limit) =>
+								ctx.db
+									.query("files_pending_update_operation_batches")
+									.withIndex("by_expiresAt", (q) =>
+										(after ? q.gt("expiresAt", after.expiresAt) : q.gte("expiresAt", 0)).lte("expiresAt", now),
+									)
+									.take(limit),
+						),
+					expiresAt: (batch) => batch.expiresAt ?? 0,
+					handle: async (batch) => {
+						if (remainingLargeValues === 0) return false;
+						const inputLimit = remainingLargeValues;
+						const [textInputs, batchStates] = await Promise.all([
+							ctx.db
+								.query("files_pending_update_text_inputs")
+								.withIndex("by_operationBatch", (q) => q.eq("operationBatchId", batch._id))
+								.take(inputLimit),
+							ctx.db
+								.query("files_pending_update_yjs_states")
+								.withIndex("by_owner_operationBatch", (q) => q.eq("owner.operationBatchId", batch._id))
+								.collect(),
+						]);
+						remainingLargeValues -= textInputs.length;
+						for (const input of textInputs) {
+							await ctx.db.delete("files_pending_update_text_inputs", input._id);
+							await files_private_storage_db_release_deleted_resource(ctx, { kind: "text_input", id: input._id });
+						}
+						deletedCount += textInputs.length;
+						let statesDeleted = true;
+						for (const state of batchStates) {
+							if (!(await deleteStateFamily(state._id))) statesDeleted = false;
+						}
+						if (!statesDeleted || textInputs.length === inputLimit) return false;
+						await ctx.db.delete("files_pending_update_operation_batches", batch._id);
+						deletedCount += 1;
+						return true;
+					},
+				}),
+			// Orphaned expired text inputs whose batch is already gone.
+			(after) =>
+				walk({
+					after,
+					large: true,
+					read: (after, limit) =>
+						readAfter(
+							after,
+							limit,
+							(after) =>
+								ctx.db
+									.query("files_pending_update_text_inputs")
+									.withIndex("by_expiresAt", (q) =>
+										q.eq("expiresAt", after.expiresAt).gt("_creationTime", after.creationTime),
+									)
+									.take(limit),
+							(after, limit) =>
+								ctx.db
+									.query("files_pending_update_text_inputs")
+									.withIndex("by_expiresAt", (q) =>
+										(after ? q.gt("expiresAt", after.expiresAt) : q.gte("expiresAt", 0)).lte("expiresAt", now),
+									)
+									.take(limit),
+						),
+					expiresAt: (input) => input.expiresAt ?? 0,
+					handle: async (input) => {
+						await ctx.db.delete("files_pending_update_text_inputs", input._id);
+						await files_private_storage_db_release_deleted_resource(ctx, { kind: "text_input", id: input._id });
+						deletedCount += 1;
+						return true;
+					},
+				}),
+			// Expired trusted-update stages (pending Accept / public fill / snapshot restore).
+			(after) =>
+				walk({
+					after,
+					large: true,
+					read: (after, limit) =>
+						readAfter(
+							after,
+							limit,
+							(after) =>
+								ctx.db
+									.query("files_yjs_trusted_update_stages")
+									.withIndex("by_expiresAt", (q) =>
+										q.eq("expiresAt", after.expiresAt).gt("_creationTime", after.creationTime),
+									)
+									.take(limit),
+							(after, limit) =>
+								ctx.db
+									.query("files_yjs_trusted_update_stages")
+									.withIndex("by_expiresAt", (q) =>
+										(after ? q.gt("expiresAt", after.expiresAt) : q.gte("expiresAt", 0)).lte("expiresAt", now),
+									)
+									.take(limit),
+						),
+					expiresAt: (stage) => stage.expiresAt ?? 0,
+					handle: async (stage) => {
+						await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
+						await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+						deletedCount += 1;
+						return true;
+					},
+				}),
+			// Drain retired-state cleanup tasks. The drain must tolerate a task whose states another
+			// path (user finalize, data deletion) already removed, and still delete the task doc —
+			// otherwise the task would sit forever as a false signal of pending work.
+			(after) =>
+				walk({
+					after,
+					large: false,
+					read: (after, limit) =>
+						ctx.db
+							.query("files_pending_update_state_cleanup_tasks")
+							.withIndex("by_creation_time", (q) => (after ? q.gt("_creationTime", after.creationTime) : q))
+							.take(limit),
+					expiresAt: () => 0,
+					handle: async (cleanupTask) => {
+						const retiredStates = await ctx.db
+							.query("files_pending_update_yjs_states")
+							.withIndex("by_owner_cleanupTask", (q) => q.eq("owner.cleanupTaskId", cleanupTask._id))
+							.take(PENDING_STATE_SWEEP_BATCH_SIZE);
+						let statesDeleted = true;
+						for (const state of retiredStates) if (!(await deleteStateFamily(state._id))) statesDeleted = false;
+						// Keep the task while it may still own more states than this bounded pass read.
+						if (!statesDeleted || retiredStates.length === PENDING_STATE_SWEEP_BATCH_SIZE) return false;
+						await ctx.db.delete("files_pending_update_state_cleanup_tasks", cleanupTask._id);
+						deletedCount += 1;
+						return true;
+					},
+				}),
+		];
+
+		let table = args.cursor?.table ?? 0;
+		let after: After = args.cursor?.after ?? null;
+		for (; table < tables.length; table++, after = null) {
+			const reached = await tables[table]!(after);
+			if (reached !== "end") {
+				after = reached;
 				break;
 			}
-			const inputLimit = remainingLargeValues;
-			const [textInputs, batchStates] = await Promise.all([
-				ctx.db
-					.query("files_pending_update_text_inputs")
-					.withIndex("by_operationBatch", (q) => q.eq("operationBatchId", batch._id))
-					.take(inputLimit),
-				ctx.db
-					.query("files_pending_update_yjs_states")
-					.withIndex("by_owner_operationBatch", (q) => q.eq("owner.operationBatchId", batch._id))
-					.collect(),
-			]);
-			remainingLargeValues -= textInputs.length;
-			for (const input of textInputs) {
-				await ctx.db.delete("files_pending_update_text_inputs", input._id);
-				await files_private_storage_db_release_deleted_resource(ctx, { kind: "text_input", id: input._id });
-			}
-			deletedCount += textInputs.length;
-			let statesDeleted = true;
-			for (const state of batchStates) {
-				if (!(await deleteStateFamily(state._id))) statesDeleted = false;
-			}
-			if (!statesDeleted || textInputs.length === inputLimit) {
-				sawFullBatch = true;
-				continue;
-			}
-			await ctx.db.delete("files_pending_update_operation_batches", batch._id);
-			deletedCount += 1;
 		}
-		sawFullBatch ||= expiredBatches.length === PENDING_STATE_SWEEP_BATCH_SIZE;
-
-		// Orphaned expired text inputs whose batch is already gone.
-		const textInputLimit = remainingLargeValues;
-		const expiredTextInputs =
-			textInputLimit === 0
-				? []
-				: await ctx.db
-						.query("files_pending_update_text_inputs")
-						.withIndex("by_expiresAt", (q) => q.gte("expiresAt", 0).lte("expiresAt", now))
-						.take(textInputLimit);
-		remainingLargeValues -= expiredTextInputs.length;
-		for (const input of expiredTextInputs) {
-			if (await isBusy(input)) continue;
-			await ctx.db.delete("files_pending_update_text_inputs", input._id);
-			await files_private_storage_db_release_deleted_resource(ctx, { kind: "text_input", id: input._id });
-			deletedCount += 1;
-		}
-		sawFullBatch ||= expiredTextInputs.length === textInputLimit;
-
-		// Expired trusted-update stages (pending Accept / public fill / snapshot restore).
-		const trustedStageLimit = remainingLargeValues;
-		const expiredTrustedStages =
-			trustedStageLimit === 0
-				? []
-				: await ctx.db
-						.query("files_yjs_trusted_update_stages")
-						.withIndex("by_expiresAt", (q) => q.gte("expiresAt", 0).lte("expiresAt", now))
-						.take(trustedStageLimit);
-		remainingLargeValues -= expiredTrustedStages.length;
-		for (const stage of expiredTrustedStages) {
-			if (await isBusy(stage)) continue;
-			await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
-			await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
-			deletedCount += 1;
-		}
-		sawFullBatch ||= expiredTrustedStages.length === trustedStageLimit;
-
-		// Drain retired-state cleanup tasks. The drain must tolerate a task whose states another
-		// path (user finalize, data deletion) already removed, and still delete the task doc —
-		// otherwise the task would sit forever as a false signal of pending work.
-		const cleanupTasks = await ctx.db
-			.query("files_pending_update_state_cleanup_tasks")
-			.take(PENDING_STATE_SWEEP_BATCH_SIZE);
-		for (const cleanupTask of cleanupTasks) {
-			if (await isBusy(cleanupTask)) continue;
-			const retiredStates = await ctx.db
-				.query("files_pending_update_yjs_states")
-				.withIndex("by_owner_cleanupTask", (q) => q.eq("owner.cleanupTaskId", cleanupTask._id))
-				.take(PENDING_STATE_SWEEP_BATCH_SIZE);
-			let statesDeleted = true;
-			for (const state of retiredStates) if (!(await deleteStateFamily(state._id))) statesDeleted = false;
-			// Keep the task while it may still own more states than this bounded pass read.
-			if (!statesDeleted || retiredStates.length === PENDING_STATE_SWEEP_BATCH_SIZE) {
-				sawFullBatch = true;
-				continue;
-			}
-			await ctx.db.delete("files_pending_update_state_cleanup_tasks", cleanupTask._id);
-			deletedCount += 1;
-		}
-		sawFullBatch ||= cleanupTasks.length === PENDING_STATE_SWEEP_BATCH_SIZE;
-
-		// A pass that only skipped busy rows would read the same rows again. Leave them to the next run.
-		const done = !sawFullBatch || deletedCount === 0;
+		// Each pass deletes rows or moves the cursor, so the chain ends.
+		const done = table === tables.length;
 		if (!done && !args._test_disableReschedule) {
 			await ctx.scheduler.runAfter(0, internal.files_pending_updates.cleanup_expired_pending_state_rows, {
+				cursor: { table, after },
 				_test_now: args._test_now,
 			});
 		}
