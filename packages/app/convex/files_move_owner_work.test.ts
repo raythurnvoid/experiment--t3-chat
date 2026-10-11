@@ -5,7 +5,11 @@ import { api, internal } from "./_generated/api.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
-import { files_u8_to_array_buffer, type files_PendingParent } from "../shared/files.ts";
+import {
+	files_pending_update_index_revision,
+	files_u8_to_array_buffer,
+	type files_PendingParent,
+} from "../shared/files.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
 	test_convex,
@@ -183,7 +187,7 @@ async function private_folder(f: Fixture, name: string, parent: files_PendingPar
 	});
 }
 
-async function native_pending_scope() {
+async function native_pending_scope(options: { otherFile?: boolean } = {}) {
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -192,6 +196,14 @@ async function native_pending_scope() {
 		path: "/source.md",
 		textContent: "Saved body.\n",
 	});
+	// A file outside the Move. Creating a saved file waits for a Move, so make it first.
+	const otherNodeId = options.otherFile
+		? await test_create_saved_text_file(t, {
+				membershipId: db.membershipId,
+				path: "/other.md",
+				textContent: "Other.\n",
+			})
+		: null;
 	const target = await asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: db.membershipId,
 		parentId: "root",
@@ -261,7 +273,7 @@ async function native_pending_scope() {
 				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
 				.unique(),
 		);
-		if (slot?.cohortId) return { t, db, asUser, nodeId, runId, cohortId: slot.cohortId, proposals };
+		if (slot?.cohortId) return { t, db, asUser, nodeId, otherNodeId, runId, cohortId: slot.cohortId, proposals };
 		const job = await t.run((ctx) =>
 			ctx.db
 				.query("files_pending_overlay_jobs")
@@ -571,10 +583,10 @@ test("public Move tags an old pending chunk without copying it, and the drain wa
 			(job) =>
 				job.name.includes("drain_pending_update_docs") &&
 				job.state.kind === "pending" &&
-				(job.args[0] as { tableIndex?: number }).tableIndex === 1,
+				(job.args[0] as { tableIndex?: number }).tableIndex === undefined,
 		),
 	);
-	expect(waiting, "the drain tries the same table again later").toHaveLength(1);
+	expect(waiting, "the drain starts again later from the first table").toHaveLength(1);
 	// Stop puts the old chunk back in the range, and the drain then deletes it.
 	expect(await f.asUser.mutation(api.files_transfer.stop, { membershipId: f.db.membershipId, runId: f.runId })).toEqual(
 		{ _yay: null },
@@ -584,6 +596,81 @@ test("public Move tags an old pending chunk without copying it, and the drain wa
 	await drain();
 	expect(await read_old_chunk()).toBeNull();
 	expect(await pending_scope_docs(f, proposal)).toEqual(original);
+}, 120_000);
+
+test("an edit of a big draft drains its old chunks while a Move holds another file", async () => {
+	const f = await native_pending_scope({ otherFile: true });
+	const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
+	const nodeId = f.otherNodeId!;
+	const target = { kind: "saved", id: nodeId } as const;
+	async function save(text: string) {
+		const batch = await f.t.mutation(
+			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+			{ ...scope, target },
+		);
+		if (batch._nay) throw new Error(batch._nay.message);
+		const operationBatchId = batch._yay.operationBatchId;
+		expect(
+			await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+				...scope,
+				operationBatchId,
+				role: "unstaged",
+				text,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await f.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				...scope,
+				target,
+				operationBatchId,
+			}),
+		).toEqual({ _yay: null });
+	}
+	// Each unit is one chunk: 300 chunks per table, more than the 128 that an edit deletes inline.
+	await save(`x\n\n${"first body ".repeat(100)}\n\n`.repeat(300));
+	await save(`x\n\n${"later body ".repeat(100)}\n\n`.repeat(300));
+	// Run the due drain jobs by hand, so the Move's own jobs do not run and it keeps the workspace.
+	for (let pass = 0; pass < 50; pass++) {
+		const job = await f.t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).find(
+				(job) =>
+					job.name.includes("drain_pending_update_docs") &&
+					job.state.kind === "pending" &&
+					job.scheduledTime <= Date.now(),
+			),
+		);
+		if (!job) break;
+		await f.t.run((ctx) => ctx.scheduler.cancel(job._id));
+		await f.t.mutation(internal.files_pending_updates.drain_pending_update_docs, job.args[0] as never);
+	}
+	const { slot, proposal, chunks } = await f.t.run(async (ctx) => {
+		const proposal = (await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_target", (q) =>
+				q.eq("userId", f.db.userId).eq("target.kind", "saved").eq("target.id", nodeId),
+			)
+			.unique())!;
+		const chunks = [];
+		for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const)
+			chunks.push(
+				...(await ctx.db
+					.query(table)
+					.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", proposal._id))
+					.collect()),
+			);
+		const slot = await ctx.db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) => q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId))
+			.unique();
+		return { slot, proposal, chunks };
+	});
+	expect(slot?.cohortId, "the Move still holds the workspace").toBe(f.cohortId);
+	const current = files_pending_update_index_revision(proposal);
+	expect(chunks.filter((chunk) => chunk.sourceKind === "pending" && chunk.proposalRevision === current).length).toBeGreaterThan(2 * 128);
+	expect(
+		chunks.filter((chunk) => chunk.sourceKind !== "pending" || chunk.proposalRevision !== current),
+		"old chunks of a draft the Move does not hold drain at once",
+	).toEqual([]);
 }, 120_000);
 
 test("public Move leaves unrelated drafts under an unchanged anchor in place", async () => {
