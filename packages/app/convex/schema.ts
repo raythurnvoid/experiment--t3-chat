@@ -5940,6 +5940,16 @@ const app_convex_schema = defineSchema({
 				refusal: v.object({ name: v.union(v.string(), v.null()), message: v.string() }),
 			}),
 		),
+		/**
+		 * Restore: the longest path an item of the job gets when it lands. Keep both of a folder uses it,
+		 * so no path inside the folder goes over the limit.
+		 */
+		maxPathLength: v.optional(v.number()),
+		/**
+		 * Restore: how many items would get a path over the limit, with the longest one. The check refuses
+		 * the restore when it finds any. An item found later stays archived, and the job says so at the end.
+		 */
+		longPaths: v.optional(v.object({ count: v.number(), name: v.string(), length: v.number() })),
 	})
 		.index("by_organization_workspace_active_kind", ["organizationId", "workspaceId", "active", "kind"])
 		.index("by_requestFirstRun_active", ["requestFirstRunId", "active"])

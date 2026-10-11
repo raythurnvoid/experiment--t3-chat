@@ -4452,6 +4452,7 @@ export async function files_nodes_db_validate_pending_move_target_for_proposal(
 	const tooLong = files_check_name_and_path_length({
 		names: args.destName === node.name ? [] : [args.destName],
 		path: destPath,
+		oldPath: node.path,
 	});
 	if (tooLong._nay) return tooLong;
 	const visibleNodePath = (await reader.resolveTarget({ kind: "saved", id: node._id }))?.path;
@@ -4564,6 +4565,10 @@ export async function files_nodes_db_live_scope_reader(
  *
  * It never writes `archiveOperationId`. An archive job may stamp the same child, and a patch keeps
  * the other field.
+ *
+ * It does not check the path limit. A restore gives a child that was archived on its own the path of
+ * its restored folder, even when that path is a few characters over the limit. The child stays
+ * archived, and its own restore later keeps that path, which the limit allows.
  */
 export async function files_nodes_db_rebuild_node(
 	ctx: MutationCtx,

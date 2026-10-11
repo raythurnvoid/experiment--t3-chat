@@ -74,7 +74,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
   the destination path. Copy plan checks every item, so a folder copied deeper stops the run before
   any write. The Move header step visits every node, so a folder moved deeper aborts the Move when a
   path below it would pass 1,024. No extra scan runs for this. A Move keeps a name stored before the
-  limits.
+  limits. A path already over 1,024 is refused only when it gets longer, so moving it higher works.
+  The refusal names the item and its length and says `Shorten a folder name or move it higher.`.
 - Move and Accept have no total selection cap. The limits test measures native worker transactions
   with room for future catalog work. Transaction page sizes never refuse a large selection.
   These path moves stay within one workspace. Cross-workspace Move is refused before output.
