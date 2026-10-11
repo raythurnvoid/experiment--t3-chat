@@ -2834,6 +2834,22 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 		let sawFullBatch = false;
 		// Pages, text inputs, and trusted updates can each approach 1 MB.
 		let remainingLargeValues = 6;
+		// A running Move refuses writes to its rows with `move_busy`, and one throw would undo the
+		// whole sweep. Skip that workspace's rows this pass, like draft expiry does. A later run
+		// deletes them after the Move ends.
+		const busyWorkspaces = new Map<string, boolean>();
+		const isBusy = async (scope: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+		}) => {
+			const key = `${scope.organizationId}:${scope.workspaceId}`;
+			let busy = busyWorkspaces.get(key);
+			if (busy === undefined) {
+				busy = (await files_move_reservations_db_find_blocker(ctx.db, { wholeWorkspace: scope })) !== null;
+				busyWorkspaces.set(key, busy);
+			}
+			return busy;
+		};
 
 		const deleteStateFamily = async (stateId: Id<"files_pending_update_yjs_states">) => {
 			if (remainingLargeValues === 0) {
@@ -2867,6 +2883,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 			.withIndex("by_owner_expiresAt", (q) => q.gte("owner.expiresAt", 0).lte("owner.expiresAt", now))
 			.take(PENDING_STATE_SWEEP_BATCH_SIZE);
 		for (const state of expiredStates) {
+			if (await isBusy(state)) continue;
 			await deleteStateFamily(state._id);
 		}
 		sawFullBatch ||= expiredStates.length === PENDING_STATE_SWEEP_BATCH_SIZE;
@@ -2878,6 +2895,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 			.withIndex("by_expiresAt", (q) => q.gte("expiresAt", 0).lte("expiresAt", now))
 			.take(PENDING_STATE_SWEEP_BATCH_SIZE);
 		for (const batch of expiredBatches) {
+			if (await isBusy(batch)) continue;
 			if (remainingLargeValues === 0) {
 				sawFullBatch = true;
 				break;
@@ -2923,10 +2941,11 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 						.take(textInputLimit);
 		remainingLargeValues -= expiredTextInputs.length;
 		for (const input of expiredTextInputs) {
+			if (await isBusy(input)) continue;
 			await ctx.db.delete("files_pending_update_text_inputs", input._id);
 			await files_private_storage_db_release_deleted_resource(ctx, { kind: "text_input", id: input._id });
+			deletedCount += 1;
 		}
-		deletedCount += expiredTextInputs.length;
 		sawFullBatch ||= expiredTextInputs.length === textInputLimit;
 
 		// Expired trusted-update stages (pending Accept / public fill / snapshot restore).
@@ -2940,10 +2959,11 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 						.take(trustedStageLimit);
 		remainingLargeValues -= expiredTrustedStages.length;
 		for (const stage of expiredTrustedStages) {
+			if (await isBusy(stage)) continue;
 			await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
 			await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
+			deletedCount += 1;
 		}
-		deletedCount += expiredTrustedStages.length;
 		sawFullBatch ||= expiredTrustedStages.length === trustedStageLimit;
 
 		// Drain retired-state cleanup tasks. The drain must tolerate a task whose states another
@@ -2953,6 +2973,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 			.query("files_pending_update_state_cleanup_tasks")
 			.take(PENDING_STATE_SWEEP_BATCH_SIZE);
 		for (const cleanupTask of cleanupTasks) {
+			if (await isBusy(cleanupTask)) continue;
 			const retiredStates = await ctx.db
 				.query("files_pending_update_yjs_states")
 				.withIndex("by_owner_cleanupTask", (q) => q.eq("owner.cleanupTaskId", cleanupTask._id))
@@ -2969,7 +2990,8 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 		}
 		sawFullBatch ||= cleanupTasks.length === PENDING_STATE_SWEEP_BATCH_SIZE;
 
-		const done = !sawFullBatch;
+		// A pass that only skipped busy rows would read the same rows again. Leave them to the next run.
+		const done = !sawFullBatch || deletedCount === 0;
 		if (!done && !args._test_disableReschedule) {
 			await ctx.scheduler.runAfter(0, internal.files_pending_updates.cleanup_expired_pending_state_rows, {
 				_test_now: args._test_now,

@@ -5,6 +5,7 @@ import { api, internal } from "../convex/_generated/api.js";
 import { Doc as YjsDoc, encodeStateAsUpdate } from "yjs";
 import { files_u8_to_array_buffer, files_YJS_DOC_KEYS } from "../shared/files.ts";
 import { r2_create_asset_key } from "../convex/r2_client.ts";
+import { files_private_storage_db_reserve } from "../convex/files_private_storage.ts";
 import { test_mocks } from "../convex/setup.test.ts";
 import { test_create_saved_placement_fixture as fixture } from "./files-saved-placement.test-fixtures.ts";
 import {
@@ -726,5 +727,63 @@ describe("Move write reservations", () => {
 				.unique(),
 		);
 		expect(waiter?.worker.kind, "the accepted scope repair waits before reading normal-only children").toBe("subtree");
+	});
+
+	test("the pending-state sweep skips a moved file's retired state until the Move ends", async () => {
+		const f = await fixture();
+		const reservationId = await f.t.run((ctx) =>
+			ctx.db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source: { kind: "saved", id: f.nodeId },
+				mode: "placement",
+				userId: null,
+				generation: 1,
+			}),
+		);
+		const stateId = await f.t.run(async (ctx) => {
+			const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId };
+			const cleanupTaskId = await ctx.db.insert("files_pending_update_state_cleanup_tasks", {
+				...scope,
+				createdAt: Date.now(),
+			});
+			const id = await ctx.db.insert("files_pending_update_yjs_states", {
+				...scope,
+				userId: f.db.userId,
+				target: { kind: "saved", id: f.nodeId },
+				owner: { kind: "retired", cleanupTaskId },
+				sealed: true,
+				pageCount: 0,
+				totalBytes: 0,
+				digest: "",
+			});
+			const held = await files_private_storage_db_reserve(ctx, {
+				...scope,
+				userId: f.db.userId,
+				resource: { kind: "state", id },
+				byteCount: 0,
+			});
+			if (held._nay) throw new Error(held._nay.message);
+			return id;
+		});
+		const sweep = () =>
+			f.t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {
+				_test_disableReschedule: true,
+			});
+		// A busy row stays for a later pass. The sweep must not fail for every other workspace.
+		expect(await sweep()).toMatchObject({ done: true });
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_yjs_states", stateId))).not.toBeNull();
+		// The Move ends: its reservation goes and the workspace slot is free again.
+		await f.t.run(async (ctx) => {
+			await ctx.db.delete("files_move_source_reservations", reservationId);
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+				)
+				.unique();
+			await ctx.db.patch("files_move_workspace_slots", slot!._id, { cohortId: null });
+		});
+		await sweep();
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_yjs_states", stateId))).toBeNull();
 	});
 });
