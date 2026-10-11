@@ -405,14 +405,33 @@ test("a 700 KB Save stages and repairs in few steps, and no step nears a limit",
 			if (result._nay) throw new Error(result._nay.message);
 			return result._yay.done;
 		});
+	const untagged = () =>
+		f.t.run(async (ctx) =>
+			(
+				await Promise.all(
+					(["files_text_chunks", "files_plain_text_chunks"] as const).map((table) =>
+						ctx.db
+							.query(table)
+							.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+								q
+									.eq("pendingUpdateId", f.proposal._id)
+									.eq("moveView.cohortId", undefined)
+									.eq("moveView.view", undefined),
+							)
+							.collect(),
+					),
+				)
+			).flat(),
+		);
+	expect((await untagged()).length, "the draft has old chunks to tag").toBeGreaterThan(1000);
 	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.context))).toEqual({ _yay: null });
 	while (!(await step((ctx) => files_move_content_db_stage(ctx, f.context))));
+	expect(await untagged(), "staging tags every old draft chunk").toEqual([]);
 	expect(await f.publish()).toEqual({ _yay: null });
 	while (!(await step((ctx) => files_move_content_db_finish(ctx, f.context))));
 	expect(await f.chunks(), "the switch serves the whole accepted text").toBe(text);
-	// One page per step took 754 steps. Tagging the draft's old chunks still pages with a cursor,
-	// one page of 8 per step, so it takes about 150 of the steps left.
-	expect(steps, "each step runs many pages").toBeLessThan(200);
+	// One page per step took 754 steps.
+	expect(steps, "each step runs many pages").toBeLessThan(60);
 	expect(heaviest, "each step keeps a quarter of every limit").toBeLessThan(0.75);
 });
 

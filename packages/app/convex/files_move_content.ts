@@ -468,22 +468,18 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 	}
 	if (content.phase === "pending_text" || content.phase === "pending_plain_text") {
 		if (part < 2) {
-			step.paginated = true;
 			const table = part === 0 ? "files_text_chunks" : "files_plain_text_chunks";
-			const page = await ctx.db
+			// The index is pendingUpdateId, moveView.cohortId, moveView.view, chunkIndex. Tagging sets
+			// moveView, so a tagged row leaves this range at once, also for later reads in this
+			// mutation. Each `take` from the start then gets the next untagged rows, with no cursor.
+			const rows = await ctx.db
 				.query(table)
 				.withIndex("by_pendingUpdate_chunkIndex", (q) =>
 					q.eq("pendingUpdateId", proposal._id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 				)
-				.paginate({ cursor, numItems: PAGE_SIZE });
-			for (const row of page.page) await ctx.db.patch(table, row._id, { moveView: beforeTag });
-			return await db_progress(
-				ctx,
-				content,
-				"pending_text",
-				page.isDone ? part + 1 : part,
-				page.isDone ? null : page.continueCursor,
-			);
+				.take(PAGE_SIZE);
+			for (const row of rows) await ctx.db.patch(table, row._id, { moveView: beforeTag });
+			return await db_progress(ctx, content, "pending_text", rows.length < PAGE_SIZE ? part + 1 : part, null);
 		}
 		const chunks = shape.rootKind
 			? await (step.chunks.unstaged ??= db_chunks(ctx, content, "unstaged", shape.rootKind))
