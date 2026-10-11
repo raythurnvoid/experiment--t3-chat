@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	files_media_validation_db_advance_content_version,
@@ -63,7 +64,10 @@ describe("media validation versions", () => {
 			);
 			await t.run(async (ctx) => {
 				if (kind === "shared") {
-					const clock = (await ctx.db.get("files_media_validation_versions", pins.versions[1]!.id))!;
+					const clock = (await ctx.db.get(
+						"files_media_validation_versions",
+						pins.versions[1]!.id as Id<"files_media_validation_versions">,
+					))!;
 					await ctx.db.delete("files_media_validation_versions", clock._id);
 					await ctx.db.insert("files_media_validation_versions", {
 						organizationId: clock.organizationId,

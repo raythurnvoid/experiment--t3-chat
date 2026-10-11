@@ -66,7 +66,6 @@ import {
 } from "./files-saved-placement.ts";
 import {
 	files_pending_review_facts_db_change_state,
-	files_pending_review_facts_db_get_state,
 	files_pending_review_facts_db_sync,
 } from "./files-pending-review-facts.ts";
 import { path_tree_prefix_upper_bound, server_path_normalize } from "./server-utils.ts";
@@ -297,7 +296,6 @@ type FlushMarks = {
 		| null;
 	factScopes: Map<string, Omit<Scope, "userId">>;
 	factScopesChanged: Set<string>;
-	factStructureRevisions: Map<string, number>;
 	/**
 	 * The last known source fields of each source doc, for the whole mutation.
 	 */
@@ -456,7 +454,6 @@ function new_state(): FlushMarks {
 		allocatingPrivateSource: null,
 		factScopes: new Map(),
 		factScopesChanged: new Set(),
-		factStructureRevisions: new Map(),
 		lastKnown: new Map(),
 		savedOld: new Map(),
 		oldReads: new Map(),
@@ -1552,18 +1549,11 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 	if (place) pendingUpdateIds.add(place.pendingUpdateId);
 	if (pendingUpdate) pendingUpdateIds.add(pendingUpdate._id);
 	for (const pendingUpdateId of pendingUpdateIds) {
-		const scopeKey = `${scope.organizationId}:${scope.workspaceId}`;
-		let structureRevision = state.factStructureRevisions.get(scopeKey);
-		if (structureRevision === undefined) {
-			structureRevision = (await files_pending_review_facts_db_get_state(ctx.db, scope))?.structureRevision ?? 0;
-			state.factStructureRevisions.set(scopeKey, structureRevision);
-		}
 		await files_pending_review_facts_db_sync(ctx.db, {
 			pendingUpdateId,
 			source: {
 				proposal: pendingUpdateId === pendingUpdate?._id ? pendingUpdate : null,
 				savedNode: desired.savedNode,
-				structureRevision,
 			},
 		});
 		const rows = await ctx.db
@@ -2478,8 +2468,7 @@ export async function files_pending_overlay_db_flush(ctx: MutationCtx) {
 		}
 		for (const [key, scope] of state.factScopes) {
 			if (!state.factScopesChanged.has(key)) {
-				const facts = await files_pending_review_facts_db_change_state(ctx.db, scope, { structural: true });
-				state.factStructureRevisions.set(key, facts.structureRevision);
+				await files_pending_review_facts_db_change_state(ctx.db, scope, { structural: true });
 				state.factScopesChanged.add(key);
 			}
 		}

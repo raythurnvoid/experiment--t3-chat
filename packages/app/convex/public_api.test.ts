@@ -5088,6 +5088,32 @@ describe("files write-many", () => {
 		}
 	});
 
+	test("writing and overwriting a plain text file moves no shared clock", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-clocks" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-clocks" });
+		// Parallel load-test writers in one workspace conflict on these docs when every write touches them.
+		const clocks = () =>
+			t.run(async (ctx) => ({
+				media: await ctx.db.query("files_media_validation_versions").collect(),
+				content: await ctx.db.query("files_content_versions").collect(),
+				facts: await ctx.db.query("files_pending_review_fact_state").collect(),
+			}));
+		const before = await clocks();
+		for (const content of ["First version\n", "Second version\n"]) {
+			const response = await t.fetch("/api/v1/files/write-many", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ files: [{ path: "/load/notes.txt", content }] }),
+			});
+			expect(response.status).toBe(200);
+			expect(((await response.json()) as { errors: unknown[] }).errors).toEqual([]);
+		}
+		expect((await find_active_node({ t, db, path: "/load/notes.txt" }))?.textKind).toBe("plain_text");
+		expect(await clocks()).toEqual(before);
+	});
+
 	test("writes files of different folders at the same time, one per folder first", async () => {
 		const t = test_convex();
 		install_r2_object_reads();

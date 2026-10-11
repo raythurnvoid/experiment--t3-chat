@@ -709,7 +709,7 @@ describe("copy_transfer_file", () => {
 		let validationCalls = 0;
 		let publicationCalls = 0;
 		// Hold the first two finished pages outside their transactions. Both proofs then pin the
-		// same clocks. The first publication only creates a node, so the other proof stays fresh.
+		// same clocks. No embeds, so publication skips the clock check.
 		test_spy_handler(copy_transfer_file, async (handler, ctx, args) => {
 			const runMutation = ctx.runMutation.bind(ctx);
 			vi.spyOn(ctx, "runMutation").mockImplementation(async (...mutationArgs) => {
@@ -3405,9 +3405,11 @@ describe("copy_transfer_file saved replacement", () => {
 				)?.content,
 			).toBe("Replacement text\n");
 			// The old file is plain text with no pending replacement, so no media proof can check it.
-			expect((await t.run((ctx) => ctx.db.query("files_content_versions").collect()))[0]!.revision).toBe(
-				mediaPins.versions[2]!.revision,
-			);
+			const contentClock = mediaPins.versions[2]!;
+			expect(
+				(await t.run((ctx) => ctx.db.get("files_content_versions", contentClock.id as Id<"files_content_versions">)))
+					?.revision,
+			).toBe(contentClock.revision);
 			expect(
 				await asUser.query(api.files_metadata.get_entries, {
 					membershipId: db.membershipId,
@@ -3553,7 +3555,11 @@ describe("accept_file_pending_replacement", () => {
 				).toHaveLength(0);
 			});
 			// The accepted proposal was a pending replacement, so a proof could check the file through it.
-			expect((await contentClocks())[0]!.revision).toBeGreaterThan(mediaPins.versions[2]!.revision);
+			const contentClock = mediaPins.versions[2]!;
+			expect(
+				(await t.run((ctx) => ctx.db.get("files_content_versions", contentClock.id as Id<"files_content_versions">)))
+					?.revision,
+			).toBeGreaterThan(contentClock.revision);
 		},
 	);
 

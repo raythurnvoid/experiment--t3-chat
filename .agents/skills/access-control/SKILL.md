@@ -84,9 +84,10 @@ not permission caches. Final publication still checks current access.
 - Replaced content advances a separate content version (`files_content_versions`), not the
   workspace version. Copy and Save pin it too. A Move group pins only the organization, workspace
   and review versions. Data deletion removes it with the workspace.
-- Only `files_nodes_db_archive_nodes` and `db_install_file_content_replacement` skip the advance,
-  for plain files with no pending replacement. A plain file is not a stored image or video. Creating
-  a node never advances. Move cohorts, archive runs and subtree jobs always advance.
+- For a plain file with no pending replacement, `files_nodes_db_archive_nodes` skips the workspace
+  version and `db_install_file_content_replacement` skips the content version. A plain file is not a
+  stored image or video. Creating a node advances neither. Move cohorts, archive runs and subtree jobs
+  always advance.
 - A Copy or Save proof with no media refs skips the version check. The folder Move check and the
   Move cohort keep their pins, because the same pins catch write policy and access changes.
 - Purge fencing invalidates proofs before docs are removed. A removed version doc also invalidates

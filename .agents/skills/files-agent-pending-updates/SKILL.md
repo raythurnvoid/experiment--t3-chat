@@ -162,11 +162,12 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 - A Discard item can carry `onlyIfEmpty: true`. It is for a hidden parent folder that Pending `Discard all` sends with the shown drafts. An unselected draft inside it does not block the run. Planning puts these folders after the other Discard roots, deepest first. `commit_unit` discards the unit's saved proposals first, then removes such a folder only when it has no active child draft and no draft move into it; otherwise it keeps the folder.
 - `files_pending_review_versions` is the owner's pending-change clock. The normal path seals each unit against the run's current clock. An outside edit enables `revalidateRemaining` for the rest of the run. Every later unit then checks its original IDs, revisions, content states, paths, and dependency scope in pages, even after an earlier unit's own commit advances the run clock.
 - `files_pending_review_fact_state.structureRevision` is the workspace's saved-tree clock for review
-  plans. Each plan producer step pins it for 10 minutes (`files_pending_review_facts_db_pin_structure`),
-  and the plan restarts when the clock moved. A saved-tree change advances it only while a pin is
-  live, so parallel saves with no review plan do not all write this doc. A pin after a lapse, or a
-  renewal within 60 seconds of the end, advances the clock first, because changes may have skipped
-  it. `files_pending_review_versions` still advances on every proposal write.
+  plans. The plan producer pins it for 10 minutes (`files_pending_review_facts_db_pin_structure`) and
+  renews the pin only when 5 minutes or less are left. The plan restarts when the clock moved. A
+  saved-tree change advances it only while a pin is live, so parallel saves with no review plan do
+  not all write this doc. A pin after a lapse, or a renewal within 60 seconds of the end, advances
+  the clock first, because changes may have skipped it. `files_pending_review_versions` still
+  advances on every proposal write.
 - Every preparation step checks current membership, its lifetime, the parent run and access clocks
   in its own transaction. The final switch checks the same proof. Changed access or input aborts
   unpublished candidates and returns `needs_review`. Completed groups stay saved.

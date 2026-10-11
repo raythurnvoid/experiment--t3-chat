@@ -2906,7 +2906,11 @@ const app_convex_schema = defineSchema({
 		destinationPath: v.union(v.string(), v.null()),
 		destinationTreePath: v.union(v.string(), v.null()),
 		structuralKind: v.union(v.literal("none"), v.literal("move"), v.literal("archive")),
-		sourcePlacementRevision: v.number(),
+		/**
+		 * No longer written: filling it read the fact state, which conflicted with review pin renewals.
+		 * Old docs may still have it. Remove it in a later cleanup.
+		 */
+		sourcePlacementRevision: v.optional(v.number()),
 	})
 		.index("by_proposal_view", ["pendingUpdateId", "cohortId", "view"])
 		.index("by_cohort_view", ["cohortId", "view"])

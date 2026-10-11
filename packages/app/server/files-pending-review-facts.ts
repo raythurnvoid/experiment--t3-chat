@@ -151,7 +151,6 @@ export async function files_pending_review_facts_db_sync(
 		source?: {
 			proposal: Doc<"files_pending_updates"> | null;
 			savedNode: Doc<"files_nodes"> | null;
-			structureRevision: number;
 		};
 	},
 ) {
@@ -206,10 +205,6 @@ export async function files_pending_review_facts_db_sync(
 		const path = await parent_path(db, scope, proposal.pendingMove.destParent, args.fixedView);
 		destinationPath = path === null ? null : `${path === "/" ? "" : path}/${proposal.pendingMove.destName}`;
 	}
-	const structureRevision =
-		args.source?.structureRevision ??
-		(await files_pending_review_facts_db_get_state(db, scope))?.structureRevision ??
-		0;
 	const fields: Omit<Doc<"files_pending_review_facts">, "_id" | "_creationTime"> = {
 		...scope,
 		pendingUpdateId: proposal._id,
@@ -227,7 +222,6 @@ export async function files_pending_review_facts_db_sync(
 			: proposal.pendingMove
 				? ("move" as const)
 				: ("none" as const),
-		sourcePlacementRevision: structureRevision,
 	};
 	if (stored) await db.replace("files_pending_review_facts", stored._id, fields);
 	else await db.insert("files_pending_review_facts", fields);
