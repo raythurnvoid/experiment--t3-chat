@@ -502,11 +502,11 @@ describe("proposal hold expiry", () => {
 		await finish(f);
 		expect(
 			await f.t.run((ctx) => files_pending_holds_db_release_producer_batch(ctx, { producer: f.producer })),
-		).toEqual({ done: false, deletedCount: 32 });
+		).toEqual({ done: false, deletedCount: 32, waiting: false });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toHaveLength(1);
 		expect(
 			await f.t.run((ctx) => files_pending_holds_db_release_producer_batch(ctx, { producer: f.producer })),
-		).toEqual({ done: true, deletedCount: 1 });
+		).toEqual({ done: true, deletedCount: 1, waiting: false });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toHaveLength(33);
 	});
 });

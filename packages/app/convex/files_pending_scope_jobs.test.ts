@@ -1,7 +1,13 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_rename_node, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_finish_transfer_run,
+	test_mocks_fill_db_with,
+	test_rename_node,
+} from "./setup.test.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 
@@ -105,43 +111,20 @@ test("pending scope pages follow the latest saved path and archive state without
 	expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
 		_yay: null,
 	});
-	for (let step = 0; step < 24; step++) {
-		await t.mutation(internal.files_transfer.advance, { runId });
-		const receipt = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
-		if (receipt?.activity.status === "succeeded") break;
-	}
-	// Finish the real subtree walk before driving the pending side-doc pages.
-	for (let step = 0; step < 10; step++) {
-		const walks = await t.run((ctx) => ctx.db.query("files_subtree_op_walks").collect());
-		if (walks.length === 0) break;
-		for (const walk of walks)
-			await t.mutation(internal.files_subtree_ops.advance, { opId: walk.opId, step: walk.step });
-	}
-	expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/destination/project/note.md");
-	const readJob = async () =>
-		await t.run((ctx) =>
-			ctx.db
-				.query("files_pending_overlay_jobs")
-				.withIndex("by_kind_key", (q) => q.eq("kind", "saved_node").eq("key", nodeId))
-				.unique(),
-		);
-	expect(await readJob(), "file path-only changes queue pending scope repair").not.toBeNull();
+	// The Move runs its group steps as scheduled workers, and it restages pending search docs itself.
+	// Watch its owner stage cursor to see that those docs span several pages.
 	let reachedScopePage = false;
-	for (let step = 0; step < 10; step++) {
-		const currentJob = await readJob();
-		if (!currentJob) break;
-		await t.mutation(internal.files_pending_overlay.run_job, {
-			kind: currentJob.kind,
-			key: currentJob.key,
-			nextAttemptAt: currentJob.nextAttemptAt,
+	await test_finish_transfer_run(asUser, runId, async () => {
+		const ranges = await t.run((ctx) => ctx.db.query("files_move_work_ranges").collect());
+		reachedScopePage ||= ranges.some((range) => {
+			const cursor =
+				range.phase === "stage" && range.cursor
+					? (JSON.parse(range.cursor) as { phase: string; page: string | null })
+					: null;
+			return cursor?.phase === "pending_plain" && cursor.page !== null;
 		});
-		const job = await readJob();
-		const cursor = job?.cursor ? (JSON.parse(job.cursor) as { phase: number; page: string | null }) : null;
-		if (cursor?.phase === 4 && cursor.page) {
-			reachedScopePage = true;
-			break;
-		}
-	}
+	});
+	expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/destination/project/note.md");
 	expect(reachedScopePage, "pending search docs span several scope pages").toBe(true);
 	expect(
 		await test_rename_node(t, asUser, {

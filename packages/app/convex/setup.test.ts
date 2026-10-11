@@ -434,6 +434,9 @@ export async function test_finish_pending_update_run(
 				if (!cohort) throw new Error("Missing review cohort");
 				if (cohort.phase === "complete") await asUser.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
 				else await asUser.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			} else if (unit && unit.kind !== "cohort") {
+				// Other units run as Workpool work, which the test does not run. Run that step here.
+				await asUser.action(internal.files_pending_update_runs.prepare_unit, { runId, fence: run.fence, unitId: unit._id, attemptFence: unit.attemptFence });
 			}
 		}
 	}

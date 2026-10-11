@@ -148,8 +148,10 @@ describe("bash_meta_command_create", () => {
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stderr).toBe("");
-			// The overlay read runs first, so a metadata stream is the last query.
-			expect(runQuery.mock.calls.at(-1)?.[1]).toMatchObject({ plan: item.plan });
+			// The overlay read runs first and the Move view check runs last. Only the metadata stream has a plan.
+			expect(runQuery.mock.calls.find(([, args]) => (args as { plan?: unknown }).plan)?.[1]).toMatchObject({
+				plan: item.plan,
+			});
 		}
 	});
 

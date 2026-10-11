@@ -3458,9 +3458,12 @@ describe("copy_transfer_file saved replacement", () => {
 					})
 				)?.content,
 			).toBe("Replacement text\n");
+			// Replaced content advances the workspace content clock, the third pin.
+			const contentPin = mediaPins.versions[2]!;
 			expect(
-				(await t.run((ctx) => ctx.db.get("files_media_validation_versions", mediaPins.versions[1]!.id)))?.revision,
-			).toBeGreaterThan(mediaPins.versions[1]!.revision);
+				(await t.run((ctx) => ctx.db.get("files_content_versions", contentPin.id as Id<"files_content_versions">)))
+					?.revision,
+			).toBeGreaterThan(contentPin.revision);
 			expect(
 				await asUser.query(api.files_metadata.get_entries, {
 					membershipId: db.membershipId,
@@ -3601,9 +3604,12 @@ describe("accept_file_pending_replacement", () => {
 						.collect(),
 				).toHaveLength(0);
 			});
+			// Replaced content advances the workspace content clock, the third pin.
+			const contentPin = mediaPins.versions[2]!;
 			expect(
-				(await t.run((ctx) => ctx.db.get("files_media_validation_versions", mediaPins.versions[1]!.id)))?.revision,
-			).toBeGreaterThan(mediaPins.versions[1]!.revision);
+				(await t.run((ctx) => ctx.db.get("files_content_versions", contentPin.id as Id<"files_content_versions">)))
+					?.revision,
+			).toBeGreaterThan(contentPin.revision);
 		},
 	);
 

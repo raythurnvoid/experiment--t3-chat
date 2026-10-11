@@ -174,11 +174,11 @@ describe("ai_chat_tool_create_bash", () => {
 			ctxData: server_ai_tools_test_ctx_data,
 			options: { allowDbFilesMkdir: true },
 		});
-		expect(tool.description).toContain("cp -R src dest &");
-		expect(tool.description).toContain("{ first; cp -R src dest; next; } &");
-		expect(tool.description).toContain("Only verified Copy waiting time is excluded");
+		expect(tool.description).toContain("cp -R src dest & or mv src dest &");
+		expect(tool.description).toContain("{ first; mv src dest; next; } &");
+		expect(tool.description).toContain("Verified intake and Copy or Move waiting time is excluded");
 		expect(tool.description).toContain(
-			"Loops, functions, logical chains, pipelines, redirects, nested shells, and foreground copies do not use this paged Copy: their Copy must finish within the current call's or job run's time limit, or it is stopped and reports 124.",
+			"Loops, functions, logical chains, pipelines, redirects, nested shells, and foreground commands keep the current call's or job run's time limit. A timeout stops the Copy or Move and reports 124.",
 		);
 		expect(tool.description).toContain(
 			"Copies still wait for the user's Review and Save in the destination workspace.",
@@ -338,7 +338,7 @@ describe("ai_chat_tool_create_bash", () => {
 			"A job runs one top-level statement at a time, and each run of it has an 8-minute budget and 2000 commands",
 			"a minute before that the job pauses after the current statement and continues in a new run",
 			"or it is cut off at 7 minutes 30 seconds and the job reports 124",
-			"A job has at most 24 hours of ordinary compute, sleep, and other waiting; verified durable Copy waits are excluded",
+			"A job has at most 24 hours of ordinary compute, sleep, and other waiting; verified intake and Copy or Move waits are excluded",
 			"A top-level sleep N with a literal N of 5 seconds or more pauses the job for N seconds (at most one hour) without holding a worker",
 			"a sleep with a redirection or with an assignment in front of it, ! sleep N, time sleep N, a sleep joined by && or ||",
 			"a job waiting to continue after a pause prints [job N queued] and a job asked to stop prints [job N stopping]",
@@ -355,7 +355,7 @@ describe("ai_chat_tool_create_bash", () => {
 			"until a launch works or a wait that found a job live and then saw it end starts the count again",
 			"A wait does not make a refused script, state, or stopping launch succeed",
 			"a script over 64 KiB, a shell state over 128 KiB, and a launch from a job that is already stopping are refused every time",
-			"put sequential cp or mv commands in one job. While the lane is busy, a plain background cp keeps waiting for up to about 10 minutes, then its whole job ends; other cp and mv forms in a job wait up to 60 s, then fail with exit 1.",
+			"put sequential cp or mv commands in one job. While the lane is busy, a plain background cp or mv uses a ten-minute idle admission deadline; accepted input extends it, but lane polling does not. Bounded cp and mv forms in a job wait up to 60 s, then fail with exit 1.",
 			"jobs -o N prints the stored stdout then stderr of job N, then one final [job N exit C] line on stderr",
 			"wait N waits for the named jobs",
 			"wait is a shell builtin, so which wait finds nothing even though wait works",

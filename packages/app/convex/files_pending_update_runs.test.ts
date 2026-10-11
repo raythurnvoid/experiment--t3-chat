@@ -874,12 +874,12 @@ describe("review jobs", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 
-	test("a reviewed delete of a folder with many side docs archives its first step within the unit budget", async () => {
+	test("a reviewed delete of a folder with many side docs archives the whole folder in group steps", async () => {
 		const f = await fixture();
 		const parentId = await saved_folder(f, "big");
-		// 150 files with 20 metadata docs each: one archive step patches about 3,150 docs.
+		// 24 files with 4 metadata docs each: the group worker pages them 8 at a time, so it takes many steps.
 		await f.t.run(async (ctx) => {
-			for (let index = 0; index < 150; index++) {
+			for (let index = 0; index < 24; index++) {
 				const name = `f${String(index).padStart(3, "0")}.md`;
 				const fileNodeId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
@@ -895,7 +895,7 @@ describe("review jobs", () => {
 					treePath: `/big/${name}`,
 					pathDepth: 2,
 				});
-				for (let field = 0; field < 20; field++) {
+				for (let field = 0; field < 4; field++) {
 					await ctx.db.insert("files_metadata_docs", {
 						organizationId: f.scope.organizationId,
 						workspaceId: f.scope.workspaceId,
@@ -926,9 +926,15 @@ describe("review jobs", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
 			{ status: "completed", errorMessage: null },
 		]);
-		// The archive job goes on in the background after the review.
-		const archiveRun = await f.t.run((ctx) => ctx.db.query("files_archive_runs").first());
-		expect(archiveRun?.active).toBe(true);
+		// The group worker stages the folder in pages, then archives all of it under one operation id.
+		const archived = await f.t.run(async (ctx) => ({
+			nodes: await ctx.db.query("files_nodes").collect(),
+			metadata: await ctx.db.query("files_metadata_docs").collect(),
+		}));
+		const operationId = archived.nodes.find((node) => node._id === parentId)?.archiveOperationId;
+		expect(operationId).toBeTruthy();
+		expect(archived.nodes.filter((node) => node.archiveOperationId === operationId)).toHaveLength(25);
+		expect(archived.metadata.every((doc) => doc.archiveOperationId === operationId)).toBe(true);
 	});
 
 	test("does not discard an unselected ready child", async () => {
