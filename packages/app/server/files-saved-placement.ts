@@ -1,7 +1,7 @@
-// Leaf saved-view reads. These helpers choose a placement; callers still check current access.
+// Leaf saved-view reads, and the saved search bump. These helpers choose a placement; callers still check current access.
 
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
-import type { QueryCtx } from "../convex/_generated/server.js";
+import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 export type files_saved_placement_FixedView = {
@@ -31,7 +31,7 @@ export async function files_saved_placement_db_get_view(
 	const organizationId = db.normalizeId("organizations", args.organizationId);
 	const workspaceId = db.normalizeId("organizations_workspaces", args.workspaceId);
 	if (!organizationId || !workspaceId) return {
-		cohortId: null, view: null, generation: 0, searchGeneration: 0, migrationDirection: null,
+		cohortId: null, view: null, generation: 0, migrationDirection: null,
 	};
 	const slot = await db
 		.query("files_move_workspace_slots")
@@ -42,7 +42,6 @@ export async function files_saved_placement_db_get_view(
 			cohortId: null,
 			view: null,
 			generation: slot?.generation ?? 0,
-			searchGeneration: slot?.searchGeneration ?? 0,
 			migrationDirection: null,
 		};
 	// Every Move step patches the cohort. Read the slot's copy, so open trees do not run again per step.
@@ -51,7 +50,6 @@ export async function files_saved_placement_db_get_view(
 			cohortId: slot.cohortId,
 			view: slot.visibleView,
 			generation: slot.generation,
-			searchGeneration: slot.searchGeneration,
 			migrationDirection: slot.migrationDirection,
 		};
 	const { cohort } = await get_cohort(db, slot.cohortId);
@@ -68,13 +66,55 @@ export async function files_saved_placement_db_get_view(
 		cohortId: cohort._id,
 		view: cohort.visibleView,
 		generation: slot.generation,
-		searchGeneration: slot.searchGeneration,
 		migrationDirection: cohort.phase === "published" || cohort.phase === "finishing" ||
 			cohort.phase === "aborting" || cohort.phase === "complete" ? "to_normal" as const : "to_cohort" as const,
 	};
 }
 
 export type files_saved_placement_View = Awaited<ReturnType<typeof files_saved_placement_db_get_view>>;
+
+/**
+ * Saved search pages check this number. Only search reads it, so its changes do not run tree pages again.
+ */
+export async function files_saved_placement_db_get_search_generation(
+	db: QueryCtx["db"],
+	args: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId">,
+) {
+	const organizationId = db.normalizeId("organizations", args.organizationId);
+	const workspaceId = db.normalizeId("organizations_workspaces", args.workspaceId);
+	if (!organizationId || !workspaceId) return 0;
+	const row = await db
+		.query("files_move_search_generations")
+		.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
+		.unique();
+	if (row) return row.searchGeneration;
+	// Before its own doc, the number lived on the slot.
+	const slot = await db
+		.query("files_move_workspace_slots")
+		.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
+		.unique();
+	return slot?.searchGeneration ?? 0;
+}
+
+/**
+ * Make open saved search pages restart.
+ */
+export async function files_saved_placement_db_bump_search_generation(
+	ctx: MutationCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+) {
+	const row = await ctx.db
+		.query("files_move_search_generations")
+		.withIndex("by_workspace", (q) => q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId))
+		.unique();
+	if (row) await ctx.db.patch("files_move_search_generations", row._id, { searchGeneration: row.searchGeneration + 1 });
+	else
+		await ctx.db.insert("files_move_search_generations", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			searchGeneration: (await files_saved_placement_db_get_search_generation(ctx.db, args)) + 1,
+		});
+}
 
 /**
  * A saved file's side docs use its selected view. Unreserved files use normal docs.

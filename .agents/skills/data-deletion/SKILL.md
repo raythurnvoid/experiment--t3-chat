@@ -75,7 +75,7 @@ Load each companion skill that owns the affected boundary:
   work finishes physical repair. Only then may cleanup release parent holds or delete history.
   Completed cohort docs stay until parent history is gone and delayed storage resources settle.
   `files_move_cohorts.cleanup` drains indexed child docs, then the cohort. It also removes the
-  empty workspace slot when the workspace is gone. Completed files and drafts are not history.
+  empty workspace slot and its saved search number when the workspace is gone. Completed files and drafts are not history.
 - `db_drain_user_bash_jobs_batch`: stops and deletes one background Bash job the user started (its receipts, Activity and row, at most `batchSize` docs per pass) before deleting memberships. Both user-deletion paths run it right after transfer runs.
 - `db_drain_user_pending_review_runs_batch`: fences one review run before deleting its prepared content and at most eight item rows per pass. Units, Activity viewer state, Activity, and the run follow. Completed saves stay in retained workspaces. Both user deletion paths drain reviews before memberships and proposals.
 - `db_drain_user_write_policy_runs_batch`: stops and deletes one "Apply to contents" protection job the user started, with its Activity. Items it already updated keep their new rule. Both user-deletion paths run it right after review runs.

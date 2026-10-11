@@ -33,6 +33,7 @@ import {
 	files_saved_placement_db_get_proposal,
 	files_saved_placement_db_get_publish_receipt_by_saved_node,
 	files_saved_placement_db_get_slot,
+	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_view,
 	type files_saved_placement_FixedView,
 } from "../server/files-saved-placement.ts";
@@ -834,7 +835,10 @@ async function db_stream_open(ctx: QueryCtx, args: StreamOpenArgs & { readLimit?
 	const organizationId = args.organizationId;
 	const fileScope = files_db_resolve_scope(ctx, args.workspaceId);
 	const saved = await files_saved_stream_db_create(ctx.db, args, args.savedStream);
-	if (args.searchGeneration !== undefined && args.searchGeneration !== saved.view.searchGeneration)
+	if (
+		args.searchGeneration !== undefined &&
+		args.searchGeneration !== (await files_saved_placement_db_get_search_generation(ctx.db, args))
+	)
 		throw convex_invalid_cursor_error("The saved Move search changed.");
 	// The owner's overlay in a workspace. `tenant` is set only then, with the reader.
 	const ownerScope =
@@ -888,7 +892,10 @@ export const internal_get_move_view = internalQuery({
 	handler: async (ctx, args) => {
 		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
 		if (authorized._nay) return null;
-		return await files_saved_placement_db_get_view(ctx.db, args);
+		return {
+			...(await files_saved_placement_db_get_view(ctx.db, args)),
+			searchGeneration: await files_saved_placement_db_get_search_generation(ctx.db, args),
+		};
 	},
 });
 

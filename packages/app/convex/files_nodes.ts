@@ -104,7 +104,10 @@ import {
 } from "../server/files-saved-content.ts";
 import { files_index_range_apply, files_index_range_phases } from "../server/files-index-range.ts";
 import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
-import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_search_generation,
+	files_saved_placement_db_get_view,
+} from "../server/files-saved-placement.ts";
 import {
 	files_move_reservations_db_check,
 	files_move_reservations_db_enter_security,
@@ -5303,10 +5306,9 @@ export const get_workspace_move_view = query({
 	handler: async (ctx, args) => {
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
 		if (!reader) return null;
-		const { cohortId, view, generation, searchGeneration } = await files_saved_placement_db_get_view(
-			ctx.db,
-			reader.membership,
-		);
+		const { cohortId, view, generation } = await files_saved_placement_db_get_view(ctx.db, reader.membership);
+		// Search hooks use this too. Tree pagers ignore it, so a search change does not restart them.
+		const searchGeneration = await files_saved_placement_db_get_search_generation(ctx.db, reader.membership);
 		return { cohortId, view, generation, searchGeneration };
 	},
 });
@@ -9610,7 +9612,11 @@ export const text_search_files = internalQuery({
 			args.serviceAccountId === undefined &&
 			!organizations_is_global_organization_id(args.organizationId) &&
 			scope.kind === "workspace";
-		const view = await files_saved_placement_db_get_view(ctx.db, args);
+		const view = {
+			...(await files_saved_placement_db_get_view(ctx.db, args)),
+			// The cursor keeps the whole view, so a search change starts the search again.
+			searchGeneration: await files_saved_placement_db_get_search_generation(ctx.db, args),
+		};
 		const tags = view.cohortId && view.view ? [undefined, { cohortId: view.cohortId, view: view.view }] : [undefined];
 		const sources = (ownerPending ? ["pending" as const, "committed" as const] : ["committed" as const]).flatMap(
 			(sourceKind) => tags.map((tag) => ({ sourceKind, tag })),
@@ -9760,7 +9766,10 @@ export const search_saved = query({
 		const { userAuth, membership } = reader;
 		const clause = args.clause;
 		const saved = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
-		if (args.searchGeneration !== undefined && args.searchGeneration !== saved.view.searchGeneration) {
+		if (
+			args.searchGeneration !== undefined &&
+			args.searchGeneration !== (await files_saved_placement_db_get_search_generation(ctx.db, membership))
+		) {
 			throw convex_invalid_cursor_error("The saved search view changed.");
 		}
 		const paginationOpts = {

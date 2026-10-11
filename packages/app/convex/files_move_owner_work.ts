@@ -7,7 +7,10 @@ import {
 	files_pending_overlay_db_stage_owner_fields,
 	files_pending_overlay_db_stage_owner_lists,
 } from "../server/files-pending-overlay.ts";
-import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_bump_search_generation,
+	files_saved_placement_db_get_node,
+} from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_enter } from "../server/files-move-reservations.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
@@ -681,7 +684,7 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 					)
 					.unique();
 				if (slot?.cohortId !== cohort._id) throw should_never_happen("Owner cleanup lost its workspace slot", args);
-				await ctx.db.patch("files_move_workspace_slots", slot._id, { searchGeneration: slot.searchGeneration + 1 });
+				await files_saved_placement_db_bump_search_generation(ctx, cohort);
 			}
 			if (!page.isDone) return Result({ _yay: { done: false } });
 		}

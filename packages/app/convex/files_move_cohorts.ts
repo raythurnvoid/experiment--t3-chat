@@ -22,6 +22,7 @@ import {
 } from "../server/files-pending-overlay.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import {
+	files_saved_placement_db_bump_search_generation,
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_publish_receipt,
@@ -245,7 +246,6 @@ async function db_begin(
 	const fields = {
 		cohortId,
 		generation,
-		searchGeneration: (slot?.searchGeneration ?? 0) + 1,
 		visibleView: "before" as const,
 		migrationDirection: "to_cohort" as const,
 	};
@@ -256,6 +256,7 @@ async function db_begin(
 			workspaceId: args.workspaceId,
 			...fields,
 		});
+	await files_saved_placement_db_bump_search_generation(ctx, args);
 	return Result({ _yay: cohortId });
 }
 
@@ -1829,11 +1830,8 @@ async function db_publish(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, o
 		.unique();
 	if (slot?.cohortId !== cohort._id || slot.generation !== cohort.slotGeneration)
 		throw should_never_happen("Move lost its workspace slot", { cohortId: cohort._id });
-	await ctx.db.patch("files_move_workspace_slots", slot._id, {
-		searchGeneration: slot.searchGeneration + 1,
-		visibleView: "after",
-		migrationDirection: "to_normal",
-	});
+	await ctx.db.patch("files_move_workspace_slots", slot._id, { visibleView: "after", migrationDirection: "to_normal" });
+	await files_saved_placement_db_bump_search_generation(ctx, cohort);
 	await files_media_validation_db_advance_version(ctx, cohort);
 	if (cohort.origin.kind === "review")
 		await files_pending_update_runs_db_record_cohort_publication(ctx, { cohortId: cohort._id });
@@ -1954,8 +1952,7 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 			q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
 		)
 		.unique();
-	if (slot?.cohortId === cohort._id)
-		await ctx.db.patch("files_move_workspace_slots", slot._id, { searchGeneration: slot.searchGeneration + 1 });
+	if (slot?.cohortId === cohort._id) await files_saved_placement_db_bump_search_generation(ctx, cohort);
 	return false;
 }
 
@@ -1989,13 +1986,14 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 			q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
 		)
 		.unique();
-	if (slot?.cohortId === cohort._id)
+	if (slot?.cohortId === cohort._id) {
 		await ctx.db.patch("files_move_workspace_slots", slot._id, {
 			cohortId: null,
-			searchGeneration: slot.searchGeneration + 1,
 			visibleView: undefined,
 			migrationDirection: undefined,
 		});
+		await files_saved_placement_db_bump_search_generation(ctx, cohort);
+	}
 	await ctx.db.patch("files_move_cohorts", cohort._id, {
 		phase: "complete",
 		workPhase: "complete",
@@ -2659,6 +2657,14 @@ export const cleanup = internalMutation({
 						)
 						.unique();
 					if (slot?.cohortId === null) await ctx.db.delete("files_move_workspace_slots", slot._id);
+					const search = await ctx.db
+						.query("files_move_search_generations")
+						.withIndex("by_workspace", (q) =>
+							q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
+						)
+						.unique();
+					// A Move that still holds the slot needs the number. Its own cleanup removes the row later.
+					if (search && !slot?.cohortId) await ctx.db.delete("files_move_search_generations", search._id);
 				}
 				await ctx.db.delete("files_move_cohorts", cohort._id);
 				return null;

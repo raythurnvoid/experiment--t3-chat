@@ -56,6 +56,7 @@ import {
 	type files_metadata_catalog_Changes,
 } from "./files-metadata-catalog.ts";
 import {
+	files_saved_placement_db_bump_search_generation,
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_proposal,
 	files_saved_placement_db_get_publish_receipt,
@@ -1352,7 +1353,7 @@ export async function files_pending_overlay_db_stage_owner(
 			)
 			.unique();
 		if (slot?.cohortId !== cohort._id) throw should_never_happen("Staged owner has no workspace slot", args);
-		await ctx.db.patch("files_move_workspace_slots", slot._id, { searchGeneration: slot.searchGeneration + 1 });
+		await files_saved_placement_db_bump_search_generation(ctx, cohort);
 	}
 	return Result({ _yay: { ...work, ...fields } });
 }

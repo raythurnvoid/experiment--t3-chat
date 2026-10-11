@@ -7,6 +7,7 @@ import { test_create_saved_placement_fixture as fixture } from "../server/files-
 import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import {
+	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
@@ -517,7 +518,7 @@ describe("Move cohort publication", () => {
 		120_000,
 	);
 
-	test("a tree page does not read the Move cohort, so a Move step does not run it again", async () => {
+	test("a tree page reads neither the Move cohort nor the search number, so Move steps do not run it again", async () => {
 		const f = await native_rotation(3);
 		const outside = await f.asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: f.db.membershipId,
@@ -532,10 +533,13 @@ describe("Move cohort publication", () => {
 		});
 		// Convex runs a query again when a doc it read changes, and every Move step patches the cohort.
 		const cohortReads: unknown[][] = [];
+		const tables = new Set<string>();
 		test_spy_handler(list_tree_children, async (handler, ctx, args) => {
 			const get = vi.spyOn(ctx.db, "get");
+			const query = vi.spyOn(ctx.db, "query");
 			const result = await handler(ctx, args);
 			cohortReads.push(...get.mock.calls.filter((call) => call.includes(f.cohortId)));
+			for (const [table] of query.mock.calls) tables.add(table);
 			return result;
 		});
 		const view = await f.t.run((ctx) => files_saved_placement_db_get_view(ctx.db, f.scope));
@@ -550,7 +554,34 @@ describe("Move cohort publication", () => {
 		});
 		expect(page.page.map((row) => row.name)).toEqual(["inner"]);
 		expect(cohortReads, "the page reads the view from the slot").toEqual([]);
+		expect(tables, "the page does not read the search number").not.toContain("files_move_search_generations");
 	});
+
+	test("the slot changes only with the saved view, while search changes many times", async () => {
+		const f = await native_rotation(3);
+		const read = () =>
+			f.t.run(async (ctx) => ({
+				slot: await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) =>
+						q.eq("organizationId", f.scope.organizationId).eq("workspaceId", f.scope.workspaceId),
+					)
+					.unique(),
+				search: await files_saved_placement_db_get_search_generation(ctx.db, f.scope),
+			}));
+		const first = await read();
+		let last = first;
+		const slotChanges: string[] = [];
+		await finish_cohort(f, async () => {
+			const next = await read();
+			if (JSON.stringify(next.slot) !== JSON.stringify(last.slot))
+				slotChanges.push(`${next.slot?.visibleView ?? null}/${next.slot?.migrationDirection ?? null}`);
+			last = next;
+		});
+		// Tree pages read the slot. Each change runs every open tree page again.
+		expect(slotChanges, "only publish and complete change the slot").toEqual(["after/to_normal", "null/null"]);
+		expect(last.search - first.search, "each cleaned node still restarts search").toBeGreaterThan(2);
+	}, 120_000);
 });
 
 async function transfer_workspace() {

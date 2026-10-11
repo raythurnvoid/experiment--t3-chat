@@ -2013,11 +2013,22 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		cohortId: v.union(v.id("files_move_cohorts"), v.null()),
 		generation: v.number(),
-		searchGeneration: v.number(),
+		// Old slots only. Search now reads `files_move_search_generations`.
+		searchGeneration: v.optional(v.number()),
 		// Copies of the cohort's view. Every Move step patches the cohort, so view reads use these
 		// instead, and open trees do not run again on each step. Older slots read the cohort.
 		visibleView: v.optional(files_move_view_validator),
 		migrationDirection: v.optional(v.union(v.literal("to_cohort"), v.literal("to_normal"))),
+	}).index("by_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * Saved search pages restart when this number changes. A Move changes it once per cleaned node, so
+	 * it has its own doc: tree pages read the slot, and do not run again for each change.
+	 */
+	files_move_search_generations: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		searchGeneration: v.number(),
 	}).index("by_workspace", ["organizationId", "workspaceId"]),
 
 	files_move_cohorts: defineTable({

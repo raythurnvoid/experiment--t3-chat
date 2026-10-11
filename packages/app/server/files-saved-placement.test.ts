@@ -307,7 +307,6 @@ describe("saved placement foundation", () => {
 			cohortId: null,
 			view: null,
 			generation: 0,
-			searchGeneration: 0,
 			migrationDirection: null,
 		});
 		expect(await t.run((ctx) => ctx.db.query("files_move_workspace_slots").collect())).toEqual([]);

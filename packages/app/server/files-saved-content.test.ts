@@ -11,6 +11,7 @@ import {
 	files_saved_content_db_text_chunks,
 	files_saved_content_db_yjs_updates,
 } from "./files-saved-content.ts";
+import { files_saved_placement_db_bump_search_generation } from "./files-saved-placement.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -258,14 +259,7 @@ test("content search pages both views and refuses a cursor after side rows chang
 	}
 	expect(items.map((row) => row.chunkIndex).sort(), "search includes normal and selected chunks").toEqual([0, 1]);
 	const first = await f.t.query(internal.files_nodes.text_search_files, args);
-	await f.t.run(async (ctx) => {
-		const slot = await ctx.db
-			.query("files_move_workspace_slots")
-			.withIndex("by_workspace", (q) => q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId))
-			.unique();
-		if (!slot) throw new Error("Expected saved view slot");
-		await ctx.db.patch("files_move_workspace_slots", slot._id, { searchGeneration: slot.searchGeneration + 1 });
-	});
+	await f.t.run((ctx) => files_saved_placement_db_bump_search_generation(ctx, f.db));
 	await expect(
 		f.t.query(internal.files_nodes.text_search_files, { ...args, cursor: first.continueCursor }),
 	).rejects.toThrow("Search changed");
