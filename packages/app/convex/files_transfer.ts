@@ -833,7 +833,7 @@ async function db_resolve_name(
 		const tooLong = files_check_name_and_path_length({
 			names: args.run.kind === "move" && name === args.item.sourceName ? [] : [name],
 			path,
-			oldPath: args.run.kind === "move" ? args.item.sourcePath : undefined,
+			oldPathLength: args.run.kind === "move" ? args.item.sourcePath.length : undefined,
 		});
 		if (tooLong._nay) return tooLong;
 		const claims =
@@ -1738,9 +1738,11 @@ async function db_start(
 		if (normalized._nay || normalized._yay !== name) return Result({ _nay: { message: "Invalid folder name" } });
 	}
 	const newNames = args.targetName === null ? args.missingParentNames : [...args.missingParentNames, args.targetName];
+	// A Rename may make an older long path shorter.
 	const tooLong = files_check_name_and_path_length({
 		names: newNames,
 		path: newNames.reduce(path_join, args.targetPath),
+		oldPathLength: args.rename?.source.path.length,
 	});
 	if (tooLong._nay) return tooLong;
 

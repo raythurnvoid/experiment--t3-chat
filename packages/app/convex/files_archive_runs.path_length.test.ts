@@ -11,7 +11,9 @@ import {
 	restore,
 	folder,
 	read_node,
+	lock_archived,
 } from "./files_archive_runs.setup.test.ts";
+import { test_rename_node } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.
@@ -171,12 +173,33 @@ describe("unarchive_nodes path limit", () => {
 		expect((await read_node(f, top._id)).archiveOperationId).not.toBeNull();
 	});
 
-	test("an item whose path gets too long after the check stays archived, and the job says so", async () => {
+	test("Keep both of a folder is cut only by the paths inside that folder", async () => {
 		const f = await fixture();
+		// Another item of the same job has a path of 1,024 characters. `/notes` has nothing inside.
+		await folder(f, `/p/${NAMES.join("/")}/${"d".repeat(253)}`);
+		const deepTop = await find_node(f, `/p/${NAMES[0]}`);
+		const notes = await folder(f, "/notes");
+		expect(await archive(f, [deepTop._id, notes])).toEqual({ _yay: null });
+		await folder(f, "/notes");
+
+		const job = (await restore(f, [notes]))._yay!;
+		expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+		expect((await read_node(f, notes)).name, "the Keep both name is not cut").toBe("notes-2");
+	});
+
+	/**
+	 * Archive `/first` and `/p/<NAMES>/<d * 250>` (1,021 characters) with a short folder `e` next to it
+	 * as one operation, and put a new
+	 * `/first` in the way. The restore checks, then waits on the `/first` clash. Then `/p` gets a name 7
+	 * characters longer, like a rename that ran while the job waited.
+	 */
+	async function seed_late_long_path(f: Fixture) {
 		const deepestPath = `/p/${NAMES.join("/")}/${"d".repeat(250)}`;
 		await folder(f, deepestPath);
 		const top = await find_node(f, `/p/${NAMES[0]}`);
 		const deepest = await find_node(f, deepestPath);
+		const short = await folder(f, `/p/${NAMES.join("/")}/e`);
 		// `/first` is in the same operation and comes first. Its clash pauses the job after the check.
 		const first = await folder(f, "/first");
 		expect(await archive(f, [first, top._id])).toEqual({ _yay: null });
@@ -184,38 +207,74 @@ describe("unarchive_nodes path limit", () => {
 		const job = (await restore(f, [top._id]))._yay!;
 		expect((await read_activity(f, job.activityId)).status).toBe("awaiting_input");
 		await rename_directly(f, { path: "/p", name: "pppppppp" });
+		return { first, deepest, short, job };
+	}
+
+	test("an item whose path gets too long after the check stays archived on its own, and the job is partly done", async () => {
+		const f = await fixture();
+		const { first, deepest, job } = await seed_late_long_path(f);
 
 		expect(await resolve(f, job.runId, "skip")).toEqual({ _yay: null });
 		const ended = await run_to_end(f, job);
 		expect(ended.activity).toMatchObject({
-			status: "succeeded",
-			progress: { completed: 3, skipped: 2 },
-			errorMessage: `1 item would have a path over 1,024 characters: …/${"d".repeat(250)} (1,028), so it stayed archived. Shorten a folder name, then restore it again.`,
+			status: "partial",
+			progress: { completed: 4, skipped: 2 },
+			errorMessage: `1 item stayed archived because its path would be too long: …/${"d".repeat(250)} (1,028 characters). Shorten a folder name, then restore it again.`,
 		});
 		const run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
 		expect((await read_node(f, deepest._id)).archiveOperationId, "the deepest folder stays archived").toBe(
-			run.skipOperationId,
+			run.longPathOperationId,
+		);
+		expect(run.longPathOperationId).not.toBe(run.skipOperationId);
+
+		// With a shorter folder name it comes back alone. The skipped `/first` does not ask again.
+		await rename_directly(f, { path: "/pppppppp", name: "p", isWholeTree: true });
+		expect(await restore(f, [deepest._id]), "the restore of the deepest folder alone").toEqual({ _yay: null });
+		expect((await read_node(f, deepest._id)).archiveOperationId).toBeNull();
+		expect((await read_node(f, first)).archiveOperationId).toBe(run.skipOperationId);
+	});
+
+	test("a job that fails after an item stayed archived for its path still says so", async () => {
+		const f = await fixture();
+		const { short, job } = await seed_late_long_path(f);
+		// `e` comes after the deepest folder. It becomes read-only after the check, so it stops the job.
+		await lock_archived(f, short);
+
+		expect(await resolve(f, job.runId, "skip")).toEqual({ _yay: null });
+		const ended = await run_to_end(f, job);
+		expect(ended.activity.status).toBe("failed");
+		expect(ended.activity.errorMessage).toMatch(
+			/^Stopped partway: .+ 1 item stayed archived because its path would be too long: …\/d+ \(1,028 characters\)\. Shorten a folder name, then restore it again\.$/,
 		);
 	});
 
-	test("a child archived on its own follows its restored folder over 1,024 characters and comes back later", async () => {
+	test("a child archived on its own that followed its folder past 1,024 characters cannot come back longer", async () => {
 		const f = await fixture();
-		const deepestPath = `/p/${NAMES.join("/")}/${"d".repeat(250)}`;
-		const deepestId = await folder(f, deepestPath);
-		const top = await find_node(f, `/p/${NAMES[0]}`);
+		const chain = `${NAMES.join("/")}/${"d".repeat(250)}`;
+		// 1,023 characters.
+		const deepestId = await folder(f, `/p/x/${chain}`);
+		const top = await find_node(f, "/p/x");
 		expect(await archive(f, [deepestId])).toEqual({ _yay: null });
 		expect(await archive(f, [top._id])).toEqual({ _yay: null });
-		await rename_directly(f, { path: "/p", name: "pppppppp" });
-
-		expect(await restore(f, [top._id])).toEqual({ _yay: null });
+		await folder(f, "/p/x");
+		const job = (await restore(f, [top._id]))._yay!;
+		expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
 		const followed = await read_node(f, deepestId);
 		expect(followed.archiveOperationId, "the child stays archived").not.toBeNull();
-		expect(followed.path.length).toBe(1028);
+		expect(followed.path, "the child follows its folder to 1,025 characters").toBe(`/p/x-2/${chain}`);
 
-		expect(await restore(f, [deepestId])).toEqual({ _yay: null });
-		expect(await read_node(f, deepestId), "the child is back where it was").toMatchObject({
-			archiveOperationId: null,
-			path: followed.path,
+		expect(await restore(f, [deepestId]), "the child cannot come back 2 characters longer").toEqual({
+			_nay: {
+				name: "path_too_long",
+				message: `Can't restore. 1 item would have a path over 1,024 characters: …/${"d".repeat(250)} (1,025). Shorten a folder name, then restore again.`,
+			},
 		});
+		// A real Rename makes the folder shorter. The child follows and can come back.
+		expect(
+			(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId: top._id, path: "y" }))._nay,
+		).toBeUndefined();
+		expect(await restore(f, [deepestId])).toEqual({ _yay: null });
+		expect(await read_node(f, deepestId)).toMatchObject({ archiveOperationId: null, path: `/p/y/${chain}` });
 	});
 });

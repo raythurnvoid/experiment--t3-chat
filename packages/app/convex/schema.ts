@@ -4451,6 +4451,12 @@ const app_convex_schema = defineSchema({
 		 */
 		archiveOperationId: v.union(v.string(), v.null()),
 		/**
+		 * The path length when the node was archived. A restore may give an archived child its folder's
+		 * new path, even over the limit. Restore checks the limit against this length, so that path cannot
+		 * come back longer. Read only while the node is archived. Older nodes have none and use `path`.
+		 */
+		archivedPathLength: v.optional(v.number()),
+		/**
 		 * Created by user ID. SYSTEM writes read-only external content.
 		 */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
@@ -5950,10 +5956,20 @@ const app_convex_schema = defineSchema({
 		 */
 		maxPathLength: v.optional(v.number()),
 		/**
+		 * Restore: the longest path inside each top item, for at most 500 top items. Keep both of one of
+		 * these folders uses it instead of `maxPathLength`.
+		 */
+		topMaxPathLengths: v.optional(v.array(v.object({ nodeId: v.id("files_nodes"), length: v.number() }))),
+		/**
 		 * Restore: how many items would get a path over the limit, with the longest one. The check refuses
 		 * the restore when it finds any. An item found later stays archived, and the job says so at the end.
 		 */
 		longPaths: v.optional(v.object({ count: v.number(), name: v.string(), length: v.number() })),
+		/**
+		 * Restore: items found later with a path over the limit stay archived under this operation id. It
+		 * is not `skipOperationId`, so restoring them again does not ask about the items the person skipped.
+		 */
+		longPathOperationId: v.optional(v.string()),
 	})
 		.index("by_organization_workspace_active_kind", ["organizationId", "workspaceId", "active", "kind"])
 		.index("by_requestFirstRun_active", ["requestFirstRunId", "active"])

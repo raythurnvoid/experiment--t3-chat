@@ -3920,12 +3920,15 @@ describe("move", () => {
 		);
 	});
 
-	test("moves a folder whose paths are already over 1,024 characters higher, even when they stay over", async () => {
-		// `/s` + 3 names of 255 characters + one of 251 make 1,022 characters. Then `/s` gets a longer
-		// name, like a path stored before the limit: 1,031 characters.
-		const names = [..."abc"].map((letter) => letter.repeat(255));
-		const chainPath = `/${[...names, "d".repeat(251)].join("/")}`;
-		const fixture = await create_folder_fixture([`/s${chainPath}`, "/sssss"]);
+	// `/s` + 3 names of 255 characters + one of 251 make 1,022 characters.
+	const names = [..."abc"].map((letter) => letter.repeat(255));
+	const chainPath = `/${[...names, "d".repeat(251)].join("/")}`;
+
+	/**
+	 * Give `/s` a longer name with every path inside, like paths stored before the limit. The deepest
+	 * one gets 1,031 characters.
+	 */
+	async function lengthen_s(fixture: Awaited<ReturnType<typeof create_folder_fixture>>) {
 		await fixture.t.run(async (ctx) => {
 			for (const node of await ctx.db.query("files_nodes").collect()) {
 				if (node.path !== "/s" && !node.path.startsWith("/s/")) continue;
@@ -3937,6 +3940,11 @@ describe("move", () => {
 				});
 			}
 		});
+	}
+
+	test("moves a folder whose paths are already over 1,024 characters higher, even when they stay over", async () => {
+		const fixture = await create_folder_fixture([`/s${chainPath}`, "/sssss"]);
+		await lengthen_s(fixture);
 		const top = await get_node(fixture, `/ssssssssss/${names[0]}`);
 		if (!top) throw new Error("Expected the top folder");
 		expect((await get_node(fixture, `/ssssssssss${chainPath}`))?.path.length).toBe(1031);
@@ -3949,6 +3957,61 @@ describe("move", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect((await get_node(fixture, `/sssss${chainPath}`))?.path.length, "the deepest path got shorter").toBe(1026);
+	});
+
+	test("Rename lets a path over 1,024 characters get shorter, and a refusal names the item", async () => {
+		const fixture = await create_folder_fixture([`/s${chainPath}`]);
+		await lengthen_s(fixture);
+		const deepest = (await get_node(fixture, `/ssssssssss${chainPath}`))!;
+		const rename = (name: string) =>
+			test_rename_node(fixture.t, fixture.asUser, {
+				membershipId: fixture.db.membershipId,
+				nodeId: deepest._id,
+				path: name,
+			});
+
+		expect((await rename("d".repeat(246)))._nay, "a Rename that makes the path 5 characters shorter").toBeUndefined();
+		expect((await fixture.t.run((ctx) => ctx.db.get("files_nodes", deepest._id)))?.path.length).toBe(1026);
+		expect(await rename("d".repeat(252)), "a Rename that makes the path 6 characters longer").toMatchObject({
+			_nay: {
+				name: "path_too_long",
+				message: `…/${"d".repeat(252)} would have a path of 1,032 characters. Paths can have at most 1,024 characters. Shorten a folder name or move it higher.`,
+			},
+		});
+	});
+
+	test("an agent Move of a draft lets a path over 1,024 characters get shorter, and a refusal names the item", async () => {
+		const fixture = await create_folder_fixture([`/s/${names.join("/")}`]);
+		const created = await fixture.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: fixture.db.organizationId,
+			workspaceId: fixture.db.workspaceId,
+			userId: fixture.db.userId,
+			path: `/s/${names.join("/")}/${"e".repeat(251)}`,
+			kind: "folder",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		// The draft follows its saved folder to 1,031 characters.
+		await lengthen_s(fixture);
+		const folder = (await get_node(fixture, `/ssssssssss/${names.join("/")}`))!;
+		const move = (destName: string) =>
+			fixture.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				organizationId: fixture.db.organizationId,
+				workspaceId: fixture.db.workspaceId,
+				userId: fixture.db.userId,
+				target: created._yay.target,
+				destParent: { kind: "saved", id: folder._id },
+				destName,
+			});
+
+		expect(await move("e".repeat(246)), "a Move that makes the path 5 characters shorter").toMatchObject({
+			_yay: { destPath: `/ssssssssss/${names.join("/")}/${"e".repeat(246)}` },
+		});
+		expect(await move("e".repeat(252)), "a Move that makes the path 6 characters longer").toMatchObject({
+			_nay: {
+				name: "path_too_long",
+				message: `…/${"e".repeat(252)} would have a path of 1,032 characters. Paths can have at most 1,024 characters. Shorten a folder name or move it higher.`,
+			},
+		});
 	});
 
 	test("refuses a Copy that would push a path inside the folder past 1,024 characters, before any write", async () => {
