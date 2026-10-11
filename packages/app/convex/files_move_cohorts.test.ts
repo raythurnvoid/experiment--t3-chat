@@ -852,6 +852,34 @@ describe("Move cohort repair retries", () => {
 		);
 	});
 
+	test("a stuck repair that ends in the release step clears the notice", async () => {
+		const w = await transfer_workspace();
+		const a = await w.folder("/a");
+		await w.folder("/a/c1");
+		const target = await w.folder("/target");
+		const cohort = async () => (await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first()))!;
+		const cohortId = await w.move(a, target, async () => (await cohort()).workPhase === "release");
+		const runId = (await cohort()).origin.runId;
+		const activity = () => w.t.run((ctx) => activities_db_require_by_source_id(ctx, runId));
+		// Each release pass starts stuck, so the last one is like a retry that works right after a failure.
+		for (let pass = 0; (await cohort()).phase !== "complete"; pass++) {
+			if (pass === 20) throw new Error("The release did not end");
+			await w.t.run(async (ctx) =>
+				ctx.db.patch("activities", (await activities_db_require_by_source_id(ctx, runId))._id, {
+					errorCode: "move_repair_stuck",
+					errorMessage: "stuck",
+				}),
+			);
+			await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+		}
+		const done = await activity();
+		expect([done.status, done.errorCode, done.errorMessage], "the end of repair clears the notice").toEqual([
+			"running",
+			undefined,
+			null,
+		]);
+	});
+
 	test("Try again now is refused for another user and tries at once for the starter", async () => {
 		const { w, cohortId, cohort, activity } = await stuck_move();
 		const activityId = (await activity())._id;
