@@ -307,7 +307,9 @@ export const retry_move_repair = mutation({
 			!activity ||
 			activity.organizationId !== membership.organizationId ||
 			activity.workspaceId !== membership.workspaceId ||
+			activity.visibility !== "requester" ||
 			activity.userId !== userAuth.id ||
+			!activity.feedVisible ||
 			(activity.source.kind !== "files_transfer_run" && activity.source.kind !== "files_pending_update_run")
 		) {
 			return Result({ _nay: { message: "Activity not found" } });

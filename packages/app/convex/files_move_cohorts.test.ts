@@ -924,6 +924,20 @@ describe("Move cohort repair retries", () => {
 		expect((await activity()).errorCode, "a try that works clears the notice").toBeUndefined();
 	});
 
+	test.each([{ visibility: "shared" as const }, { feedVisible: false }])(
+		"Try again now is refused like Stop for %o",
+		async (patch) => {
+			const { w, cohort, activity } = await stuck_move();
+			const activityId = (await activity())._id;
+			await w.t.run((ctx) => ctx.db.patch("activities", activityId, patch));
+			const before = await cohort();
+			expect(
+				await w.asUser.mutation(api.activities.retry_move_repair, { membershipId: w.db.membershipId, activityId }),
+			).toEqual({ _nay: { message: "Activity not found" } });
+			expect((await cohort()).repairNextRetryAt, "a refused try keeps the wait").toBe(before.repairNextRetryAt);
+		},
+	);
+
 	test("ops find a stuck group and retry_now finishes it once the fault is gone", async () => {
 		const { w, cohortId, cohort, activity } = await stuck_move();
 		expect(
