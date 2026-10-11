@@ -1190,9 +1190,8 @@ describe("scalable Copy Save", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", copies[2]!._id))).toEqual(copies[2]);
 	});
 
-	// Keep this at 1,000 Copy outputs. Our Save reads a fixed number of docs per step, but convex-test still
-	// scans the whole table for each query, even an indexed one (our patch only stops it from scanning every
-	// table). Run this slow check with test:files:full-size.
+	// Keep all 1,000 Copy outputs. Save and the test fork read indexed pages.
+	// Run this large check with test:files:full-size.
 	test(
 		"saves 1,000 Copy outputs beside one ordinary edit",
 		async () => {

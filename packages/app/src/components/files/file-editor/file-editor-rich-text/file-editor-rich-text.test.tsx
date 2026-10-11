@@ -488,41 +488,46 @@ describe("FileEditorRichTextNonCollab", () => {
 	});
 
 	test("Escape on a bubble button hides the bubble and puts the focus back in the text", async () => {
-		resolveQueryWithNonCollaborativeContent("alpha beta\n");
-		renderNonCollabRichEditor();
-		await flushEditorMount();
-		const editor = editorHarness.editor;
-		if (!editor) {
-			throw new Error("Expected the mounted editor to be captured");
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha beta\n");
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+			const editor = editorHarness.editor;
+			if (!editor) {
+				throw new Error("Expected the mounted editor to be captured");
+			}
+
+			// Run listener setup before the focus frame and the 250 ms bubble delay.
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(0);
+			});
+			await act(async () => {
+				editor.chain().focus().setTextSelection({ from: 1, to: 6 }).run();
+				await vi.advanceTimersByTimeAsync(400);
+			});
+			const bubble = document.querySelector<HTMLElement>(".FileEditorRichTextBubble-rendered");
+			if (!bubble) {
+				throw new Error("Expected the bubble to show for the selection");
+			}
+
+			// The toolbar has a Bold button too, so take the one in the bubble.
+			const boldButton = within(bubble).getByRole("button", { name: "Bold (Ctrl+B)" });
+			act(() => {
+				boldButton.focus();
+			});
+
+			fireEvent.keyDown(boldButton, { key: "Escape" });
+			// Tiptap moves the focus one frame later.
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(50);
+			});
+
+			expect(document.querySelector(".FileEditorRichTextBubble-rendered")).toBeNull();
+			expect(document.activeElement).toBe(editor.view.dom);
+		} finally {
+			vi.useRealTimers();
 		}
-
-		// The bubble registers its listeners from a timer. Tiptap shows it 250 ms after the selection changes.
-		await act(async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
-		});
-		await act(async () => {
-			editor.chain().focus().setTextSelection({ from: 1, to: 6 }).run();
-			await new Promise((resolve) => setTimeout(resolve, 400));
-		});
-		const bubble = document.querySelector<HTMLElement>(".FileEditorRichTextBubble-rendered");
-		if (!bubble) {
-			throw new Error("Expected the bubble to show for the selection");
-		}
-
-		// The toolbar has a Bold button too, so take the one in the bubble.
-		const boldButton = within(bubble).getByRole("button", { name: "Bold (Ctrl+B)" });
-		act(() => {
-			boldButton.focus();
-		});
-
-		fireEvent.keyDown(boldButton, { key: "Escape" });
-		// Tiptap moves the focus one frame later.
-		await act(async () => {
-			await new Promise((resolve) => setTimeout(resolve, 50));
-		});
-
-		expect(document.querySelector(".FileEditorRichTextBubble-rendered")).toBeNull();
-		expect(document.activeElement).toBe(editor.view.dom);
 	});
 
 	test("Escape in an open bubble select closes only the select, and the bubble stays", async () => {

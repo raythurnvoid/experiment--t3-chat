@@ -602,7 +602,8 @@ describe("paged Move transaction budgets", () => {
 				"the cap refuses one more owner draft",
 			).rejects.toThrow("Too many people have pending changes");
 		console.info("Move budget fixture: shares, links and owner drafts ready");
-		await t.run(async (ctx) => {
+		// Restrict updated the metadata flags after the initial fixture was saved.
+		const metadataBeforeMove = await t.run(async (ctx) => {
 			expect(
 				await ctx.db
 					.query("files_pending_hides")
@@ -622,10 +623,26 @@ describe("paged Move transaction budgets", () => {
 					.collect(),
 			).toHaveLength(50);
 			expect(await ctx.db.query("files_share_links").collect()).toHaveLength(500);
+			return args.dense
+				? await ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+							q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId),
+						)
+						.collect()
+				: [];
 		});
+		const savedTextBeforeMove = args.dense
+			? await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
+				path: seeded.heavy.path, includePending: false,
+			})
+			: null;
+		if (args.dense)
+			expect(savedTextBeforeMove?.content, "Save puts a blank line after the rich-text frontmatter").toBe(frontmatter + "\n" + body);
 
 		const { peaks, record, check } = budget_recorder();
-		const metadataPages = measure_cohort(record, args.dense ? seeded.metadata : []);
+		const metadataPages = measure_cohort(record, metadataBeforeMove);
 		// The metadata catalog's compactor runs in its own transactions while the Move goes on.
 		test_spy_handler(compact_metadata_catalog, async (handler, ctx, args) => {
 			const before = await ctx.meta.getTransactionMetrics();
@@ -728,13 +745,14 @@ describe("paged Move transaction budgets", () => {
 				.filter(([key]) => !["_id", "_creationTime", "moveView", "path", "treePath", "parentId"].includes(key))))
 				.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 			expect(metadata, "Dense metadata keeps all 896 saved docs").toHaveLength(896);
-			expect(metadata_fields(metadata)).toEqual(metadata_fields(seeded.metadata));
+			expect(metadata_fields(metadata), "Dense Move keeps the metadata captured after Restrict")
+				.toEqual(metadata_fields(metadataBeforeMove));
 			expect(metadata.every((row) => row.moveView === undefined && row.path === "/target/heavy.md" && row.treePath === row.path)).toBe(true);
 			expect(metadata.filter((row) => row.docKind === "field").every((row) => row.parentId === seeded.target._id)).toBe(true);
 			expect((await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 				organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
 				path: "/target/heavy.md", includePending: false,
-			}))?.content, "Dense metadata Move keeps its saved text").toBe(textContent);
+			}))?.content, "Dense metadata Move keeps its saved text").toBe(savedTextBeforeMove?.content);
 		}
 	};
 
