@@ -813,6 +813,35 @@ describe("Move write reservations", () => {
 		expect(await read_tasks(), "every busy task stays for a later pass").toEqual(tasks);
 	});
 
+	test("one sweep pass handles at most 32 rows, and skipped rows do not count", async () => {
+		const f = await fixture();
+		const otherWorkspaceId = await f.t.run(async (ctx) => {
+			const db = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" });
+			// Busy tasks first, then more free tasks than one pass may handle.
+			for (const scope of [
+				{ organizationId: f.db.organizationId, workspaceId: f.db.workspaceId },
+				{ organizationId: db.organizationId, workspaceId: db.workspaceId },
+			])
+				for (let index = 0; index < 40; index++)
+					await ctx.db.insert("files_pending_update_state_cleanup_tasks", { ...scope, createdAt: Date.now() });
+			return db.workspaceId;
+		});
+		const result = await f.t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {
+			_test_disableReschedule: true,
+		});
+		const otherTasks = await f.t.run(
+			async (ctx) =>
+				(await ctx.db.query("files_pending_update_state_cleanup_tasks").collect()).filter(
+					(task) => task.workspaceId === otherWorkspaceId,
+				).length,
+		);
+		expect({ ...result, otherTasks }, "one pass handles at most 32 rows").toEqual({
+			deletedCount: 32,
+			done: false,
+			otherTasks: 8,
+		});
+	});
+
 	test("busy rows at the head of the sweep do not block another workspace", async () => {
 		const f = await fixture();
 		const other = await f.t.run(async (ctx) => {

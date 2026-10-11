@@ -2809,7 +2809,10 @@ export const recover_file_pending_update_expiry_checks = internalMutation({
 	},
 });
 
-/** How many retired states one cleanup task drains per pass. */
+/**
+ * How many rows one sweep pass handles, and how many retired states one cleanup task drains in it.
+ * This keeps a pass under the per-mutation write limits.
+ */
 const PENDING_STATE_SWEEP_BATCH_SIZE = 32;
 /** How many rows one sweep pass reads, handled or skipped, before it continues in a new pass. */
 const PENDING_STATE_SWEEP_ROW_LIMIT = 128;
@@ -2850,6 +2853,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 		// Pages, text inputs, and trusted updates can each approach 1 MB.
 		let remainingLargeValues = 6;
 		let remainingRows = PENDING_STATE_SWEEP_ROW_LIMIT;
+		let remainingHandled = PENDING_STATE_SWEEP_BATCH_SIZE;
 		const busyWorkspaces = new Map<string, boolean>();
 		const isBusy = async (scope: {
 			organizationId: Id<"organizations">;
@@ -2885,7 +2889,8 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 		type Scope = Parameters<typeof isBusy>[0];
 		/**
 		 * Walk one table from `after` in index order. A large table spends one large value per row
-		 * it reads, even a skipped one. `handle` returns false to retry its row in the next pass.
+		 * it reads, even a skipped one. Only handled rows count toward `remainingHandled`, so skipped
+		 * rows still just move the cursor. `handle` returns false to retry its row in the next pass.
 		 * Returns "end", or the last row passed when the pass must stop.
 		 */
 		const walk = async <Row extends Scope & { _creationTime: number }>(walkArgs: {
@@ -2903,7 +2908,11 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 				remainingRows -= rows.length;
 				if (walkArgs.large) remainingLargeValues -= rows.length;
 				for (const row of rows) {
-					if (!(await isBusy(row)) && !(await walkArgs.handle(row))) return after;
+					if (!(await isBusy(row))) {
+						if (remainingHandled === 0) return after;
+						remainingHandled -= 1;
+						if (!(await walkArgs.handle(row))) return after;
+					}
 					after = { expiresAt: walkArgs.expiresAt(row), creationTime: row._creationTime };
 				}
 				if (rows.length < limit) return "end";
