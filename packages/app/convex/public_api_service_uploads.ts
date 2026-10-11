@@ -56,6 +56,7 @@ import {
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_check_name_and_path_length,
+	files_check_new_folder_count,
 } from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
@@ -1001,6 +1002,12 @@ export const create_upload_target = internalMutation({
 		});
 		if (tooLong._nay) {
 			return tooLong;
+		}
+		const newFolders = files_check_new_folder_count(
+			segments.length - 1 - (effectiveDestinationAclNode?.pathDepth ?? 0),
+		);
+		if (newFolders._nay) {
+			return newFolders;
 		}
 		// Refuse before the asset insert below: the create meets a Move only after it.
 		const busy = await files_nodes_db_check_create_busy(ctx, {

@@ -1029,14 +1029,6 @@ export const files_NAME_MAX_LENGTH = 255;
 export const files_PATH_MAX_LENGTH = 1024;
 
 /**
- * Limits for one call that creates files and their missing folders. One call names at most 64
- * distinct parent folder paths (every level of every file), and one path creates at most 32 new
- * folders, so the call stays under Convex's 4,096 index ranges.
- */
-export const files_REQUEST_FOLDER_PREFIXES_MAX = 64;
-export const files_NEW_FOLDER_DEPTH_MAX = 32;
-
-/**
  * Refuse a name or a path over the limits. Pass only the names and the path a write sets: an old
  * node may keep a longer name, so lookups and unchanged names are never checked.
  */
@@ -1046,6 +1038,55 @@ export function files_check_name_and_path_length(args: { names?: string[]; path?
 	}
 	if (args.path !== undefined && args.path.length > files_PATH_MAX_LENGTH) {
 		return Result({ _nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters." } });
+	}
+	return Result({ _yay: null });
+}
+
+/**
+ * Folder limits for one create call. Each folder on a path costs database reads, and each new
+ * folder costs about 17 index reads, so these keep one call well under the 4,096 index reads a
+ * mutation may do. The app folder import, volumes, and Move parents stay within the new folder limit.
+ */
+export const files_NEW_FOLDER_DEPTH_MAX = 32;
+export const files_REQUEST_FOLDER_PREFIXES_MAX = 64;
+
+/**
+ * Refuse a call whose paths name too many distinct folders. It reads only the strings, so callers run
+ * it before any database read. Pass the paths the call walks: absolute, or relative to its parent.
+ */
+export function files_check_request_folder_prefixes(paths: string[]) {
+	const prefixes = new Set<string>();
+	for (const path of paths) {
+		let prefix = "";
+		for (const segment of path_extract_segments_from(path).slice(0, -1)) {
+			prefix += `/${segment}`;
+			prefixes.add(prefix);
+			// Stop early, so a huge request does not build a huge set.
+			if (prefixes.size > files_REQUEST_FOLDER_PREFIXES_MAX) {
+				return Result({
+					_nay: {
+						name: "too_many_folders",
+						message: `This request uses too many folders (limit ${files_REQUEST_FOLDER_PREFIXES_MAX}). Send fewer files per request.`,
+					},
+				});
+			}
+		}
+	}
+	return Result({ _yay: null });
+}
+
+/**
+ * Refuse a path that adds too many new folders. Count only the missing folders, so a file can still go
+ * into an existing deeper folder.
+ */
+export function files_check_new_folder_count(count: number) {
+	if (count > files_NEW_FOLDER_DEPTH_MAX) {
+		return Result({
+			_nay: {
+				name: "too_many_folders",
+				message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+			},
+		});
 	}
 	return Result({ _yay: null });
 }

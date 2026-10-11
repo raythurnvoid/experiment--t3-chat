@@ -13,13 +13,13 @@ import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts
 import { quotas_db_ensure } from "./quotas.ts";
 import { quotas } from "../shared/quotas.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
-import { test_convex, test_rename_node, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_db_hold_move_slot, test_rename_node, test_mocks_fill_db_with } from "./setup.test.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import { files_NAME_MAX_LENGTH } from "../shared/files.ts";
+import { files_NAME_MAX_LENGTH, files_NEW_FOLDER_DEPTH_MAX } from "../shared/files.ts";
 
 const SEAL_PROCESSING_PATH = "/api/v1/plugins/service-grants/seal-processing";
 const CREATE_TARGET_PATH = "/api/v1/files/service-uploads/create-target";
@@ -1254,9 +1254,8 @@ describe("service upload targets", () => {
 			if (created._nay) {
 				throw new Error(created._nay.message);
 			}
-			// Only the reservation decides the refusal, so a placeholder cohort id is enough.
 			await ctx.db.insert("files_move_source_reservations", {
-				cohortId: "999999files_move_cohorts" as Id<"files_move_cohorts">,
+				cohortId: await test_db_hold_move_slot(ctx, fixture),
 				source: { kind: "saved", id: created._yay },
 				mode: "subtree",
 				userId: null,
@@ -1303,6 +1302,66 @@ describe("service upload targets", () => {
 			body: target_body({ path: `/meetings/${longName}/recording.mp4` }),
 		});
 		expect(response.status, "a service upload into an old long-named folder").toBe(200);
+		expect(await read_targets(t)).toHaveLength(1);
+	});
+
+	test("folder limits: 32 new folders fit during a Move, one more answers 400 and writes nothing", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture });
+		// Another folder is in a Move, so every write guard runs.
+		await t.run(async (ctx) => {
+			for (const path of ["/meetings/base", "/moving"]) {
+				const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					userId: fixture.userId,
+					parentId: files_ROOT_ID,
+					path,
+					kind: "folder",
+					now: Date.now(),
+				});
+				if (created._nay) {
+					throw new Error(created._nay.message);
+				}
+				if (path === "/moving") {
+					await ctx.db.insert("files_move_source_reservations", {
+						cohortId: await test_db_hold_move_slot(ctx, fixture),
+						source: { kind: "saved", id: created._yay },
+						mode: "subtree",
+						userId: null,
+						generation: 1,
+					});
+				}
+			}
+		});
+		const path = (newFolders: number) =>
+			`/meetings/base/${Array<string>(newFolders).fill("a").join("/")}/recording.mp4`;
+
+		const tooDeep = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: sealed,
+			body: target_body({ path: path(files_NEW_FOLDER_DEPTH_MAX + 1) }),
+		});
+		expect(tooDeep.status, "one new folder too many").toBe(400);
+		expect(await tooDeep.json()).toEqual({
+			message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+			code: "too_many_folders",
+		});
+		expect(await read_targets(t)).toHaveLength(0);
+		expect(
+			await t.run(async (ctx) => await ctx.db.query("files_r2_assets").collect()),
+			"a refused path writes no asset",
+		).toHaveLength(0);
+
+		const fits = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: sealed,
+			body: target_body({ path: path(files_NEW_FOLDER_DEPTH_MAX) }),
+		});
+		expect(fits.status, "the most new folders a path may add").toBe(200);
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 

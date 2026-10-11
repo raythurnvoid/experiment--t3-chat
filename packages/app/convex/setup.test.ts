@@ -36,6 +36,7 @@ import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
 import { activities_db_get_by_source_id, activities_db_require_by_source_id } from "./activities_db.ts";
+import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
 
 // #region helpers
 
@@ -327,6 +328,85 @@ export async function test_db_get_slot_cohort(
 	const slot = await ctx.db.query("files_move_workspace_slots")
 		.withIndex("by_workspace", q => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId)).unique();
 	return slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
+}
+
+/**
+ * Start a staging Move that holds this workspace's Move slot, like files_move_cohorts.ts db_begin.
+ * Add its reservations after this, so busy checks see the held slot.
+ */
+export async function test_db_hold_move_slot(
+	ctx: MutationCtx,
+	scope: Pick<Doc<"files_move_cohorts">, "organizationId" | "workspaceId" | "userId" | "membershipId">,
+) {
+	const pins = await files_media_validation_db_capture_versions(ctx, { userId: scope.userId, scopes: [scope] });
+	const cohortId = await ctx.db.insert("files_move_cohorts", {
+		organizationId: scope.organizationId,
+		workspaceId: scope.workspaceId,
+		userId: scope.userId,
+		membershipId: scope.membershipId,
+		membershipLifetime: 0,
+		// Busy checks and placement reads never load the origin, so these IDs only need the right table.
+		origin: {
+			kind: "transfer",
+			runId: "999999files_transfer_runs" as Id<"files_transfer_runs">,
+			itemId: "999999files_transfer_items" as Id<"files_transfer_items">,
+		},
+		slotGeneration: 1,
+		fence: 1,
+		attemptFence: 1,
+		workId: null,
+		deadlineAt: Date.now() + 60_000,
+		reviewDeadlineAt: Date.now() + 60_000,
+		phase: "staging",
+		visibleView: "before",
+		step: 0,
+		workPhase: "items",
+		operationTime: Date.now(),
+		publishedAt: null,
+		itemCount: 1,
+		stagedItemCount: 0,
+		validatedItemCount: 0,
+		pendingWorkCount: 0,
+		affectedNodeCount: 0,
+		materializedNodeCount: 0,
+		proofEpoch: 1,
+		clockPins: {
+			organization: pins.versions[0] as Doc<"files_move_cohorts">["clockPins"]["organization"],
+			workspace: pins.versions[1] as Doc<"files_move_cohorts">["clockPins"]["workspace"],
+			review: pins.pendingVersions[0]!,
+		},
+		billedUserId: scope.userId,
+		contentCostCents: 0,
+		storedByteDelta: 0,
+		storedFileCount: 0,
+		billingApplied: false,
+		privateByteDelta: 0,
+		privateNodeDelta: 0,
+		privateAccountingApplied: false,
+		planningCursor: null,
+		stagingCursor: null,
+		validationCursor: null,
+		cleanupCursor: null,
+		errorCode: null,
+		errorMessage: null,
+		conflictItemId: null,
+	});
+	const slot = await ctx.db
+		.query("files_move_workspace_slots")
+		.withIndex("by_workspace", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
+		.unique();
+	if (slot) {
+		await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId, generation: slot.generation + 1 });
+	} else {
+		await ctx.db.insert("files_move_workspace_slots", {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			cohortId,
+			generation: 1,
+			searchGeneration: 1,
+		});
+	}
+	return cohortId;
 }
 
 /**

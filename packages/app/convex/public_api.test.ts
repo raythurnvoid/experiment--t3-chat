@@ -4,7 +4,7 @@ import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { getFunctionName } from "convex/server";
 import type { Id } from "./_generated/dataModel";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_db_hold_move_slot, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
@@ -20,6 +20,8 @@ import {
 	files_get_utf8_byte_size,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_NAME_MAX_LENGTH,
+	files_NEW_FOLDER_DEPTH_MAX,
+	files_REQUEST_FOLDER_PREFIXES_MAX,
 } from "../shared/files.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -4278,9 +4280,8 @@ describe("files upload-urls", () => {
 				treePath: "/dir/",
 				pathDepth: 1,
 			});
-			// Only the reservation decides the refusal, so a placeholder cohort id is enough.
 			await ctx.db.insert("files_move_source_reservations", {
-				cohortId: "999999files_move_cohorts" as Id<"files_move_cohorts">,
+				cohortId: await test_db_hold_move_slot(ctx, db),
 				source: { kind: "saved", id: dirId },
 				mode: "subtree",
 				userId: null,
@@ -4307,6 +4308,88 @@ describe("files upload-urls", () => {
 			assets: await ctx.db.query("files_r2_assets").collect(),
 		}));
 		expect(written).toEqual({ nodes: ["/dir"], assets: [] });
+	});
+
+	describe("folder limits under the real read limits, while another folder is in a Move", () => {
+		async function seed_upload_during_move(clerkUserId: string) {
+			const t = test_convex({ transactionLimits: true });
+			install_r2_object_reads();
+			const db = await seed_signed_in_membership({ t, clerkUserId });
+			const { credential } = await seed_write_credential({ t, db, clerkSubject: clerkUserId });
+			await t.run(async (ctx) => {
+				const movingId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: files_ROOT_ID,
+					name: "moving",
+					sortName: files_sort_text_key("moving"),
+					kind: "folder",
+					path: "/moving",
+					treePath: "/moving/",
+					pathDepth: 1,
+				});
+				await ctx.db.insert("files_move_source_reservations", {
+					cohortId: await test_db_hold_move_slot(ctx, db),
+					source: { kind: "saved", id: movingId },
+					mode: "subtree",
+					userId: null,
+					generation: 1,
+				});
+			});
+			const post = (paths: string[]) =>
+				t.fetch("/api/v1/files/upload-urls", {
+					method: "POST",
+					headers: auth_headers(credential),
+					body: JSON.stringify({
+						files: paths.map((path) => ({ path, contentType: "application/octet-stream", size: 1 })),
+					}),
+				});
+			return { t, post };
+		}
+		const chain = (head: string, folders: number) => `/${[head, ...Array<string>(folders - 1).fill("a")].join("/")}`;
+
+		test("20 files in two new chains that use every folder slot fit", async () => {
+			const { post } = await seed_upload_during_move("clerk-upload-urls-folder-slots");
+			const chains = [chain("p", files_NEW_FOLDER_DEPTH_MAX), chain("q", files_NEW_FOLDER_DEPTH_MAX)];
+			expect(chains.length * files_NEW_FOLDER_DEPTH_MAX).toBe(files_REQUEST_FOLDER_PREFIXES_MAX);
+			const response = await post(Array.from({ length: 20 }, (_, i) => `${chains[i % 2]}/${i}.bin`));
+			expect(response.status, "a batch at the folder limits").toBe(200);
+			expect(((await response.json()) as { files: unknown[] }).files).toHaveLength(20);
+		});
+
+		test("too many folders answer 400 too_many_folders and write nothing", async () => {
+			const { t, post } = await seed_upload_during_move("clerk-upload-urls-too-many-folders");
+			const count = () =>
+				t.run(async (ctx) => ({
+					nodes: (await ctx.db.query("files_nodes").collect()).length,
+					assets: (await ctx.db.query("files_r2_assets").collect()).length,
+				}));
+			const before = await count();
+
+			// One folder more than a call may name, counted from the strings before any lookup.
+			const tooMany = await post([
+				`${chain("p", files_NEW_FOLDER_DEPTH_MAX)}/0.bin`,
+				`${chain("q", files_REQUEST_FOLDER_PREFIXES_MAX - files_NEW_FOLDER_DEPTH_MAX + 1)}/1.bin`,
+			]);
+			expect(tooMany.status).toBe(400);
+			expect(await tooMany.json(), "too many folders in one batch").toEqual({
+				message: `This request uses too many folders (limit ${files_REQUEST_FOLDER_PREFIXES_MAX}). Send fewer files per request.`,
+				code: "too_many_folders",
+			});
+
+			const tooDeepPath = `${chain("d", files_NEW_FOLDER_DEPTH_MAX + 1)}/f.bin`;
+			const tooDeep = await post([tooDeepPath]);
+			expect(tooDeep.status, "one path with one new folder too many").toBe(400);
+			expect(await tooDeep.json()).toEqual({
+				message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+				path: tooDeepPath,
+				code: "too_many_folders",
+			});
+			expect(await count()).toEqual(before);
+		});
 	});
 
 	test("a name over 255 characters refuses the whole batch with 400 before any item is written", async () => {

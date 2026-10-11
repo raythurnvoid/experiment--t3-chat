@@ -725,6 +725,21 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   and Restore. Keep both and Copy names cut the base name to fit. Refusals say `Names can have at
   most 255 characters.` or `Paths can have at most 1,024 characters.`. Lookups never check, and a
   node stored before the limits keeps its longer name until a write changes it.
+- Folder limits per create call (`shared/files.ts`), so one call stays under the 4,096 index reads
+  of a mutation: one path adds at most `files_NEW_FOLDER_DEPTH_MAX` (32) new folders
+  (`files_check_new_folder_count`, in the create helper and in each batch door's check pass; existing
+  folders do not count, so a file can still go into an existing deeper folder), and one call names at
+  most `files_REQUEST_FOLDER_PREFIXES_MAX` (64) distinct folder prefixes
+  (`files_check_request_folder_prefixes`, from the strings before any read). `create_upload_nodes`
+  counts prefixes of its relative paths, so files into an existing deep parent count none; the API
+  doors count absolute prefixes. Both refuse the whole call with name `too_many_folders`. Batch doors
+  look up and check each folder once per call, and pass one `folders` map to every
+  `files_nodes_db_create_node_recursively_at_path` call so later items reuse found and new folders.
+  The Move busy check (`files_move_reservations_db_find_blocker`) reads the workspace Move slot
+  first: a Move holds that slot while any of its reservations or slot claims exist, so a free slot
+  means no parent walk. During a Move, each parent's answer is kept for the rest of the transaction
+  and dropped when a reservation or a parent changes. Test fixtures that add reservations must hold
+  the slot too (`test_db_hold_move_slot` in `convex/setup.test.ts`).
 - Only an active folder takes new children. Every create door with a parent id answers `Not found`
   when the parent is a file or an archived folder: `create_folder_node`, `create_text_node` (its
   preflight refuses before any R2 write), `create_upload_node(s)`, and the shared
