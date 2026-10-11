@@ -829,10 +829,11 @@ async function db_resolve_name(
 
 		const path = path_join(args.parentPath, name);
 		// A Copy checks every item here, so a folder copied deeper refuses before any write. A Move
-		// keeps an older long name.
+		// keeps an older long name, and an older long path may get shorter.
 		const tooLong = files_check_name_and_path_length({
 			names: args.run.kind === "move" && name === args.item.sourceName ? [] : [name],
 			path,
+			oldPath: args.run.kind === "move" ? args.item.sourcePath : undefined,
 		});
 		if (tooLong._nay) return tooLong;
 		const claims =

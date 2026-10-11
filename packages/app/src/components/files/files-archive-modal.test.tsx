@@ -228,7 +228,7 @@ describe("FilesArchiveModal", () => {
 });
 
 describe("FilesArchiveRunModal", () => {
-	const pausedRestore = (canReplace: boolean) => ({
+	const pausedRestore = (canReplace: boolean, canKeepBoth = true) => ({
 		kind: "restore",
 		revision: 3,
 		activity: {
@@ -245,6 +245,7 @@ describe("FilesArchiveRunModal", () => {
 			path: "/Reports/a.md",
 			occupantPath: "/Reports/a.md",
 			canReplace,
+			canKeepBoth,
 		},
 		archived: [],
 		notArchived: [],
@@ -290,6 +291,15 @@ describe("FilesArchiveRunModal", () => {
 		const clash = within(dialog).getByRole("group", { name: "/Reports/a.md" });
 		expect(within(clash).queryByRole("radio", { name: "Replace" })).toBeNull();
 		expect(within(clash).getByRole("radio", { name: "Keep both" })).toBeTruthy();
+	});
+
+	test("hides Keep both when the server says no new name fits", async () => {
+		useQueryMock.mockReturnValue(pausedRestore(true, false));
+		renderRunModal();
+		const dialog = await screen.findByRole("dialog", { name: "Restore files" });
+		const clash = within(dialog).getByRole("group", { name: "/Reports/a.md" });
+		expect(within(clash).queryByRole("radio", { name: "Keep both" })).toBeNull();
+		expect(within(clash).getByRole("radio", { name: "Skip" })).toBeTruthy();
 	});
 
 	test("lists the selected items the archive did not archive", async () => {

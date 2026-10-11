@@ -389,10 +389,17 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 										In the way: {conflict.occupantPath}
 									</p>
 								) : null}
-								<label className={"FilesArchiveRunModal-choice" satisfies FilesArchiveRunModal_ClassNames}>
-									<MyRadio name={choiceName} checked={choice === "keep_both"} onChange={() => setChoice("keep_both")} />
-									Keep both
-								</label>
+								{/* Keep both needs a new name that keeps every path inside the limit. The server says when one fits. */}
+								{conflict.canKeepBoth ? (
+									<label className={"FilesArchiveRunModal-choice" satisfies FilesArchiveRunModal_ClassNames}>
+										<MyRadio
+											name={choiceName}
+											checked={choice === "keep_both"}
+											onChange={() => setChoice("keep_both")}
+										/>
+										Keep both
+									</label>
+								) : null}
 								{/* Replace archives the item in the way. The server says when that is possible. */}
 								{conflict.canReplace ? (
 									<label className={"FilesArchiveRunModal-choice" satisfies FilesArchiveRunModal_ClassNames}>

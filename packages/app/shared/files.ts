@@ -1031,12 +1031,18 @@ export const files_PATH_MAX_LENGTH = 1024;
 /**
  * Refuse a name or a path over the limits. Pass only the names and the path a write sets: an old
  * node may keep a longer name, so lookups and unchanged names are never checked.
+ * Pass `oldPath` when a node moves or is renamed. A path over the limit is then refused only when it
+ * gets longer, so an older long path can always get shorter.
  */
-export function files_check_name_and_path_length(args: { names?: string[]; path?: string }) {
+export function files_check_name_and_path_length(args: { names?: string[]; path?: string; oldPath?: string }) {
 	if (args.names?.some((name) => name.length > files_NAME_MAX_LENGTH)) {
 		return Result({ _nay: { name: "name_too_long", message: "Names can have at most 255 characters." } });
 	}
-	if (args.path !== undefined && args.path.length > files_PATH_MAX_LENGTH) {
+	if (
+		args.path !== undefined &&
+		args.path.length > files_PATH_MAX_LENGTH &&
+		(args.oldPath === undefined || args.path.length > args.oldPath.length)
+	) {
 		return Result({ _nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters." } });
 	}
 	return Result({ _yay: null });

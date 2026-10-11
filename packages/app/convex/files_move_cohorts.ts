@@ -48,6 +48,7 @@ import {
 	files_derive_tree_path_for_file_node,
 	files_lowercase_extension,
 	files_check_name_and_path_length,
+	files_PATH_MAX_LENGTH,
 } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { path_join, path_extract_segments_from } from "../server/server-utils.ts";
@@ -1234,10 +1235,21 @@ async function db_headers(
 	}
 	const path = path_join(parent?.path ?? "/", name);
 	// This step visits every node of the Move, so a folder moved deeper refuses here for any path below it.
+	// An older path over the limit may stay or get shorter.
 	const tooLong = files_check_name_and_path_length({
 		names: name === old?.name ? [] : [name],
-		path: path === old?.path ? undefined : path,
+		path,
+		oldPath: old?.path,
 	});
+	if (tooLong._nay?.name === "path_too_long") {
+		const limit = files_PATH_MAX_LENGTH.toLocaleString("en-US");
+		return Result({
+			_nay: {
+				name: "path_too_long",
+				message: `…/${name} would have a path of ${path.length.toLocaleString("en-US")} characters. Paths can have at most ${limit} characters. Shorten a folder name or move it higher.`,
+			},
+		});
+	}
 	if (tooLong._nay) return tooLong;
 	const scope = physical.isRestrictedScopeRoot ? physical._id : (parent?.restrictedScopeNodeId ?? null);
 	if (selected) {

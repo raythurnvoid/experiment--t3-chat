@@ -78,7 +78,7 @@ import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { files_db_get_pending_update, files_ROOT_ID } from "../server/files.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { files_check_name_and_path_length, files_NAME_MAX_LENGTH } from "../shared/files.ts";
+import { files_check_name_and_path_length, files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -845,14 +845,76 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 }
 
 /**
+ * How many characters longer an item's path gets when the restore lands it. A top item lands in its
+ * active parent, or at the workspace root when `rootNodeIds` has it. An item inside follows its top
+ * item. `growths` keeps the answers, so each folder is read once per step.
+ */
+async function db_get_restore_growth(
+	ctx: MutationCtx,
+	args: {
+		run: RunFields;
+		node: Doc<"files_nodes">;
+		parents: Map<Id<"files_nodes">, Doc<"files_nodes"> | null>;
+		growths: Map<Id<"files_nodes">, number>;
+	},
+): Promise<number> {
+	const { run, node, parents, growths } = args;
+
+	const known = growths.get(node._id);
+	if (known !== undefined) return known;
+	const parentId = node.parentId;
+	let parent = parentId === files_ROOT_ID ? null : parents.get(parentId);
+	if (parent === undefined && parentId !== files_ROOT_ID) {
+		parent = await ctx.db.get("files_nodes", parentId);
+		parents.set(parentId, parent);
+	}
+	const growth = !parent
+		? 0
+		: parent.archiveOperationId === run.archiveOperationId
+			? await db_get_restore_growth(ctx, { ...args, node: parent })
+			: parent.archiveOperationId === null
+				? path_join(parent.path, node.name).length - node.path.length
+				: run.rootNodeIds.includes(node._id)
+					? path_join("/", node.name).length - node.path.length
+					: // The item joins the restore of its folder. The landing check catches a path that got too long.
+						0;
+	growths.set(node._id, growth);
+	return growth;
+}
+
+/**
+ * Count one item whose new path would be over the limit. Keep the longest one, so the message can name it.
+ */
+function add_long_path(run: RunFields, item: { name: string; length: number }) {
+	run.longPaths = {
+		...(run.longPaths && run.longPaths.length >= item.length ? run.longPaths : item),
+		count: (run.longPaths?.count ?? 0) + 1,
+	};
+}
+
+/**
+ * Say how many items would get a path over the limit and name the longest one, like
+ * "3 items would have paths over 1,024 characters, like …/report.md (1,031)".
+ */
+function get_long_paths_text(longPaths: NonNullable<RunFields["longPaths"]>) {
+	const limit = files_PATH_MAX_LENGTH.toLocaleString("en-US");
+	const example = `…/${longPaths.name} (${longPaths.length.toLocaleString("en-US")})`;
+	return longPaths.count === 1
+		? `1 item would have a path over ${limit} characters: ${example}`
+		: `${longPaths.count} items would have paths over ${limit} characters, like ${example}`;
+}
+
+/**
  * Check every node of the operation before the restore writes anything. Also check each top item: an
  * item whose parent is not in the operation. Keep the top items whose folder is archived by another
  * operation in `rootNodeIds`. They land at the workspace root. This list is fixed here. A folder
  * archived later, during the job, keeps its restored items inside.
+ * A restore that would make any path too long is refused here, so the person can fix it before any write.
  */
 async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	const { run, progress } = args;
 	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
+	const growths = new Map<Id<"files_nodes">, number>();
 	let readCount = 0;
 
 	while (true) {
@@ -949,21 +1011,55 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			}
 		}
 
+		// The top items of this page know where they land now. A path over the limit is refused only when
+		// it gets longer, so an older long path can still come back where it was.
+		for (const node of page) {
+			const growth = await db_get_restore_growth(ctx, { run, node, parents, growths });
+			const length = node.path.length + growth;
+			run.maxPathLength = Math.max(run.maxPathLength ?? 0, length);
+			if (growth > 0 && length > files_PATH_MAX_LENGTH) add_long_path(run, { name: node.name, length });
+		}
+
+		if (isLastPage && run.longPaths) {
+			return {
+				kind: "failed",
+				nay: {
+					name: "path_too_long",
+					message: `Can't restore. ${get_long_paths_text(run.longPaths)}. Shorten a folder name, then restore again.`,
+				},
+			};
+		}
 		if (isLastPage) return { kind: "done" };
 		run.checkCursor = { ...run.checkCursor, treePath: page.at(-1)!.treePath };
 	}
 }
 
 /**
- * Find a free name for Keep both: `name-2.md`, `name-3.md`, and so on.
+ * The longest Keep both name for `node` next to `occupant`. A path already over the limit may stay as
+ * long as it was. A folder's new name makes each path inside longer too, so the name may grow only by
+ * what the longest path of the job leaves free.
  */
-async function db_find_free_name(
-	args: StepArgs & {
-		ctx: MutationCtx;
-		node: Doc<"files_nodes">;
-		parentId: Doc<"files_nodes">["parentId"];
-	},
-) {
+function get_keep_both_max_length(args: { run: RunFields; node: Doc<"files_nodes">; occupant: Doc<"files_nodes"> }) {
+	const { run, node, occupant } = args;
+
+	const parentLength = occupant.path.length - occupant.name.length;
+	const maxLength = Math.min(files_NAME_MAX_LENGTH, Math.max(files_PATH_MAX_LENGTH, node.path.length) - parentLength);
+	return node.kind === "folder"
+		? Math.min(maxLength, node.name.length + Math.max(0, files_PATH_MAX_LENGTH - (run.maxPathLength ?? 0)))
+		: maxLength;
+}
+
+/**
+ * Find a free name for Keep both: `name-2.md`, `name-3.md`, and so on. Returns null when no free name
+ * fits in `maxLength`.
+ */
+async function db_find_free_name(args: {
+	ctx: QueryCtx | MutationCtx;
+	run: RunFields;
+	node: Doc<"files_nodes">;
+	parentId: Doc<"files_nodes">["parentId"];
+	maxLength: number;
+}) {
 	const { ctx, node, parentId } = args;
 
 	const dot = node.kind === "file" ? node.name.indexOf(".", 1) : -1;
@@ -971,8 +1067,9 @@ async function db_find_free_name(
 	const extension = dot < 0 ? "" : node.name.slice(dot);
 	for (let counter = 2; counter <= MAX_NAME_ATTEMPTS; counter++) {
 		const suffix = `-${counter}${extension}`;
-		// Cut the base, so a long name still gets a free name inside the limit.
-		const name = `${base.slice(0, Math.max(1, files_NAME_MAX_LENGTH - suffix.length))}${suffix}`;
+		// Cut the base, so a long name still gets a free name inside the limit. Keep at least one character.
+		if (args.maxLength - suffix.length < 1) return null;
+		const name = `${base.slice(0, args.maxLength - suffix.length)}${suffix}`;
 		const occupant = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
@@ -1061,6 +1158,7 @@ async function db_land_node(
 
 	let name = node.name;
 	let replacedNode: Doc<"files_nodes"> | null = null;
+	let isSkipped = false;
 	const occupant = await ctx.db
 		.query("files_nodes")
 		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
@@ -1083,9 +1181,20 @@ async function db_land_node(
 				: node.kind === "file"
 					? run.applyToRemaining.file
 					: run.applyToRemaining.folder;
-		// A Replace that is not possible here asks again, so the person can pick Keep both or Skip.
+		const freeName =
+			choice === "keep_both"
+				? await db_find_free_name({
+						ctx,
+						run,
+						node,
+						parentId: landingParentId,
+						maxLength: get_keep_both_max_length({ run, node, occupant }),
+					})
+				: null;
+		// A Replace or a Keep both that is not possible here asks again, so the person can pick another choice.
 		if (
 			choice === null ||
+			(choice === "keep_both" && freeName === null) ||
 			(choice === "replace" &&
 				!(await db_can_replace(ctx, {
 					userAuth: args.userAuth,
@@ -1102,34 +1211,37 @@ async function db_land_node(
 		run.choice = null;
 
 		if (choice === "skip") {
-			run.skipOperationId ??= crypto.randomUUID();
-			await files_nodes_db_archive_node(ctx, {
-				node,
-				archiveOperationId: run.skipOperationId,
-				updatedBy: args.userAuth.id,
-				now: args.now,
-			});
-			args.writeState.isWritten = true;
-			progress.skipped += 1;
-			return null;
-		}
-
-		if (choice === "keep_both") {
-			const freeName = await db_find_free_name({ ctx, ...previousArgs, node, parentId: landingParentId });
-			if (freeName === null) return { kind: "failed", nay: { message: "No free name was found." } };
+			isSkipped = true;
+		} else if (freeName !== null) {
 			name = freeName;
+			// Each path inside the folder gets longer too.
+			if (node.kind === "folder") {
+				run.maxPathLength = (run.maxPathLength ?? 0) + Math.max(0, name.length - node.name.length);
+			}
 		} else {
 			replacedNode = occupant;
 		}
 	}
 
-	// A Keep both name or a parent renamed during the archive makes a new name or path.
+	// Keep both cut the name to fit, so only a parent renamed after the check can make the path too long.
+	// That item stays archived like a skipped one, and the job says so when it ends. It never fails partway.
 	const path = path_join(landing?.path ?? "/", name);
-	const tooLong = files_check_name_and_path_length({
-		names: name === node.name ? [] : [name],
-		path: path === node.path ? undefined : path,
-	});
-	if (tooLong._nay) return { kind: "failed", nay: tooLong._nay };
+	if (!isSkipped && files_check_name_and_path_length({ path, oldPath: node.path })._nay) {
+		add_long_path(run, { name: node.name, length: path.length });
+		isSkipped = true;
+	}
+	if (isSkipped) {
+		run.skipOperationId ??= crypto.randomUUID();
+		await files_nodes_db_archive_node(ctx, {
+			node,
+			archiveOperationId: run.skipOperationId,
+			updatedBy: args.userAuth.id,
+			now: args.now,
+		});
+		args.writeState.isWritten = true;
+		progress.skipped += 1;
+		return null;
+	}
 
 	await files_nodes_db_restore_node(ctx, {
 		node,
@@ -1429,11 +1541,16 @@ async function db_settle_step(
 			return;
 		}
 		case "done": {
+			// Items whose path got too long after the check stayed archived. Say how to bring them back.
+			const longPaths = args.run.longPaths;
+			const isOne = longPaths?.count === 1;
 			await db_finish_run({
 				ctx,
 				runId: args.runId,
 				status: activities_get_result_status(args.progress),
-				errorMessage: null,
+				errorMessage: longPaths
+					? `${get_long_paths_text(longPaths)}, so ${isOne ? "it" : "they"} stayed archived. Shorten a folder name, then restore ${isOne ? "it" : "them"} again.`
+					: null,
 				now: args.now,
 			});
 			return;
@@ -1826,6 +1943,7 @@ export const get = query({
 					path: v.union(v.string(), v.null()),
 					occupantPath: v.union(v.string(), v.null()),
 					canReplace: v.boolean(),
+					canKeepBoth: v.boolean(),
 				}),
 				v.null(),
 			),
@@ -1898,6 +2016,15 @@ export const get = query({
 					path: nodeReadable._nay ? null : node.path,
 					occupantPath: occupantReadable._nay ? null : occupant.path,
 					canReplace: await db_can_replace(ctx, { userAuth, membership, node, occupant }),
+					// Keep both is not possible when no new name keeps the paths inside the limit.
+					canKeepBoth:
+						(await db_find_free_name({
+							ctx,
+							run,
+							node,
+							parentId: occupant.parentId,
+							maxLength: get_keep_both_max_length({ run, node, occupant }),
+						})) !== null,
 				};
 			}
 		}

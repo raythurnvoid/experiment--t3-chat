@@ -3909,10 +3909,46 @@ describe("move", () => {
 				itemIds: [top._id],
 				targetParentId: fixture.folders.get("/target")!,
 			}),
-		).toMatchObject({ _nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters." } });
+		).toMatchObject({
+			_nay: {
+				name: "path_too_long",
+				message: `…/${"z".repeat(249)} would have a path of 1,025 characters. Paths can have at most 1,024 characters. Shorten a folder name or move it higher.`,
+			},
+		});
 		expect((await get_node(fixture, deepPath))?._id, "the deepest folder keeps its path").toBe(
 			fixture.folders.get(deepPath),
 		);
+	});
+
+	test("moves a folder whose paths are already over 1,024 characters higher, even when they stay over", async () => {
+		// `/s` + 3 names of 255 characters + one of 251 make 1,022 characters. Then `/s` gets a longer
+		// name, like a path stored before the limit: 1,031 characters.
+		const names = [..."abc"].map((letter) => letter.repeat(255));
+		const chainPath = `/${[...names, "d".repeat(251)].join("/")}`;
+		const fixture = await create_folder_fixture([`/s${chainPath}`, "/sssss"]);
+		await fixture.t.run(async (ctx) => {
+			for (const node of await ctx.db.query("files_nodes").collect()) {
+				if (node.path !== "/s" && !node.path.startsWith("/s/")) continue;
+				const path = `/ssssssssss${node.path.slice(2)}`;
+				await ctx.db.patch("files_nodes", node._id, {
+					...(node.path === "/s" ? { name: "ssssssssss", sortName: files_sort_text_key("ssssssssss") } : {}),
+					path,
+					treePath: `${path}/`,
+				});
+			}
+		});
+		const top = await get_node(fixture, `/ssssssssss/${names[0]}`);
+		if (!top) throw new Error("Expected the top folder");
+		expect((await get_node(fixture, `/ssssssssss${chainPath}`))?.path.length).toBe(1031);
+
+		expect(
+			await test_move_nodes(fixture.t, fixture.asUser, {
+				membershipId: fixture.db.membershipId,
+				itemIds: [top._id],
+				targetParentId: fixture.folders.get("/sssss")!,
+			}),
+		).toEqual({ _yay: null });
+		expect((await get_node(fixture, `/sssss${chainPath}`))?.path.length, "the deepest path got shorter").toBe(1026);
 	});
 
 	test("refuses a Copy that would push a path inside the folder past 1,024 characters, before any write", async () => {
