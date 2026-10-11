@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
-import { test_convex } from "./setup.test.ts";
+import { test_convex } from "./setup-base.test.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();

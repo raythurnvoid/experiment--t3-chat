@@ -1,4 +1,4 @@
-import "../convex/setup.test.ts";
+import "../convex/setup-base.test.ts";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { server_fetch_json } from "./server-fetch.ts";
 

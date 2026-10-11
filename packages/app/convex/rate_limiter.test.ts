@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ActionCtx } from "./_generated/server.js";
 import { rate_limiter_get_plugin_volume_daily_files_left, rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { test_convex } from "./setup.test.ts";
+import { test_convex } from "./setup-base.test.ts";
 
 afterEach(() => {
 	vi.useRealTimers();

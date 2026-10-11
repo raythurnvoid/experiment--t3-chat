@@ -3,7 +3,7 @@ import { api, components } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
-import { test_convex } from "./setup.test.ts";
+import { test_convex } from "./setup-base.test.ts";
 
 async function presence_test_bootstrap_user(ctx: MutationCtx, args: { clerkUserId: string; displayName: string }) {
 	const now = Date.now();

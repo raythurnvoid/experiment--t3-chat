@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
-import { test_convex } from "./setup.test.ts";
+import { test_convex } from "./setup-base.test.ts";
 
 type NotificationsTestTarget = {
 	userId: Id<"users">;

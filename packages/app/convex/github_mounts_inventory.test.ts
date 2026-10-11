@@ -1,7 +1,7 @@
 import { ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { internal } from "./_generated/api.js";
-import { test_convex } from "./setup.test.ts";
+import { test_convex } from "./setup-base.test.ts";
 
 const test = baseTest.sequential;
 

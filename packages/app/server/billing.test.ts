@@ -1,4 +1,4 @@
-import "../convex/setup.test.ts";
+import "../convex/setup-base.test.ts";
 import { describe, expect, test } from "vitest";
 import type { Id } from "../convex/_generated/dataModel.js";
 import { composite_id } from "../shared/shared-utils.ts";
