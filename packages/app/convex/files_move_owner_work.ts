@@ -694,6 +694,7 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 		? (JSON.parse(range.cursor) as { phase: number; view: "before" | "after"; page: string | null })
 		: { phase: 0, view: "before" as const, page: null };
 	const keep = mode === "finish" ? "after" : "before";
+	let done = false;
 	// Empty cleanup ranges share a step. Any paginated page ends the transaction.
 	while (cursor.phase < 8) {
 		let paginated = false;
@@ -785,13 +786,17 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 			for (const work of page?.page ?? [])
 				await ctx.db.patch("files_move_owner_work", work._id, { status: "materialized" });
 			cursor.page = page?.continueCursor ?? null;
-			if (!page || page.isDone) await db_complete_range(ctx, range);
+			// The last page's own isDone ends the phase, so no extra step finds the range complete.
+			if (!page || page.isDone) {
+				await db_complete_range(ctx, range);
+				done = true;
+			}
 			break;
 		}
 		if (paginated) break;
 	}
 	await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
-	return Result({ _yay: { done: false } });
+	return Result({ _yay: { done } });
 }
 
 export async function files_move_owner_work_db_finish(ctx: MutationCtx, args: Args) {

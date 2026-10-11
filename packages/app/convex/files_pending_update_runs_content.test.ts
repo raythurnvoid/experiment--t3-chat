@@ -2,7 +2,14 @@ import { Workpool } from "@convex-dev/workpool";
 import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_drain_billing_usage_event_outbox, test_mocks, test_progress_guard } from "./setup.test.ts";
+import {
+	test_drain_billing_usage_event_outbox,
+	test_mocks,
+	test_progress_guard,
+	test_spy_handler,
+} from "./setup.test.ts";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
+import type { Id } from "./_generated/dataModel.js";
 import {
 	attach_media,
 	finish_review,
@@ -888,5 +895,23 @@ describe("review job content", () => {
 			}),
 			"Save keeps private metadata in the written key order",
 		).toEqual(entries);
+	});
+
+	test.each([1, 10])("a Save of %i private text files keeps its Move step count", async (count) => {
+		const f = await fixture();
+		const proposals = [];
+		for (let index = 0; index < count; index++)
+			proposals.push(await private_node({ f, path: `/file-${index}.txt`, text: `file ${index}\n` }));
+		let steps = 0;
+		test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+			const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
+			if ((await ctx.db.get("files_move_cohorts", cohortId))?.step === step) steps++;
+			return await handler(ctx, args);
+		});
+		const result = await finish_review({ f, runId: await start_review({ f, proposals }) });
+		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: count } });
+		// Each Move step is one scheduled transaction, so it adds latency to every Save.
+		// Steps that only find an empty range must not come back. Lower this when a change removes steps.
+		expect(steps, "one private text file takes at most 70 Move steps").toBeLessThanOrEqual(count * 70);
 	});
 });

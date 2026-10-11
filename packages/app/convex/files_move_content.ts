@@ -1449,7 +1449,10 @@ export async function files_move_content_db_abort(ctx: MutationCtx, args: Contex
 /**
  * Root calls only after every content, placement, and owner side has finished cleanup.
  */
-export async function files_move_content_db_release_claims(ctx: MutationCtx, args: Omit<Context, "contentId">) {
+export async function files_move_content_db_release_claims(
+	ctx: MutationCtx,
+	args: Omit<Context, "contentId"> & { limit: number },
+) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (!cohort) return Result({ _nay: { message: "Not found" } });
 	const entered = await files_move_reservations_db_enter(ctx, {
@@ -1460,7 +1463,7 @@ export async function files_move_content_db_release_claims(ctx: MutationCtx, arg
 	const claims = await ctx.db
 		.query("files_move_asset_claims")
 		.withIndex("by_cohort", (q) => q.eq("cohortId", cohort._id))
-		.take(PAGE_SIZE);
+		.take(args.limit);
 	for (const claim of claims) await ctx.db.delete("files_move_asset_claims", claim._id);
-	return Result({ _yay: { done: claims.length < PAGE_SIZE } });
+	return Result({ _yay: { count: claims.length } });
 }

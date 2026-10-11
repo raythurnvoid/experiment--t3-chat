@@ -382,7 +382,7 @@ test("public Move joins empty owner phases in one step", async () => {
 	expect(ownerSteps, "A node without owner or receipt docs needs one owner collection step").toBe(1);
 	expect.soft(sideSteps, "An empty folder needs two side staging steps").toBe(2);
 	expect.soft(childSteps, "An empty folder needs one child collection step").toBe(1);
-	expect(cleanupSteps, "An empty folder needs two owner cleanup steps").toBe(2);
+	expect(cleanupSteps, "An empty folder needs one owner cleanup step").toBe(1);
 });
 
 test("public Move seals unselected pending scope before the switch and keeps each branch", async () => {
