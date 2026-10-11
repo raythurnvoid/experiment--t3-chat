@@ -1005,6 +1005,8 @@ export const list_folder_fields = query({
 			return refused;
 		}
 		// Only the owner reads the restricted twin. Refuse before the folder read, so it costs nothing.
+		// So a member never sees the keys of a restricted child shared with them. Accepted until the
+		// search engine; see "Accepted Columns gap" in the file-metadata skill.
 		if (args.restricted && !reader.isOwner) {
 			return refused;
 		}

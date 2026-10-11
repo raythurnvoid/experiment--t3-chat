@@ -631,6 +631,17 @@ and values from the catalog. Each read is one index range, so it costs the same 
   files in shared folders).
   Then delete the catalog tables, the leaf module, the overlay hook, the compactor, its cron, the
   rebuild and check tools and the data deletion pass. "Starts with" can become "contains" again.
+- **Accepted Columns gap until the search engine (user, 2026-10-11).** Columns lists keys of a
+  folder's direct children only. A child that is its own restricted root counts in
+  `parent_restricted`, which only the owner reads. So a member misses the keys of such a child even
+  when it is shared with them. Example: `/projects/budget.xlsx` is restricted, shared with Ana, and
+  has `metadata.salary_band`; Ana's Columns in `/projects` does not offer `salary_band`. Keys of
+  files inside a shared restricted folder still show when Ana opens that folder. The gain of fixing
+  it is small: a metadata sort or filter already drops that child (`hiddenSharedKey` in
+  `files-explorer-tree`). Do not build a per-scope catalog (decision 6 stage 3) for this: it needs a
+  read budget and a hand-merged cursor inside one query, which the scan rules forbid, and a
+  per-principal table would multiply writes by shares (up to about 12,800 per save). The search
+  engine fixes it; add the Ana case to its acceptance tests.
 
 # Dialog Reconciliation
 
