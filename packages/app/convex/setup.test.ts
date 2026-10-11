@@ -27,7 +27,14 @@ import {
 } from "./organizations.ts";
 import { files_pending_updates_action_prepare_content } from "./files_pending_updates.ts";
 import { files_pending_media_action_validate } from "./files_pending_media.ts";
-import { files_TRANSFER_SELECTION_PAGE_SIZE, type files_PendingTarget } from "../shared/files.ts";
+import {
+	files_MAX_TEXT_CONTENT_BYTES,
+	files_TRANSFER_SELECTION_PAGE_SIZE,
+	type files_PendingTarget,
+} from "../shared/files.ts";
+import { db_replace_file_chunks } from "./files_nodes_content.ts";
+import { files_nodes_db_insert_committed_text_chunks } from "./files_nodes_create_db.ts";
+import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { api, components, internal } from "./_generated/api.js";
@@ -608,6 +615,89 @@ export async function test_create_saved_text_file(
 		return saved._yay.target.id;
 	}
 	throw new Error("Expected a test file path");
+}
+
+/**
+ * The Convex limits at 75%. Jobs keep 25% free, so with `test_convex({ transactionLimits: this })`
+ * any transaction that uses more than 75% of a limit throws, also in scheduled jobs.
+ */
+export const test_LIMITS_AT_75_PERCENT = {
+	bytesRead: 12 * 1024 * 1024,
+	bytesWritten: 12 * 1024 * 1024,
+	documentsRead: 24_000,
+	databaseQueries: 3072,
+	documentsWritten: 12_000,
+	functionsScheduled: 750,
+	scheduledFunctionArgsBytes: 12 * 1024 * 1024,
+};
+
+/**
+ * A 900 KB markdown text with about 3,000 chunks, the most one file can have: each "x" line and each
+ * long paragraph is its own chunk. `head` goes first, for example frontmatter.
+ */
+export function test_max_chunks_markdown(head = "") {
+	const unit = `x\n\n${"lorem ipsum ".repeat(100)}\n\n`;
+	return head + unit.repeat(Math.floor((files_MAX_TEXT_CONTENT_BYTES - head.length) / unit.length));
+}
+
+const test_max_chunks_by_head = new Map<string, ReturnType<typeof files_chunk_markdown>>();
+
+/**
+ * Give a saved text file `test_max_chunks_markdown` as its saved text, and return its chunk count.
+ * A real Save of this text is slow in tests, so write the saved docs directly. The chunker alone
+ * takes about 20 s for this text, so chunk it once per test file.
+ */
+export async function test_fill_saved_file_with_max_chunks(
+	t: ReturnType<typeof test_convex>,
+	nodeId: Id<"files_nodes">,
+	head = "",
+) {
+	let chunking = test_max_chunks_by_head.get(head);
+	if (!chunking) {
+		chunking = files_chunk_markdown(test_max_chunks_markdown(head));
+		test_max_chunks_by_head.set(head, chunking);
+	}
+	const chunks = await chunking;
+	if (chunks._nay) throw new Error(chunks._nay.message);
+	return await t.run(async (ctx) => {
+		const node = (await ctx.db.get("files_nodes", nodeId))!;
+		const scope = { organizationId: node.organizationId, workspaceId: node.workspaceId };
+		// Save only the head, so its metadata docs are real, then swap in the chunks of the whole text.
+		const replaced = await db_replace_file_chunks(ctx, { ...scope, nodeId, textContent: head });
+		if (replaced._nay) throw new Error(replaced._nay.message);
+		const headChunks = await Promise.all([
+			ctx.db
+				.query("files_text_chunks")
+				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+					q
+						.eq("organizationId", node.organizationId)
+						.eq("workspaceId", node.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", nodeId),
+				)
+				.collect(),
+			ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", node.organizationId)
+						.eq("workspaceId", node.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", nodeId),
+				)
+				.collect(),
+		]);
+		for (const doc of headChunks[0]) await ctx.db.delete("files_text_chunks", doc._id);
+		for (const doc of headChunks[1]) await ctx.db.delete("files_plain_text_chunks", doc._id);
+		await files_nodes_db_insert_committed_text_chunks(ctx, {
+			...scope,
+			nodeId,
+			path: node.path,
+			archiveOperationId: node.archiveOperationId ?? undefined,
+			chunks: chunks._yay,
+		});
+		return chunks._yay.length;
+	});
 }
 
 /**
