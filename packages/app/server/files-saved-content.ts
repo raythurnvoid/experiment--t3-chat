@@ -207,31 +207,35 @@ export async function* files_saved_content_db_text_chunks(
 
 export async function* files_saved_content_db_plain_text_chunks(
 	db: QueryCtx["db"],
-	args: Scope & Source & { fixedView?: files_saved_placement_FixedView },
+	args: Scope & Source & { fixedView?: files_saved_placement_FixedView; proposalRevision?: number },
 ): AsyncGenerator<Doc<"files_plain_text_chunks">> {
 	const tags = await files_saved_content_db_get_tags(db, args);
-	const sources = tags.map((tag) =>
-		args.pendingUpdateId
-			? db
-					.query("files_plain_text_chunks")
-					.withIndex("by_pendingUpdate_chunkIndex", (q) =>
-						q
-							.eq("pendingUpdateId", args.pendingUpdateId)
-							.eq("moveView.cohortId", tag?.cohortId)
-							.eq("moveView.view", tag?.view),
-					)
-			: db
-					.query("files_plain_text_chunks")
-					.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("fileNodeId", args.nodeId)
-							.eq("moveView.cohortId", tag?.cohortId)
-							.eq("moveView.view", tag?.view),
-					),
-	);
+	const sources = tags.map((tag) => {
+		if (!args.pendingUpdateId)
+			return db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", args.nodeId)
+						.eq("moveView.cohortId", tag?.cohortId)
+						.eq("moveView.view", tag?.view),
+				);
+		const chunks = db
+			.query("files_plain_text_chunks")
+			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+				q
+					.eq("pendingUpdateId", args.pendingUpdateId)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view),
+			);
+		// Like the text chunks: old chunks can wait for their drain in the same range.
+		return args.proposalRevision === undefined
+			? chunks
+			: chunks.filter((q) => q.eq(q.field("proposalRevision"), args.proposalRevision));
+	});
 	yield* merge(
 		sources,
 		(doc) => (doc.sourceKind === "pending" ? [doc.chunkIndex] : [doc.yjsSequence, doc.chunkIndex]),

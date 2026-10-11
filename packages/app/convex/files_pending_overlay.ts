@@ -45,7 +45,7 @@ import {
 	files_share_rows_db_compute_all_for_grant,
 } from "../server/files-share-rows.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
-import { files_ancestor_ids, type files_PendingTarget } from "../shared/files.ts";
+import { files_ancestor_ids, files_pending_update_index_revision, type files_PendingTarget } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
@@ -392,7 +392,8 @@ async function db_pending_metadata_docs(db: QueryCtx["db"], pendingUpdateId: Id<
 			q.eq("pendingUpdateId", pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 		)
 		.collect();
-	return docs.filter((doc) => doc.sourceKind === "pending" && doc.proposalRevision === pendingUpdate.revision);
+	const revision = files_pending_update_index_revision(pendingUpdate);
+	return docs.filter((doc) => doc.sourceKind === "pending" && doc.proposalRevision === revision);
 }
 
 /**

@@ -5,7 +5,7 @@ import type { Id } from "./_generated/dataModel.js";
 import { activities_is_active } from "./activities_db.ts";
 import { test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
-import { drain_deleted_pending_update_docs } from "./files_pending_updates.ts";
+import { drain_pending_update_docs } from "./files_pending_updates.ts";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { files_subtree_ops_db_find_blocker } from "./files_subtree_ops.ts";
 import {
@@ -694,7 +694,7 @@ describe("apply_file_pending_archive", () => {
 
 		// Each drain pass runs under the real limits and schedules the next one.
 		let passes = 0;
-		test_spy_handler(drain_deleted_pending_update_docs, async (handler, ctx, args) => {
+		test_spy_handler(drain_pending_update_docs, async (handler, ctx, args) => {
 			passes += 1;
 			return await handler(ctx, args);
 		});

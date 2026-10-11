@@ -78,7 +78,6 @@ import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { files_pending_update_runs_db_start } from "./files_pending_update_runs.ts";
 import { activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
 import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
-import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops.ts";
 import {
 	files_private_storage_db_reserve,
 	files_private_storage_db_release,
@@ -155,6 +154,7 @@ import {
 	files_PENDING_PATH_TOO_DEEP_MESSAGE,
 	files_pending_update_content_is_stale,
 	files_pending_update_content_of,
+	files_pending_update_index_revision,
 	type files_PendingTarget,
 	type files_VisibleEntry,
 	type files_ContentType,
@@ -522,6 +522,16 @@ export type files_pending_updates_get_by_file_node_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * How many docs of each chunk table a caller deletes inline. A small draft is gone at once. A big
+ * draft has about 3,000 of each, and deleting them all in one mutation passes the Convex limits.
+ */
+const INLINE_CHUNK_DELETE_LIMIT = 128;
+
+/**
+ * Delete the proposal's pending chunk and metadata docs. Every caller also deletes the proposal or
+ * moves its revision on, so readers skip any chunk left here. A background drain deletes those.
+ */
 export async function files_pending_update_db_delete_chunks(
 	ctx: MutationCtx,
 	args: { pendingUpdateId: Id<"files_pending_updates"> },
@@ -532,67 +542,52 @@ export async function files_pending_update_db_delete_chunks(
 			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
 				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 			)
-			.collect(),
+			.take(INLINE_CHUNK_DELETE_LIMIT + 1),
 		ctx.db
 			.query("files_plain_text_chunks")
 			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
 				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 			)
-			.collect(),
+			.take(INLINE_CHUNK_DELETE_LIMIT + 1),
 	]);
+	// The Move guard would read each doc again before its delete.
+	for (const [table, docs] of [
+		["files_text_chunks", textChunks],
+		["files_plain_text_chunks", plainTextChunks],
+	] as const)
+		for (const doc of docs) files_move_reservations_db_note_source(ctx.db, { table, id: doc._id, old: doc });
 	await Promise.all([
-		...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
-		...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
+		...plainTextChunks
+			.slice(0, INLINE_CHUNK_DELETE_LIMIT)
+			.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
+		...textChunks.slice(0, INLINE_CHUNK_DELETE_LIMIT).map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
+		// Metadata docs are bounded by the per-file metadata caps, so they all go here.
 		files_metadata_db_delete_pending(ctx, args),
+		...(textChunks.length > INLINE_CHUNK_DELETE_LIMIT || plainTextChunks.length > INLINE_CHUNK_DELETE_LIMIT
+			? [ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_pending_update_docs, args)]
+			: []),
 	]);
 }
 
 /**
- * Keep unchanged text indexes tied to the new proposal revision.
+ * Keep unchanged text indexes tied to the new proposal revision. A full draft has thousands of
+ * docs, so patching them all can pass the Convex limits. Point the new revision at the docs'
+ * revision on the proposal instead. Call it in the mutation that bumps the revision by 1.
  */
 export async function files_pending_update_db_update_index_revision(
 	ctx: MutationCtx,
 	args: { pendingUpdateId: Id<"files_pending_updates">; proposalRevision: number },
 ) {
-	const [textChunks, plainTextChunks, metadataDocs] = await Promise.all([
-		ctx.db
-			.query("files_text_chunks")
-			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
-				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
-			)
-			.collect(),
-		ctx.db
-			.query("files_plain_text_chunks")
-			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
-				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
-			)
-			.collect(),
-		ctx.db
-			.query("files_metadata_docs")
-			.withIndex("by_pendingUpdate_fieldPath", (q) =>
-				q.eq("pendingUpdateId", args.pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
-			)
-			.collect(),
-	]);
-	// Give the read docs to the Move guard, so it does not read each one again before its patch.
-	// A full-size text has about 1,500 chunks, so that read would be a third of what this function reads.
-	for (const [table, docs] of [
-		["files_text_chunks", textChunks],
-		["files_plain_text_chunks", plainTextChunks],
-		["files_metadata_docs", metadataDocs],
-	] as const)
-		for (const doc of docs) files_move_reservations_db_note_source(ctx.db, { table, id: doc._id, old: doc });
-	await Promise.all([
-		...textChunks.map((chunk) =>
-			ctx.db.patch("files_text_chunks", chunk._id, { proposalRevision: args.proposalRevision }),
-		),
-		...plainTextChunks.map((chunk) =>
-			ctx.db.patch("files_plain_text_chunks", chunk._id, { proposalRevision: args.proposalRevision }),
-		),
-		...metadataDocs.map((doc) =>
-			ctx.db.patch("files_metadata_docs", doc._id, { proposalRevision: args.proposalRevision }),
-		),
-	]);
+	const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
+	if (!pendingUpdate) throw should_never_happen("Pending update is missing", args);
+	// Some callers bump the revision first, so read the docs' revision from the one before.
+	const docs = files_pending_update_index_revision({
+		revision: args.proposalRevision - 1,
+		indexRevision: pendingUpdate.indexRevision,
+	});
+	const indexRevision = { docs, proposal: args.proposalRevision };
+	await ctx.db.patch("files_pending_updates", pendingUpdate._id, { indexRevision });
+	return indexRevision;
 }
 
 /**
@@ -5435,7 +5430,7 @@ export async function files_pending_updates_db_apply_archive(
 				workspaceId: membership.workspaceId,
 				pendingUpdateId: pendingUpdate._id,
 			}),
-			ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_deleted_pending_update_docs, {
+			ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_pending_update_docs, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
 			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
@@ -5564,66 +5559,92 @@ export async function files_pending_updates_db_remove_archived_node_proposal(
 		}),
 		// A big draft holds thousands of chunks. Deleting them here, beside the archive, can pass the
 		// transaction limits, so a background drain deletes them after the proposal is gone.
-		ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_deleted_pending_update_docs, {
+		ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_pending_update_docs, {
 			pendingUpdateId: pendingUpdate._id,
 		}),
 		files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 	]);
 }
 
-/** How many docs of each kind one drain page deletes before it checks the limits again. */
-const DELETED_PROPOSAL_DRAIN_PAGE_SIZE = 64;
+/** The most docs one drain run reads. Convex allows one `.paginate()` per run, so a run is one page. */
+const DRAIN_PAGE_SIZE = 512;
+
+const DRAIN_TABLES = ["files_text_chunks", "files_plain_text_chunks", "files_metadata_docs"] as const;
 
 /**
- * Delete the chunk and metadata docs of a proposal that is already deleted, in pages. Readers drop
- * docs whose proposal is gone, so nobody sees them while they wait. A pass that gets near the limits
- * schedules the next pass.
+ * Delete a proposal's old chunk and metadata docs, one page per run, table by table. A doc is old
+ * when its proposal is gone or its `proposalRevision` is not the current one. Readers already skip
+ * old docs, so nobody sees them while they wait. The current docs stay.
  */
-export const drain_deleted_pending_update_docs = internalMutation({
-	args: { pendingUpdateId: v.id("files_pending_updates") },
+export const drain_pending_update_docs = internalMutation({
+	args: {
+		pendingUpdateId: v.id("files_pending_updates"),
+		tableIndex: v.optional(v.number()),
+		cursor: v.optional(v.union(v.string(), v.null())),
+	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		for (;;) {
-			const [plainTextChunks, textChunks, metadataDocs] = await Promise.all([
-				ctx.db
-					.query("files_plain_text_chunks")
-					.withIndex("by_pendingUpdate_chunkIndex", (q) =>
-						q
-							.eq("pendingUpdateId", args.pendingUpdateId)
-							.eq("moveView.cohortId", undefined)
-							.eq("moveView.view", undefined),
-					)
-					.take(DELETED_PROPOSAL_DRAIN_PAGE_SIZE),
-				ctx.db
-					.query("files_text_chunks")
-					.withIndex("by_pendingUpdate_chunkIndex", (q) =>
-						q
-							.eq("pendingUpdateId", args.pendingUpdateId)
-							.eq("moveView.cohortId", undefined)
-							.eq("moveView.view", undefined),
-					)
-					.take(DELETED_PROPOSAL_DRAIN_PAGE_SIZE),
-				ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_pendingUpdate_fieldPath", (q) =>
-						q
-							.eq("pendingUpdateId", args.pendingUpdateId)
-							.eq("moveView.cohortId", undefined)
-							.eq("moveView.view", undefined),
-					)
-					.take(DELETED_PROPOSAL_DRAIN_PAGE_SIZE),
-			]);
-			if (plainTextChunks.length + textChunks.length + metadataDocs.length === 0) return null;
-			await Promise.all([
-				...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
-				...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
-				...metadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)),
-			]);
-			if (await files_subtree_ops_db_is_near_limits(ctx)) {
-				await ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_deleted_pending_update_docs, args);
-				return null;
-			}
+		const tableIndex = args.tableIndex ?? 0;
+		const table = DRAIN_TABLES[tableIndex];
+		if (!table) return null;
+		// The Move guard refuses side doc writes while the workspace has a Move, and a Stop puts the docs
+		// it tagged back in the range. So wait while any doc of the table, tagged or not, has a Move. Like expiry.
+		const anyDoc = await (
+			table === "files_metadata_docs"
+				? ctx.db.query(table).withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+				: ctx.db
+						.query(table)
+						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+		).first();
+		if (
+			anyDoc?.sourceKind === "pending" &&
+			(await files_move_reservations_db_find_blocker(ctx.db, { wholeWorkspace: anyDoc }))
+		) {
+			await ctx.scheduler.runAfter(EXPIRY_RETRY_MS, internal.files_pending_updates.drain_pending_update_docs, args);
+			return null;
 		}
+		// A cursor holds the index key of its last doc, and a `fieldPath` key can be too long to store.
+		const query =
+			table === "files_metadata_docs"
+				? ctx.db
+						.query(table)
+						.withIndex("by_pendingUpdate", (q) =>
+							q
+								.eq("pendingUpdateId", args.pendingUpdateId)
+								.eq("moveView.cohortId", undefined)
+								.eq("moveView.view", undefined),
+						)
+				: ctx.db
+						.query(table)
+						.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+							q
+								.eq("pendingUpdateId", args.pendingUpdateId)
+								.eq("moveView.cohortId", undefined)
+								.eq("moveView.view", undefined),
+						);
+		const page = await query.paginate({
+			cursor: args.cursor ?? null,
+			numItems: DRAIN_PAGE_SIZE,
+			maximumBytesRead: 2 * 1024 * 1024,
+		});
+		const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
+		const current = pendingUpdate && files_pending_update_index_revision(pendingUpdate);
+		for (const doc of page.page) {
+			if (doc.sourceKind === "pending" && doc.proposalRevision === current) continue;
+			files_move_reservations_db_note_source(ctx.db, { table, id: doc._id, old: doc });
+			await ctx.db.delete(table, doc._id);
+		}
+		if (!page.isDone)
+			await ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_pending_update_docs, {
+				...args,
+				cursor: page.continueCursor,
+			});
+		else if (tableIndex + 1 < DRAIN_TABLES.length)
+			await ctx.scheduler.runAfter(0, internal.files_pending_updates.drain_pending_update_docs, {
+				pendingUpdateId: args.pendingUpdateId,
+				tableIndex: tableIndex + 1,
+			});
+		return null;
 	},
 });
 

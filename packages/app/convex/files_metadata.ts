@@ -68,6 +68,7 @@ import {
 import {
 	files_pending_update_content_is_stale,
 	files_pending_update_has_pending_chunks,
+	files_pending_update_index_revision,
 	files_get_utf8_byte_size,
 	type files_PendingTarget,
 	type files_VisibleEntry,
@@ -1341,7 +1342,9 @@ export const get_by_path = internalQuery({
 			? [
 					...committedDocs.filter((doc) => doc.fieldPath.startsWith(files_metadata_METADATA_FIELD_PREFIX)),
 					...pendingDocs.filter(
-						(doc) => doc.sourceKind === "pending" && doc.proposalRevision === pendingUpdate.revision,
+						(doc) =>
+							doc.sourceKind === "pending" &&
+							doc.proposalRevision === files_pending_update_index_revision(pendingUpdate),
 					),
 				]
 			: committedDocs;
@@ -1556,7 +1559,8 @@ export async function files_metadata_db_write_entries(
 					target: args.privateEntry.pendingUpdate.target,
 					userId: args.privateEntry.node.userId,
 					pendingUpdateId: args.privateEntry.pendingUpdate._id,
-					proposalRevision: args.privateEntry.pendingUpdate.revision,
+					// The chunk docs keep their revision, so the new metadata docs take the same one.
+					proposalRevision: files_pending_update_index_revision(args.privateEntry.pendingUpdate),
 					path: args.privateEntry.path,
 					treePath: args.privateEntry.path,
 				};
@@ -1837,12 +1841,15 @@ export const update_entries_by_path = internalMutation({
 				pendingUpdateId: entry.pendingUpdate._id,
 				value: { createIntent, revision, updatedAt },
 			});
-			await files_pending_update_db_update_index_revision(ctx, {
+			const indexRevision = await files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: entry.pendingUpdate._id,
 				proposalRevision: revision,
 			});
 			await files_metadata_db_write_entries(ctx, {
-				privateEntry: { ...entry, pendingUpdate: { ...entry.pendingUpdate, createIntent, revision, updatedAt } },
+				privateEntry: {
+					...entry,
+					pendingUpdate: { ...entry.pendingUpdate, createIntent, revision, updatedAt, indexRevision },
+				},
 				entries: validated._yay.entries,
 			});
 		} else {

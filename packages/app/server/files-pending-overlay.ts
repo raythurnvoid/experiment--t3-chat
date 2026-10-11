@@ -35,6 +35,7 @@ import {
 	files_derive_tree_path_for_file_node,
 	files_is_ancestor_field,
 	files_lowercase_extension,
+	files_pending_update_index_revision,
 	files_TEXT_SEARCH_MAX_RESULTS,
 	type files_PendingParent,
 	type files_PendingTarget,
@@ -1886,7 +1887,11 @@ export async function files_pending_overlay_db_stage_owner_fields(
 			// Source docs stay in place. These identity-only indexes keep the stored cursor short.
 			const page = await source.paginate({ cursor: cursor.page, numItems: 8, maximumBytesRead: 1024 * 1024 });
 			for (const doc of page.page) {
-				if (doc.sourceKind === "pending" && doc.proposalRevision !== proposal?.revision) continue;
+				if (
+					doc.sourceKind === "pending" &&
+					doc.proposalRevision !== (proposal && files_pending_update_index_revision(proposal))
+				)
+					continue;
 				await ctx.db.insert("files_pending_place_fields", {
 					organizationId: place.organizationId,
 					workspaceId: place.workspaceId,

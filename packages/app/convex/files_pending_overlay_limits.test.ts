@@ -798,7 +798,6 @@ describe("cohort Accept transaction budgets", () => {
 					...(await ctx.db.query("files_text_chunks").collect()),
 				].filter((row) => "pendingUpdateId" in row && row.pendingUpdateId === proposal._id),
 			);
-		// The finish step deletes these untagged chunks in one transaction.
 		expect((await pendingDocs()).length).toBeGreaterThan(1000);
 		const { peaks, record } = budget_recorder();
 		measure_cohort(record);
@@ -830,6 +829,8 @@ describe("cohort Accept transaction budgets", () => {
 			(await asOwner.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId }))?.activity,
 		).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.archiveOperationId).not.toBeNull();
+		// The finish deletes a few chunks with the draft. A background drain deletes the rest after the Move.
+		await finish_scheduled(t, async () => (await pendingDocs()).length === 0);
 		expect(await pendingDocs(), "no pending index doc outlives the draft").toEqual([]);
 		expect(peaks.get("cohort/finish_nodes")?.calls).toBeGreaterThan(0);
 		console.info("accepted delete with a full-size edit, phase peaks", JSON.stringify(Object.fromEntries(peaks)));

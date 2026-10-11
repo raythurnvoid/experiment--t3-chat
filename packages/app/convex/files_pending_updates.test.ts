@@ -62,6 +62,7 @@ import {
 	files_MAX_YJS_RECONSTRUCTED_STATE_BYTES,
 	files_MAX_YJS_WIRE_BYTES,
 	files_get_utf8_byte_size,
+	files_pending_update_index_revision,
 	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
 	files_YJS_DOC_KEYS,
 } from "../shared/files.ts";
@@ -19698,22 +19699,23 @@ describe("create_file_pending_update_operation_batch", () => {
 		expect(after.updatedAt).toBe(before.updatedAt);
 		expect(after.revision).toBe(before.revision + 1);
 		expect(after.content).toEqual(before.content);
+		// The docs keep their revision. The proposal points its new revision at it.
+		expect(files_pending_update_index_revision(after)).toBe(before.revision);
 		await t.run(async (ctx) => {
 			for (const rows of Object.values(beforeIndexes)) {
 				expect(rows.length).toBeGreaterThan(0);
+				expect(rows.every((row) => row.proposalRevision === before.revision)).toBe(true);
 			}
-			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: before._id })).toEqual(
-				beforeIndexes.text.map((row) => ({ ...row, proposalRevision: after.revision })),
-			);
+			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: before._id })).toEqual(beforeIndexes.text);
 			expect(await list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: before._id })).toEqual(
-				beforeIndexes.plain.map((row) => ({ ...row, proposalRevision: after.revision })),
+				beforeIndexes.plain,
 			);
 			expect(
 				await ctx.db
 					.query("files_metadata_docs")
 					.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", before._id))
 					.collect(),
-			).toEqual(beforeIndexes.metadata.map((row) => ({ ...row, proposalRevision: after.revision })));
+			).toEqual(beforeIndexes.metadata);
 		});
 
 		const committed = await t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {

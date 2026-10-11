@@ -447,6 +447,62 @@ test("public Stop restores a partly staged unselected pending scope page", async
 	expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.path).toBe("/source.md");
 }, 120_000);
 
+test("public Move tags an old pending chunk without copying it, and the drain waits for the Move", async () => {
+	const f = await native_pending_scope();
+	const proposal = f.proposals[0]!;
+	const original = await pending_scope_docs(f, proposal);
+	// An edit of a big draft leaves its old chunks for a background drain. Make one by hand.
+	const oldChunkId = await f.t.run(async (ctx) => {
+		const chunk = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", proposal._id))
+			.first();
+		if (chunk?.sourceKind !== "pending") throw new Error("Expected a pending chunk");
+		const { _id: _id, _creationTime: _time, ...fields } = chunk;
+		return await ctx.db.insert("files_plain_text_chunks", { ...fields, proposalRevision: fields.proposalRevision - 1 });
+	});
+	for (let pass = 0; pass < 1000; pass++) {
+		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+		if ((await pending_scope_docs(f, proposal, "before")).plain.length > 0) break;
+		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: cohort.step });
+		if (pass === 999) throw new Error("Pending scope did not start");
+	}
+	const read_old_chunk = () => f.t.run((ctx) => ctx.db.get("files_plain_text_chunks", oldChunkId));
+	expect((await read_old_chunk())?.moveView, "the Move tags the old chunk").toEqual({
+		cohortId: f.cohortId,
+		view: "before",
+	});
+	expect((await pending_scope_docs(f, proposal, "after")).plain, "but does not copy it").toHaveLength(
+		(await pending_scope_docs(f, proposal, "before")).plain.length - 1,
+	);
+	// The drain of the plain chunks waits while the Move runs.
+	const drain = () =>
+		f.t.mutation(internal.files_pending_updates.drain_pending_update_docs, {
+			pendingUpdateId: proposal._id,
+			tableIndex: 1,
+		});
+	await drain();
+	expect(await read_old_chunk()).not.toBeNull();
+	const waiting = await f.t.run(async (ctx) =>
+		(await ctx.db.system.query("_scheduled_functions").collect()).filter(
+			(job) =>
+				job.name.includes("drain_pending_update_docs") &&
+				job.state.kind === "pending" &&
+				(job.args[0] as { tableIndex?: number }).tableIndex === 1,
+		),
+	);
+	expect(waiting, "the drain tries the same table again later").toHaveLength(1);
+	// Stop puts the old chunk back in the range, and the drain then deletes it.
+	expect(await f.asUser.mutation(api.files_transfer.stop, { membershipId: f.db.membershipId, runId: f.runId })).toEqual(
+		{ _yay: null },
+	);
+	await test_finish_transfer_run(f.asUser, f.runId);
+	expect((await read_old_chunk())?.moveView).toBeUndefined();
+	await drain();
+	expect(await read_old_chunk()).toBeNull();
+	expect(await pending_scope_docs(f, proposal)).toEqual(original);
+}, 120_000);
+
 test("public Move leaves unrelated drafts under an unchanged anchor in place", async () => {
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
