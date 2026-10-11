@@ -34,6 +34,20 @@ const tiles = await frame.evaluate(() => document.querySelectorAll(".tile").leng
 - Keyboard: tile links and buttons show a visible focus ring; tile labels appear on focus. Buttons keep a 44px minimum height.
 - Narrow layout: check 360px and 390px viewports plus 200% zoom. The grid must not create required horizontal scrolling.
 
+## Live check of the dead-cursor restart
+
+Gallery 0.1.23 starts the scan again, once per click, when `/api/v1/files/list` answers 400 `errorCode: "invalid_cursor"`. `personal/home` (the only Gallery install) has fewer than 100 media files, so with the real page size the first page is the last one and no cursor is ever kept. To get real cursors, shrink only the page size in your own tab before you open the page:
+
+```js
+await page.route("**/api/v1/files/list", async (route) => {
+	const body = JSON.parse(route.request().postData() ?? "{}");
+	body.limit = 5;
+	await route.continue({ postData: JSON.stringify(body) });
+});
+```
+
+Then wait for 12 tiles and `Load more`, rename an empty QA folder in the same workspace (`files_nodes:rename_node` with the CLI `--identity`; `path` is the new name, relative to the parent), and wait until the list shows the new name. Press `Load more` (focus plus Enter). Expected: one request with the old cursor gets 400 `invalid_cursor`, the next request sends `cursor: null`, and the grid grows to 24 unique tiles with no alert. Further clicks reach the full media count with no repeats and no `Load more`. Rename the folder back afterwards. Verified 2026-10-11 with 29 media files and `/qa/qa-cmp-empty-0924`.
+
 ## Known hazards
 
 - `fetch()` from the plugin page to R2 fails by design because CSP limits `connect-src` to the Convex origin. Probe media via element `readyState`/`naturalWidth`, not fetch.
