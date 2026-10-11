@@ -3772,6 +3772,8 @@ describe("accept_file_pending_replacement", () => {
 	test("releases the staged copy of an occupant that a saved Move replaces", async () => {
 		const fixture = await create_file_fixture();
 		const { t, db, asUser } = fixture;
+		// The deletion job may run from the scheduler too. Never call real R2.
+		const deleted = vi.spyOn(r2_confirmed_object_delete, "delete_object").mockResolvedValue(undefined);
 		const upload = async (filename: string, bytes: Uint8Array) => {
 			const created = await asUser.mutation(api.files_nodes.create_upload_node, {
 				membershipId: db.membershipId,
@@ -3855,5 +3857,23 @@ describe("accept_file_pending_replacement", () => {
 		expect(after.asset).toBeNull();
 		expect(after.job?.reason).toBe("discarded_replacement");
 		expect(after.job?.privateStorageReservationId).toBe(after.hold?._id);
+		expect(after.hold?.byteCount).toBeGreaterThan(0);
+
+		// Run the job twice. The hold settles once and the private bytes drop by its size once.
+		const { hold, job } = after;
+		if (!hold || !job) throw new Error("Expected the hold and its deletion job");
+		const read_bytes = () => t.run(async (ctx) => (await ctx.db.get("quotas", hold.userQuotaId))!.usedCount);
+		const bytesBefore = await read_bytes();
+		vi.useFakeTimers();
+		vi.setSystemTime(Math.max(Date.now(), (job.putMayArriveUntil ?? 0) + 1));
+		for (let attempt = 0; attempt < 2; attempt++)
+			await t.action(internal.r2_client.process_object_deletion_job, { jobId: job._id, generation: job.generation });
+		vi.useRealTimers();
+		expect(deleted).toHaveBeenCalledTimes(1);
+		expect(deleted).toHaveBeenCalledWith(expect.anything(), stagedKey);
+		expect((await t.run((ctx) => ctx.db.get("files_private_storage_reservations", hold._id)))?.settlement.kind).toBe(
+			"deleted",
+		);
+		expect(await read_bytes(), "the copy leaves the private quota once").toBe(bytesBefore - hold.byteCount);
 	});
 });
