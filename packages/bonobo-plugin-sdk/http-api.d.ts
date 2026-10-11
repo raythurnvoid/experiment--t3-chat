@@ -510,6 +510,12 @@ export type BonoboHttpApi = {
 					};
 					body: {
 						message: string;
+					} | {
+						errorCode: "invalid_cursor";
+						message: string;
+						items?: undefined;
+						cursor?: undefined;
+						isDone?: undefined;
 					};
 				};
 				403: {

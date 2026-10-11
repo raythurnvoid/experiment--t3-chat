@@ -155,11 +155,16 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									throw error;
 								return {
 									status: 400,
-									body: await fail({
-										status: 400,
-										message: "This list cursor changed. Start a new page.",
-										errorCode: "invalid_cursor",
-									}),
+									body: {
+										...(await fail({
+											status: 400,
+											message: "This list cursor changed. Start a new page.",
+											errorCode: "invalid_cursor",
+										})),
+										// Clients restart with `cursor: null` on this code. A Move or Rename in the workspace, a
+										// replaced folder, or a host update all end old cursors, so this is a normal answer.
+										errorCode: "invalid_cursor" as const,
+									},
 								} as const;
 							}
 							if (listed._nay) {

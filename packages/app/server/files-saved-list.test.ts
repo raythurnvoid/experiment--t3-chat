@@ -146,7 +146,7 @@ describe("saved list action", () => {
 			body: JSON.stringify({ path: "/", cursor: "broken" }),
 		});
 		expect(response.status).toBe(400);
-		expect(await response.json()).toEqual({ message: "This list cursor changed. Start a new page." });
+		expect(await response.json()).toEqual({ message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" });
 	});
 
 	test("does not resume a cursor under a new membership lifetime", async () => {

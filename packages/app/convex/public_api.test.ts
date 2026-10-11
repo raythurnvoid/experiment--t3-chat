@@ -4033,13 +4033,13 @@ describe("files list hidden paths", () => {
 		const edited = `${cursor.slice(0, 10)}${cursor[10] === "A" ? "B" : "A"}${cursor.slice(11)}`;
 		expect(await list(t, f.memberCredential, { path: "/", recursive: true, limit: 1, cursor: edited })).toEqual({
 			status: 400,
-			body: { message: "This list cursor changed. Start a new page." },
+			body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
 		});
 		// A plain JSON cursor from before the seal, like a caller may still hold after the deploy.
 		const old = JSON.stringify({ scope: "[]", lastKey: { value: "/b.md", createdAt: 0, nodeId: "node" } });
 		expect(await list(t, f.memberCredential, { path: "/", recursive: true, limit: 1, cursor: old })).toEqual({
 			status: 400,
-			body: { message: "This list cursor changed. Start a new page." },
+			body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
 		});
 		const huge = await list(t, f.memberCredential, { path: "/", cursor: `c1.${"A".repeat(16384)}` });
 		expect(huge, "the body check refuses an over-long cursor before the server decodes it").toEqual({
@@ -4113,7 +4113,7 @@ describe("files list hidden paths", () => {
 		expect(recreated._nay).toBeUndefined();
 		expect(await list(t, f.ownerCredential, next)).toEqual({
 			status: 400,
-			body: { message: "This list cursor changed. Start a new page." },
+			body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
 		});
 	});
 });
