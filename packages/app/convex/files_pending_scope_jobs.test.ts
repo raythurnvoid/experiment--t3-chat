@@ -2,7 +2,9 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
+import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
@@ -296,11 +298,21 @@ test("a saved scope job pages a file's saved docs and ends equal to the node aft
 	expect(archived.job).toMatchObject({ cursor: null });
 	expect(await reviewJobs(), "the saved scope job does not hold up reviews").toBe(reviewJobsBefore);
 
-	// One run: the first page of chunks only.
+	// First run: all metadata docs, so folder tables catch up first.
+	vi.runOnlyPendingTimers();
+	await t.finishInProgressScheduledFunctions();
+	const metadataDone = await read_saved_docs(t, nodeId);
+	expect(
+		metadataDone.metadata.filter((doc) => doc.archiveOperationId === undefined),
+		"metadata goes first",
+	).toEqual([]);
+	expect(JSON.parse(metadataDone.job!.cursor!)).toMatchObject({ phase: 1, page: null });
+
+	// Second run: the first page of chunks only.
 	vi.runOnlyPendingTimers();
 	await t.finishInProgressScheduledFunctions();
 	const halfway = await read_saved_docs(t, nodeId);
-	expect(JSON.parse(halfway.job!.cursor!)).toMatchObject({ phase: 0, page: expect.any(String) });
+	expect(JSON.parse(halfway.job!.cursor!)).toMatchObject({ phase: 1, page: expect.any(String) });
 	const archivedChunks = halfway.chunks.filter((chunk) => chunk.archiveOperationId !== undefined).length;
 	expect(archivedChunks).toBeGreaterThan(0);
 	expect(archivedChunks).toBeLessThan(halfway.chunks.length);
@@ -366,6 +378,15 @@ test("a saved scope job waits while a Move holds its file, then follows the move
 		nextAttemptAt: job.nextAttemptAt,
 	});
 	expect((await read_saved_docs(t, nodeId)).job?.blockedByCohortId, "the job waits for the Move").toBe(cohort!._id);
+	// A new write does not start a parked job: the Move wakes it. The test ran the job by hand, so
+	// cancel its scheduled run, like a run that ended.
+	await t.run((ctx) => ctx.scheduler.cancel(job.scheduledFunctionId));
+	await t.run(async (ctx) =>
+		files_pending_overlay_db_schedule_saved_scope(ctx, (await ctx.db.get("files_nodes", nodeId))!),
+	);
+	expect((await read_saved_docs(t, nodeId)).job?.scheduledFunctionId, "a parked job stays parked").toBe(
+		job.scheduledFunctionId,
+	);
 
 	await test_finish_transfer_run(asUser, runId);
 	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
@@ -373,4 +394,63 @@ test("a saved scope job waits while a Move holds its file, then follows the move
 	expect(moved.node.path).toBe("/project/renamed.md");
 	expect(moved.job, "the Move wakes the job, and the job ends").toBeNull();
 	expect(stale_docs(moved)).toEqual([]);
+}, 60_000);
+
+test("an Archive that names a node twice makes one saved scope job", async () => {
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
+		path: "/project/twice.md",
+		textContent: "---\ntitle: Twice\n---\nSaved text.\n",
+	});
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+
+	await t.run((ctx) =>
+		files_nodes_db_archive_nodes({
+			ctx,
+			nodeIds: [nodeId, nodeId],
+			updatedBy: db.userId,
+			now: Date.now(),
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
+		}),
+	);
+	const jobs = await t.run((ctx) =>
+		ctx.db
+			.query("files_pending_overlay_jobs")
+			.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope").eq("key", nodeId))
+			.collect(),
+	);
+	// Two docs would make every run and every later schedule throw on `.unique()`.
+	expect(jobs, "one job doc per node").toHaveLength(1);
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	const archived = await read_saved_docs(t, nodeId);
+	expect(archived.job).toBeNull();
+	expect(stale_docs(archived)).toEqual([]);
+}, 60_000);
+
+test("a Restore starts a saved scope job again when its run was lost", async () => {
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
+		path: "/project/lost.md",
+		textContent: "---\ntitle: Lost\n---\nSaved text.\n",
+	});
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	const args = { membershipId: db.membershipId, nodeIds: [nodeId] };
+	expect(await asUser.mutation(api.files_nodes.archive_nodes, args)).toEqual({ _yay: null });
+	// A failed run leaves the job doc the same as a lost one.
+	const lost = (await read_saved_docs(t, nodeId)).job!;
+	await t.run((ctx) => ctx.scheduler.cancel(lost.scheduledFunctionId));
+
+	expect(await asUser.mutation(api.files_nodes.unarchive_nodes, args)).toEqual({ _yay: null });
+	const restarted = (await read_saved_docs(t, nodeId)).job!;
+	const run = await t.run((ctx) => ctx.db.system.get("_scheduled_functions", restarted.scheduledFunctionId));
+	expect(run?.state.kind, "Restore starts the lost job again").toBe("pending");
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	const restored = await read_saved_docs(t, nodeId);
+	expect(restored.job).toBeNull();
+	expect(stale_docs(restored)).toEqual([]);
 }, 60_000);

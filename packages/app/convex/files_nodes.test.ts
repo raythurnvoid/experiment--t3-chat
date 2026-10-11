@@ -25,6 +25,8 @@ import {
 	files_nodes_db_get_content_version,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
+	files_nodes_db_archive_node,
+	files_nodes_db_restore_node,
 	files_tail_lines_from_text,
 	yjs_reserve_and_increment_last_sequence,
 } from "./files_nodes.ts";
@@ -13545,6 +13547,123 @@ describe("list_tree_children_sorted", () => {
 			}),
 		]);
 		expect(first.page[0]).not.toHaveProperty("sortFieldValue");
+	});
+
+	test("a restored row's metadata cells show no value until its saved scope job runs", async () => {
+		vi.useFakeTimers();
+		const { t, db, asOwner, parentId, insert_child, set_metadata } = await seed_folder_table();
+		const fileId = await insert_child({ name: "a.md", kind: "file", updatedAt: 1 });
+		await set_metadata([[fileId, [{ key: "status", value: "ready" }]]]);
+		const target = { kind: "saved" as const, id: fileId };
+		const cells = () =>
+			asOwner.query(api.files_metadata.get_field_values, {
+				membershipId: db.membershipId,
+				target,
+				fields: ["metadata.status"],
+				afterField: null,
+			});
+		const fields = async () =>
+			(
+				await asOwner.query(api.files_metadata.list_node_fields, {
+					membershipId: db.membershipId,
+					target,
+					cursor: null,
+				})
+			)?.fields;
+		// The calls an archive run and a restore run make (`files_archive_runs.ts`).
+		await t.run(async (ctx) =>
+			files_nodes_db_archive_node(ctx, {
+				node: (await ctx.db.get("files_nodes", fileId))!,
+				archiveOperationId: "op-1",
+				updatedBy: db.userId,
+				now: Date.now(),
+			}),
+		);
+		await test_finish_saved_scope_jobs(t);
+		await t.run(async (ctx) =>
+			files_nodes_db_restore_node(ctx, {
+				node: (await ctx.db.get("files_nodes", fileId))!,
+				parent: await ctx.db.get("files_nodes", parentId),
+				name: "a.md",
+				updatedBy: db.userId,
+				now: Date.now(),
+			}),
+		);
+
+		await expect(cells(), "a restored row shows no value until the job runs").resolves.toMatchObject({
+			values: [{ field: "metadata.status", value: null }],
+		});
+		await expect(fields(), "a restored row lists no field until the job runs").resolves.toEqual([]);
+		await test_finish_saved_scope_jobs(t);
+		expect(await cells()).toMatchObject({ values: [{ field: "metadata.status", value: "ready" }] });
+		expect(await fields()).toEqual(["metadata.status"]);
+
+		// With no job, a stale archive id is a bug and still fails loudly.
+		await t.run(async (ctx) => {
+			const fieldDoc = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", fileId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined)
+						.eq("fieldPath", "metadata.status"),
+				)
+				.filter((q) => q.eq(q.field("docKind"), "field"))
+				.unique();
+			await ctx.db.patch("files_metadata_docs", fieldDoc!._id, { archiveOperationId: "op-2" });
+		});
+		await expect(cells()).rejects.toThrow("metadataDoc source is mismatched");
+	});
+
+	test("a row that Archive and a Keep both Restore renamed in its folder leaves a metadata sort until its saved scope job runs", async () => {
+		vi.useFakeTimers();
+		const { t, db, parentId, insert_children, set_metadata, read_page } = await seed_folder_table();
+		const [fileId, keptId] = await insert_children([
+			{ name: "a.md", kind: "file", updatedAt: 1 },
+			{ name: "kept.md", kind: "file", updatedAt: 1 },
+		]);
+		await set_metadata([
+			[fileId!, [{ key: "status", value: "ready" }]],
+			[keptId!, [{ key: "status", value: "ready" }]],
+		]);
+		const names = async () =>
+			(
+				await read_page({
+					kind: "file",
+					sort: { field: "metadata.status", direction: "asc" },
+					paginationOpts: { numItems: 10, cursor: null },
+				})
+			).page.map((row) => row.name);
+		// The calls an archive run and a restore run make (`files_archive_runs.ts`). Keep both gives
+		// a new name in the same folder before the Archive's job ran.
+		await t.run(async (ctx) =>
+			files_nodes_db_archive_node(ctx, {
+				node: (await ctx.db.get("files_nodes", fileId!))!,
+				archiveOperationId: "op-1",
+				updatedBy: db.userId,
+				now: Date.now(),
+			}),
+		);
+		await t.run(async (ctx) =>
+			files_nodes_db_restore_node(ctx, {
+				node: (await ctx.db.get("files_nodes", fileId!))!,
+				parent: await ctx.db.get("files_nodes", parentId),
+				name: "a (1).md",
+				updatedBy: db.userId,
+				now: Date.now(),
+			}),
+		);
+
+		await expect(names(), "the renamed row is left out until the job runs").resolves.toEqual(["kept.md"]);
+		await test_finish_saved_scope_jobs(t);
+		expect(await names()).toEqual(["a (1).md", "kept.md"]);
+
+		// With no job, a stale name is a bug and still fails loudly.
+		await t.run((ctx) => ctx.db.patch("files_nodes", fileId!, { name: "a (2).md", sortName: "a (2).md" }));
+		await expect(names()).rejects.toThrow("fieldDoc sort fields are mismatched");
 	});
 
 	test("a page over the byte limit asks for a split, and the halves give every row once", async () => {

@@ -3,7 +3,7 @@ import { expect } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { activities_is_active } from "./activities_db.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_finish_saved_scope_jobs, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
 export async function fixture(options: Parameters<typeof test_convex>[0] = { transactionLimits: true }) {
@@ -289,7 +289,8 @@ export async function step(f: Fixture, runId: Id<"files_archive_runs">) {
 }
 
 /**
- * Run the job to its end and check both rules after every step. Returns the step count.
+ * Run the job to its end and check both rules after every step. Then run the saved scope jobs to
+ * their end, and check every side doc with no job left to skip. Returns the step count.
  */
 export async function run_to_end(f: Fixture, job: { runId: Id<"files_archive_runs">; activityId: Id<"activities"> }) {
 	await expect_consistent(f);
@@ -298,6 +299,8 @@ export async function run_to_end(f: Fixture, job: { runId: Id<"files_archive_run
 		await expect_consistent(f);
 		const activity = await read_activity(f, job.activityId);
 		if (!activities_is_active(activity.status) || activity.status === "awaiting_input") {
+			await test_finish_saved_scope_jobs(f.t);
+			expect((await expect_consistent(f)).savedScopeJobs, "every saved scope job ends").toEqual([]);
 			return { steps: count, activity };
 		}
 	}

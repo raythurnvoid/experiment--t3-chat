@@ -2004,7 +2004,9 @@ async function db_schedule_job(flush: Flush, scope: Omit<Scope, "userId">, input
 /**
  * Make a saved node's chunks and metadata docs follow its new path or archive state, in a
  * job. A job that has not started reads the node when it runs. One in the middle of a pass walks
- * once more when the pass ends, so steady writes cannot keep it from ending.
+ * once more when the pass ends, so steady writes cannot keep it from ending. One whose run failed
+ * starts again. Callers must not
+ * schedule the same node twice in parallel: both calls would insert a job doc.
  */
 export async function files_pending_overlay_db_schedule_saved_scope(
 	ctx: MutationCtx,
@@ -2018,7 +2020,10 @@ export async function files_pending_overlay_db_schedule_saved_scope(
 		const cursor = job.cursor && (JSON.parse(job.cursor) as { rerun?: boolean });
 		if (cursor && !cursor.rerun)
 			await ctx.db.patch("files_pending_overlay_jobs", job._id, { cursor: JSON.stringify({ ...cursor, rerun: true }) });
-		return;
+		// A failed or lost run leaves the job idle until `recover_jobs`, so start it again now. A Move
+		// wakes a parked job, and a pending run reads this write when it runs.
+		const run = await ctx.db.system.get("_scheduled_functions", job.scheduledFunctionId);
+		if (job.blockedByCohortId || run?.state.kind === "pending" || run?.state.kind === "inProgress") return;
 	}
 	const now = Date.now();
 	const scheduledFunctionId = await ctx.scheduler.runAfter(0, internal.files_pending_overlay.run_job, {
@@ -2026,6 +2031,10 @@ export async function files_pending_overlay_db_schedule_saved_scope(
 		key: node._id,
 		nextAttemptAt: now,
 	});
+	if (job) {
+		await ctx.db.patch("files_pending_overlay_jobs", job._id, { nextAttemptAt: now, scheduledFunctionId });
+		return;
+	}
 	await ctx.db.insert("files_pending_overlay_jobs", {
 		organizationId: node.organizationId,
 		workspaceId: node.workspaceId,
@@ -2037,6 +2046,18 @@ export async function files_pending_overlay_db_schedule_saved_scope(
 		scheduledFunctionId,
 		attempts: 0,
 	});
+}
+
+/**
+ * Whether a saved node's chunks and metadata docs may still lag its scope. Readers use it to skip a
+ * doc in transit, and still throw on a mismatch with no job.
+ */
+export async function files_pending_overlay_db_has_saved_scope_job(ctx: QueryCtx, nodeId: Id<"files_nodes">) {
+	const job = await ctx.db
+		.query("files_pending_overlay_jobs")
+		.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope").eq("key", nodeId))
+		.unique();
+	return job !== null;
 }
 
 export async function files_pending_overlay_db_delete_job(ctx: MutationCtx, job: Doc<"files_pending_overlay_jobs">) {
