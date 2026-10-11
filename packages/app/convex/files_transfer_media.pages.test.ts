@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_save_file_pending_update, test_spy_handler } from "./setup.test.ts";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { prepare_transfer_file_media } from "./files_nodes_content.ts";
 import {
 	mock_media_storage,
@@ -211,12 +212,22 @@ describe("copy_transfer_file media", () => {
 			});
 			for (const dependency of dependencies) expect(read?.content).toContain(`![Photo](${dependency.src})`);
 			for (const src of f.sourceRefs) expect(read?.content).not.toContain(src);
+			// Each Move step is one advance call. Count the steps that repair saved content.
+			let repairSteps = 0;
+			test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+				const { cohortId } = args as { cohortId: Id<"files_move_cohorts"> };
+				if ((await ctx.db.get("files_move_cohorts", cohortId))?.workPhase === "finish_content") repairSteps++;
+				return await handler(ctx, args);
+			});
 			await save_all_media({
 				t: f.t,
 				membershipId: f.destination.membershipId,
 				userId: f.destination.userId,
 				targets: f.selectedMediaItems.map((media) => media.outputTarget!),
 			});
+			// Each media Save repairs its content in one step, plus one step that finds no more content.
+			// One page per step took 16 steps per Save, mostly for its 14 empty sides.
+			expect(repairSteps, "content repair runs all its sides in one step").toBe(2 * mediaCount);
 			expect(
 				await test_save_file_pending_update(f.asUser, {
 					membershipId: f.destination.membershipId,
