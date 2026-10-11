@@ -790,7 +790,8 @@ describe("Move write reservations", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_yjs_states", stateId))).toBeNull();
 	});
 
-	test("a bulk metadata replace during an unrelated Move checks the file once, not once per doc", async () => {
+	// In parallel, every write starts its check before the first walk ends.
+	test.each([false, true])("a bulk metadata replace during a Move walks once, parallel: %s", async (parallel) => {
 		const f = await fixture();
 		// An unrelated file at depth 3, while the fixture's Move holds the workspace.
 		const file = await test_run_with_flush(f.t, async (ctx) => {
@@ -858,8 +859,13 @@ describe("Move write reservations", () => {
 						.eq("fileNodeId", file._id),
 				)
 				.collect();
-			for (const doc of old) await ctx.db.delete("files_metadata_docs", doc._id);
-			for (const doc of docs(1)) await ctx.db.insert("files_metadata_docs", doc);
+			if (parallel) {
+				await Promise.all(old.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
+				await Promise.all(docs(1).map((doc) => ctx.db.insert("files_metadata_docs", doc)));
+			} else {
+				for (const doc of old) await ctx.db.delete("files_metadata_docs", doc._id);
+				for (const doc of docs(1)) await ctx.db.insert("files_metadata_docs", doc);
+			}
 			const after = await ctx.meta.getTransactionMetrics();
 			return { ranges: after.databaseQueries.used - before.databaseQueries.used, docs: old.length };
 		});
