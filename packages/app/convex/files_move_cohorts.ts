@@ -911,12 +911,15 @@ async function db_rename_parents(
 		const reserved = await db_reserve_saved(ctx, cohort, { node: folder, role: "anchor" });
 		if (reserved._nay) return reserved;
 	} else {
+		const path = path_join(cursor.parentPath, name);
+		// Check before the first write: an existing folder may keep a longer name, a new one may not.
+		const tooLong = files_check_name_and_path_length({ names: [name], path });
+		if (tooLong._nay) return tooLong;
 		const claimed =
 			cursor.parentArchiveOperationId === null
 				? await db_claim_slot(ctx, cohort, { parentId: cursor.parentId, name })
 				: Result({ _yay: null });
 		if (claimed._nay) return claimed;
-		const path = path_join(cursor.parentPath, name);
 		const nodeId = await ctx.db.insert("files_nodes", {
 			organizationId: cohort.organizationId,
 			workspaceId: cohort.workspaceId,

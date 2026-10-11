@@ -97,7 +97,7 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import { files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } from "../shared/files.ts";
+import { files_NAME_MAX_LENGTH, files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_table_filter_order_field, type files_table_Filter } from "../shared/files-table.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
@@ -2179,6 +2179,27 @@ test("rename_node resolves more than 32 missing parents in worker steps", async 
 		progress: { completed: 1 },
 	});
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", db.files.file_root_1._id)))?.path).toBe(`/${path}`);
+}, 120_000);
+
+test("rename_node refuses a new parent folder name over the limit and keeps the old name", async () => {
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId, name: "Rename User" });
+	const accepted = await test_rename_node(t, asUser, {
+		membershipId: db.membershipId,
+		nodeId: db.files.file_root_1._id,
+		path: `${"n".repeat(files_NAME_MAX_LENGTH + 1)}/renamed`,
+	});
+	if (!accepted._yay) throw new Error("Rename was not accepted", { cause: accepted._nay });
+	expect(await t.run((ctx) => ctx.db.get("activities", accepted._yay!.activityId))).toMatchObject({
+		status: "failed",
+	});
+	const nodes = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+	expect(
+		nodes.filter((node) => node.name.length > files_NAME_MAX_LENGTH),
+		"no folder with a name over the limit",
+	).toEqual([]);
+	expect(nodes.find((node) => node._id === db.files.file_root_1._id)?.path).toBe(db.files.file_root_1.path);
 }, 120_000);
 
 test("rename_node Stop removes staged parents and keeps the old name visible", async () => {
