@@ -6696,12 +6696,32 @@ export async function public_api_http_write_many(args: {
 		credentialId: principal.credentialId,
 	};
 
-	// Write in two waves. Wave 1 writes the first file of each parent folder, so two files never
-	// race to create the same parent. Wave 2 writes the rest, once their parents exist.
+	// Write new files in two waves. Wave 1 writes the first file of each parent folder, so two files
+	// never race to create the same parent. Wave 2 writes the rest, once their parents exist.
+	// Overwrites go last, one at a time: a fill stages its Yjs update under a hold on the user's and
+	// the workspace's private storage counters, and its publish gives the hold back. Parallel fills
+	// conflict on those two docs until Convex gives up. This lookup only picks the wave: the per-file
+	// write still decides create or fill on its own.
+	const existingNodes = await Promise.all(
+		validatedFiles.map((file) =>
+			ctx.runQuery(internal.files_nodes.get_by_path, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				visibilityUserId: public_api_visibility_user_id(principal),
+				serviceAccountId: principal.serviceAccountId ?? undefined,
+				path: file.path,
+			}),
+		),
+	);
 	const firstWave: number[] = [];
 	const secondWave: number[] = [];
+	const fillWave: number[] = [];
 	const seenParents = new Set<string>();
 	for (const [index, file] of validatedFiles.entries()) {
+		if (existingNodes[index]) {
+			fillWave.push(index);
+			continue;
+		}
 		const parentPath = server_path_parent_of(file.path);
 		(seenParents.has(parentPath) ? secondWave : firstWave).push(index);
 		seenParents.add(parentPath);
@@ -6710,10 +6730,14 @@ export async function public_api_http_write_many(args: {
 	// A dead credential or a bad item stops the batch. Files already in flight finish; files not
 	// started yet are skipped.
 	let stopped = false;
-	for (const wave of [firstWave, secondWave]) {
+	for (const [wave, limit] of [
+		[firstWave, FILES_WRITE_MANY_CONCURRENCY],
+		[secondWave, FILES_WRITE_MANY_CONCURRENCY],
+		[fillWave, 1],
+	] as const) {
 		const settled = await async_all_settled_with_limit({
 			items: wave,
-			limit: FILES_WRITE_MANY_CONCURRENCY,
+			limit,
 			run: async (index) => {
 				if (stopped) {
 					return;

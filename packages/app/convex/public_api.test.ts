@@ -5174,6 +5174,68 @@ describe("files write-many", () => {
 		expect(folders.map((folder) => folder.path).sort()).toEqual(["/a", "/b"]);
 	});
 
+	test("overwrites existing files one at a time", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-fills" });
+		const { credential } = await seed_bulk_writer_credential({ t, db, clerkSubject: "write-many-fills" });
+		const paths = ["/x/old.md", "/y/old.md", "/z/old.md"];
+		for (const path of paths) {
+			const first = await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ path, content: "# Old\n" }),
+			});
+			expect(first.status).toBe(200);
+		}
+		const files = paths.map((path) => ({ path, content: `# New ${path}\n` }));
+		const fillContents = new Set(files.map((file) => file.content));
+
+		// Hold each fill's first content PUT until a second fill is in flight too, or a short while
+		// passed. Later PUTs of the same text come from background materialization and pass through.
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let release = Promise.withResolvers<void>();
+		const stubbedFetch = globalThis.fetch;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			if (init?.method !== "PUT" || typeof init.body !== "string" || !fillContents.delete(init.body)) {
+				return await stubbedFetch(url, init);
+			}
+			inFlight += 1;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			if (inFlight >= 2) {
+				release.resolve();
+			}
+			await Promise.race([release.promise, new Promise((resolve) => setTimeout(resolve, 1_000))]);
+			try {
+				return await stubbedFetch(url, init);
+			} finally {
+				inFlight -= 1;
+				if (inFlight === 0) {
+					release = Promise.withResolvers<void>();
+				}
+			}
+		});
+
+		const response = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ files }),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { written: Array<{ path: string }>; errors: unknown[] };
+		expect(body.errors).toEqual([]);
+		expect(body.written.map((item) => item.path)).toEqual(paths);
+		// Each fill holds the user's and the workspace's private storage counters while it stages its
+		// update. Parallel fills conflict on those two docs, so they must run one at a time.
+		expect(maxInFlight).toBe(1);
+		// Every hold was given back.
+		const privateQuotas = await t.run(async (ctx) =>
+			(await ctx.db.query("quotas").collect()).filter((quota) => quota.quotaName.startsWith("files_private_")),
+		);
+		expect(privateQuotas.map((quota) => quota.usedCount)).toEqual(privateQuotas.map(() => 0));
+	});
+
 	test("refuses an oversized or overfull batch", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-limits" });
