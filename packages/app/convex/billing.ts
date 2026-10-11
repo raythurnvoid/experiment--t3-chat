@@ -40,6 +40,7 @@ import {
 	billing_db_drain_usage_event_outbox,
 	billing_db_ingest_anonymous_user_events,
 	billing_db_recover_usage_event_outbox,
+	billing_db_resend_rejected_usage_events,
 	billing_ingest_events,
 	billing_pick_billed_user_id,
 	billing_workpool_usage_event,
@@ -1829,12 +1830,17 @@ export const ingest_events = internalAction({
 		if (!ingestResult.ok) {
 			// Polar checks the whole batch before it saves any event, so one bad event refuses all of
 			// them (422), and a retry would fail forever. Split the batch in halves until the bad event
-			// is alone, then log it and drop it. Other errors throw, so the pool retries the batch.
+			// is alone, then log it and keep it in `billing_usage_event_rejected`, so a code bug that
+			// makes every event invalid loses no charge. Other errors throw, so the pool retries.
 			if (ingestResult.error instanceof HTTPValidationError) {
 				if (args.events.length === 1) {
-					console.error("Polar refused a usage event; it is not retried", {
+					console.error("Polar refused a usage event; it waits in billing_usage_event_rejected", {
 						event: args.events[0],
 						detail: ingestResult.error.detail,
+					});
+					await ctx.runMutation(internal.billing.save_rejected_usage_event, {
+						event: args.events[0],
+						error: ingestResult.error.message.slice(0, 1000),
 					});
 					return;
 				}
@@ -1885,6 +1891,30 @@ export const recover_usage_event_outbox = internalMutation({
 	handler: async (ctx) => {
 		await billing_db_recover_usage_event_outbox(ctx);
 		return null;
+	},
+});
+
+/**
+ * Keep one usage event Polar refused (422), so it can be sent again after a fix.
+ */
+export const save_rejected_usage_event = internalMutation({
+	args: { event: billing_event_validator, error: v.string() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await ctx.db.insert("billing_usage_event_rejected", { ...args, rejectedAt: Date.now() });
+		return null;
+	},
+});
+
+/**
+ * Move up to 500 refused usage events back to the outbox, after the cause is fixed. Run it again
+ * until it returns 0. An event Polar still refuses comes back to `billing_usage_event_rejected`.
+ */
+export const resend_rejected_usage_events = internalMutation({
+	args: {},
+	returns: v.number(),
+	handler: async (ctx) => {
+		return await billing_db_resend_rejected_usage_events(ctx);
 	},
 });
 

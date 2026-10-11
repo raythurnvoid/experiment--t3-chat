@@ -52,6 +52,7 @@ Load each companion skill that owns the affected boundary:
   reuses it.
 - `ai_model_call_receipts` are billing records. No user, organization, workspace, or thread deletion path touches them. Their only deletion path is the daily retention cron, which deletes a receipt 396 days after admission once its usage is final and no charge is `queued`. A deleted user's id stays in those docs until then.
 - `billing_usage_event_outbox` and its one `billing_usage_event_outbox_drainers` marker are billing records on their way to Polar, like the jobs in the usage pool. No user, organization, or workspace deletion path touches them: deleting them would drop charges for saves that already happened. The drainer sends each doc within seconds and then deletes it. The docs hold ids and amounts only, no names or paths.
+- `billing_usage_event_rejected` holds usage events Polar refused (422), with Polar's trimmed error text. No deletion path touches it either, for the same reason: each doc is a charge for work that already happened and waits for a resend after a fix. Unlike the outbox, a doc can stay until an operator acts, but it still holds only ids, amounts, and Polar's validation message, no names, paths, or content. So no purge pass is needed; the operator resends or deletes the docs.
 
 # Primary Files
 

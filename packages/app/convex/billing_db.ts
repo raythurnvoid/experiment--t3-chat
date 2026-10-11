@@ -406,6 +406,18 @@ export async function billing_db_recover_usage_event_outbox(ctx: MutationCtx) {
 }
 
 /**
+ * Move up to one batch of refused events from `billing_usage_event_rejected` back to the outbox.
+ * Returns how many moved. Polar skips an event it already has, so a resend never counts twice.
+ */
+export async function billing_db_resend_rejected_usage_events(ctx: MutationCtx) {
+	const docs = await ctx.db.query("billing_usage_event_rejected").take(OUTBOX_BATCH_SIZE);
+	if (docs.length === 0) return 0;
+	for (const doc of docs) await ctx.db.delete("billing_usage_event_rejected", doc._id);
+	await db_insert_outbox_events(ctx, docs.map((doc) => doc.event));
+	return docs.length;
+}
+
+/**
  * Send one signed-in usage event to Polar through the usage pool. `onComplete` learns when the
  * pool gives up or finishes, so the caller can record the delivery.
  */

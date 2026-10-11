@@ -4591,7 +4591,7 @@ describe("ingest_events", () => {
 		});
 	});
 
-	test("splits a batch Polar refuses (422) until the bad event is alone, then logs it and sends the rest", async () => {
+	test("splits a batch Polar refuses (422) until the bad event is alone, keeps it for a resend, and sends the rest", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const events = ["a", "b", "bad", "c"].map((key) => ({
@@ -4656,10 +4656,25 @@ describe("ingest_events", () => {
 			["manual_credit::c"],
 		]);
 		expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
-		expect(consoleErrorSpy).toHaveBeenCalledWith("Polar refused a usage event; it is not retried", {
+		expect(consoleErrorSpy).toHaveBeenCalledWith("Polar refused a usage event; it waits in billing_usage_event_rejected", {
 			event: expect.objectContaining({ externalId: "manual_credit::bad" }),
 			detail: [],
 		});
+		// The refused event is kept, not dropped.
+		const rejected = await t.run((ctx) => ctx.db.query("billing_usage_event_rejected").collect());
+		expect(
+			rejected.map((doc) => ({ externalId: doc.event.externalId, error: doc.error })),
+			"the refused event must wait in billing_usage_event_rejected",
+		).toEqual([{ externalId: "manual_credit::bad", error: refused.message.slice(0, 1000) }]);
+
+		// After a fix, the resend moves it back to the outbox, and the drainer starts.
+		expect(await t.mutation(internal.billing.resend_rejected_usage_events, {})).toBe(1);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_rejected").collect())).toEqual([]);
+		expect(
+			(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox").collect())).map((doc) => doc.event.externalId),
+		).toEqual(["manual_credit::bad"]);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").collect())).toHaveLength(1);
+		expect(await t.mutation(internal.billing.resend_rejected_usage_events, {})).toBe(0);
 	});
 
 	test("billing_ingest_events splits signed-in and anonymous billedUserEvents", async () => {

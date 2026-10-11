@@ -8868,6 +8868,17 @@ const app_convex_schema = defineSchema({
 	}),
 
 	/**
+	 * Usage events Polar refused (422) one by one. Kept so no charge is lost: after a fix,
+	 * `billing.resend_rejected_usage_events` moves them back to the outbox.
+	 */
+	billing_usage_event_rejected: defineTable({
+		event: billing_event_validator,
+		/** Polar's error text, trimmed. */
+		error: v.string(),
+		rejectedAt: v.number(),
+	}),
+
+	/**
 	 * One receipt per billed provider request: chat steps, titles and inline AI. A receipt is saved
 	 * before the request is sent, so no request runs without one. Usage only moves forward. Each
 	 * charge has its own Polar event id, and its state stops a second charge.
