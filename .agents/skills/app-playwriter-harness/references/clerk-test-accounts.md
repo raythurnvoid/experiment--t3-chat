@@ -131,7 +131,9 @@ await state.page.waitForFunction(() => window.Clerk?.user != null, { timeout: 15
 - **Deleting the minted anonymous user reloads the tab.** After `users.delete_current_user_account`,
   the next call can fail with `Cannot read properties of undefined (reading 'user')`, because
   `window.Clerk` is gone while the page reloads. Wait for `window.Clerk?.loaded === true` before the
-  sign-in. Verified 2026-09-27.
+  sign-in. Verified 2026-09-27. On 2026-10-11 the same direct action call in the owner's Edge did not
+  reload the tab and minted no new anonymous user, so do not wait for a reload that may not come; just
+  check `window.Clerk?.loaded` before the sign-in.
 - **The first Convex call after sign-in can answer `Unauthenticated`.** On 2026-09-27 the page also
   logged `useAppAuth must be used within AppAuthProvider`. A `page.reload` followed by waiting for
   `window.Clerk.user` fixed it, and every call after that worked. That error message kept showing
