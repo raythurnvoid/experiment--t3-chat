@@ -2,6 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import type { MutationCtx } from "./_generated/server.js";
 import { test_run_with_flush } from "./setup.test.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes.ts";
 import {
@@ -18,6 +19,7 @@ import {
 	files_saved_placement_db_get_proposal,
 } from "../server/files-saved-placement.ts";
 import { files_saved_content_collect, files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
+import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
 import { files_db_load_pending_update_yjs_state_bytes, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
@@ -358,6 +360,35 @@ test("publication keeps a partial Save allowed at the private cap and books its 
 	expect(await f.publish()).toEqual({ _yay: null });
 	expect((await read_quota())?.usedCount, "the growth is booked once").toBe(quota.usedCount + content.privateByteDelta);
 	expect(await f.chunks(), "the switch serves accepted content").toBe("accepted text");
+});
+
+test("a 700 KB Save stages and repairs in few steps, and no step nears a limit", async () => {
+	// Each text has about 600 chunks, written or tagged in pages of 8.
+	const text = "a\t".repeat(350_000);
+	const f = await fixture({ staged: text, unstaged: `${text}\nlater draft` });
+	let steps = 0;
+	let heaviest = 0;
+	const step = (
+		run: (ctx: MutationCtx) => ReturnType<typeof files_move_content_db_stage | typeof files_move_content_db_finish>,
+	) =>
+		test_run_with_flush(f.t, async (ctx) => {
+			steps++;
+			const result = await run(ctx);
+			await files_pending_overlay_db_flush(ctx);
+			for (const metric of Object.values(await ctx.meta.getTransactionMetrics()))
+				heaviest = Math.max(heaviest, metric.used / (metric.used + metric.remaining));
+			if (result._nay) throw new Error(result._nay.message);
+			return result._yay.done;
+		});
+	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.context))).toEqual({ _yay: null });
+	while (!(await step((ctx) => files_move_content_db_stage(ctx, f.context))));
+	expect(await f.publish()).toEqual({ _yay: null });
+	while (!(await step((ctx) => files_move_content_db_finish(ctx, f.context))));
+	expect(await f.chunks(), "the switch serves the whole accepted text").toBe(text);
+	// One page per step took 754 steps. Tagging the draft's old chunks still pages with a cursor,
+	// one page of 8 per step, so it takes about 150 of the steps left.
+	expect(steps, "each step runs many pages").toBeLessThan(200);
+	expect(heaviest, "each step keeps a quarter of every limit").toBeLessThan(0.75);
 });
 
 test("a lost preparation keeps held output and fences the next attempt", async () => {
