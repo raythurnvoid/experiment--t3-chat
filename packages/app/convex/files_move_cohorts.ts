@@ -81,7 +81,10 @@ import {
 	files_db_advance_pending_review_version,
 	files_db_retire_pending_update_yjs_states,
 } from "../server/files.ts";
-import { files_pending_update_db_delete_chunks } from "./files_pending_updates.ts";
+import {
+	files_pending_update_db_delete_chunks,
+	files_pending_update_db_release_replacement_asset,
+} from "./files_pending_updates.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 const WAKE_PAGE_SIZE = 8;
@@ -1859,8 +1862,17 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 					}
 				} else {
 					// An accepted delete or replaced occupant skips the content step. Drop the text it ignored,
-					// with its untagged index docs.
-					if ((proposal.pendingArchive || record.role === "replacement") && proposal.content) {
+					// with its untagged index docs. A whole-file copy also releases its staged object, like Discard.
+					if (
+						(proposal.pendingArchive || record.role === "replacement") &&
+						(proposal.content || proposal.pendingReplacement)
+					) {
+						if (proposal.pendingReplacement)
+							await files_pending_update_db_release_replacement_asset(ctx, {
+								organizationId: proposal.organizationId,
+								workspaceId: proposal.workspaceId,
+								assetId: proposal.pendingReplacement.assetId,
+							});
 						await files_db_retire_pending_update_yjs_states(ctx, {
 							organizationId: proposal.organizationId,
 							workspaceId: proposal.workspaceId,

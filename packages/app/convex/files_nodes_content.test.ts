@@ -3768,4 +3768,92 @@ describe("accept_file_pending_replacement", () => {
 			"the run adds a version row for the replaced bytes",
 		).toContain(previousAssetId);
 	});
+
+	test("releases the staged copy of an occupant that a saved Move replaces", async () => {
+		const fixture = await create_file_fixture();
+		const { t, db, asUser } = fixture;
+		const upload = async (filename: string, bytes: Uint8Array) => {
+			const created = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				filename,
+				contentType: "application/pdf",
+				size: bytes.byteLength,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const key = `test/${filename}`;
+			objects.set(key, bytes);
+			await t.run((ctx) => ctx.db.patch("files_r2_assets", created._yay.assetId, { r2Key: key }));
+			return created._yay;
+		};
+		const occupant = await upload("replaced.pdf", new Uint8Array([1, 2, 3]));
+		const source = await upload("source.pdf", new Uint8Array([4, 5, 6]));
+		const mover = await upload("mover.pdf", new Uint8Array([7, 8, 9]));
+		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+			objects.set(args.destinationKey, objects.get(args.sourceKey)!);
+			return { outcome: "copied", size: 3, etag: "copied" };
+		});
+		const copy = await prepare_agent_replacement({ ...fixture, nodeId: occupant.nodeId }, source.nodeId);
+		const stagedAssetId = copy.pendingReplacement!.assetId;
+		const stagedKey = (await t.run((ctx) => ctx.db.get("files_r2_assets", stagedAssetId)))!.r2Key!;
+		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...fixture.scope,
+			target: { kind: "saved", id: mover.nodeId },
+			destParent: { kind: "root" },
+			destName: "replaced.pdf",
+			replace: true,
+		});
+		if (moved._nay) throw new Error(moved._nay.message);
+		const move = await t.run((ctx) =>
+			ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_user_target", (q) =>
+					q.eq("userId", db.userId).eq("target.kind", "saved").eq("target.id", mover.nodeId),
+				)
+				.first(),
+		);
+		if (!move) throw new Error("Expected the Move proposal");
+		const started = await asUser.mutation(api.files_pending_update_runs.start, {
+			membershipId: db.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "accept",
+			expectedItemCount: 2,
+			items: [move, copy].map((proposal) => ({
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+				selectedContentStateId: null,
+			})),
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		const sealed = await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId });
+		if (sealed._nay) throw new Error(sealed._nay.message);
+		vi.useFakeTimers();
+		await test_finish_pending_update_run(asUser, runId);
+		vi.useRealTimers();
+		const finished = await asUser.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId });
+		expect(finished?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2 } });
+		const after = await t.run(async (ctx) => {
+			const hold = await ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", stagedAssetId))
+				.first();
+			return {
+				occupant: await ctx.db.get("files_nodes", occupant.nodeId),
+				copy: await ctx.db.get("files_pending_updates", copy._id),
+				asset: await ctx.db.get("files_r2_assets", stagedAssetId),
+				hold,
+				job: await ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", stagedKey))
+					.first(),
+			};
+		});
+		expect(after.occupant?.archiveOperationId).not.toBeNull();
+		expect(after.copy).toBeNull();
+		// The dropped copy goes to the deletion ledger. Its storage hold settles when the delete finishes.
+		expect(after.asset).toBeNull();
+		expect(after.job?.reason).toBe("discarded_replacement");
+		expect(after.job?.privateStorageReservationId).toBe(after.hold?._id);
+	});
 });
