@@ -156,6 +156,8 @@ export default defineConfig({
 				},
 				test: {
 					include: ["convex/**/*.test.ts", "server/**/*.test.ts", "shared/**/*.test.ts"],
+					// Setup helpers have no tests, but each one would still take a worker and import the app.
+					exclude: [...configDefaults.exclude, "**/setup.test.ts", "**/setup-*.test.ts", "**/*.setup.test.ts"],
 					includeSource: ["convex/**/*.ts", "server/bash.ts", "server/server-ai-tools.ts"],
 					name: "convex",
 					globals: true,
