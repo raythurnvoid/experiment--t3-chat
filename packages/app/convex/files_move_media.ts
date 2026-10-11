@@ -518,7 +518,7 @@ export async function files_move_media_db_validate_next(
 		proofEpoch: number;
 		cursor: string | null;
 	},
-): Promise<MediaResult<{ done: boolean; cursor: string }>> {
+): Promise<MediaResult<{ done: boolean; cursor: string; paged: boolean }>> {
 	const checked = await db_current(ctx, args);
 	if (checked._nay) return checked;
 	const { content, set, cohort } = checked._yay;
@@ -534,13 +534,16 @@ export async function files_move_media_db_validate_next(
 			previous.dependencySet.generation !== set.generation)
 	)
 		return changed();
-	if (previous?.sealed) return Result({ _yay: { done: true, cursor: args.cursor ?? "" } });
-	const page = await ctx.db
-		.query("files_media_dependencies")
-		.withIndex("by_set_order", (q) => q.eq("setId", set._id))
-		.paginate({ cursor: args.cursor, numItems: PAGE_SIZE });
+	if (previous?.sealed) return Result({ _yay: { done: true, cursor: args.cursor ?? "", paged: false } });
+	const range = () => ctx.db.query("files_media_dependencies").withIndex("by_set_order", (q) => q.eq("setId", set._id));
+	// An empty set reads no page, so the caller may still check its next work in this step.
+	const page =
+		args.cursor === null && !(await range().first())
+			? null
+			: await range().paginate({ cursor: args.cursor, numItems: PAGE_SIZE });
+	const isDone = page?.isDone ?? true;
 	let validatedCount = previous?.validatedCount ?? 0;
-	for (const row of page.page) {
+	for (const row of page?.page ?? []) {
 		if (row.order !== validatedCount) return changed();
 		const current = await db_ref(ctx, checked._yay, row.sourceSrc);
 		if (current._nay) return current;
@@ -553,7 +556,7 @@ export async function files_move_media_db_validate_next(
 			return changed();
 		validatedCount++;
 	}
-	if (page.isDone && validatedCount !== set.expectedCount) return changed();
+	if (isDone && validatedCount !== set.expectedCount) return changed();
 	await ctx.db.patch("files_move_cohort_content", content._id, {
 		mediaProof: {
 			proofEpoch: cohort.proofEpoch,
@@ -563,8 +566,8 @@ export async function files_move_media_db_validate_next(
 			dependencySet: { setId: set._id, generation: set.generation },
 			expectedCount: set.expectedCount,
 			validatedCount,
-			sealed: page.isDone,
+			sealed: isDone,
 		},
 	});
-	return Result({ _yay: { done: page.isDone, cursor: page.continueCursor } });
+	return Result({ _yay: { done: isDone, cursor: page?.continueCursor ?? "", paged: page !== null } });
 }

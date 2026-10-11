@@ -12,6 +12,7 @@ import {
 	test_mocks_fill_db_with,
 	test_save_file_pending_update,
 	test_spy_handler,
+	test_spy_move_ranges,
 } from "./setup.test.ts";
 import {
 	r2_create_asset_key,
@@ -3674,6 +3675,7 @@ describe("accept_file_pending_replacement", () => {
 	});
 
 	test("accepts the replacement through a review run and keeps the replaced bytes in history", async () => {
+		test_spy_move_ranges();
 		const fixture = await create_file_fixture();
 		const { t, db, asUser } = fixture;
 		// Use stored files on both sides. A text file already has a version row for its current

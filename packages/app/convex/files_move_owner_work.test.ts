@@ -14,6 +14,7 @@ import {
 	test_finish_transfer_run,
 	test_mocks_fill_db_with,
 	test_spy_handler,
+	test_spy_move_ranges,
 } from "./setup.test.ts";
 import {
 	files_move_owner_work_db_abort,
@@ -380,7 +381,7 @@ test("public Move joins empty owner phases in one step", async () => {
 		path: "/target/source",
 	});
 	expect(ownerSteps, "A node without owner or receipt docs needs one owner collection step").toBe(1);
-	expect.soft(sideSteps, "An empty folder needs two side staging steps").toBe(2);
+	expect.soft(sideSteps, "An empty folder needs one side staging step").toBe(1);
 	expect.soft(childSteps, "An empty folder needs one child collection step").toBe(1);
 	expect(cleanupSteps, "An empty folder needs one owner cleanup step").toBe(1);
 });
@@ -900,6 +901,7 @@ test("collects and stages several native owner pages once, then keeps chosen IDs
 });
 
 test("closes after-only private parent aliases and restores partial owner staging on abort", async () => {
+	test_spy_move_ranges();
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });

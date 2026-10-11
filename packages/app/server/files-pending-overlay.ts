@@ -1765,6 +1765,7 @@ export async function files_pending_overlay_db_stage_owner_lists(
 	const proposal = work.pendingUpdateId
 		? await files_saved_placement_db_get_proposal(ctx.db, work.pendingUpdateId, { cohortId: cohort._id, view: "after" })
 		: null;
+	const paged = cursor.phase === "before" && !!work.pendingUpdateId;
 	if (cursor.phase === "before" && work.pendingUpdateId) {
 		const page = await ctx.db
 			.query("files_pending_list_rows")
@@ -1805,7 +1806,7 @@ export async function files_pending_overlay_db_stage_owner_lists(
 	}
 	const next = JSON.stringify(cursor);
 	await ctx.db.patch("files_move_owner_work", work._id, { dependencyCursor: next });
-	return Result({ _yay: { cursor: next, done: cursor.phase === "done" } });
+	return Result({ _yay: { cursor: next, done: cursor.phase === "done", paged } });
 }
 
 /**
@@ -1832,8 +1833,10 @@ export async function files_pending_overlay_db_stage_owner_fields(
 		: { phase: "before" as const, page: null };
 	const before = { cohortId: cohort._id, view: "before" as const };
 	const after = { cohortId: cohort._id, view: "after" as const };
+	let paged = false;
 	if (cursor.phase === "before") {
 		if (work.beforePlaceId) {
+			paged = true;
 			const page = await ctx.db
 				.query("files_pending_place_fields")
 				.withIndex("by_place", (q) =>
@@ -1873,6 +1876,7 @@ export async function files_pending_overlay_db_stage_owner_fields(
 						);
 			// Source docs stay in place. These identity-only indexes keep the stored cursor short.
 			const page = await source.paginate({ cursor: cursor.page, numItems: 8, maximumBytesRead: 1024 * 1024 });
+			paged = true;
 			for (const doc of page.page) {
 				if (doc.sourceKind === "pending" && doc.proposalRevision !== proposal?.revision) continue;
 				await ctx.db.insert("files_pending_place_fields", {
@@ -1901,7 +1905,7 @@ export async function files_pending_overlay_db_stage_owner_fields(
 	}
 	const next = JSON.stringify(cursor);
 	await ctx.db.patch("files_move_owner_work", work._id, { fieldCursor: next });
-	return Result({ _yay: { cursor: next, done: cursor.phase === "done" } });
+	return Result({ _yay: { cursor: next, done: cursor.phase === "done", paged } });
 }
 
 // #endregion recompute
@@ -2611,6 +2615,17 @@ export function files_pending_overlay_list_over_budget(metrics: TransactionMetri
 		metrics.documentsRead.used > LIST_BUDGET.documents ||
 		metrics.bytesRead.used > LIST_BUDGET.bytes
 	);
+}
+
+/**
+ * Whether a Move step may join one more small sub-step of the same unit. It flushes first, so the next
+ * sub-step reads fresh derived docs and the metrics count the derived writes. A joined step stays
+ * under 1/16 of every Convex transaction limit.
+ */
+export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx) {
+	await files_pending_overlay_db_flush(ctx);
+	const metrics = await ctx.meta.getTransactionMetrics();
+	return Object.values(metrics).every((metric) => metric.used * 16 < metric.used + metric.remaining);
 }
 
 const saved_source_schema = z.discriminatedUnion("kind", [

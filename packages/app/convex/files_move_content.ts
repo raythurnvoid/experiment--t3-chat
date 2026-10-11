@@ -356,7 +356,9 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 	if (!record?.afterPlaceId || !node) return Result({ _nay: { message: "The final saved header is not ready." } });
 	const tag = { cohortId: cohort._id, view: "after" as const };
 	const beforeTag = { cohortId: cohort._id, view: "before" as const };
-	const { part, cursor } = phase_cursor(content.phaseCursor);
+	let phase = content.phase;
+	let { part } = phase_cursor(content.phaseCursor);
+	const { cursor } = phase_cursor(content.phaseCursor);
 	const scope = { organizationId: cohort.organizationId, workspaceId: cohort.workspaceId };
 	const shape = content_shape(content, proposal, node);
 	const prepared = content.prepared;
@@ -366,20 +368,88 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 			: prepared.kind === "replacement"
 				? (prepared.expectedYjsLastSequence?.lastSequence ?? 0)
 				: 0;
-	if (content.phase === "sources") {
+	// Each probe below uses the same range as its page.
+	const source_chunks = (table: "files_text_chunks" | "files_plain_text_chunks") =>
+		ctx.db
+			.query(table)
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q
+					.eq("organizationId", scope.organizationId)
+					.eq("workspaceId", scope.workspaceId)
+					.eq("fileNodeId", content.nodeId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined),
+			);
+	const source_updates = () =>
+		ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q
+					.eq("organizationId", scope.organizationId)
+					.eq("workspaceId", scope.workspaceId)
+					.eq("fileNodeId", content.nodeId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined),
+			);
+	const pending_chunks = (table: "files_text_chunks" | "files_plain_text_chunks") =>
+		ctx.db
+			.query(table)
+			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+				q.eq("pendingUpdateId", proposal._id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			);
+	const metadata_docs = (part: number) =>
+		part === 0
+			? ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+						q
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", content.nodeId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
+					)
+			: ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_pendingUpdate_fieldPath", (q) =>
+						q.eq("pendingUpdateId", proposal._id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+					);
+	// Before any page, skip empty ranges and phases with nothing to write. A cursor tail keeps its own step.
+	// Text chunking and metadata docs stop the loop, so their CPU work keeps its own step too.
+	while (cursor === null) {
+		if (phase === "sources" && part < 2) {
+			if (await source_chunks(part === 0 ? "files_text_chunks" : "files_plain_text_chunks").first()) break;
+			part++;
+		} else if (phase === "sources") {
+			if (await source_updates().first()) break;
+			phase = "text";
+			part = 0;
+		} else if (
+			(phase === "text" || phase === "plain_text") &&
+			!((await db_input(ctx, content, "staged")) && shape.rootKind)
+		)
+			phase = "updates";
+		// Only a saved Yjs edit copies updates.
+		else if (phase === "updates" && prepared.kind !== "saved_yjs") phase = "pending_text";
+		else if ((phase === "pending_text" || phase === "pending_plain_text") && part < 2) {
+			if (await pending_chunks(part === 0 ? "files_text_chunks" : "files_plain_text_chunks").first()) break;
+			part++;
+		} else if (
+			(phase === "pending_text" || phase === "pending_plain_text") &&
+			!((await db_input(ctx, content, "unstaged")) && shape.rootKind)
+		) {
+			phase = "metadata";
+			part = 0;
+		} else if (phase === "metadata" && part < 2) {
+			if (await metadata_docs(part).first()) break;
+			part++;
+		} else break;
+	}
+	if (phase === "sources") {
 		if (part < 2) {
 			const table = part === 0 ? "files_text_chunks" : "files_plain_text_chunks";
-			const page = await ctx.db
-				.query(table)
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q
-						.eq("organizationId", scope.organizationId)
-						.eq("workspaceId", scope.workspaceId)
-						.eq("fileNodeId", content.nodeId)
-						.eq("moveView.cohortId", undefined)
-						.eq("moveView.view", undefined),
-				)
-				.paginate({ cursor, numItems: PAGE_SIZE });
+			const page = await source_chunks(table).paginate({ cursor, numItems: PAGE_SIZE });
 			for (const row of page.page) await ctx.db.patch(table, row._id, { moveView: beforeTag });
 			return await db_progress(
 				ctx,
@@ -389,17 +459,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 				page.isDone ? null : page.continueCursor,
 			);
 		}
-		const page = await ctx.db
-			.query("files_yjs_updates")
-			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q
-					.eq("organizationId", scope.organizationId)
-					.eq("workspaceId", scope.workspaceId)
-					.eq("fileNodeId", content.nodeId)
-					.eq("moveView.cohortId", undefined)
-					.eq("moveView.view", undefined),
-			)
-			.paginate({ cursor, numItems: 1 });
+		const page = await source_updates().paginate({ cursor, numItems: 1 });
 		for (const row of page.page) await ctx.db.patch("files_yjs_updates", row._id, { moveView: beforeTag });
 		return await db_progress(
 			ctx,
@@ -409,7 +469,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 			page.isDone ? null : page.continueCursor,
 		);
 	}
-	if (content.phase === "text" || content.phase === "plain_text") {
+	if (phase === "text" || phase === "plain_text") {
 		const input = await db_input(ctx, content, "staged");
 		if (input && shape.rootKind) {
 			const chunks = await chunk_page(content, input.text, shape.rootKind);
@@ -438,7 +498,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 		}
 		return await db_progress(ctx, content, "updates", 0, null);
 	}
-	if (content.phase === "updates") {
+	if (phase === "updates") {
 		if (prepared.kind === "saved_yjs") {
 			const page = await ctx.db
 				.query("files_yjs_updates")
@@ -482,15 +542,10 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 		}
 		return await db_progress(ctx, content, "pending_text", 0, null);
 	}
-	if (content.phase === "pending_text" || content.phase === "pending_plain_text") {
+	if (phase === "pending_text" || phase === "pending_plain_text") {
 		if (part < 2) {
 			const table = part === 0 ? "files_text_chunks" : "files_plain_text_chunks";
-			const page = await ctx.db
-				.query(table)
-				.withIndex("by_pendingUpdate_chunkIndex", (q) =>
-					q.eq("pendingUpdateId", proposal._id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
-				)
-				.paginate({ cursor, numItems: PAGE_SIZE });
+			const page = await pending_chunks(table).paginate({ cursor, numItems: PAGE_SIZE });
 			for (const row of page.page) await ctx.db.patch(table, row._id, { moveView: beforeTag });
 			return await db_progress(
 				ctx,
@@ -545,28 +600,14 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 		}
 		return await db_progress(ctx, content, "metadata", 0, null);
 	}
-	if (content.phase === "metadata") {
+	if (phase === "metadata") {
 		if (part < 2) {
-			const query =
-				part === 0
-					? ctx.db
-							.query("files_metadata_docs")
-							.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-								q
-									.eq("organizationId", scope.organizationId)
-									.eq("workspaceId", scope.workspaceId)
-									.eq("sourceKind", "committed")
-									.eq("fileNodeId", content.nodeId)
-									.eq("moveView.cohortId", undefined)
-									.eq("moveView.view", undefined),
-							)
-					: ctx.db
-							.query("files_metadata_docs")
-							.withIndex("by_pendingUpdate_fieldPath", (q) =>
-								q.eq("pendingUpdateId", proposal._id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
-							);
 			// Tagging removes each doc from the range. Long field keys make native cursors too large to store.
-			const page = await query.paginate({ cursor: null, numItems: PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
+			const page = await metadata_docs(part).paginate({
+				cursor: null,
+				numItems: PAGE_SIZE,
+				maximumBytesRead: 1024 * 1024,
+			});
 			for (const original of page.page) {
 				await ctx.db.patch("files_metadata_docs", original._id, { moveView: beforeTag });
 				// Frontmatter is replaced. Metadata is bounded by its per-file write contract.
@@ -1061,37 +1102,27 @@ async function db_cleanup_page(ctx: MutationCtx, content: Doc<"files_move_cohort
 	const marker = `${mode}:`;
 	const progress = content.phaseCursor?.startsWith(marker) ? content.phaseCursor.slice(marker.length) : null;
 	if (progress === "done") return true;
-	const { part } = phase_cursor(progress);
+	let { part } = phase_cursor(progress);
 	if (part >= 14) return true;
-	const kind = Math.floor(part / 2);
-	const view = part % 2 === 0 ? "before" : "after";
-	const remove = mode === "finish" ? view === "before" : view === "after";
 	const cohort = (await ctx.db.get("files_move_cohorts", content.cohortId))!;
 	const scope = { organizationId: cohort.organizationId, workspaceId: cohort.workspaceId };
-	const table =
-		kind === 0 || kind === 4
-			? "files_text_chunks"
-			: kind === 1 || kind === 5
-				? "files_plain_text_chunks"
-				: kind === 2
-					? "files_yjs_updates"
-					: "files_metadata_docs";
-	const query =
-		kind === 0 || kind === 1
-			? ctx.db
-					.query(table as "files_text_chunks" | "files_plain_text_chunks")
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-						q
-							.eq("organizationId", scope.organizationId)
-							.eq("workspaceId", scope.workspaceId)
-							.eq("fileNodeId", content.nodeId)
-							.eq("moveView.cohortId", content.cohortId)
-							.eq("moveView.view", view),
-					)
-			: kind === 2
+	// One part's range. The probe and the page use the same range.
+	const range = (part: number) => {
+		const kind = Math.floor(part / 2);
+		const view = part % 2 === 0 ? "before" : "after";
+		const table =
+			kind === 0 || kind === 4
+				? "files_text_chunks"
+				: kind === 1 || kind === 5
+					? "files_plain_text_chunks"
+					: kind === 2
+						? "files_yjs_updates"
+						: "files_metadata_docs";
+		const query =
+			kind === 0 || kind === 1
 				? ctx.db
-						.query("files_yjs_updates")
-						.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+						.query(table as "files_text_chunks" | "files_plain_text_chunks")
+						.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 							q
 								.eq("organizationId", scope.organizationId)
 								.eq("workspaceId", scope.workspaceId)
@@ -1099,35 +1130,53 @@ async function db_cleanup_page(ctx: MutationCtx, content: Doc<"files_move_cohort
 								.eq("moveView.cohortId", content.cohortId)
 								.eq("moveView.view", view),
 						)
-				: kind === 3
+				: kind === 2
 					? ctx.db
-							.query("files_metadata_docs")
-							.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+							.query("files_yjs_updates")
+							.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
 								q
 									.eq("organizationId", scope.organizationId)
 									.eq("workspaceId", scope.workspaceId)
-									.eq("sourceKind", "committed")
 									.eq("fileNodeId", content.nodeId)
 									.eq("moveView.cohortId", content.cohortId)
 									.eq("moveView.view", view),
 							)
-					: kind === 4 || kind === 5
+					: kind === 3
 						? ctx.db
-								.query(table as "files_text_chunks" | "files_plain_text_chunks")
-								.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+								.query("files_metadata_docs")
+								.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 									q
-										.eq("pendingUpdateId", content.pendingUpdateId)
+										.eq("organizationId", scope.organizationId)
+										.eq("workspaceId", scope.workspaceId)
+										.eq("sourceKind", "committed")
+										.eq("fileNodeId", content.nodeId)
 										.eq("moveView.cohortId", content.cohortId)
 										.eq("moveView.view", view),
 								)
-						: ctx.db
-								.query("files_metadata_docs")
-								.withIndex("by_pendingUpdate_fieldPath", (q) =>
-									q
-										.eq("pendingUpdateId", content.pendingUpdateId)
-										.eq("moveView.cohortId", content.cohortId)
-										.eq("moveView.view", view),
-								);
+						: kind === 4 || kind === 5
+							? ctx.db
+									.query(table as "files_text_chunks" | "files_plain_text_chunks")
+									.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+										q
+											.eq("pendingUpdateId", content.pendingUpdateId)
+											.eq("moveView.cohortId", content.cohortId)
+											.eq("moveView.view", view),
+									)
+							: ctx.db
+									.query("files_metadata_docs")
+									.withIndex("by_pendingUpdate_fieldPath", (q) =>
+										q
+											.eq("pendingUpdateId", content.pendingUpdateId)
+											.eq("moveView.cohortId", content.cohortId)
+											.eq("moveView.view", view),
+									);
+		return { kind, view, table, query } as const;
+	};
+	// Skip empty parts before the page. When all are empty, the caller finishes in this step.
+	while (part < 14 && !(await range(part).query.first())) part++;
+	if (part >= 14) return true;
+	const { kind, view, table, query } = range(part);
+	const remove = mode === "finish" ? view === "before" : view === "after";
 	// Clearing or deleting each tag drains the range without storing a large metadata cursor.
 	const page = await query.paginate({ cursor: null, numItems: kind === 2 ? 1 : PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
 	for (const row of page.page) {

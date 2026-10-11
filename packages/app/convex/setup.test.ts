@@ -28,7 +28,7 @@ import {
 import { files_pending_updates_action_prepare_content } from "./files_pending_updates.ts";
 import { files_pending_media_action_validate } from "./files_pending_media.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE, type files_PendingTarget } from "../shared/files.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { path_tree_prefix_upper_bound, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
@@ -36,6 +36,7 @@ import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
 import { activities_db_get_by_source_id, activities_db_require_by_source_id } from "./activities_db.ts";
+import { advance as advance_cohort } from "./files_move_cohorts.ts";
 
 // #region helpers
 
@@ -673,6 +674,178 @@ export function test_spy_handler(
 	const target = registered as { _handler: (ctx: MutationCtx, args: unknown) => Promise<null> };
 	const handler = target._handler;
 	vi.spyOn(target, "_handler").mockImplementation(async (ctx, args) => await wrap(handler, ctx, args));
+}
+
+/**
+ * Check, when a Move phase ends, that its ranges were fully handled. Move steps skip a range after an
+ * empty probe, and later cleanup drains the same tags, so a wrong probe would not change the end state.
+ * - content: no source or pending row of a content is left untagged
+ * - content cleanup: no row of a content keeps the cohort tag
+ * - owner closure: every row of a parent or prefix range has its owner work
+ * The checks are soft: a throw inside the step would make the Move run retry it instead of failing.
+ */
+export function test_spy_move_ranges() {
+	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
+		const { cohortId } = args as { cohortId: Id<"files_move_cohorts"> };
+		const from = (await ctx.db.get("files_move_cohorts", cohortId))?.workPhase;
+		const result = await handler(ctx, args);
+		const cohort = (await ctx.db.get("files_move_cohorts", cohortId))!;
+		const contents = await ctx.db
+			.query("files_move_cohort_content")
+			.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohortId))
+			.collect();
+		const scope = { organizationId: cohort.organizationId, workspaceId: cohort.workspaceId };
+		const content_rows = async (
+			content: Doc<"files_move_cohort_content">,
+			tag: { cohortId: Id<"files_move_cohorts">; view: "before" | "after" } | undefined,
+		) => {
+			const rows = [];
+			for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const) {
+				rows.push(
+					...(await ctx.db
+						.query(table)
+						.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("fileNodeId", content.nodeId)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view),
+						)
+						.collect()),
+					...(await ctx.db
+						.query(table)
+						.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+							q
+								.eq("pendingUpdateId", content.pendingUpdateId)
+								.eq("moveView.cohortId", tag?.cohortId)
+								.eq("moveView.view", tag?.view),
+						)
+						.collect()),
+				);
+			}
+			rows.push(
+				...(await ctx.db
+					.query("files_yjs_updates")
+					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+						q
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId)
+							.eq("fileNodeId", content.nodeId)
+							.eq("moveView.cohortId", tag?.cohortId)
+							.eq("moveView.view", tag?.view),
+					)
+					.collect()),
+				...(await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+						q
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", content.nodeId)
+							.eq("moveView.cohortId", tag?.cohortId)
+							.eq("moveView.view", tag?.view),
+					)
+					.collect()),
+				...(await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_pendingUpdate_fieldPath", (q) =>
+						q
+							.eq("pendingUpdateId", content.pendingUpdateId)
+							.eq("moveView.cohortId", tag?.cohortId)
+							.eq("moveView.view", tag?.view),
+					)
+					.collect()),
+			);
+			return rows;
+		};
+		if (from === "content" && cohort.workPhase === "media")
+			for (const content of contents)
+				expect
+					.soft(await content_rows(content, undefined), "content staging tags every source and pending row")
+					.toEqual([]);
+		if (
+			(from === "finish_content" || from === "abort_content") &&
+			(cohort.workPhase === "finish_owners" || cohort.workPhase === "abort_owners")
+		)
+			for (const content of contents)
+				for (const view of ["before", "after"] as const)
+					expect
+						.soft(await content_rows(content, { cohortId, view }), "content cleanup clears every tagged row")
+						.toEqual([]);
+		if (from === "owners_closure" && cohort.workPhase === "content") {
+			const ranges = await ctx.db
+				.query("files_move_work_ranges")
+				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohortId))
+				.collect();
+			const owners: { userId: Id<"users">; target: files_PendingTarget }[] = [];
+			for (const { range } of ranges) {
+				if (range.kind === "parent") {
+					const { userId, parent } = range;
+					const parentId = parent.kind === "root" ? undefined : parent.id;
+					for (const row of await ctx.db
+						.query("files_pending_nodes")
+						.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("userId", userId)
+								.eq("parent.kind", parent.kind)
+								.eq("parent.id", parentId)
+								.eq("state", "active"),
+						)
+						.collect())
+						owners.push({ userId: row.userId, target: { kind: "private", id: row._id } });
+					for (const row of await ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_org_ws_user_pendingMove_destParent_destName", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("userId", userId)
+								.eq("pendingMove.destParent.kind", parent.kind)
+								.eq("pendingMove.destParent.id", parentId),
+						)
+						.collect())
+						owners.push({ userId: row.userId, target: row.target });
+				} else if (range.kind === "prefix") {
+					const { userId, prefix } = range;
+					for (const row of await ctx.db
+						.query("files_pending_places")
+						.withIndex("by_org_ws_user_ownerTreePath", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("userId", userId)
+								.eq("moveView.cohortId", undefined)
+								.eq("moveView.view", undefined)
+								.gt("ownerTreePath", prefix)
+								.lt("ownerTreePath", path_tree_prefix_upper_bound(prefix)),
+						)
+						.collect())
+						owners.push({ userId: row.userId, target: row.target });
+				}
+			}
+			for (const { userId, target } of owners)
+				expect
+					.soft(
+						await ctx.db
+							.query("files_move_owner_work")
+							.withIndex("by_cohort_owner_target", (q) =>
+								q
+									.eq("cohortId", cohortId)
+									.eq("userId", userId)
+									.eq("target.kind", target.kind)
+									.eq("target.id", target.id),
+							)
+							.unique(),
+						"owner closure adds every owner in its ranges",
+					)
+					.not.toBeNull();
+		}
+		return result;
+	});
 }
 
 export async function test_get_file_yjs_pointers(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {

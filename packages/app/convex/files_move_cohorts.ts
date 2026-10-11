@@ -13,6 +13,7 @@ import {
 import { files_subtree_ops_db_recover } from "./files_subtree_ops.ts";
 import { files_move_reservations_db_take_waiters } from "../server/files-move-reservations.ts";
 import {
+	files_pending_overlay_db_can_join_step,
 	files_pending_overlay_db_set_cohort_staging,
 	files_pending_overlay_db_set_cohort_allocation,
 	files_pending_overlay_db_set_cohort_materialization,
@@ -1506,6 +1507,7 @@ async function db_sides(
 	const beforeTag = { cohortId: cohort._id, view: "before" as const };
 	const afterTag = { cohortId: cohort._id, view: "after" as const };
 	let paginated = false;
+	let joined = false;
 	let done = false;
 	// Skip empty phases, then stop after one native page.
 	while (cursor.part < 2 && !paginated) {
@@ -1618,7 +1620,10 @@ async function db_sides(
 			node: (await ctx.db.get("files_nodes", record.nodeId))!,
 		});
 		cursor.part++;
-	} else if (!paginated) {
+		joined = true;
+	}
+	// Part 3 reads no page either, so it joins part 2 when the budget allows.
+	if (!paginated && cursor.part === 3 && (!joined || (await files_pending_overlay_db_can_join_step(ctx)))) {
 		const before = record.beforePlaceId ? await ctx.db.get("files_saved_places", record.beforePlaceId) : null;
 		let reparented = before?.parentId !== after.parentId;
 		if (record.role === "descendant" && item) {
@@ -1745,6 +1750,7 @@ async function db_validate(
 		const record = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
 		const access = await db_authorize_record(ctx, cohort, membership, record);
 		if (access._nay) return access;
+		let paged = false;
 		if (item.contentId) {
 			const content = await ctx.db.get("files_move_cohort_content", item.contentId);
 			if (!content?.sealed || content.proofEpoch !== cohort.proofEpoch)
@@ -1756,6 +1762,7 @@ async function db_validate(
 				cursor: cohort.validationCursor,
 			});
 			if (media._nay) return media;
+			paged = media._yay.paged;
 			if (!media._yay.done) {
 				await ctx.db.patch("files_move_cohorts", cohort._id, { validationCursor: media._yay.cursor });
 				return Result({ _yay: { done: false } });
@@ -1766,8 +1773,8 @@ async function db_validate(
 			validatedItemCount: cohort.validatedItemCount + 1,
 			validationCursor: null,
 		});
-		// Media validation may have read a page in this step.
-		return Result({ _yay: { done: !item.contentId && (await db_validate_done(ctx, cohort)) } });
+		// After a media page this step may not read more.
+		return Result({ _yay: { done: !paged && (await db_validate_done(ctx, cohort)) } });
 	}
 	const record = await ctx.db
 		.query("files_move_cohort_nodes")

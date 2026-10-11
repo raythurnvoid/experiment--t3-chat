@@ -7,6 +7,7 @@ import {
 	test_mocks,
 	test_progress_guard,
 	test_spy_handler,
+	test_spy_move_ranges,
 } from "./setup.test.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import type { Id } from "./_generated/dataModel.js";
@@ -843,6 +844,7 @@ describe("review job content", () => {
 	});
 
 	test("publishes mixed private folders and text in parent order", async () => {
+		test_spy_move_ranges();
 		const f = await fixture();
 		const parent = await private_node({ f, path: "/parent" });
 		const nested = await private_node({ f, path: "/parent/nested" });
@@ -867,6 +869,7 @@ describe("review job content", () => {
 	});
 
 	test("keeps private metadata key order after Save", async () => {
+		test_spy_move_ranges();
 		const f = await fixture();
 		const proposal = await private_node({ f, path: "/metadata" });
 		const entries = [
@@ -912,6 +915,6 @@ describe("review job content", () => {
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: count } });
 		// Each Move step is one scheduled transaction, so it adds latency to every Save.
 		// Steps that only find an empty range must not come back. Lower this when a change removes steps.
-		expect(steps, "one private text file takes at most 70 Move steps").toBeLessThanOrEqual(count * 70);
+		expect(steps, "one private text file takes at most 40 Move steps").toBeLessThanOrEqual(count * 40);
 	});
 });

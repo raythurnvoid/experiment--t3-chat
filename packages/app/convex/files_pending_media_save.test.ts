@@ -3,7 +3,7 @@ import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_drain_billing_usage_event_outbox, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_drain_billing_usage_event_outbox, test_mocks_fill_db_with, test_spy_move_ranges } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
@@ -359,6 +359,7 @@ describe("Save ordinary rich-text media", () => {
 	test.each([true, false])(
 		"ordinary Save checks a live embed added after planning (media selected: %s)",
 		async (selectMedia) => {
+			test_spy_move_ranges();
 			const f = await fixture();
 			const text = "Intro\n\nFooter\n";
 			const saved = await save(f, await private_text(f, { staged: text, collaborative: true }));
