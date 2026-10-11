@@ -2845,8 +2845,7 @@ describe("private pending text", () => {
 	});
 
 	test("allows Save but refuses more draft bytes when private storage is full", async () => {
-		// A full Save frees private bytes. A partial Save that grows private storage still needs quota.
-		const draft = await create_private_text_for_test({ staged: "accepted\n" });
+		const draft = await create_private_text_for_test({ staged: "accepted\n", unstaged: "remaining\n" });
 		const { t, asUser, membershipId, target, pendingUpdateId, proposal } = draft;
 		await t.run(async (ctx) => {
 			for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes"] as const) {
@@ -2885,7 +2884,6 @@ describe("private pending text", () => {
 		});
 		if (saved._nay) throw new Error(saved._nay.message);
 		expect(saved._yay.target.kind).toBe("saved");
-		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId))).toBeNull();
 	});
 
 	test("refuses an old review after the owner renames the draft", async () => {

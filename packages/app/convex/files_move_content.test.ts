@@ -337,29 +337,27 @@ test("each content page checks current membership before changing any side", asy
 	expect(await f.chunks(), "the refused page keeps the old saved content").toBe("old text");
 });
 
-test("publication refuses extra private growth without changing any balance or saved content", async () => {
+test("publication keeps a partial Save allowed at the private cap and books its growth once", async () => {
 	const f = await fixture();
 	await f.stage();
 	const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId)))!;
 	expect(content.privateByteDelta).toBeGreaterThan(0);
-	await f.t.run(async (ctx) => {
-		const quota = await ctx.db
-			.query("quotas")
-			.withIndex("by_workspace_quotaName", (q) =>
-				q.eq("workspaceId", f.db.workspaceId).eq("quotaName", "files_private_workspace_bytes"),
-			)
-			.unique();
-		if (!quota) throw new Error("Expected private quota");
-		await ctx.db.patch("quotas", quota._id, { maxCount: quota.usedCount });
-	});
-	const balances = await f.t.run((ctx) => ctx.db.query("quotas").collect());
-	expect(await f.publish(), "final private growth still needs ordinary quota").toMatchObject({
-		_nay: { name: "storage_full" },
-	});
-	expect(await f.t.run((ctx) => ctx.db.query("quotas").collect()), "a refused switch changes no balance").toEqual(
-		balances,
-	);
-	expect(await f.chunks(), "quota refusal leaves the old content visible").toBe("old text");
+	const read_quota = () =>
+		f.t.run((ctx) =>
+			ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", f.db.workspaceId).eq("quotaName", "files_private_workspace_bytes"),
+				)
+				.unique(),
+		);
+	const quota = await read_quota();
+	if (!quota) throw new Error("Expected private quota");
+	await f.t.run((ctx) => ctx.db.patch("quotas", quota._id, { maxCount: quota.usedCount }));
+	// The remainder only copies text the draft already holds, so Save does not need new quota.
+	expect(await f.publish()).toEqual({ _yay: null });
+	expect((await read_quota())?.usedCount, "the growth is booked once").toBe(quota.usedCount + content.privateByteDelta);
+	expect(await f.chunks(), "the switch serves accepted content").toBe("accepted text");
 });
 
 test("a lost preparation keeps held output and fences the next attempt", async () => {

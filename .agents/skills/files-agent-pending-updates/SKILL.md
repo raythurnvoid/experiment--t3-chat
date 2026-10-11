@@ -167,8 +167,11 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 - Private subtree Discard checks the selected descendants in pages, then fences the approved roots in one small transaction. The unchanged unit clock protects that checked set. Activity counts the full unit when the roots close; cleanup continues after Stop. Discard's other final transactions count their reads, writes, bytes, and query ranges and roll back as `review_too_large` before exceeding the supported budget.
 - Before the switch, each Save group checks its full cost for the pinned payer. Folders, moves,
   unchanged text and replaced occupants add no charge. Private quota changes settle once at the
-  switch. Candidates have separate storage owners and do not consume the ordinary one-Save
+  switch, even above the cap, so a partial Save still works when private storage is full.
+  Candidates have separate storage owners and do not consume the ordinary one-Save
   preparation headroom as one huge request. Abort keeps the original private resources.
+- A replaced occupant's own selected change only settles. Cleanup drops its draft text and
+  releases a staged whole-file copy to the deletion ledger, like Discard.
 - Every selected content candidate seals before the group's media proof starts. This keeps a
   selected replacement's final asset available even when its document was prepared first.
   Media proof comes from the exact prepared text, including ordinary private embeds. Each page
