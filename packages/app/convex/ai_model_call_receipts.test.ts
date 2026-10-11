@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } 
 import { internal } from "./_generated/api.js";
 import type { ActionCtx } from "./_generated/server.js";
 import { ai_model_call_receipts_create } from "./ai_model_call_receipts.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_drain_billing_usage_event_outbox, test_mocks_fill_db_with } from "./setup.test.ts";
 
 let enqueueActionSpy: MockInstance;
 
@@ -100,19 +100,33 @@ describe("save_usage", () => {
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 
-	test("queues a Polar event for a signed-in payer and records the pool result", async () => {
+	test("sends a signed-in payer's charges through the outbox as one batch and records the batch result", async () => {
 		const { t, db, admit, receipt } = await setup();
 		await t.run((ctx) => ctx.db.patch("users", db.userId, { clerkUserId: "clerk-receipts-user" }));
-		await admit("call_1");
+		for (const modelCallId of ["call_1", "call_2"]) {
+			await admit(modelCallId);
+			await t.mutation(internal.ai_model_call_receipts.save_usage, {
+				modelCallId,
+				responseId: `resp_${modelCallId}`,
+				providerModelId: null,
+				usage: REPORTED,
+				step: null,
+			});
+		}
+		await t.mutation(internal.ai_model_call_receipts.save_image, { modelCallId: "call_2", imageCallId: "ig_1" });
 
-		await t.mutation(internal.ai_model_call_receipts.save_usage, {
-			modelCallId: "call_1",
-			responseId: "resp_1",
-			providerModelId: null,
-			usage: REPORTED,
-			step: null,
-		});
+		// No model call makes its own pool job, so heavy chat use makes no Polar call per model call.
+		expect(enqueueActionSpy.mock.calls.length, "a model call must not enqueue its own Polar job").toBe(0);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox").collect())).toHaveLength(3);
+		expect(await receipt("call_1")).toMatchObject({ tokens: { state: "queued" } });
 
+		await test_drain_billing_usage_event_outbox(t);
+		const receipts = [
+			{ modelCallId: "call_1", imageCallId: null },
+			{ modelCallId: "call_2", imageCallId: null },
+			{ modelCallId: "call_2", imageCallId: "ig_1" },
+		];
+		expect(enqueueActionSpy.mock.calls.length).toBe(1);
 		expect(enqueueActionSpy).toHaveBeenCalledWith(
 			expect.anything(),
 			internal.billing.ingest_events,
@@ -121,23 +135,42 @@ describe("save_usage", () => {
 					expect.objectContaining({
 						name: "ai_usage",
 						externalId: `ai_model_call::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::call_1`,
-						metadata: expect.objectContaining({ modelCallId: "call_1", component: "tokens", responseId: "resp_1" }),
+						metadata: expect.objectContaining({
+							modelCallId: "call_1",
+							component: "tokens",
+							responseId: "resp_call_1",
+						}),
 					}),
+					expect.objectContaining({
+						metadata: expect.objectContaining({ modelCallId: "call_2", component: "tokens" }),
+					}),
+					expect.objectContaining({ metadata: expect.objectContaining({ modelCallId: "call_2", component: "image" }) }),
 				],
 			},
 			expect.objectContaining({
-				onComplete: internal.ai_model_call_receipts.on_delivery_complete,
-				context: { modelCallId: "call_1", imageCallId: null },
+				onComplete: internal.ai_model_call_receipts.on_batch_delivery_complete,
+				context: { receipts },
 			}),
 		);
-		expect(await receipt("call_1")).toMatchObject({ tokens: { state: "queued" } });
 
-		await t.mutation(internal.ai_model_call_receipts.on_delivery_complete, {
-			workId: "receipts-test-work" as never,
-			context: { modelCallId: "call_1", imageCallId: null },
-			result: { kind: "success", returnValue: null },
-		});
+		// A batch that moved its events to new jobs records nothing; those jobs record it.
+		const complete = (receipts: Array<{ modelCallId: string; imageCallId: string | null }>, returnValue: unknown) =>
+			t.mutation(internal.ai_model_call_receipts.on_batch_delivery_complete, {
+				workId: "receipts-test-work" as never,
+				context: { receipts },
+				result: { kind: "success", returnValue },
+			});
+		await complete(receipts, "handed_on");
+		expect(await receipt("call_2")).toMatchObject({ tokens: { state: "queued" } });
+
+		await complete(receipts.slice(0, 2), null);
 		expect(await receipt("call_1")).toMatchObject({ tokens: { state: "delivered" } });
+		expect(await receipt("call_2")).toMatchObject({ tokens: { state: "delivered" } });
+
+		// Polar refused the picture event: it waits in `billing_usage_event_rejected`.
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		await complete(receipts.slice(2), "rejected");
+		expect((await receipt("call_2"))!.images).toMatchObject([{ charge: { state: "delivery_failed" } }]);
 	});
 
 	test("keeps the charge as target_gone when an admin purge deleted the payer", async () => {

@@ -24,6 +24,7 @@ import { HTTPValidationError } from "@polar-sh/sdk/models/errors/httpvalidatione
 import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
+import { SDKError } from "@polar-sh/sdk/models/errors/sdkerror.js";
 import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlocked.js";
 import { billing_POLAR_METER_EVENT, billing_event } from "../server/billing.ts";
 import type { Id } from "./_generated/dataModel.js";
@@ -4675,6 +4676,49 @@ describe("ingest_events", () => {
 		).toEqual(["manual_credit::bad"]);
 		expect(await t.run((ctx) => ctx.db.query("billing_usage_event_outbox_drainers").collect())).toHaveLength(1);
 		expect(await t.mutation(internal.billing.resend_rejected_usage_events, {})).toBe(0);
+	});
+
+	test("moves a batch Polar rate limits (429) to a new pool job 60 seconds later", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const events = [
+			{
+				name: "manual_credit" as const,
+				externalCustomerId: userId,
+				externalId: "manual_credit::a",
+				metadata: { amount: 1 },
+			},
+		];
+		eventsIngestMock.mockResolvedValue({
+			ok: false,
+			error: new SDKError("API error occurred", {
+				request: new Request("https://polar.test/v1/events/ingest"),
+				response: new Response("{}", { status: 429, headers: { "retry-after": "60" } }),
+				body: "{}",
+			}),
+		} as never);
+		const { enqueueActionSpy } = mock_billing_ingest_enqueue("work_rate_limited_batch");
+		const originalNodeEnv = process.env.NODE_ENV;
+		process.env.NODE_ENV = "production";
+
+		try {
+			expect(await t.action(internal.billing.ingest_events, { events }), "a 429 must hand the batch on").toBe(
+				"handed_on",
+			);
+		} finally {
+			if (originalNodeEnv === undefined) {
+				delete process.env.NODE_ENV;
+			} else {
+				process.env.NODE_ENV = originalNodeEnv;
+			}
+		}
+
+		expect(enqueueActionSpy.mock.calls.length).toBe(1);
+		expect(enqueueActionSpy.mock.calls[0]!.slice(1)).toEqual([
+			internal.billing.ingest_events,
+			{ events },
+			{ runAfter: 60_000 },
+		]);
 	});
 
 	test("billing_ingest_events splits signed-in and anonymous billedUserEvents", async () => {

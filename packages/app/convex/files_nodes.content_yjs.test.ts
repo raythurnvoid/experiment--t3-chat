@@ -4962,14 +4962,16 @@ test("/api/files/contextual-prompt bills every provider request through its own 
 			tokens: { state: "queued" },
 		});
 	}
-	const usageEvents = enqueueActionSpy.mock.calls.map((call) => {
+	// The charges wait in the usage event outbox and go to Polar in one batch.
+	await test_drain_billing_usage_event_outbox(t);
+	const usageEvents = enqueueActionSpy.mock.calls.flatMap((call) => {
 		const args = call[2] as {
 			events: Array<{
 				externalId: string;
 				metadata: { modelCallId: string; purpose: string };
 			}>;
 		};
-		return args.events[0]!;
+		return args.events;
 	});
 	expect(usageEvents.map((event) => event.externalId)).toEqual(
 		receipts.map(

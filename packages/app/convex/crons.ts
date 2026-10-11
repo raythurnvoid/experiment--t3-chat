@@ -49,6 +49,9 @@ crons.cron("recover model call usage", "*/5 * * * *", internal.ai_model_call_rec
 // Every 5 minutes — restart the billing outbox drainer when its chain stopped.
 crons.cron("recover billing usage event outbox", "*/5 * * * *", internal.billing.recover_usage_event_outbox, {});
 
+// Daily — alert on usage events Polar refused, and on an outbox event older than 10 minutes.
+crons.cron("check billing usage event backlog", "15 7 * * *", internal.billing_alerts.check_usage_event_backlog, {});
+
 // Every 5 minutes — end chat runs whose lease passed without a run end, for example a killed action.
 crons.cron("end expired chat runs", "*/5 * * * *", internal.ai_chat_runs.end_expired_runs, {});
 

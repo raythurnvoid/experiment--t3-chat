@@ -16,7 +16,7 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 import type { billing_Event } from "../server/billing.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 
-export const billing_workpool_usage_event = new Workpool(components.billing_workpool_usage_event, {
+const billing_workpool_usage_event = new Workpool(components.billing_workpool_usage_event, {
 	maxParallelism: 1,
 	retryActionsByDefault: true,
 	defaultRetryBehavior: {
@@ -362,9 +362,7 @@ export async function billing_db_drain_usage_event_outbox(
 		.withIndex("by_creation_time", (q) => q.lt("_creationTime", now - OUTBOX_CUTOFF_MS))
 		.take(OUTBOX_BATCH_SIZE);
 	if (docs.length > 0) {
-		await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, {
-			events: docs.map((doc) => doc.event),
-		});
+		await billing_db_enqueue_usage_events(ctx, { events: docs.map((doc) => doc.event) });
 		for (const doc of docs) await ctx.db.delete("billing_usage_event_outbox", doc._id);
 		await ctx.scheduler.runAfter(
 			docs.length === OUTBOX_BATCH_SIZE ? OUTBOX_FULL_BATCH_INTERVAL_MS : OUTBOX_DRAIN_INTERVAL_MS,
@@ -418,21 +416,32 @@ export async function billing_db_resend_rejected_usage_events(ctx: MutationCtx) 
 }
 
 /**
- * Send one signed-in usage event to Polar through the usage pool. `onComplete` learns when the
- * pool gives up or finishes, so the caller can record the delivery.
+ * Enqueue one batch of signed-in usage events as one `ingest_events` job on the usage pool. When the
+ * batch holds `ai_usage` events, the job's `onComplete` records their delivery on the model call
+ * receipts. `runAfter` delays the job, for a Polar 429.
  */
-export async function billing_db_enqueue_signed_in_event(
-	ctx: MutationCtx,
-	args: {
-		event: billing_Event;
-		options: Parameters<typeof billing_workpool_usage_event.enqueueAction>[3];
-	},
+export async function billing_db_enqueue_usage_events(
+	ctx: ActionCtx | MutationCtx,
+	args: { events: billing_Event[]; runAfter?: number },
 ) {
+	const { events, runAfter } = args;
+	const receipts = events.flatMap((event) =>
+		event.name === "ai_usage"
+			? [{ modelCallId: event.metadata.modelCallId, imageCallId: event.metadata.imageCallId }]
+			: [],
+	);
+	// A plain batch needs no options.
+	if (receipts.length === 0 && runAfter === undefined) {
+		await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, { events });
+		return;
+	}
 	await billing_workpool_usage_event.enqueueAction(
 		ctx,
 		internal.billing.ingest_events,
-		{ events: [args.event] },
-		args.options,
+		{ events },
+		receipts.length === 0
+			? { runAfter }
+			: { runAfter, onComplete: internal.ai_model_call_receipts.on_batch_delivery_complete, context: { receipts } },
 	);
 }
 

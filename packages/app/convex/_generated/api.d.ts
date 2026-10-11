@@ -24,6 +24,7 @@ import type * as ai_chat_workspaces from "../ai_chat_workspaces.js";
 import type * as ai_model_call_receipts from "../ai_model_call_receipts.js";
 import type * as bash from "../bash.js";
 import type * as billing from "../billing.js";
+import type * as billing_alerts from "../billing_alerts.js";
 import type * as billing_db from "../billing_db.js";
 import type * as billing_http from "../billing_http.js";
 import type * as billing_http_routes from "../billing_http_routes.js";
@@ -160,6 +161,7 @@ declare const fullApi: ApiFromModules<{
   ai_model_call_receipts: typeof ai_model_call_receipts;
   bash: typeof bash;
   billing: typeof billing;
+  billing_alerts: typeof billing_alerts;
   billing_db: typeof billing_db;
   billing_http: typeof billing_http;
   billing_http_routes: typeof billing_http_routes;

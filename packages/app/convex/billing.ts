@@ -16,6 +16,7 @@ import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/already
 import { HTTPValidationError } from "@polar-sh/sdk/models/errors/httpvalidationerror.js";
 import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
+import { SDKError } from "@polar-sh/sdk/models/errors/sdkerror.js";
 import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlocked.js";
 import { v } from "convex/values";
 import { z } from "zod";
@@ -38,12 +39,12 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	billing_db_check_credits,
 	billing_db_drain_usage_event_outbox,
+	billing_db_enqueue_usage_events,
 	billing_db_ingest_anonymous_user_events,
 	billing_db_recover_usage_event_outbox,
 	billing_db_resend_rejected_usage_events,
 	billing_ingest_events,
 	billing_pick_billed_user_id,
-	billing_workpool_usage_event,
 } from "./billing_db.ts";
 import {
 	allowed_origins,
@@ -1801,14 +1802,25 @@ export const cancel_current_subscription = action({
 });
 
 // #region event ingestion
+/**
+ * Polar's 429 answers `retry-after: 60`. The pool's own retry waits 10 minutes or more.
+ */
+const POLAR_RATE_LIMIT_RETRY_MS = 60 * 1000;
+
+/**
+ * Send one batch to Polar. Returns `null` when Polar took it, `"handed_on"` when the events moved
+ * to new pool jobs (a 422 split or a 429 retry), and `"rejected"` when Polar refused the one event.
+ * `on_batch_delivery_complete` reads this to record model call receipt delivery.
+ */
 export const ingest_events = internalAction({
 	args: {
 		events: v.array(billing_event_validator),
 	},
+	returns: v.union(v.null(), v.literal("handed_on"), v.literal("rejected")),
 	handler: async (ctx, args) => {
 		// Skip direct Polar calls in tests; tests usually assert the queued payload.
 		if (process.env.NODE_ENV === "test") {
-			return;
+			return null;
 		}
 
 		// Polar uses one meter event; keep the app event name in metadata.
@@ -1842,15 +1854,22 @@ export const ingest_events = internalAction({
 						event: args.events[0],
 						error: ingestResult.error.message.slice(0, 1000),
 					});
-					return;
+					return "rejected";
 				}
 				const half = Math.ceil(args.events.length / 2);
 				for (const events of [args.events.slice(0, half), args.events.slice(half)])
-					await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, { events });
-				return;
+					await billing_db_enqueue_usage_events(ctx, { events });
+				return "handed_on";
+			}
+			// Polar's limit is per organization, so a 429 here also slows checkout and portal calls.
+			// Wait as long as Polar asks, not the pool's 10 minutes. Polar skips events it already has.
+			if (ingestResult.error instanceof SDKError && ingestResult.error.statusCode === 429) {
+				await billing_db_enqueue_usage_events(ctx, { events: args.events, runAfter: POLAR_RATE_LIMIT_RETRY_MS });
+				return "handed_on";
 			}
 			throw new Error(JSON.stringify(ingestResult.error));
 		}
+		return null;
 	},
 });
 

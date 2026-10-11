@@ -18,7 +18,7 @@ import type { RegisteredQuery } from "convex/server";
 import type { billing_Event } from "../server/billing.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
-import { billing_db_debit_anonymous_snapshot, billing_db_enqueue_signed_in_event } from "./billing_db.ts";
+import { billing_db_debit_anonymous_snapshot, billing_ingest_events } from "./billing_db.ts";
 import { ai_chat_model_id_validator, ai_model_call_purpose_validator } from "./schema.ts";
 import { ai_chat_runs_db_plan_step } from "./ai_chat_runs.ts";
 
@@ -528,13 +528,9 @@ async function db_deliver_charge(args: {
 			threadId: receipt.threadId,
 		},
 	};
-	await billing_db_enqueue_signed_in_event(ctx, {
-		event,
-		options: {
-			onComplete: internal.ai_model_call_receipts.on_delivery_complete,
-			context: { modelCallId: receipt.modelCallId, imageCallId },
-		},
-	});
+	// The event waits in the usage event outbox and goes to Polar in a batch, so heavy chat use does
+	// not make one Polar call per model call. The batch's `onComplete` records the delivery.
+	await billing_ingest_events(ctx, { billedUserEvents: [{ event, billedUser: payer }] });
 	return { amountCents, externalId, state: "queued" as const };
 }
 
@@ -687,33 +683,59 @@ export const save_image = internalMutation({
 	},
 });
 
+async function db_set_charge_delivery(
+	ctx: MutationCtx,
+	charge: { modelCallId: string; imageCallId: string | null },
+	resultKind: "success" | "failed" | "canceled" | "rejected",
+) {
+	const receipt = await db_get_receipt(ctx, charge.modelCallId);
+	const state = resultKind === "success" ? "delivered" : "delivery_failed";
+	if (state === "delivery_failed") console.error("AI usage delivery failed", { ...charge, resultKind });
+
+	if (charge.imageCallId === null) {
+		if (!receipt.tokens) throw should_never_happen("Delivered tokens charge not found", charge);
+		await ctx.db.patch("ai_model_call_receipts", receipt._id, { tokens: { ...receipt.tokens, state } });
+		return;
+	}
+
+	await ctx.db.patch("ai_model_call_receipts", receipt._id, {
+		images: receipt.images.map((image) =>
+			image.imageCallId === charge.imageCallId ? { ...image, charge: { ...image.charge, state } } : image,
+		),
+	});
+}
+
+/**
+ * Pool result of one single-event job enqueued before charges went through the usage event outbox.
+ * Kept until those jobs are done.
+ */
 export const on_delivery_complete = internalMutation({
 	args: vOnCompleteArgs(v.object({ modelCallId: v.string(), imageCallId: v.union(v.string(), v.null()) })),
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const receipt = await db_get_receipt(ctx, args.context.modelCallId);
 		// The usage pool retries without limit, so a failure here means the pool gave up or the
 		// work was canceled. Keep the charge as `delivery_failed` for the admin readback.
-		const state = args.result.kind === "success" ? "delivered" : "delivery_failed";
-		if (state === "delivery_failed") {
-			console.error("AI usage delivery failed", {
-				modelCallId: receipt.modelCallId,
-				imageCallId: args.context.imageCallId,
-				resultKind: args.result.kind,
-			});
-		}
+		await db_set_charge_delivery(ctx, args.context, args.result.kind);
+		return null;
+	},
+});
 
-		if (args.context.imageCallId === null) {
-			if (!receipt.tokens) throw should_never_happen("Delivered tokens charge not found", args.context);
-			await ctx.db.patch("ai_model_call_receipts", receipt._id, { tokens: { ...receipt.tokens, state } });
-			return null;
-		}
-
-		await ctx.db.patch("ai_model_call_receipts", receipt._id, {
-			images: receipt.images.map((image) =>
-				image.imageCallId === args.context.imageCallId ? { ...image, charge: { ...image.charge, state } } : image,
-			),
-		});
+/**
+ * Pool result of one outbox batch, for the `ai_usage` charges in it. A batch whose events moved to
+ * new jobs (`"handed_on"`, a 422 split or a 429 retry) records nothing: those jobs record it. An
+ * event Polar refused (`"rejected"`) waits in `billing_usage_event_rejected` and is
+ * `delivery_failed` until a resend delivers it.
+ */
+export const on_batch_delivery_complete = internalMutation({
+	args: vOnCompleteArgs(
+		v.object({ receipts: v.array(v.object({ modelCallId: v.string(), imageCallId: v.union(v.string(), v.null()) })) }),
+	),
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const returnValue = args.result.kind === "success" ? args.result.returnValue : undefined;
+		if (returnValue === "handed_on") return null;
+		const resultKind = returnValue === "rejected" ? "rejected" : args.result.kind;
+		for (const charge of args.context.receipts) await db_set_charge_delivery(ctx, charge, resultKind);
 		return null;
 	},
 });
