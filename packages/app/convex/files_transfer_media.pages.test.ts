@@ -10,6 +10,13 @@ import {
 	copy_again,
 } from "./files_transfer_media.setup.test.ts";
 
+// Lower the media page from 50 to 3, so 4 media fill one page and start a second one, like 51 media
+// do with the real page. Code inside files_media_dependencies.ts still uses its own value of 50.
+vi.mock("./files_media_dependencies.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./files_media_dependencies.ts")>()),
+	files_media_dependencies_PAGE_SIZE: 3,
+}));
+
 beforeEach(mock_media_storage);
 
 afterEach(() => {
@@ -18,22 +25,21 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-// Validation tests whose media need more than one page of 50. Each of the 51 media files needs its own
-// Save, which takes 2 to 3 minutes on a busy machine, so these tests may take 5 minutes.
+// Validation tests whose media need more than one page. Each media file needs its own Save.
 describe("copy_transfer_file media", () => {
 	test("does not repin media replaced between validation pages", async () => {
-		const f = await fixture({ mediaCount: 51 });
+		const f = await fixture({ mediaCount: 4 });
 		const capture = await prepare_document_capture(f);
 		const validate = { itemId: capture.itemId, attempt: capture.attempt, workId: capture.workId, text: capture.text };
 		expect(
 			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 0 }),
-		).toEqual({ _yay: { offset: 50, isDone: false } });
+		).toEqual({ _yay: { offset: 3, isDone: false } });
 		const other = await create_media({ t: f.t, scope: f.destination, path: "/other.png" });
 		const replacement = await copy_again({ f, source: other.target, targetName: "photo.png" });
 		if (replacement?.createIntent?.kind !== "stored") throw new Error("Expected replacement media");
 		expect(replacement.createIntent.assetId).not.toBe(f.selectedMedia!.outputMediaAssetId);
 		expect(
-			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 50 }),
+			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 3 }),
 		).toHaveProperty("_nay");
 		expect(
 			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 0 }),
@@ -53,15 +59,15 @@ describe("copy_transfer_file media", () => {
 				),
 			),
 		).not.toBeNull();
-	}, 300_000);
+	}, 120_000);
 
 	test("rejects a source ACL change after the first validation page without changing P", async () => {
-		const f = await fixture({ mediaCount: 51 });
+		const f = await fixture({ mediaCount: 4 });
 		const capture = await prepare_document_capture(f);
 		const validate = { itemId: capture.itemId, attempt: capture.attempt, workId: capture.workId, text: capture.text };
 		expect(
 			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 0 }),
-		).toEqual({ _yay: { offset: 50, isDone: false } });
+		).toEqual({ _yay: { offset: 3, isDone: false } });
 		const pendingVersions = await f.t.run((ctx) => ctx.db.query("files_pending_review_versions").collect());
 		expect(
 			await f.asOwner.mutation(api.files_sharing.restrict_node, {
@@ -71,7 +77,7 @@ describe("copy_transfer_file media", () => {
 		).toEqual({ _yay: null });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_review_versions").collect())).toEqual(pendingVersions);
 		expect(
-			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 50 }),
+			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 3 }),
 		).toMatchObject({ _nay: { message: "Media access changed during validation. Try again." } });
 		expect(await f.t.mutation(internal.files_nodes_content.finalize_transfer_file_copy, capture)).toHaveProperty(
 			"_nay",
@@ -85,15 +91,15 @@ describe("copy_transfer_file media", () => {
 		).toMatchObject({ _nay: { message: "A linked media file is not available" } });
 		for (const media of f.selectedMediaItems)
 			expect(await f.t.run((ctx) => ctx.db.get("files_r2_assets", media.outputMediaAssetId!))).not.toBeNull();
-	}, 300_000);
+	}, 120_000);
 
 	test("rechecks pages after media Save and binds final adoption to exact text", async () => {
-		const f = await fixture({ mediaCount: 51 });
+		const f = await fixture({ mediaCount: 4 });
 		const capture = await prepare_document_capture(f);
 		const validate = { itemId: capture.itemId, attempt: capture.attempt, workId: capture.workId, text: capture.text };
 		expect(
 			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 0 }),
-		).toEqual({ _yay: { offset: 50, isDone: false } });
+		).toEqual({ _yay: { offset: 3, isDone: false } });
 		await save_media({
 			t: f.t,
 			membershipId: f.destination.membershipId,
@@ -101,14 +107,14 @@ describe("copy_transfer_file media", () => {
 			target: f.selectedMedia!.outputTarget!,
 		});
 		expect(
-			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 50 }),
+			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 3 }),
 		).toHaveProperty("_nay");
 		expect(
 			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 0 }),
-		).toEqual({ _yay: { offset: 50, isDone: false } });
+		).toEqual({ _yay: { offset: 3, isDone: false } });
 		expect(
-			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 50 }),
-		).toEqual({ _yay: { offset: 51, isDone: true } });
+			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 3 }),
+		).toEqual({ _yay: { offset: 4, isDone: true } });
 		expect(
 			await f.t.mutation(internal.files_nodes_content.finalize_transfer_file_copy, {
 				...capture,
@@ -125,5 +131,5 @@ describe("copy_transfer_file media", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id))).toMatchObject({
 			state: "completed",
 		});
-	}, 300_000);
+	}, 120_000);
 });

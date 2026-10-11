@@ -315,7 +315,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - `convex/files_nodes_content.test.ts`: saved content, new assets, comments, billing, and races.
 - `convex/files_transfer_selection.test.ts` and `convex/files_transfer_holds.test.ts`: paged intake,
   large discovery, exact replay, long-running output, and retry retention.
-- `convex/files_transfer_media*.test.ts` and `convex/files_pending_media_save.test.ts`: selected media,
+- `convex/files_transfer_media*.test.ts` and `convex/files_pending_media_save*.test.ts`: selected media,
   exact versions, partial Save, and linked review units.
 - `convex/files_nodes.test.ts`: public Move and Rename permissions, scope and names.
 - `convex/files_move_cohorts.test.ts`: linked cycles, one group switch, Stop and cleanup.
@@ -327,7 +327,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - The normal test commands omit only five checks: "saves 1,000 Copy outputs beside one ordinary
   edit", "plans 10,001 unrelated saved Move proposals as 10,001 units", the 2,001-descendant Move
   scale check, the 16-owner overlay budget check and the Copy that adopts 101 media files (the
-  normal run adopts 51). Run them with
+  normal run lowers the media page from 50 to 3 and adopts 4). Run them with
   `vp env exec pnpm --dir packages/app run test:files:full-size`.
   This command keeps every input and assertion. It runs the files one at a time.
   These checks write a lot of docs, so they can take hours. The Copy and

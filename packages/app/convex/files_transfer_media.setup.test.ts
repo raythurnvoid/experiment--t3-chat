@@ -7,6 +7,7 @@ import type { Id } from "./_generated/dataModel.js";
 import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_transfer_db_prepare_copy_item } from "./files_transfer.ts";
 import { files_transfer_media_db_map_refs } from "./files_transfer_media.ts";
+import { files_media_dependencies_PAGE_SIZE } from "./files_media_dependencies.ts";
 import { r2_server_side_copy, r2_create_asset_key } from "./r2_client.ts";
 import { files_media_build_file_src, files_media_build_private_src } from "../shared/files-media.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
@@ -362,13 +363,13 @@ export async function prepare_document_capture(f: Awaited<ReturnType<typeof fixt
 		const refs =
 			files_transfer_rewrite_media_refs({ mut_editor: editor._yay, referenceMap: new Map() })._nay?.data
 				.unresolvedRefs ?? [];
-		for (let offset = 0; offset < Math.max(1, refs.length); offset += 50) {
+		for (let offset = 0; offset < Math.max(1, refs.length); offset += files_media_dependencies_PAGE_SIZE) {
 			const args = {
 				...claim,
 				sourceTextDigest,
 				expectedCount: refs.length,
 				offset,
-				refs: refs.slice(offset, offset + 50),
+				refs: refs.slice(offset, offset + files_media_dependencies_PAGE_SIZE),
 			};
 			const page = await f.t.mutation(internal.files_nodes_content.prepare_transfer_file_media, args);
 			if (page._nay || !page._yay) throw new Error(page._nay?.message ?? "Expected mappings");
