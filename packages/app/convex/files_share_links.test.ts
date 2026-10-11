@@ -1622,11 +1622,8 @@ describe("get_share_link_view", () => {
 		const f = await fixture();
 		const privateFolderId = await insert_restricted_folder(f, "private");
 		const openImageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
-		const privateImageId = await insert_media_file(f, {
-			parentId: privateFolderId,
-			path: "/private/secret.png",
-			contentType: "image/png",
-		});
+		// Starts at the root and moves into the private folder after Save.
+		const privateImageId = await insert_media_file(f, { parentId: "root", path: "/secret.png", contentType: "image/png" });
 		const svgImageId = await insert_media_file(f, {
 			parentId: "root",
 			path: "/logo.svg",
@@ -1639,21 +1636,9 @@ describe("get_share_link_view", () => {
 			path: "/restricted.png",
 			contentType: "image/png",
 		});
-		await f.t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", selfRestrictedImageId, {
-				isRestrictedScopeRoot: true,
-				restrictedScopeNodeId: selfRestrictedImageId,
-			});
-		});
+		const missingImageId = await insert_media_file(f, { parentId: "root", path: "/missing.png", contentType: "image/png" });
 		// An image at the root of another workspace. Only the tenant check can refuse it.
 		const otherImageId = await insert_media_file(f, { parentId: "root", path: "/other.png", contentType: "image/png" });
-		await f.t.run(async (ctx) => {
-			const other = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other" });
-			const image = await ctx.db.get("files_nodes", otherImageId);
-			const tenant = { organizationId: other.organizationId, workspaceId: other.workspaceId };
-			await ctx.db.patch("files_nodes", otherImageId, tenant);
-			await ctx.db.patch("files_r2_assets", image!.assetId!, tenant);
-		});
 		const nodeId = await test_create_saved_text_file(f.t, {
 			membershipId: f.db.membershipId,
 			path: "/page.md",
@@ -1662,12 +1647,31 @@ describe("get_share_link_view", () => {
 				`![Secret](bonobo-file://${privateImageId})`,
 				`![Logo](bonobo-file://${svgImageId})`,
 				`![Busy](bonobo-file://${busyImageId})`,
-				"![Missing](bonobo-file://not-a-real-id)",
+				`![Missing](bonobo-file://${missingImageId})`,
 				`![Other](bonobo-file://${otherImageId})`,
 				// A video tag that points at an image.
 				`<video src="bonobo-file://${openImageId}"></video>`,
 				`![Restricted](bonobo-file://${selfRestrictedImageId})`,
 			].join("\n\n"),
+		});
+		// Save refuses media the saver cannot see. So the images change only after Save.
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", privateImageId, {
+				parentId: privateFolderId,
+				path: "/private/secret.png",
+				treePath: "/private/secret.png",
+				pathDepth: 2,
+			});
+			await ctx.db.patch("files_nodes", selfRestrictedImageId, {
+				isRestrictedScopeRoot: true,
+				restrictedScopeNodeId: selfRestrictedImageId,
+			});
+			await ctx.db.delete("files_nodes", missingImageId);
+			const other = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other" });
+			const image = await ctx.db.get("files_nodes", otherImageId);
+			const tenant = { organizationId: other.organizationId, workspaceId: other.workspaceId };
+			await ctx.db.patch("files_nodes", otherImageId, tenant);
+			await ctx.db.patch("files_r2_assets", image!.assetId!, tenant);
 		});
 		const link = await link_on(f, nodeId);
 		await insert_subtree_op(f, "/busy.png");
@@ -1843,6 +1847,8 @@ describe("get_share_link_view", () => {
 				closedAt: null,
 			}),
 		);
+		// Save refuses a link to a draft that has no saved file, so link the saved file first.
+		await f.t.run((ctx) => ctx.db.patch("files_nodes", imageId, { publishedFromPrivateNodeId: privateNodeId }));
 		const nodeId = await test_create_saved_text_file(f.t, {
 			membershipId: f.db.membershipId,
 			path: "/page.md",
@@ -1850,7 +1856,8 @@ describe("get_share_link_view", () => {
 		});
 		const link = await link_on(f, nodeId);
 
-		// The draft was not published as a saved file yet.
+		// Without its saved file, the draft link shows nothing.
+		await f.t.run((ctx) => ctx.db.patch("files_nodes", imageId, { publishedFromPrivateNodeId: undefined }));
 		expect((await view_of(f, link.token))?.media).toEqual([{ index: 0, available: false }]);
 
 		await f.t.run((ctx) => ctx.db.patch("files_nodes", imageId, { publishedFromPrivateNodeId: privateNodeId }));

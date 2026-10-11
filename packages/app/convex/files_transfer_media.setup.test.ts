@@ -4,7 +4,13 @@ import { Workpool } from "@convex-dev/workpool";
 import { expect, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_save_file_pending_update,
+	test_convex,
+	test_create_saved_text_file,
+	test_finish_pending_update_run,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { files_transfer_db_prepare_copy_item } from "./files_transfer.ts";
 import { files_transfer_media_db_map_refs } from "./files_transfer_media.ts";
 import { r2_server_side_copy, r2_create_asset_key } from "./r2_client.ts";
@@ -112,6 +118,65 @@ export async function save_media(args: {
 	return saved._yay.target;
 }
 
+/**
+ * Save many media drafts in one review job, like Accept in Pending. Each single Save runs its own
+ * job of about 100 steps, which is too slow for 50 or more files.
+ */
+export async function save_all_media(args: {
+	t: ReturnType<typeof test_convex>;
+	membershipId: Id<"organizations_workspaces_users">;
+	userId: Id<"users">;
+	targets: files_PendingTarget[];
+}) {
+	const { t, userId, membershipId, targets } = args;
+
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: userId });
+	const items = [];
+	for (const target of targets) {
+		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target });
+		if (!view?.entry.pendingUpdate) throw new Error("Expected media proposal");
+		items.push({
+			pendingUpdateId: view.entry.pendingUpdate._id,
+			reviewedRevision: view.entry.pendingUpdate.revision,
+			selectedContentStateId: null,
+		});
+	}
+	const started = await asUser.mutation(api.files_pending_update_runs.start, {
+		membershipId,
+		requestId: crypto.randomUUID(),
+		kind: "accept",
+		expectedItemCount: items.length,
+		items: items.slice(0, 100),
+	});
+	if (started._nay) throw new Error(started._nay.message);
+	const { runId, activityId } = started._yay;
+	for (let offset = 100; offset < items.length; offset += 100)
+		expect(
+			await asUser.mutation(api.files_pending_update_runs.append_items, {
+				membershipId,
+				runId,
+				offset,
+				items: items.slice(offset, offset + 100),
+			}),
+		).toEqual({ _yay: null });
+	expect(await asUser.mutation(api.files_pending_update_runs.seal, { membershipId, runId })).toEqual({ _yay: null });
+	await test_finish_pending_update_run(asUser, runId);
+	expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({ status: "succeeded" });
+	return await t.run(async (ctx) => {
+		const saved: Array<{ kind: "saved"; id: Id<"files_nodes"> }> = [];
+		for (const target of targets) {
+			if (target.kind !== "private") throw new Error("Expected a media draft");
+			const receipt = await ctx.db
+				.query("files_pending_node_publish_receipts")
+				.withIndex("by_privateNode", (q) => q.eq("privateNodeId", target.id))
+				.first();
+			if (!receipt) throw new Error("Expected saved media");
+			saved.push({ kind: "saved", id: receipt.savedNodeId });
+		}
+		return saved;
+	});
+}
+
 export async function fixture(
 	options: {
 		sourceWorkspace?: "current" | "personal";
@@ -169,20 +234,29 @@ export async function fixture(
 	const mediaFiles = [media];
 	const sourceRefs = [sourceRef];
 	if (options.aliases && original.kind === "private") sourceRefs.push(files_media_build_private_src(original.id));
-	for (let index = 1; index < (options.mediaCount ?? 1); index++) {
-		const extra = await create_media({ t, scope: source, path: `/photo-${index}.png` });
-		extra.target = await save_media({
-			t,
-			membershipId: source.membershipId,
-			userId: source.userId,
-			target: extra.target,
-		});
+	const extras = [];
+	for (let index = 1; index < (options.mediaCount ?? 1); index++)
+		extras.push(await create_media({ t, scope: source, path: `/photo-${index}.png` }));
+	const savedExtras = extras.length
+		? await save_all_media({
+				t,
+				membershipId: source.membershipId,
+				userId: source.userId,
+				targets: extras.map((extra) => extra.target),
+			})
+		: [];
+	for (const [index, extra] of extras.entries()) {
+		extra.target = savedExtras[index]!;
 		mediaFiles.push(extra);
 		sourceRefs.push(files_media_build_file_src(extra.target.id));
 	}
+	// Save refuses a document that links to media that is still a draft. Tests with a draft source pass
+	// their refs to `map_refs` directly, so that document saves without the link.
 	const documentText =
-		options.documentText?.(sourceRef) ??
-		`Before\n\n${sourceRefs.map((src) => `![Photo](${src})`).join("\n\n")}\n\nAfter\n`;
+		options.sourceKind === "private"
+			? "Before\n\nAfter\n"
+			: (options.documentText?.(sourceRef) ??
+				`Before\n\n${sourceRefs.map((src) => `![Photo](${src})`).join("\n\n")}\n\nAfter\n`);
 	const documentId = await test_create_saved_text_file(t, {
 		membershipId: source.membershipId,
 		path: "/document.md",

@@ -503,13 +503,14 @@ describe("plugin file media validation clocks", () => {
 				[],
 			);
 			expect(after.externalBindings).toHaveLength(privateRoot ? 1 : 0);
-			await expect_clock({ f, before, changed: true });
+			// A new folder advances only the content clock, so a Move that pins the access clock goes on.
+			await expect_clock({ f, before, changed: privateRoot });
 			deltas.push(
 				after.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision -
 					before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision,
 			);
 		}
-		// Creation already advances the workspace clock. The root restriction needs its own writer hook.
+		// Creation does not advance the workspace clock. The root restriction needs its own writer hook.
 		expect(deltas[1]).toBeGreaterThan(deltas[0]!);
 	});
 

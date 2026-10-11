@@ -6,9 +6,13 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { activities_is_active } from "./activities_db.ts";
 import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
-import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops.ts";
+import {
+	files_subtree_ops_db_delete,
+	files_subtree_ops_db_enqueue_nodes,
+	files_subtree_ops_db_insert,
+} from "./files_subtree_ops.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
-import { test_save_file_pending_update, test_convex, test_rename_node, test_move_nodes, test_create_saved_text_file, test_finish_transfer_run, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_rename_node, test_move_nodes, test_create_saved_text_file, test_finish_transfer_run, test_finish_pending_update_run, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
@@ -1658,31 +1662,8 @@ describe("advance", () => {
 							runId: reviewRunId,
 						}),
 					).toEqual({ _yay: null });
-					for (let pass = 0; pass < 30; pass++) {
-						const run = await t.run((ctx) => ctx.db.get("files_pending_update_runs", reviewRunId));
-						if (!run) throw new Error("Expected the review run");
-						if (run.step === "finished") break;
-						if (run.step === "planning")
-							await t.action(internal.files_pending_update_runs.plan, { runId: reviewRunId, fence: run.fence });
-						else {
-							await t.mutation(internal.files_pending_update_runs.advance, { runId: reviewRunId });
-							const unit = await t.run((ctx) =>
-								ctx.db
-									.query("files_pending_update_run_units")
-									.withIndex("by_run_status_deleteLast_order", (q) =>
-										q.eq("runId", reviewRunId).eq("status", "preparing"),
-									)
-									.first(),
-							);
-							if (unit)
-								await t.action(internal.files_pending_update_runs.prepare_unit, {
-									runId: reviewRunId,
-									fence: run.fence,
-									unitId: unit._id,
-									attemptFence: unit.attemptFence,
-								});
-						}
-					}
+					// Accept saves the copy in a Move group, so use the driver that also runs its steps.
+					await test_finish_pending_update_run(asUser, reviewRunId);
 					expect(
 						(
 							await asUser.query(api.files_pending_update_runs.get, {
@@ -2369,10 +2350,12 @@ describe("advance", () => {
 		const { t, db, asUser, folders } = fixture;
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		await t.mutation(internal.files_transfer.advance, { runId });
+		// Copy and Move of one user share one lane, so a teammate moves the child.
+		const member = await add_member(fixture);
 		expect(
 			(
-				await test_move_nodes(t, asUser, {
-						membershipId: db.membershipId,
+				await test_move_nodes(t, member.asUser, {
+						membershipId: member.membershipId,
 						itemIds: [folders.get("/source/folder-00")!],
 						targetParentId: folders.get("/target")!,
 					})
@@ -4003,8 +3986,9 @@ describe("move", () => {
 		});
 		if (moving._nay) throw new Error(moving._nay.message);
 		const moveArgs = { membershipId: member.membershipId, runId: moving._yay.runId };
-		// Run real steps for at most one minute. The other user's choice must not expire.
-		for (let step = 0; step < 60; step++) {
+		// Run real steps, one per second, for at most five minutes. A Move takes many small steps. The
+		// other user's choice lasts 24 hours, so it must not expire.
+		for (let step = 0; step < 300; step++) {
 			if ((await member.asUser.query(api.files_transfer.get, moveArgs))?.activity.status === "succeeded") break;
 			vi.advanceTimersByTime(1_000);
 			await t.finishInProgressScheduledFunctions();
@@ -4267,9 +4251,11 @@ describe("move", () => {
 		const moved = await t.run((ctx) => ctx.db.get("files_nodes", sourceId));
 		expect(moved).toMatchObject({ path: "/target/notes.md", archiveOperationId: null });
 		expect(await read_versions(sourceId)).toEqual(versionsBefore);
-		// The same metadata rows stay attached to the node. Only their copy of the path follows it.
+		// The Move stages new metadata rows at the new path and keeps only them at the switch. The node
+		// keeps the same fields, and no staged copy is left behind.
 		const metadataDocsAfter = await read_metadata_docs(sourceId);
-		expect(metadataDocsAfter.map((doc) => doc._id).sort()).toEqual(metadataDocsBefore.map((doc) => doc._id).sort());
+		expect(metadataDocsAfter).toHaveLength(metadataDocsBefore.length);
+		expect(metadataDocsAfter.every((doc) => doc.moveView === undefined)).toBe(true);
 		expect(metadataDocsAfter.map((doc) => doc.fieldPath).sort()).toEqual(
 			metadataDocsBefore.map((doc) => doc.fieldPath).sort(),
 		);
@@ -4591,7 +4577,8 @@ describe("move", () => {
 				._nay,
 		).toBeUndefined();
 		// Rename /a to /b the way a big folder is renamed: the folder now, its children later. `shared`
-		// still stores /a/shared/, and a new folder takes the free name /a.
+		// still stores /a/shared/, and a new folder takes the free name /a. A Move waits for this op, so
+		// it checks `shared` only after the walk rewrote its path.
 		const newA = await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", folders.get("/a")!, {
 				name: "b",
@@ -4599,7 +4586,7 @@ describe("move", () => {
 				path: "/b",
 				treePath: "/b/",
 			});
-			await files_subtree_ops_db_insert(ctx, {
+			const opId = await files_subtree_ops_db_insert(ctx, {
 				op: {
 					kind: "move",
 					organizationId: db.organizationId,
@@ -4613,6 +4600,8 @@ describe("move", () => {
 				},
 				now: Date.now(),
 			});
+			// A real op queues its roots for the walk.
+			await files_subtree_ops_db_enqueue_nodes(ctx, { opId, nodes: [{ nodeId: folders.get("/a")!, nodeDone: true }] });
 			return await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: db.organizationId,
@@ -4652,7 +4641,7 @@ describe("move", () => {
 				restrictedScopeNodeId: folders.get("/shared")!,
 				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
-			await files_subtree_ops_db_insert(ctx, {
+			const opId = await files_subtree_ops_db_insert(ctx, {
 				op: {
 					kind: "scope",
 					organizationId: db.organizationId,
@@ -4665,6 +4654,8 @@ describe("move", () => {
 				},
 				now: Date.now(),
 			});
+			// A real op queues its roots for the walk.
+			await files_subtree_ops_db_enqueue_nodes(ctx, { opId, nodes: [{ nodeId: folders.get("/shared")!, nodeDone: true }] });
 		});
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", folders.get("/shared/item")!))).toMatchObject({
 			restrictedScopeNodeId: null,
@@ -4672,7 +4663,7 @@ describe("move", () => {
 
 		// The member has no grant on /shared, so the write check refuses the item, like any item inside a
 		// restricted folder. Moving the item out would leave it open for good, because the op walks only
-		// what is still inside /shared.
+		// what is still inside /shared. So the Move waits for the op and checks the written scope.
 		expect(
 			(
 				await test_move_nodes(t, member.asUser, {
