@@ -324,6 +324,7 @@ export async function billing_ingest_events(
 
 /**
  * Insert the events into the outbox. When no drainer marker exists, insert one and schedule a run.
+ * Returns the marker id.
  *
  * Savers only insert events and read the marker, so parallel saves do not conflict, except one retry
  * when the chain starts (two savers insert a marker). A save in flight also retries once when the
@@ -331,9 +332,11 @@ export async function billing_ingest_events(
  */
 async function db_insert_outbox_events(ctx: MutationCtx, events: billing_Event[]) {
 	for (const event of events) await ctx.db.insert("billing_usage_event_outbox", { event });
-	if (await ctx.db.query("billing_usage_event_outbox_drainers").first()) return;
+	const marker = await ctx.db.query("billing_usage_event_outbox_drainers").first();
+	if (marker) return marker._id;
 	const markerId = await ctx.db.insert("billing_usage_event_outbox_drainers", { lastRunAt: Date.now() });
 	await ctx.scheduler.runAfter(OUTBOX_DRAIN_INTERVAL_MS, internal.billing.drain_usage_event_outbox, { markerId });
+	return markerId;
 }
 
 /**
@@ -342,8 +345,10 @@ async function db_insert_outbox_events(ctx: MutationCtx, events: billing_Event[]
  * nothing to send; `idleSince` carries that time from run to run. A missing marker ends the chain.
  *
  * The job and the deletes commit together, so each event reaches the pool once. The pool retries a
- * failed batch (429, 5xx, network) as a whole. Polar skips each event whose `externalId` it already
- * has, so a retry never counts an event twice. A batch Polar refuses (422) is split in `ingest_events`.
+ * failed batch (5xx, network) as a whole. A batch Polar rate limits (429) comes back to the outbox
+ * and pauses the chain (`billing_db_requeue_rate_limited_usage_events`). Polar skips each event whose
+ * `externalId` it already has, so a retry never counts an event twice. A batch Polar refuses (422) is
+ * split in `ingest_events`.
  */
 export async function billing_db_drain_usage_event_outbox(
 	ctx: MutationCtx,
@@ -354,6 +359,17 @@ export async function billing_db_drain_usage_event_outbox(
 	const now = Date.now();
 	if (marker.lastRunAt < now - OUTBOX_HEARTBEAT_MS)
 		await ctx.db.patch("billing_usage_event_outbox_drainers", marker._id, { lastRunAt: now });
+
+	// After a Polar 429, send nothing until Polar allows it. Wake at least once a minute, so the
+	// heartbeat stays fresh and the recovery cron does not replace the chain.
+	if (marker.pausedUntil !== undefined && marker.pausedUntil > now) {
+		await ctx.scheduler.runAfter(
+			Math.min(marker.pausedUntil - now, OUTBOX_HEARTBEAT_MS),
+			internal.billing.drain_usage_event_outbox,
+			{ markerId: marker._id },
+		);
+		return;
+	}
 
 	// Each run reads from the oldest event, so an event that commits late with an old creation time
 	// is still sent by a later run.
@@ -416,22 +432,31 @@ export async function billing_db_resend_rejected_usage_events(ctx: MutationCtx) 
 }
 
 /**
+ * Put a batch Polar rate limited (429) back in the outbox and pause the drainer for `retryAfterMs`.
+ * The one drainer chain then paces every Polar call, so a 429 makes no extra pool jobs. Polar skips
+ * events it already has, so a resend never counts twice.
+ */
+export async function billing_db_requeue_rate_limited_usage_events(
+	ctx: MutationCtx,
+	args: { events: billing_Event[]; retryAfterMs: number },
+) {
+	const markerId = await db_insert_outbox_events(ctx, args.events);
+	await ctx.db.patch("billing_usage_event_outbox_drainers", markerId, { pausedUntil: Date.now() + args.retryAfterMs });
+}
+
+/**
  * Enqueue one batch of signed-in usage events as one `ingest_events` job on the usage pool. When the
  * batch holds `ai_usage` events, the job's `onComplete` records their delivery on the model call
- * receipts. `runAfter` delays the job, for a Polar 429.
+ * receipts.
  */
-export async function billing_db_enqueue_usage_events(
-	ctx: ActionCtx | MutationCtx,
-	args: { events: billing_Event[]; runAfter?: number },
-) {
-	const { events, runAfter } = args;
+export async function billing_db_enqueue_usage_events(ctx: ActionCtx | MutationCtx, args: { events: billing_Event[] }) {
+	const { events } = args;
 	const receipts = events.flatMap((event) =>
 		event.name === "ai_usage"
 			? [{ modelCallId: event.metadata.modelCallId, imageCallId: event.metadata.imageCallId }]
 			: [],
 	);
-	// A plain batch needs no options.
-	if (receipts.length === 0 && runAfter === undefined) {
+	if (receipts.length === 0) {
 		await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, { events });
 		return;
 	}
@@ -439,9 +464,7 @@ export async function billing_db_enqueue_usage_events(
 		ctx,
 		internal.billing.ingest_events,
 		{ events },
-		receipts.length === 0
-			? { runAfter }
-			: { runAfter, onComplete: internal.ai_model_call_receipts.on_batch_delivery_complete, context: { receipts } },
+		{ onComplete: internal.ai_model_call_receipts.on_batch_delivery_complete, context: { receipts } },
 	);
 }
 

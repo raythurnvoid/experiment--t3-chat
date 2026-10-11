@@ -4678,7 +4678,7 @@ describe("ingest_events", () => {
 		expect(await t.mutation(internal.billing.resend_rejected_usage_events, {})).toBe(0);
 	});
 
-	test("moves a batch Polar rate limits (429) to a new pool job 60 seconds later", async () => {
+	test("puts a batch Polar rate limits (429) back in the outbox and pauses the drainer for retry-after", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const events = [
@@ -4693,13 +4693,14 @@ describe("ingest_events", () => {
 			ok: false,
 			error: new SDKError("API error occurred", {
 				request: new Request("https://polar.test/v1/events/ingest"),
-				response: new Response("{}", { status: 429, headers: { "retry-after": "60" } }),
+				response: new Response("{}", { status: 429, headers: { "retry-after": "90" } }),
 				body: "{}",
 			}),
 		} as never);
 		const { enqueueActionSpy } = mock_billing_ingest_enqueue("work_rate_limited_batch");
 		const originalNodeEnv = process.env.NODE_ENV;
 		process.env.NODE_ENV = "production";
+		const before = Date.now();
 
 		try {
 			expect(await t.action(internal.billing.ingest_events, { events }), "a 429 must hand the batch on").toBe(
@@ -4713,12 +4714,22 @@ describe("ingest_events", () => {
 			}
 		}
 
-		expect(enqueueActionSpy.mock.calls.length).toBe(1);
-		expect(enqueueActionSpy.mock.calls[0]!.slice(1)).toEqual([
-			internal.billing.ingest_events,
-			{ events },
-			{ runAfter: 60_000 },
-		]);
+		expect(enqueueActionSpy.mock.calls.length, "a 429 must not enqueue its own retry job").toBe(0);
+		const { outbox, marker } = await t.run(async (ctx) => ({
+			outbox: await ctx.db.query("billing_usage_event_outbox").collect(),
+			marker: (await ctx.db.query("billing_usage_event_outbox_drainers").first())!,
+		}));
+		expect(outbox.map((doc) => doc.event)).toEqual(events);
+		expect(marker.pausedUntil).toBeGreaterThanOrEqual(before + 90_000);
+		expect(marker.pausedUntil).toBeLessThanOrEqual(Date.now() + 90_000);
+
+		// While paused, the drainer sends nothing; after the pause it sends the batch again.
+		vi.spyOn(Date, "now").mockReturnValue(marker.pausedUntil! - 1);
+		await t.mutation(internal.billing.drain_usage_event_outbox, { markerId: marker._id });
+		expect(enqueueActionSpy.mock.calls.length, "a paused drainer must send nothing").toBe(0);
+		vi.mocked(Date.now).mockReturnValue(marker.pausedUntil! + 1);
+		await test_drain_billing_usage_event_outbox(t);
+		expect(enqueueActionSpy.mock.calls.map((call) => call[2])).toEqual([{ events }]);
 	});
 
 	test("billing_ingest_events splits signed-in and anonymous billedUserEvents", async () => {

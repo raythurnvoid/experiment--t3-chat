@@ -8867,6 +8867,10 @@ const app_convex_schema = defineSchema({
 		 * that the chain stopped.
 		 */
 		lastRunAt: v.number(),
+		/**
+		 * Set after a Polar 429. The chain sends nothing until then.
+		 */
+		pausedUntil: v.optional(v.number()),
 	}),
 
 	/**

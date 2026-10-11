@@ -58,12 +58,18 @@ export const check_usage_event_backlog = internalAction({
 		console.error("Billing usage events need attention", alert);
 		if (!BILLING_ALERT_WEBHOOK_URL) return null;
 
-		const response = await fetch(BILLING_ALERT_WEBHOOK_URL, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(alert),
-		});
-		if (!response.ok) console.error("Billing alert webhook failed", { status: response.status });
+		// A slow or broken webhook must not hang or fail the cron; the alert is already in the logs.
+		try {
+			const response = await fetch(BILLING_ALERT_WEBHOOK_URL, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(alert),
+				signal: AbortSignal.timeout(10_000),
+			});
+			if (!response.ok) console.error("Billing alert webhook failed", { status: response.status });
+		} catch {
+			console.error("Billing alert webhook failed");
+		}
 		return null;
 	},
 });

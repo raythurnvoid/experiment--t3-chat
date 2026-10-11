@@ -688,7 +688,16 @@ async function db_set_charge_delivery(
 	charge: { modelCallId: string; imageCallId: string | null },
 	resultKind: "success" | "failed" | "canceled" | "rejected",
 ) {
-	const receipt = await db_get_receipt(ctx, charge.modelCallId);
+	const receipt = await ctx.db
+		.query("ai_model_call_receipts")
+		.withIndex("by_modelCallId", (q) => q.eq("modelCallId", charge.modelCallId))
+		.unique();
+	// The receipt can be gone, for example after a data deletion while its event waited. Skip it, so
+	// one missing receipt does not roll back the other charges of the batch.
+	if (!receipt) {
+		console.error("AI usage delivery receipt not found", charge);
+		return;
+	}
 	const state = resultKind === "success" ? "delivered" : "delivery_failed";
 	if (state === "delivery_failed") console.error("AI usage delivery failed", { ...charge, resultKind });
 
@@ -707,7 +716,8 @@ async function db_set_charge_delivery(
 
 /**
  * Pool result of one single-event job enqueued before charges went through the usage event outbox.
- * Kept until those jobs are done.
+ * It reads the result like `on_batch_delivery_complete`. Remove it once no jobs queued before that
+ * deploy remain.
  */
 export const on_delivery_complete = internalMutation({
 	args: vOnCompleteArgs(v.object({ modelCallId: v.string(), imageCallId: v.union(v.string(), v.null()) })),
@@ -715,16 +725,18 @@ export const on_delivery_complete = internalMutation({
 	handler: async (ctx, args) => {
 		// The usage pool retries without limit, so a failure here means the pool gave up or the
 		// work was canceled. Keep the charge as `delivery_failed` for the admin readback.
-		await db_set_charge_delivery(ctx, args.context, args.result.kind);
+		const returnValue = args.result.kind === "success" ? args.result.returnValue : undefined;
+		if (returnValue === "handed_on") return null;
+		await db_set_charge_delivery(ctx, args.context, returnValue === "rejected" ? "rejected" : args.result.kind);
 		return null;
 	},
 });
 
 /**
  * Pool result of one outbox batch, for the `ai_usage` charges in it. A batch whose events moved to
- * new jobs (`"handed_on"`, a 422 split or a 429 retry) records nothing: those jobs record it. An
- * event Polar refused (`"rejected"`) waits in `billing_usage_event_rejected` and is
- * `delivery_failed` until a resend delivers it.
+ * new jobs or back to the outbox (`"handed_on"`, a 422 split or a 429) records nothing: a later
+ * batch records it. An event Polar refused (`"rejected"`) waits in `billing_usage_event_rejected`
+ * and is `delivery_failed` until a resend delivers it. A missing receipt is logged and skipped.
  */
 export const on_batch_delivery_complete = internalMutation({
 	args: vOnCompleteArgs(

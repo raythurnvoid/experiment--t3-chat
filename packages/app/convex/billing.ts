@@ -42,6 +42,7 @@ import {
 	billing_db_enqueue_usage_events,
 	billing_db_ingest_anonymous_user_events,
 	billing_db_recover_usage_event_outbox,
+	billing_db_requeue_rate_limited_usage_events,
 	billing_db_resend_rejected_usage_events,
 	billing_ingest_events,
 	billing_pick_billed_user_id,
@@ -1803,14 +1804,14 @@ export const cancel_current_subscription = action({
 
 // #region event ingestion
 /**
- * Polar's 429 answers `retry-after: 60`. The pool's own retry waits 10 minutes or more.
+ * Wait this long after a Polar 429 without a `retry-after` header. Polar usually answers 60 seconds.
  */
 const POLAR_RATE_LIMIT_RETRY_MS = 60 * 1000;
 
 /**
  * Send one batch to Polar. Returns `null` when Polar took it, `"handed_on"` when the events moved
- * to new pool jobs (a 422 split or a 429 retry), and `"rejected"` when Polar refused the one event.
- * `on_batch_delivery_complete` reads this to record model call receipt delivery.
+ * on (a 422 split into new pool jobs, or a 429 back to the outbox), and `"rejected"` when Polar
+ * refused the one event. `on_batch_delivery_complete` reads this to record model call receipt delivery.
  */
 export const ingest_events = internalAction({
 	args: {
@@ -1862,9 +1863,14 @@ export const ingest_events = internalAction({
 				return "handed_on";
 			}
 			// Polar's limit is per organization, so a 429 here also slows checkout and portal calls.
-			// Wait as long as Polar asks, not the pool's 10 minutes. Polar skips events it already has.
+			// Put the batch back in the outbox and pause the drainer as long as Polar asks, so the one
+			// drainer chain paces every call. A new pool job per 429 would not be paced.
 			if (ingestResult.error instanceof SDKError && ingestResult.error.statusCode === 429) {
-				await billing_db_enqueue_usage_events(ctx, { events: args.events, runAfter: POLAR_RATE_LIMIT_RETRY_MS });
+				const retryAfterSeconds = Number(ingestResult.error.headers.get("retry-after"));
+				await ctx.runMutation(internal.billing.requeue_rate_limited_usage_events, {
+					events: args.events,
+					retryAfterMs: retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : POLAR_RATE_LIMIT_RETRY_MS,
+				});
 				return "handed_on";
 			}
 			throw new Error(JSON.stringify(ingestResult.error));
@@ -1921,6 +1927,18 @@ export const save_rejected_usage_event = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		await ctx.db.insert("billing_usage_event_rejected", { ...args, rejectedAt: Date.now() });
+		return null;
+	},
+});
+
+/**
+ * Put a batch Polar rate limited (429) back in the outbox and pause the drainer.
+ */
+export const requeue_rate_limited_usage_events = internalMutation({
+	args: { events: v.array(billing_event_validator), retryAfterMs: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await billing_db_requeue_rate_limited_usage_events(ctx, args);
 		return null;
 	},
 });
