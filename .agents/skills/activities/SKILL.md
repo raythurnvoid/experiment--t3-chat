@@ -168,8 +168,8 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   Unarchive request, with the queued restore jobs of that request. The done part stays archived or
   restored. The restore jobs of one Unarchive request run one at a time: the ones after the first
   start as `queued`, with `feedVisible: false`, a 24-hour deadline, and no scheduled step. A restore
-  also waits as `queued` while it overlaps another subtree op. Its op marks at most 64 paths busy, so
-  a restore of many top items can mark a whole shared folder, or `/`, busy. When an op ends,
+  also waits as `queued` while it overlaps another subtree op. An archive or restore op marks at most
+  64 paths busy, so one with many top items can mark a whole shared folder, or `/`, busy. When an op ends,
   `files_subtree_ops_db_delete` starts each waiter that overlaps nothing any more: promote marks it
   `running`, shows its card, and schedules its first step. Each waiter's check reads every op of the
   workspace, so the delete stops near the transaction limits and `files_subtree_ops.release_waiters`

@@ -248,7 +248,7 @@ of never showing hidden items.
   `files_archive_run`). The job is the `archive` or `restore` kind of a `files_subtree_ops` op, and it
   walks the folder by `parentId`. The request runs the first step itself. When that step finishes the
   work (up to 75 nodes), no run doc, no op, and no Activity exist. A bigger one continues in the
-  background.
+  background. An archive op keeps at most 64 busy paths too, merged the same way as a restore's below.
   - A restore first pages through its archive operation in creation order to find all top items. It
     keeps at most 64 folder paths that hold them: past 64, the two paths with the longest shared
     folder merge into that folder, up to `/`. It checks those paths for a running subtree job, and its
