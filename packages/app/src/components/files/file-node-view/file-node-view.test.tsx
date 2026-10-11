@@ -2902,7 +2902,9 @@ describe("FileNodeView folder filter", () => {
 		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
 			wrapper: ({ children }) => (
 				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-					<FilesClipboardProvider membershipId={tenantContextMock().membershipId}>{children}</FilesClipboardProvider>
+					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={tenantContextMock().membershipId}>
+						{children}
+					</FilesClipboardProvider>
 				</AppActivitiesProvider>
 			),
 		});
