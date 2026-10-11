@@ -185,6 +185,7 @@ import { quotas_db_ensure } from "./quotas.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_share_rows_NODE_FIELDS, files_share_rows_principal_key } from "../server/files-share-rows.ts";
 import {
+	files_pending_overlay_db_has_saved_scope_job,
 	files_pending_overlay_db_schedule_saved_scope,
 	files_pending_overlay_list_over_budget,
 } from "../server/files-pending-overlay.ts";
@@ -4698,9 +4699,10 @@ export async function files_nodes_db_archive_nodes(args: {
 	const { ctx, shareLinkCleanup } = args;
 
 	const archiveOperationId = crypto.randomUUID();
-	const fileNodes = (await Promise.all(args.nodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
-		(fileNode) => fileNode !== null,
-	);
+	// A node named twice would schedule its saved scope job twice in parallel, and make two job docs.
+	const fileNodes = (
+		await Promise.all([...new Set(args.nodeIds)].map((nodeId) => ctx.db.get("files_nodes", nodeId)))
+	).filter((fileNode) => fileNode !== null);
 	const archivedWorkspaces = new Map<Doc<"files_nodes">["workspaceId"], Doc<"files_nodes">["organizationId"]>();
 	for (const fileNode of fileNodes) {
 		archivedWorkspaces.set(fileNode.workspaceId, fileNode.organizationId);
@@ -5903,6 +5905,15 @@ export const list_tree_children_sorted = query({
 						(node.archiveOperationId !== null ||
 							node.parentId !== args.parentId ||
 							node.isRestrictedScopeRoot !== args.restricted)
+					) {
+						return null;
+					}
+					// Archive, then Restore with Keep both, can rename the node in the same folder before the
+					// saved scope job copies the new name. Leave the row out while that job is pending.
+					if (
+						(fieldDoc.sortName !== node.sortName || fieldDoc.name !== node.name) &&
+						fieldDoc.nodeKind === node.kind &&
+						(await files_pending_overlay_db_has_saved_scope_job(ctx, node._id))
 					) {
 						return null;
 					}

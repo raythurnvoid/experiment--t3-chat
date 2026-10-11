@@ -58,6 +58,7 @@ import {
 import { files_sort_text_key, files_sort_value_of } from "../shared/files-sort.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { files_db_get_visible_node_by_path, files_db_patch_pending_update } from "../server/files.ts";
+import { files_pending_overlay_db_has_saved_scope_job } from "../server/files-pending-overlay.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_node_view,
@@ -938,6 +939,13 @@ export async function files_metadata_db_get_table_field(
 	// Staging and cleanup move each bounded field between these two exact ranges.
 	const metadataDoc = candidates.find((candidate) => candidate !== null);
 	if (!metadataDoc) return null;
+	// After a Restore the doc keeps its archive id until the saved scope job runs. Show no value
+	// until then.
+	if (
+		metadataDoc.archiveOperationId !== undefined &&
+		(await files_pending_overlay_db_has_saved_scope_job(ctx, args.fileNode._id))
+	)
+		return null;
 	check_table_field_source(metadataDoc, args.fileNode);
 	return metadataDoc;
 }
@@ -1091,10 +1099,14 @@ export const list_node_fields = query({
 				isDone = true;
 				break;
 			}
-			check_table_field_source(metadataDoc, fileNode);
+			// After a Restore the doc keeps its archive id until the saved scope job runs. Skip it until then.
+			const inTransit =
+				metadataDoc.archiveOperationId !== undefined &&
+				(await files_pending_overlay_db_has_saved_scope_job(ctx, fileNode._id));
+			if (!inTransit) check_table_field_source(metadataDoc, fileNode);
 			afterField = metadataDoc.fieldPath;
 			completed++;
-			if (search_field_path_is_valid(afterField)) fields.push(afterField);
+			if (!inTransit && search_field_path_is_valid(afterField)) fields.push(afterField);
 		}
 		if (!isDone && completed === 0) throw convex_error({ message: "Metadata read exceeded its work limit." });
 		return {

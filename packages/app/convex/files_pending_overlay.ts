@@ -522,9 +522,10 @@ async function db_continue_job(
 }
 
 /**
- * One page of a saved scope job: copy the saved node's current scope onto its saved plain text
- * chunks (phase 0), then onto its saved metadata docs (phase 1). Each run reads the node again, so
- * a page done twice changes nothing, and the last pass ends with the docs equal to the node.
+ * One page of a saved scope job: copy the saved node's current scope onto its saved metadata docs
+ * (phase 0), then onto its saved plain text chunks (phase 1). Metadata goes first: it is at most a
+ * few runs, and folder tables skip a row whose docs lag. Each run reads the node again, so a page
+ * done twice changes nothing, and the last pass ends with the docs equal to the node.
  */
 async function db_run_saved_scope_job(
 	ctx: MutationCtx,
@@ -556,7 +557,7 @@ async function db_run_saved_scope_job(
 	};
 	// The patches change no key of these indexes, so the page cursor stays valid.
 	let isDone: boolean;
-	if (cursor.phase === 0) {
+	if (cursor.phase === 1) {
 		const page = await ctx.db
 			.query("files_plain_text_chunks")
 			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
