@@ -761,6 +761,30 @@ describe("WebBrowser downloads and file choosers", () => {
 		]);
 	});
 
+	test("a Delete that throws shows an error toast", async () => {
+		mockActions({
+			"files_browser:save_browser_download": {
+				_yay: { nodeId: "node_saved", path: "/.system/downloads/report.pdf", shared: false },
+			},
+		});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		mocks.mutation.mockImplementation(async (reference: never) => {
+			if (getFunctionName(reference) === "files_nodes:archive_nodes") throw new Error("Read too much data");
+			return { _yay: null };
+		});
+		mocks.session = webSession("human");
+		render(<WebBrowser />);
+		await connectViewer("human");
+
+		emitDownload("download_1");
+		await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalledOnce());
+		const [, options] = mocks.toastSuccess.mock.calls[0] as [string, { cancel: { onClick: () => void } }];
+		options.cancel.onClick();
+
+		await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith("Download not deleted. Try again."));
+		expect(mocks.toastSuccess).toHaveBeenCalledOnce();
+	});
+
 	test("says members can see a download saved in a team workspace", async () => {
 		mockActions({
 			"files_browser:save_browser_download": {

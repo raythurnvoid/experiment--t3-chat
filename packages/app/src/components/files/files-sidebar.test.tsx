@@ -7,6 +7,7 @@ import {
 	type AnyRouter,
 } from "@tanstack/react-router";
 import { useState } from "react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { FunctionReference } from "convex/server";
 
@@ -840,6 +841,36 @@ describe("FilesSidebar", () => {
 		fireEvent.keyDown(alpha, { key: "v", code: "KeyV", ctrlKey: true });
 		fireEvent.keyUp(alpha, { key: "v", code: "KeyV", ctrlKey: true });
 		expect(createNode).not.toHaveBeenCalled();
+	});
+
+	test("a Restore that throws shows an error toast", async () => {
+		const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		createNode.mockRejectedValue(new Error("Read too much data"));
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		fireEvent.click(await view.findByRole("button", { name: "More options" }));
+		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show archived items" });
+		fireEvent.click(showArchived);
+		fireEvent.keyDown(showArchived, { key: "Escape" });
+		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
+		act(() => {
+			treeState.nodes = treeState.nodes.map((node) =>
+				node._id === "alpha" ? { ...node, archiveOperationId: "qa-archive" } : node,
+			);
+			for (const listener of treeState.listeners) listener();
+		});
+		await view.findByRole("treeitem", { name: "alpha archived" });
+		fireEvent.click(view.getByRole("button", { name: "More actions for alpha archived" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Restore" }));
+
+		await waitFor(() =>
+			expect(createNode).toHaveBeenCalledWith(app_convex_api.files_nodes.unarchive_nodes, {
+				membershipId: "membership",
+				nodeIds: ["alpha"],
+			}),
+		);
+		await waitFor(() => expect(errorToast).toHaveBeenCalledWith("Failed to restore. Try again."));
 	});
 
 	test("marks a cut row and clears it with Escape", async () => {

@@ -435,6 +435,7 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 			})
 			.catch((error: unknown) => {
 				console.error("[WebBrowserLive.deleteDownload] Unexpected archive error", { error });
+				toast.error("Download not deleted. Try again.");
 			});
 	};
 
