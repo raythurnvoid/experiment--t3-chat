@@ -1968,6 +1968,10 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 		repairNextRetryAt: undefined,
 		repairLastError: undefined,
 	});
+	// This last step skips `db_save_step`, so take the stuck notice away here too.
+	const activity = await activities_db_require_by_source_id(ctx, cohort.origin.runId);
+	if (activities_is_active(activity.status) && activity.errorCode === files_move_cohorts_REPAIR_STUCK_CODE)
+		await ctx.db.patch("activities", activity._id, { errorCode: undefined, errorMessage: null });
 	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.wake_waiters, { cohortId: cohort._id });
 	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.wake_owner_jobs, { cohortId: cohort._id });
 	if (cohort.origin.kind === "review")
@@ -1999,11 +2003,13 @@ async function db_save_step(
 		cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;
 	if (activities_is_active(activity.status) && activity.deadlineAt > now && !transfer?.fixedDeadline)
 		await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + delayMs + RUN_TIMEOUT_MS });
-	// A good step takes the notice away.
-	const needsHelp = (patch.repairFailureCount ?? 0) >= REPAIR_HELP_COUNT;
+	// A good step takes the notice away. Only set or clear the notice itself: a Stop's "canceled" or
+	// "timed_out" code picks the final status, so it must stay. The notice says the files already moved,
+	// so an abort that never published does not get it.
+	const needsHelp = (patch.repairFailureCount ?? 0) >= REPAIR_HELP_COUNT && cohort.publishedAt !== null;
 	if (
 		activities_is_active(activity.status) &&
-		needsHelp !== (activity.errorCode === files_move_cohorts_REPAIR_STUCK_CODE)
+		(needsHelp ? activity.errorCode == null : activity.errorCode === files_move_cohorts_REPAIR_STUCK_CODE)
 	)
 		await ctx.db.patch(
 			"activities",

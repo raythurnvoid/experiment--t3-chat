@@ -340,6 +340,10 @@ describe("cleanup_history", () => {
 			deletedCount: 1,
 			done: false,
 		});
+		const retries = (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+			.filter((job) => job.name.endsWith("activities:cleanup_history") && job.state.kind === "pending")
+			.map((job) => job.scheduledTime - Date.now());
+		expect(retries, "a pass that deleted rows goes on at once").toEqual([0]);
 		expect(await t.run((ctx) => ctx.db.query("files_transfer_selection_items").collect())).toEqual([]);
 		expect(await t.mutation(internal.activities.cleanup_history, { _test_now: finished.expiresAt })).toEqual({
 			deletedCount: 3,
