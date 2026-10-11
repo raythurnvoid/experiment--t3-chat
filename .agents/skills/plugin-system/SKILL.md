@@ -841,6 +841,12 @@ as a required system source at `/.mounts/t3-chat`, with daily system sync and
 normal chat read checks. It needs no workspace plugin or run-as grant.
 Ordinary external repos keep the workspace plugin permission model.
 
+SDK 0.21.1 was mirrored on 2026-10-11 at
+`e9d22e99db563356780e2073008adc89dae1f2fb`. Its tree equals the folder at host commit
+`c7aa1247`. It adds `errorCode: "invalid_cursor"` to the `files/list` 400, documents the API
+rate limits, and carries the list and MCP docs changed since 0.21.0. Typecheck and 48 SDK tests
+pass. No plugin pins it yet.
+
 SDK 0.21.0 was mirrored on 2026-09-28 at
 `973457877210fec8908f26fe17c8d727572aa54d`. All 12 SDK files match the reviewed
 Press tree at `2a154f8459438ef3cbaf5b323b72f07ece686dad`. It adds the Mounts API,
