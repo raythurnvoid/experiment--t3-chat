@@ -153,12 +153,14 @@ import {
 	files_MAX_UPLOADS_BYTES,
 	files_NAME_MAX_LENGTH,
 	files_name_input_select_stem,
+	files_NEW_FOLDER_DEPTH_MAX,
 	files_node_has_editable_text_content,
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_file_rename_name,
 	files_normalize_markdown_name,
 	files_normalize_upload_file_name,
+	files_PATH_MAX_LENGTH,
 	files_REQUEST_FOLDER_PREFIXES_MAX,
 	files_yjs_root_kind_of_content_type,
 	type files_EditorView,
@@ -323,8 +325,6 @@ function upload_filename_has_real_extension(filename: string) {
 // #region folder import
 const FILES_IMPORT_MAX_FILES = 1000;
 const FILES_IMPORT_MAX_CHUNK_BYTES = 1024 * 1024 * 1024;
-const FILES_IMPORT_MAX_PATH_DEPTH = 32;
-const FILES_IMPORT_MAX_PATH_LENGTH = 1024;
 const FILES_IMPORT_PREPARE_CONCURRENCY = 4;
 const FILES_IMPORT_PUT_CONCURRENCY = 4;
 const FILES_IMPORT_TOAST_FAILED_PATHS = 5;
@@ -339,6 +339,7 @@ type FilesImportSkipReason =
 	| "missing_extension"
 	| "too_large"
 	| "too_deep"
+	| "path_too_long"
 	| "duplicate_after_normalization"
 	| "conflict"
 	| "path_blocked";
@@ -364,7 +365,8 @@ type FilesImportStoreState = {
 	pendingConfirmation: number;
 	/** Client-side and server-side skips, merged for the final report. */
 	skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }>;
-	failed: Array<{ relativePath: string }>;
+	/** `reason` is the server's message, when the server gave one. */
+	failed: Array<{ relativePath: string; reason?: string }>;
 	/**
 	 * Non-empty exactly while the confirm modal is open.
 	 */
@@ -451,8 +453,9 @@ type FilesImportPlanItem = {
 /**
  * Normalize ordinary import paths, skip invalid files, and dedupe target paths.
  * Skill resources must keep their paths. A changed or rejected bundle path stops the whole import.
+ * `parentPath` is the target folder's path: the server limits the full path, not the relative one.
  */
-function build_import_plan(entries: FilesImportEntry[]) {
+function build_import_plan(entries: FilesImportEntry[], parentPath: string) {
 	const items: FilesImportPlanItem[] = [];
 	const skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }> = [];
 	const seenPaths = new Set<string>();
@@ -523,14 +526,20 @@ function build_import_plan(entries: FilesImportEntry[]) {
 		) {
 			invalidSkillPaths.push(entry.relativePath);
 		}
-		if (
-			normalizedSegments.length > FILES_IMPORT_MAX_PATH_DEPTH ||
-			normalizedPath.length > FILES_IMPORT_MAX_PATH_LENGTH
-		) {
+		// The server refuses the whole call for a path over these limits, so skip the file here. Every
+		// folder on the relative path counts as new: the client does not know which ones exist.
+		const fullPathLength = (parentPath === "/" ? 0 : parentPath.length) + 1 + normalizedPath.length;
+		const depthOrLengthSkip =
+			normalizedSegments.length - 1 > files_NEW_FOLDER_DEPTH_MAX
+				? "too_deep"
+				: fullPathLength > files_PATH_MAX_LENGTH
+					? "path_too_long"
+					: null;
+		if (depthOrLengthSkip) {
 			if (skillRoot !== undefined) {
 				invalidSkillPaths.push(entry.relativePath);
 			}
-			skipped.push({ relativePath: entry.relativePath, reason: "too_deep" });
+			skipped.push({ relativePath: entry.relativePath, reason: depthOrLengthSkip });
 			continue;
 		}
 
@@ -643,11 +652,15 @@ function finish_import_run() {
 	}
 	const summary = summaryParts.join(", ");
 	// Name the first failed files, so the user knows what to import again. The console has them all.
-	const failedPaths = state.failed.slice(0, FILES_IMPORT_TOAST_FAILED_PATHS).map((item) => item.relativePath);
+	// Paths are the browser paths the user picked. A long one keeps only its end.
+	const failedPaths = state.failed
+		.slice(0, FILES_IMPORT_TOAST_FAILED_PATHS)
+		.map((item) => (item.relativePath.length > 60 ? `…${item.relativePath.slice(-59)}` : item.relativePath));
 	const moreFailedCount = state.failed.length - failedPaths.length;
+	const failedReasons = [...new Set(state.failed.flatMap((item) => (item.reason ? [item.reason] : [])))].slice(0, 2);
 	const description =
 		failedPaths.length > 0
-			? `Not imported: ${failedPaths.join(", ")}${moreFailedCount > 0 ? ` and ${moreFailedCount} more` : ""}.`
+			? `Not imported: ${failedPaths.join(", ")}${moreFailedCount > 0 ? ` and ${moreFailedCount} more` : ""}.${failedReasons.map((reason) => ` ${reason}`).join("")}`
 			: undefined;
 
 	if (state.cancelRequested) {
@@ -683,9 +696,11 @@ async function run_folder_import(args: {
 	convex: ConvexReactClient;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
+	/** The target folder's path, `/` for the root. */
+	parentPath: string;
 	entries: FilesImportEntry[];
 }) {
-	const plan = build_import_plan(args.entries);
+	const plan = build_import_plan(args.entries, args.parentPath);
 	if (plan.invalidSkillPaths.length > 0) {
 		toast.error(
 			`Skill import stopped. Fix these paths before importing, and update any renamed references: ${plan.invalidSkillPaths.join(", ")}`,
@@ -729,7 +744,8 @@ async function run_folder_import(args: {
 		}
 
 		// Ask once which target paths already exist, so the user decides before any write. The check
-		// reads the same folders as the create call, so it uses the same chunks.
+		// reads one path per file and walks no folders. It reuses the create chunks only because they
+		// hold at most `files_IMPORT_MAX_ITEMS_PER_CALL` files, its own limit too.
 		const chunks = chunk_import_items(uploadItems);
 		const conflicts: FilesImportConflict[] = [];
 		for (const itemChunk of chunks) {
@@ -834,12 +850,13 @@ async function run_folder_import(args: {
 						console.error("[FilesSidebar.runFolderImport] Create upload nodes threw", { error });
 						return null;
 					});
-				// A thrown call wrote nothing, like a refusal. Report its files instead of ending the run.
+				// A thrown call wrote nothing, like a refusal. It fails only its own files: the later calls
+				// name other files and folders, so they can still pass.
 				if (!result) {
 					useFilesImportStore.setState((state) => ({
 						failed: [...state.failed, ...chunk.map((item) => ({ relativePath: item.relativePath }))],
 					}));
-					return "stop";
+					return "continue";
 				}
 				if (result._nay) {
 					// "Rate limit exceeded" is the literal from `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`.
@@ -850,10 +867,13 @@ async function run_folder_import(args: {
 					}
 
 					console.error("[FilesSidebar.runFolderImport] Failed to create upload nodes", { error: result._nay });
+					const reason = result._nay.message;
 					useFilesImportStore.setState((state) => ({
-						failed: [...state.failed, ...chunk.map((item) => ({ relativePath: item.relativePath }))],
+						failed: [...state.failed, ...chunk.map((item) => ({ relativePath: item.relativePath, reason }))],
 					}));
-					return "stop";
+					// A refusal about one path or the folder count fails only this call. Any other refusal
+					// (sign-in, target folder, storage) would refuse every later call too, so stop.
+					return result._nay.data?.path !== undefined || result._nay.name === "too_many_folders" ? "continue" : "stop";
 				}
 
 				useFilesImportStore.setState((state) => ({ skipped: [...state.skipped, ...result._yay.skipped] }));
@@ -908,7 +928,11 @@ async function run_folder_import(args: {
 							error,
 							relativePath: created.relativePath,
 						});
-						await discard_unuploaded_node(created, { reportFailed: true });
+						// Report the browser path, like every other failure in the summary.
+						await discard_unuploaded_node(
+							{ nodeId: created.nodeId, relativePath: item.relativePath },
+							{ reportFailed: true },
+						);
 					}
 				},
 			});
@@ -921,13 +945,16 @@ async function run_folder_import(args: {
 				break;
 			}
 			if ((await process_chunk(chunk)) === "stop") {
-				// The chunks after a failed call were never attempted; report their files too, so
-				// the summary accounts for every file. A cancel is not a failure.
+				// The chunks after a refusal for the whole import were never attempted; report their files
+				// too, with the same reason, so the summary accounts for every file. A cancel is not a failure.
 				const remainingItems = chunks.slice(chunkIndex + 1).flat();
 				if (remainingItems.length > 0 && !useFilesImportStore.getState().cancelRequested) {
-					useFilesImportStore.setState((state) => ({
-						failed: [...state.failed, ...remainingItems.map((item) => ({ relativePath: item.relativePath }))],
-					}));
+					useFilesImportStore.setState((state) => {
+						const reason = state.failed.at(-1)?.reason;
+						return {
+							failed: [...state.failed, ...remainingItems.map((item) => ({ relativePath: item.relativePath, reason }))],
+						};
+					});
 				}
 				break;
 			}
@@ -5411,6 +5438,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			if (!canWriteParentId(args.parentId)) {
 				return;
 			}
+			// The plan checks the full path length. `canWriteParentId` already needs this tree item.
+			const parentPath = args.parentId === files_ROOT_ID ? "/" : treeItems?.itemById.get(args.parentId)?.path;
+			if (parentPath === undefined) {
+				return;
+			}
 
 			if (useFilesImportStore.getState().phase !== "idle") {
 				toast.error("Another import is already running.");
@@ -5425,6 +5457,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				convex,
 				membershipId,
 				parentId: args.parentId,
+				parentPath,
 				entries: args.entries,
 			}).catch((error: unknown) => {
 				console.error("[FilesSidebar.importBrowserFiles] Unexpected import run error", { error });
@@ -7854,6 +7887,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const plan = build_import_plan(
 				get_import_file_entries([first, duplicate, markdown, missingExtension, invalidFolder]),
+				"/",
 			);
 
 			// A non-`.md` name keeps its extension; the type travels separately.
@@ -7876,7 +7910,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				type: "text/markdown",
 			});
 
-			const plan = build_import_plan(get_import_file_entries([readme, agents, skill]));
+			const plan = build_import_plan(get_import_file_entries([readme, agents, skill]), "/");
 
 			expect(plan.items.map((item) => item.normalizedPath)).toEqual([
 				"docs/README.md",
@@ -7900,37 +7934,44 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				type: "text/markdown",
 			});
 
-			const plan = build_import_plan(get_import_file_entries([skill, reference, readme]));
+			const plan = build_import_plan(get_import_file_entries([skill, reference, readme]), "/");
 
 			expect(plan.items).toEqual([]);
 			expect(plan.invalidSkillPaths).toEqual(["one/references/Output_Format.md", "one/references/readme.md"]);
 		});
 
-		test("build_import_plan skips too-deep paths", () => {
-			const deepPath = `${Array.from({ length: 33 }, (_, index) => `d${index}`).join("/")}/leaf.pdf`;
-			const deep = test_file_with_path({ name: "leaf.pdf", path: `/${deepPath}` });
+		test("build_import_plan keeps 32 new folders and skips 33", () => {
+			const folders = (count: number) => Array.from({ length: count }, (_, index) => `d${index}`).join("/");
+			const fits = test_file_with_path({ name: "leaf.pdf", path: `/${folders(32)}/leaf.pdf` });
+			const deep = test_file_with_path({ name: "leaf.pdf", path: `/${folders(33)}/leaf.pdf` });
 
-			const plan = build_import_plan(get_import_file_entries([deep]));
+			const plan = build_import_plan(get_import_file_entries([fits, deep]), "/");
 
-			expect(plan.items).toEqual([]);
-			expect(plan.skipped).toEqual([{ relativePath: deepPath, reason: "too_deep" }]);
+			expect(plan.items.map((item) => item.normalizedPath)).toEqual([`${folders(32)}/leaf.pdf`]);
+			expect(plan.skipped).toEqual([{ relativePath: `${folders(33)}/leaf.pdf`, reason: "too_deep" }]);
 		});
 
-		test("build_import_plan skips over-long paths", () => {
-			const longPath = `${Array.from({ length: 20 }, () => "d".repeat(60)).join("/")}/leaf.pdf`;
-			const long = test_file_with_path({ name: "leaf.pdf", path: `/${longPath}` });
+		test("build_import_plan skips a path over 1,024 characters with the target folder's path", () => {
+			const parentPath = `/${"p".repeat(900)}`;
+			// With the parent and its `/`, this path is exactly 1,024 characters.
+			const fitsPath = `${"d".repeat(116)}/a.pdf`;
+			expect(`${parentPath}/${fitsPath}`).toHaveLength(1024);
+			const fits = test_file_with_path({ name: "a.pdf", path: `/${fitsPath}` });
+			const long = test_file_with_path({ name: "ab.pdf", path: `/${"d".repeat(116)}/ab.pdf` });
 
-			const plan = build_import_plan(get_import_file_entries([long]));
+			const plan = build_import_plan(get_import_file_entries([fits, long]), parentPath);
 
-			expect(plan.items).toEqual([]);
-			expect(plan.skipped).toEqual([{ relativePath: longPath, reason: "too_deep" }]);
+			expect(plan.items.map((item) => item.normalizedPath)).toEqual([fitsPath]);
+			expect(plan.skipped).toEqual([{ relativePath: `${"d".repeat(116)}/ab.pdf`, reason: "path_too_long" }]);
+			// At the root the same relative path fits.
+			expect(build_import_plan(get_import_file_entries([long]), "/").items).toHaveLength(1);
 		});
 
 		test("build_import_plan skips a name over 255 characters", () => {
 			const longName = `${"n".repeat(252)}.pdf`;
 			const long = test_file_with_path({ name: longName, path: `/docs/${longName}` });
 
-			const plan = build_import_plan(get_import_file_entries([long]));
+			const plan = build_import_plan(get_import_file_entries([long]), "/");
 
 			expect(plan.items).toEqual([]);
 			expect(plan.skipped).toEqual([{ relativePath: `docs/${longName}`, reason: "invalid_name" }]);
@@ -8012,6 +8053,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					convex: convexStub,
 					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 					parentId: files_ROOT_ID,
+					parentPath: "/",
 					entries: get_import_file_entries([test_file_with_path({ name: "a.pdf", path: "./a.pdf" })]),
 				});
 			} finally {
@@ -8025,7 +8067,34 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(useFilesImportStore.getState().phase).toBe("idle");
 		});
 
-		test("run_folder_import keeps earlier chunks and names the failed files when a create call throws", async () => {
+		test.each([
+			{
+				failure: "throws",
+				// Like a call over a Convex limit: it throws and writes nothing.
+				answer: () => Promise.reject(new Error("Too many index ranges read")),
+				calls: 3,
+				summary: "3 imported, 2 failed",
+				failedIndexes: [2, 3],
+				reason: "",
+			},
+			{
+				failure: "refuses one path",
+				answer: () =>
+					Promise.resolve({ _nay: { message: "Paths can have at most 1,024 characters.", data: { path: "c" } } }),
+				calls: 3,
+				summary: "3 imported, 2 failed",
+				failedIndexes: [2, 3],
+				reason: " Paths can have at most 1,024 characters.",
+			},
+			{
+				failure: "refuses the whole import",
+				answer: () => Promise.resolve({ _nay: { message: "Not found" } }),
+				calls: 2,
+				summary: "2 imported, 3 failed",
+				failedIndexes: [2, 3, 4],
+				reason: " Not found",
+			},
+		])("run_folder_import keeps the other chunks when a create call $failure", async (args) => {
 			// Five files in their own 31-folder chains: two per call, so three calls.
 			const paths = ["a", "b", "c", "d", "e"].map(
 				(root) => `${root}/${Array.from({ length: 30 }, (_, index) => `d${index}`).join("/")}/f.pdf`,
@@ -8035,8 +8104,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				query: async () => [],
 				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
 					createCalls += 1;
-					// Like a call over a Convex limit: it throws and writes nothing.
-					if (createCalls === 2) throw new Error("Too many index ranges read");
+					if (createCalls === 2) return await args.answer();
 					return {
 						_yay: {
 							created: mutationArgs.items.map((item) => ({
@@ -8060,20 +8128,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					convex: convexStub,
 					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 					parentId: files_ROOT_ID,
+					parentPath: "/",
 					entries: get_import_file_entries(
 						paths.map((path) => test_file_with_path({ name: "f.pdf", path: `/${path}` })),
 					),
 				});
-				// Check before the restore, which clears the recorded calls.
-				expect(errorToast).toHaveBeenCalledWith("Import finished: 2 imported, 3 failed.", {
-					description: `Not imported: ${paths.slice(2).join(", ")}.`,
+				// Check before the restore, which clears the recorded calls. Long paths keep only their end.
+				const failedPaths = args.failedIndexes.map((index) => `…${paths[index]!.slice(-59)}`);
+				expect(errorToast).toHaveBeenCalledWith(`Import finished: ${args.summary}.`, {
+					description: `Not imported: ${failedPaths.join(", ")}.${args.reason}`,
 				});
 			} finally {
 				vi.unstubAllGlobals();
 				errorToast.mockRestore();
 			}
 
-			expect(createCalls).toBe(2);
+			expect(createCalls).toBe(args.calls);
 			expect(useFilesImportStore.getState().phase).toBe("idle");
 		});
 
@@ -8101,6 +8171,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					convex: convexStub,
 					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 					parentId: files_ROOT_ID,
+					parentPath: "/",
 					entries: get_import_file_entries([test_file_with_path({ name: "a.pdf", path: "./a.pdf" })]),
 				});
 			} finally {
