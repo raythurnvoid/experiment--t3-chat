@@ -56,6 +56,7 @@ import {
 	files_derive_tree_path_for_file_node,
 	files_pending_update_content_is_stale,
 	files_pending_update_has_pending_chunks,
+	files_pending_update_index_revision,
 	type files_PendingTarget,
 	type files_PendingParent,
 } from "../shared/files.ts";
@@ -2919,7 +2920,7 @@ export const internal_search_metadata_pending = internalQuery({
 				const doc = docs.find(
 					(pending) =>
 						pending.sourceKind === "pending" &&
-						pending.proposalRevision === proposal.revision &&
+						pending.proposalRevision === files_pending_update_index_revision(proposal) &&
 						metadata_plan_matches(plan, pending),
 				);
 				if (!doc) return null;

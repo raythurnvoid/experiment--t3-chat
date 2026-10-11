@@ -27,7 +27,7 @@ import { files_pending_review_facts_db_get_state } from "../server/files-pending
 import type { Id } from "./_generated/dataModel.js";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
-import { files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
+import { files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH, files_pending_update_index_revision } from "../shared/files.ts";
 
 // Scheduled functions never run on their own under fake timers. Each test drives them. R2 is faked.
 beforeEach(() => {
@@ -386,4 +386,117 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 		expect(table.page.map((row) => row.path)).toEqual([deep_path("b")]);
 		await finish_all_jobs(f);
 	}, 120_000);
+
+	test("Edit and Discard of the owner's full draft", async () => {
+		const f = await fixture({ transactionLimits: test_LIMITS_AT_75_PERCENT });
+		const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
+		const [nodeId] = await max_files(f, [deep_path("a")], { fill: false });
+		const target = { kind: "saved", id: nodeId! } as const;
+		const save_draft = async (text: string) => {
+			const batch = await f.t.mutation(
+				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+				{ ...scope, target },
+			);
+			if (batch._nay) throw new Error(batch._nay.message);
+			expect(
+				await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+					...scope,
+					operationBatchId: batch._yay.operationBatchId,
+					role: "unstaged",
+					text,
+				}),
+			).toEqual({ _yay: null });
+			return await f.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				...scope,
+				target,
+				operationBatchId: batch._yay.operationBatchId,
+			});
+		};
+		// Run only the jobs that are due now. Running every timer would also expire the draft.
+		const run_due_jobs = async () => {
+			for (let round = 0; round < 100; round++) {
+				vi.advanceTimersByTime(1);
+				await f.t.finishInProgressScheduledFunctions();
+			}
+		};
+		// Count the draft's chunks by revision, in pages: old and new chunks together do not fit one read.
+		const read_chunk_revisions = async () => {
+			const proposal = (await f.t.run((ctx) => ctx.db.query("files_pending_updates").first()))!;
+			const revision = files_pending_update_index_revision(proposal);
+			const counts = { proposal, current: 0, old: 0 };
+			for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const) {
+				let cursor: string | null = null;
+				for (;;) {
+					const page = await f.t.run((ctx) =>
+						ctx.db
+							.query(table)
+							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", proposal._id))
+							.paginate({ cursor, numItems: 1_000 }),
+					);
+					for (const chunk of page.page)
+						counts[chunk.sourceKind === "pending" && chunk.proposalRevision === revision ? "current" : "old"] += 1;
+					if (page.isDone) break;
+					cursor = page.continueCursor;
+				}
+			}
+			return counts;
+		};
+		// The agent's grep of the draft. The first 128 old chunks are already deleted, so start far after them.
+		const grep = async (pattern: string) =>
+			(
+				await f.t.query(internal.files_nodes.match_text_file_lines, {
+					...scope,
+					target,
+					pattern,
+					ignoreCase: false,
+					fixedStrings: true,
+					invert: false,
+					before: 0,
+					after: 0,
+					window: { kind: "lines", startLine: 2_000, maxLines: 20 },
+				})
+			)?.selectedCount;
+		const search = async (query: string) =>
+			(
+				await f.t.query(internal.files_nodes.text_search_files, {
+					...scope,
+					hasWorkspaceRead: true,
+					query,
+					numItems: 10,
+					cursor: null,
+				})
+			).items.length;
+
+		const text = test_max_chunks_markdown();
+		expect(await save_draft(text)).toEqual({ _yay: null });
+		// The edit changes every chunk. Before the fix, deleting the old chunks here passed the limits.
+		expect(await save_draft(text.replaceAll("lorem", "dolor"))).toEqual({ _yay: null });
+		const edited = await read_chunk_revisions();
+		expect(edited.current).toBeGreaterThan(5_800);
+		// Most old chunks wait for the drain. Readers already skip them.
+		expect(edited.old).toBeGreaterThan(5_000);
+		expect(await grep("lorem")).toBe(0);
+		expect(await grep("dolor")).toBeGreaterThan(0);
+		expect(await search("lorem")).toBe(0);
+		expect(await search("dolor")).toBeGreaterThan(0);
+		await run_due_jobs();
+		expect(await read_chunk_revisions()).toMatchObject({ current: edited.current, old: 0 });
+
+		// Discard, like expiry, deletes the proposal and leaves the big rest to the drain.
+		expect(
+			await f.asOwner.mutation(api.files_pending_updates.discard_file_pending_update, {
+				membershipId: f.db.membershipId,
+				target,
+				pendingUpdateId: edited.proposal._id,
+				reviewedRevision: edited.proposal.revision,
+			}),
+		).toEqual({ _yay: null });
+		await finish_all_jobs(f);
+		expect(
+			await f.t.run(async (ctx) => [
+				...(await ctx.db.query("files_text_chunks").collect()).filter((chunk) => chunk.sourceKind === "pending"),
+				...(await ctx.db.query("files_plain_text_chunks").collect()).filter((chunk) => chunk.sourceKind === "pending"),
+			]),
+		).toEqual([]);
+	}, 300_000);
 });

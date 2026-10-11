@@ -9,6 +9,7 @@ import { files_db_authorize_volume_read } from "./files_volume_access.ts";
 import {
 	files_pending_update_content_is_stale,
 	files_pending_update_has_pending_chunks,
+	files_pending_update_index_revision,
 	files_ROOT_ID,
 	type files_VisibleEntry,
 } from "../shared/files.ts";
@@ -136,7 +137,7 @@ export async function files_search_db_create_reader(
 			if (
 				!pendingUpdate ||
 				pendingUpdate._id !== document.pendingUpdateId ||
-				pendingUpdate.revision !== document.proposalRevision
+				files_pending_update_index_revision(pendingUpdate) !== document.proposalRevision
 			)
 				return null;
 			if (isMetadata ? entry.kind !== "private" : !hasPendingContent) return null;

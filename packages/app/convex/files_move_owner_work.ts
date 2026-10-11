@@ -10,7 +10,11 @@ import {
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_enter } from "../server/files-move-reservations.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
-import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
+import {
+	files_pending_update_index_revision,
+	type files_PendingParent,
+	type files_PendingTarget,
+} from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 const PAGE_SIZE = 8;
@@ -548,12 +552,14 @@ async function db_stage_pending_scope(
 					)
 					.paginate({ cursor: null, numItems: PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
 	for (const row of page.page) {
-		if (row.sourceKind !== "pending" || row.userId !== work.userId || row.proposalRevision !== proposal.revision)
+		if (row.sourceKind !== "pending" || row.userId !== work.userId)
 			return Result({ _nay: { name: "move_changed", message: "Pending content changed." } });
+		// An old doc waits for its drain. The Move tags it like the others but does not copy it.
+		const current = row.proposalRevision === files_pending_update_index_revision(proposal);
 		if ("fieldPath" in row) {
 			const { _id: _id, _creationTime: _time, ...fields } = row;
 			await ctx.db.patch("files_metadata_docs", row._id, { moveView: before });
-			if (!item || item.afterProposal)
+			if (current && (!item || item.afterProposal))
 				await ctx.db.insert("files_metadata_docs", {
 					...fields,
 					moveView: after,
@@ -564,7 +570,7 @@ async function db_stage_pending_scope(
 		} else {
 			const { _id: _id, _creationTime: _time, ...fields } = row;
 			await ctx.db.patch("files_plain_text_chunks", row._id, { moveView: before });
-			if (!item || item.afterProposal)
+			if (current && (!item || item.afterProposal))
 				await ctx.db.insert("files_plain_text_chunks", {
 					...fields,
 					moveView: after,

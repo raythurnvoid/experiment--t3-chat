@@ -1047,6 +1047,12 @@ export const files_pending_update_header_validator = v.object({
 	 * their thread id; client-driven writes preserve the array. Unset for client-only docs.
 	 */
 	threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
+	/**
+	 * While `revision` is `proposal`, the pending chunk and metadata docs carry `docs` as their
+	 * `proposalRevision`. A bump that keeps the text sets this instead of patching thousands of docs.
+	 * Read it with `files_pending_update_index_revision`.
+	 */
+	indexRevision: v.optional(v.object({ docs: v.number(), proposal: v.number() })),
 	size: v.number(),
 	updatedAt: v.number(),
 	/**

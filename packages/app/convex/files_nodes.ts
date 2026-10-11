@@ -158,6 +158,7 @@ import {
 	files_normalize_upload_file_name,
 	files_parse_content_type_prefix,
 	files_pending_update_content_is_stale,
+	files_pending_update_index_revision,
 	files_TEXT_SEARCH_MAX_RESULTS,
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	type files_VisibleEntry,
@@ -8378,7 +8379,7 @@ export const read_file_content_from_chunks = internalQuery({
 					const chunks = files_saved_content_db_text_chunks(ctx.db, {
 						...args,
 						pendingUpdateId: pendingUpdate._id,
-						proposalRevision: pendingUpdate.revision,
+						proposalRevision: files_pending_update_index_revision(pendingUpdate),
 					});
 
 					if (args.mode.kind === "prefix") {
@@ -8427,7 +8428,7 @@ export const read_file_content_from_chunks = internalQuery({
 						files_saved_content_db_text_chunks(ctx.db, {
 							...args,
 							pendingUpdateId: pendingUpdate._id,
-							proposalRevision: pendingUpdate.revision,
+							proposalRevision: files_pending_update_index_revision(pendingUpdate),
 							startLine,
 						}),
 						{
@@ -9115,6 +9116,8 @@ async function db_get_text_match_source(
 
 	let fileNode: Doc<"files_nodes"> | null = null;
 	let pendingUpdateId: Id<"files_pending_updates"> | null = null;
+	// Old chunks can wait for their drain in the same range. Read only the current ones.
+	let proposalRevision: number | undefined;
 	if (tenantScope) {
 		const entry = (await ctx.runQuery(internal.files_visible.internal_get_by_target, {
 			...tenantScope,
@@ -9132,6 +9135,7 @@ async function db_get_text_match_source(
 			)
 				return null;
 			pendingUpdateId = entry.pendingUpdate._id;
+			proposalRevision = files_pending_update_index_revision(entry.pendingUpdate);
 		} else {
 			fileNode = entry.node;
 			if (!files_node_has_editable_text_content(fileNode)) return null;
@@ -9141,8 +9145,10 @@ async function db_get_text_match_source(
 				!pending.preparation &&
 				files_pending_update_has_pending_chunks(pending) &&
 				!files_pending_update_content_is_stale(pending, fileNode)
-			)
+			) {
 				pendingUpdateId = pending._id;
+				proposalRevision = files_pending_update_index_revision(pending);
+			}
 		}
 	} else {
 		if (args.target.kind !== "saved" || args.pendingUpdateId != null) return null;
@@ -9168,7 +9174,7 @@ async function db_get_text_match_source(
 			return null;
 	}
 
-	return { fileNode, pendingUpdateId };
+	return { fileNode, pendingUpdateId, proposalRevision };
 }
 
 /**
@@ -9239,7 +9245,7 @@ export const match_text_file_lines = internalQuery({
 		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 		const source = await db_get_text_match_source(ctx, args);
 		if (!source) return null;
-		const { fileNode, pendingUpdateId } = source;
+		const { fileNode, pendingUpdateId, proposalRevision } = source;
 
 		let match: { kind: "substring"; needle: string; ignoreCase: boolean } | { kind: "regex"; regex: RegExp };
 		if (args.fixedStrings) {
@@ -9262,6 +9268,7 @@ export const match_text_file_lines = internalQuery({
 			const chunks = files_saved_content_db_text_chunks(ctx.db, {
 				...args,
 				pendingUpdateId,
+				proposalRevision,
 				startLine: window?.kind === "lines" ? Math.max(1, Math.trunc(window.startLine)) : undefined,
 				startIndex: window?.kind === "slice" ? Math.max(0, Math.trunc(window.startIndex)) + 1 : undefined,
 			});
@@ -9375,10 +9382,10 @@ export const match_plain_text_file_lines = internalQuery({
 		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 		const source = await db_get_text_match_source(ctx, args);
 		if (!source) return null;
-		const { fileNode, pendingUpdateId } = source;
+		const { fileNode, pendingUpdateId, proposalRevision } = source;
 
 		if (pendingUpdateId != null) {
-			const chunks = files_saved_content_db_plain_text_chunks(ctx.db, { ...args, pendingUpdateId });
+			const chunks = files_saved_content_db_plain_text_chunks(ctx.db, { ...args, pendingUpdateId, proposalRevision });
 
 			return await match_plain_text_chunks_list(db_plain_text_chunks_with_lines(chunks), {
 				target: args.target,

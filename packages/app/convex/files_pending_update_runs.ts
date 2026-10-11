@@ -445,6 +445,8 @@ async function db_capture_review(ctx: MutationCtx, proposal: Doc<"files_pending_
 		updatedAt: _updatedAt,
 		expiresAt: _expiresAt,
 		moveCohortId: _cohortId,
+		// Index bookkeeping, not reviewed content.
+		indexRevision: _indexRevision,
 		...reviewHeader
 	} = proposal;
 	let reviewSource: Doc<"files_pending_update_run_items">["reviewSource"] = null;

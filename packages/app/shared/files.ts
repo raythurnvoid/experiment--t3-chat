@@ -979,6 +979,18 @@ export function files_pending_update_has_pending_chunks(
 }
 
 /**
+ * The `proposalRevision` of the proposal's current pending chunk and metadata docs. Docs with
+ * another value are old: readers skip them and a background drain deletes them.
+ */
+export function files_pending_update_index_revision(
+	pendingUpdate: Pick<app_convex_Doc<"files_pending_updates">, "revision" | "indexRevision">,
+) {
+	return pendingUpdate.indexRevision?.proposal === pendingUpdate.revision
+		? pendingUpdate.indexRevision.docs
+		: pendingUpdate.revision;
+}
+
+/**
  * A content proposal on a file with collaboration off is stale when a member saved the file
  * after the proposal was made: the node's content asset is no longer the one the branches were
  * built from. Reads use saved text. Agent writes and Review prepare the retained proposal
