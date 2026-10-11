@@ -13,13 +13,19 @@ import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts
 import { quotas_db_ensure } from "./quotas.ts";
 import { quotas } from "../shared/quotas.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
-import { test_convex, test_rename_node, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_fill_saved_file_with_max_chunks,
+	test_LIMITS_AT_75_PERCENT,
+	test_rename_node,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import { files_NAME_MAX_LENGTH } from "../shared/files.ts";
+import { files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 
 const SEAL_PROCESSING_PATH = "/api/v1/plugins/service-grants/seal-processing";
 const CREATE_TARGET_PATH = "/api/v1/files/service-uploads/create-target";
@@ -4240,6 +4246,28 @@ describe("service upload archive", () => {
 		expect(replay.status).toBe(200);
 		expect(await replay.json()).toEqual({ archivedNodes: 0 });
 	});
+
+	test("archives 3,000-chunk notes at the longest path within 75% of the limits", async () => {
+		const t = test_convex({ transactionLimits: test_LIMITS_AT_75_PERCENT });
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
+		// Each plain text chunk stores the path, and a 900 KB note can have about 3,000 chunks.
+		const folder = `/meetings/meeting-1/${["0", "1", "2"].map((digit) => digit.repeat(files_NAME_MAX_LENGTH)).join("/")}/`;
+		const paths = ["a", "b"].map((letter) => `${folder}${letter.repeat(files_PATH_MAX_LENGTH - folder.length - 3)}.md`);
+		for (const path of paths) expect((await write_note({ t, sealed, path })).status).toBe(200);
+		const notes = (await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).filter((node) =>
+			paths.includes(node.path),
+		);
+		expect(notes).toHaveLength(2);
+		for (const note of notes) expect(await test_fill_saved_file_with_max_chunks(t, note._id)).toBeGreaterThan(2900);
+
+		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} });
+		expect(response.status, await response.clone().text()).toBe(200);
+		for (const note of notes)
+			expect((await t.run(async (ctx) => await ctx.db.get("files_nodes", note._id)))?.archiveOperationId).toBeTypeOf(
+				"string",
+			);
+	}, 120_000);
 
 	test("does not archive a folder a member or another plugin made at the destination", async () => {
 		const t = test_convex();
