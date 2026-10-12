@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
 import {
-	attach_media,
+	mark_copied,
 	finish_review,
 	fixture,
 	mock_review_storage,
@@ -26,15 +26,14 @@ describe("review job content", () => {
 		const source = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...f.scope, path: "/source" });
 		if (source._nay) throw new Error(source._nay.message);
 		const images = [];
-		// 101 media and the document need 2 selection pages of 100, 3 dependency pages of 50, 5 media
+		// 101 media and the document need 2 selection pages of 100, 5 media
 		// validation pages of 25, and 13 plan pages of 8.
 		for (let index = 0; index < 101; index++)
 			images.push(await private_media({ f, path: `/image-${index}.png`, sourceId: source._yay.nodeId }));
-		const text = images.map(({ dependency }) => `![Image](${dependency.src})`).join("\n\n") + "\n";
-		const document = await attach_media({
+		const text = images.map(({ src }) => `![Image](${src})`).join("\n\n") + "\n";
+		const document = await mark_copied({
 			f,
 			pending: await private_node({ f, path: "/document.md", text }),
-			images,
 			sourceId: source._yay.nodeId,
 		});
 		const runId = await start_review({ f, proposals: [document, ...images.map(({ pending }) => pending)] });

@@ -436,7 +436,7 @@ async function db_validate_items(
 
 async function db_capture_review(ctx: MutationCtx, proposal: Doc<"files_pending_updates">, kind: "accept" | "discard") {
 	if (kind === "discard")
-		return { reviewHeader: null, reviewSource: null, mediaDependencySet: null, expectedDestinationParentPath: null };
+		return { reviewHeader: null, reviewSource: null, expectedDestinationParentPath: null };
 	// Keep the reviewed links when the owner edits a proposal during Save.
 	const {
 		_id: _proposalId,
@@ -514,11 +514,7 @@ async function db_capture_review(ctx: MutationCtx, proposal: Doc<"files_pending_
 		)
 			expectedDestinationParentPath = saved.path;
 	}
-	const set = proposal.mediaDependencySetId
-		? await ctx.db.get("files_media_dependency_sets", proposal.mediaDependencySetId)
-		: null;
-	const mediaDependencySet = set ? { setId: set._id, generation: set.generation } : null;
-	return { reviewHeader, reviewSource, mediaDependencySet, expectedDestinationParentPath };
+	return { reviewHeader, reviewSource, expectedDestinationParentPath };
 }
 
 async function db_get_plan_context(ctx: QueryCtx | MutationCtx, proposal: Doc<"files_pending_updates">) {
@@ -797,6 +793,7 @@ export async function files_pending_update_runs_db_start(
 			...(await db_capture_review(ctx, checked._yay[order]!, args.kind)),
 			planKind: null,
 			privateVersion: null,
+			mediaDependencySet: null,
 			unitId: null,
 			prepared: null,
 			billedUserId: null,
@@ -938,6 +935,7 @@ async function db_append_items(
 			...(await db_capture_review(ctx, checked._yay[index]!, run.kind)),
 			planKind: null,
 			privateVersion: null,
+			mediaDependencySet: null,
 			unitId: null,
 			prepared: null,
 			billedUserId: null,

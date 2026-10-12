@@ -28,7 +28,6 @@ import {
 	files_private_storage_db_reserve,
 	files_private_storage_db_release_deleted_resource,
 } from "../convex/files_private_storage.ts";
-import { files_media_dependencies_db_retire } from "../convex/files_media_dependencies.ts";
 import { files_db_resolve_scope } from "../convex/files_scopes.ts";
 import {
 	files_saved_placement_db_get_node,
@@ -296,15 +295,6 @@ export async function files_db_delete_pending_update(args: {
 	if (!proposal) return;
 	// Paged cleanup follows the root's logical Discard, which already changed this clock.
 	if (!options?.reviewAlreadyFenced) await files_db_advance_pending_review_version(ctx, proposal);
-	if (proposal.mediaDependencySetId) {
-		const set = await ctx.db.get("files_media_dependency_sets", proposal.mediaDependencySetId);
-		if (set)
-			await files_media_dependencies_db_retire(ctx, {
-				setId: set._id,
-				generation: set.generation,
-				owner: { kind: "proposal", pendingUpdateId },
-			});
-	}
 	await ctx.db.delete("files_pending_updates", pendingUpdateId);
 }
 

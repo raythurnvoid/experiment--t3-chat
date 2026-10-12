@@ -7,17 +7,13 @@ import { api, internal } from "./_generated/api.js";
 import {
 	test_save_file_pending_update,
 	test_convex,
-	test_drain_billing_usage_event_outbox,
 	test_rename_node,
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { quotas_db_ensure } from "./quotas.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { files_media_dependencies_db_create, files_media_dependencies_db_seal } from "./files_media_dependencies.ts";
-import { files_pending_updates_action_prepare_content } from "./files_pending_updates.ts";
 import {
-	files_db_patch_pending_update,
 	files_DRAFT_IDLE_EXPIRY_MS,
 	files_ROOT_ID,
 	files_pending_update_has_yjs_content,
@@ -33,8 +29,6 @@ import {
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import {
 	create_private_text_for_test,
-	expire_pending_update_for_test,
-	file_save_events,
 	list_pending_update_plain_text_chunks,
 	list_pending_update_text_chunks,
 	mock_pending_updates_storage,
@@ -425,207 +419,6 @@ describe("copied-parent text Save", () => {
 		});
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", child.pendingUpdateId))).toBeNull();
 	});
-});
-
-describe("prepared Save media proof", () => {
-	test("an asset Save with nothing staged validates media without changing the proposal or file", async () => {
-		vi.useFakeTimers();
-		const f = await create_private_text_for_test({ path: "/noop-proof.md", staged: "# Before", collaborative: false });
-		const saved = await test_save_file_pending_update(f.asUser, {
-			membershipId: f.membershipId,
-			target: f.target,
-			pendingUpdateId: f.proposal._id,
-			reviewedRevision: f.proposal.revision,
-		});
-		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected the saved file");
-		const target = saved._yay.target;
-		const edited = await upsert_file_pending_update_public_for_test(f.asUser, {
-			membershipId: f.membershipId,
-			nodeId: target.id,
-			stagedMarkdown: "# Before",
-			unstagedMarkdown: "# After",
-		});
-		if (edited._nay || !edited._yay.pendingUpdate) throw new Error("Expected the pending edit");
-		const proposal = edited._yay.pendingUpdate;
-		await f.t.run(async (ctx) => {
-			const created = await files_media_dependencies_db_create(ctx, {
-				organizationId: f.organizationId,
-				workspaceId: f.workspaceId,
-				userId: f.userId,
-				owner: { kind: "proposal", pendingUpdateId: proposal._id },
-				expectedCount: 0,
-			});
-			if (created._nay) throw new Error(created._nay.message);
-			expect(await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 })).toEqual({
-				_yay: null,
-			});
-			await files_db_patch_pending_update({
-				ctx,
-				pendingUpdateId: proposal._id,
-				value: { mediaDependencySetId: created._yay },
-			});
-		});
-		const before = await f.t.run(async (ctx) => ({
-			proposal: await ctx.db.get("files_pending_updates", proposal._id),
-			file: await ctx.db.get("files_nodes", target.id),
-		}));
-		await test_drain_billing_usage_event_outbox(f.t);
-		const savesBefore = file_save_events().length;
-		expect(
-			(
-				await test_save_file_pending_update(f.asUser, {
-					membershipId: f.membershipId,
-					target,
-					pendingUpdateId: proposal._id,
-					reviewedRevision: proposal.revision,
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(
-			await f.t.run(async (ctx) => ({
-				proposal: await ctx.db.get("files_pending_updates", proposal._id),
-				file: await ctx.db.get("files_nodes", target.id),
-			})),
-		).toEqual(before);
-		await test_drain_billing_usage_event_outbox(f.t);
-		expect(file_save_events()).toHaveLength(savesBefore);
-		const inputs = await f.t.run((ctx) => ctx.db.query("files_pending_update_text_inputs").collect());
-		expect(inputs.some((input) => input.mediaValidation?.pendingUpdateId === proposal._id)).toBe(true);
-	});
-
-	test.each(["save", "discard", "expiry"] as const)("%s retires the proposal's media set", async (operation) => {
-		vi.useFakeTimers();
-		const f = await create_private_text_for_test({ path: "/retire.md", staged: "# Retained" });
-		const setId = await f.t.run(async (ctx) => {
-			const created = await files_media_dependencies_db_create(ctx, {
-				organizationId: f.organizationId,
-				workspaceId: f.workspaceId,
-				userId: f.userId,
-				owner: { kind: "proposal", pendingUpdateId: f.proposal._id },
-				expectedCount: 0,
-			});
-			if (created._nay) throw new Error(created._nay.message);
-			expect(await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 })).toEqual({
-				_yay: null,
-			});
-			await files_db_patch_pending_update({
-				ctx,
-				pendingUpdateId: f.proposal._id,
-				value: { mediaDependencySetId: created._yay },
-			});
-			return created._yay;
-		});
-		const args = {
-			membershipId: f.membershipId,
-			target: f.target,
-			pendingUpdateId: f.proposal._id,
-			reviewedRevision: f.proposal.revision,
-		};
-		if (operation === "save") {
-			expect((await test_save_file_pending_update(f.asUser, args))._nay).toBeUndefined();
-		} else if (operation === "discard") {
-			expect(await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, args)).toEqual({
-				_yay: null,
-			});
-		} else {
-			await expire_pending_update_for_test(f.t, f.proposal._id);
-		}
-		if (operation !== "save") {
-			const cleanup = await f.t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").first());
-			if (!cleanup) throw new Error("Expected the private cleanup task");
-			await f.t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: cleanup.privateNodeId });
-		}
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", f.proposal._id))).toBeNull();
-		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toMatchObject({
-			owner: { kind: "cleanup" },
-			generation: 1,
-		});
-		await f.t.mutation(internal.files_media_dependencies.cleanup_set, { setId });
-		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toBeNull();
-	});
-
-	test.each(["saved_yjs", "saved_asset"] as const)(
-		"%s refuses a missing proof before publishing",
-		async (kind) => {
-			const f = await create_private_text_for_test({
-				path: "/proof.md",
-				staged: "# Before",
-				collaborative: kind !== "saved_asset",
-			});
-			let target: Doc<"files_pending_updates">["target"] = f.target;
-			let proposal = f.proposal;
-			{
-				const saved = await test_save_file_pending_update(f.asUser, {
-					membershipId: f.membershipId,
-					target,
-					pendingUpdateId: proposal._id,
-					reviewedRevision: proposal.revision,
-				});
-				if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected the saved file");
-				target = saved._yay.target;
-				const edited = await upsert_file_pending_update_public_for_test(f.asUser, {
-					membershipId: f.membershipId,
-					nodeId: target.id,
-					stagedMarkdown: "# After",
-					unstagedMarkdown: "# After",
-				});
-				if (edited._nay || !edited._yay.pendingUpdate) throw new Error("Expected the pending edit");
-				proposal = edited._yay.pendingUpdate;
-			}
-			// The Copy producer owns this empty set. Use its helpers, not raw set docs.
-			await f.t.run(async (ctx) => {
-				const created = await files_media_dependencies_db_create(ctx, {
-					organizationId: f.organizationId,
-					workspaceId: f.workspaceId,
-					userId: f.userId,
-					owner: { kind: "proposal", pendingUpdateId: proposal._id },
-					expectedCount: 0,
-				});
-				if (created._nay) throw new Error(created._nay.message);
-				expect(await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 })).toEqual({
-					_yay: null,
-				});
-				await files_db_patch_pending_update({
-					ctx,
-					pendingUpdateId: proposal._id,
-					value: { mediaDependencySetId: created._yay },
-				});
-			});
-			const args = {
-				membershipId: f.membershipId,
-				target,
-				pendingUpdateId: proposal._id,
-				reviewedRevision: proposal.revision,
-			};
-			const prepared = await f.t.action((ctx) =>
-				files_pending_updates_action_prepare_content(ctx, {
-					...args,
-					userId: f.userId,
-					reviewedPrivateParentIds: [],
-				}),
-			);
-			if (prepared._nay || prepared._yay.kind === "private") throw new Error("Expected prepared saved content");
-			const before = await f.t.run(async (ctx) => ({
-				proposal: await ctx.db.get("files_pending_updates", proposal._id),
-				nodes: await ctx.db.query("files_nodes").collect(),
-			}));
-			const refused = await f.t.mutation(internal.files_pending_updates.commit_prepared_content, {
-				userId: f.userId,
-				prepared: prepared._yay,
-			});
-			expect(refused).toMatchObject({ _nay: { name: "media_validation_changed" } });
-			expect(
-				await f.t.run(async (ctx) => ({
-					proposal: await ctx.db.get("files_pending_updates", proposal._id),
-					nodes: await ctx.db.query("files_nodes").collect(),
-				})),
-			).toEqual(before);
-			await f.t.mutation(internal.files_pending_updates.retire_prepared_content, { prepared: prepared._yay });
-			const saved = await test_save_file_pending_update(f.asUser, args);
-			expect(saved._nay).toBeUndefined();
-			expect(saved._yay?.target.kind).toBe("saved");
-		},
-	);
 });
 
 describe("archived-parent draft recovery", () => {

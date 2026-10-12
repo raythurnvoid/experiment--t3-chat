@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getFunctionName } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_create_saved_text_file, test_spy_handler } from "./setup.test.ts";
+import { test_spy_handler } from "./setup.test.ts";
 import { copy_transfer_file } from "./files_nodes_content.ts";
 import {
 	mock_media_storage,
@@ -13,7 +13,6 @@ import {
 	read_dependencies,
 	prepare_document_capture,
 	finish_document,
-	copy_again,
 } from "./files_transfer_media.setup.test.ts";
 
 beforeEach(mock_media_storage);
@@ -64,14 +63,15 @@ describe("copy_transfer_file media", () => {
 			state: "completed",
 		});
 		expect(await read_dependencies(f.t, setId)).toEqual(mappings);
-		const adopted = await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId));
-		expect(adopted).toMatchObject({ owner: { kind: "proposal" } });
+		// The finished Copy retires its mappings. The proposal keeps no media set.
+		const retired = await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId));
+		expect(retired).toMatchObject({ owner: { kind: "cleanup" } });
 		await f.t.mutation(internal.files_transfer.handle_copy_complete, {
 			workId: capture.workId,
 			context: { itemId: capture.itemId, attempt: capture.attempt },
 			result: { kind: "failed", error: "Late old callback" },
 		});
-		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toEqual(adopted);
+		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toEqual(retired);
 	});
 
 	test("retires a saved clipboard copy's set without deleting its media", async () => {
@@ -370,7 +370,7 @@ describe("copy_transfer_file media", () => {
 		},
 	);
 
-	test("retires the old set when a document replacement is replaced again", async () => {
+	test("retires a document replacement's set without deleting its media", async () => {
 		const f = await fixture({ documentReplacement: true });
 		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
 			itemId: f.document._id,
@@ -379,20 +379,10 @@ describe("copy_transfer_file media", () => {
 		await finish_document(f);
 		const original = await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id));
 		const setId = original!.capture!.mediaDependencySetId!;
-		const before = await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId));
-		const source = await test_create_saved_text_file(f.t, {
-			membershipId: f.destination.membershipId,
-			path: "/new-source.md",
-			textContent: "No media now\n",
-		});
-		const replacement = await copy_again({ f, source: { kind: "saved", id: source }, targetName: "document.md" });
-		expect(replacement!.target).toEqual(original!.outputTarget);
-		expect(replacement!.mediaDependencySetId).not.toBe(setId);
 		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toMatchObject({
 			owner: { kind: "cleanup" },
-			generation: before!.generation + 1,
+			count: 1,
 		});
-		expect(await read_dependencies(f.t, replacement!.mediaDependencySetId)).toEqual([]);
 		await f.t.mutation(internal.files_media_dependencies.cleanup_set, { setId });
 		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toBeNull();
 		expect(await f.t.run((ctx) => ctx.db.get("files_r2_assets", f.selectedMedia!.outputMediaAssetId!))).not.toBeNull();

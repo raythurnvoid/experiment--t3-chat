@@ -12,7 +12,7 @@ import {
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import type { Id } from "./_generated/dataModel.js";
 import {
-	attach_media,
+	mark_copied,
 	finish_review,
 	fixture,
 	mock_review_storage,
@@ -440,7 +440,7 @@ describe("review job content", () => {
 		async (hasCapturedMedia) => {
 			const f = await fixture();
 			const oldImage = hasCapturedMedia ? await private_media({ f, path: "/old-image.png" }) : null;
-			const sourceText = oldImage ? `Before\n\n![Old image](${oldImage.dependency.src})\n` : "Before\n";
+			const sourceText = oldImage ? `Before\n\n![Old image](${oldImage.src})\n` : "Before\n";
 			const source = await private_node({ f, path: "/source.md", text: sourceText });
 			const destination = await private_node({ f, path: "/destination" });
 			expect(
@@ -505,12 +505,8 @@ describe("review job content", () => {
 			const copiedProposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 			const document = copiedProposals.find((proposal) => proposal.copiedFrom?.target.id === sourceId);
 			if (!document?.copiedFrom) throw new Error("Expected the copied document");
-			if (!document.mediaDependencySetId) throw new Error("Expected the copied document's dependency set");
-			expect(
-				await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", document.mediaDependencySetId!)),
-			).toMatchObject({ count: hasCapturedMedia ? 1 : 0, sealed: true });
 			const image = await private_media({ f, path: "/new-image.png" });
-			const text = `Before\n\n![New image](${image.dependency.src})\n`;
+			const text = `Before\n\n![New image](${image.src})\n`;
 			const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 				membershipId: f.db.membershipId,
 				target: document.target,
@@ -535,7 +531,6 @@ describe("review job content", () => {
 			if (edited._nay || !edited._yay.pendingUpdate) throw new Error("Expected the edited Copy");
 			const current = (await f.t.run((ctx) => ctx.db.get("files_pending_updates", document._id)))!;
 			expect(current.revision).toBeGreaterThan(document.revision);
-			expect(current.mediaDependencySetId).toBe(document.mediaDependencySetId);
 			const runId = await start_review({ f, proposals: [current, image.pending] });
 			const result = await finish_review({ f, runId });
 			expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
@@ -559,11 +554,10 @@ describe("review job content", () => {
 		const images = [];
 		for (let index = 0; index < 9; index++)
 			images.push(await private_media({ f, path: `/image-${index}.png`, sourceId: source._yay.nodeId }));
-		const text = images.map(({ dependency }) => `![Image](${dependency.src})`).join("\n\n") + "\n";
-		const document = await attach_media({
+		const text = images.map(({ src }) => `![Image](${src})`).join("\n\n") + "\n";
+		const document = await mark_copied({
 			f,
 			pending: await private_node({ f, path: "/document.md", text }),
-			images: [],
 			sourceId: source._yay.nodeId,
 		});
 		const proposals = [document, ...images.map(({ pending }) => pending)];
@@ -614,7 +608,7 @@ describe("review job content", () => {
 			planEpoch: page.plan.epoch,
 			offset: 0,
 			itemId: page.media.item._id,
-			refs: images.slice(0, 8).map(({ dependency }) => dependency.src),
+			refs: images.slice(0, 8).map(({ src }) => src),
 			isDone: false,
 			error: null,
 		};
@@ -665,11 +659,10 @@ describe("review job content", () => {
 		const source = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...f.scope, path: "/source" });
 		if (source._nay) throw new Error(source._nay.message);
 		const image = await private_media({ f, path: "/photo.png", sourceId: source._yay.nodeId });
-		const text = `![Image](${image.dependency.src})\n`;
-		const document = await attach_media({
+		const text = `![Image](${image.src})\n`;
+		const document = await mark_copied({
 			f,
 			pending: await private_node({ f, path: "/document.md", text }),
-			images: [image],
 			sourceId: source._yay.nodeId,
 		});
 		const unrelated = await private_node({ f, path: "/unrelated.txt", text: "keep this Copy\n" });
@@ -710,17 +703,9 @@ describe("review job content", () => {
 		const f = await fixture();
 		const parent = await private_node({ f, path: "/parent" });
 		const image = await private_media({ f, path: "/parent/photo.png" });
-		const text = `![Image](${image.dependency.src})\n`;
-		const first = await attach_media({
-			f,
-			pending: await private_node({ f, path: "/parent/first.md", text }),
-			images: [image],
-		});
-		const second = await attach_media({
-			f,
-			pending: await private_node({ f, path: "/parent/second.md", text }),
-			images: [image],
-		});
+		const text = `![Image](${image.src})\n`;
+		const first = await private_node({ f, path: "/parent/first.md", text });
+		const second = await private_node({ f, path: "/parent/second.md", text });
 		const runId = await start_review({ f, proposals: [first, second, image.pending, parent] });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
 			{ kind: "cohort", itemCount: 4 },

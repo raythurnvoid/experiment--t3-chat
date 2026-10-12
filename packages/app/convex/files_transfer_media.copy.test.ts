@@ -13,7 +13,6 @@ import {
 	save_media,
 	fixture,
 	map_refs,
-	read_dependencies,
 } from "./files_transfer_media.setup.test.ts";
 
 beforeEach(mock_media_storage);
@@ -25,7 +24,7 @@ afterEach(() => {
 });
 
 describe("copy_transfer_file media", () => {
-	test("counts saved and private source aliases separately and saves their one destination", async () => {
+	test("maps saved and private source aliases to one destination and saves it", async () => {
 		const f = await fixture({ aliases: true });
 		expect(f.sourceRefs).toHaveLength(2);
 		expect(f.selectedMediaItems).toHaveLength(1);
@@ -35,16 +34,6 @@ describe("copy_transfer_file media", () => {
 		});
 		const item = await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id));
 		expect(item).toMatchObject({ state: "completed", outputTarget: { kind: "private" } });
-		const setId = item!.capture!.mediaDependencySetId!;
-		const dependencies = await read_dependencies(f.t, setId);
-		// Two source refs can map to one copied media file.
-		expect(dependencies).toHaveLength(2);
-		expect(new Set(dependencies.map((dependency) => dependency.src)).size).toBe(1);
-		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toMatchObject({
-			count: 2,
-			expectedCount: 2,
-			owner: { kind: "proposal" },
-		});
 		await save_media({
 			t: f.t,
 			membershipId: f.destination.membershipId,
@@ -70,38 +59,9 @@ describe("copy_transfer_file media", () => {
 			path: "/document.md",
 			includePending: false,
 		});
-		expect(read?.content.split(dependencies[0]!.src)).toHaveLength(3);
+		// Two source refs map to one copied media file.
+		expect(read?.content.split(files_media_build_private_src(f.selectedMedia!.outputTarget!.id))).toHaveLength(3);
 		for (const src of f.sourceRefs) expect(read?.content).not.toContain(src);
-	});
-
-	test.each([false, true])("adopts an empty set for rich text (replacement: %s)", async (documentReplacement) => {
-		const f = await fixture({ documentReplacement, selected: false, documentText: () => "No media yet\n" });
-		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
-			itemId: f.document._id,
-			attempt: f.document.attempt,
-		});
-		const item = await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id));
-		expect(item?.state).toBe("completed");
-		const pending = await f.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_user_target", (q) =>
-					q
-						.eq("userId", f.destination.userId)
-						.eq("target.kind", item!.outputTarget!.kind)
-						.eq("target.id", item!.outputTarget!.id),
-				)
-				.unique(),
-		);
-		expect(pending?.mediaDependencySetId).toBeDefined();
-		const set = await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", pending!.mediaDependencySetId!));
-		expect(set).toMatchObject({
-			count: 0,
-			expectedCount: 0,
-			sealed: true,
-			owner: { kind: "proposal", pendingUpdateId: pending!._id },
-		});
-		expect(pending).not.toHaveProperty("mediaDependencies");
 	});
 
 	test("rewrites a real video embed from personal to current", async () => {
@@ -127,43 +87,6 @@ describe("copy_transfer_file media", () => {
 		expect(read?.content).toContain(`src="${files_media_build_private_src(f.selectedMedia!.outputTarget!.id)}"`);
 		expect(read?.content).toContain('title="Clip"');
 		expect(read?.content).not.toContain(f.sourceRef);
-	});
-
-	test.each([false, true])("replacement Save waits for its media (media replacement: %s)", async (replacement) => {
-		const f = await fixture({ documentReplacement: true, replacement });
-		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
-			itemId: f.document._id,
-			attempt: f.document.attempt,
-		});
-		const item = await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id));
-		if (item?.outputTarget?.kind !== "saved") throw new Error("Expected document replacement");
-		const target = item.outputTarget;
-		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
-			membershipId: f.destination.membershipId,
-			target,
-		});
-		const pending = view!.entry.pendingUpdate!;
-		const before = await f.t.run((ctx) => ctx.db.get("files_nodes", target.id));
-		const args = {
-			membershipId: f.destination.membershipId,
-			target,
-			pendingUpdateId: pending._id,
-			reviewedRevision: pending.revision,
-		};
-		expect(await test_save_file_pending_update(f.asUser, args)).toMatchObject({
-			_nay: { message: expect.stringContaining("Save the selected media") },
-		});
-		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", target.id))).toEqual(before);
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
-		await save_media({
-			t: f.t,
-			membershipId: f.destination.membershipId,
-			userId: f.destination.userId,
-			target: f.selectedMedia!.outputTarget!,
-		});
-		expect(await test_save_file_pending_update(f.asUser, args)).toMatchObject({
-			_yay: { target },
-		});
 	});
 
 	test("refuses a second Copy over private media before the first document mapping", async () => {
@@ -333,14 +256,14 @@ describe("copy_transfer_file media", () => {
 			target,
 		});
 		const pending = view!.entry.pendingUpdate!;
-		expect(await read_dependencies(f.t, pending.mediaDependencySetId)).toEqual([
-			expect.objectContaining({
-				src: files_media_build_private_src(mediaTarget.id),
-				target: mediaTarget,
-				assetId: original.assetId,
-				version: expect.objectContaining({ kind: "asset" }),
-			}),
-		]);
+		const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: f.destination.organizationId,
+			workspaceId: f.destination.workspaceId,
+			userId: f.destination.userId,
+			overlayUserId: f.destination.userId,
+			path: "/document.md",
+		});
+		expect(read?.content).toContain(`![Photo](${files_media_build_private_src(mediaTarget.id)})`);
 		expect(
 			await test_save_file_pending_update(f.asUser, {
 				membershipId: f.destination.membershipId,
@@ -408,7 +331,7 @@ describe("copy_transfer_file media", () => {
 	});
 
 	test.each([false, true])(
-		"rewrites only app media and stores destination pins (replacement: %s)",
+		"rewrites only app media (replacement: %s)",
 		async (documentReplacement) => {
 			const f = await fixture({
 				documentReplacement,
@@ -426,18 +349,6 @@ describe("copy_transfer_file media", () => {
 				state: "completed",
 				outputTarget: { kind: documentReplacement ? "saved" : "private" },
 			});
-			const pending = await f.t.run((ctx) =>
-				ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_user_target", (q) =>
-						q
-							.eq("userId", f.destination.userId)
-							.eq("target.kind", item!.outputTarget!.kind)
-							.eq("target.id", item!.outputTarget!.id),
-					)
-					.first(),
-			);
-			expect(await read_dependencies(f.t, pending!.mediaDependencySetId)).toEqual(mapped._yay.mediaDependencies);
 			const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 				organizationId: f.destination.organizationId,
 				workspaceId: f.destination.workspaceId,
