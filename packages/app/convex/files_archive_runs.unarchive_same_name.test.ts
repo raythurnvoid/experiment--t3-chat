@@ -13,6 +13,13 @@ import {
 	archive_to_end,
 } from "./files_archive_runs.setup.test.ts";
 
+// A check step reads at most 100 nodes here instead of 500, so small trees cross it. The real limit runs
+// in files_archive_runs.check_limit.test.ts. The mock puts this file in the isolated "Convex" project.
+vi.mock("../server/files-archive-runs.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../server/files-archive-runs.ts")>()),
+	files_archive_runs_CHECK_STEP_MAX_NODES: 100,
+}));
+
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -25,7 +32,8 @@ afterEach(() => {
 describe("unarchive_nodes", () => {
 	test("restores many files with the same name in different folders", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "repeated", folderCount: 551, filesPerFolder: 1 });
+		// 151 files with one name: more than one check step of 100 plus a page of 50.
+		const tree = await seed_tree(f, { name: "repeated", folderCount: 151, filesPerFolder: 1 });
 		await archive_to_end(f, tree.topId);
 
 		const restored = await restore(f, [tree.topId]);
@@ -35,10 +43,11 @@ describe("unarchive_nodes", () => {
 		expect((await read_state(f)).nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	}, 120_000);
 
-	test("the check reads up to 500 more items of the operation with the path where a page ends", async () => {
+	test("the check reads up to 100 more items of the operation with the path where a page ends", async () => {
 		const f = await fixture();
-		const fits = await seed_same_path(f, { name: "fits", count: 550, archiveOperationId: crypto.randomUUID() });
-		const tooMany = await seed_same_path(f, { name: "too-many", count: 551, archiveOperationId: crypto.randomUUID() });
+		// A page of 50, then up to 100 more with the same path.
+		const fits = await seed_same_path(f, { name: "fits", count: 150, archiveOperationId: crypto.randomUUID() });
+		const tooMany = await seed_same_path(f, { name: "too-many", count: 151, archiveOperationId: crypto.randomUUID() });
 
 		// The files share one name, so after the first one the job waits for a clash choice. The check
 		// has passed by then.
