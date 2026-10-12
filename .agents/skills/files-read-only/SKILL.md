@@ -547,7 +547,7 @@ control only because its save is running. Folder radio groups use unique names.
 
 # Test Map
 
-- `convex/files_nodes.test.ts`: selected writers, ACL independence, local create defaults, folder-only
+- `convex/files_nodes.read_only.test.ts`: selected writers, ACL independence, local create defaults, folder-only
   management, creation management, unlock one child, redaction, and writes. The service-account writer
   policy check is in `convex/files_nodes.move_nodes.test.ts`.
 - `convex/files_write_policy_runs.test.ts`: Apply to contents steps, blocked and hidden items, rechecks,
