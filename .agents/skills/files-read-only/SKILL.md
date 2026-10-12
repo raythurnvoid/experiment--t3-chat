@@ -548,11 +548,12 @@ control only because its save is running. Folder radio groups use unique names.
 # Test Map
 
 - `convex/files_nodes.test.ts`: selected writers, ACL independence, local create defaults, folder-only
-  management, creation management, unlock one child, redaction, and writes.
+  management, creation management, unlock one child, redaction, and writes. The service-account writer
+  policy check is in `convex/files_nodes.move_nodes.test.ts`.
 - `convex/files_write_policy_runs.test.ts`: Apply to contents steps, blocked and hidden items, rechecks,
   Stop, deadline, and history cleanup.
-- `convex/files_pending_updates.test.ts`: current-policy proposal, commit, and private discard checks.
-- `convex/files_nodes_content.test.ts`: replacement, collaboration, snapshots, and materialization.
+- `convex/files_pending_updates.structural.test.ts`: current-policy proposal, commit, and private discard checks.
+- `convex/files_nodes_content*.test.ts`: replacement, collaboration, snapshots, and materialization.
 - `convex/public_api*.test.ts`: bound accounts, current credentials/scopes, service targets, conflicts,
   policy management, accepted uploads, and no partial publication.
 - `convex/access_control.test.ts`: human/account permissions, management authority, and source privacy.

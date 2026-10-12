@@ -1,6 +1,9 @@
 import { DAY, HOUR, MINUTE, RateLimiter, calculateRateLimit } from "@convex-dev/rate-limiter";
-import { components } from "./_generated/api.js";
+import { v } from "convex/values";
+import { components, internal } from "./_generated/api.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 
 export const rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE = "Rate limit exceeded";
 
@@ -41,22 +44,20 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 10,
 	},
-	// A key's parallel requests all charge this bucket. Four shards spread the charges over four
-	// docs. Each charge still reads two random shards, so about half of the parallel charges still
-	// conflict and Convex retries them. The total limit does not change, but near the limit a few
-	// requests may get a 429 early. Each charge must be at most capacity / (shards / 2) = 10, or
-	// the limiter throws. So every charge here is 1, and batch routes charge their items in their
-	// own bulk bucket.
+	// One of four unsharded parts per key and route: together they hold 20 tokens and refill at
+	// 120/min. A charge walks every part before refusing, so tokens cannot be missed in another
+	// part. The first part often has a token, which avoids reading a second doc. Each charge is 1;
+	// batch routes charge their items in their own bulk bucket. Exhausted write retries can still
+	// refuse early. After a full drain, the next whole token in each part takes two seconds.
 	public_api_principal: {
 		kind: "token bucket",
-		rate: 120,
+		rate: 30,
 		period: MINUTE,
-		capacity: 20,
-		shards: 4,
+		capacity: 5,
 	},
 	// Bulk file writes charge one token per file in a single up-front batch charge, so the
 	// capacity must cover a full write-many request (20 files) with room for several back-to-back
-	// batches during an import. Sharded like the principal bucket. One charge must stay <= capacity /
+	// batches during an import. Four shards spread the writes. One charge must stay <= capacity /
 	// shards = 25, because the first charge on an unused shard reads only that shard.
 	public_api_files_write_bulk: {
 		kind: "token bucket",
@@ -65,9 +66,9 @@ const rate_limiter_CONFIG = {
 		capacity: 100,
 		shards: 4,
 	},
-	// `upload-urls` and `download-urls` items: one token per URL, charged once per request. Same
-	// numbers as the principal bucket. Not sharded: they are not hot paths, and a 20-item charge
-	// needs the whole capacity.
+	// `upload-urls` and `download-urls` items: one token per URL, charged once per request. Each
+	// bucket holds 20 tokens and refills at 120/min. Not sharded: they are not hot paths, and a
+	// 20-item charge needs the whole capacity.
 	public_api_files_upload_bulk: {
 		kind: "token bucket",
 		rate: 120,
@@ -285,6 +286,28 @@ const rate_limiter_CONFIG = {
 
 const rate_limiter = new RateLimiter(components.rate_limiter, rate_limiter_CONFIG);
 
+// All component calls share the caller's mutation, so one charge commits at most one token.
+async function limit_principal_parts(ctx: MutationCtx, key: string) {
+	const start = Math.floor(Math.random() * 4);
+	let retryAfter = Infinity;
+	for (let step = 0; step < 4; step += 1) {
+		const part = (start + step) % 4;
+		const limit = await rate_limiter.limit(ctx, "public_api_principal", { key: `${key}:${part}` });
+		if (limit.ok) return limit;
+		retryAfter = Math.min(retryAfter, limit.retryAfter);
+	}
+	return { ok: false, retryAfter } as const;
+}
+
+export const limit_principal = internalMutation({
+	args: { key: v.string() },
+	returns: v.union(
+		v.object({ ok: v.literal(true), retryAfter: v.optional(v.number()) }),
+		v.object({ ok: v.literal(false), retryAfter: v.number() }),
+	),
+	handler: async (ctx, args) => await limit_principal_parts(ctx, args.key),
+});
+
 /**
  * Turns a rate limit key into a short number, so a log line can name the caller without printing
  * the key. This is only a label. It hides the key from someone reading the logs, but it is not
@@ -314,6 +337,7 @@ function is_write_conflict_error(error: unknown) {
  */
 const WRITE_CONFLICT_RETRY_AFTER_MS = 1_000;
 
+// Keep the return type explicit: the generated API refers back to this helper.
 export async function rate_limiter_limit_by_key(
 	ctx: MutationCtx | ActionCtx,
 	args: {
@@ -321,13 +345,28 @@ export async function rate_limiter_limit_by_key(
 		key: string;
 		count?: number;
 	},
-) {
+): Promise<
+	{ readonly message: typeof rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE; readonly retryAfterMs: number } | null
+> {
+	if (args.name === "public_api_principal" && args.count !== undefined && args.count !== 1) {
+		const errorMessage = "Principal rate limit charge must be 1";
+		const errorData = { count: args.count };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
 	let limit;
 	try {
-		limit = await rate_limiter.limit(ctx, args.name, {
-			key: args.key,
-			count: args.count,
-		});
+		if (args.name === "public_api_principal") {
+			limit = "db" in ctx
+				? await limit_principal_parts(ctx, args.key)
+				: await ctx.runMutation(internal.rate_limiter.limit_principal, { key: args.key });
+		} else {
+			limit = await rate_limiter.limit(ctx, args.name, {
+				key: args.key,
+				count: args.count,
+			});
+		}
 	} catch (error) {
 		// Only an action sees this error. Inside a mutation, Convex reruns the whole mutation instead.
 		// Answer "try again soon" instead of a 500. This still fails closed: nothing is let through.

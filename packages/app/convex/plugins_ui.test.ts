@@ -1038,12 +1038,9 @@ describe("plugin ui sessions", () => {
 				body: JSON.stringify({ recursive: true }),
 			});
 
-		// The bucket holds 20 calls in 4 shards and refills 2 per second. Freeze the clock so nothing
-		// refills on a slow machine. A fixed `Math.random` makes every charge read the same two shards,
-		// so exactly 10 calls pass and the 11th is refused.
+		// Freeze the clock so a slow machine cannot refill the 20-call budget.
 		vi.useFakeTimers({ toFake: ["Date"] });
-		vi.spyOn(Math, "random").mockReturnValue(0);
-		for (let call = 0; call < 10; call += 1) {
+		for (let call = 0; call < 20; call += 1) {
 			expect((await list_with(call % 2 === 0 ? first.token : second.token)).status).toBe(200);
 		}
 		expect((await list_with(second.token)).status).toBe(429);
@@ -1053,7 +1050,7 @@ describe("plugin ui sessions", () => {
 			headers: auth_headers(first.token),
 			body: JSON.stringify({ path: "/missing.md" }),
 		});
-		expect(separateRoute.status).not.toBe(429);
+		expect(separateRoute.status).toBe(404);
 	});
 
 	test("pages a sparse content type filter from its index", async () => {

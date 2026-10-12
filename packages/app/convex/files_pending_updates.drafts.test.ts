@@ -1,5 +1,6 @@
 // Copy replies, Save preparation, recovery and upsert tests. Save, review, Move, archive and read-only tests
-// are in files_pending_updates.test.ts. Private draft tests are in files_pending_updates.drafts_*.test.ts.
+// are in files_pending_updates.test.ts, files_pending_updates.review.test.ts and
+// files_pending_updates.structural.test.ts. Private draft tests are in files_pending_updates.drafts_*.test.ts.
 import { RateLimiter } from "@convex-dev/rate-limiter";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";

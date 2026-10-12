@@ -57,7 +57,6 @@ import {
 	files_yjs_UNSUPPORTED_UPDATE_ENCODING_MESSAGE,
 	files_yjs_UPDATE_SHAPE_REFUSED_MESSAGE,
 } from "./files-yjs.ts";
-import { files_text_diff_TOO_LARGE_MESSAGE } from "./files-text-diff.ts";
 import {
 	table_canonical_2x2,
 	table_alignments,
@@ -2983,10 +2982,6 @@ describe("files_yjs_doc_check_text_addressable", () => {
 });
 
 describe("files_yjs_doc_update_from_text plain branch", () => {
-	afterEach(() => {
-		vi.useRealTimers();
-	});
-
 	test("refuses to write into a document whose text is not addressable", () => {
 		const attackerDoc = new YDoc();
 		attackerDoc.getXmlFragment("plain_text").insert(0, [new YXmlElement("p")]);
@@ -3082,82 +3077,7 @@ describe("files_yjs_doc_update_from_text plain branch", () => {
 		expect(plain_text_of(mergedDoc)).toBe(merged);
 	});
 
-	// Diff budget calibration guards. These run the production budgets on purpose: the pass
-	// cases prove ordinary bulk edits stay under the step budget, and the refusal case proves a
-	// genuinely pathological near-cap change still refuses. Step counts are deterministic (same
-	// input, same count, on every machine), so these outcomes do not depend on machine speed;
-	// the explicit test timeouts only give slow machines room to finish the compute.
-	// The diff also has a 30 s wall-clock backstop. The full test run can load the CPU enough
-	// to reach it, and then a pass case is refused. So the pass cases freeze `Date`, and only
-	// the step budget decides. The refusal case keeps the real clock, so a slow run still ends
-	// at the backstop instead of running to the step budget.
-	test("applies a full sort of 1,000 lines (~25 KB) within the diff budgets", () => {
-		vi.useFakeTimers({ toFake: ["Date"] });
-		// The generated hash-key order is deterministically scrambled, so sorting it is a
-		// full permutation of every line. Measured cost: 132M steps (budget 1,000M).
-		const lines = Array.from({ length: 1000 }, (_, i) => `key_${((i * 2654435761) >>> 0).toString(16)} = value_${i}`);
-		const sortedText = [...lines].sort().join("\n");
-
-		const yjsDoc = plain_doc_from(lines.join("\n"));
-		set_plain_text(yjsDoc, sortedText);
-		expect(plain_text_of(yjsDoc)).toBe(sortedText);
-	}, 60_000);
-
-	test("applies a prettify of a ~40 KB minified JSON within the diff budgets", () => {
-		vi.useFakeTimers({ toFake: ["Date"] });
-		// Measured cost: 313M steps (budget 1,000M) — the heaviest ordinary edit the budgets
-		// must admit.
-		const obj: Record<string, unknown> = {};
-		for (let i = 0; i < 500; i++) {
-			obj[`key_${((i * 2654435761) >>> 0).toString(16)}`] = {
-				id: i,
-				name: `name ${i}`,
-				tags: [`a${i}`, `b${i}`],
-				active: i % 2 === 0,
-			};
-		}
-		const minifiedText = JSON.stringify(obj);
-		const prettyText = JSON.stringify(obj, null, 2);
-
-		const yjsDoc = plain_doc_from(minifiedText);
-		set_plain_text(yjsDoc, prettyText);
-		expect(plain_text_of(yjsDoc)).toBe(prettyText);
-	}, 60_000);
-
-	test("applies a replace-all with 1,000 hits in a ~66 KB file within the diff budgets", () => {
-		vi.useFakeTimers({ toFake: ["Date"] });
-		// Measured cost: 52M steps (budget 1,000M).
-		const lines = Array.from({ length: 2000 }, (_, i) =>
-			i % 2 === 0 ? `const value_${i} = oldName.compute(${i});` : `plain line ${i} with text`,
-		);
-		const sourceText = lines.join("\n");
-		const targetText = sourceText.replaceAll("oldName", "newLongerName");
-
-		const yjsDoc = plain_doc_from(sourceText);
-		set_plain_text(yjsDoc, targetText);
-		expect(plain_text_of(yjsDoc)).toBe(targetText);
-	}, 60_000);
-
-	test("refuses a near-cap high-line-count rewrite instead of degrading", () => {
-		// Two unrelated ~890 KB texts: measured cost is over 2,000M steps, so the 1,000M step
-		// budget trips (after ~19 s of compute on the measuring machine) and the Myers bisect
-		// must refuse, never fall back to a coarse whole-document replacement.
-		const sourceText = Array.from({ length: 68500 }, (_, i) => `src ${((i * 2654435761) >>> 0).toString(16)}`).join(
-			"\n",
-		);
-		const targetText = Array.from({ length: 68500 }, (_, i) => `dst ${((i * 40503) >>> 0).toString(16)}`).join("\n");
-
-		const yjsDoc = plain_doc_from(sourceText);
-		const result = files_yjs_doc_update_from_text({
-			text: targetText,
-			mut_yjsDoc: yjsDoc,
-			rootKind: "plain_text",
-		});
-		expect(result._nay?.message).toBe(files_text_diff_TOO_LARGE_MESSAGE);
-
-		// The refusal must leave the document untouched.
-		expect(plain_text_of(yjsDoc)).toBe(sourceText);
-	}, 120_000);
+	// The diff budget calibration cases are in files.diff_budgets.test.ts and files.diff_refusal.test.ts.
 });
 
 describe("files_yjs_doc_create_from_text", () => {

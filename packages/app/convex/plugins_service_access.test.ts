@@ -363,9 +363,6 @@ describe("set_plugin_service_registration", () => {
 describe("get_snapshot", () => {
 	test("limits an authenticated page before creating member lifetime facts", async () => {
 		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
-		// The principal bucket has 4 shards. A fixed `Math.random` makes every charge read the same two
-		// shards, which hold 10 of the 20 tokens.
-		const random = vi.spyOn(Math, "random").mockReturnValue(0);
 		try {
 			const t = test_convex();
 			const fixture = await seed_installation({ t });
@@ -389,7 +386,7 @@ describe("get_snapshot", () => {
 					body: JSON.stringify({ installationId: fixture.installationId, cursor: null, startRevision: null }),
 				});
 			expect((await request("wrong-proof")).status).toBe(401);
-			for (let index = 0; index < 10; index++) {
+			for (let index = 0; index < 20; index++) {
 				expect(
 					await t.run((ctx) =>
 						rate_limiter_limit_by_key(ctx, {
@@ -410,7 +407,6 @@ describe("get_snapshot", () => {
 			).toBeNull();
 		} finally {
 			clock.mockRestore();
-			random.mockRestore();
 		}
 	});
 
@@ -496,9 +492,6 @@ describe("get_snapshot", () => {
 describe("get_events", () => {
 	test("charges one page token only after checking the service proof", async () => {
 		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
-		// The principal bucket has 4 shards. A fixed `Math.random` makes every charge read the same two
-		// shards, so exactly 10 pages pass.
-		const random = vi.spyOn(Math, "random").mockReturnValue(0);
 		try {
 			const t = test_convex();
 			const fixture = await seed_installation({ t });
@@ -510,12 +503,11 @@ describe("get_events", () => {
 					body: JSON.stringify({ installationId: fixture.installationId, afterRevision: 0, limit: 100 }),
 				});
 			expect((await request("wrong-proof")).status).toBe(401);
-			for (let index = 0; index < 10; index++) expect((await request(fixture.secret)).status).toBe(200);
+			for (let index = 0; index < 20; index++) expect((await request(fixture.secret)).status).toBe(200);
 			expect((await events({ t, installationId: fixture.installationId }))._nay?.message).toBe("Rate limit exceeded");
 			expect((await request(fixture.secret)).status).toBe(429);
 		} finally {
 			clock.mockRestore();
-			random.mockRestore();
 		}
 	});
 

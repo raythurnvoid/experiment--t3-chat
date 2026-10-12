@@ -7351,7 +7351,7 @@ export async function public_api_http_download_urls(args: {
 	const truncated = body.data.fileNodeIds.length > fileNodeIds.length;
 
 	// Authorization charged one principal slot for the request. The URLs charge their own bulk
-	// bucket, because the sharded principal bucket refuses a charge above 10.
+	// bucket, because each principal charge must be 1.
 	const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
 		name: "public_api_files_download_bulk",
 		key: `${principal.kind}:${principal.principalKey}`,
@@ -7657,8 +7657,7 @@ export async function public_api_http_upload_urls(args: {
 	}
 
 	// Authorization charged one principal slot for the request. The URLs charge their own bulk
-	// bucket, so minting does not eat the write-many budget, and the sharded principal bucket would
-	// refuse a charge above 10.
+	// bucket, so minting does not eat the write-many budget. Each principal charge must be 1.
 	const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
 		name: "public_api_files_upload_bulk",
 		key: `${principal.kind}:${principal.principalKey}`,

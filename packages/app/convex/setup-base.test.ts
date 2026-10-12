@@ -22,6 +22,21 @@ const convex_test_modules = import.meta.glob("./**/*.ts");
 
 const test_convex_instances: Array<ReturnType<typeof convexTest>> = [];
 
+const test_convex_memo_schemas = new WeakSet<object>();
+
+// convex-test calls `export()` on every table of a schema for each new instance and for each
+// registered component. That builds the same validator JSON again each time, about 3 ms per test.
+// Build it once per table. convex-test only reads the result.
+function test_convex_memo_schema_exports<S extends { tables: Record<string, unknown> }>(schema: S) {
+	if (test_convex_memo_schemas.has(schema)) return schema;
+	test_convex_memo_schemas.add(schema);
+	for (const table of Object.values(schema.tables) as Array<{ export: () => unknown }>) {
+		const exported = table.export();
+		table.export = () => exported;
+	}
+	return schema;
+}
+
 // convex-test runs scheduled functions as floating promises — nothing awaits them, and teardown does
 // not either. A README seed seeded by one test was still issuing its R2 writes while a later test
 // ran, so those writes landed in that test's `globalThis.fetch` spy and failed an exact-compare
@@ -68,8 +83,15 @@ export function test_convex(
 		transactionLimits?: Parameters<typeof convexTest>[0]["transactionLimits"];
 	} = {},
 ): TestConvexRoot<DataModel> {
-	const t = convexTest({ schema, modules: convex_test_modules, transactionLimits: options.transactionLimits });
+	const t = convexTest({
+		schema: test_convex_memo_schema_exports(schema),
+		modules: convex_test_modules,
+		transactionLimits: options.transactionLimits,
+	});
 	test_convex_instances.push(t);
+	const registerComponent = t.registerComponent.bind(t);
+	t.registerComponent = (name, componentSchema, modules) =>
+		registerComponent(name, test_convex_memo_schema_exports(componentSchema), modules);
 	const withIdentity = t.withIdentity.bind(t);
 	t.withIdentity = ((identity) => {
 		// Use realistic Clerk identities by default; tests that cover the missing

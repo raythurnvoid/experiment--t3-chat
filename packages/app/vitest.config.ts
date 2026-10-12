@@ -92,7 +92,14 @@ export default defineConfig({
 				],
 				test: {
 					include: ["src/**/*.test.{ts,tsx}", "shared/**/*.test.ts"],
-					exclude: ["src/**/*.browser.test.{ts,tsx}"],
+					// Shared tests run here and in the convex project, because shared code must work in both
+					// runtimes. The diff budget files compute for about 30 s each, and their step counts are the
+					// same in every runtime, so they run only in the convex project.
+					exclude: [
+						"src/**/*.browser.test.{ts,tsx}",
+						"shared/files.diff_budgets.test.ts",
+						"shared/files.diff_refusal.test.ts",
+					],
 					includeSource: ["src/**/*.{ts,tsx}"],
 					name: "src",
 					// happy-dom is pinned to 20.3.5 in package.json. From 20.3.6 on, a click inside a
