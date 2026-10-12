@@ -1087,7 +1087,7 @@ export function files_check_request_path_length(path: string) {
 /**
  * Folder limits for one create call. Each folder on a path costs database reads, and each new
  * folder costs about 17 index reads, so these keep one call well under the 4,096 index reads a
- * mutation may do. The new folder limit matches the app folder import, volumes, and Move parents.
+ * mutation may do. The app folder import, volumes, and Move parents stay within the new folder limit.
  */
 export const files_NEW_FOLDER_DEPTH_MAX = 32;
 export const files_REQUEST_FOLDER_PREFIXES_MAX = 64;
