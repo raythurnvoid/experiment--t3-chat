@@ -2726,11 +2726,11 @@ call:
 ```js
 const ctx = state.page.context();
 state.apiPage = await ctx.newPage();
-await state.apiPage.goto("http://localhost:5173/w/<org>/<ws>/home", { waitUntil: "domcontentloaded" });
+await state.apiPage.goto("http://localhost:5173/w/<org>/<ws>/api-keys", { waitUntil: "domcontentloaded" });
 await state.apiPage.waitForTimeout(8000); // let the Convex client authenticate
 ```
 
-Then write runners as `await (state.apiPage ?? state.page).evaluate(...)`. The workspace home route
+Then write runners as `await (state.apiPage ?? state.page).evaluate(...)`. The API keys route
 holds still, so long multi-step runners survive.
 
 ## `page.goto` keeps its own 10 s timeout, and a fresh Vite server is slower than that
