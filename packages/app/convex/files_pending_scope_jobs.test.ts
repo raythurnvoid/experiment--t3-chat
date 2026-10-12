@@ -396,7 +396,13 @@ test("a saved scope job waits while a Move holds its file, then follows the move
 		});
 	for (let pass = 0; pass < 100 && !(await holder()); pass++) {
 		const cohort = await t.run((ctx) => test_db_get_slot_cohort(ctx, db));
-		if (cohort) await asUser.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+		if (cohort)
+			await asUser.action(internal.files_move_cohorts.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 		else await t.mutation(internal.files_transfer.advance, { runId });
 	}
 	const cohort = await holder();

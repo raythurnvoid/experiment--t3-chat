@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { FunctionArgs } from "convex/server";
 import { HTTPClient } from "@polar-sh/sdk/lib/http.js";
 import { components, internal } from "./_generated/api.js";
-import { test_convex } from "./setup.test.ts";
+import { test_convex } from "./setup-base.test.ts";
 import { billing_polar_client } from "../server/billing.ts";
 
 vi.hoisted(() => {

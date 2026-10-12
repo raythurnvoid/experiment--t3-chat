@@ -17,6 +17,10 @@ personal AI folder for runners, raw samples, logs, and the progress table. Keep 
 6. Attach `getCDPSession({ page })` and enable `Network`. Check `Profiler.enable` separately. If it is
    unavailable, use long tasks and app state; do not claim CPU function attribution.
 
+Use the full [DevTools stub](../../perf-profiling/scripts/neutralize-react-devtools.js) on each owned
+replacement tab before navigation. A partial stub without `renderers` can prevent the app from booting.
+Verify the new tab's account and rebind the harness. Keep accepted IDs and the journal; do not repeat setup.
+
 Treat `Could not find public function` as a setup failure. Save the exact called function and prove
 the browser's loaded source. Check deployed function/schema metadata and any active migration
 handoff before a push. A clean HEAD can still roll back another task or reject retained data.
@@ -104,6 +108,10 @@ later milestone is kept. Require the new route ID, `aria-busy="false"`, ready so
 expected row IDs. A new empty folder must have zero rows; the previous root table can still be ready.
 After rename, check the row, breadcrumb, and saved path.
 No-op rename sends no mutation, so report it as a client-only case.
+Rename now returns an accepted Move Activity. Record the reply, the published row/name/path,
+and the finished Activity as separate milestones. The published saved view is the UI milestone;
+do not wait for all background repair to report it. Check descendant paths and terminal run state
+later, through the separate `files_transfer.get` and `list_items` reads.
 
 Use `a[aria-label="Home"]` for the root breadcrumb. It is not always inside the path-list class.
 At root, that breadcrumb is absent. Check `nodeId=root` first and skip the Home click there.
@@ -111,6 +119,11 @@ Set a short page timeout for an async batch too. The CLI timeout does not stop a
 inside a background runner. A missing Home link waited 60 seconds on Playwriter 0.7.0.
 If a locator click stalls at `performing click action`, inspect state before retrying. Use the current
 box and a hit test, then a real mouse click. Do not raise the timeout or force the click.
+The Playwriter toolbar can cover a long breadcrumb's centre. A visible left inset of 15px worked;
+check `elementFromPoint` on the current box before every native click. An open Agent panel can also
+cover a Files row. Use its native resize handle and verify the row's hit target before continuing.
+Finished Transfer dialogs have two Close buttons. Scope the native footer control to
+`.FilesTransferRunModal .MyModalFooter`. Do not press Escape between Cut and Paste; it clears Cut.
 
 Root loading must check the expected first-page row IDs in order, on the same `Folder contents`
 table, plus `aria-busy="false"` and `data-sort-state="ready"`. The URL can change while the previous

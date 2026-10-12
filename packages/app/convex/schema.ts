@@ -2225,6 +2225,8 @@ const app_convex_schema = defineSchema({
 		),
 		visibleView: files_move_view_validator,
 		step: v.number(),
+		// Absent when this group has no scheduled run. One action owns its whole chain.
+		runJob: v.optional(v.object({ id: v.id("_scheduled_functions"), step: v.number(), generation: v.number() })),
 		workPhase: v.union(
 			...(
 				[

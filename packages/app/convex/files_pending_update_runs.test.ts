@@ -857,10 +857,10 @@ describe("review jobs", () => {
 	test("a reviewed folder delete archives its files and metadata docs within the unit budget", async () => {
 		const f = await fixture();
 		const parentId = await saved_folder(f, "big");
-		// Keep all 150 files and 3,000 metadata docs across the cohort's small steps.
+		// 9 files pass the 8-node page, and their 180 metadata docs fill two 64-row pages and part of a third.
 		const fileIds = await f.t.run(async (ctx) => {
 			const ids: Id<"files_nodes">[] = [];
-			for (let index = 0; index < 150; index++) {
+			for (let index = 0; index < 9; index++) {
 				const name = `f${String(index).padStart(3, "0")}.md`;
 				const fileNodeId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
@@ -960,15 +960,15 @@ describe("review jobs", () => {
 				break;
 			}
 			if (cohort.phase === "complete") throw new Error("Review completed without metadata cleanup");
-			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 			if (pass === 9999) throw new Error("Review did not reach metadata cleanup");
 		}
 		const result = await finish_review(f, runId);
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
-		expect(stagePages, "Reviewed Delete stages metadata in one page per file").toHaveLength(150);
-		expect(cleanupPages, "Reviewed Delete cleans both metadata views in 94 pages").toMatchObject({
-			before: Array.from({ length: 47 }, (_, index) => index === 46 ? 56 : 64),
-			after: Array.from({ length: 47 }, (_, index) => index === 46 ? 56 : 64),
+		expect(stagePages, "Reviewed Delete stages metadata in one page per file").toHaveLength(9);
+		expect(cleanupPages, "Reviewed Delete cleans both metadata views in 6 pages").toMatchObject({
+			before: [64, 64, 52],
+			after: [64, 64, 52],
 		});
 
 		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
@@ -1345,7 +1345,7 @@ describe("review jobs", () => {
 				if (unit.cohortId) {
 					const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
 					if (cohort && cohort.phase !== "complete")
-						await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+						await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 				}
 				done = await purge();
 			}

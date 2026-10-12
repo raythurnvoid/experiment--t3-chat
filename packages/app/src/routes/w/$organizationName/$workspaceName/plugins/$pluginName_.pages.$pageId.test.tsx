@@ -1,9 +1,10 @@
 /**
  * @vitest-environment happy-dom
- * @vitest-environment-options {"happyDOM": {"settings": {"disableIframePageLoading": true}}}
+ * @vitest-environment-options {"settings": {"disableIframePageLoading": true}}
  *
  * By default happy-dom fetches each iframe page over the network. The option above turns that off,
- * so the iframe stays empty and the tests stub its `contentWindow`.
+ * so the iframe stays empty and the tests stub its `contentWindow`. Vitest already puts docblock
+ * options under `happyDOM`, so do not add that key here.
  *
  * These tests cover the route's state machine and message fields. WindowProxy identity,
  * sandbox navigation, concrete-origin delivery, and what `inert` does to focus and clicks all need

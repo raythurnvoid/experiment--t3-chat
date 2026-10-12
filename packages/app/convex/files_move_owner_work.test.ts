@@ -146,7 +146,7 @@ async function cleanup(f: Fixture, mode: "finish" | "abort") {
 				: files_move_owner_work_db_abort(ctx, step_args(f)),
 		);
 		expect(result._nay).toBeUndefined();
-		if (result._yay!.done) return;
+		if (result._yay!.done) return result._yay;
 	}
 	throw new Error("Owner cleanup did not finish");
 }
@@ -344,10 +344,9 @@ test("public Move joins empty owner phases in one step", async () => {
 		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
 		if (cohort?.step === step && cohort.workPhase === "finish_owners") cleanupSteps++;
 		if (cohort?.step === step && (cohort.workPhase === "owners_collect" || cohort.workPhase === "sides")) {
-			const cursor = cohort.stagingCursor
-				? (JSON.parse(cohort.stagingCursor) as { order: number })
-				: { order: -1 };
-			const record = await ctx.db.query("files_move_cohort_nodes")
+			const cursor = cohort.stagingCursor ? (JSON.parse(cohort.stagingCursor) as { order: number }) : { order: -1 };
+			const record = await ctx.db
+				.query("files_move_cohort_nodes")
 				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohortId).gt("order", cursor.order))
 				.first();
 			if (record?.nodeId === sourceId) {
@@ -356,12 +355,14 @@ test("public Move joins empty owner phases in one step", async () => {
 			}
 		}
 		if (cohort?.step === step && cohort.workPhase === "descendants" && cohort.planningCursor === "trees") {
-			let range = await ctx.db.query("files_move_work_ranges")
+			let range = await ctx.db
+				.query("files_move_work_ranges")
 				.withIndex("by_cohort_phase_status_order", (q) =>
 					q.eq("cohortId", cohortId).eq("phase", "collect").eq("status", "running"),
 				)
 				.first();
-			range ??= await ctx.db.query("files_move_work_ranges")
+			range ??= await ctx.db
+				.query("files_move_work_ranges")
 				.withIndex("by_cohort_phase_status_order", (q) =>
 					q.eq("cohortId", cohortId).eq("phase", "collect").eq("status", "queued"),
 				)
@@ -384,9 +385,10 @@ test("public Move joins empty owner phases in one step", async () => {
 	expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
 		_yay: null,
 	});
-	await test_finish_transfer_run(asUser, runId);
-	expect((await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.status)
-		.toBe("succeeded");
+	await test_finish_transfer_run(asUser, runId, undefined, { stepwise: true });
+	expect((await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
+		"succeeded",
+	);
 	expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toMatchObject({
 		_id: sourceId,
 		parentId: target._yay.nodeId,
@@ -409,7 +411,12 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 		if (cohort.workPhase === "publish") break;
 		expect(cohort.errorCode).toBeNull();
-		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: cohort.step });
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: f.cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
 		if (pass === 999) throw new Error("Pending scope staging did not finish");
 	}
 	for (const [index, proposal] of f.proposals.entries()) {
@@ -458,7 +465,12 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 		).toEqual(before.plain.map((doc) => doc._id));
 	}
 	const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
-	await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: cohort.step });
+	await f.t.action(internal.files_move_cohorts.run, {
+		cohortId: f.cohortId,
+		step: cohort.step,
+		runGeneration: cohort.runJob?.generation ?? null,
+		mode: "step",
+	});
 	for (const proposal of f.proposals) {
 		const metadata = await f.t.query(internal.files_metadata.get_by_path, {
 			organizationId: f.db.organizationId,
@@ -517,7 +529,12 @@ test("public Stop restores a partly staged unselected pending scope page", async
 		const before = await pending_scope_docs(f, proposal, "before");
 		if (before.plain.length > 0) break;
 		expect(cohort.publishedAt).toBeNull();
-		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: cohort.step });
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: f.cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
 		if (pass === 999) throw new Error("Pending scope did not start");
 	}
 	expect(
@@ -559,7 +576,12 @@ test("public Move tags an old pending chunk without copying it, and the drain wa
 	for (let pass = 0; pass < 1000; pass++) {
 		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 		if ((await pending_scope_docs(f, proposal, "before")).plain.length > 0) break;
-		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: cohort.step });
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: f.cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
 		if (pass === 999) throw new Error("Pending scope did not start");
 	}
 	const read_old_chunk = () => f.t.run((ctx) => ctx.db.get("files_plain_text_chunks", oldChunkId));
@@ -886,7 +908,12 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 		if (cohort?.workPhase === "publish") break;
 		if (cohort) {
 			expect(cohort.errorCode).toBeNull();
-			await t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await t.action(internal.files_move_cohorts.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 		} else await t.mutation(internal.files_transfer.advance, { runId });
 		if (pass === 1999) throw new Error("Native anchor Move did not reach publication");
 	}
@@ -979,12 +1006,22 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 		expect(affectedMetadata?.fields).toEqual(["metadata.affected"]);
 	}
 	await check_unrelated(false);
-	await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+	await t.action(internal.files_move_cohorts.run, {
+		cohortId,
+		step: cohort.step,
+		runGeneration: cohort.runJob?.generation ?? null,
+		mode: "step",
+	});
 	await check_unrelated(true);
 	cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 	expect(cohort.phase).toBe("published");
 	for (let pass = 0; pass < 1000; pass++) {
-		await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+		await t.action(internal.files_move_cohorts.run, {
+			cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
 		cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 		if (cohort.workPhase === "finish_nodes" && cohort.cleanupCursor) break;
 		if (pass === 999) throw new Error("Native cleanup did not start its node page");
@@ -1022,7 +1059,7 @@ test("collects and stages several native owner pages once, then keeps chosen IDs
 			.collect(),
 	);
 	expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))?.pendingWorkCount).toBe(0);
-	await cleanup(f, "finish");
+	expect(await cleanup(f, "finish"), "the final native owner page is reported").toEqual({ done: true, paged: true });
 	for (const work of staged) {
 		if (work.afterPlaceId)
 			expect(
@@ -1163,7 +1200,12 @@ test("closes after-only private parent aliases and restores partial owner stagin
 		}
 		if (cohort) {
 			expect(cohort.errorCode).toBeNull();
-			await t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await t.action(internal.files_move_cohorts.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 		} else {
 			const run = (await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))!;
 			if (run.step === "planning") await t.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
@@ -1223,7 +1265,12 @@ test("closes after-only private parent aliases and restores partial owner stagin
 	for (let pass = 0; pass < 2000; pass++) {
 		cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 		if (cohort.phase === "complete") break;
-		await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+		await t.action(internal.files_move_cohorts.run, {
+			cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
 		if (pass === 1999) throw new Error("Native alias abort did not finish");
 	}
 	await test_finish_pending_update_run(asUser, runId);

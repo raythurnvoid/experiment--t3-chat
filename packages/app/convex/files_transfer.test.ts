@@ -523,7 +523,7 @@ describe("Rename at a group boundary", () => {
 		for (let pass = 0; pass < 500; pass++) {
 			const cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 			if (cohort.phase === "complete") break;
-			await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 		}
 		expect((await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))?.phase).toBe("complete");
 		await t.mutation(internal.files_transfer.settle_cohort, { cohortId });
@@ -4553,7 +4553,7 @@ describe("move", () => {
 					if (step === 20) throw new Error("The other Move did not hold the child");
 					const cohort = await t.run((ctx) => ctx.db.query("files_move_cohorts").first());
 					if (cohort)
-						await t.mutation(internal.files_move_cohorts.advance, { cohortId: cohort._id, step: cohort.step });
+						await t.mutation(internal.files_move_cohorts.advance, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, join: false });
 					else await t.mutation(internal.files_transfer.advance, { runId: other._yay.runId });
 				}
 			}

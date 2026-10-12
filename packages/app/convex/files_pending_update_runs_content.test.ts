@@ -75,7 +75,12 @@ describe("review job content", () => {
 				await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
 				break;
 			}
-			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 			if (pass === 49_999) throw new Error("Partial Save did not finish");
 		}
 		const remainder = await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id));
@@ -144,7 +149,12 @@ describe("review job content", () => {
 				expect(cohort.workPhase).toBe("finish_content");
 				break;
 			}
-			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 			if (pass === 49_999) throw new Error("Partial Save did not publish");
 		}
 		const beforeRepair = await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id));
@@ -200,7 +210,12 @@ describe("review job content", () => {
 			if (!cohort) throw new Error("Expected the partial Save group");
 			repairProgress(cohort, `Move ${cohort.phase}/${cohort.workPhase} step ${cohort.step}`);
 			if (cohort.phase === "complete") break;
-			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 			if (pass === 49_999) throw new Error("Stopped partial Save did not finish repair");
 		}
 		await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
@@ -258,7 +273,12 @@ describe("review job content", () => {
 		const cohort = async () => (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 		for (let pass = 0; (await cohort()).publishedAt === null; pass++) {
 			if (pass === 5_000) throw new Error("The Save did not publish");
-			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: (await cohort()).step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				mode: "step",
+			});
 		}
 		// An organization owner can pay for this group. Their user doc can be deleted after publication.
 		await f.t.run(async (ctx) => {
@@ -269,7 +289,12 @@ describe("review job content", () => {
 		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 		for (let pass = 0; (await cohort()).phase !== "complete"; pass++) {
 			if (pass === 100) break;
-			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: (await cohort()).step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				mode: "step",
+			});
 		}
 		expect((await cohort()).phase, "published repair finishes without its payer").toBe("complete");
 		expect(errors.mock.calls.map((call) => call[0])).toEqual([

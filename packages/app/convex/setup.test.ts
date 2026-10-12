@@ -1,9 +1,11 @@
 import "./setup-env.test.ts";
-import { afterEach, expect, vi } from "vitest";
-import { convexTest, type TestConvexRoot } from "convex-test";
+// `test_convex` and the cleanup after each test live in setup-base.test.ts, so a test file that
+// needs nothing else can skip the app modules this file loads.
+import { test_convex } from "./setup-base.test.ts";
+import { expect, vi } from "vitest";
+import type { TestConvexRoot } from "convex-test";
 import type { FunctionArgs } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
-import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
 import { make } from "../src/lib/utils.ts";
 import type { DataModel, Doc, Id, TableNames } from "./_generated/dataModel";
@@ -15,11 +17,6 @@ import {
 } from "../server/files-pending-overlay.ts";
 import { files_move_reservations_db_wrap } from "../server/files-move-reservations.ts";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
-import polar_test from "@convex-dev/polar/test";
-import presence_test from "@convex-dev/presence/test";
-import workpool_test from "@convex-dev/workpool/test";
-import rate_limiter_test from "@convex-dev/rate-limiter/test";
-import r2_test from "@convex-dev/r2/test";
 import {
 	organizations_db_create,
 	organizations_db_create_workspace,
@@ -48,92 +45,7 @@ import { files_media_validation_db_capture_versions } from "./files_media_valida
 
 // #region helpers
 
-const convex_test_modules = import.meta.glob("./**/*.ts");
-
-const test_convex_instances: Array<ReturnType<typeof convexTest>> = [];
-
-// convex-test runs scheduled functions as floating promises — nothing awaits them, and teardown does
-// not either. A README seed seeded by one test was still issuing its R2 writes while a later test
-// ran, so those writes landed in that test's `globalThis.fetch` spy and failed an exact-compare
-// assertion at random. Cancel what has not started yet, then wait for whatever already has, so every
-// test owns its own background work instead of leaving it for the next one.
-afterEach(async () => {
-	const instances = test_convex_instances.splice(0);
-	if (instances.length === 0) {
-		return;
-	}
-
-	// Vitest registers this hook when the file is imported, and its default `stack` order runs such
-	// hooks *after* each test file's own `afterEach` — including the ones that put the real `fetch`
-	// back. So a request sent from here would really leave the machine. We block it: these leftover
-	// jobs are checked by no test, and they fail with or without network, only slower.
-	const realFetch = globalThis.fetch;
-	globalThis.fetch = (() => Promise.reject(new Error("fetch is closed during test teardown"))) as typeof fetch;
-
-	try {
-		for (const t of instances) {
-			try {
-				await t.run(async (ctx) => {
-					const jobs = await ctx.db.system.query("_scheduled_functions").collect();
-					for (const job of jobs) {
-						if (job.state.kind === "pending") {
-							await ctx.scheduler.cancel(job._id);
-						}
-					}
-				});
-				await t.finishInProgressScheduledFunctions();
-			} catch {
-				// Best-effort cleanup. A test that already deleted its own data can make this throw,
-				// and a cleanup failure must not turn into a test failure.
-			}
-		}
-	} finally {
-		globalThis.fetch = realFetch;
-	}
-});
-
-// Keep the named return type; inferring it makes the full type check slower.
-export function test_convex(
-	options: {
-		transactionLimits?: Parameters<typeof convexTest>[0]["transactionLimits"];
-	} = {},
-): TestConvexRoot<DataModel> {
-	const t = convexTest({ schema, modules: convex_test_modules, transactionLimits: options.transactionLimits });
-	test_convex_instances.push(t);
-	const withIdentity = t.withIdentity.bind(t);
-	t.withIdentity = ((identity) => {
-		// Use realistic Clerk identities by default; tests that cover the missing
-		// email invariant opt out explicitly with `email: undefined`.
-		if (identity.issuer === "https://clerk.test" && !("email" in identity)) {
-			return withIdentity({
-				...identity,
-				email: "test-user@example.com",
-			});
-		}
-
-		return withIdentity(identity);
-	}) as typeof t.withIdentity;
-	t.registerComponent(
-		"polar",
-		polar_test.schema as unknown as Parameters<typeof t.registerComponent>[1],
-		polar_test.modules as unknown as Parameters<typeof t.registerComponent>[2],
-	);
-	presence_test.register(t as unknown as Parameters<typeof presence_test.register>[0]);
-	workpool_test.register(t, "billing_workpool_bootstrap");
-	workpool_test.register(t, "billing_workpool_cancellation");
-	workpool_test.register(t, "billing_workpool_usage_event");
-	workpool_test.register(t, "files_content_materialization_workpool");
-	workpool_test.register(t, "files_upload_conversion_workpool");
-	workpool_test.register(t, "files_transfer_workpool");
-	workpool_test.register(t, "data_deletion_workpool");
-	workpool_test.register(t, "github_mounts_workpool");
-	workpool_test.register(t, "plugins_runtime_workpool");
-	workpool_test.register(t, "plugins_scheduled_runs_workpool");
-	workpool_test.register(t, "ai_chat_bash_jobs_workpool");
-	rate_limiter_test.register(t, "rate_limiter");
-	r2_test.register(t as unknown as Parameters<typeof r2_test.register>[0]);
-	return t;
-}
+export { test_convex };
 
 /**
  * Like `t.run`, but the writes of `fn` go through the overlay capture of the mutation wrapper, and
@@ -325,6 +237,7 @@ export async function test_finish_transfer_run(
 	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
 	runId: Id<"files_transfer_runs">,
 	onStep?: () => Promise<void>,
+	options: { stepwise?: boolean } = {},
 ) {
 	let previous: string | undefined;
 	while (true) {
@@ -391,9 +304,12 @@ export async function test_finish_transfer_run(
 		if (cohort) {
 			const cohortId = cohort._id;
 			if (cohort.origin.kind !== "transfer" || cohort.origin.runId !== runId) throw new Error("Transfer waits for another Move");
-			await asUser.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
-			// Only release can complete the cohort.
-			if (cohort.workPhase === "release" && (await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete") {
+			const result = await asUser.action(internal.files_move_cohorts.run, {
+				cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null,
+				mode: onStep || options.stepwise ? "step" : "chain",
+			});
+			// The worker reports completion after release. No extra completion probe is needed.
+			if (result === "complete") {
 				await test_wake_move_cohort(asUser, cohortId);
 				await asUser.mutation(internal.files_transfer.settle_cohort, { cohortId });
 			}
@@ -607,6 +523,7 @@ async function test_save_file_pending_update_core(
 export async function test_finish_pending_update_run(
 	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
 	runId: Id<"files_pending_update_runs">,
+	options: { stepwise?: boolean } = {},
 ) {
 	let previous: string | undefined;
 	while (true) {
@@ -681,10 +598,11 @@ export async function test_finish_pending_update_run(
 			if (unit?.cohortId) {
 				if (!cohort) throw new Error("Missing review cohort");
 				const cohortId = cohort._id;
-				if (cohort.phase !== "complete") await asUser.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
-				// Only release can complete the cohort.
-				if (cohort.phase === "complete" || (cohort.workPhase === "release" &&
-					(await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete")) {
+				const result = cohort.phase === "complete" ? "complete" : await asUser.action(internal.files_move_cohorts.run, {
+					cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null,
+					mode: options.stepwise ? "step" : "chain",
+				});
+				if (result === "complete") {
 					await test_wake_move_cohort(asUser, cohortId);
 					await asUser.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
 				}

@@ -259,26 +259,40 @@ describe("discover_sources", () => {
 		const f = await fixture();
 		const folderIds: Id<"files_nodes">[] = [];
 		for (const workspace of ["current", "personal"] as const) {
-			const nodeId = await f.create({
-				path: "/.agents/skills/example/noise-0000.md",
-				textContent: "Not a skill",
-				workspace,
-			});
-			// Clone a valid file header: discovery reads paths, not these noise files' content.
-			await f.t.run(async (ctx) => {
-				const node = (await ctx.db.get("files_nodes", nodeId))!;
-				folderIds.push(node.parentId as Id<"files_nodes">);
-				const { _id, _creationTime, ...fields } = node;
-				for (let index = 1; index < 550; index++) {
-					const name = `noise-${String(index).padStart(4, "0")}.md`;
-					const path = `/.agents/skills/example/${name}`;
-					await ctx.db.insert("files_nodes", { ...fields, name, path, treePath: path });
-				}
-			});
-			await f.create({
+			const skillId = await f.create({
 				path: "/.agents/skills/z-late/SKILL.md",
 				textContent: "---\nname: z-late\ndescription: Late\n---\n",
 				workspace,
+			});
+			// Clone its folder as `example` with 201 noise files, more than the 4 catalog pages of 50 could list.
+			// Discovery reads paths, not their content, and each real Save costs seconds.
+			await f.t.run(async (ctx) => {
+				const { _id, _creationTime, ...file } = (await ctx.db.get("files_nodes", skillId))!;
+				const {
+					_id: _folderId,
+					_creationTime: _folderCreationTime,
+					...folder
+				} = (await ctx.db.get("files_nodes", file.parentId as Id<"files_nodes">))!;
+				const parentId = await ctx.db.insert("files_nodes", {
+					...folder,
+					name: "example",
+					sortName: files_sort_text_key("example"),
+					path: "/.agents/skills/example",
+					treePath: "/.agents/skills/example/",
+				});
+				folderIds.push(parentId);
+				for (let index = 0; index < 201; index++) {
+					const name = `noise-${String(index).padStart(4, "0")}.md`;
+					const path = `/.agents/skills/example/${name}`;
+					await ctx.db.insert("files_nodes", {
+						...file,
+						parentId,
+						name,
+						sortName: files_sort_text_key(name),
+						path,
+						treePath: path,
+					});
+				}
 			});
 		}
 		// Files inside a skill folder cost nothing: each folder costs one exact path read.
@@ -305,8 +319,27 @@ describe("discover_sources", () => {
 
 	test("discovers exact skill paths without scanning nested instructions or resources", async () => {
 		const f = await fixture();
-		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
-		await f.create({ path: "/elsewhere/SKILL.md", textContent: skillText });
+		const skillId = await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		// Clone it as `/elsewhere/SKILL.md`: discovery reads paths, not content, and each real Save costs seconds.
+		await f.t.run(async (ctx) => {
+			const { _id, _creationTime, ...file } = (await ctx.db.get("files_nodes", skillId))!;
+			const {
+				_id: _folderId,
+				_creationTime: _folderCreationTime,
+				...folder
+			} = (await ctx.db.get("files_nodes", file.parentId as Id<"files_nodes">))!;
+			const parentId = await ctx.db.insert("files_nodes", {
+				...folder,
+				parentId: files_ROOT_ID,
+				name: "elsewhere",
+				sortName: files_sort_text_key("elsewhere"),
+				path: "/elsewhere",
+				treePath: "/elsewhere/",
+				pathDepth: 1,
+			});
+			const path = "/elsewhere/SKILL.md";
+			await ctx.db.insert("files_nodes", { ...file, parentId, path, treePath: path, pathDepth: 2 });
+		});
 		await f.create({ path: "/.agents/skills/example/references/details.md", textContent: "RESOURCE_BODY" });
 		await f.create({ path: "/invoices/AGENTS.md", textContent: "SIBLING_BODY" });
 		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([
@@ -387,8 +420,25 @@ describe("discover_sources", () => {
 
 	test("filters restricted file paths before exposing names or invalid-source warnings", async () => {
 		const f = await fixture();
-		const secret = await f.create({ path: "/.agents/skills/secret/SKILL.md", textContent: "PRIVATE_INVALID" });
-		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		const exampleId = await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		// Clone it as `/.agents/skills/secret/SKILL.md`: discovery reads paths and access, not content.
+		const secret = await f.t.run(async (ctx) => {
+			const { _id, _creationTime, ...file } = (await ctx.db.get("files_nodes", exampleId))!;
+			const {
+				_id: _folderId,
+				_creationTime: _folderCreationTime,
+				...folder
+			} = (await ctx.db.get("files_nodes", file.parentId as Id<"files_nodes">))!;
+			const parentId = await ctx.db.insert("files_nodes", {
+				...folder,
+				name: "secret",
+				sortName: files_sort_text_key("secret"),
+				path: "/.agents/skills/secret",
+				treePath: "/.agents/skills/secret/",
+			});
+			const path = "/.agents/skills/secret/SKILL.md";
+			return await ctx.db.insert("files_nodes", { ...file, parentId, path, treePath: path });
+		});
 		await f.t.run((ctx) => ctx.db.patch("files_nodes", secret, { restrictedScopeNodeId: secret }));
 		const second = await f.member(true);
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, second);

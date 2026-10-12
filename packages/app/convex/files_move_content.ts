@@ -18,7 +18,6 @@ import { files_compute_wc_counts, files_nodes_db_insert_committed_text_chunks } 
 import { files_metadata_content_stage_docs } from "./files_metadata.ts";
 import { files_stored_uploads_cost_cents, files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { files_media_dependencies_db_retire } from "./files_media_dependencies.ts";
-import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops.ts";
 import { billing_db_check_paid_plan, billing_db_emit_file_save, billing_db_emit_file_upload } from "./billing_db.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
@@ -29,7 +28,10 @@ import {
 import { r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_client.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_enter } from "../server/files-move-reservations.ts";
-import { files_pending_overlay_db_set_cohort_materialization } from "../server/files-pending-overlay.ts";
+import {
+	files_pending_overlay_db_can_join_step,
+	files_pending_overlay_db_set_cohort_materialization,
+} from "../server/files-pending-overlay.ts";
 import {
 	files_chunk_markdown_add_plain_text,
 	files_chunk_markdown_bounds,
@@ -51,8 +53,8 @@ type Context = Omit<files_pending_updates_CohortContentContext, "preparationFenc
 const PAGE_SIZE = 8;
 
 /**
- * A stage or repair step runs pages until a transaction limit is near, or until this many pages.
- * Transaction metrics do not count run time, so this count bounds it.
+ * A stage or repair step runs pages while `files_pending_overlay_db_can_join_step` allows more work, up
+ * to this many pages. Transaction metrics do not count run time, so this count bounds it.
  */
 const STEP_MAX_PAGES = 32;
 
@@ -219,11 +221,15 @@ export async function files_move_content_db_create(
 	return Result({ _yay: contentId });
 }
 
-export async function files_move_content_action_prepare(ctx: ActionCtx, args: Context) {
+export async function files_move_content_action_prepare(
+	ctx: ActionCtx,
+	args: Context & { runGeneration: number | null },
+) {
 	const begun = await ctx.runMutation(internal.files_pending_updates.begin_cohort_content_preparation, args);
 	if (begun._nay) return begun;
 	if (begun._yay.done) return Result({ _yay: null });
-	const cohortContent = { ...args, preparationFence: begun._yay.preparationFence };
+	const { runGeneration: _runGeneration, ...context } = args;
+	const cohortContent = { ...context, preparationFence: begun._yay.preparationFence };
 	const data = await ctx.runQuery(internal.files_pending_updates.get_cohort_content_preparation, cohortContent);
 	if (data._nay) return data;
 	const { phase: _phase, preparationFence: _preparationFence, ...scope } = data._yay;
@@ -247,6 +253,7 @@ async function db_progress(
 	phase: Doc<"files_move_cohort_content">["phase"],
 	part: number,
 	cursor: string | null,
+	paged: boolean,
 	nextChunkIndex = 0,
 	chunkBounds?: ArrayBuffer,
 ) {
@@ -256,7 +263,7 @@ async function db_progress(
 		nextChunkIndex,
 		chunkBounds,
 	});
-	return Result({ _yay: { done: false } });
+	return Result({ _yay: { done: false, paged } });
 }
 
 /**
@@ -319,8 +326,6 @@ async function db_input(ctx: MutationCtx, content: Doc<"files_move_cohort_conten
 }
 
 type StageStep = {
-	// Convex allows one `.paginate()` per function call, so a step ends after the page that used it.
-	paginated: boolean;
 	// Each prepared text is read once per step, not once per page. `chunk_page` keeps its chunk bounds.
 	inputs: Partial<Record<"staged" | "unstaged", ReturnType<typeof db_input>>>;
 };
@@ -357,13 +362,14 @@ function changes_saved_content(prepared: NonNullable<Doc<"files_move_cohort_cont
 }
 
 /**
- * One stage step. It reads at most one `.paginate()` page, the Convex limit per call.
+ * One stage page. It reads at most one `.paginate()` page, the Convex limit per call, and then
+ * reports `paged`.
  */
 async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 	const current = await db_current(ctx, args);
 	if (current._nay) return current;
 	const { content, cohort, proposal, item } = current._yay;
-	if (content.sealed) return Result({ _yay: { done: true } });
+	if (content.sealed) return Result({ _yay: { done: true, paged: false } });
 	if (!content.prepared) return Result({ _nay: { message: "This content is still preparing." } });
 	const record = await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId);
 	const node = await files_saved_placement_db_get_node(ctx.db, content.nodeId, { cohortId: cohort._id, view: "after" });
@@ -459,7 +465,6 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 		} else break;
 	}
 	if (phase === "sources") {
-		step.paginated = true;
 		if (part < 2) {
 			const table = part === 0 ? "files_text_chunks" : "files_plain_text_chunks";
 			const page = await source_chunks(table).paginate({ cursor, numItems: PAGE_SIZE });
@@ -470,6 +475,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 				"sources",
 				page.isDone ? part + 1 : part,
 				page.isDone ? null : page.continueCursor,
+				true,
 			);
 		}
 		const page = await source_updates().paginate({ cursor, numItems: 1 });
@@ -480,6 +486,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 			page.isDone ? "text" : "sources",
 			page.isDone ? 0 : part,
 			page.isDone ? null : page.continueCursor,
+			true,
 		);
 	}
 	if (phase === "text" || phase === "plain_text") {
@@ -505,15 +512,15 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 					"text",
 					0,
 					null,
+					false,
 					content.nextChunkIndex + page.length,
 					chunks._yay.chunkBounds,
 				);
 		}
-		return await db_progress(ctx, content, "updates", 0, null);
+		return await db_progress(ctx, content, "updates", 0, null, false);
 	}
 	if (phase === "updates") {
 		if (prepared.kind === "saved_yjs") {
-			step.paginated = true;
 			const page = await ctx.db
 				.query("files_yjs_updates")
 				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
@@ -529,7 +536,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 				.paginate({ cursor, numItems: 1 });
 			for (const { _id: _id, _creationTime: _time, ...row } of page.page)
 				await ctx.db.insert("files_yjs_updates", { ...row, moveView: tag });
-			if (!page.isDone) return await db_progress(ctx, content, "updates", 0, page.continueCursor);
+			if (!page.isDone) return await db_progress(ctx, content, "updates", 0, page.continueCursor, true);
 			if (content.trustedStageId) {
 				const stage = await ctx.db.get("files_yjs_trusted_update_stages", content.trustedStageId);
 				if (
@@ -554,7 +561,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 				});
 			}
 		}
-		return await db_progress(ctx, content, "pending_text", 0, null);
+		return await db_progress(ctx, content, "pending_text", 0, null, prepared.kind === "saved_yjs");
 	}
 	if (phase === "pending_text" || phase === "pending_plain_text") {
 		if (part < 2) {
@@ -564,7 +571,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 			// mutation. Each `take` from the start then gets the next untagged chunks, with no cursor.
 			const rows = await pending_chunks(table).take(PAGE_SIZE);
 			for (const row of rows) await ctx.db.patch(table, row._id, { moveView: beforeTag });
-			return await db_progress(ctx, content, "pending_text", rows.length < PAGE_SIZE ? part + 1 : part, null);
+			return await db_progress(ctx, content, "pending_text", rows.length < PAGE_SIZE ? part + 1 : part, null, false);
 		}
 		const unstaged = await input("unstaged");
 		if (unstaged && shape.rootKind) {
@@ -605,15 +612,15 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 					"pending_text",
 					part,
 					null,
+					false,
 					content.nextChunkIndex + PAGE_SIZE,
 					chunks._yay.chunkBounds,
 				);
 		}
-		return await db_progress(ctx, content, "metadata", 0, null);
+		return await db_progress(ctx, content, "metadata", 0, null, false);
 	}
 	if (phase === "metadata") {
 		if (part < 2) {
-			step.paginated = true;
 			// Tagging removes each doc from the range. Long field keys make native cursors too large to store.
 			const page = await metadata_docs(part).paginate({
 				cursor: null,
@@ -648,13 +655,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 						: {}),
 				});
 			}
-			return await db_progress(
-				ctx,
-				content,
-				"metadata",
-				page.isDone ? part + 1 : part,
-				null,
-			);
+			return await db_progress(ctx, content, "metadata", page.isDone ? part + 1 : part, null, true);
 		}
 		const accepted = await db_input(ctx, content, "staged");
 		const remainder = await db_input(ctx, content, "unstaged");
@@ -669,26 +670,27 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 		for (const row of docs.slice(content.nextChunkIndex, content.nextChunkIndex + PAGE_SIZE))
 			await ctx.db.insert("files_metadata_docs", { ...row, moveView: tag });
 		if (content.nextChunkIndex + PAGE_SIZE < docs.length)
-			return await db_progress(ctx, content, "metadata", part, null, content.nextChunkIndex + PAGE_SIZE);
+			return await db_progress(ctx, content, "metadata", part, null, false, content.nextChunkIndex + PAGE_SIZE);
 		await ctx.db.patch("files_move_cohort_items", item._id, { afterProposal });
-		return await db_progress(ctx, content, "seal", 0, null);
+		return await db_progress(ctx, content, "seal", 0, null, false);
 	}
 	return await db_seal(ctx, { content, cohort, proposal, node, afterPlaceId: record.afterPlaceId });
 }
 
 /**
- * Stage pages until a transaction limit is near. Root schedules the next call and owns the view switch.
+ * Stage pages while the step may join more work. A `.paginate()` page ends the step. Root schedules the
+ * next call and owns the view switch.
  */
 export async function files_move_content_db_stage(ctx: MutationCtx, args: Context) {
-	const step: StageStep = { paginated: false, inputs: {} };
+	const step: StageStep = { inputs: {} };
 	for (let pages = 1; ; pages++) {
 		const staged = await db_stage_page(ctx, args, step);
 		if (
 			staged._nay ||
 			staged._yay.done ||
-			step.paginated ||
+			staged._yay.paged ||
 			pages >= STEP_MAX_PAGES ||
-			(await files_subtree_ops_db_is_near_limits(ctx))
+			!(await files_pending_overlay_db_can_join_step(ctx))
 		)
 			return staged;
 	}
@@ -984,7 +986,7 @@ async function db_seal(
 		afterProposal:
 			afterProposal && remainder ? { ...afterProposal, size: files_get_utf8_byte_size(remainder.text) } : afterProposal,
 	});
-	return Result({ _yay: { done: true } });
+	return Result({ _yay: { done: true, paged: false } });
 }
 
 function retained_state_ids(proposal: WithoutSystemFields<Doc<"files_pending_updates">> | null) {
@@ -1216,24 +1218,24 @@ async function db_cleanup_part_page(
 }
 
 /**
- * Move owned side pages back to normal, or remove the side that lost the switch, until a
- * transaction limit is near. True when every side is done.
+ * Move owned side pages back to normal, or remove the side that lost the switch, while the step may
+ * join more work. It reads no `.paginate()` page, so it never reports one.
  */
 async function db_cleanup_page(ctx: MutationCtx, content: Doc<"files_move_cohort_content">, mode: "finish" | "abort") {
 	const marker = `${mode}:`;
 	const progress = content.phaseCursor?.startsWith(marker) ? content.phaseCursor.slice(marker.length) : null;
-	if (progress === "done") return true;
+	if (progress === "done") return { done: true, paged: false };
 	let { part } = phase_cursor(progress);
 	const cohort = (await ctx.db.get("files_move_cohorts", content.cohortId))!;
 	const scope = { organizationId: cohort.organizationId, workspaceId: cohort.workspaceId };
 	for (let pages = 1; part < 14; pages++) {
 		if (await db_cleanup_part_page(ctx, { content, mode, part, scope })) part++;
-		if (pages >= STEP_MAX_PAGES || (await files_subtree_ops_db_is_near_limits(ctx))) {
+		if (pages >= STEP_MAX_PAGES || !(await files_pending_overlay_db_can_join_step(ctx))) {
 			await ctx.db.patch("files_move_cohort_content", content._id, { phaseCursor: `${marker}${part}|` });
-			return false;
+			return { done: false, paged: false };
 		}
 	}
-	return true;
+	return { done: true, paged: false };
 }
 
 async function db_retire_states(
@@ -1418,8 +1420,9 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: Conte
 	if (entered._nay) return entered;
 	if (!cohort.privateAccountingApplied || !content.sealed)
 		throw should_never_happen("Move content finished before publication", args);
-	if (content.phaseCursor === "finish:done") return Result({ _yay: { done: true } });
-	if (!(await db_cleanup_page(ctx, content, "finish"))) return Result({ _yay: { done: false } });
+	if (content.phaseCursor === "finish:done") return Result({ _yay: { done: true, paged: false } });
+	const cleaned = await db_cleanup_page(ctx, content, "finish");
+	if (!cleaned.done) return Result({ _yay: cleaned });
 	const node = await ctx.db.get("files_nodes", content.nodeId);
 	const place = await files_saved_placement_db_get_node(ctx.db, content.nodeId, {
 		cohortId: cohort._id,
@@ -1519,7 +1522,7 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: Conte
 	}
 	await db_finish_resources(ctx, content, "finish");
 	await ctx.db.patch("files_move_cohort_content", content._id, { phaseCursor: "finish:done" });
-	return Result({ _yay: { done: true } });
+	return Result({ _yay: { done: true, paged: cleaned.paged } });
 }
 
 /**
@@ -1530,8 +1533,9 @@ export async function files_move_content_db_abort(ctx: MutationCtx, args: Contex
 	if (!content || content.cohortId !== args.cohortId) return Result({ _nay: { message: "Not found" } });
 	const entered = await files_pending_overlay_db_set_cohort_materialization(ctx, { ...args, mode: "abort" });
 	if (entered._nay) return entered;
-	if (content.phaseCursor === "abort:done") return Result({ _yay: { done: true } });
-	if (!(await db_cleanup_page(ctx, content, "abort"))) return Result({ _yay: { done: false } });
+	if (content.phaseCursor === "abort:done") return Result({ _yay: { done: true, paged: false } });
+	const cleaned = await db_cleanup_page(ctx, content, "abort");
+	if (!cleaned.done) return Result({ _yay: cleaned });
 	if (!content.prepared || changes_saved_content(content.prepared)) {
 		if (content.afterSnapshotId) await ctx.db.delete("files_yjs_snapshots", content.afterSnapshotId);
 		if (content.afterStatsId) await ctx.db.delete("file_stats", content.afterStatsId);
@@ -1544,7 +1548,7 @@ export async function files_move_content_db_abort(ctx: MutationCtx, args: Contex
 		await ctx.db.delete("files_yjs_docs_last_sequences", content.afterSequence.lastSequenceId);
 	await db_finish_resources(ctx, content, "abort");
 	await ctx.db.patch("files_move_cohort_content", content._id, { phaseCursor: "abort:done" });
-	return Result({ _yay: { done: true } });
+	return Result({ _yay: { done: true, paged: cleaned.paged } });
 }
 
 /**

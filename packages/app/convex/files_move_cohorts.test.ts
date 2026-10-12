@@ -155,13 +155,11 @@ async function native_rotation(count: number) {
 		requestId: crypto.randomUUID(),
 		kind: "accept",
 		expectedItemCount: count,
-		items: proposals
-			.slice(0, 100)
-			.map((proposal) => ({
-				pendingUpdateId: proposal!._id,
-				reviewedRevision: proposal!.revision,
-				selectedContentStateId: null,
-			})),
+		items: proposals.slice(0, 100).map((proposal) => ({
+			pendingUpdateId: proposal!._id,
+			reviewedRevision: proposal!.revision,
+			selectedContentStateId: null,
+		})),
 	});
 	if (started._nay) throw new Error(started._nay.message);
 	const runId = started._yay.runId;
@@ -171,13 +169,11 @@ async function native_rotation(count: number) {
 				membershipId: db.membershipId,
 				runId,
 				offset,
-				items: proposals
-					.slice(offset, offset + 100)
-					.map((proposal) => ({
-						pendingUpdateId: proposal!._id,
-						reviewedRevision: proposal!.revision,
-						selectedContentStateId: null,
-					})),
+				items: proposals.slice(offset, offset + 100).map((proposal) => ({
+					pendingUpdateId: proposal!._id,
+					reviewedRevision: proposal!.revision,
+					selectedContentStateId: null,
+				})),
 			}),
 		).toEqual({ _yay: null });
 	expect(await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId })).toEqual({
@@ -237,7 +233,12 @@ async function finish_cohort(
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId: f.runId });
 			return cohort;
 		}
-		await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: cohort._id,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: check ? "step" : "chain",
+		});
 	}
 	throw new Error("Rotation cohort did not finish");
 }
@@ -297,7 +298,12 @@ describe("Move cohort publication", () => {
 
 	test("Stop before publication keeps all old names and proposals", async () => {
 		const f = await native_rotation(3);
-		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: 0 });
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: f.cohortId,
+			step: 0,
+			mode: "step",
+			runGeneration: (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.runJob?.generation ?? null,
+		});
 		const activityId = await f.t.run(
 			async (ctx) =>
 				(await ctx.db
@@ -354,7 +360,12 @@ describe("Move cohort publication", () => {
 			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 			if (cohort.publishedAt !== null) break;
 			if (pass === 1_000) throw new Error("The group did not publish");
-			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 		}
 		// A timeout ends the Activity at once. The run cannot go while its group still repairs.
 		await f.t.run((ctx) =>
@@ -375,7 +386,12 @@ describe("Move cohort publication", () => {
 			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 			if (cohort.publishedAt !== null) break;
 			if (pass === 1_000) throw new Error("The group did not publish");
-			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 		}
 		const activity = () => f.t.run((ctx) => activities_db_require_by_source_id(ctx, f.runId));
 		expect(
@@ -391,7 +407,12 @@ describe("Move cohort publication", () => {
 
 	test("a new folder elsewhere does not stop publication", async () => {
 		const f = await native_rotation(3);
-		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: 0 });
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: f.cohortId,
+			step: 0,
+			mode: "step",
+			runGeneration: (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.runJob?.generation ?? null,
+		});
 		expect(
 			await f.asUser.mutation(api.files_nodes.create_folder_node, {
 				membershipId: f.db.membershipId,
@@ -407,7 +428,12 @@ describe("Move cohort publication", () => {
 
 	test("a fresh access change stops publication without changing old names", async () => {
 		const f = await native_rotation(3);
-		await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: 0 });
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: f.cohortId,
+			step: 0,
+			mode: "step",
+			runGeneration: (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.runJob?.generation ?? null,
+		});
 		await f.t.run((ctx) => files_media_validation_db_advance_version(ctx, f.scope));
 		const finished = await finish_cohort(f);
 		expect(finished.publishedAt, "a changed workspace clock prevents publication").toBeNull();
@@ -422,6 +448,7 @@ describe("Move cohort publication", () => {
 		await f.t.mutation(internal.files_move_cohorts.resume, {
 			cohortId: f.cohortId,
 			step: cohort!.step,
+			runGeneration: cohort!.runJob?.generation ?? null,
 			error: { name: "stopped", message: "This Move step is no longer current." },
 		});
 		const finished = await finish_cohort(f);
@@ -495,7 +522,12 @@ describe("Move cohort publication", () => {
 		async (end) => {
 			const f = await native_rotation(3);
 			await expect_slot_copies_view(f);
-			await f.t.action(internal.files_move_cohorts.run, { cohortId: f.cohortId, step: 0 });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId: f.cohortId,
+				step: 0,
+				runGeneration: (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.runJob?.generation ?? null,
+				mode: "step",
+			});
 			if (end === "stop") {
 				const activity = await f.t.run((ctx) => activities_db_require_by_source_id(ctx, f.runId));
 				expect(
@@ -631,7 +663,12 @@ async function transfer_workspace() {
 		for (let pass = 0; !(await isReady()); pass++) {
 			if (pass === 100) throw new Error("The Move did not reach the wanted step");
 			const cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
-			await t.mutation(internal.files_move_cohorts.advance, { cohortId, step: cohort.step });
+			await t.mutation(internal.files_move_cohorts.advance, {
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				join: false,
+			});
 		}
 		return cohortId;
 	};
@@ -734,7 +771,12 @@ describe("Move cohort and folder-wide jobs", () => {
 		const cohort = async () => (await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 		for (let pass = 0; (await cohort()).phase !== "complete"; pass++) {
 			if (pass === 100) throw new Error("The Move did not finish");
-			await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+			await w.t.mutation(internal.files_move_cohorts.advance, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				join: false,
+			});
 		}
 		// Drop the Move's wake, like a wake mutation that threw.
 		expect(await cancel("files_move_cohorts:wake_waiters")).toBe(1);
@@ -787,7 +829,12 @@ describe("Move cohort Activity deadline", () => {
 		const activity = () => w.t.run((ctx) => activities_db_require_by_source_id(ctx, runId));
 		const before = (await activity()).deadlineAt;
 		vi.setSystemTime(Date.now() + 20 * 60 * 1000);
-		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+		await w.t.mutation(internal.files_move_cohorts.advance, {
+			cohortId,
+			step: (await cohort()).step,
+			runGeneration: (await cohort()).runJob?.generation ?? null,
+			join: false,
+		});
 		const refreshed = (await activity()).deadlineAt;
 		expect(refreshed, "a repair step refreshes the Activity deadline").toBeGreaterThan(before);
 		// An agent's Move keeps the deadline it asked for.
@@ -795,7 +842,12 @@ describe("Move cohort Activity deadline", () => {
 			ctx.db.patch("files_transfer_runs", runId as Id<"files_transfer_runs">, { fixedDeadline: true }),
 		);
 		vi.setSystemTime(Date.now() + 60_000);
-		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+		await w.t.mutation(internal.files_move_cohorts.advance, {
+			cohortId,
+			step: (await cohort()).step,
+			runGeneration: (await cohort()).runJob?.generation ?? null,
+			join: false,
+		});
 		expect((await activity()).deadlineAt, "a repair step keeps a fixed deadline").toBe(refreshed);
 	});
 });
@@ -823,7 +875,12 @@ describe("Move cohort repair retries", () => {
 		const error = { name: "move_step_failed", message: "This Move step failed. Review it again.", cause };
 		const delays: number[] = [];
 		for (let failure = 0; failure < 4; failure++) {
-			await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error });
+			await w.t.mutation(internal.files_move_cohorts.resume, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				error,
+			});
 			delays.push(...(await nextRunDelays()));
 		}
 		expect(delays, "each repeated failure doubles the wait").toEqual([30_000, 60_000, 120_000, 240_000]);
@@ -840,8 +897,16 @@ describe("Move cohort repair retries", () => {
 			repairFailureCount: 4,
 			repairLastError: cause,
 		});
-		await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error: null });
-		expect(await nextRunDelays(), "a good step resets the wait").toEqual([0]);
+		const { step } = await cohort();
+		expect(await await w.t.mutation(internal.files_move_cohorts.resume, {
+			cohortId,
+			step: (await cohort()).step,
+			runGeneration: (await cohort()).runJob?.generation ?? null,
+			error: null,
+		}), "a good step resets the wait, and the worker goes on").toEqual({
+			kind: "next",
+			step: step + 1,
+		});
 		const reset = await cohort();
 		expect([reset.repairFailureCount, reset.repairNextRetryAt, reset.repairLastError]).toEqual([
 			undefined,
@@ -863,7 +928,12 @@ describe("Move cohort repair retries", () => {
 		await w.t.run((ctx) => ctx.db.patch("files_move_cohorts", cohortId, { repairFailureCount: 7 }));
 		const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 		const error = { name: "move_step_failed", message: "This Move step failed. Review it again." };
-		await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error });
+		await w.t.mutation(internal.files_move_cohorts.resume, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				error,
+			});
 		expect(errorLog.mock.calls.filter(([text]) => text === "Move repair stuck")).toHaveLength(1);
 		errorLog.mockRestore();
 		const retryAt = Date.now() + 60 * 60_000;
@@ -874,7 +944,12 @@ describe("Move cohort repair retries", () => {
 		vi.setSystemTime(Date.now() + 45 * 60_000);
 		await w.t.mutation(internal.files_transfer.advance, { runId });
 		await w.t.mutation(internal.files_move_cohorts.recover, {});
-		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: waiting.step });
+		await w.t.mutation(internal.files_move_cohorts.advance, {
+			cohortId,
+			step: waiting.step,
+			runGeneration: waiting.runJob?.generation ?? null,
+			join: false,
+		});
 		expect(await cohort(), "a wake does not try a waiting repair early").toMatchObject({
 			step: waiting.step,
 			repairFailureCount: 8,
@@ -882,7 +957,12 @@ describe("Move cohort repair retries", () => {
 		await w.t.mutation(internal.activities.recover_expired, { _test_disableReschedule: true });
 		expect((await activity()).status, "a waiting repair does not time out").toBe(status);
 		vi.setSystemTime(retryAt);
-		await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: waiting.step });
+		await w.t.mutation(internal.files_move_cohorts.advance, {
+			cohortId,
+			step: waiting.step,
+			runGeneration: waiting.runJob?.generation ?? null,
+			join: false,
+		});
 		expect((await cohort()).step, "the delayed try runs on time").toBe(waiting.step + 1);
 	});
 
@@ -900,6 +980,7 @@ describe("Move cohort repair retries", () => {
 			await w.t.mutation(internal.files_move_cohorts.resume, {
 				cohortId,
 				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
 				error: { name: "move_step_failed", message: "This Move step failed. Review it again." },
 			});
 		await fail();
@@ -933,7 +1014,12 @@ describe("Move cohort repair retries", () => {
 			errorMessage: expect.stringContaining("Your files are already in their new place."),
 		});
 		expect(activities_get_controls(stuck, w.db.userId).canStop, "Stop is hidden after the files moved").toBe(false);
-		await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error: null });
+		await w.t.mutation(internal.files_move_cohorts.resume, {
+			cohortId,
+			step: (await cohort()).step,
+			runGeneration: (await cohort()).runJob?.generation ?? null,
+			error: null,
+		});
 		const fixed = await activity();
 		expect([fixed.status, fixed.errorCode, fixed.errorMessage], "a good step clears the notice").toEqual([
 			"running",
@@ -948,7 +1034,18 @@ describe("Move cohort repair retries", () => {
 	] as const)("a %s Stop keeps its result when the repair then gets stuck", async (stop, status) => {
 		const { w, cohortId, cohort, activity } = await stuck_move(stop);
 		expect((await activity()).errorCode, "the stuck notice does not replace the Stop code").toBe(status);
-		await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error: null });
+		await w.t.mutation(internal.files_move_cohorts.resume, {
+			cohortId,
+			step: (await cohort()).step,
+			runGeneration: (await cohort()).runJob?.generation ?? null,
+			error: null,
+		});
+		// The worker goes on after a good step. Hand off like it does.
+		await w.t.mutation(internal.files_move_cohorts.handoff, {
+			cohortId,
+			step: (await cohort()).step,
+			runGeneration: (await cohort()).runJob?.generation ?? null,
+		});
 		await w.finish();
 		expect((await activity()).status).toBe(status);
 	});
@@ -964,7 +1061,12 @@ describe("Move cohort repair retries", () => {
 		const error = { name: "move_step_failed", message: "This Move step failed. Review it again." };
 		// The first failure aborts the unpublished group. The next ones are repair failures.
 		for (let failure = 0; failure < 4; failure++)
-			await w.t.mutation(internal.files_move_cohorts.resume, { cohortId, step: (await cohort()).step, error });
+			await w.t.mutation(internal.files_move_cohorts.resume, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				error,
+			});
 		expect(await cohort()).toMatchObject({ publishedAt: null, phase: "aborting", repairFailureCount: 3 });
 		expect((await w.t.run((ctx) => activities_db_require_by_source_id(ctx, runId))).errorCode).not.toBe(
 			"move_repair_stuck",
@@ -989,7 +1091,12 @@ describe("Move cohort repair retries", () => {
 					errorMessage: "stuck",
 				}),
 			);
-			await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+			await w.t.mutation(internal.files_move_cohorts.advance, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				join: false,
+			});
 		}
 		const done = await activity();
 		expect([done.status, done.errorCode, done.errorMessage], "the end of repair clears the notice").toEqual([
@@ -1039,7 +1146,12 @@ describe("Move cohort repair retries", () => {
 		expect(await pendingRunDelays(), "the starter's try runs at once, and a second click adds nothing").toEqual([
 			0, 120_000,
 		]);
-		await w.t.action(internal.files_move_cohorts.run, { cohortId, step: (await cohort()).step });
+		await w.t.action(internal.files_move_cohorts.run, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				mode: "step",
+			});
 		expect((await activity()).errorCode, "a try that works clears the notice").toBeUndefined();
 	});
 
@@ -1065,7 +1177,12 @@ describe("Move cohort repair retries", () => {
 		).toEqual([cohortId]);
 		await w.t.mutation(internal.files_move_cohorts.retry_now, { cohortId });
 		for (let pass = 0; (await cohort()).phase !== "complete" && pass < 100; pass++)
-			await w.t.action(internal.files_move_cohorts.run, { cohortId, step: (await cohort()).step });
+			await w.t.action(internal.files_move_cohorts.run, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				mode: "step",
+			});
 		expect((await cohort()).phase, "retry_now finishes the stuck group").toBe("complete");
 		await w.finish();
 		expect((await activity()).status).toBe("succeeded");
@@ -1221,7 +1338,12 @@ describe("Move cohort share rows", () => {
 		).toEqual({ _yay: null });
 		for (let pass = 0; (await cohort()).phase !== "complete"; pass++) {
 			if (pass === 100) throw new Error("The Move did not finish");
-			await w.t.mutation(internal.files_move_cohorts.advance, { cohortId, step: (await cohort()).step });
+			await w.t.mutation(internal.files_move_cohorts.advance, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				join: false,
+			});
 		}
 		const rows = await w.t.run((ctx) =>
 			ctx.db

@@ -3,10 +3,11 @@ import { R2 } from "@convex-dev/r2";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { expect, vi } from "vitest";
 import { encodeStateAsUpdate } from "yjs";
-import { api, internal } from "./_generated/api.js";
+import { api, components, internal } from "./_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_metadata_db_write_entries } from "./files_metadata.ts";
 import {
+	test_compact_metadata_catalog,
 	test_convex,
 	test_create_saved_text_file,
 	test_get_file_yjs_pointers,
@@ -19,7 +20,7 @@ import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import type { files_metadata_Entry } from "../shared/files-metadata.ts";
+import type { files_metadata_Entry, files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import { files_sort_compare, files_sort_text_key, type files_sort_Clause } from "../shared/files-sort.ts";
 import type { files_table_Filter } from "../shared/files-table.ts";
 
@@ -753,4 +754,201 @@ export function expected_ledger_keys(
 	return assetIds
 		.map((assetId) => r2_create_asset_key({ organizationId: db.organizationId, workspaceId: db.workspaceId, assetId }))
 		.sort();
+}
+
+// Search box door helpers for the files_nodes.search_box test files.
+
+/**
+ * Each seeded file spends one Yjs push and the sharing steps spend tree writes, so the strict
+ * per-user limits run out inside one fixture. Reset them between steps.
+ */
+export async function reset_file_write_rate_limits(t: ReturnType<typeof test_convex>, userId: Id<"users">) {
+	for (const name of ["files_yjs_push_update", "files_tree_write", "files_sharing_write"]) {
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name, key: userId });
+	}
+}
+
+/**
+ * Three tasks with frontmatter, one of them with metadata-map keys too, and a look-alike folder
+ * `/tasks-archive` that a tree-path bound with the wrong end character would include in `/tasks`.
+ */
+export async function seed_search_box_fixture(t: ReturnType<typeof test_convex>) {
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asOwner = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Search Box Owner",
+		email: "search-box-owner@example.com",
+	});
+	test_setup_r2_capture();
+
+	const openTaskId = await test_materialize_markdown_file({
+		t,
+		asUser: asOwner,
+		db,
+		path: "/tasks/2026-09-04-raw-media.md",
+		markdown: [
+			"---",
+			"status: open",
+			"priority: 3",
+			"regression: true",
+			"reported: 2026-09-04",
+			"tags:",
+			"  - teams",
+			"  - macos",
+			"source:",
+			"  channel: qa-and-feedback",
+			"---",
+			"Body",
+		].join("\n"),
+	});
+	await reset_file_write_rate_limits(t, db.userId);
+	const fixedTaskId = await test_materialize_markdown_file({
+		t,
+		asUser: asOwner,
+		db,
+		path: "/tasks/2026-08-20-waiting-room.md",
+		markdown: ["---", "status: fixed", "priority: 2", "reported: 2026-08-20", "---", "Body"].join("\n"),
+	});
+	await reset_file_write_rate_limits(t, db.userId);
+	const archivedTaskId = await test_materialize_markdown_file({
+		t,
+		asUser: asOwner,
+		db,
+		path: "/tasks-archive/2026-07-01-old.md",
+		markdown: ["---", "status: open", "priority: 1", "legacy: yes", "---", "Body"].join("\n"),
+	});
+	await reset_file_write_rate_limits(t, db.userId);
+
+	// The metadata map is the second metadata kind: this file is "fixed" in its frontmatter and "open"
+	// in its map, and its map holds a key with a colon.
+	const written = await asOwner.mutation(api.files_metadata.set_entries, {
+		membershipId: db.membershipId,
+		fileNodeId: fixedTaskId,
+		metadataYaml: ["status: open", "slack-message-id: '1757003021.482119'"].join("\n"),
+	});
+	if (written._nay) throw new Error(written._nay.message);
+
+	const { page: rootFolders } = await asOwner.query(api.files_nodes.list_tree_children, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		kind: "folder",
+		archived: false,
+		restricted: false,
+		paginationOpts: { numItems: 50, cursor: null },
+	});
+	const tasksFolderId = rootFolders.find((fileNode) => fileNode.path === "/tasks")!._id;
+
+	return { db, asOwner, openTaskId, fixedTaskId, archivedTaskId, tasksFolderId };
+}
+
+/**
+ * A member with no role at all, so the workspace lets them read nothing and only a share grant
+ * can let them in. The owner passes every check, so a refusal needs this second identity.
+ */
+export async function seed_grant_only_member(args: {
+	t: ReturnType<typeof test_convex>;
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+	suffix: string;
+}) {
+	const { t, db, suffix } = args;
+
+	const member = await t.run(async (ctx) => {
+		const userId = await ctx.db.insert("users", { clerkUserId: `clerk_search_box_${suffix}` });
+		const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId,
+			active: true,
+			pendingOrganizationRemoval: false,
+			updatedAt: Date.now(),
+		});
+		return { userId, membershipId };
+	});
+	return {
+		...member,
+		asMember: t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: member.userId,
+			name: `Search Box Member ${suffix}`,
+		}),
+	};
+}
+
+/**
+ * The first page of saved keys that start with `prefix`, once the catalog compactor applied every
+ * save.
+ */
+export async function list_keys(args: {
+	t: ReturnType<typeof test_convex>;
+	asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+	membershipId: Id<"organizations_workspaces_users">;
+	prefix?: string;
+}) {
+	await test_compact_metadata_catalog(args.t);
+	const result = await args.asWho.query(api.files_metadata.list_search_fields, {
+		membershipId: args.membershipId,
+		prefix: args.prefix ?? "",
+		paginationOpts: { numItems: 50, cursor: null },
+	});
+	return result.page;
+}
+
+/**
+ * The first page of saved string values of `fieldPath` that start with `prefix`, like `list_keys`.
+ */
+export async function list_values(args: {
+	t: ReturnType<typeof test_convex>;
+	asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+	membershipId: Id<"organizations_workspaces_users">;
+	fieldPath: string;
+	prefix: string;
+}) {
+	await test_compact_metadata_catalog(args.t);
+	const result = await args.asWho.query(api.files_metadata.list_search_values, {
+		membershipId: args.membershipId,
+		fieldPath: args.fieldPath,
+		prefix: args.prefix,
+		paginationOpts: { numItems: 50, cursor: null },
+	});
+	return result.page;
+}
+
+export const statusOpenPlans: files_metadata_SearchPlan[] = [
+	{ op: "eq", fieldPath: "frontmatter.status", value: "open" },
+	{ op: "eq", fieldPath: "metadata.status", value: "open" },
+];
+
+/**
+ * One first page of `search_saved`, as node ids, or the problem message.
+ */
+export async function search_saved_page(args: {
+	asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+	membershipId: Id<"organizations_workspaces_users">;
+	clause: FunctionArgs<typeof api.files_nodes.search_saved>["clause"];
+	folderPath?: string;
+}) {
+	const result = await args.asWho.query(api.files_nodes.search_saved, {
+		membershipId: args.membershipId,
+		clause: args.clause,
+		folderPath: args.folderPath,
+		paginationOpts: { numItems: 50, cursor: null },
+	});
+	return new Set(result.page.map((row) => (row.kind === "problem" ? row.message : row.nodeId)));
+}
+
+/**
+ * `search_saved_page` for each plan of one chip, as one set: a chip with two plans is two calls.
+ */
+export async function search_saved_plans(args: {
+	asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+	membershipId: Id<"organizations_workspaces_users">;
+	plans: files_metadata_SearchPlan[];
+	folderPath?: string;
+}) {
+	const pages = await Promise.all(
+		args.plans.map((plan) => search_saved_page({ ...args, clause: { kind: "metadata", plan } })),
+	);
+	return new Set(pages.flatMap((page) => [...page]));
 }

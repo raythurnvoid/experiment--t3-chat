@@ -1,5 +1,5 @@
 import { Result } from "common/errors-as-values-utils.ts";
-import type { WithoutSystemFields } from "convex/server";
+import type { RegisteredMutation, WithoutSystemFields } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
@@ -94,6 +94,9 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 const WAKE_PAGE_SIZE = 8;
 const METADATA_PAGE_SIZE = 64;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
+const RUN_BUDGET_MS = 5_000;
+const RUN_MAX_ADVANCE_CALLS = 128;
+const RECOVER_IDLE_MS = 2 * 60 * 1000;
 const CLEANUP_DEADLINE_MS = 5 * 60 * 1000;
 const REPAIR_RETRY_MS = 30 * 1000;
 const REPAIR_RETRY_MAX_MS = 60 * 60 * 1000;
@@ -496,14 +499,22 @@ async function db_reserve_saved(
 
 export async function files_move_cohorts_db_schedule(
 	ctx: MutationCtx,
-	args: { cohortId: Id<"files_move_cohorts">; delayMs?: number },
+	args: { cohortId: Id<"files_move_cohorts">; delayMs?: number; handoff?: boolean },
 ) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
-	if (cohort && cohort.phase !== "complete")
-		await ctx.scheduler.runAfter(args.delayMs ?? 0, internal.files_move_cohorts.run, {
-			cohortId: cohort._id,
-			step: cohort.step,
-		});
+	if (!cohort || cohort.phase === "complete") return;
+	if (!args.handoff && cohort.runJob?.step === cohort.step) {
+		const job = await ctx.db.system.get(cohort.runJob.id);
+		if (job?.state.kind === "pending" || job?.state.kind === "inProgress") return;
+	}
+	const generation = (cohort.runJob?.generation ?? 0) + 1;
+	const id = await ctx.scheduler.runAfter(args.delayMs ?? 0, internal.files_move_cohorts.run, {
+		cohortId: cohort._id,
+		step: cohort.step,
+		runGeneration: generation,
+		mode: "chain",
+	});
+	await ctx.db.patch("files_move_cohorts", cohort._id, { runJob: { id, step: cohort.step, generation } });
 }
 
 export async function files_move_cohorts_db_request_stop(
@@ -527,12 +538,13 @@ export async function files_move_cohorts_db_request_stop(
 }
 
 /**
- * Try a waiting repair now. The try is fenced by step, so a second click does nothing.
+ * Try a waiting repair now. A second click finds no waiting try and does nothing.
  */
 export async function files_move_cohorts_db_retry_repair_now(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 	if (cohort.phase === "complete" || cohort.repairNextRetryAt === undefined) return;
 	await ctx.db.patch("files_move_cohorts", cohort._id, { repairNextRetryAt: undefined });
-	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+	// A new run generation, so the delayed try does nothing when it runs.
+	await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id, handoff: true });
 }
 
 /**
@@ -765,7 +777,10 @@ async function db_items(
 			.withIndex("by_plan_runItem", (q) => q.eq("planId", plan._id).eq("runItemId", runItemId))
 			.unique();
 		if (!planned || planned.unitId !== unitId)
-			throw should_never_happen("Review item is missing from its unit graph", { cohortId: cohort._id, itemId: input._id });
+			throw should_never_happen("Review item is missing from its unit graph", {
+				cohortId: cohort._id,
+				itemId: input._id,
+			});
 		proposal = await ctx.db.get("files_pending_updates", input.pendingUpdateId);
 		if (!proposal || proposal.revision !== input.reviewedRevision || proposal.userId !== cohort.userId)
 			return Result({ _nay: { name: "needs_review", message: "A reviewed change was revised. Review it again." } });
@@ -1079,7 +1094,7 @@ async function db_descendants(
 			planningCursor: page.isDone ? "trees" : page.continueCursor,
 		});
 		// In this phase the work count holds only open child ranges. With none, no tree walk is left.
-		return Result({ _yay: { done: page.isDone && cohort.pendingWorkCount + added === 0 } });
+		return Result({ _yay: { done: page.isDone && cohort.pendingWorkCount + added === 0, paged: true } });
 	}
 	let range = await ctx.db
 		.query("files_move_work_ranges")
@@ -1110,6 +1125,7 @@ async function db_descendants(
 	const cursor = JSON.parse(range.cursor!) as { source: "before" | "normal"; cursor: string | null };
 	const parentId = range.range.nodeId;
 	let done = false;
+	let paged = false;
 	// Skip empty phases. A mutation may paginate only one range.
 	while (!done) {
 		if (cursor.cursor === null) {
@@ -1158,6 +1174,7 @@ async function db_descendants(
 								.eq("parentId", parentId),
 						)
 						.paginate({ cursor: cursor.cursor, numItems: 1 });
+		paged = true;
 		for (const entry of page.page) {
 			const nodeId = "nodeId" in entry ? entry.nodeId : entry._id;
 			const child = (await files_saved_placement_db_get_node(ctx.db, nodeId, {
@@ -1187,7 +1204,7 @@ async function db_descendants(
 		const latest = (await ctx.db.get("files_move_cohorts", cohort._id))!;
 		await ctx.db.patch("files_move_cohorts", cohort._id, { pendingWorkCount: latest.pendingWorkCount - 1 });
 	}
-	return Result({ _yay: { done: false } });
+	return Result({ _yay: { done: false, paged } });
 }
 
 async function db_headers(
@@ -1711,7 +1728,7 @@ async function db_sides(
 		done = !next;
 	}
 	await ctx.db.patch("files_move_cohorts", cohort._id, { stagingCursor: JSON.stringify(cursor) });
-	return Result({ _yay: { done } });
+	return Result({ _yay: { done, paged: paginated } });
 }
 
 async function db_cleanup_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
@@ -1755,9 +1772,9 @@ async function db_cleanup_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 			else await ctx.db.delete(table, row._id);
 		}
 		// A done page tagged or deleted its whole range, so the cleanup ends when no later family has rows.
-		return page.isDone && !later;
+		return { done: page.isDone && !later, paged: true };
 	}
-	return true;
+	return { done: true, paged: false };
 }
 
 async function db_record_unselected_proposal(
@@ -1817,7 +1834,7 @@ async function db_validate(
 			paged = media._yay.paged;
 			if (!media._yay.done) {
 				await ctx.db.patch("files_move_cohorts", cohort._id, { validationCursor: media._yay.cursor });
-				return Result({ _yay: { done: false } });
+				return Result({ _yay: { done: false, paged } });
 			}
 		}
 		await ctx.db.patch("files_move_cohort_items", item._id, { status: "validated", validatedEpoch: cohort.proofEpoch });
@@ -1826,7 +1843,7 @@ async function db_validate(
 			validationCursor: null,
 		});
 		// After a media page this step may not read more.
-		return Result({ _yay: { done: !paged && (await db_validate_done(ctx, cohort)) } });
+		return Result({ _yay: { done: !paged && (await db_validate_done(ctx, cohort)), paged } });
 	}
 	const record = await ctx.db
 		.query("files_move_cohort_nodes")
@@ -2136,6 +2153,7 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 		phase: "complete",
 		workPhase: "complete",
 		workId: null,
+		runJob: undefined,
 		repairFailureCount: undefined,
 		repairNextRetryAt: undefined,
 		repairLastError: undefined,
@@ -2157,12 +2175,14 @@ async function db_save_step(
 	cohort: Doc<"files_move_cohorts">,
 	patch: Partial<WithoutSystemFields<Doc<"files_move_cohorts">>> = {},
 	delayMs = 0,
+	schedule = true,
 ) {
 	const now = Date.now();
 	await ctx.db.patch("files_move_cohorts", cohort._id, {
 		step: cohort.step + 1,
 		// A delayed retry must not look lost to recover before it runs.
 		deadlineAt: now + delayMs + RUN_TIMEOUT_MS,
+		...(cohort.runJob ? { runJob: { ...cohort.runJob, step: cohort.step + 1 } } : {}),
 		repairFailureCount: undefined,
 		repairNextRetryAt: undefined,
 		repairLastError: undefined,
@@ -2197,7 +2217,7 @@ async function db_save_step(
 				await ctx.db.patch("files_pending_update_run_units", unit._id, { attemptDeadlineAt: now + RUN_TIMEOUT_MS });
 		}
 	}
-	await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id, delayMs });
+	if (schedule) await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id, delayMs, handoff: true });
 }
 
 /**
@@ -2270,14 +2290,321 @@ async function db_parent_running(ctx: MutationCtx, cohort: Doc<"files_move_cohor
 	return run?.revision === cohort.fence && item?.state === "pending" && item.attempt === cohort.attemptFence;
 }
 
+async function db_advance_step(
+	ctx: MutationCtx,
+	args: { cohortId: Id<"files_move_cohorts">; step: number; runGeneration: number | null },
+) {
+	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
+	if (
+		!cohort ||
+		cohort.phase === "complete" ||
+		cohort.step !== args.step ||
+		(cohort.runJob?.generation ?? null) !== args.runGeneration
+	)
+		return null;
+	// A failed repair waits for its delayed try. Other wakes must not retry it early.
+	if (cohort.repairNextRetryAt !== undefined && cohort.repairNextRetryAt > Date.now()) return null;
+	const call = { cohortId: cohort._id, fence: cohort.fence, attemptFence: cohort.attemptFence };
+	const repairing = cohort.publishedAt !== null || cohort.phase === "aborting";
+	let membership: Doc<"organizations_workspaces_users"> | null = null;
+	let organization: Doc<"organizations"> | null = null;
+	if (!repairing) {
+		const authorized = await db_get_membership(ctx, cohort);
+		if (authorized._nay || !(await db_parent_running(ctx, cohort))) {
+			await db_abort(
+				ctx,
+				cohort,
+				authorized._nay ?? { name: "stopped", message: "This Move stopped before it was saved." },
+			);
+			return null;
+		}
+		({ membership, organization } = authorized._yay);
+		const pins = cohort.clockPins;
+		// Keep this check even with no media: the same pins catch write policy and access changes while staging.
+		if (
+			!(await files_media_validation_db_versions_match(ctx, {
+				versions: [pins.organization, pins.workspace],
+				pendingVersions: pins.review ? [pins.review] : [],
+			}))
+		) {
+			await db_abort(ctx, cohort, {
+				name: "needs_review",
+				message: "Files or access changed. Review this Move again.",
+			});
+			return null;
+		}
+	}
+	const entered = repairing
+		? await files_pending_overlay_db_set_cohort_materialization(ctx, {
+				...call,
+				mode: cohort.publishedAt === null ? "abort" : "finish",
+			})
+		: await files_pending_overlay_db_set_cohort_staging(ctx, call);
+	if (entered._nay) return null;
+	let result:
+		| { _yay: { done: boolean; paged?: boolean }; _nay?: undefined }
+		| { _nay: { name?: string; message: string }; _yay?: undefined } = Result({ _yay: { done: false } });
+	let next: Doc<"files_move_cohorts">["workPhase"] | null = null;
+	if (cohort.workPhase === "items") {
+		result = await db_items(ctx, cohort, membership!);
+		if (result._yay) result._yay.paged = cohort.origin.kind === "review";
+		// Only a Transfer Rename has parent folders to create.
+		next =
+			cohort.origin.kind === "transfer" && (await ctx.db.get("files_transfer_runs", cohort.origin.runId))?.rename
+				? "rename_parents"
+				: "descendants";
+	} else if (cohort.workPhase === "rename_parents") {
+		result = await db_rename_parents(ctx, cohort, membership!);
+		next = "descendants";
+	} else if (cohort.workPhase === "descendants") {
+		result = await db_descendants(ctx, cohort, membership!);
+		next = "headers";
+	} else if (cohort.workPhase === "headers") {
+		result = await db_headers(ctx, cohort, membership!);
+		next = "owners_collect";
+		if (result._yay?.done) {
+			const subtree = await ctx.db
+				.query("files_move_work_ranges")
+				.withIndex("by_cohort_phase_status_order", (q) =>
+					q.eq("cohortId", cohort._id).eq("phase", "collect").eq("status", "queued"),
+				)
+				.first();
+			if (subtree) next = "descendants";
+		}
+	} else if (cohort.workPhase === "owners_collect") {
+		const cursor = cohort.stagingCursor
+			? (JSON.parse(cohort.stagingCursor) as { order: number; page: string | null })
+			: { order: -1, page: null };
+		const record = await ctx.db
+			.query("files_move_cohort_nodes")
+			.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id).gt("order", cursor.order))
+			.first();
+		if (!record) result = Result({ _yay: { done: true } });
+		else {
+			const access = await db_authorize_record(ctx, cohort, membership!, record);
+			if (access._nay) {
+				await db_abort(ctx, cohort, access._nay);
+				return null;
+			}
+			const collected = await files_move_owner_work_db_collect_node(ctx, {
+				...call,
+				nodeRecordId: record._id,
+				cursor: cursor.page,
+			});
+			if (collected._nay) {
+				await db_abort(ctx, cohort, collected._nay);
+				return null;
+			}
+			await ctx.db.patch("files_move_cohorts", cohort._id, {
+				stagingCursor: JSON.stringify({
+					order: collected._yay.done ? record.order : cursor.order,
+					page: collected._yay.done ? null : collected._yay.cursor,
+				}),
+			});
+			// Record orders count up from 0, so the last record ends the phase without another read.
+			result = Result({
+				_yay: {
+					done: collected._yay.done && record.order + 1 === cohort.affectedNodeCount,
+					paged: collected._yay.paged,
+				},
+			});
+		}
+		next = "owners_closure";
+	} else if (cohort.workPhase === "owners_closure") {
+		result = await files_move_owner_work_db_collect_closure(ctx, call);
+		next = "content";
+	} else if (cohort.workPhase === "content") {
+		const item = await ctx.db
+			.query("files_move_cohort_items")
+			.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohort._id).eq("status", "planned"))
+			.first();
+		if (!item) result = Result({ _yay: { done: true } });
+		else {
+			const record = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
+			const access = await db_authorize_record(ctx, cohort, membership!, record);
+			if (access._nay) {
+				await db_abort(ctx, cohort, access._nay);
+				return null;
+			}
+			const proposal = item.pendingUpdateId ? await ctx.db.get("files_pending_updates", item.pendingUpdateId) : null;
+			if (
+				record.role !== "replacement" &&
+				proposal &&
+				!proposal.pendingArchive &&
+				(proposal.content || proposal.pendingReplacement || item.target.kind === "private")
+			) {
+				const created = await files_move_content_db_create(ctx, { ...call, itemId: item._id, nodeId: record.nodeId });
+				if (created._nay) {
+					await db_abort(ctx, cohort, created._nay);
+					return null;
+				}
+				const content = (await ctx.db.get("files_move_cohort_content", created._yay))!;
+				if (!content.prepared)
+					return {
+						step: cohort.step,
+						contentId: content._id,
+						fence: cohort.fence,
+						attemptFence: cohort.attemptFence,
+						kind: "prepare" as const,
+					};
+				if (!content.sealed) {
+					const staged = await files_move_content_db_stage(ctx, { ...call, contentId: content._id });
+					if (staged._nay) {
+						await db_abort(ctx, cohort, staged._nay);
+						return null;
+					}
+					// Text chunking and metadata generation keep their own CPU budget.
+					await db_save_step(ctx, cohort, {}, 0, false);
+					return { kind: "next" as const, step: cohort.step + 1, yield: true };
+				}
+			}
+			await ctx.db.patch("files_move_cohort_items", item._id, { status: "staged" });
+			// This step read no page. The same check as the next step ends the phase now.
+			const nextItem = await ctx.db
+				.query("files_move_cohort_items")
+				.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohort._id).eq("status", "planned"))
+				.first();
+			result = Result({ _yay: { done: !nextItem } });
+		}
+		next = "media";
+	} else if (cohort.workPhase === "media") {
+		// Linked media may be later in the group. Stage every content candidate first.
+		const content = await ctx.db
+			.query("files_move_cohort_content")
+			.withIndex("by_cohort_node", (q) =>
+				cohort.stagingCursor === null
+					? q.eq("cohortId", cohort._id)
+					: q.eq("cohortId", cohort._id).gt("nodeId", cohort.stagingCursor as Id<"files_nodes">),
+			)
+			.first();
+		if (!content) result = Result({ _yay: { done: true } });
+		else {
+			const item = (await ctx.db.get("files_move_cohort_items", content.itemId))!;
+			const record = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
+			const access = await db_authorize_record(ctx, cohort, membership!, record);
+			if (access._nay) {
+				await db_abort(ctx, cohort, access._nay);
+				return null;
+			}
+			const mediaSet = content.preparedMediaSet
+				? await ctx.db.get("files_media_dependency_sets", content.preparedMediaSet.setId)
+				: null;
+			if (!mediaSet?.sealed)
+				return {
+					step: cohort.step,
+					contentId: content._id,
+					fence: cohort.fence,
+					attemptFence: cohort.attemptFence,
+					kind: "media" as const,
+				};
+			await ctx.db.patch("files_move_cohorts", cohort._id, { stagingCursor: content.nodeId });
+			const nextContent = await ctx.db
+				.query("files_move_cohort_content")
+				.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).gt("nodeId", content.nodeId))
+				.first();
+			result = Result({ _yay: { done: !nextContent } });
+		}
+		next = "sides";
+	} else if (cohort.workPhase === "sides") {
+		result = await db_sides(ctx, cohort, membership!);
+		next = "owners_stage";
+	} else if (cohort.workPhase === "owners_stage") {
+		result = await files_move_owner_work_db_stage(ctx, call);
+		next = "validate";
+	} else if (cohort.workPhase === "validate") {
+		result = await db_validate(ctx, cohort, membership!);
+		next = "publish";
+	} else if (cohort.workPhase === "publish") {
+		result = await db_publish(ctx, cohort, organization!);
+		next = "finish_content";
+	} else if (cohort.workPhase === "finish_content" || cohort.workPhase === "abort_content") {
+		const content = await ctx.db
+			.query("files_move_cohort_content")
+			.withIndex("by_cohort_node", (q) =>
+				cohort.cleanupCursor === null
+					? q.eq("cohortId", cohort._id)
+					: q.eq("cohortId", cohort._id).gt("nodeId", cohort.cleanupCursor as Id<"files_nodes">),
+			)
+			.first();
+		if (!content) result = Result({ _yay: { done: true } });
+		else {
+			const cleaned = await (cohort.publishedAt === null ? files_move_content_db_abort : files_move_content_db_finish)(
+				ctx,
+				{ ...call, contentId: content._id },
+			);
+			if (cleaned._nay) throw should_never_happen("Move content cleanup failed", cleaned._nay);
+			result = Result({ _yay: { done: false, paged: cleaned._yay.paged } });
+			if (cleaned._yay.done) {
+				await ctx.db.patch("files_move_cohorts", cohort._id, { cleanupCursor: content.nodeId });
+				// A finished content cleanup read no page in this step, so it can check for the next content.
+				const nextContent = await ctx.db
+					.query("files_move_cohort_content")
+					.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).gt("nodeId", content.nodeId))
+					.first();
+				result = Result({ _yay: { done: !nextContent, paged: cleaned._yay.paged } });
+			}
+		}
+		next = cohort.publishedAt === null ? "abort_owners" : "finish_owners";
+	} else if (cohort.workPhase === "finish_owners" || cohort.workPhase === "abort_owners") {
+		result = await (cohort.publishedAt === null ? files_move_owner_work_db_abort : files_move_owner_work_db_finish)(
+			ctx,
+			call,
+		);
+		next = cohort.publishedAt === null ? "abort_sides" : "finish_sides";
+	} else if (cohort.workPhase === "finish_sides" || cohort.workPhase === "abort_sides") {
+		result = Result({ _yay: await db_cleanup_sides(ctx, cohort) });
+		next = cohort.publishedAt === null ? "abort_nodes" : "finish_nodes";
+	} else if (cohort.workPhase === "finish_nodes" || cohort.workPhase === "abort_nodes") {
+		result = Result({ _yay: { done: await db_cleanup_nodes(ctx, cohort) } });
+		next = "release";
+	} else if (cohort.workPhase === "release") {
+		if (await db_release(ctx, cohort)) return { kind: "complete" as const };
+	} else throw should_never_happen("Unexpected Move step", { cohortId: cohort._id, workPhase: cohort.workPhase });
+	if (result._nay) {
+		if (repairing)
+			await db_retry_repair(ctx, cohort, { name: result._nay.name ?? "repair_failed", message: result._nay.message });
+		else await db_abort(ctx, cohort, result._nay);
+		return null;
+	}
+	await db_save_step(
+		ctx,
+		cohort,
+		result._yay.done && next
+			? {
+					workPhase: next,
+					planningCursor: null,
+					stagingCursor: null,
+					validationCursor: null,
+					cleanupCursor: null,
+					...(next === "validate"
+						? { phase: "validating" as const }
+						: next === "publish"
+							? { phase: "ready" as const }
+							: {}),
+				}
+			: {},
+		0,
+		false,
+	);
+	return { kind: "next" as const, step: cohort.step + 1, yield: result._yay.paged === true };
+}
+
 /**
- * One step changes bounded docs. A stale scheduled delivery changes nothing.
+ * Join small exact work. A native page or heavy content work ends this transaction.
  */
 export const advance = internalMutation({
-	args: { cohortId: v.id("files_move_cohorts"), step: v.number() },
+	args: {
+		cohortId: v.id("files_move_cohorts"),
+		step: v.number(),
+		runGeneration: v.union(v.number(), v.null()),
+		join: v.boolean(),
+	},
 	returns: v.union(
 		v.null(),
+		v.object({ kind: v.literal("complete") }),
+		v.object({ kind: v.literal("next"), step: v.number() }),
 		v.object({
+			step: v.number(),
 			contentId: v.id("files_move_cohort_content"),
 			fence: v.number(),
 			attemptFence: v.number(),
@@ -2285,287 +2612,30 @@ export const advance = internalMutation({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
-		if (!cohort || cohort.phase === "complete" || cohort.step !== args.step) return null;
-		// A failed repair waits for its delayed try. Other wakes must not retry it early.
-		if (cohort.repairNextRetryAt !== undefined && cohort.repairNextRetryAt > Date.now()) return null;
-		const call = { cohortId: cohort._id, fence: cohort.fence, attemptFence: cohort.attemptFence };
-		const repairing = cohort.publishedAt !== null || cohort.phase === "aborting";
-		let membership: Doc<"organizations_workspaces_users"> | null = null;
-		let organization: Doc<"organizations"> | null = null;
-		if (!repairing) {
-			const authorized = await db_get_membership(ctx, cohort);
-			if (authorized._nay || !(await db_parent_running(ctx, cohort))) {
-				await db_abort(
-					ctx,
-					cohort,
-					authorized._nay ?? { name: "stopped", message: "This Move stopped before it was saved." },
-				);
-				return null;
+		let step = args.step;
+		while (true) {
+			const result = await db_advance_step(ctx, { ...args, step });
+			if (result?.kind !== "next") return result;
+			step = result.step;
+			if (!args.join) {
+				await files_move_cohorts_db_schedule(ctx, { cohortId: args.cohortId, handoff: true });
+				return { kind: "next" as const, step };
 			}
-			({ membership, organization } = authorized._yay);
-			const pins = cohort.clockPins;
-			// Keep this check even with no media: the same pins catch write policy and access changes while staging.
-			if (
-				!(await files_media_validation_db_versions_match(ctx, {
-					versions: [pins.organization, pins.workspace],
-					pendingVersions: pins.review ? [pins.review] : [],
-				}))
-			) {
-				await db_abort(ctx, cohort, {
-					name: "needs_review",
-					message: "Files or access changed. Review this Move again.",
-				});
-				return null;
-			}
+			if (result.yield || !(await files_pending_overlay_db_can_join_step(ctx))) return { kind: "next" as const, step };
 		}
-		const entered = repairing
-			? await files_pending_overlay_db_set_cohort_materialization(ctx, {
-					...call,
-					mode: cohort.publishedAt === null ? "abort" : "finish",
-				})
-			: await files_pending_overlay_db_set_cohort_staging(ctx, call);
-		if (entered._nay) return null;
-		let result:
-			| { _yay: { done: boolean }; _nay?: undefined }
-			| { _nay: { name?: string; message: string }; _yay?: undefined } = Result({ _yay: { done: false } });
-		let next: Doc<"files_move_cohorts">["workPhase"] | null = null;
-		if (cohort.workPhase === "items") {
-			result = await db_items(ctx, cohort, membership!);
-			// Only a Transfer Rename has parent folders to create.
-			next =
-				cohort.origin.kind === "transfer" && (await ctx.db.get("files_transfer_runs", cohort.origin.runId))?.rename
-					? "rename_parents"
-					: "descendants";
-		} else if (cohort.workPhase === "rename_parents") {
-			result = await db_rename_parents(ctx, cohort, membership!);
-			next = "descendants";
-		} else if (cohort.workPhase === "descendants") {
-			result = await db_descendants(ctx, cohort, membership!);
-			next = "headers";
-		} else if (cohort.workPhase === "headers") {
-			result = await db_headers(ctx, cohort, membership!);
-			next = "owners_collect";
-			if (result._yay?.done) {
-				const subtree = await ctx.db
-					.query("files_move_work_ranges")
-					.withIndex("by_cohort_phase_status_order", (q) =>
-						q.eq("cohortId", cohort._id).eq("phase", "collect").eq("status", "queued"),
-					)
-					.first();
-				if (subtree) next = "descendants";
-			}
-		} else if (cohort.workPhase === "owners_collect") {
-			const cursor = cohort.stagingCursor
-				? (JSON.parse(cohort.stagingCursor) as { order: number; page: string | null })
-				: { order: -1, page: null };
-			const record = await ctx.db
-				.query("files_move_cohort_nodes")
-				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id).gt("order", cursor.order))
-				.first();
-			if (!record) result = Result({ _yay: { done: true } });
-			else {
-				const access = await db_authorize_record(ctx, cohort, membership!, record);
-				if (access._nay) {
-					await db_abort(ctx, cohort, access._nay);
-					return null;
-				}
-				const collected = await files_move_owner_work_db_collect_node(ctx, {
-					...call,
-					nodeRecordId: record._id,
-					cursor: cursor.page,
-				});
-				if (collected._nay) {
-					await db_abort(ctx, cohort, collected._nay);
-					return null;
-				}
-				await ctx.db.patch("files_move_cohorts", cohort._id, {
-					stagingCursor: JSON.stringify({
-						order: collected._yay.done ? record.order : cursor.order,
-						page: collected._yay.done ? null : collected._yay.cursor,
-					}),
-				});
-				// Record orders count up from 0, so the last record ends the phase without another read.
-				result = Result({ _yay: { done: collected._yay.done && record.order + 1 === cohort.affectedNodeCount } });
-			}
-			next = "owners_closure";
-		} else if (cohort.workPhase === "owners_closure") {
-			result = await files_move_owner_work_db_collect_closure(ctx, call);
-			next = "content";
-		} else if (cohort.workPhase === "content") {
-			const item = await ctx.db
-				.query("files_move_cohort_items")
-				.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohort._id).eq("status", "planned"))
-				.first();
-			if (!item) result = Result({ _yay: { done: true } });
-			else {
-				const record = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
-				const access = await db_authorize_record(ctx, cohort, membership!, record);
-				if (access._nay) {
-					await db_abort(ctx, cohort, access._nay);
-					return null;
-				}
-				const proposal = item.pendingUpdateId ? await ctx.db.get("files_pending_updates", item.pendingUpdateId) : null;
-				if (
-					proposal &&
-					!proposal.pendingArchive &&
-					record.role !== "replacement" &&
-					(proposal.content || proposal.pendingReplacement || item.target.kind === "private")
-				) {
-					const created = await files_move_content_db_create(ctx, { ...call, itemId: item._id, nodeId: record.nodeId });
-					if (created._nay) {
-						await db_abort(ctx, cohort, created._nay);
-						return null;
-					}
-					const content = (await ctx.db.get("files_move_cohort_content", created._yay))!;
-					if (!content.prepared)
-						return {
-							contentId: content._id,
-							fence: cohort.fence,
-							attemptFence: cohort.attemptFence,
-							kind: "prepare" as const,
-						};
-					if (!content.sealed) {
-						const staged = await files_move_content_db_stage(ctx, { ...call, contentId: content._id });
-						if (staged._nay) {
-							await db_abort(ctx, cohort, staged._nay);
-							return null;
-						}
-						await db_save_step(ctx, cohort);
-						return null;
-					}
-				}
-				await ctx.db.patch("files_move_cohort_items", item._id, { status: "staged" });
-				// This step read no page. The same check as the next step ends the phase now.
-				const nextItem = await ctx.db
-					.query("files_move_cohort_items")
-					.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohort._id).eq("status", "planned"))
-					.first();
-				result = Result({ _yay: { done: !nextItem } });
-			}
-			next = "media";
-		} else if (cohort.workPhase === "media") {
-			// Linked media may be later in the group. Stage every content candidate first.
-			const content = await ctx.db
-				.query("files_move_cohort_content")
-				.withIndex("by_cohort_node", (q) =>
-					cohort.stagingCursor === null
-						? q.eq("cohortId", cohort._id)
-						: q.eq("cohortId", cohort._id).gt("nodeId", cohort.stagingCursor as Id<"files_nodes">),
-				)
-				.first();
-			if (!content) result = Result({ _yay: { done: true } });
-			else {
-				const item = (await ctx.db.get("files_move_cohort_items", content.itemId))!;
-				const record = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
-				const access = await db_authorize_record(ctx, cohort, membership!, record);
-				if (access._nay) {
-					await db_abort(ctx, cohort, access._nay);
-					return null;
-				}
-				const mediaSet = content.preparedMediaSet
-					? await ctx.db.get("files_media_dependency_sets", content.preparedMediaSet.setId)
-					: null;
-				if (!mediaSet?.sealed)
-					return {
-						contentId: content._id,
-						fence: cohort.fence,
-						attemptFence: cohort.attemptFence,
-						kind: "media" as const,
-					};
-				await ctx.db.patch("files_move_cohorts", cohort._id, { stagingCursor: content.nodeId });
-				const nextContent = await ctx.db
-					.query("files_move_cohort_content")
-					.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).gt("nodeId", content.nodeId))
-					.first();
-				result = Result({ _yay: { done: !nextContent } });
-			}
-			next = "sides";
-		} else if (cohort.workPhase === "sides") {
-			result = await db_sides(ctx, cohort, membership!);
-			next = "owners_stage";
-		} else if (cohort.workPhase === "owners_stage") {
-			result = await files_move_owner_work_db_stage(ctx, call);
-			next = "validate";
-		} else if (cohort.workPhase === "validate") {
-			result = await db_validate(ctx, cohort, membership!);
-			next = "publish";
-		} else if (cohort.workPhase === "publish") {
-			result = await db_publish(ctx, cohort, organization!);
-			next = "finish_content";
-		} else if (cohort.workPhase === "finish_content" || cohort.workPhase === "abort_content") {
-			const content = await ctx.db
-				.query("files_move_cohort_content")
-				.withIndex("by_cohort_node", (q) =>
-					cohort.cleanupCursor === null
-						? q.eq("cohortId", cohort._id)
-						: q.eq("cohortId", cohort._id).gt("nodeId", cohort.cleanupCursor as Id<"files_nodes">),
-				)
-				.first();
-			if (!content) result = Result({ _yay: { done: true } });
-			else {
-				const cleaned = await (
-					cohort.publishedAt === null ? files_move_content_db_abort : files_move_content_db_finish
-				)(ctx, { ...call, contentId: content._id });
-				if (cleaned._nay) throw should_never_happen("Move content cleanup failed", cleaned._nay);
-				if (cleaned._yay.done) {
-					await ctx.db.patch("files_move_cohorts", cohort._id, { cleanupCursor: content.nodeId });
-					// A finished content cleanup read no page in this step, so it can check for the next content.
-					const nextContent = await ctx.db
-						.query("files_move_cohort_content")
-						.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).gt("nodeId", content.nodeId))
-						.first();
-					result = Result({ _yay: { done: !nextContent } });
-				}
-			}
-			next = cohort.publishedAt === null ? "abort_owners" : "finish_owners";
-		} else if (cohort.workPhase === "finish_owners" || cohort.workPhase === "abort_owners") {
-			result = await (cohort.publishedAt === null ? files_move_owner_work_db_abort : files_move_owner_work_db_finish)(
-				ctx,
-				call,
-			);
-			next = cohort.publishedAt === null ? "abort_sides" : "finish_sides";
-		} else if (cohort.workPhase === "finish_sides" || cohort.workPhase === "abort_sides") {
-			result = Result({ _yay: { done: await db_cleanup_sides(ctx, cohort) } });
-			next = cohort.publishedAt === null ? "abort_nodes" : "finish_nodes";
-		} else if (cohort.workPhase === "finish_nodes" || cohort.workPhase === "abort_nodes") {
-			result = Result({ _yay: { done: await db_cleanup_nodes(ctx, cohort) } });
-			next = "release";
-		} else if (cohort.workPhase === "release") {
-			if (await db_release(ctx, cohort)) return null;
-		} else throw should_never_happen("Unexpected Move step", { cohortId: cohort._id, workPhase: cohort.workPhase });
-		if (result._nay) {
-			if (repairing)
-				await db_retry_repair(ctx, cohort, { name: result._nay.name ?? "repair_failed", message: result._nay.message });
-			else await db_abort(ctx, cohort, result._nay);
-			return null;
-		}
-		await db_save_step(
-			ctx,
-			cohort,
-			result._yay.done && next
-				? {
-						workPhase: next,
-						planningCursor: null,
-						stagingCursor: null,
-						validationCursor: null,
-						cleanupCursor: null,
-						...(next === "validate"
-							? { phase: "validating" as const }
-							: next === "publish"
-								? { phase: "ready" as const }
-								: {}),
-					}
-				: {},
-		);
-		return null;
 	},
 });
+
+type advance_Result =
+	typeof advance extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const resume = internalMutation({
 	args: {
 		cohortId: v.id("files_move_cohorts"),
 		step: v.number(),
+		runGeneration: v.union(v.number(), v.null()),
 		error: v.union(
 			v.object({
 				name: v.optional(v.string()),
@@ -2578,11 +2648,17 @@ export const resume = internalMutation({
 			v.null(),
 		),
 	},
-	returns: v.null(),
+	returns: v.union(v.null(), v.object({ kind: v.literal("next"), step: v.number() })),
 	handler: async (ctx, args) => {
 		const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
-		if (!cohort || cohort.phase === "complete" || cohort.step !== args.step) return null;
-		// A duplicate run of this step took over the content preparation. That run moves the Move on.
+		if (
+			!cohort ||
+			cohort.phase === "complete" ||
+			cohort.step !== args.step ||
+			(cohort.runJob?.generation ?? null) !== args.runGeneration
+		)
+			return null;
+		// A stopped preparation must not advance this group.
 		if (args.error?.name === "stopped") return null;
 		if (args.error && cohort.publishedAt === null && cohort.phase !== "aborting")
 			await db_abort(ctx, cohort, args.error);
@@ -2592,32 +2668,80 @@ export const resume = internalMutation({
 				cohort,
 				args.error.cause ?? { name: args.error.name ?? "repair_failed", message: args.error.message },
 			);
-		else await db_save_step(ctx, cohort);
+		else {
+			await db_save_step(ctx, cohort, {}, 0, false);
+			return { kind: "next" as const, step: cohort.step + 1 };
+		}
+		return null;
+	},
+});
+
+export const handoff = internalMutation({
+	args: { cohortId: v.id("files_move_cohorts"), step: v.number(), runGeneration: v.union(v.number(), v.null()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
+		if (
+			cohort &&
+			cohort.phase !== "complete" &&
+			cohort.step === args.step &&
+			(cohort.runJob?.generation ?? null) === args.runGeneration
+		)
+			await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id, handoff: true });
 		return null;
 	},
 });
 
 export const run = internalAction({
-	args: { cohortId: v.id("files_move_cohorts"), step: v.number() },
-	returns: v.null(),
+	args: {
+		cohortId: v.id("files_move_cohorts"),
+		step: v.number(),
+		runGeneration: v.union(v.number(), v.null()),
+		mode: v.union(v.literal("step"), v.literal("chain")),
+	},
+	returns: v.union(v.null(), v.literal("complete")),
 	handler: async (ctx, args) => {
+		const startedAt = Date.now();
+		let step = args.step;
 		try {
-			const pending = await ctx.runMutation(internal.files_move_cohorts.advance, args);
-			if (!pending) return null;
-			const result = await (
-				pending.kind === "prepare" ? files_move_content_action_prepare : files_move_media_action_prepare_refs
-			)(ctx, {
+			for (let count = 0; count < RUN_MAX_ADVANCE_CALLS; count++) {
+				let pending: advance_Result = await ctx.runMutation(internal.files_move_cohorts.advance, {
+					cohortId: args.cohortId,
+					step,
+					runGeneration: args.runGeneration,
+					join: args.mode === "chain",
+				});
+				if (!pending) return null;
+				if (pending.kind === "complete") return "complete" as const;
+				if (pending.kind === "prepare" || pending.kind === "media") {
+					step = pending.step;
+					const result = await (
+						pending.kind === "prepare" ? files_move_content_action_prepare : files_move_media_action_prepare_refs
+					)(ctx, {
+						cohortId: args.cohortId,
+						contentId: pending.contentId,
+						fence: pending.fence,
+						attemptFence: pending.attemptFence,
+						runGeneration: args.runGeneration,
+					});
+					pending = await ctx.runMutation(internal.files_move_cohorts.resume, {
+						cohortId: args.cohortId,
+						step,
+						runGeneration: args.runGeneration,
+						error: result._nay ? { name: result._nay.name, message: result._nay.message } : null,
+					});
+					if (!pending) return null;
+				}
+				step = pending.step;
+				if (args.mode === "step" || Date.now() - startedAt >= RUN_BUDGET_MS) break;
+			}
+			await ctx.runMutation(internal.files_move_cohorts.handoff, {
 				cohortId: args.cohortId,
-				contentId: pending.contentId,
-				fence: pending.fence,
-				attemptFence: pending.attemptFence,
-			});
-			await ctx.runMutation(internal.files_move_cohorts.resume, {
-				...args,
-				error: result._nay ? { name: result._nay.name, message: result._nay.message } : null,
+				step,
+				runGeneration: args.runGeneration,
 			});
 		} catch (error) {
-			console.error("Move step failed", { cohortId: args.cohortId, step: args.step, error });
+			console.error("Move step failed", { cohortId: args.cohortId, step, error });
 			// Keep the real error, so a repair that keeps failing shows why.
 			const data = error instanceof ConvexError ? (error.data as { name?: unknown; message?: unknown }) : null;
 			const message =
@@ -2629,7 +2753,9 @@ export const run = internalAction({
 						? "should_never_happen"
 						: "move_step_failed";
 			await ctx.runMutation(internal.files_move_cohorts.resume, {
-				...args,
+				cohortId: args.cohortId,
+				step,
+				runGeneration: args.runGeneration,
 				error: {
 					name: "move_step_failed",
 					message: "This Move step failed. Review it again.",
@@ -2645,24 +2771,61 @@ export const recover = internalMutation({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
-		const now = Date.now();
-		for (const phase of ["planning", "staging", "validating", "ready", "published", "aborting", "finishing"] as const) {
-			const rows = await ctx.db
-				.query("files_move_cohorts")
-				.withIndex("by_deadline", (q) => q.eq("phase", phase).lte("deadlineAt", now))
-				.take(8);
-			for (const cohort of rows) {
-				if (cohort.publishedAt === null && cohort.phase !== "aborting")
-					await db_abort(ctx, cohort, { name: "timeout", message: "This Move stopped before it was saved." });
-				// A lost run is not a good step. Keep the failure count, but try again now.
-				else
-					await db_save_step(ctx, cohort, {
-						repairFailureCount: cohort.repairFailureCount,
-						repairLastError: cohort.repairLastError,
-					});
-			}
+		await ctx.scheduler.runAfter(0, internal.files_move_cohorts.recover_page, {
+			now: Date.now(),
+			phase: "planning",
+			cursor: null,
+		});
+		return null;
+	},
+});
+
+/**
+ * Keep the cutoff fixed while paging. Every idle group is visited, including overflow.
+ */
+export const recover_page = internalMutation({
+	args: {
+		now: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		phase: v.union(
+			...(
+				["planning", "staging", "validating", "ready", "published", "aborting", "finishing", "complete"] as const
+			).map((phase) => v.literal(phase)),
+		),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const phases = [
+			"planning",
+			"staging",
+			"validating",
+			"ready",
+			"published",
+			"aborting",
+			"finishing",
+			"complete",
+		] as const;
+		const page = await ctx.db
+			.query("files_move_cohorts")
+			.withIndex("by_deadline", (q) =>
+				q
+					.eq("phase", args.phase)
+					.lte("deadlineAt", args.phase === "complete" ? args.now : args.now + RUN_TIMEOUT_MS - RECOVER_IDLE_MS),
+			)
+			.paginate({ cursor: args.cursor, numItems: WAKE_PAGE_SIZE });
+		for (const cohort of page.page) {
+			if (cohort.phase === "complete") await db_start_cleanup(ctx, cohort._id);
+			else if (cohort.deadlineAt <= args.now && cohort.publishedAt === null && cohort.phase !== "aborting")
+				await db_abort(ctx, cohort, { name: "timeout", message: "This Move stopped before it was saved." });
+			else await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id });
 		}
-		await ctx.scheduler.runAfter(0, internal.files_move_cohorts.recover_completed, {});
+		const phase = page.isDone ? phases[phases.indexOf(args.phase) + 1] : args.phase;
+		if (phase)
+			await ctx.scheduler.runAfter(0, internal.files_move_cohorts.recover_page, {
+				now: args.now,
+				phase,
+				cursor: page.isDone ? null : page.continueCursor,
+			});
 		return null;
 	},
 });
@@ -2674,24 +2837,6 @@ async function db_start_cleanup(ctx: MutationCtx, cohortId: Id<"files_move_cohor
 	await ctx.db.patch("files_move_cohorts", cohortId, { deadlineAt: Date.now() + CLEANUP_DEADLINE_MS });
 	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.cleanup, { cohortId });
 }
-
-/**
- * Start cleanup for every due completed group, a page at a time.
- */
-export const recover_completed = internalMutation({
-	args: {},
-	returns: v.null(),
-	handler: async (ctx) => {
-		const completed = await ctx.db
-			.query("files_move_cohorts")
-			.withIndex("by_deadline", (q) => q.eq("phase", "complete").lte("deadlineAt", Date.now()))
-			.take(WAKE_PAGE_SIZE);
-		for (const cohort of completed) await db_start_cleanup(ctx, cohort._id);
-		if (completed.length === WAKE_PAGE_SIZE)
-			await ctx.scheduler.runAfter(0, internal.files_move_cohorts.recover_completed, {});
-		return null;
-	},
-});
 
 /**
  * A deleted parent run no longer keeps its completed groups. Start their cleanup now.

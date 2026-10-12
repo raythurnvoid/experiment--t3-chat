@@ -187,7 +187,12 @@ async function stage_review(f: Awaited<ReturnType<typeof fixture>>, phase: "read
 		if (cohort.phase === phase) return cohort;
 		if (cohort.phase === "aborting" || cohort.phase === "complete")
 			throw new Error(`Media staging stopped: ${cohort.errorCode}: ${cohort.errorMessage}`);
-		await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: cohort._id,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
 	}
 	throw new Error(`Media staging did not finish: ${cohort?.phase}/${cohort?.workPhase}`);
 }
@@ -229,6 +234,53 @@ test("proves actual prepared private embeds through the native AFTER receipt", a
 		}),
 	);
 	expect(proof._yay?.done).toBe(true);
+}, 120_000);
+
+test("a stale media runner cannot read or change its successor's set", async () => {
+	const f = await fixture();
+	const cohort = await stage_review(f, "validating");
+	const content = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_move_cohort_content")
+			.withIndex("by_cohort_proposal", (q) => q.eq("cohortId", cohort._id).eq("pendingUpdateId", f.document._id))
+			.unique(),
+	);
+	if (!content?.preparedMediaSet) throw new Error("Expected prepared document media");
+	const set = (await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", content.preparedMediaSet!.setId)))!;
+	const args = {
+		cohortId: cohort._id,
+		contentId: content._id,
+		fence: cohort.fence,
+		attemptFence: cohort.attemptFence,
+		runGeneration: cohort.runJob!.generation,
+	};
+	await f.t.mutation(internal.files_move_cohorts.handoff, {
+		cohortId: cohort._id,
+		step: cohort.step,
+		runGeneration: args.runGeneration,
+	});
+	expect(
+		await f.t.query(internal.files_move_media.read, args),
+		"a stale media runner cannot read the current set",
+	).toMatchObject({ _nay: { name: "stopped" } });
+	expect(
+		await f.t.mutation(internal.files_move_media.start, {
+			...args,
+			digest: content.acceptedTextDigest ?? "",
+			expectedCount: set.expectedCount,
+		}),
+	).toMatchObject({ _nay: { name: "stopped" } });
+	expect(
+		await f.t.mutation(internal.files_move_media.append, {
+			...args,
+			setId: set._id,
+			generation: set.generation,
+			offset: set.count,
+			refs: [f.src],
+		}),
+	).toMatchObject({ _nay: { name: "stopped" } });
+	expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", set._id))).toEqual(set);
+	expect(await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", content._id))).toEqual(content);
 }, 120_000);
 
 test("refuses a selected media candidate after its asset hold is lost", async () => {
@@ -444,7 +496,12 @@ test.each(["finish", "abort"] as const)(
 			});
 		}
 		for (let pass = 0; pass < 2_000 && cohort.phase !== "complete"; pass++) {
-			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 			cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohort._id)))!;
 		}
 		expect(cohort).toMatchObject({ phase: "complete", publishedAt: end === "finish" ? expect.any(Number) : null });

@@ -1,4 +1,4 @@
-import "../convex/setup.test.ts";
+import "../convex/setup-base.test.ts";
 import { compareValues } from "convex/values";
 import { describe, test, expect } from "vitest";
 import { z } from "zod";

@@ -139,6 +139,10 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   block it. Exact unselected proposal IDs stay in the existing review hint after a later failure.
 - Every Accept group uses `files_move_cohorts.ts`. The worker reserves inputs and names, stages
   saved headers, content, search chunks and every owner's pending overlay in small transactions.
+  One transaction joins small exact work after flushing derived writes and checking its budget.
+  Any native page ends the transaction, even an empty page. Heavy text preparation keeps its own
+  step. Between advances, one action checks whether five seconds or 128 advance calls have
+  passed, then hands off. A content action can take longer. These bounds never refuse a selection.
   Before publication, all normal names still resolve to the old saved IDs and content. One small
   transaction selects the complete after view. Physical cleanup then finishes in pages.
   This also serves one change. It never exposes a temporary folder or parking name.
@@ -211,8 +215,13 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   was lost, recover resumes the review, and the Activity sweep resumes a parked run whose Move
   already ended. Folder protection waits for a Move the same way. Waits for a folder-wide job or
   for overlay jobs still poll: 100 ms first, doubling to 5 s while nothing changes.
-- A duplicate run of one group step can take over its content preparation. The older run then gets
-  `stopped` and does nothing; the newer run continues the group.
+- Each group stores its current scheduled run ID, step and generation. Each delivery checks that
+  generation before changing a step or resuming preparation. The generation changes at handoff or
+  replacement. Review kicks leave a pending or running owner alone. The existing five-minute Move
+  recovery cron visits idle groups in full indexed pages. It checks the exact scheduled job before
+  restarting a dead owner. A recovery kick does not renew deadlines or restart healthy preparation.
+  A failed repair step waits for its delayed try (30 s, doubling up to 1 h); "Try again now" starts a
+  new generation.
 - Stop aborts an unpublished group. A published group keeps its after view and completes physical
   repair before releasing reservations. Recovery resumes the exact fenced step. User and workspace
   purge wait for that repair before removing the run or its holds.

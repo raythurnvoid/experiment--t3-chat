@@ -2097,7 +2097,7 @@ test("rename_node Stop removes staged parents and keeps the old name visible", a
 			);
 			if (!slot?.cohortId) throw new Error("Rename cohort is missing");
 			const cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", slot.cohortId!)))!;
-			await t.mutation(internal.files_move_cohorts.advance, { cohortId: cohort._id, step: cohort.step });
+			await t.mutation(internal.files_move_cohorts.advance, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, join: false });
 			staged = await t.run(async (ctx) =>
 				(
 					await ctx.db
@@ -3006,30 +3006,22 @@ describe("paged folder moves and scope jobs", () => {
 	}
 
 	/**
-	 * Move reserves the folder, each child and the target, plus the proposal in a review. 7 children
-	 * make at least 9 reservations, one past the 8 rows that a Move release step frees.
+	 * 65 children need several descendant pages even when one transaction joins small steps.
 	 */
-	const BIG_FOLDER_CHILDREN = 7;
+	const BIG_FOLDER_CHILDREN = 65;
 
 	/**
-	 * Count the Move release steps that free some reservations and leave the rest for the next step.
-	 * A release step frees at most 8 (`db_release` in files_move_cohorts.ts). 8 rows is the biggest page
-	 * in a Move cohort step, so a count above 0 means the folder needs more than one page in each phase.
+	 * Count descendant transactions that leave more walking work for the next transaction.
 	 */
-	function count_paged_releases() {
+	function count_paged_moves() {
 		const paged = { count: 0 };
 		test_spy_handler(advance_move_cohort, async (handler, ctx, args) => {
 			const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
 			const cohort = await ctx.db.get("files_move_cohorts", cohortId);
-			const reservations = () =>
-				ctx.db
-					.query("files_move_source_reservations")
-					.withIndex("by_cohort", (q) => q.eq("cohortId", cohortId))
-					.collect();
-			const before = cohort?.step === step && cohort.workPhase === "release" ? (await reservations()).length : 0;
 			const result = await handler(ctx, args);
-			const after = before ? (await reservations()).length : 0;
-			if (after > 0 && after < before) paged.count++;
+			const after = await ctx.db.get("files_move_cohorts", cohortId);
+			if (cohort?.step === step && cohort.workPhase === "descendants" && after?.workPhase === "descendants" && after.step > step)
+				paged.count++;
 			return result;
 		});
 		return paged;
@@ -3039,7 +3031,7 @@ describe("paged folder moves and scope jobs", () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const { source, target } = await seed_wide_source({ t, db, childCount: BIG_FOLDER_CHILDREN, metadataPerNode: 3 });
-		const pagedReleases = count_paged_releases();
+		const pagedMoves = count_paged_moves();
 		const move = await propose_move_for_test(t, {
 			...db,
 			nodeId: source._id,
@@ -3065,7 +3057,7 @@ describe("paged folder moves and scope jobs", () => {
 				true,
 			);
 		});
-		expect(pagedReleases.count, "the folder needs more than one Move page").toBeGreaterThan(0);
+		expect(pagedMoves.count, "the folder needs more than one Move page").toBeGreaterThan(0);
 	});
 
 	test("a public Move finishes every child path in a big folder", async () => {
@@ -3073,7 +3065,7 @@ describe("paged folder moves and scope jobs", () => {
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		const { source, target } = await seed_wide_source({ t, db, childCount: BIG_FOLDER_CHILDREN, metadataPerNode: 1 });
-		const pagedReleases = count_paged_releases();
+		const pagedMoves = count_paged_moves();
 
 		expect(
 			await test_move_nodes(t, asUser, {
@@ -3131,7 +3123,7 @@ describe("paged folder moves and scope jobs", () => {
 		expect(
 			metadata.filter((doc) => doc.sourceKind !== "committed" || doc.path !== pathById.get(doc.fileNodeId)),
 		).toEqual([]);
-		expect(pagedReleases.count, "the folder needs more than one Move page").toBeGreaterThan(0);
+		expect(pagedMoves.count, "the folder needs more than one Move page").toBeGreaterThan(0);
 	});
 
 	test("a public Move finishes a big group of archived items with one name", async () => {
@@ -3163,7 +3155,7 @@ describe("paged folder moves and scope jobs", () => {
 			(await t.run((ctx) => ctx.db.query("files_nodes").collect())).filter(
 				(node) => node.path === "/target/source/report.md",
 			).length;
-		const pagedReleases = count_paged_releases();
+		const pagedMoves = count_paged_moves();
 
 		expect(
 			await test_move_nodes(t, asUser, {
@@ -3174,7 +3166,7 @@ describe("paged folder moves and scope jobs", () => {
 		).toEqual({ _yay: null });
 		expect(await moved()).toBe(BIG_FOLDER_CHILDREN);
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
-		expect(pagedReleases.count, "the group needs more than one Move page").toBeGreaterThan(0);
+		expect(pagedMoves.count, "the group needs more than one Move page").toBeGreaterThan(0);
 	});
 
 	test("a restrict of a big folder commits now and a job gives every child the new scope", async () => {
@@ -3685,7 +3677,7 @@ describe("reviewed Move names and paths", () => {
 						.first(),
 				);
 				if (cohort && cohort.phase !== "complete")
-					await asUser.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+					await asUser.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 				else if (cohort) await t.mutation(internal.files_transfer.settle_cohort, { cohortId: cohort._id });
 				await t.mutation(internal.files_transfer.advance, { runId: rename.runId });
 				if (pass === 4_999) throw new Error("Rename did not finish");
