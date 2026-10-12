@@ -14,7 +14,7 @@ import {
 	find_node,
 	lock_archived,
 } from "./files_archive_runs.setup.test.ts";
-import { test_rename_node } from "./setup.test.ts";
+import { test_finish_transfer_run, test_rename_node } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_NAME_MAX_LENGTH } from "../shared/files.ts";
 
@@ -116,19 +116,41 @@ describe("unarchive_nodes path limit", () => {
 		const f = await fixture();
 		const chain = `${NAMES.join("/")}/${"d".repeat(250)}`;
 		await folder(f, `/p/${chain}`);
-		// 1,030 characters, like a path stored before the limit.
+		// Assume this path was stored before the normal limit. Its first Archive must keep its length.
 		await rename_directly(f, { path: "/p", name: "pppppppppp", isWholeTree: true });
 		const top = await find_node(f, `/pppppppppp/${NAMES[0]}`);
 		const deepest = await find_node(f, `/pppppppppp/${chain}`);
 		expect(deepest.path.length).toBe(1030);
 		expect(await archive(f, [top._id])).toEqual({ _yay: null });
+		expect((await read_node(f, top._id)).archivedPathLength, "ordinary paths need no stored allowance").toBeUndefined();
+		expect((await read_node(f, deepest._id)).archivedPathLength, "first Archive keeps the historical path length").toBe(
+			1030,
+		);
 		await rename_directly(f, { path: "/pppppppppp", name: "ppppppp" });
+		expect(
+			(await read_node(f, deepest._id)).archivedPathLength,
+			"the archived allowance does not follow a rename",
+		).toBe(1030);
 
 		expect(await restore(f, [top._id])).toEqual({ _yay: null });
 		expect(await read_node(f, deepest._id), "the deepest folder is back, 3 characters shorter").toMatchObject({
 			archiveOperationId: null,
 			path: `/ppppppp/${chain}`,
 		});
+		expect(
+			(await read_node(f, deepest._id)).archivedPathLength,
+			"Restore clears the historical allowance",
+		).toBeUndefined();
+		const parent = await find_node(f, "/ppppppp");
+		expect(
+			(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId: parent._id, path: "p" }))._nay,
+		).toBeUndefined();
+		expect((await read_node(f, deepest._id)).path).toBe(`/p/${chain}`);
+		expect(await archive(f, [top._id])).toEqual({ _yay: null });
+		expect(
+			(await read_node(f, deepest._id)).archivedPathLength,
+			"a new Archive does not reuse the old allowance",
+		).toBeUndefined();
 	});
 
 	test("Keep both of a folder cuts the name, so the paths inside stay within 1,024 characters", async () => {
@@ -250,6 +272,10 @@ describe("unarchive_nodes path limit", () => {
 		const deepestId = await folder(f, `/p/x/${chain}`);
 		const top = await find_node(f, "/p/x");
 		expect(await archive(f, [deepestId])).toEqual({ _yay: null });
+		expect(
+			(await read_node(f, deepestId)).archivedPathLength,
+			"Archive within the limit stores no allowance",
+		).toBeUndefined();
 		expect(await archive(f, [top._id])).toEqual({ _yay: null });
 		await folder(f, "/p/x");
 		const job = (await restore(f, [top._id]))._yay!;
@@ -271,5 +297,119 @@ describe("unarchive_nodes path limit", () => {
 		).toBeUndefined();
 		expect(await restore(f, [deepestId])).toEqual({ _yay: null });
 		expect(await read_node(f, deepestId)).toMatchObject({ archiveOperationId: null, path: `/p/y/${chain}` });
+		expect(
+			(await read_node(f, deepestId)).archivedPathLength,
+			"an active restored child has no allowance",
+		).toBeUndefined();
+	});
+
+	test("a Move replacement cannot restore its archived child past the normal path limit", async () => {
+		const f = await fixture();
+		const create_folder = async (parentId: Id<"files_nodes"> | "root", name: string) => {
+			const created = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: f.db.membershipId,
+				parentId,
+				path: name,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.nodeId;
+		};
+		const parentId = await create_folder("root", "p");
+		const topId = await create_folder(parentId, "x");
+		let targetParentId = topId;
+		for (const name of NAMES) targetParentId = await create_folder(targetParentId, name);
+		const name = "d".repeat(250);
+		const chain = `${NAMES.join("/")}/${name}`;
+		const childId = await create_folder(targetParentId, name);
+		expect((await read_node(f, childId)).path.length).toBe(1023);
+		const incomingId = await create_folder("root", name);
+		const move_incoming = async (targetParentId: Id<"files_nodes"> | "root") => {
+			const started = await f.asOwner.mutation(api.files_transfer.start, {
+				membershipId: f.db.membershipId,
+				requestId: crypto.randomUUID(),
+				kind: "move",
+				sourceIds: [incomingId],
+				expectedSourceCount: 1,
+				targetParentId,
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			expect(
+				await f.asOwner.mutation(api.files_transfer.seal, {
+					membershipId: f.db.membershipId,
+					runId: started._yay.runId,
+				}),
+			).toEqual({ _yay: null });
+			await test_finish_transfer_run(f.asOwner, started._yay.runId);
+			return started._yay;
+		};
+		const move = await move_incoming(targetParentId);
+		expect((await f.t.run((ctx) => ctx.db.get("activities", move.activityId)))?.status).toBe("awaiting_input");
+		const page = await f.asOwner.query(api.files_transfer.list_items, {
+			membershipId: f.db.membershipId,
+			runId: move.runId,
+			state: "conflict",
+			paginationOpts: { cursor: null, numItems: 16 },
+		});
+		expect(page?.page).toHaveLength(1);
+		const item = page!.page[0]!;
+		const run = (await f.t.run((ctx) => ctx.db.get("files_transfer_runs", move.runId)))!;
+		expect(
+			await f.asOwner.mutation(api.files_transfer.resolve_conflicts, {
+				membershipId: f.db.membershipId,
+				runId: move.runId,
+				revision: run.revision,
+				choices: [
+					{
+						itemId: item.itemId,
+						choice: "replace",
+						reviewedTarget: item.conflict!.target!,
+						reviewedVersion: item.conflict!.version,
+					},
+				],
+				applyToRemaining: { file: null, folder: null },
+			}),
+		).toEqual({ _yay: null });
+		await test_finish_transfer_run(f.asOwner, move.runId);
+		expect((await f.t.run((ctx) => ctx.db.get("activities", move.activityId)))?.status).toBe("succeeded");
+		const archived = await read_node(f, childId);
+		expect(archived).toMatchObject({ _id: childId, path: `/p/x/${chain}` });
+		expect(archived.archiveOperationId).not.toBeNull();
+		expect(archived.archivedPathLength, "Move Replace within the limit stores no allowance").toBeUndefined();
+		expect(await read_node(f, incomingId)).toMatchObject({
+			_id: incomingId,
+			path: archived.path,
+			archiveOperationId: null,
+		});
+		const movedOut = await move_incoming("root");
+		expect((await f.t.run((ctx) => ctx.db.get("activities", movedOut.activityId)))?.status).toBe("succeeded");
+		expect(await read_node(f, incomingId)).toMatchObject({
+			_id: incomingId,
+			path: `/${name}`,
+			archiveOperationId: null,
+		});
+
+		expect(await archive(f, [topId])).toEqual({ _yay: null });
+		await create_folder(parentId, "x");
+		const job = (await restore(f, [topId]))._yay!;
+		expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+		const followed = await read_node(f, childId);
+		expect(followed).toMatchObject({
+			_id: childId,
+			path: `/p/x-2/${chain}`,
+			archiveOperationId: archived.archiveOperationId,
+		});
+		expect(followed.path.length).toBe(1025);
+		expect(followed.archivedPathLength, "parent Restore preserves the child's missing allowance").toBeUndefined();
+		const stateBefore = await read_state(f);
+		expect(await restore(f, [childId]), "Restore refuses the archived child's growth beyond the normal limit").toEqual({
+			_nay: {
+				name: "path_too_long",
+				message: `Can't restore. 1 item would have a path over 1,024 characters: …/${name} (1,025). Shorten a folder name, then restore again.`,
+			},
+		});
+		expect(await read_state(f), "early Restore refusal leaves the full stored file state unchanged").toEqual(
+			stateBefore,
+		);
 	});
 });

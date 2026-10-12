@@ -166,6 +166,7 @@ import {
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	type files_VisibleEntry,
 	files_check_name_and_path_length,
+	files_PATH_MAX_LENGTH,
 	files_check_new_folder_count,
 	files_check_request_folder_prefixes,
 	files_NEW_FOLDER_DEPTH_MAX,
@@ -4601,7 +4602,7 @@ export const rename_node = mutation({
  *
  * It does not check the path limit. A restore gives a child that was archived on its own the path of
  * its restored folder, even when that path is a few characters over the limit. The child stays
- * archived. Its own restore checks the limit against `archivedPathLength`, so it cannot come back longer.
+ * archived. Its own restore uses its first Archive allowance, or the normal limit when it is absent.
  */
 export async function files_nodes_db_rebuild_node(
 	ctx: MutationCtx,
@@ -4667,8 +4668,13 @@ export async function files_nodes_db_archive_node(
 	});
 	await ctx.db.patch("files_nodes", args.node._id, {
 		archiveOperationId: args.archiveOperationId,
-		// A node archived again, like a skipped one, keeps the length from its first archive.
-		archivedPathLength: args.node.archiveOperationId === null ? args.node.path.length : args.node.archivedPathLength,
+		// Already archived nodes keep their first Archive allowance, including absence.
+		archivedPathLength:
+			args.node.archiveOperationId === null
+				? args.node.path.length > files_PATH_MAX_LENGTH
+					? args.node.path.length
+					: undefined
+				: args.node.archivedPathLength,
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
@@ -4708,6 +4714,7 @@ export async function files_nodes_db_restore_node(
 	});
 	await ctx.db.patch("files_nodes", args.node._id, {
 		archiveOperationId: null,
+		archivedPathLength: undefined,
 		parentId,
 		name: args.name,
 		sortName: files_sort_text_key(args.name),

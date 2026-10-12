@@ -143,6 +143,10 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   Before publication, all normal names still resolve to the old saved IDs and content. One small
   transaction selects the complete after view. Physical cleanup then finishes in pages.
   This also serves one change. It never exposes a temporary folder or parking name.
+  Saved plain-text chunks stay in their normal ID range when content and archive identity stay
+  the same. Both views read them. Search returns the current node's path and checks its current
+  access. Physical cleanup queues exact saved-scope work for the chunk path cache; every cache
+  page reads the current node again, so a later Move cannot restore an old path.
   Unselected owners' pending plain-text chunks and metadata use the same before/after scope.
   They stage in indexed pages before publication. Their proposal headers stay unselected.
   Exact proposal reservations select the content view until cleanup restores normal indexes.
@@ -457,7 +461,7 @@ Important behavior:
 - Structural Accept and Discard name the exact tagged target, proposal ID, and reviewed revision. A changed proposal refuses. Removing one structural part keeps the same proposal when other pending parts remain.
 - Connected moves, folder cycles, content, and replacement occupants must appear in the explicit server review selection. Accepting one member never silently selects another member. Each connected Accept unit stages its changes in pages and publishes them with one group switch.
 - Folder Move replaces only an empty folder. Bash requires the explicit `mv -T -f` form. Active saved children, private children, and the owner's pending moves into that folder count as contents. The final Save checks again, so a late saved child keeps its folder. A file never replaces a folder, and a folder never replaces a file. Move never merges nonempty folders.
-- Move Accept uses `files_move_cohorts.ts`. It stages every affected saved header and indexed side doc in pages. Before the switch, readers keep the old IDs, names and content. After it, they read the final group while the worker finishes physical writes and releases holds. See "Create, Rename, Archive, Unarchive" in the [explorer spec](../files-explorer-tree/SKILL.md).
+- Move Accept uses `files_move_cohorts.ts`. It stages saved headers and changed indexed side docs in pages. Before the switch, readers keep the old IDs, names and content. After it, they read the final group while the worker finishes physical writes and releases holds. Both placements also carry the archive path allowance. A missing allowance means the normal path limit; moving an archived item keeps its allowance or absence. See "Create, Rename, Archive, Unarchive" in the [explorer spec](../files-explorer-tree/SKILL.md).
 - A replacement pins the saved occupant ID and content version at proposal time. A later occupant or changed version requires a new review; Save never adopts either automatically. The occupant's own pending changes must be selected too, even when another chat contributed them. Accept archives that occupant and removes its whole proposal without saving its draft text or charging another Save.
 - Accepting Delete or replacement retires the consumed proposal's three content states. Background cleanup removes their pages before releasing the held bytes. Removing the proposal alone must not leave those states active.
 - If that proposal also owns an unused Copy asset, cleanup queues its exact R2 key and deletes its asset doc. Its byte hold stays until R2 deletion finishes. A normal Save keeps the asset adopted by its content step.
@@ -643,6 +647,9 @@ The pending overlay is a set of derived tables. They copy what each user's draft
 
 **Saved node ancestors.** The same flush writes `files_nodes.ancestor1..ancestor12`: the folders above a node, top-level folder first, so "under folder G" is one equality `ancestor<G.pathDepth> = G` in the `files_nodes.search_name` search index. For every saved node the round inserted or whose parent or `treePath` changed, parents first (shorter `treePath`), it copies the parent's ancestors plus the parent. A node more than 12 folders deep keeps the top 12, so a folder deeper than 12 levels cannot scope a name search. Ordinary creates, restores and path repair use this flush. Move, Rename and Accept also build the AFTER place's ancestors in their fenced cohort stage. Outside fenced cohort materialization, a `files_nodes` patch that writes only ancestor fields marks nothing; a patch that mixes them with other fields throws. `files_pending_overlay:check_ancestors` (`cursor: null`, call again until the cursor is null) reports nodes whose ancestors drifted, for example after a dashboard edit.
 
+Physical Move cleanup writes all twelve ancestor fields from the selected place. It clears the
+unused fields when a node moves to a shallower folder or root.
+
 **Derived docs are discovery, not facts.** The flush computes each derived doc from the source docs and the owner's reader. It reads derived docs only to learn what to recompute or delete. A read that uses a derived doc still checks what can change after the write, for example access on `accessNodeId` and `destinationAccessNodeIds`. Never decide a write from a derived doc alone.
 
 **Drift.** A Convex dashboard edit or `convex import` writes without the wrapper, so derived docs drift. After one, run `files_pending_overlay:check_user` for each affected user (organization, workspace, user, `cursor: null`; call again with the returned cursor until it is null). It returns the differences and `moveInProgress`. If that flag is true, wait for the workspace Move to finish, then start the audit again with `cursor: null`. An empty differences list with that flag is not a clean audit. Cohort staging uses its exact work proofs instead of this normal-doc audit. `files_pending_overlay:repair_user` with the same args recomputes the user's docs and deletes orphans; reserved targets stay parked until the Move ends. QA steps are in `../app-playwriter-harness/references/pending-path-overlay.md`.
@@ -652,11 +659,15 @@ The pending overlay is a set of derived tables. They copy what each user's draft
 **Limits.**
 
 - Human Move, Rename, agent `mv` and Accept use durable jobs. There is no total Move or Accept cap.
-  One selected root or a linked review group uses the same cohort worker. Each step handles one
-  node, metadata page or chunk page. The limits test measures every wrapped transaction, with the
+  One selected root or a linked review group uses the same cohort worker. A descendant step reads
+  one native child page, up to 32 items or 128 KiB. It reserves every returned child before yielding.
+  Other steps handle one node, metadata page or chunk page. The limits test measures every wrapped transaction, with the
   metadata catalog's delta writes and its compactor runs. Page sizes limit transaction work, never the selection.
 - Move prepares pending metadata, plain-text scope and owner overlays before selecting the after
   view. Existing Archive and Restore `saved_node` jobs still page their exact target indexes.
+- A workspace slot is either idle, with no view fields, or active, with both view fields required.
+  Search cursors use only `files_move_search_generations`, indexed by workspace. A missing counter
+  means zero; its first change writes one. Tree view reads use the slot and do not read the busy cohort.
 - Bash `meta get` merges the normal and selected exact file or proposal ranges. An unselected
   pending branch finds its staged scope through its source reservation. Cleanup keeps all fields visible.
 - A user's own draft write may add a hide or place of a saved node only while other users hold fewer than 32 of them. Past that, the flush refuses it with a clean error. Without this cap, one write to a saved node would update every user's copies inline. The user's own draft write is refused, also when it moves or creates a draft onto the name of a crowded saved node (the claim adds a hide). Folder side effects (a broken move cycle, a folder move), jobs and the user who accepts or discards never refuse, so a node can pass the cap, for example when a saved file moves onto a name that many users' drafts already hold. Discard, Accept and data deletion never fail on the cap.

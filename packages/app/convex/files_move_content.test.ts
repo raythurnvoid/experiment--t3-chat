@@ -75,7 +75,12 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 			.withIndex("by_workspace", (q) => q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId))
 			.unique();
 		if (!slot) throw new Error("Expected a fixture slot");
-		await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId: null });
+		await ctx.db.replace("files_move_workspace_slots", slot._id, {
+			organizationId: slot.organizationId,
+			workspaceId: slot.workspaceId,
+			cohortId: null,
+			generation: slot.generation,
+		});
 		const claims = await ctx.db
 			.query("files_move_slot_claims")
 			.withIndex("by_cohort", (q) => q.eq("cohortId", f.cohortId))
@@ -110,7 +115,11 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 		const proposal = await ctx.db.get("files_pending_updates", f.proposal._id);
 		const node = await ctx.db.get("files_nodes", f.nodeId);
 		if (!proposal?.content || !node) throw new Error("Expected edited content");
-		await ctx.db.patch("files_move_workspace_slots", slotId, { cohortId: f.cohortId });
+		await ctx.db.patch("files_move_workspace_slots", slotId, {
+			cohortId: f.cohortId,
+			visibleView: "before",
+			migrationDirection: "to_cohort",
+		});
 		await ctx.db.patch("files_nodes", f.nodeId, { moveCohortId: f.cohortId });
 		await ctx.db.patch("files_pending_updates", proposal._id, { moveCohortId: f.cohortId });
 		await ctx.db.patch("files_move_cohort_nodes", f.recordId, {
@@ -173,6 +182,10 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 				phase: "published",
 				visibleView: "after",
 				publishedAt: Date.now(),
+			});
+			await ctx.db.patch("files_move_workspace_slots", slotId, {
+				visibleView: "after",
+				migrationDirection: "to_normal",
 			});
 			return accounting;
 		});

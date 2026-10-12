@@ -1033,8 +1033,8 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			}
 		}
 
-		// The top items of this page know where they land now. A path over the limit is refused only when
-		// it gets longer than when it was archived. A child archived on its own may have taken a longer path
+		// The top items of this page know where they land now. A path over the normal limit needs its
+		// first Archive allowance. A child archived on its own may have taken a longer path
 		// from its folder since then, and it cannot come back with it.
 		for (const node of page) {
 			const { growth, topId } = await db_get_restore_landing(ctx, { run, node, parents, landings });
@@ -1046,7 +1046,7 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			else if ((run.topMaxPathLengths?.length ?? 0) < MAX_TOP_PATH_LENGTHS) {
 				run.topMaxPathLengths = [...(run.topMaxPathLengths ?? []), { nodeId: topId, length }];
 			}
-			if (length > files_PATH_MAX_LENGTH && length > (node.archivedPathLength ?? node.path.length)) {
+			if (length > files_PATH_MAX_LENGTH && length > (node.archivedPathLength ?? files_PATH_MAX_LENGTH)) {
 				add_long_path(run, { name: node.name, length });
 			}
 		}
@@ -1066,8 +1066,8 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 }
 
 /**
- * The longest Keep both name for `node` next to `occupant`. A path already over the limit may stay as
- * long as it was. A folder's new name makes each path inside longer too, so the name may grow only by
+ * The longest Keep both name for `node` next to `occupant`. A path over the normal limit needs its
+ * first Archive allowance. A folder's new name makes each path inside longer too, so it may grow only by
  * what the longest path inside it leaves free. A folder that is not a top item, or one past the
  * `topMaxPathLengths` list, uses the longest path of the whole job.
  */
@@ -1075,7 +1075,7 @@ function get_keep_both_max_length(args: { run: RunFields; node: Doc<"files_nodes
 	const { run, node, occupant } = args;
 
 	const parentLength = occupant.path.length - occupant.name.length;
-	const oldLength = node.archivedPathLength ?? node.path.length;
+	const oldLength = node.archivedPathLength ?? files_PATH_MAX_LENGTH;
 	const maxLength = Math.min(files_NAME_MAX_LENGTH, Math.max(files_PATH_MAX_LENGTH, oldLength) - parentLength);
 	const longest = run.topMaxPathLengths?.find((item) => item.nodeId === node._id)?.length ?? run.maxPathLength ?? 0;
 	return node.kind === "folder"
@@ -1257,18 +1257,15 @@ async function db_land_node(
 		}
 	}
 
-	// The check refuses paths that get too long, and Keep both cuts its name to fit. Only a job that passed
-	// its check before this check existed, or an item that joined another restore, can still get a path
-	// that is too long here. That item stays archived under its own operation id, so restoring it again
-	// does not ask about the items the person skipped. The job says so when it ends, and never fails
-	// partway for this.
+	// Recheck the landing path. An item that joined another restore may now be too long.
+	// It stays archived under its own operation id. The job reports it when it ends.
 	const path = path_join(landing?.path ?? "/", name);
 	let skipOperationId = null;
 	if (isSkipped) {
 		run.skipOperationId ??= crypto.randomUUID();
 		skipOperationId = run.skipOperationId;
 	} else if (
-		files_check_name_and_path_length({ path, oldPathLength: node.archivedPathLength ?? node.path.length })._nay
+		files_check_name_and_path_length({ path, oldPathLength: node.archivedPathLength ?? files_PATH_MAX_LENGTH })._nay
 	) {
 		add_long_path(run, { name: node.name, length: path.length });
 		run.longPathOperationId ??= crypto.randomUUID();

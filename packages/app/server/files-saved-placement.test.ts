@@ -1,16 +1,19 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { validate } from "convex-helpers/validators";
 import app_convex_schema from "../convex/schema.ts";
 import { api } from "../convex/_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { test_create_saved_placement_fixture as fixture } from "./files-saved-placement.test-fixtures.ts";
 import {
+	files_saved_placement_db_bump_search_generation,
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_path,
 	files_saved_placement_db_get_proposal,
 	files_saved_placement_db_get_publish_receipt,
 	files_saved_placement_db_get_publish_receipt_by_saved_node,
+	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_sequence,
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_view,
@@ -73,6 +76,44 @@ describe("saved placement foundation", () => {
 			contentFrontmatterTooLargeFieldCount: 4,
 			contentFrontmatterTooLargeIndexDocumentCount: 5,
 		});
+	});
+
+	test.each([
+		{ before: 1030, after: undefined },
+		{ before: undefined, after: 1031 },
+	])("selects the archived allowance over the physical value (%o)", async ({ before, after }) => {
+		const f = await fixture();
+		await f.t.run(async (ctx) => {
+			const record = (await ctx.db.get("files_move_cohort_nodes", f.recordId))!;
+			await ctx.db.patch("files_saved_places", record.beforePlaceId!, {
+				archiveOperationId: "archive-before",
+				archivedPathLength: before,
+			});
+			await ctx.db.patch("files_saved_places", record.afterPlaceId!, {
+				archiveOperationId: "archive-after",
+				archivedPathLength: after,
+			});
+			// Physical cleanup may already hold the other view.
+			await ctx.db.patch("files_nodes", f.nodeId, {
+				archiveOperationId: "archive-after",
+				archivedPathLength: after,
+			});
+		});
+		expect(
+			(await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.archivedPathLength,
+			"the before view selects its numeric or absent allowance",
+		).toBe(before);
+		await f.t.run((ctx) =>
+			ctx.db.patch("files_nodes", f.nodeId, {
+				archiveOperationId: "archive-before",
+				archivedPathLength: before,
+			}),
+		);
+		await f.publish();
+		expect(
+			(await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.archivedPathLength,
+			"the after view selects its numeric or absent allowance",
+		).toBe(after);
 	});
 
 	test("uses exact slot claims for both paths and never fills a claimed empty slot", async () => {
@@ -310,6 +351,242 @@ describe("saved placement foundation", () => {
 			migrationDirection: null,
 		});
 		expect(await t.run((ctx) => ctx.db.query("files_move_workspace_slots").collect())).toEqual([]);
+		expect(await t.run((ctx) => files_saved_placement_db_get_search_generation(ctx.db, db))).toBe(0);
+		expect(await t.run((ctx) => ctx.db.query("files_move_search_generations").collect())).toEqual([]);
+	});
+
+	test("saved search reads only its counter range when no counter exists", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { plan: null, integrationPolicy: null }));
+		const number = await t.run(async (ctx) => {
+			const query = vi.spyOn(ctx.db, "query");
+			try {
+				const number = await files_saved_placement_db_get_search_generation(ctx.db, db);
+				expect(query.mock.calls.map(([table]) => table), "search reads only its counter range").toEqual([
+					"files_move_search_generations",
+				]);
+				return number;
+			} finally {
+				query.mockRestore();
+			}
+		});
+		expect(number).toBe(0);
+	});
+
+	test("first saved search bump creates one counter at one", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { plan: null, integrationPolicy: null }));
+		await t.run(async (ctx) => {
+			const query = vi.spyOn(ctx.db, "query");
+			try {
+				await files_saved_placement_db_bump_search_generation(ctx, db);
+				expect(query.mock.calls.map(([table]) => table), "a first bump reads the counter range once").toEqual([
+					"files_move_search_generations",
+				]);
+			} finally {
+				query.mockRestore();
+			}
+		});
+		const first = await t.run((ctx) =>
+			ctx.db
+				.query("files_move_search_generations")
+				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+				.unique(),
+		);
+		expect(first?.searchGeneration, "first bump creates counter one").toBe(1);
+		await t.run((ctx) => files_saved_placement_db_bump_search_generation(ctx, db));
+		const second = await t.run((ctx) =>
+			ctx.db
+				.query("files_move_search_generations")
+				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+				.unique(),
+		);
+		expect(second).toMatchObject({ _id: first?._id, searchGeneration: 2 });
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.unique(),
+			),
+			"search bumps never create a workspace slot",
+		).toBeNull();
+	});
+
+	test("saved search bump keeps the workspace slot unchanged", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { plan: null, integrationPolicy: null }));
+		const { slotId, counterId } = await t.run(async (ctx) => ({
+			slotId: await ctx.db.insert("files_move_workspace_slots", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				cohortId: null,
+				generation: 4,
+			}),
+			counterId: await ctx.db.insert("files_move_search_generations", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				searchGeneration: 262,
+			}),
+		}));
+		const slot = await t.run((ctx) => ctx.db.get("files_move_workspace_slots", slotId));
+		await t.run((ctx) => files_saved_placement_db_bump_search_generation(ctx, db));
+		expect(
+			await t.run((ctx) => ctx.db.get("files_move_search_generations", counterId)),
+			"existing counter 262 becomes 263",
+		).toHaveProperty("searchGeneration", 263);
+		expect(
+			await t.run((ctx) => ctx.db.get("files_move_workspace_slots", slotId)),
+			"a search bump keeps the slot ID, generation and fields",
+		).toEqual(slot);
+	});
+
+	test("a search counter change rejects search continuation but keeps tree continuation", async () => {
+		const f = await fixture({ normalPaths: ["/cursor-a.txt", "/cursor-b.txt"] });
+		const view = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		if (!view?.cohortId) throw new Error("Expected the active saved view");
+		const slot = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+				)
+				.unique(),
+		);
+		if (!slot) throw new Error("Expected the active workspace slot");
+		const savedStream = { kind: "normal", generation: view.generation } as const;
+		const searchArgs = {
+			membershipId: f.db.membershipId,
+			savedStream,
+			searchGeneration: view.searchGeneration,
+			clause: { kind: "name", text: "cursor", nodeKind: "file" },
+		} as const;
+		const treeArgs = {
+			membershipId: f.db.membershipId,
+			savedStream,
+			parentId: "root",
+			kind: "file",
+			archived: false,
+			restricted: false,
+		} as const;
+		const search = await f.asUser.query(api.files_nodes.search_saved, {
+			...searchArgs,
+			paginationOpts: { cursor: null, numItems: 1 },
+		});
+		const tree = await f.asUser.query(api.files_nodes.list_tree_children, {
+			...treeArgs,
+			paginationOpts: { cursor: null, numItems: 1 },
+		});
+		expect(search.page).toHaveLength(1);
+		expect(search.isDone, "the saved search has a real next page").toBe(false);
+		expect(tree.page).toHaveLength(1);
+		expect(tree.isDone, "the saved tree has a real next page").toBe(false);
+		await f.t.run((ctx) => files_saved_placement_db_bump_search_generation(ctx, f.db));
+		expect(await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId })).toEqual({
+			...view,
+			searchGeneration: view.searchGeneration + 1,
+		});
+		expect(
+			await f.t.run((ctx) => ctx.db.get("files_move_workspace_slots", slot._id)),
+			"only the search counter changes; the slot and saved view stay fixed",
+		).toEqual(slot);
+		const nextTree = await f.asUser.query(api.files_nodes.list_tree_children, {
+			...treeArgs,
+			paginationOpts: { cursor: tree.continueCursor, numItems: 1 },
+		});
+		const expected = [...f.normalNodes.values()].sort();
+		expect(
+			[...tree.page, ...nextTree.page].map((node) => node._id).sort(),
+			"the old tree continuation still returns every normal saved file",
+		).toEqual(expected);
+		await expect(
+			f.asUser.query(api.files_nodes.search_saved, {
+				...searchArgs,
+				paginationOpts: { cursor: search.continueCursor, numItems: 1 },
+			}),
+			"a counter-only bump rejects the old saved search continuation",
+		).rejects.toThrow("InvalidCursor: The saved search view changed.");
+		const fresh = await f.asUser.query(api.files_nodes.search_saved, {
+			...searchArgs,
+			searchGeneration: view.searchGeneration + 1,
+			paginationOpts: { cursor: null, numItems: 2 },
+		});
+		expect(fresh.page.map((node) => (node.kind === "problem" ? node.message : node.nodeId)).sort()).toEqual(expected);
+	});
+
+	test("active saved view reads only its slot range", async () => {
+		const f = await fixture();
+		const view = await f.t.run(async (ctx) => {
+			const query = vi.spyOn(ctx.db, "query");
+			const get = vi.spyOn(ctx.db, "get");
+			try {
+				const view = await files_saved_placement_db_get_view(ctx.db, f.db);
+				expect(
+					query.mock.calls.map(([table]) => table),
+					"view reads only its slot range",
+				).toEqual(["files_move_workspace_slots"]);
+				expect(get, "view never reads the Move cohort").not.toHaveBeenCalled();
+				return view;
+			} finally {
+				query.mockRestore();
+				get.mockRestore();
+			}
+		});
+		const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId));
+		expect(view).toEqual({
+			cohortId: f.cohortId,
+			view: "before",
+			generation: cohort?.slotGeneration,
+			migrationDirection: "to_cohort",
+		});
+	});
+
+	test("slot schema accepts current states and rejects old or incomplete fields", async () => {
+		const f = await fixture();
+		await f.t.run(async (ctx) => {
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+				)
+				.unique();
+			if (!slot?.cohortId) throw new Error("Expected the active fixture slot");
+			const { _id, _creationTime, ...active } = slot;
+			const validator = app_convex_schema.tables.files_move_workspace_slots.validator;
+			const idle = {
+				organizationId: slot.organizationId,
+				workspaceId: slot.workspaceId,
+				cohortId: null,
+				generation: slot.generation,
+			};
+			expect(validate(validator, active, { db: ctx.db }), "the slot schema accepts the active producer shape").toBe(
+				true,
+			);
+			expect(
+				validate(validator, idle, { db: ctx.db }),
+				"the slot schema accepts an idle slot without view fields",
+			).toBe(true);
+			for (const fields of [active, idle])
+				expect(
+					validate(validator, { ...fields, searchGeneration: 1 }, { db: ctx.db }),
+					"the slot schema rejects the old search counter",
+				).toBe(false);
+			const { visibleView: _view, ...missingView } = active;
+			const { migrationDirection: _direction, ...missingDirection } = active;
+			expect(validate(validator, missingView, { db: ctx.db }), "an active slot requires its visible view").toBe(false);
+			expect(
+				validate(validator, missingDirection, { db: ctx.db }),
+				"an active slot requires its migration direction",
+			).toBe(false);
+			expect(
+				validate(validator, { ...idle, visibleView: "before" }, { db: ctx.db }),
+				"an idle slot has no visible view field",
+			).toBe(false);
+			expect(
+				validate(validator, { ...idle, migrationDirection: "to_cohort" }, { db: ctx.db }),
+				"an idle slot has no migration direction field",
+			).toBe(false);
+		});
 	});
 
 	test("keeps foundation and planned serving indexes within Convex limits", () => {

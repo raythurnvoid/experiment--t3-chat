@@ -349,6 +349,7 @@ describe("saved list action", () => {
 
 	test("refuses a seek key outside its recursive source range", async () => {
 		const f = await test_create_saved_placement_fixture();
+		const view = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
 		const args = {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
@@ -357,7 +358,12 @@ describe("saved list action", () => {
 			minDepth: 1,
 			numItems: 1,
 			cursor: null,
-			savedStream: { kind: "cohort" as const, cohortId: f.cohortId, view: "before" as const, generation: 1 },
+			savedStream: {
+				kind: "cohort" as const,
+				cohortId: f.cohortId,
+				view: "before" as const,
+				generation: view!.generation,
+			},
 		};
 		await expect(
 			f.t.query(internal.files_nodes.list_subtree, {

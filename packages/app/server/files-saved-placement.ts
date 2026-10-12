@@ -45,29 +45,11 @@ export async function files_saved_placement_db_get_view(
 			migrationDirection: null,
 		};
 	// Every Move step patches the cohort. Read the slot's copy, so open trees do not run again per step.
-	if (slot.visibleView && slot.migrationDirection)
-		return {
-			cohortId: slot.cohortId,
-			view: slot.visibleView,
-			generation: slot.generation,
-			migrationDirection: slot.migrationDirection,
-		};
-	const { cohort } = await get_cohort(db, slot.cohortId);
-	if (
-		cohort.organizationId !== args.organizationId ||
-		cohort.workspaceId !== args.workspaceId ||
-		cohort.slotGeneration !== slot.generation
-	)
-		throw should_never_happen("Workspace saved-view slot does not match its cohort", {
-			slotId: slot._id,
-			cohortId: cohort._id,
-		});
 	return {
-		cohortId: cohort._id,
-		view: cohort.visibleView,
+		cohortId: slot.cohortId,
+		view: slot.visibleView,
 		generation: slot.generation,
-		migrationDirection: cohort.phase === "published" || cohort.phase === "finishing" ||
-			cohort.phase === "aborting" || cohort.phase === "complete" ? "to_normal" as const : "to_cohort" as const,
+		migrationDirection: slot.migrationDirection,
 	};
 }
 
@@ -87,13 +69,7 @@ export async function files_saved_placement_db_get_search_generation(
 		.query("files_move_search_generations")
 		.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.unique();
-	if (row) return row.searchGeneration;
-	// Before its own doc, the number lived on the slot.
-	const slot = await db
-		.query("files_move_workspace_slots")
-		.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
-		.unique();
-	return slot?.searchGeneration ?? 0;
+	return row?.searchGeneration ?? 0;
 }
 
 /**
@@ -112,7 +88,7 @@ export async function files_saved_placement_db_bump_search_generation(
 		await ctx.db.insert("files_move_search_generations", {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			searchGeneration: (await files_saved_placement_db_get_search_generation(ctx.db, args)) + 1,
+			searchGeneration: 1,
 		});
 }
 
@@ -131,7 +107,7 @@ export async function files_saved_placement_db_get_node_view(
 }
 
 function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">): Doc<"files_nodes"> {
-	// Explicit optional fields also clear ancestors that only exist in the other view.
+	// Explicit optional fields clear values that only exist in the other view.
 	return {
 		...node,
 		parentId: place.parentId,
@@ -143,6 +119,7 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		pathDepth: place.pathDepth,
 		lowercaseExtension: place.lowercaseExtension,
 		archiveOperationId: place.archiveOperationId,
+		archivedPathLength: place.archivedPathLength,
 		restrictedScopeNodeId: place.restrictedScopeNodeId,
 		isRestrictedScopeRoot: place.isRestrictedScopeRoot,
 		updatedAt: place.updatedAt,

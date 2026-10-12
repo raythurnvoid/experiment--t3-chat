@@ -906,12 +906,12 @@ The model:
   keeps its own scope. The first step runs inside the request, so a small folder is done at once. A
   bigger one leaves a hidden Activity ("Restrict files", `feedVisible: false`) only so the recover
   cron finds the op. A move job rewrites scope the same way.
-- Until the job writes a child, the child keeps its stored scope. Every permission check, for reads
-  and writes, trusts that stored scope. So while a scope or move job runs, a child keeps its old
-  access until the job rewrites it: a child moved into a restricted folder stays open to the
-  workspace for that time, and so does a child of a newly restricted folder. This short window is
-  accepted on purpose. Do not patch it by reading the parent folders: that does not scale, and it
-  breaks the simple rule that a node's access comes from the scope stored on it.
+- Until a scope job writes a child, the child keeps its stored scope. Every permission check, for
+  reads and writes, trusts that stored scope. So a child of a newly restricted folder keeps its old
+  access until the job rewrites it. This short window is accepted on purpose. Do not patch it by
+  reading the parent folders: that does not scale, and it breaks the simple rule that a node's access
+  comes from the scope stored on it. A Move publishes its nodes and inherited scopes together through
+  the selected saved view.
 - A child of an unrestricted folder is different: it still points at that folder, which is not its
   own scope any more (a **dead pointer**). `unrestrict_node` gives the folder the scope stored on its
   parent, so `access_control_db_resolve_live_restricted_scope` follows the dead folder's own pointer

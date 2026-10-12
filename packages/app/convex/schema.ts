@@ -513,6 +513,8 @@ const files_saved_placement_fields = {
 	pathDepth: v.number(),
 	lowercaseExtension: v.union(v.string(), v.null()),
 	archiveOperationId: v.union(v.string(), v.null()),
+	// Missing uses the normal Restore path limit.
+	archivedPathLength: v.optional(v.number()),
 	restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	isRestrictedScopeRoot: v.boolean(),
 	updatedAt: v.number(),
@@ -877,7 +879,9 @@ const files_plain_text_chunk_fields = {
 	...files_text_chunk_fields,
 	/** Linked exact text chunk for exact reads and integrity checks. */
 	textChunkId: v.id("files_text_chunks"),
-	/** Effective path, used to filter search before pagination. */
+	/**
+	 * Cached path. Saved text and search reads return the selected node's current path.
+	 */
 	path: v.string(),
 	archiveOperationId: v.optional(v.string()),
 	plainTextChunk: v.string(),
@@ -2170,18 +2174,25 @@ const app_convex_schema = defineSchema({
 	// #endregion value store
 
 	// #region files
-	files_move_workspace_slots: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		cohortId: v.union(v.id("files_move_cohorts"), v.null()),
-		generation: v.number(),
-		// Old slots only. Search now reads `files_move_search_generations`.
-		searchGeneration: v.optional(v.number()),
-		// Copies of the cohort's view. Every Move step patches the cohort, so view reads use these
-		// instead, and open trees do not run again on each step. Older slots read the cohort.
-		visibleView: v.optional(files_move_view_validator),
-		migrationDirection: v.optional(v.union(v.literal("to_cohort"), v.literal("to_normal"))),
-	}).index("by_workspace", ["organizationId", "workspaceId"]),
+	files_move_workspace_slots: defineTable(
+		v.union(
+			v.object({
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				cohortId: v.null(),
+				generation: v.number(),
+			}),
+			v.object({
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				cohortId: v.id("files_move_cohorts"),
+				generation: v.number(),
+				// Tree pages read this copy, so they do not run again on every Move step.
+				visibleView: files_move_view_validator,
+				migrationDirection: v.union(v.literal("to_cohort"), v.literal("to_normal")),
+			}),
+		),
+	).index("by_workspace", ["organizationId", "workspaceId"]),
 
 	/**
 	 * Saved search pages restart when this number changes. A Move changes it once per cleaned node, so
@@ -4651,9 +4662,9 @@ const app_convex_schema = defineSchema({
 		 */
 		archiveOperationId: v.union(v.string(), v.null()),
 		/**
-		 * The path length when the node was archived. A restore may give an archived child its folder's
-		 * new path, even over the limit. Restore checks the limit against this length, so that path cannot
-		 * come back longer. Read only while the node is archived. Older nodes have none and use `path`.
+		 * The first Archive path length, stored only when it is above 1,024. Missing means the normal
+		 * 1,024-character Restore limit. Active nodes have no field. An archived child keeps this
+		 * allowance even if its folder's Restore gives it a longer path.
 		 */
 		archivedPathLength: v.optional(v.number()),
 		/**

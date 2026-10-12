@@ -65,7 +65,8 @@ async function shared_fixture() {
 			level: "read",
 		}),
 	).toEqual({ _yay: null });
-	return { ...f, member, asOwner, asMember, principal };
+	const view = await asOwner.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+	return { ...f, member, asOwner, asMember, principal, generation: view!.generation };
 }
 
 describe("share rows during a Move", () => {
@@ -86,7 +87,7 @@ describe("share rows during a Move", () => {
 				membershipId: f.member.membershipId,
 				principalIndex: 0,
 				archived: false,
-				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation: 1 },
+				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation: f.generation },
 				paginationOpts: { cursor: null, numItems: 20 },
 			});
 		expect((await read("before")).page.map((row) => row.name)).toEqual(["old.txt"]);
@@ -96,7 +97,7 @@ describe("share rows during a Move", () => {
 					membershipId: f.member.membershipId,
 					principalIndex: 0,
 					archived: false,
-					savedStream: { kind: "normal", generation: 1 },
+					savedStream: { kind: "normal", generation: f.generation },
 					paginationOpts: { cursor: null, numItems: 20 },
 				})
 			).page,
@@ -145,7 +146,7 @@ describe("share rows during a Move", () => {
 					membershipId: f.member.membershipId,
 					principalIndex: 0,
 					archived: false,
-					savedStream: { kind: "cohort", cohortId: f.cohortId, view: "after", generation: 1 },
+					savedStream: { kind: "cohort", cohortId: f.cohortId, view: "after", generation: f.generation },
 					paginationOpts: { cursor: null, numItems: 20 },
 				})
 			).page,
