@@ -373,10 +373,7 @@ test("pages a long text from one chunking, also after a page loses the kept boun
 	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.prepareContext))).toEqual({ _yay: null });
 	const chunker = vi.spyOn(await import("../server/files-plain-text-chunking.ts"), "files_chunk_plain_text");
 	// One page per step, so a step can end inside the text phase. A step may otherwise run many pages.
-	vi.spyOn(
-		await import("../server/files-pending-overlay.ts"),
-		"files_pending_overlay_db_can_join_step",
-	).mockResolvedValue(false);
+	vi.spyOn(await import("./files_subtree_ops.ts"), "files_subtree_ops_db_is_near_limits").mockResolvedValue(true);
 	let dropped = false;
 	for (let i = 0; i < 200; i++) {
 		const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId)))!;
@@ -574,8 +571,8 @@ test("a 700 KB Save stages and repairs in few steps, and no step nears a limit",
 	expect(await f.publish()).toEqual({ _yay: null });
 	while (!(await step((ctx) => files_move_content_db_finish(ctx, f.context))));
 	expect(await f.chunks(), "the switch serves the whole accepted text").toBe(text);
-	// One page per step took 754 steps. Pages join while a step stays under 1/16 of every limit, so 65 steps.
-	expect(steps, "each step runs many pages").toBeLessThan(80);
+	// One page per step took 754 steps, and the 1/16 join budget took 65. Now 36.
+	expect(steps, "each step runs many pages").toBeLessThan(45);
 	expect(heaviest, "each step keeps a quarter of every limit").toBeLessThan(0.75);
 });
 
