@@ -223,21 +223,6 @@ export async function get_proposal(args: {
 	return view.entry.pendingUpdate;
 }
 
-export async function get_dependencies(
-	f: Awaited<ReturnType<typeof fixture>>,
-	setId: Id<"files_media_dependency_sets"> | undefined,
-) {
-	if (!setId) throw new Error("Expected a media dependency set");
-	return await f.t.run(async (ctx) =>
-		(
-			await ctx.db
-				.query("files_media_dependencies")
-				.withIndex("by_set_order", (q) => q.eq("setId", setId))
-				.collect()
-		).map((row) => row.dependency),
-	);
-}
-
 export async function save_proposal(args: {
 	f: Awaited<ReturnType<typeof fixture>>;
 	workspace: "current" | "personal";

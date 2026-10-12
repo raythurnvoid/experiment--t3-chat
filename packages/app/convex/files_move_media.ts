@@ -157,7 +157,7 @@ async function db_current(
 }
 
 async function db_text(ctx: QueryCtx | MutationCtx, data: NonNullable<Awaited<ReturnType<typeof db_current>>["_yay"]>) {
-	const { cohort, content, item, run } = data;
+	const { cohort, content, run } = data;
 	if (!content.acceptedTextInputId)
 		return content.acceptedTextDigest === null ? Result({ _yay: { text: null, digest: "" } }) : changed();
 	const input = await ctx.db.get("files_pending_update_text_inputs", content.acceptedTextInputId);
@@ -193,10 +193,10 @@ async function db_text(ctx: QueryCtx | MutationCtx, data: NonNullable<Awaited<Re
 	const node = await files_saved_placement_db_get_node(ctx.db, content.nodeId, { cohortId: cohort._id, view: "after" });
 	if (!node) return changed();
 	// One selected item cannot include another selected media file.
-	const ordinarySingle = !item.mediaDependencySet && run?.expectedItemCount === 1;
+	const single = run?.expectedItemCount === 1;
 	return Result({
 		_yay: {
-			text: node.textKind === "rich_text" && !ordinarySingle ? input.text : null,
+			text: node.textKind === "rich_text" && !single ? input.text : null,
 			digest: content.acceptedTextDigest!,
 		},
 	});
@@ -219,7 +219,7 @@ export const read = internalQuery({
 				...text._yay,
 				sealed: checked._yay.set?.sealed ?? false,
 				offset: checked._yay.set?.count ?? 0,
-				ordinary: !checked._yay.item.mediaDependencySet && checked._yay.cohort.origin.kind === "review",
+				ordinary: checked._yay.cohort.origin.kind === "review",
 			},
 		});
 	},
@@ -290,7 +290,7 @@ export const select_refs = internalQuery({
 		const checked = await db_current(ctx, args);
 		if (checked._nay) return checked;
 		const { cohort } = checked._yay;
-		if (cohort.origin.kind !== "review" || checked._yay.item.mediaDependencySet) return changed();
+		if (cohort.origin.kind !== "review") return changed();
 		const refs = [];
 		for (const src of args.refs) {
 			const parsed = files_media_parse_src(src);
@@ -325,36 +325,15 @@ async function db_ref(
 	data: NonNullable<Awaited<ReturnType<typeof db_current>>["_yay"]>,
 	src: string,
 ) {
-	const { cohort, item, membership } = data;
-	const pin = item.mediaDependencySet;
-	const captured = pin ? await ctx.db.get("files_media_dependency_sets", pin.setId) : null;
-	if (
-		pin &&
-		(!captured?.sealed ||
-			captured.generation !== pin.generation ||
-			captured.userId !== cohort.userId ||
-			captured.organizationId !== cohort.organizationId ||
-			captured.workspaceId !== cohort.workspaceId ||
-			captured.owner.kind !== "proposal" ||
-			captured.owner.pendingUpdateId !== item.pendingUpdateId)
-	)
-		return changed();
-	const mapping = captured
-		? await ctx.db
-				.query("files_media_dependencies")
-				.withIndex("by_set_src", (q) => q.eq("setId", captured._id).eq("dependency.src", src))
-				.first()
-		: null;
+	const { cohort, membership } = data;
 	const parsed = files_media_parse_src(src);
 	const savedId = parsed.kind === "file" ? ctx.db.normalizeId("files_nodes", parsed.fileNodeId) : null;
 	const privateId = parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
-	const original =
-		mapping?.dependency.target ??
-		(savedId
-			? { kind: "saved" as const, id: savedId }
-			: privateId
-				? { kind: "private" as const, id: privateId }
-				: null);
+	const original = savedId
+		? { kind: "saved" as const, id: savedId }
+		: privateId
+			? { kind: "private" as const, id: privateId }
+			: null;
 	if (!original) return changed();
 	const fixedView = { cohortId: cohort._id, view: "after" as const };
 	const target = await files_saved_placement_db_resolve_read_target(ctx.db, { ...cohort, target: original }, fixedView);
@@ -435,14 +414,6 @@ async function db_ref(
 				return changed();
 		}
 	}
-	const pinned = mapping?.dependency;
-	if (
-		pinned &&
-		(ready.assetId !== pinned.assetId ||
-			ready.version.contentType !== pinned.version.contentType ||
-			(pinned.version.kind !== "pending" && !files_transfer_source_versions_equal(pinned.version, ready.version)))
-	)
-		return changed();
 	return Result({ _yay: { src, target, assetId: ready.assetId, version: ready.version } });
 }
 

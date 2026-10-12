@@ -31,16 +31,13 @@ Structural state uses:
 - `copiedFrom` for copy or replace provenance.
 - `pendingArchive` for delete intent (bash `rm`): accepting archives the node; a folder archives its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Setting Delete keeps the content branches for Undo. Accept removes the whole proposal without saving its draft text. Discard restores the content branches as a Modified row.
 - `createIntent` for a private file or folder. Missing agent write and copy targets stay private until Save. Removing an owned private create discards that private identity and its approved pending work.
-- `mediaDependencySetId` on copied documents points to sealed, indexed image/video mappings.
-  Each set has one owner and a generation. The mappings pin selected destination targets and versions.
-  Save checks real embeds in the actual accepted text before writing. Each used media target must
-  be saved unchanged or in the same reviewed unit. Group by resolved target, including permanent
-  private-origin links after Save. A new replacement or Archive proposal cannot bypass that group.
-  Removing the embed releases its Save requirement; code and plain links do not require media.
-  Bulk review reads the sealed text selected for Save before joining media items. It keeps stored
-  pins for other branches and checks the final merged text again before writing.
-  If a live merge adds a link to media selected in another unit, Save refuses that document and
-  asks for a fresh review. The whole run's selection is never treated as one atomic unit.
+
+Copy maps image/video links through a sealed, paged set owned by the Copy item. The set only
+rewrites the copied text, and it retires when the Copy finishes. The proposal keeps no media set.
+A copied document saves like any other document. A missing or changed image stays as a link and
+never blocks Save, like Notion and Google Docs. We chose this because blocking a whole Save for one
+image surprised users, and readers already check access on every view.
+Bulk Review still joins a document with the media selected in the same Review (see Review runs).
 
 There is no separate source-removal review. Saving a Copy never changes its original.
 Completed proposals need current destination access for human Review and Save, not access to the
@@ -205,8 +202,8 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   Readers still check each media file's current access. A one-item ordinary Review skips media
   parsing. A larger Review selects refs through exact run-target and private-alias indexes,
   in pages of eight, before creating the proof set. This also checks live links added after planning.
-  Copy-owned sets stay strict, including empty sets and partial Saves after `copiedFrom` clears. Each page
-  checks current access and the exact asset version. Selected private media uses its exact after
+  A copied document follows the same rule. Its selected media saves first, in its own unit,
+  and other links stay text. Each page checks current access and the exact asset version. Selected private media uses its exact after
   receipt. Private embed URLs keep their existing form after Save. The switch checks sealed proof
   for the current text digest, proposal revision, selection and group attempt. A proof whose
   accepted text has no embeds needs no version check.

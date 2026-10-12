@@ -16,13 +16,7 @@ import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-y
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { files_media_build_private_src } from "../shared/files-media.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
-import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
-import {
-	files_media_dependencies_db_create,
-	files_media_dependencies_db_append,
-	files_media_dependencies_db_seal,
-} from "./files_media_dependencies.ts";
 
 const r2Objects = new Map<string, string | ArrayBuffer>();
 let uploadDurationMs = 0;
@@ -276,7 +270,6 @@ export async function private_media(args: {
 	});
 	if (prepared._nay) throw new Error(prepared._nay.message);
 	if (prepared._yay.kind !== "stored") throw new Error("Expected the media upload");
-	const assetId = prepared._yay.assetId;
 	r2Objects.set(prepared._yay.r2Key, new Uint8Array([1, 2, 3, 4]).buffer);
 	const ready = await f.t.mutation(internal.files_ingestion.finalize_file, {
 		...f.scope,
@@ -297,67 +290,29 @@ export async function private_media(args: {
 					copiedFrom: { target: { kind: "saved", id: sourceId }, path: "/source", sourceWritePolicy: null },
 				},
 			});
-		const pending = (await ctx.db.get("files_pending_updates", entry.pendingUpdate._id))!;
-		const version = await files_transfer_db_get_entry_version(ctx, { ...entry, pendingUpdate: pending });
-		if (!version) throw new Error("Expected the ready media version");
 		return {
-			pending,
-			dependency: {
-				src: files_media_build_private_src(entry.node._id),
-				target: pending.target,
-				assetId,
-				version,
-			},
+			pending: (await ctx.db.get("files_pending_updates", entry.pendingUpdate._id))!,
+			src: files_media_build_private_src(entry.node._id),
 		};
 	});
 }
 
-export async function attach_media(args: {
+/**
+ * Mark a document as a Copy of `sourceId`, so review links its media in copy mode.
+ */
+export async function mark_copied(args: {
 	f: Awaited<ReturnType<typeof fixture>>;
 	pending: Doc<"files_pending_updates">;
-	images: Awaited<ReturnType<typeof private_media>>[];
-	sourceId?: Id<"files_nodes">;
+	sourceId: Id<"files_nodes">;
 }) {
-	const { f, pending, images, sourceId } = args;
+	const { f, pending, sourceId } = args;
 
-	const set = await f.t.run((ctx) =>
-		files_media_dependencies_db_create(ctx, {
-			...f.scope,
-			owner: { kind: "proposal", pendingUpdateId: pending._id },
-			expectedCount: images.length,
-		}),
-	);
-	if (set._nay) throw new Error(set._nay.message);
-	for (let offset = 0; offset < images.length; offset += 50)
-		expect(
-			await f.t.run((ctx) =>
-				files_media_dependencies_db_append(ctx, {
-					setId: set._yay,
-					generation: 0,
-					offset,
-					mappings: images
-						.slice(offset, offset + 50)
-						.map(({ dependency }) => ({ sourceSrc: dependency.src, dependency })),
-				}),
-			),
-		).toEqual({ _yay: null });
 	return await f.t.run(async (ctx) => {
-		expect(await files_media_dependencies_db_seal(ctx, { setId: set._yay, generation: 0 })).toEqual({ _yay: null });
-		// Only the captured mapping is seeded; text and media use their normal producer doors.
 		await files_db_patch_pending_update({
 			ctx,
 			pendingUpdateId: pending._id,
 			value: {
-				mediaDependencySetId: set._yay,
-				...(sourceId
-					? {
-							copiedFrom: {
-								target: { kind: "saved" as const, id: sourceId },
-								path: "/source",
-								sourceWritePolicy: null,
-							},
-						}
-					: {}),
+				copiedFrom: { target: { kind: "saved", id: sourceId }, path: "/source", sourceWritePolicy: null },
 			},
 		});
 		return (await ctx.db.get("files_pending_updates", pending._id))!;

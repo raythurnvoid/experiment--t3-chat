@@ -161,13 +161,13 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Reserve all private output IDs first, copy media before documents, and pin the mapping for retries.
   A completed image/video item keeps its exact output asset ID, without owning the asset. The first
   document mapping must still match that ID. Saving unchanged media is allowed; replacing it is not.
-  Save checks the embeds still present in the accepted text. Each must be saved at the copied version
-  or selected in that same Save group. Large Copy review saves selected media before its
-  dependent documents. Removed embeds need no media Save. See the pending spec.
+  A copied document saves like any other document. A missing or changed image stays as a link
+  and never blocks Save. Large Copy review saves selected media before its dependent documents.
+  See the pending spec.
 - Media mappings live in `files_media_dependency_sets` and indexed `files_media_dependencies` docs.
-  A sealed set belongs to a transfer capture, a proposal, or cleanup. Adoption changes that owner
-  in the publication transaction. Cleanup deletes mapping docs in pages and never owns their assets.
-  Capture and Save proofs pin the exact text, set generation, proposal or attempt, and organization,
+  A sealed set belongs to a transfer capture or cleanup. Publication retires the capture set in
+  the same transaction; the proposal keeps no set. Cleanup deletes mapping docs in pages and never
+  owns their assets. Capture proofs pin the exact text, set generation, attempt, and organization,
   workspace, and owner-proposal validation versions. A changed version invalidates the proof.
   Copy retries validation and final publication together, with at most three attempts. A change
   that can break a checked embed can still advance the version after the last validation page. A
@@ -348,8 +348,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
   preparation, retry, Stop, and cleanup.
 - The normal test commands omit only five checks: "saves 1,000 Copy outputs beside one ordinary
   edit", "plans 10,001 unrelated saved Move proposals as 10,001 units", the 2,001-descendant Move
-  scale check, the 16-owner overlay budget check and the Copy that adopts 101 media files (the
-  normal run lowers the media page from 50 to 3 and adopts 4). They carry the `full-size` tag, and
+  scale check, the 16-owner overlay budget check and the Copy that copies 101 media files (the
+  normal run lowers the media page from 50 to 3 and copies 4). They carry the `full-size` tag, and
   `vitest.config.ts` filters that tag out, so `-t` cannot pick them by accident.
   `vitest.full-size.config.ts` flips the filter. Run them with
   `vp env exec pnpm --dir packages/app run test:files:full-size`.

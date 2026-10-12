@@ -69,11 +69,6 @@ import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_share_links_create_cleanup_state, type files_share_links_CleanupState } from "./files_share_links_db.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
-import {
-	files_pending_media_action_validate,
-	files_pending_media_db_require_validation,
-	type files_pending_media_ValidatedSave,
-} from "./files_pending_media.ts";
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { files_pending_update_runs_db_start } from "./files_pending_update_runs.ts";
 import { activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
@@ -8665,9 +8660,6 @@ export async function files_pending_updates_db_commit_prepared_content(
 	args: {
 		userId: Id<"users">;
 		prepared: Infer<typeof saved_prepared_content_validator>;
-		reviewedPendingUpdateIds?: Set<Id<"files_pending_updates">>;
-		reviewRunId?: Id<"files_pending_update_runs">;
-		validatedMedia?: files_pending_media_ValidatedSave;
 		shareLinkCleanup: files_share_links_CleanupState;
 	},
 ): Promise<save_file_pending_update_Result> {
@@ -8713,7 +8705,7 @@ export async function files_pending_updates_db_commit_prepared_content(
 		return Result({ _yay: input.text });
 	};
 
-	const actor = { userId: args.userId, billedUserId: prepared.billedUserId, validatedMedia: args.validatedMedia };
+	const actor = { userId: args.userId, billedUserId: prepared.billedUserId };
 	if (prepared.kind === "saved_yjs") {
 		const text = prepared.partial ? await readText(prepared.partial.unstagedTextInputId, "unstaged") : null;
 		if (text?._nay) return text;
@@ -8721,9 +8713,6 @@ export async function files_pending_updates_db_commit_prepared_content(
 			ctx,
 			...prepared,
 			expectedRevision: prepared.reviewedRevision,
-			operationBatchId: prepared.operationBatchIds[0],
-			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-			reviewRunId: args.reviewRunId,
 			partial: prepared.partial ? { ...prepared.partial, unstagedText: text!._yay! } : undefined,
 			actor,
 		});
@@ -8737,9 +8726,6 @@ export async function files_pending_updates_db_commit_prepared_content(
 			ctx,
 			...prepared,
 			expectedRevision: prepared.reviewedRevision,
-			operationBatchId: prepared.operationBatchIds[0],
-			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-			reviewRunId: args.reviewRunId,
 			publish: prepared.publish ? { ...prepared.publish, text: text!._yay! } : null,
 			actor,
 		});
@@ -8761,8 +8747,6 @@ export async function files_pending_updates_db_commit_prepared_content(
 		actor: {
 			...actor,
 			publicationBatchId: prepared.operationBatchIds[0],
-			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-			reviewRunId: args.reviewRunId,
 		},
 	});
 	return saved._nay ? saved : Result({ _yay: { target, newSequence: null } });
@@ -8841,7 +8825,6 @@ export const save_file_pending_update_in_db = internalMutation({
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-		operationBatchId: v.optional(v.id("files_pending_update_operation_batches")),
 		/**
 		 * The staged accept diff to publish through door 1; absent when nothing staged changed.
 		 */
@@ -8896,15 +8879,12 @@ async function files_pending_updates_db_save_yjs(args: {
 	baseYjsSequence: number;
 	baseLineageGeneration: number;
 	expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
-	operationBatchId?: Id<"files_pending_update_operation_batches">;
-	reviewedPendingUpdateIds?: ReadonlySet<Id<"files_pending_updates">>;
-	reviewRunId?: Id<"files_pending_update_runs">;
 	trustedStageId?: Id<"files_yjs_trusted_update_stages">;
 	partial?: Infer<typeof files_pending_prepared_state_family_validator> & {
 		unstagedText: string;
 		unstagedTextChanged: boolean;
 	};
-	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave };
+	actor: { userId: Id<"users">; billedUserId: Id<"users"> };
 }) {
 	const { ctx, actor } = args;
 
@@ -9017,56 +8997,6 @@ async function files_pending_updates_db_save_yjs(args: {
 	}
 	if (lastSequenceDoc.lineageGeneration !== args.baseLineageGeneration) {
 		return Result({ _nay: { message: PENDING_BASE_STALE_MESSAGE } });
-	}
-	if (targetNode.textKind === "rich_text" && pendingUpdate.mediaDependencySetId) {
-		const batch = args.operationBatchId
-			? await db_get_owned_operation_batch(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					userId: user._id,
-					operationBatchId: args.operationBatchId,
-					now: Date.now(),
-				})
-			: null;
-		if (
-			!batch?.publication ||
-			batch.target.kind !== "saved" ||
-			batch.target.id !== args.nodeId ||
-			batch.expectedPendingUpdateId !== pendingUpdate._id ||
-			batch.expectedRevision !== pendingUpdate.revision ||
-			(args.trustedStageId &&
-				(batch.publication.kind !== "update" || batch.publication.trustedStageId !== args.trustedStageId))
-		)
-			return Result({ _nay: { message: "The prepared text is no longer available" } });
-		// The action stores the merged accepted text, not the old staged branch. Each batch has at most two texts.
-		const inputs = await ctx.db
-			.query("files_pending_update_text_inputs")
-			.withIndex("by_operationBatch", (q) => q.eq("operationBatchId", batch._id))
-			.take(2);
-		const input = inputs.find((input) => input.role === "staged");
-		const reservation = input
-			? await ctx.db
-					.query("files_private_storage_reservations")
-					.withIndex("by_resource", (q) => q.eq("resource.kind", "text_input").eq("resource.id", input._id))
-					.unique()
-			: null;
-		// Only server-staged publication text qualifies; public staging cannot replace this reservation.
-		if (
-			!input ||
-			(input.expiresAt !== undefined && input.expiresAt <= Date.now()) ||
-			reservation?.publicationBatchId !== batch._id ||
-			reservation.settlement.kind !== "held"
-		)
-			return Result({ _nay: { message: "The prepared text is no longer available" } });
-		const media = await files_pending_media_db_require_validation(ctx, {
-			pendingUpdate,
-			text: input.text,
-			operationBatchId: batch._id,
-			validated: actor.validatedMedia,
-			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-			reviewRunId: args.reviewRunId,
-		});
-		if (media._nay) return media;
 	}
 
 	// Validate the partial-output family before any write, so a refusal leaves nothing behind.
@@ -9444,13 +9374,10 @@ async function files_pending_updates_db_save_asset(args: {
 	nodeId: Id<"files_nodes">;
 	pendingUpdateId: Id<"files_pending_updates">;
 	expectedRevision: number;
-	operationBatchId?: Id<"files_pending_update_operation_batches">;
-	reviewedPendingUpdateIds?: ReadonlySet<Id<"files_pending_updates">>;
-	reviewRunId?: Id<"files_pending_update_runs">;
 	publish: { text: string; textSize: number; versionSnapshotAssetId: Id<"files_r2_assets"> } | null;
 	partial?: Infer<typeof files_pending_prepared_state_family_validator>;
 	unchanged?: true;
-	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave };
+	actor: { userId: Id<"users">; billedUserId: Id<"users"> };
 }) {
 	const { ctx, actor } = args;
 
@@ -9563,19 +9490,6 @@ async function files_pending_updates_db_save_asset(args: {
 	}
 
 	if (args.publish) {
-		if (targetNode.textKind === "rich_text" && pendingUpdate.mediaDependencySetId) {
-			if (!args.operationBatchId)
-				return Result({ _nay: { message: "The prepared media check is no longer available" } });
-			const media = await files_pending_media_db_require_validation(ctx, {
-				pendingUpdate,
-				text: args.publish.text,
-				operationBatchId: args.operationBatchId,
-				validated: actor.validatedMedia,
-				reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-				reviewRunId: args.reviewRunId,
-			});
-			if (media._nay) return media;
-		}
 		const reservation = await ctx.db
 			.query("files_private_storage_reservations")
 			.withIndex("by_resource", (q) =>
@@ -9692,31 +9606,6 @@ async function files_pending_updates_db_save_asset(args: {
 	}
 
 	const now = Date.now();
-
-	if (!args.publish && !args.partial && targetNode.textKind === "rich_text" && pendingUpdate.mediaDependencySetId) {
-		// A later full Save can consume the proposal without changing the already saved text.
-		const chunks = [];
-		for await (const chunk of files_saved_content_db_text_chunks(ctx.db, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId: targetNode._id,
-		}))
-			chunks.push(chunk);
-		const asset = await ctx.db.get("files_r2_assets", targetNode.assetId);
-		const text = chunks.length > 0 ? files_merge_contiguous_chunks(chunks) : asset?.size === 0 ? "" : null;
-		if (text === null) throw should_never_happen("Full Save has no committed text", { nodeId: targetNode._id });
-		// Completing the proposal still checks its media, even when no new text asset is needed.
-		if (!args.operationBatchId) return Result({ _nay: { message: "The prepared media check is no longer available" } });
-		const media = await files_pending_media_db_require_validation(ctx, {
-			pendingUpdate,
-			text,
-			operationBatchId: args.operationBatchId,
-			validated: actor.validatedMedia,
-			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-			reviewRunId: args.reviewRunId,
-		});
-		if (media._nay) return media;
-	}
 
 	// Full consume: nothing unstaged survives, so the proposal is done.
 	if (!args.partial) {
@@ -10100,7 +9989,7 @@ async function action_save_file_pending_update_non_collaborative(
 		partialFamily = { operationBatchId, base, staged, unstaged };
 	}
 
-	if ((args.cohortContent || pendingUpdate.mediaDependencySetId) && !operationBatchId) {
+	if (args.cohortContent && !operationBatchId) {
 		const batch = (await ctx.runMutation(
 			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 			{
@@ -10114,7 +10003,7 @@ async function action_save_file_pending_update_non_collaborative(
 		if (batch._nay) return batch;
 		operationBatchId = batch._yay.operationBatchId;
 	}
-	if (operationBatchId && (args.cohortContent || upload || pendingUpdate.mediaDependencySetId)) {
+	if (operationBatchId && (args.cohortContent || upload)) {
 		try {
 			const input = await ctx.runMutation(internal.files_pending_updates.stage_prepared_content_text, {
 				cohortContent: args.cohortContent,
@@ -10842,13 +10731,6 @@ export const save_file_pending_update = action({
 		try {
 			if (prepared._yay.kind === "private")
 				throw should_never_happen("Saved content preparation returned a private draft", args);
-			const media = await files_pending_media_action_validate(ctx, {
-				userId: userAuth.id,
-				pendingUpdateId: prepared._yay.pendingUpdateId,
-				reviewedRevision: prepared._yay.reviewedRevision,
-				operationBatchId: prepared._yay.operationBatchIds[0],
-			});
-			if (media._nay) return media;
 			return await ctx.runMutation(internal.files_pending_updates.commit_prepared_content, {
 				userId: userAuth.id,
 				prepared: prepared._yay,
@@ -11128,13 +11010,13 @@ export async function files_pending_updates_action_prepare_content(
 		publicationBatchId = staged._yay.operationBatchId;
 	}
 
-	if (args.cohortContent || (rootKind === "rich_text" && pendingUpdate.mediaDependencySetId)) {
+	if (args.cohortContent) {
 		const acceptedText = files_yjs_doc_get_text({ yjsDoc: liveFileYjsDocAfterSave, rootKind });
 		if (acceptedText._nay) {
 			await retireTrustedStage();
 			return Result({ _nay: { message: acceptedText._nay.message } });
 		}
-		if (args.cohortContent && trustedStageId) {
+		if (trustedStageId) {
 			const snapshot = files_pending_update_encode_yjs_state_update({ yjsDoc: liveFileYjsDocAfterSave });
 			const allocation = (await ctx.runMutation(internal.files_pending_updates.prepare_pending_save_assets, {
 				cohortContent: args.cohortContent,
@@ -11858,13 +11740,6 @@ export const accept_file_pending_replacement = action({
 		try {
 			if (prepared._yay.kind === "private")
 				throw should_never_happen("Saved replacement preparation returned a private draft", args);
-			const media = await files_pending_media_action_validate(ctx, {
-				userId: userAuth.id,
-				pendingUpdateId: prepared._yay.pendingUpdateId,
-				reviewedRevision: prepared._yay.reviewedRevision,
-				operationBatchId: prepared._yay.operationBatchIds[0],
-			});
-			if (media._nay) return media;
 			const saved = (await ctx.runMutation(internal.files_pending_updates.commit_prepared_content, {
 				userId: userAuth.id,
 				prepared: prepared._yay,

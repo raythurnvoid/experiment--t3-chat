@@ -55,7 +55,6 @@ import type * as files_nodes_content from "../files_nodes_content.js";
 import type * as files_nodes_create_db from "../files_nodes_create_db.js";
 import type * as files_nodes_reconstruct_content from "../files_nodes_reconstruct_content.js";
 import type * as files_pending_holds from "../files_pending_holds.js";
-import type * as files_pending_media from "../files_pending_media.js";
 import type * as files_pending_nodes from "../files_pending_nodes.js";
 import type * as files_pending_overlay from "../files_pending_overlay.js";
 import type * as files_pending_update_plan_producer from "../files_pending_update_plan_producer.js";
@@ -192,7 +191,6 @@ declare const fullApi: ApiFromModules<{
   files_nodes_create_db: typeof files_nodes_create_db;
   files_nodes_reconstruct_content: typeof files_nodes_reconstruct_content;
   files_pending_holds: typeof files_pending_holds;
-  files_pending_media: typeof files_pending_media;
   files_pending_nodes: typeof files_pending_nodes;
   files_pending_overlay: typeof files_pending_overlay;
   files_pending_update_plan_producer: typeof files_pending_update_plan_producer;

@@ -23,7 +23,6 @@ import {
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
 import { files_pending_updates_action_prepare_content } from "./files_pending_updates.ts";
-import { files_pending_media_action_validate } from "./files_pending_media.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_TRANSFER_SELECTION_PAGE_SIZE,
@@ -509,8 +508,6 @@ async function test_save_file_pending_update_core(
 	if (prepared._nay) return prepared;
 	if (prepared._yay.kind === "private") throw new Error("Saved-content core received a private draft");
 	try {
-		const media = await files_pending_media_action_validate(ctx, { userId: userAuth.id, pendingUpdateId: prepared._yay.pendingUpdateId, reviewedRevision: prepared._yay.reviewedRevision, operationBatchId: prepared._yay.operationBatchIds[0] });
-		if (media._nay) return media;
 		return await ctx.runMutation(internal.files_pending_updates.commit_prepared_content, { userId: userAuth.id, prepared: prepared._yay });
 	} finally {
 		await ctx.runMutation(internal.files_pending_updates.retire_prepared_content, { prepared: prepared._yay });
