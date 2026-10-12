@@ -796,6 +796,76 @@ test("draft expiry runs while another user's Move holds the workspace, and waits
 	expect(after.heldDraft, "a draft on the moved file waits for the Move").toEqual(before.heldDraft);
 }, 120_000);
 
+test("draft expiry waits while the owner's own Move runs, even for a draft it does not hold", async () => {
+	const f = await native_pending_scope();
+	const draft = f.proposals[0]!;
+	const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
+	const read = () =>
+		f.t.run(async (ctx) => ({
+			draft: await ctx.db.get("files_pending_updates", draft._id),
+			reservations: await ctx.db.query("files_move_source_reservations").collect(),
+		}));
+	const before = await read();
+	// The Move has its slot but holds no source yet, so only its review clock pin can stop expiry.
+	expect(before.reservations, "the Move holds nothing yet").toEqual([]);
+	vi.setSystemTime(before.draft!.expiresAt + 1);
+	await f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope);
+	expect((await read()).draft, "the owner's own Move keeps the owner's draft").toEqual(before.draft);
+}, 120_000);
+
+test("draft expiry waits for a draft another user's Move holds only through its proposal", async () => {
+	const f = await native_pending_scope({ otherFile: true, editor: true });
+	const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.editorUserId! };
+	const target = { kind: "saved", id: f.otherNodeId! } as const;
+	const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+		...scope,
+		target,
+	});
+	if (batch._nay) throw new Error(batch._nay.message);
+	expect(
+		await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			...scope,
+			operationBatchId: batch._yay.operationBatchId,
+			role: "unstaged",
+			text: "Editor draft.\n",
+		}),
+	).toEqual({ _yay: null });
+	expect(
+		await f.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			...scope,
+			target,
+			operationBatchId: batch._yay.operationBatchId,
+		}),
+	).toEqual({ _yay: null });
+	const draft = (await f.t.run((ctx) =>
+		ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_target", (q) =>
+				q.eq("userId", scope.userId).eq("target.kind", "saved").eq("target.id", f.otherNodeId!),
+			)
+			.unique(),
+	))!;
+	// The Move holds the proposal, like owner work does, but not its file.
+	await f.t.run((ctx) =>
+		ctx.db.insert("files_move_source_reservations", {
+			cohortId: f.cohortId,
+			source: { kind: "proposal", id: draft._id },
+			mode: "proposal",
+			userId: scope.userId,
+			generation: 1,
+		}),
+	);
+	vi.setSystemTime(draft.expiresAt + 1);
+	await expect(
+		f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope),
+		"expiry waits without a move_busy error",
+	).resolves.toBeNull();
+	expect(
+		await f.t.run((ctx) => ctx.db.get("files_pending_updates", draft._id)),
+		"a draft held through its proposal waits for the Move",
+	).toEqual(draft);
+}, 120_000);
+
 /**
  * Copy the first pending doc of each table `count` times with the revision before, so the drain sees
  * old docs. Returns the new IDs.
