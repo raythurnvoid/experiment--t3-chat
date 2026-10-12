@@ -4482,7 +4482,10 @@ describe("files upload-urls", () => {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({
-				files: [{ path: longPath, contentType: "image/png", size: 64 }],
+				files: [
+					{ path: "/short.png", contentType: "image/png", size: 64 },
+					{ path: longPath, contentType: "image/png", size: 64 },
+				],
 			}),
 		});
 		expect(response.status).toBe(400);
@@ -4490,6 +4493,12 @@ describe("files upload-urls", () => {
 			message: "Paths can have at most 1,024 characters.",
 			path: longPath,
 		});
+		// Only authorization took a slot (1 of 20). The batch did not take one per extra file.
+		const chargeKey = `user_api_key:${credential.split(".")[0]}:/api/v1/files/upload-urls`;
+		const remaining = await t.run(async (ctx) =>
+			rate_limiter_check_by_key(ctx, { name: "public_api_principal", key: chargeKey, count: 19 }),
+		);
+		expect(remaining, "the refused batch takes no more rate limit slots").toBeNull();
 	});
 
 	test("a name over 255 characters refuses the whole batch with 400 before any item is written", async () => {
@@ -6175,6 +6184,87 @@ describe("files read-only locks", () => {
 		});
 		expect(response.status, "a new file in a folder whose parent was just restricted").toBe(403);
 		expect(await response.json()).toEqual({ message: "Permission denied", path: "/secret/child/new.bin" });
+	});
+
+	test("write and touch check the scope a folder gets from its parents while a scope job runs", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-write-stale-scope" });
+		const seeded = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/secret/child/seed.md",
+			content: "# S\n",
+		});
+		expect(seeded.status).toBe(200);
+		const prepare = (path: string) =>
+			t.mutation(internal.public_api.prepare_file_write, {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				userId: writer.userId,
+				principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+				path,
+				overwrite: "fail",
+				contentType: "text/markdown",
+				yjsRootKind: "rich_text",
+				contentSize: 4,
+				yjsSnapshotSize: 7,
+			});
+		// Stage both before the restrict, so their publish checks the folder again.
+		const write = await prepare("/secret/child/write.md");
+		const touch = await prepare("/secret/child/touch.md");
+		expect(write._nay).toBeUndefined();
+		expect(touch._nay).toBeUndefined();
+		const secret = await find_active_node({ t, db: writer.db, path: "/secret" });
+		await t.run(async (ctx) => {
+			// The folder was just restricted. Its child keeps no scope until the scope job reaches it.
+			await ctx.db.patch("files_nodes", secret!._id, { restrictedScopeNodeId: secret!._id });
+			await ctx.db.insert("files_subtree_ops", {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				userId: writer.db.userId,
+				status: "running",
+				blockedByOpId: null,
+				rootNodeIds: [secret!._id],
+				treePaths: ["/secret/"],
+				kind: "scope",
+			});
+		});
+		expect((await prepare("/secret/child/new.md"))._nay?.message, "preflight").toBe("Permission denied");
+		const written = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: write._yay!.stageId,
+			content: "# W\n",
+			targetAnchor: write._yay!.targetAnchor,
+		});
+		expect(written._nay?.message, "write publish").toBe("Permission denied");
+		const touched = await t.mutation(internal.public_api.publish_file_touch, {
+			stageId: touch._yay!.stageId,
+			targetAnchor: touch._yay!.targetAnchor,
+		});
+		expect(touched._nay?.message, "touch publish").toBe("Permission denied");
+	});
+
+	test("write and touch below a file answer 409 and say a file is in the way", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-write-below-file" });
+		expect((await write_file({ t, credential: writer.credential, path: "/a.md", content: "# A\n" })).status).toBe(200);
+		const written = await write_file({ t, credential: writer.credential, path: "/a.md/b.md", content: "# B\n" });
+		expect(written.status, "write").toBe(409);
+		expect(await written.json(), "write message").toMatchObject({
+			message: "An intermediate segment is owned by a file",
+		});
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: ["/a.md/b.md"] }),
+		});
+		expect(touched.status, "touch").toBe(409);
+		expect(await touched.json(), "touch message").toMatchObject({
+			message: "An intermediate segment is owned by a file",
+		});
 	});
 
 	test("a locked file answers the public write with a 409 conflict while the internal name stays read_only", async () => {

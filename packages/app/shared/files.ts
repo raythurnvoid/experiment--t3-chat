@@ -1048,8 +1048,9 @@ export function files_check_name_and_path_length(args: { names?: string[]; path?
 }
 
 /**
- * Refuse a request path longer than any stored path, before any lookup, so the work for each path stays
- * bounded. Such a path can only be new, so it gets the same answer as a new path over the current cap.
+ * Refuse a request path over 4,096 characters before any lookup, so the work for each path stays bounded.
+ * It gets the same answer as a new path over the current cap. Paths had no cap before the 4,096 one, so an
+ * older stored path can be longer. A request cannot name such a path.
  */
 export function files_check_request_path_length(path: string) {
 	if (path.length > files_STORED_PATH_MAX_LENGTH) return files_check_name_and_path_length({ path });
