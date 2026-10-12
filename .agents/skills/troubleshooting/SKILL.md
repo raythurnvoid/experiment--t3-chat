@@ -134,6 +134,12 @@ or `resume`), calls queued by the old code fail with `ArgumentValidationError`. 
 The `recover` cron starts each group again within about 7 minutes (2 minutes idle, then the next
 5-minute run), so users see a pause, not an error. Act only when a group stays idle longer.
 
+Every Save in one workspace polls for 30 minutes and then fails -> compare
+`files_pending_review_fact_state.pendingJobCount` with the workspace's counted jobs
+(`files_pending_overlay_jobs` with `reviewFactsPending: true`); run the repair migration
+`migrations:run_repair_review_fact_job_counts`. `migrations:audit_review_fact_job_count` with
+`{ organizationId, workspaceId }` returns both numbers.
+
 A failed function, including one that hits a Convex limit, also shows on the dashboard Logs page. In production the client sees only "Server Error", but the log keeps the details. Convex adds warning lines with a `system_code` field when a function gets close to a limit. No log stream or alert is set up yet; that needs the Convex Pro plan.
 
 # Convex HTTP Action Latency
