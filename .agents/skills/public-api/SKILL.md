@@ -479,10 +479,14 @@ A batch whose new folders plus the existing parents it found number more than 64
 with the path that went over. Folders above a found parent do not count, so a file can go into an existing
 folder at any depth. During a Move, reads grow with the depth of each different folder branch, so a batch
 into many different very deep folders can still pass the read limit. A `path` over 4,096 characters
-(`files_STORED_PATH_MAX_LENGTH`, the older path cap) answers `Paths can have at most 1,024 characters.` before
-any lookup (`files_check_request_path_length`), so older long paths stay replaceable while the work per path
-stays bounded. `write` and `touch` share one walk per mutation the same way and start the create at the
-found folder.
+(`files_STORED_PATH_MAX_LENGTH`, the older path cap) answers `Paths can have at most 1,024 characters.` in
+the HTTP action, before the batch takes more rate limit slots and before any lookup
+(`files_check_request_path_length`). So paths up to 4,096 stay replaceable while the work per path stays
+bounded. Paths had no cap before that one, so an older stored path can be longer, and no request can name it.
+This route has no raw body byte limit (the 64 KiB limit above is for the plugin data routes): the item
+count and this path check bound it. `write` and `touch` share one walk per mutation the same way and start
+the create at the found folder. Like upload-urls, they check that folder with the scope its parents give
+it while a scope job runs, and a file on the way answers 409 `An intermediate segment is owned by a file`.
 One bad item returns 400, 403, or 409 with its `path`, and creates nothing. Each asset stores
 `uploadUrlExpiresAt`, like `create_upload_node`. Creating these docs accepts
 the upload. A later policy change does not cancel publication or processing. The finished node keeps its current policy.

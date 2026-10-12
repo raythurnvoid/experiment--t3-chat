@@ -202,6 +202,8 @@ const PLUGIN_SERVICE_PROCESSING_GRANT_TTL_MS = 6 * 24 * 60 * 60 * 1000;
 // references, so a stage must always die before its staged asset docs become sweepable.
 const FILE_WRITE_STAGE_TTL_MS = 15 * 60 * 1000;
 const FILE_WRITE_STAGE_CLEANUP_BATCH_SIZE = 25;
+// A new path goes below a file. The create doors answer it with 409.
+const PATH_BELOW_FILE_MESSAGE = "An intermediate segment is owned by a file";
 
 /** Stops buffering an unauthenticated request as soon as it crosses the route limit. */
 async function read_request_text_bounded(request: Request, maxBytes: number) {
@@ -2936,7 +2938,10 @@ async function db_preflight_file_write_target(
 		});
 	}
 
-	const ancestor = (await lookups.find_existing_parent(args.path)).node;
+	const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
+	const found = (await lookups.find_existing_parent(args.path)).node;
+	// A scope job may not have reached this folder yet, so check the scope its parents give it.
+	const ancestor = found && (await withLiveScope(found));
 	if (
 		!(await has_workspace_content_permission(ctx, {
 			organizationId: args.organizationId,
@@ -3308,8 +3313,10 @@ export const publish_file_write = internalMutation({
 		// The file lookup and the folder search share their reads: during a Move each folder is read once.
 		const lookups = await files_db_create_path_lookups(ctx, stage);
 		const activeNode = await lookups.get(stage.path);
+		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, stage);
 		const parent = await lookups.find_existing_parent(stage.path);
-		const parentNode = parent.node;
+		// A scope job may not have reached this folder yet, so check the scope its parents give it.
+		const parentNode = parent.node && (await withLiveScope(parent.node));
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
@@ -3477,6 +3484,8 @@ export const publish_file_write = internalMutation({
 				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
 		}
+		// A file on the way blocks the create. The create helper would only answer `Not found` for it.
+		if (parentNode?.kind === "file") return Result({ _nay: { message: PATH_BELOW_FILE_MESSAGE } });
 		const pluginName = revalidated._yay.installation?.pluginName;
 		// Start at the folder found above, so the create does not walk the folders above it.
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -4039,8 +4048,10 @@ export const publish_file_touch = internalMutation({
 			});
 			return staleRefusal;
 		}
+		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, stage);
 		const found = await lookups.find_existing_parent(stage.path);
-		const ancestor = found.node;
+		// A scope job may not have reached this folder yet, so check the scope its parents give it.
+		const ancestor = found.node && (await withLiveScope(found.node));
 
 		// Check access first. A hidden restricted folder must not reveal its read-only state.
 		if (
@@ -4082,6 +4093,8 @@ export const publish_file_touch = internalMutation({
 			});
 		}
 
+		// A file on the way blocks the create. The create helper would only answer `Not found` for it.
+		if (ancestor?.kind === "file") return Result({ _nay: { message: PATH_BELOW_FILE_MESSAGE } });
 		const pluginName = revalidated._yay.installation?.pluginName;
 
 		// Start at the folder found above, so the create does not walk the folders above it.
@@ -4403,8 +4416,6 @@ export const create_file_upload_targets = internalMutation({
 		const lookups = await files_db_create_path_lookups(ctx, args);
 		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
 		for (const rawItem of args.items) {
-			const pathLength = files_check_request_path_length(rawItem.path);
-			if (pathLength._nay) return Result({ _nay: { ...pathLength._nay, data: { path: rawItem.path } } });
 			// Existing literal targets win, including hidden files. Only missing paths are cased.
 			let existingNode = await lookups.get(rawItem.path);
 			const item = {
@@ -4560,7 +4571,7 @@ export const create_file_upload_targets = internalMutation({
 			const { node: parentNode, depth: parentDepth } = item.parent;
 			if (parentNode && parentNode.kind !== "folder") {
 				return Result({
-					_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
+					_nay: { message: PATH_BELOW_FILE_MESSAGE, data: { path: item.path } },
 				});
 			}
 			// Check only the names this item adds: an older folder on the way and a replaced file keep their
@@ -7640,6 +7651,11 @@ export async function public_api_http_upload_urls(args: {
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
+	// Refuse a path too long to look up before the batch takes more rate limit slots.
+	for (const file of body._yay.files) {
+		const pathLength = files_check_request_path_length(file.path);
+		if (pathLength._nay) return { status: 400, body: { message: pathLength._nay.message, path: file.path } } as const;
+	}
 
 	// Authorization charged one principal slot for the request. The URLs charge their own bulk
 	// bucket, so minting does not eat the write-many budget, and the sharded principal bucket would
@@ -7681,7 +7697,7 @@ export async function public_api_http_upload_urls(args: {
 						  created._nay.name === "move_busy" ||
 						  created._nay.message === "A file already exists at this path" ||
 						  created._nay.message === "The path cannot point to a folder" ||
-						  created._nay.message === "An intermediate segment is owned by a file"
+						  created._nay.message === PATH_BELOW_FILE_MESSAGE
 						? 409
 						: 400;
 		if (failedStatus === 401) {
