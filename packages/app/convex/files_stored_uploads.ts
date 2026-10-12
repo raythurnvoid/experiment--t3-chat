@@ -27,10 +27,9 @@ export async function files_stored_uploads_db_admit(
 		 */
 		billedUserId?: Id<"users">;
 		/**
-		 * Admit the items that fit and return the indexes of the others, instead of refusing the
-		 * whole batch. It also returns the free bytes left after the admitted items. The caller decides
-		 * what to do when nothing fits. Only the app folder import uses it. The API doors keep an
-		 * atomic batch.
+		 * Admit the items that fit and return the indexes of the others. It never refuses the batch
+		 * for storage, even when nothing fits. It also returns the free bytes left after the admitted
+		 * items. Only the app folder import uses it. The API doors keep an atomic batch.
 		 */
 		admitWhatFits?: boolean;
 	},
