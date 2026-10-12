@@ -1,10 +1,14 @@
 import { v } from "convex/values";
 import { internalMutation } from "./functions.ts";
+import { resolve_principal } from "./public_api.ts";
 
 // Reuse the loaded module between calls. Keep request state inside the handler.
 export const experimental_reuseContext = true;
 
 console.info("API usage small module loaded");
+
+// Temporary heavy import for the fix-off check.
+void resolve_principal;
 
 const API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS = 60_000;
 
