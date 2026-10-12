@@ -38,6 +38,11 @@ type PageState = {
 // SDK pagers use nonnegative IDs. Each Files pager gets a separate journal.
 let paginationId = 0;
 
+function next_pagination_id() {
+	paginationId -= 1;
+	return paginationId;
+}
+
 function split_page(key: number, splitCursor: string, continueCursor: string) {
 	return (state: PageState) => {
 		const queries = { ...state.queries };
@@ -106,7 +111,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 	const queryReference = useMemo(() => makeFunctionReference<"query">(queryName), [queryName]);
 	const createInitialState = useMemo(
 		() => (): PageState => {
-			const id = --paginationId;
+			const id = next_pagination_id();
 			return {
 				query: queryReference,
 				args: argsObject,
@@ -141,8 +146,8 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 		number,
 		PaginationResult<PaginatedQueryItem<Query>> | Error | undefined
 	>;
-	const [results, lastResult] = useMemo<
-		[PaginatedQueryItem<Query>[], PaginationResult<PaginatedQueryItem<Query>> | undefined]
+	const [results, lastResult, nextState] = useMemo<
+		[PaginatedQueryItem<Query>[], PaginationResult<PaginatedQueryItem<Query>> | undefined, PageState | "reset" | null]
 	>(() => {
 		let waitingForView = false;
 		let invalidCursor = false;
@@ -177,35 +182,36 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 			throw result;
 		}
 		// A cursor reset still has old view args. Wait first, but never hide another error.
-		if (waitingForView) return [[], undefined];
-		if (invalidCursor) {
-			setState(createInitialState);
-			return [[], undefined];
-		}
+		if (waitingForView) return [[], undefined, null];
+		if (invalidCursor) return [[], undefined, "reset"];
 		const rows: PaginatedQueryItem<Query>[] = [];
 		let result: PaginationResult<PaginatedQueryItem<Query>> | undefined;
+		let next: PageState | null = null;
 		for (const key of current.pageKeys) {
 			const page = resultsObject[key];
-			if (page === undefined) return [rows, undefined];
+			if (page === undefined) return [rows, undefined, next];
 			if (page instanceof Error) throw page;
 			result = page;
 			const split = current.ongoingSplits[key];
 			if (split) {
 				if (resultsObject[split[0]] !== undefined && resultsObject[split[1]] !== undefined)
-					setState(complete_split(key));
+					next = complete_split(key)(next ?? current);
 			} else if (
 				page.splitCursor &&
 				(page.pageStatus === "SplitRecommended" ||
 					page.pageStatus === "SplitRequired" ||
 					page.page.length > options.initialNumItems * 2)
 			)
-				setState(split_page(key, page.splitCursor, page.continueCursor));
+				next = split_page(key, page.splitCursor, page.continueCursor)(next ?? current);
 			// The caller keeps its previous complete display while a required split loads.
-			if (page.pageStatus === "SplitRequired") return [rows, undefined];
+			if (page.pageStatus === "SplitRequired") return [rows, undefined, next];
 			rows.push(...page.page);
 		}
-		return [rows, result];
-	}, [resultsObject, current, options.initialNumItems, createInitialState]);
+		return [rows, result, next];
+	}, [resultsObject, current, options.initialNumItems]);
+	// Keep the page calculation pure. Apply only its derived transition during render.
+	if (nextState === "reset") setState(createInitialState);
+	else if (nextState !== null) setState(nextState);
 	const status = useMemo(() => {
 		if (!lastResult)
 			return {

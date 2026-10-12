@@ -22,6 +22,7 @@ const {
 	truncatePathForWidthMock,
 	loadMoreMock,
 	pagination,
+	sourcePagination,
 	reviewStart,
 	moveView,
 	cohortUpdates,
@@ -41,6 +42,7 @@ const {
 	truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
 	loadMoreMock: vi.fn(),
 	pagination: { status: "Exhausted" as "CanLoadMore" | "LoadingMore" | "Exhausted" },
+	sourcePagination: { waitingForView: false, listeners: new Set<() => void>() },
 	reviewStart: { isStarting: false, listeners: new Set<() => void>() },
 	moveView: {
 		cohortId: null as app_convex_Id<"files_move_cohorts"> | null,
@@ -71,9 +73,18 @@ vi.mock("convex/react", () => ({
 	},
 	usePaginatedQuery: (query: unknown, args: { listKey?: string; savedStream?: { kind: string } } | "skip") => {
 		const queryResultMock = useQueryMock;
+		const waitingForView = useSyncExternalStore(
+			(listener) => {
+				sourcePagination.listeners.add(listener);
+				return () => sourcePagination.listeners.delete(listener);
+			},
+			() => sourcePagination.waitingForView,
+		);
 		if (args === "skip") return { results: [], status: "Exhausted", loadMore: loadMoreMock };
 		const updates: app_convex_Doc<"files_pending_updates">[] | undefined =
 			args.savedStream?.kind === "cohort" ? cohortUpdates.current : queryResultMock("list_files_pending_updates", args);
+		if (query === "list_files_pending_sources" && waitingForView)
+			return { results: [], status: "LoadingMore", loadMore: loadMoreMock };
 		return {
 			results:
 				(query === "list_files_pending_sources"
@@ -576,6 +587,7 @@ beforeEach(() => {
 	startReviewMock.mockResolvedValue(undefined);
 	reviewStart.isStarting = false;
 	pagination.status = "Exhausted";
+	sourcePagination.waitingForView = false;
 	loadMoreMock.mockReset();
 	blockedTargetIds.clear();
 	requiredParentsById.clear();
@@ -1768,6 +1780,43 @@ describe("FileEditorSidebarPending", () => {
 		expect(
 			screen.getAllByRole("option").map((option) => option.querySelector(".MySelectItemContentPrimary")?.textContent),
 		).toEqual(["All changes", "Agent chat"]);
+	});
+
+	test("keeps the selected chat while later source pages wait for a new Move view", () => {
+		const userUpdate = makePendingUpdate({ id: "pu_user", fileNodeId: "node_user", staged: "s", unstaged: "u" });
+		const agentUpdate = makePendingUpdate({
+			id: "pu_agent",
+			fileNodeId: "node_agent",
+			staged: "s",
+			unstaged: "u",
+			threadIds: ["thread_a"],
+		});
+		useQueryMock.mockReturnValue([userUpdate, agentUpdate]);
+		treeNodesMock.mockReturnValue([
+			makeNode({ id: "node_user", path: "/user.md" }),
+			makeNode({ id: "node_agent", path: "/agent.md" }),
+		]);
+		useQueriesMock.mockReturnValue({ thread_a: makeThread({ id: "thread_a", title: "Agent chat" }) });
+		const { container } = render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByRole("combobox"));
+		fireEvent.click(screen.getByRole("option", { name: /^Agent chat/ }));
+
+		// A stale later page hides its source rows until the workspace view catches up.
+		act(() => {
+			sourcePagination.waitingForView = true;
+			for (const listener of sourcePagination.listeners) listener();
+		});
+		expect(
+			container.querySelector(".FileEditorSidebarPending-item-path-text")?.textContent,
+			"the selected chat stays active while source pages wait for the new Move view",
+		).toBe("/agent.md");
+
+		act(() => {
+			moveView.generation += 1;
+			sourcePagination.waitingForView = false;
+			for (const listener of sourcePagination.listeners) listener();
+		});
+		expect(screen.getByRole("combobox", { name: "Pending changes source: Agent chat, 1 change" })).toBeTruthy();
 	});
 
 	test("returns to All changes when the selected chat stops contributing", async () => {

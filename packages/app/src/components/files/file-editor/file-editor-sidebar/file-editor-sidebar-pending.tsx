@@ -1490,10 +1490,12 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 					: "CanLoadMore";
 	const loadMoreSources = (numItems: number) =>
 		sourceMerge.blockingRank === null ? undefined : sourceStreams[sourceMerge.blockingRank]!.loadMore(numItems);
-	// A selected source with no changes left is gone from the list, so the panel falls back to All
-	// changes.
+	// Wait for source pages before falling back to All changes. A Move view can hide rows while loading.
 	const activeSource =
-		selectedSource === PENDING_SOURCE_ALL || sourcesStatus === "LoadingFirstPage" || sourceKeys.includes(selectedSource)
+		selectedSource === PENDING_SOURCE_ALL ||
+		sourcesStatus === "LoadingFirstPage" ||
+		sourcesStatus === "LoadingMore" ||
+		sourceKeys.includes(selectedSource)
 			? selectedSource
 			: PENDING_SOURCE_ALL;
 
