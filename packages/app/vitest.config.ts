@@ -66,6 +66,14 @@ export default defineConfig({
 				experimental_defineCacheKeyGenerator(({ environment }) => JSON.stringify(environment.config.env));
 			},
 		},
+		{
+			// Use the root worker limit after CLI flags are applied. Otherwise, `extends: true` keeps
+			// the config value in each project, and Vitest ignores `--maxWorkers`.
+			name: "root-worker-limit",
+			configureVitest({ project, vitest }) {
+				project.config.maxWorkers = vitest.config.maxWorkers;
+			},
+		},
 	],
 	resolve: {
 		alias: {
