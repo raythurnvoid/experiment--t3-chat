@@ -2508,6 +2508,8 @@ export async function public_api_db_revalidate_file_write_principal(
 		expectedParentNodeId?: Id<"files_nodes">;
 		externalFileWrite?: Doc<"public_api_file_write_stages">["externalFileWrite"];
 		now: number;
+		/** The caller's lookups for this path, so a mutation reads each folder once. */
+		lookups?: Awaited<ReturnType<typeof files_db_create_path_lookups>>;
 	},
 ) {
 	if (args.externalFileWrite !== undefined) {
@@ -2531,7 +2533,7 @@ export async function public_api_db_revalidate_file_write_principal(
 		return checked;
 	}
 	// The file lookup and the folder search share their reads: during a Move each folder is read once.
-	const lookups = await files_db_create_path_lookups(ctx, args);
+	const lookups = args.lookups ?? (await files_db_create_path_lookups(ctx, args));
 	const targetNode = await lookups.get(args.path);
 	const ancestorNode = targetNode ?? (await lookups.find_existing_parent(args.path)).node;
 	const resourceScope: files_nodes_WriteContext["resourceScope"] = targetNode
@@ -2898,14 +2900,15 @@ async function db_preflight_file_write_target(
 		userId: Id<"users">;
 		path: string;
 		pluginFacts: FileWritePluginFacts;
+		lookups: Awaited<ReturnType<typeof files_db_create_path_lookups>>;
 	},
 ) {
 	const writeContext = args.pluginFacts.writeContext;
 	const serviceAccountId =
 		writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
-	// The file lookup and the folder search share their reads: during a Move each folder is read once.
-	const lookups = await files_db_create_path_lookups(ctx, args);
+	const { lookups } = args;
 	const activeNode = await lookups.get(args.path);
+	const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
 	if (activeNode) {
 		if (
 			!(await has_workspace_content_permission(ctx, {
@@ -2913,7 +2916,8 @@ async function db_preflight_file_write_target(
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				permission: "content.write",
-				fileNode: activeNode,
+				// A scope job may not have reached this file yet, so check the scope its parents give it.
+				fileNode: await withLiveScope(activeNode),
 				serviceAccountId,
 			}))
 		) {
@@ -2937,10 +2941,9 @@ async function db_preflight_file_write_target(
 		});
 	}
 
-	const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
-	const found = (await lookups.find_existing_parent(args.path)).node;
+	const found = await lookups.find_existing_parent(args.path);
 	// A scope job may not have reached this folder yet, so check the scope its parents give it.
-	const ancestor = found && (await withLiveScope(found));
+	const ancestor = found.node && (await withLiveScope(found.node));
 	if (
 		!(await has_workspace_content_permission(ctx, {
 			organizationId: args.organizationId,
@@ -2963,16 +2966,17 @@ async function db_preflight_file_write_target(
 		return writable;
 	}
 	// Refuse before the caller uploads to R2. Check only the names this create adds: an older folder on
-	// the way may keep a longer name.
+	// the way may keep a longer name. A Move may not have rewritten the folder's stored depth yet, so use
+	// the depth the lookup found.
 	const segments = path_extract_segments_from(args.path);
 	const tooLong = files_check_name_and_path_length({
-		names: segments.slice(ancestor?.pathDepth ?? 0),
+		names: segments.slice(found.depth),
 		path: args.path,
 	});
 	if (tooLong._nay) {
 		return Result({ _nay: { name: "invalid_input", message: tooLong._nay.message } });
 	}
-	const newFolders = files_check_new_folder_count(segments.length - 1 - (ancestor?.pathDepth ?? 0));
+	const newFolders = files_check_new_folder_count(segments.length - 1 - found.depth);
 	if (newFolders._nay) {
 		return Result({ _nay: { name: "invalid_input", message: newFolders._nay.message } });
 	}
@@ -3108,6 +3112,8 @@ export const prepare_file_write = internalMutation({
 		if (expectedParentNodeId === null) {
 			return Result({ _nay: { name: "invalid_input", message: "expectedParentNodeId must be a file node ID" } });
 		}
+		// The principal check and the preflight share these reads: during a Move each folder is read once.
+		const lookups = await files_db_create_path_lookups(ctx, args);
 		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -3117,6 +3123,7 @@ export const prepare_file_write = internalMutation({
 			expectedParentNodeId,
 			externalFileWrite: args.externalFileWrite,
 			now,
+			lookups,
 		});
 		if (revalidated._nay) {
 			return revalidated;
@@ -3140,6 +3147,7 @@ export const prepare_file_write = internalMutation({
 			userId: args.userId,
 			path: args.path,
 			pluginFacts: revalidated._yay,
+			lookups,
 		});
 		if (preflight._nay) {
 			return preflight;
@@ -3239,6 +3247,8 @@ export const publish_file_write = internalMutation({
 			});
 		}
 
+		// The principal check and the target checks share these reads: during a Move each folder is read once.
+		const lookups = await files_db_create_path_lookups(ctx, stage);
 		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
@@ -3248,6 +3258,7 @@ export const publish_file_write = internalMutation({
 			expectedParentNodeId: stage.expectedParentNodeId,
 			externalFileWrite: stage.externalFileWrite,
 			now,
+			lookups,
 		});
 		if (revalidated._nay) {
 			if (revalidated._nay.name === "stale_write") {
@@ -3309,12 +3320,10 @@ export const publish_file_write = internalMutation({
 		const writeContext = revalidated._yay.writeContext;
 		const serviceAccountId =
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
-		// The file lookup and the folder search share their reads: during a Move each folder is read once.
-		const lookups = await files_db_create_path_lookups(ctx, stage);
 		const activeNode = await lookups.get(stage.path);
 		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, stage);
 		const parent = await lookups.find_existing_parent(stage.path);
-		// A scope job may not have reached this folder yet, so check the scope its parents give it.
+		// A scope job may not have reached this file or folder yet, so check the scope its parents give it.
 		const parentNode = parent.node && (await withLiveScope(parent.node));
 		if (
 			!(await has_workspace_content_permission(ctx, {
@@ -3322,7 +3331,7 @@ export const publish_file_write = internalMutation({
 				workspaceId: stage.workspaceId,
 				userId: stage.userId,
 				serviceAccountId,
-				fileNode: activeNode ?? parentNode ?? undefined,
+				fileNode: activeNode ? await withLiveScope(activeNode) : (parentNode ?? undefined),
 				permission: "content.write",
 			}))
 		) {
@@ -3930,6 +3939,9 @@ export const publish_file_touch = internalMutation({
 			});
 		}
 
+		// The principal check, the file lookup, and the folder search below share their reads: during a Move
+		// each folder is read once.
+		const lookups = await files_db_create_path_lookups(ctx, stage);
 		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
@@ -3937,6 +3949,7 @@ export const publish_file_touch = internalMutation({
 			principalRef,
 			path: stage.path,
 			now,
+			lookups,
 		});
 		if (revalidated._nay) {
 			return revalidated;
@@ -3945,20 +3958,19 @@ export const publish_file_touch = internalMutation({
 		const serviceAccountId =
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 
-		// The file lookup and the folder search below share their reads: during a Move each folder is read once.
-		const lookups = await files_db_create_path_lookups(ctx, stage);
 		const activeNode = await lookups.get(stage.path);
+		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, stage);
 		if (activeNode) {
 			// This lookup does not check access. A restricted node still has to
 			// stop the create below. So it can find a file the caller may not touch, and answering the
-			// touch would hand back its stable node id.
+			// touch would hand back its stable node id. A scope job may not have reached the file yet.
 			if (
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: stage.organizationId,
 					workspaceId: stage.workspaceId,
 					userId: stage.userId,
 					permission: "content.write",
-					fileNode: activeNode,
+					fileNode: await withLiveScope(activeNode),
 					serviceAccountId,
 				}))
 			) {
@@ -4047,7 +4059,6 @@ export const publish_file_touch = internalMutation({
 			});
 			return staleRefusal;
 		}
-		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, stage);
 		const found = await lookups.find_existing_parent(stage.path);
 		// A scope job may not have reached this folder yet, so check the scope its parents give it.
 		const ancestor = found.node && (await withLiveScope(found.node));
