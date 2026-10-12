@@ -34,7 +34,8 @@ const COMMIT_3 = "e".repeat(40);
 const GC_DELAY_MS = 5 * 60 * 1000;
 
 // Captured R2 PUT bodies keyed by R2 object key, so per-file content writes are visible to assertions and
-// the hard-delete path has a real key to clean. Mirrors files_nodes.test.ts install_r2_object_capture.
+// the hard-delete path has a real key to clean. Mirrors install_r2_object_capture in
+// files_nodes.content_yjs_updates.test.ts.
 let r2Objects: Map<string, BodyInit>;
 let fetchMock: ReturnType<typeof vi.fn>;
 
