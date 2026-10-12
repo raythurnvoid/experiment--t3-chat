@@ -318,16 +318,16 @@ the same producer with private proposals. `files_pending_updates.ts` and
 
 ## Verification
 
-- `convex/files_transfer.test.ts`: ownership, discovery, names, Stop, retries, expiry, and receipts.
-- `convex/files_nodes_content.test.ts`: saved content, new assets, comments, billing, and races.
+- `convex/files_transfer*.test.ts`: ownership, discovery, names, Stop, retries, expiry, and receipts.
+- `convex/files_nodes_content*.test.ts`: saved content, new assets, comments, billing, and races.
 - `convex/files_transfer_selection.test.ts` and `convex/files_transfer_holds.test.ts`: paged intake,
   large discovery, exact replay, long-running output, and retry retention.
 - `convex/files_transfer_media*.test.ts` and `convex/files_pending_media_save*.test.ts`: selected media,
   exact versions, partial Save, and linked review units.
-- `convex/files_nodes.test.ts`: public Move and Rename permissions, scope and names.
+- `convex/files_nodes.move_nodes.test.ts`: public Move and Rename permissions, scope and names.
 - `convex/files_move_cohorts.test.ts`: linked cycles, one group switch, Stop and cleanup.
 - `convex/files_pending_overlay_limits*.test.ts`: full transaction costs and catalog reserve.
-- `convex/files_pending_updates.test.ts`: all saved/private Move pairs, exact replacements,
+- `convex/files_pending_updates.structural.test.ts`: all saved/private Move pairs, exact replacements,
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.
 - `convex/files_pending_update_runs*.test.ts`: selected connected units, transaction bounds,
   preparation, retry, Stop, and cleanup.
