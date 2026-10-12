@@ -41,12 +41,19 @@ const builder = ts.createIncrementalProgram({
 	configFileParsingDiagnostics: parsed.errors,
 });
 
-// Read diagnostics through the builder so unchanged files reuse cached checks.
-const skipSourceFile = (file: ts.SourceFile) => /vendor|node_modules/.test(file.fileName);
+// Match folders relative to the config so a parent named vendor does not hide app errors.
+const configRoot = path.dirname(configPath);
+const skipSourceFile = (file: ts.SourceFile) =>
+	path
+		.relative(configRoot, file.fileName)
+		.split(path.sep)
+		.some((part) => part === "vendor" || part === "node_modules");
+
 // Process changed dependencies before reading cached app errors.
 while (builder.getSemanticDiagnosticsOfNextAffectedFile(undefined, skipSourceFile)) {
 	// The builder advances its changed-file list in the loop condition.
 }
+// Read diagnostics through the builder so unchanged files reuse cached checks.
 const semanticDiagnostics = builder
 	.getSourceFiles()
 	.filter((file) => !skipSourceFile(file))
@@ -60,7 +67,7 @@ const diagnostics = ts.sortAndDeduplicateDiagnostics([
 	// noEmit still writes the build info used by the next check.
 	...builder.emit().diagnostics,
 ]);
-// Keep the same path filters as the old lint:tsc command.
+// Keep config errors visible even when their files are skipped.
 const visibleDiagnostics = diagnostics.filter(
 	(diagnostic) => configDiagnostics.includes(diagnostic) || !diagnostic.file || !skipSourceFile(diagnostic.file),
 );

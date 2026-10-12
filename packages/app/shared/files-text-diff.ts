@@ -42,8 +42,10 @@ const files_text_diff_DEADLINE_MS = 30_000;
  * changes must refuse: a shuffled sort of ~890 KB and a random 880 KB vs 880 KB rewrite both
  * exceed 2,000M. 1,000M gives the heaviest must-pass case a 3.2x margin and refuses every
  * measured pathological case.
+ *
+ * Keep this object so tests can lower the budget and cross it with a small input.
  */
-const files_text_diff_MAX_OPERATIONS = 1_000_000_000;
+export const files_text_diff_limits = { maxOperations: 1_000_000_000 };
 
 /**
  * User-facing refusal message. The editors show it verbatim, so keep it stable.
@@ -77,7 +79,7 @@ type InternalDiffOptions = {
 export function files_text_diff_compute(args: { sourceText: string; targetText: string; deadlineMs?: number }) {
 	const budget: DiffBudget = {
 		deadline: Date.now() + (args.deadlineMs ?? files_text_diff_DEADLINE_MS),
-		operationsLeft: files_text_diff_MAX_OPERATIONS,
+		operationsLeft: files_text_diff_limits.maxOperations,
 	};
 
 	try {
