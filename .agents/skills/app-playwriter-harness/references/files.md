@@ -1604,6 +1604,9 @@ Filter the tree first with `#app_files_sidebar_search input`, then press `Escape
 suggestions-popover hazard. Scope the modal to `.FilesTransferRunModal`; `getByRole("dialog")`
 matches the always-mounted organization switcher instead.
 
+Dismiss search suggestions before Cut. An Escape after Cut can clear the Files clipboard.
+For root Paste, focus the `Files` tree and press Control+V. Keep the page loaded between Cut and Paste.
+
 Answer the conflicts by fieldset legend (they are `group`, not `radiogroup`):
 
 ```js

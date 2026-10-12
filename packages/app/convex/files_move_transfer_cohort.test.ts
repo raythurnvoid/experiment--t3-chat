@@ -52,7 +52,12 @@ async function release(f: Fixture) {
 			.query("files_move_workspace_slots")
 			.withIndex("by_workspace", (q) => q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId))
 			.unique())!;
-		await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId: null });
+		await ctx.db.replace("files_move_workspace_slots", slot._id, {
+			organizationId: slot.organizationId,
+			workspaceId: slot.workspaceId,
+			cohortId: null,
+			generation: slot.generation,
+		});
 		await ctx.db.patch("files_move_cohorts", f.cohortId, { phase: "complete", workPhase: "complete" });
 	});
 }

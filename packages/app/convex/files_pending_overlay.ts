@@ -537,7 +537,7 @@ async function db_run_saved_scope_job(
 		await files_pending_overlay_db_delete_job(ctx, job);
 		return;
 	}
-	// A Move copies these docs with the node's new scope itself. Go on when it ends.
+	// A Move holds this node or an ancestor. Continue after it releases the reservation.
 	const cohortId = await files_pending_overlay_db_target_cohort(ctx.db, {
 		...job,
 		target: { kind: "saved", id: node._id },

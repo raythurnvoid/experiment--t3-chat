@@ -579,7 +579,12 @@ describe("Move write reservations", () => {
 		if (!slot || !f.saved.yjsLastSequenceId) throw new Error("Expected saved fixture input");
 		// Produce accepted work before installing the inactive future cohort's reservation.
 		await f.t.run(async (ctx) => {
-			await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId: null });
+			await ctx.db.replace("files_move_workspace_slots", slot._id, {
+				organizationId: slot.organizationId,
+				workspaceId: slot.workspaceId,
+				cohortId: null,
+				generation: slot.generation,
+			});
 			await ctx.db.patch("files_nodes", f.nodeId, { moveCohortId: undefined });
 		});
 		const doc = new YjsDoc();
@@ -604,7 +609,11 @@ describe("Move write reservations", () => {
 		);
 		if (!job) throw new Error("Expected the native content job");
 		await f.t.run(async (ctx) => {
-			await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId: f.cohortId });
+			await ctx.db.patch("files_move_workspace_slots", slot._id, {
+				cohortId: f.cohortId,
+				visibleView: "before",
+				migrationDirection: "to_cohort",
+			});
 			await ctx.db.patch("files_nodes", f.nodeId, { moveCohortId: f.cohortId });
 			await ctx.db.insert("files_move_source_reservations", {
 				cohortId: f.cohortId,
@@ -852,7 +861,12 @@ describe("Move write reservations", () => {
 					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
 				)
 				.unique();
-			await ctx.db.patch("files_move_workspace_slots", slot!._id, { cohortId: null });
+			await ctx.db.replace("files_move_workspace_slots", slot!._id, {
+				organizationId: slot!.organizationId,
+				workspaceId: slot!.workspaceId,
+				cohortId: null,
+				generation: slot!.generation,
+			});
 		});
 		await sweep();
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_yjs_states", stateId))).toBeNull();
@@ -1066,7 +1080,12 @@ describe("Move write reservations", () => {
 				.unique();
 			for (const reservation of await ctx.db.query("files_move_source_reservations").collect())
 				await ctx.db.delete("files_move_source_reservations", reservation._id);
-			await ctx.db.patch("files_move_workspace_slots", slot!._id, { cohortId: null });
+			await ctx.db.replace("files_move_workspace_slots", slot!._id, {
+				organizationId: slot!.organizationId,
+				workspaceId: slot!.workspaceId,
+				cohortId: null,
+				generation: slot!.generation,
+			});
 		});
 		await f.t.run(async (ctx) => {
 			expect(await ranges(ctx, ctx.db, create("x")), "a create reads only the free slot").toEqual({

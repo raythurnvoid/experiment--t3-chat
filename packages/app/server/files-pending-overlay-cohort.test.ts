@@ -215,7 +215,12 @@ describe("Move owner views", () => {
 				)
 			.unique();
 			if (!slot) throw new Error("Expected the fixture workspace slot");
-			await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId: null });
+			await ctx.db.replace("files_move_workspace_slots", slot._id, {
+				organizationId: slot.organizationId,
+				workspaceId: slot.workspaceId,
+				cohortId: null,
+				generation: slot.generation,
+			});
 		});
 		const scheduled = () => f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
 		const before = await scheduled();
@@ -366,11 +371,12 @@ describe("Move owner views", () => {
 			cursor = result._yay!.cursor;
 			if (result._yay!.done) break;
 		}
+		const generation = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.slotGeneration;
 		const read = (view: "before" | "after") =>
 			f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
 				membershipId: f.db.membershipId,
 				listKey: "all",
-				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation: 1 },
+				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation },
 				paginationOpts: { cursor: null, numItems: 20 },
 			});
 		expect((await read("before")).page.map((row) => row.pendingUpdateId)).toEqual([f.proposal._id]);

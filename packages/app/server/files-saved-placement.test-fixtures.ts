@@ -4,7 +4,10 @@ import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import { files_media_validation_db_capture_versions } from "../convex/files_media_validation.ts";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import { files_saved_placement_db_get_node } from "./files-saved-placement.ts";
+import {
+	files_saved_placement_db_bump_search_generation,
+	files_saved_placement_db_get_node,
+} from "./files-saved-placement.ts";
 
 function placement_header(node: Doc<"files_nodes">) {
 	const {
@@ -101,6 +104,12 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 	const cohortId = await t.run(async (ctx) => {
 		const run = await ctx.db.get("files_transfer_runs", started._yay.runId);
 		if (!run) throw new Error("Expected the Transfer origin");
+		const slot = await ctx.db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+			.unique();
+		if (slot?.cohortId) throw new Error("Expected finished fixture Save jobs");
+		const generation = (slot?.generation ?? 0) + 1;
 		const pins = await files_media_validation_db_capture_versions(ctx, { userId: db.userId, scopes: [db] });
 		const organization = pins.versions[0] as Doc<"files_move_cohorts">["clockPins"]["organization"];
 		const workspace = pins.versions[1] as Doc<"files_move_cohorts">["clockPins"]["workspace"];
@@ -109,7 +118,7 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 			...db,
 			membershipLifetime: run.sourceScope.membershipLifetime,
 			origin: { kind: "transfer", runId: run._id, itemId },
-			slotGeneration: 1,
+			slotGeneration: generation,
 			fence: 1,
 			attemptFence: 1,
 			workId: null,
@@ -145,16 +154,10 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 			errorMessage: null,
 			conflictItemId: null,
 		});
-		const slot = await ctx.db
-			.query("files_move_workspace_slots")
-			.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-			.unique();
-		if (slot?.cohortId) throw new Error("Expected finished fixture Save jobs");
 		if (slot)
 			await ctx.db.patch("files_move_workspace_slots", slot._id, {
 				cohortId,
-				generation: 1,
-				searchGeneration: 2,
+				generation,
 				visibleView: "before",
 				migrationDirection: "to_cohort",
 			});
@@ -163,11 +166,11 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				cohortId,
-				generation: 1,
-				searchGeneration: 2,
+				generation,
 				visibleView: "before",
 				migrationDirection: "to_cohort",
 			});
+		await files_saved_placement_db_bump_search_generation(ctx, db);
 		return cohortId;
 	});
 	const header = placement_header(saved);
@@ -238,7 +241,12 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 	// Move code copies the view onto the slot in the same write, so these do both too.
 	const setView = (
 		cohortPatch: Partial<Doc<"files_move_cohorts">>,
-		slotPatch: Pick<Doc<"files_move_workspace_slots">, "visibleView" | "migrationDirection">,
+		slotPatch: Partial<
+			Pick<
+				Extract<Doc<"files_move_workspace_slots">, { cohortId: Id<"files_move_cohorts"> }>,
+				"visibleView" | "migrationDirection"
+			>
+		>,
 	) =>
 		t.run(async (ctx) => {
 			await ctx.db.patch("files_move_cohorts", cohortId, cohortPatch);

@@ -56,7 +56,8 @@ function compare_keys(left: Array<Value | undefined>, right: Array<Value | undef
 
 /**
  * Before reads merge original normal/before docs. After reads merge promoted normal/after docs.
- * The switch must wait for every original doc to leave normal and every after doc to seal.
+ * Replaced docs leave normal before the switch. Unchanged docs can serve both views.
+ * Every after doc must seal before the switch.
  * Both ranges belong to one file or proposal. Selected docs win a duplicate stable key.
  */
 async function* merge<T>(

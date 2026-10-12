@@ -42,6 +42,7 @@ import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
 import { activities_db_get_by_source_id, activities_db_require_by_source_id } from "./activities_db.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
+import { files_saved_placement_db_bump_search_generation } from "../server/files-saved-placement.ts";
 
 // #region helpers
 
@@ -390,6 +391,11 @@ export async function test_db_hold_move_slot(
 	ctx: MutationCtx,
 	scope: Pick<Doc<"files_move_cohorts">, "organizationId" | "workspaceId" | "userId" | "membershipId">,
 ) {
+	const slot = await ctx.db
+		.query("files_move_workspace_slots")
+		.withIndex("by_workspace", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
+		.unique();
+	const generation = (slot?.generation ?? 0) + 1;
 	const pins = await files_media_validation_db_capture_versions(ctx, { userId: scope.userId, scopes: [scope] });
 	const cohortId = await ctx.db.insert("files_move_cohorts", {
 		organizationId: scope.organizationId,
@@ -403,7 +409,7 @@ export async function test_db_hold_move_slot(
 			runId: "999999files_transfer_runs" as Id<"files_transfer_runs">,
 			itemId: "999999files_transfer_items" as Id<"files_transfer_items">,
 		},
-		slotGeneration: 1,
+		slotGeneration: generation,
 		fence: 1,
 		attemptFence: 1,
 		workId: null,
@@ -443,21 +449,24 @@ export async function test_db_hold_move_slot(
 		errorMessage: null,
 		conflictItemId: null,
 	});
-	const slot = await ctx.db
-		.query("files_move_workspace_slots")
-		.withIndex("by_workspace", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
-		.unique();
 	if (slot) {
-		await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId, generation: slot.generation + 1 });
+		await ctx.db.patch("files_move_workspace_slots", slot._id, {
+			cohortId,
+			generation,
+			visibleView: "before",
+			migrationDirection: "to_cohort",
+		});
 	} else {
 		await ctx.db.insert("files_move_workspace_slots", {
 			organizationId: scope.organizationId,
 			workspaceId: scope.workspaceId,
 			cohortId,
-			generation: 1,
-			searchGeneration: 1,
+			generation,
+			visibleView: "before",
+			migrationDirection: "to_cohort",
 		});
 	}
+	await files_saved_placement_db_bump_search_generation(ctx, scope);
 	return cohortId;
 }
 

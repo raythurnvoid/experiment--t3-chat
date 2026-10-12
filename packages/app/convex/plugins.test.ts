@@ -28,6 +28,7 @@ import {
 } from "../shared/organizations.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
+import { files_saved_placement_db_bump_search_generation } from "../server/files-saved-placement.ts";
 import {
 	mock_plugins_review,
 	user_identity,
@@ -5036,15 +5037,23 @@ describe("plugins Phase 0", () => {
 					q.eq("organizationId", fixture.membership.organizationId).eq("workspaceId", fixture.membership.workspaceId),
 				)
 				.unique();
-			if (slot) await ctx.db.patch("files_move_workspace_slots", slot._id, { cohortId, generation: 1 });
+			if (slot)
+				await ctx.db.patch("files_move_workspace_slots", slot._id, {
+					cohortId,
+					generation: 1,
+					visibleView: "after",
+					migrationDirection: "to_normal",
+				});
 			else
 				await ctx.db.insert("files_move_workspace_slots", {
 					organizationId: fixture.membership.organizationId,
 					workspaceId: fixture.membership.workspaceId,
 					cohortId,
 					generation: 1,
-					searchGeneration: 1,
+					visibleView: "after",
+					migrationDirection: "to_normal",
 				});
+			await files_saved_placement_db_bump_search_generation(ctx, fixture.membership);
 			const {
 				_id: _nodeId,
 				_creationTime: _nodeCreationTime,

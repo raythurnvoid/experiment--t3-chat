@@ -258,11 +258,17 @@ async function expect_slot_copies_view(f: Awaited<ReturnType<typeof native_rotat
 		return { slot, cohort: slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null };
 	});
 	const toNormal = ["published", "finishing", "aborting", "complete"];
-	expect({ view: slot?.visibleView ?? null, direction: slot?.migrationDirection ?? null }).toEqual(
-		cohort
-			? { view: cohort.visibleView, direction: toNormal.includes(cohort.phase) ? "to_normal" : "to_cohort" }
-			: { view: null, direction: null },
-	);
+	if (slot?.cohortId) {
+		expect(slot.generation, "the active slot and cohort have the same generation").toBe(cohort?.slotGeneration);
+		expect({ view: slot.visibleView, direction: slot.migrationDirection }).toEqual({
+			view: cohort?.visibleView,
+			direction: toNormal.includes(cohort!.phase) ? "to_normal" : "to_cohort",
+		});
+	} else {
+		expect(slot, "release keeps the idle slot").not.toBeNull();
+		expect(slot, "an idle slot has no visible view field").not.toHaveProperty("visibleView");
+		expect(slot, "an idle slot has no migration direction field").not.toHaveProperty("migrationDirection");
+	}
 }
 
 describe("Move cohort publication", () => {
@@ -609,7 +615,7 @@ describe("Move cohort publication", () => {
 		await finish_cohort(f, async () => {
 			const next = await read();
 			if (JSON.stringify(next.slot) !== JSON.stringify(last.slot))
-				slotChanges.push(`${next.slot?.visibleView ?? null}/${next.slot?.migrationDirection ?? null}`);
+				slotChanges.push(next.slot?.cohortId ? `${next.slot.visibleView}/${next.slot.migrationDirection}` : "null/null");
 			last = next;
 		});
 		// Tree pages read the slot. Each change runs every open tree page again.

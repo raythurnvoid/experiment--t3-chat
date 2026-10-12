@@ -800,6 +800,9 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   Archived Rename keeps its archive identity and can share an active path. A child that is its
   own restricted folder keeps its scope. Required physical repair finishes before holds release.
   Activity Stop keeps completed groups and cancels an unpublished group. Recovery resumes lost work.
+  Unchanged saved plain-text chunks stay keyed by file ID. Text search resolves the selected
+  node for its path and access. Their stored path is a cache, repaired after publication.
+  Metadata still stages its path and sort fields before the switch.
 - Cut/Paste and drag/drop use `FilesClipboardProvider.move` or `paste`, then the paged
   `files_transfer` job. Each selected root uses a `files_move_cohorts` worker. It stages the root,
   descendants and side docs in small transactions. Normal names keep the old saved IDs until one

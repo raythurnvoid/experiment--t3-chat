@@ -19,6 +19,7 @@ import {
 	files_pending_overlay_db_set_cohort_staging,
 	files_pending_overlay_db_set_cohort_allocation,
 	files_pending_overlay_db_set_cohort_materialization,
+	files_pending_overlay_db_schedule_saved_scope,
 	files_pending_overlay_db_wake_job,
 } from "../server/files-pending-overlay.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
@@ -92,6 +93,9 @@ import {
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 const WAKE_PAGE_SIZE = 8;
+// Bound one native page. Long headers reach the byte bound first.
+const DESCENDANT_PAGE_SIZE = 32;
+const DESCENDANT_PAGE_BYTES = 128 * 1024;
 const METADATA_PAGE_SIZE = 64;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const RUN_BUDGET_MS = 5_000;
@@ -1164,7 +1168,7 @@ async function db_descendants(
 						.withIndex("by_view_parent_name", (q) =>
 							q.eq("cohortId", cohort._id).eq("view", "before").eq("parentId", parentId),
 						)
-						.paginate({ cursor: cursor.cursor, numItems: 1 })
+						.paginate({ cursor: cursor.cursor, numItems: DESCENDANT_PAGE_SIZE, maximumBytesRead: DESCENDANT_PAGE_BYTES })
 				: await ctx.db
 						.query("files_nodes")
 						.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
@@ -1174,7 +1178,7 @@ async function db_descendants(
 								.eq("moveCohortId", undefined)
 								.eq("parentId", parentId),
 						)
-						.paginate({ cursor: cursor.cursor, numItems: 1 });
+						.paginate({ cursor: cursor.cursor, numItems: DESCENDANT_PAGE_SIZE, maximumBytesRead: DESCENDANT_PAGE_BYTES });
 		paged = true;
 		for (const entry of page.page) {
 			const nodeId = "nodeId" in entry ? entry.nodeId : entry._id;
@@ -1574,6 +1578,7 @@ async function db_sides(
 	if (!after) throw should_never_happen("Move side work has no candidate", { recordId: record._id });
 	const item = record.itemId ? await ctx.db.get("files_move_cohort_items", record.itemId) : null;
 	const ownsContent = item?.nodeRecordId === record._id && item.contentId !== null;
+	const before = record.beforePlaceId ? await ctx.db.get("files_saved_places", record.beforePlaceId) : null;
 	const beforeTag = { cohortId: cohort._id, view: "before" as const };
 	const afterTag = { cohortId: cohort._id, view: "after" as const };
 	let paginated = false;
@@ -1581,6 +1586,11 @@ async function db_sides(
 	let done = false;
 	// Skip empty phases, then stop after one native page.
 	while (cursor.part < 2 && !paginated) {
+		// Text search reads current placement by ID. Unchanged chunks can serve both views.
+		if (cursor.part === 1 && before && !ownsContent && before.archiveOperationId === after.archiveOperationId) {
+			cursor.part++;
+			continue;
+		}
 		if (!ownsContent && record.beforePlaceId) {
 			if (cursor.part === 0) {
 				const first = await ctx.db
@@ -1694,7 +1704,6 @@ async function db_sides(
 	}
 	// Part 3 reads no page either, so it joins part 2 when the budget allows.
 	if (!paginated && cursor.part === 3 && (!joined || (await files_pending_overlay_db_can_join_step(ctx)))) {
-		const before = record.beforePlaceId ? await ctx.db.get("files_saved_places", record.beforePlaceId) : null;
 		let reparented = before?.parentId !== after.parentId;
 		if (record.role === "descendant" && item) {
 			const root = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
@@ -2010,6 +2019,26 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 		node: await ctx.db.get("files_nodes", record.nodeId),
 	});
 	const item = record.itemId ? await ctx.db.get("files_move_cohort_items", record.itemId) : null;
+	const ownsContent = item?.nodeRecordId === record._id && item.contentId !== null;
+	if (finish && place?.kind === "file" && record.beforePlaceId && !ownsContent) {
+		const before = await ctx.db.get("files_saved_places", record.beforePlaceId);
+		if (before && before.archiveOperationId === place.archiveOperationId && before.path !== place.path) {
+			const chunk = await ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", cohort.organizationId)
+						.eq("workspaceId", cohort.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", record.nodeId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined),
+				)
+				.first();
+			// Materialization skips overlay marks. Repair the reused chunks' path cache after release.
+			if (chunk) await files_pending_overlay_db_schedule_saved_scope(ctx, { ...cohort, _id: record.nodeId });
+		}
+	}
 	if (item && item.nodeRecordId === record._id) {
 		if (item.pendingUpdateId) {
 			const proposal = await ctx.db.get("files_pending_updates", item.pendingUpdateId);
@@ -2143,10 +2172,11 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 		)
 		.unique();
 	if (slot?.cohortId === cohort._id) {
-		await ctx.db.patch("files_move_workspace_slots", slot._id, {
+		await ctx.db.replace("files_move_workspace_slots", slot._id, {
+			organizationId: slot.organizationId,
+			workspaceId: slot.workspaceId,
 			cohortId: null,
-			visibleView: undefined,
-			migrationDirection: undefined,
+			generation: slot.generation,
 		});
 		await files_saved_placement_db_bump_search_generation(ctx, cohort);
 	}
