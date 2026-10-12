@@ -1349,6 +1349,7 @@ The `SearchProvider` example above is the canonical attached-hook pattern.
 - `VITE_CONVEX_HTTP_URL`: Convex HTTP/site origin used for app HTTP routes and the authentication issuer/JWKS.
 - For browser calls to app-owned HTTP routes, use helpers in `packages/app/src/lib/fetch.ts`, including `app_fetch_main_api_url(...)` when building an app URL.
 - Third-party services use their own documented base URLs and clients. Never use `VITE_CONVEX_HTTP_URL` as a third-party origin.
+- `LIST_CURSOR_SECRET` (Convex env, required on every deployment): seals the public files list cursor. It is read at module load, so a deploy without it, or with fewer than 32 characters, fails. Use 32 random bytes as hex, a new value per deployment. Rotation and details: `.agents/skills/public-api/SKILL.md`.
 
 # Verifying a fix or a review report
 
