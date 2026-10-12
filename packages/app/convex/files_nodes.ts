@@ -4599,7 +4599,8 @@ export async function files_nodes_db_live_scope_reader(
 		if (folderId === files_ROOT_ID) return null;
 		let scope = scopesInside.get(folderId);
 		if (scope === undefined) {
-			const folder = await ctx.db.get("files_nodes", folderId);
+			// A published Move can still leave the old parent in the physical node.
+			const folder = await files_saved_placement_db_get_node(ctx.db, folderId);
 			// A restrict or unrestrict writes the folder's own scope in the request, so it is never old.
 			scope = !folder
 				? null

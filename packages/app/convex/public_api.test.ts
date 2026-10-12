@@ -9,6 +9,7 @@ import {
 	test_db_hold_move_slot,
 	test_drain_billing_usage_event_outbox,
 	test_fill_saved_file_with_max_chunks,
+	test_finish_transfer_run,
 	test_LIMITS_AT_75_PERCENT,
 	test_mocks,
 	test_mocks_fill_db_with,
@@ -6886,6 +6887,160 @@ describe("files read-only locks", () => {
 			skipIfUnchanged: true,
 		});
 		expect(unchanged.status, "unchanged write route").toBe(403);
+	});
+
+	test("touch and unchanged write keep the published Move scope while an unrelated Restrict waits", async () => {
+		vi.useFakeTimers();
+		try {
+			const t = test_convex();
+			install_r2_object_reads();
+			const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-move-live-parent-scope" });
+			for (const path of ["/source/note.md", "/unrelated/note.md"]) {
+				expect(
+					(await write_file({ t, credential: writer.credential, path, content: "# Same\n", nonCollaborative: true }))
+						.status,
+				).toBe(200);
+			}
+			const source = (await find_active_node({ t, db: writer.db, path: "/source" }))!;
+			const file = (await find_active_node({ t, db: writer.db, path: "/source/note.md" }))!;
+			const unrelated = (await find_active_node({ t, db: writer.db, path: "/unrelated" }))!;
+			const unrelatedFile = (await find_active_node({ t, db: writer.db, path: "/unrelated/note.md" }))!;
+			const destination = await writer.owner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: writer.db.membershipId,
+				parentId: files_ROOT_ID,
+				path: "destination",
+			});
+			if (destination._nay) throw new Error(destination._nay.message);
+			const destinationId = destination._yay.nodeId;
+			expect(
+				await writer.owner.mutation(api.files_sharing.restrict_node, {
+					membershipId: writer.db.membershipId,
+					nodeId: destinationId,
+				}),
+			).toEqual({ _yay: null });
+			expect(
+				await writer.owner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: writer.db.membershipId,
+					nodeId: destinationId,
+					principal: { kind: "user", userId: writer.userId },
+					level: "read",
+				}),
+			).toEqual({ _yay: null });
+			const before = await write_file({
+				t,
+				credential: writer.credential,
+				path: "/source/note.md",
+				content: "# Same\n",
+				skipIfUnchanged: true,
+			});
+			expect(before.status, "the member can write the open source").toBe(200);
+			expect(await before.json()).toMatchObject({ nodeId: file._id, unchanged: true });
+			const started = await writer.owner.mutation(api.files_transfer.start, {
+				membershipId: writer.db.membershipId,
+				requestId: "move-live-parent-scope",
+				kind: "move",
+				sourceIds: [source._id],
+				expectedSourceCount: 1,
+				targetParentId: destinationId,
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			expect(
+				await writer.owner.mutation(api.files_transfer.seal, {
+					membershipId: writer.db.membershipId,
+					runId: started._yay.runId,
+				}),
+			).toEqual({ _yay: null });
+			let checkedPublishedScope = false;
+			await test_finish_transfer_run(writer.owner, started._yay.runId, async () => {
+				if (checkedPublishedScope) return;
+				const cohort = await t.run((ctx) =>
+					ctx.db
+						.query("files_move_cohorts")
+						.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", started._yay.runId))
+						.order("desc")
+						.first(),
+				);
+				if (!cohort || cohort.publishedAt === null) return;
+				checkedPublishedScope = true;
+				expect(
+					await t.run((ctx) => ctx.db.get("files_nodes", source._id)),
+					"the physical parent still has its before placement",
+				).toMatchObject({ parentId: files_ROOT_ID, restrictedScopeNodeId: null, moveCohortId: cohort._id });
+				expect(
+					await t.query(internal.files_nodes.get_by_path, {
+						organizationId: writer.db.organizationId,
+						workspaceId: writer.db.workspaceId,
+						visibilityUserId: writer.userId,
+						path: "/destination/source/note.md",
+					}),
+					"the read-only member sees the selected after placement",
+				).toMatchObject({
+					_id: file._id,
+					parentId: source._id,
+					restrictedScopeNodeId: destinationId,
+				});
+				// Restrict is allowed here, but its descendant walk waits for the Move.
+				expect(
+					await writer.owner.mutation(api.files_sharing.restrict_node, {
+						membershipId: writer.db.membershipId,
+						nodeId: unrelated._id,
+					}),
+				).toEqual({ _yay: null });
+				expect(
+					await t.run((ctx) =>
+						ctx.db
+							.query("files_subtree_ops")
+							.withIndex("by_organization_workspace_kind", (q) =>
+								q
+									.eq("organizationId", writer.db.organizationId)
+									.eq("workspaceId", writer.db.workspaceId)
+									.eq("kind", "scope"),
+							)
+							.first(),
+					),
+					"the unrelated scope job waits for Move cleanup",
+				).toMatchObject({ status: "running", rootNodeIds: [unrelated._id] });
+				expect(await t.run((ctx) => ctx.db.get("files_nodes", unrelatedFile._id))).toMatchObject({
+					restrictedScopeNodeId: null,
+				});
+				const touched = await t.fetch("/api/v1/files/touch", {
+					method: "POST",
+					headers: auth_headers(writer.credential),
+					body: JSON.stringify({ paths: ["/destination/source/note.md"] }),
+				});
+				const unchanged = await write_file({
+					t,
+					credential: writer.credential,
+					path: "/destination/source/note.md",
+					content: "# Same\n",
+					skipIfUnchanged: true,
+				});
+				expect
+					.soft(touched.status, "touch checks the selected parent scope while the unrelated scope job waits")
+					.toBe(403);
+				expect
+					.soft(
+						unchanged.status,
+						"unchanged write checks the selected parent scope while the unrelated scope job waits",
+					)
+					.toBe(403);
+				expect.soft(await touched.json()).toEqual({ message: "Permission denied" });
+				expect.soft(await unchanged.json()).toEqual({ message: "Permission denied" });
+			});
+			expect(checkedPublishedScope, "the real worker reaches publication before physical repair").toBe(true);
+			expect(
+				await writer.owner.query(api.files_transfer.get, {
+					membershipId: writer.db.membershipId,
+					runId: started._yay.runId,
+				}),
+			).toMatchObject({ activity: { status: "succeeded" } });
+			expect(await find_active_node({ t, db: writer.db, path: "/destination/source/note.md" })).toMatchObject({
+				_id: file._id,
+				restrictedScopeNodeId: destinationId,
+			});
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test("write and touch below a file answer 409 and say a file is in the way", async () => {
