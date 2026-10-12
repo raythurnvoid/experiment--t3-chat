@@ -144,6 +144,8 @@ type stage_trusted_yjs_update_LocalResult =
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
 export const experimental_reuseContext = true;
 
+console.info("API usage heavy module loaded");
+
 const FILES_READ_MAX_BYTES = 128_000;
 const FILES_READ_BYTES_MAX_LENGTH = 1024 * 1024;
 const FILES_GRANT_READ_BYTES = 8 * FILES_READ_BYTES_MAX_LENGTH;
@@ -2102,32 +2104,49 @@ export const mark_credential_used = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		// Never write the credential doc here: every file publish reads it to check revocation, so a
-		// write there would conflict with parallel publishes. The usage doc has its own table.
-		const usage = await ctx.db
-			.query("api_credentials_last_used")
-			.withIndex("by_credential", (q) => q.eq("credentialId", args.credentialId))
-			.first();
-		if (usage) {
-			// Write at most once per minute, so parallel requests of one key rarely touch this doc.
-			if (args.now - usage.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS) {
-				await ctx.db.patch("api_credentials_last_used", usage._id, { lastUsedAt: args.now });
+		// eslint-disable-next-line no-console -- Temporary handler timing.
+		console.time("API credential usage handler");
+		try {
+			// Never write the credential doc here: every file publish reads it to check revocation, so a
+			// write there would conflict with parallel publishes. The usage doc has its own table.
+			const usage = await ctx.db
+				.query("api_credentials_last_used")
+				.withIndex("by_credential", (q) => q.eq("credentialId", args.credentialId))
+				.first();
+			if (usage) {
+				// Write at most once per minute, so parallel requests of one key rarely touch this doc.
+				if (args.now - usage.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS) {
+					await ctx.db.patch("api_credentials_last_used", usage._id, { lastUsedAt: args.now });
+				}
+				return null;
 			}
+
+			const credential = await ctx.db.get("api_credentials", args.credentialId);
+			if (credential) {
+				await ctx.db.insert("api_credentials_last_used", {
+					credentialId: credential._id,
+					organizationId: credential.organizationId,
+					workspaceId: credential.workspaceId,
+					userId: credential.userId,
+					lastUsedAt: args.now,
+				});
+			}
+
 			return null;
+		} finally {
+			// eslint-disable-next-line no-console -- Temporary handler timing.
+			console.timeEnd("API credential usage handler");
 		}
+	},
+});
 
-		const credential = await ctx.db.get("api_credentials", args.credentialId);
-		if (credential) {
-			await ctx.db.insert("api_credentials_last_used", {
-				credentialId: credential._id,
-				organizationId: credential.organizationId,
-				workspaceId: credential.workspaceId,
-				userId: credential.userId,
-				lastUsedAt: args.now,
-			});
-		}
-
-		return null;
+// Temporary timing control; remove it after the module comparison.
+export const profile_usage_startup = internalMutation({
+	args: { marker: v.string() },
+	returns: v.string(),
+	handler: async (_ctx, args) => {
+		console.info("API credential usage startup", { marker: args.marker });
+		return args.marker;
 	},
 });
 
