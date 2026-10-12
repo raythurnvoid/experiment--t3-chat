@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { globSync, readFileSync } from "node:fs";
+import { globSync } from "node:fs";
+import { vitest_find_isolated_files } from "./scripts/vitest-isolation.ts";
 
 const convex_project = {
 	extends: true,
@@ -39,22 +40,15 @@ const convex_project = {
 	},
 } satisfies TestProjectInlineConfiguration;
 
-// A convex project test file whose text matches this cannot share loaded modules with other test
-// files, so it runs in the isolated "Convex" project:
-// - `vi.mock`/`vi.doMock`: a mock stays registered for later files, and misses a module that an earlier
-//   file already loaded.
-// - `vi.hoisted`: it runs code (for example env values) before the file's imports, but an earlier file
-//   may have loaded those modules already.
-// - `vi.resetModules`: it reloads every module for the later files in the worker.
-// - an import of bash.setup.test.ts or files_browser.setup.test.ts: these helpers add `beforeEach` and
-//   `afterEach` hooks when they load, and a loaded helper adds them only to the first file.
-const convex_isolated_text = /vi\.(?:mock|doMock|hoisted|resetModules)\(|\/(?:bash|files_browser)\.setup\.test/;
-
-const convex_isolated_files = globSync(convex_project.test.include, {
-	cwd: fileURLToPath(new URL(".", import.meta.url)),
-})
-	.map((file) => file.replaceAll("\\", "/"))
-	.filter((file) => convex_isolated_text.test(readFileSync(new URL(file, import.meta.url), "utf8")));
+// Permanent module mocks and imported helper hooks need their own loaded modules. Factory helpers
+// and setupFiles stay shared; Vitest reloads setupFiles before every test file.
+const convex_isolated_files = vitest_find_isolated_files(
+	fileURLToPath(new URL(".", import.meta.url)),
+	globSync(convex_project.test.include, { cwd: fileURLToPath(new URL(".", import.meta.url)) }).map((file) =>
+		file.replaceAll("\\", "/"),
+	),
+	convex_project.test.setupFiles,
+);
 
 export default defineConfig({
 	plugins: [
