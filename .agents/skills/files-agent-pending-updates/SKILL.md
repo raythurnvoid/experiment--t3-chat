@@ -667,7 +667,8 @@ unused fields when a node moves to a shallower folder or root.
   Saved browser pagers wait for new view args on `saved_move_view_changed` or
   `saved_search_view_changed`. They keep native page splits and stop loadMore while waiting.
   Pending keeps the selected chat while source pages load. It falls back to All changes
-  only after the source list settles without that chat.
+  only when the exact source summary is empty. A chat outside the loaded source pages
+  keeps its selected option and title.
   Other cursor errors still restart normally.
 - Bash `meta get` merges the normal and selected exact file or proposal ranges. An unselected
   pending branch finds its staged scope through its source reservation. Cleanup keeps all fields visible.

@@ -1480,6 +1480,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		key: (row) => row.listKey,
 	});
 	const sourceKeys = sourceMerge.rows.map((row) => row.listKey);
+	// A chosen chat can be outside the loaded pages after a Move resets them.
+	if (selectedSource !== PENDING_SOURCE_ALL && !sourceKeys.includes(selectedSource)) sourceKeys.push(selectedSource);
 	const sourcesStatus =
 		savedView.loading || sourceStreams.some((stream) => stream.status === "LoadingFirstPage")
 			? "LoadingFirstPage"
@@ -1490,12 +1492,17 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 					: "CanLoadMore";
 	const loadMoreSources = (numItems: number) =>
 		sourceMerge.blockingRank === null ? undefined : sourceStreams[sourceMerge.blockingRank]!.loadMore(numItems);
-	// Wait for source pages before falling back to All changes. A Move view can hide rows while loading.
+	const selectedSummary = useQuery(app_convex_api.files_pending_updates.get_files_pending_updates_summary, {
+		membershipId,
+		listKey: selectedSource,
+	});
+	// Only the exact source summary can prove that its changes are gone.
 	const activeSource =
 		selectedSource === PENDING_SOURCE_ALL ||
 		sourcesStatus === "LoadingFirstPage" ||
 		sourcesStatus === "LoadingMore" ||
-		sourceKeys.includes(selectedSource)
+		selectedSummary === undefined ||
+		selectedSummary.count > 0
 			? selectedSource
 			: PENDING_SOURCE_ALL;
 

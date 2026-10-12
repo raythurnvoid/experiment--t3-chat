@@ -42,7 +42,10 @@ const {
 	truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
 	loadMoreMock: vi.fn(),
 	pagination: { status: "Exhausted" as "CanLoadMore" | "LoadingMore" | "Exhausted" },
-	sourcePagination: { waitingForView: false, listeners: new Set<() => void>() },
+	sourcePagination: {
+		current: { waitingForView: false, pageSize: null as number | null },
+		listeners: new Set<() => void>(),
+	},
 	reviewStart: { isStarting: false, listeners: new Set<() => void>() },
 	moveView: {
 		cohortId: null as app_convex_Id<"files_move_cohorts"> | null,
@@ -73,28 +76,33 @@ vi.mock("convex/react", () => ({
 	},
 	usePaginatedQuery: (query: unknown, args: { listKey?: string; savedStream?: { kind: string } } | "skip") => {
 		const queryResultMock = useQueryMock;
-		const waitingForView = useSyncExternalStore(
+		const sourcePage = useSyncExternalStore(
 			(listener) => {
 				sourcePagination.listeners.add(listener);
 				return () => sourcePagination.listeners.delete(listener);
 			},
-			() => sourcePagination.waitingForView,
+			() => sourcePagination.current,
 		);
 		if (args === "skip") return { results: [], status: "Exhausted", loadMore: loadMoreMock };
 		const updates: app_convex_Doc<"files_pending_updates">[] | undefined =
 			args.savedStream?.kind === "cohort" ? cohortUpdates.current : queryResultMock("list_files_pending_updates", args);
-		if (query === "list_files_pending_sources" && waitingForView)
+		if (query === "list_files_pending_sources" && sourcePage.waitingForView)
 			return { results: [], status: "LoadingMore", loadMore: loadMoreMock };
+		const sources = makeSourceKeyFixtures(updates);
 		return {
 			results:
 				(query === "list_files_pending_sources"
-					? makeSourceKeyFixtures(updates)
+					? sourcePage.pageSize === null
+						? sources
+						: sources?.slice(0, sourcePage.pageSize)
 					: makeListRowFixtures(updates, args.listKey!)) ?? [],
 			status:
 				updates === undefined
 					? "LoadingFirstPage"
 					: query === "list_files_pending_sources"
-						? "Exhausted"
+						? sourcePage.pageSize !== null && sources!.length > sourcePage.pageSize
+							? "CanLoadMore"
+							: "Exhausted"
 						: pagination.status,
 			loadMore: loadMoreMock,
 		};
@@ -587,7 +595,7 @@ beforeEach(() => {
 	startReviewMock.mockResolvedValue(undefined);
 	reviewStart.isStarting = false;
 	pagination.status = "Exhausted";
-	sourcePagination.waitingForView = false;
+	sourcePagination.current = { waitingForView: false, pageSize: null };
 	loadMoreMock.mockReset();
 	blockedTargetIds.clear();
 	requiredParentsById.clear();
@@ -1803,7 +1811,7 @@ describe("FileEditorSidebarPending", () => {
 
 		// A stale later page hides its source rows until the workspace view catches up.
 		act(() => {
-			sourcePagination.waitingForView = true;
+			sourcePagination.current = { waitingForView: true, pageSize: null };
 			for (const listener of sourcePagination.listeners) listener();
 		});
 		expect(
@@ -1813,10 +1821,52 @@ describe("FileEditorSidebarPending", () => {
 
 		act(() => {
 			moveView.generation += 1;
-			sourcePagination.waitingForView = false;
+			sourcePagination.current = { waitingForView: false, pageSize: null };
 			for (const listener of sourcePagination.listeners) listener();
 		});
 		expect(screen.getByRole("combobox", { name: "Pending changes source: Agent chat, 1 change" })).toBeTruthy();
+	});
+
+	test("keeps a chosen chat outside the reloaded first source page until its exact summary is empty", () => {
+		const updates = Array.from({ length: 22 }, (_, index) =>
+			makePendingUpdate({
+				id: `pu_${index}`,
+				fileNodeId: `node_${index}`,
+				staged: "s",
+				unstaged: "u",
+				threadIds: [`thread_${index}`],
+			}),
+		);
+		useQueryMock.mockReturnValue(updates);
+		treeNodesMock.mockReturnValue(
+			updates.map((update, index) => makeNode({ id: update.target.id, path: `/note-${index}.md` })),
+		);
+		useQueriesMock.mockReturnValue(
+			Object.fromEntries(
+				updates.map((_, index) => [`thread_${index}`, makeThread({ id: `thread_${index}`, title: `Chat ${index}` })]),
+			),
+		);
+		const { container } = render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByRole("combobox"));
+		fireEvent.click(screen.getByRole("option", { name: /^Chat 21 / }));
+
+		act(() => {
+			moveView.generation += 1;
+			sourcePagination.current = { waitingForView: false, pageSize: 20 };
+			for (const listener of sourcePagination.listeners) listener();
+		});
+		expect(
+			container.querySelector(".FileEditorSidebarPending-item-path-text")?.textContent,
+			"a loaded source prefix cannot clear the chosen chat",
+		).toBe("/note-21.md");
+		expect(screen.getByRole("combobox", { name: "Pending changes source: Chat 21, 1 change" })).toBeTruthy();
+
+		act(() => {
+			useQueryMock.mockReturnValue(updates.slice(0, 21));
+			sourcePagination.current = { waitingForView: false, pageSize: 20 };
+			for (const listener of sourcePagination.listeners) listener();
+		});
+		expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 21 changes" })).toBeTruthy();
 	});
 
 	test("returns to All changes when the selected chat stops contributing", async () => {
