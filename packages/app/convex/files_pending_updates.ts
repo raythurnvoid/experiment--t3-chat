@@ -8188,12 +8188,16 @@ export const begin_cohort_content_preparation = internalMutation({
 		contentId: v.id("files_move_cohort_content"),
 		fence: v.number(),
 		attemptFence: v.number(),
+		runGeneration: v.union(v.number(), v.null()),
 	},
 	handler: async (ctx, args) => {
 		const content = await ctx.db.get("files_move_cohort_content", args.contentId);
 		if (!content) return Result({ _nay: { message: "Not found" } });
 		const checked = await db_enter_cohort_content(ctx, { ...args, preparationFence: content.preparationFence });
 		if (checked._nay) return checked;
+		// A canceled action must not retire its successor's batch.
+		if ((checked._yay.cohort.runJob?.generation ?? null) !== args.runGeneration)
+			return Result({ _nay: { name: "stopped", message: "This Move step is no longer current." } });
 		if (content.phase !== "preparing")
 			return Result({ _yay: { preparationFence: content.preparationFence, done: true } });
 		if (content.operationBatchId) {

@@ -123,7 +123,9 @@ test("Move completion wakes every owner page before the next Review", async () =
 		.withIndex("by_source", q => q.eq("source.kind", "saved").eq("source.id", f.sourceId)).unique());
 	while (!(await reservation())) {
 		const before = (await cohort())!;
-		await f.t.action(internal.files_move_cohorts.run, { cohortId, step: before.step });
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId, step: before.step, runGeneration: before.runJob?.generation ?? null, mode: "step",
+		});
 		expect((await cohort())?.step).not.toBe(before.step);
 	}
 	expect(await reservation()).toMatchObject({ cohortId, mode: "subtree" });
@@ -301,8 +303,8 @@ test.each(["Transfer", "Review"] as const)("%s driver finishes its owned Move be
 		return result;
 	};
 	const finished = (async () => {
-		if (transfer?._yay) await test_finish_transfer_run(f.asUser, transfer._yay.runId);
-		else if (review) await test_finish_pending_update_run(f.asUser, review.runId);
+		if (transfer?._yay) await test_finish_transfer_run(f.asUser, transfer._yay.runId, undefined, { stepwise: true });
+		else if (review) await test_finish_pending_update_run(f.asUser, review.runId, { stepwise: true });
 		return await f.t.run(ctx => ctx.db.get("activities", started.activityId));
 	})();
 	try {

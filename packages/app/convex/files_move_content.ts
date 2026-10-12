@@ -212,11 +212,15 @@ export async function files_move_content_db_create(
 	return Result({ _yay: contentId });
 }
 
-export async function files_move_content_action_prepare(ctx: ActionCtx, args: Context) {
+export async function files_move_content_action_prepare(
+	ctx: ActionCtx,
+	args: Context & { runGeneration: number | null },
+) {
 	const begun = await ctx.runMutation(internal.files_pending_updates.begin_cohort_content_preparation, args);
 	if (begun._nay) return begun;
 	if (begun._yay.done) return Result({ _yay: null });
-	const cohortContent = { ...args, preparationFence: begun._yay.preparationFence };
+	const { runGeneration: _runGeneration, ...context } = args;
+	const cohortContent = { ...context, preparationFence: begun._yay.preparationFence };
 	const data = await ctx.runQuery(internal.files_pending_updates.get_cohort_content_preparation, cohortContent);
 	if (data._nay) return data;
 	const { phase: _phase, preparationFence: _preparationFence, ...scope } = data._yay;
@@ -240,6 +244,7 @@ async function db_progress(
 	phase: Doc<"files_move_cohort_content">["phase"],
 	part: number,
 	cursor: string | null,
+	paged: boolean,
 	nextChunkIndex = 0,
 	chunkBounds?: ArrayBuffer,
 ) {
@@ -249,7 +254,7 @@ async function db_progress(
 		nextChunkIndex,
 		chunkBounds,
 	});
-	return Result({ _yay: { done: false } });
+	return Result({ _yay: { done: false, paged } });
 }
 
 /**
@@ -343,13 +348,13 @@ function changes_saved_content(prepared: NonNullable<Doc<"files_move_cohort_cont
 }
 
 /**
- * One native page. Root schedules the next call and owns the view switch.
+ * One bounded content step. Root owns continuation and the view switch.
  */
 export async function files_move_content_db_stage(ctx: MutationCtx, args: Context) {
 	const current = await db_current(ctx, args);
 	if (current._nay) return current;
 	const { content, cohort, proposal, item } = current._yay;
-	if (content.sealed) return Result({ _yay: { done: true } });
+	if (content.sealed) return Result({ _yay: { done: true, paged: false } });
 	if (!content.prepared) return Result({ _nay: { message: "This content is still preparing." } });
 	const record = await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId);
 	const node = await files_saved_placement_db_get_node(ctx.db, content.nodeId, { cohortId: cohort._id, view: "after" });
@@ -457,6 +462,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 				"sources",
 				page.isDone ? part + 1 : part,
 				page.isDone ? null : page.continueCursor,
+				true,
 			);
 		}
 		const page = await source_updates().paginate({ cursor, numItems: 1 });
@@ -467,6 +473,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 			page.isDone ? "text" : "sources",
 			page.isDone ? 0 : part,
 			page.isDone ? null : page.continueCursor,
+			true,
 		);
 	}
 	if (phase === "text" || phase === "plain_text") {
@@ -492,11 +499,12 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 					"text",
 					0,
 					null,
+					false,
 					content.nextChunkIndex + page.length,
 					chunks._yay.chunkBounds,
 				);
 		}
-		return await db_progress(ctx, content, "updates", 0, null);
+		return await db_progress(ctx, content, "updates", 0, null, false);
 	}
 	if (phase === "updates") {
 		if (prepared.kind === "saved_yjs") {
@@ -515,7 +523,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 				.paginate({ cursor, numItems: 1 });
 			for (const { _id: _id, _creationTime: _time, ...row } of page.page)
 				await ctx.db.insert("files_yjs_updates", { ...row, moveView: tag });
-			if (!page.isDone) return await db_progress(ctx, content, "updates", 0, page.continueCursor);
+			if (!page.isDone) return await db_progress(ctx, content, "updates", 0, page.continueCursor, true);
 			if (content.trustedStageId) {
 				const stage = await ctx.db.get("files_yjs_trusted_update_stages", content.trustedStageId);
 				if (
@@ -540,7 +548,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 				});
 			}
 		}
-		return await db_progress(ctx, content, "pending_text", 0, null);
+		return await db_progress(ctx, content, "pending_text", 0, null, prepared.kind === "saved_yjs");
 	}
 	if (phase === "pending_text" || phase === "pending_plain_text") {
 		if (part < 2) {
@@ -553,6 +561,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 				"pending_text",
 				page.isDone ? part + 1 : part,
 				page.isDone ? null : page.continueCursor,
+				true,
 			);
 		}
 		const input = await db_input(ctx, content, "unstaged");
@@ -594,11 +603,12 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 					"pending_text",
 					part,
 					null,
+					false,
 					content.nextChunkIndex + PAGE_SIZE,
 					chunks._yay.chunkBounds,
 				);
 		}
-		return await db_progress(ctx, content, "metadata", 0, null);
+		return await db_progress(ctx, content, "metadata", 0, null, false);
 	}
 	if (phase === "metadata") {
 		if (part < 2) {
@@ -636,13 +646,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 						: {}),
 				});
 			}
-			return await db_progress(
-				ctx,
-				content,
-				"metadata",
-				page.isDone ? part + 1 : part,
-				null,
-			);
+			return await db_progress(ctx, content, "metadata", page.isDone ? part + 1 : part, null, true);
 		}
 		const accepted = await db_input(ctx, content, "staged");
 		const remainder = await db_input(ctx, content, "unstaged");
@@ -657,9 +661,9 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 		for (const row of docs.slice(content.nextChunkIndex, content.nextChunkIndex + PAGE_SIZE))
 			await ctx.db.insert("files_metadata_docs", { ...row, moveView: tag });
 		if (content.nextChunkIndex + PAGE_SIZE < docs.length)
-			return await db_progress(ctx, content, "metadata", part, null, content.nextChunkIndex + PAGE_SIZE);
+			return await db_progress(ctx, content, "metadata", part, null, false, content.nextChunkIndex + PAGE_SIZE);
 		await ctx.db.patch("files_move_cohort_items", item._id, { afterProposal });
-		return await db_progress(ctx, content, "seal", 0, null);
+		return await db_progress(ctx, content, "seal", 0, null, false);
 	}
 	return await db_seal(ctx, { content, cohort, proposal, node, afterPlaceId: record.afterPlaceId });
 }
@@ -954,7 +958,7 @@ async function db_seal(
 		afterProposal:
 			afterProposal && remainder ? { ...afterProposal, size: files_get_utf8_byte_size(remainder.text) } : afterProposal,
 	});
-	return Result({ _yay: { done: true } });
+	return Result({ _yay: { done: true, paged: false } });
 }
 
 function retained_state_ids(proposal: WithoutSystemFields<Doc<"files_pending_updates">> | null) {
@@ -1101,9 +1105,9 @@ export async function files_move_content_db_publish_accounting(ctx: MutationCtx,
 async function db_cleanup_page(ctx: MutationCtx, content: Doc<"files_move_cohort_content">, mode: "finish" | "abort") {
 	const marker = `${mode}:`;
 	const progress = content.phaseCursor?.startsWith(marker) ? content.phaseCursor.slice(marker.length) : null;
-	if (progress === "done") return true;
+	if (progress === "done") return { done: true, paged: false };
 	let { part } = phase_cursor(progress);
-	if (part >= 14) return true;
+	if (part >= 14) return { done: true, paged: false };
 	const cohort = (await ctx.db.get("files_move_cohorts", content.cohortId))!;
 	const scope = { organizationId: cohort.organizationId, workspaceId: cohort.workspaceId };
 	// One part's range. The probe and the page use the same range.
@@ -1174,11 +1178,15 @@ async function db_cleanup_page(ctx: MutationCtx, content: Doc<"files_move_cohort
 	};
 	// Skip empty parts before the page. When all are empty, the caller finishes in this step.
 	while (part < 14 && !(await range(part).query.first())) part++;
-	if (part >= 14) return true;
+	if (part >= 14) return { done: true, paged: false };
 	const { kind, view, table, query } = range(part);
 	const remove = mode === "finish" ? view === "before" : view === "after";
 	// Clearing or deleting each tag drains the range without storing a large metadata cursor.
-	const page = await query.paginate({ cursor: null, numItems: kind === 2 ? 1 : PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
+	const page = await query.paginate({
+		cursor: null,
+		numItems: kind === 2 ? 1 : PAGE_SIZE,
+		maximumBytesRead: 1024 * 1024,
+	});
 	for (const row of page.page) {
 		if (remove) await ctx.db.delete(table, row._id);
 		else await ctx.db.patch(table, row._id, { moveView: undefined });
@@ -1186,7 +1194,7 @@ async function db_cleanup_page(ctx: MutationCtx, content: Doc<"files_move_cohort
 	await ctx.db.patch("files_move_cohort_content", content._id, {
 		phaseCursor: `${marker}${page.isDone ? part + 1 : part}|`,
 	});
-	return false;
+	return { done: false, paged: true };
 }
 
 async function db_retire_states(
@@ -1371,8 +1379,9 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: Conte
 	if (entered._nay) return entered;
 	if (!cohort.privateAccountingApplied || !content.sealed)
 		throw should_never_happen("Move content finished before publication", args);
-	if (content.phaseCursor === "finish:done") return Result({ _yay: { done: true } });
-	if (!(await db_cleanup_page(ctx, content, "finish"))) return Result({ _yay: { done: false } });
+	if (content.phaseCursor === "finish:done") return Result({ _yay: { done: true, paged: false } });
+	const cleaned = await db_cleanup_page(ctx, content, "finish");
+	if (!cleaned.done) return Result({ _yay: cleaned });
 	const node = await ctx.db.get("files_nodes", content.nodeId);
 	const place = await files_saved_placement_db_get_node(ctx.db, content.nodeId, {
 		cohortId: cohort._id,
@@ -1467,7 +1476,7 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: Conte
 	}
 	await db_finish_resources(ctx, content, "finish");
 	await ctx.db.patch("files_move_cohort_content", content._id, { phaseCursor: "finish:done" });
-	return Result({ _yay: { done: true } });
+	return Result({ _yay: { done: true, paged: cleaned.paged } });
 }
 
 /**
@@ -1478,8 +1487,9 @@ export async function files_move_content_db_abort(ctx: MutationCtx, args: Contex
 	if (!content || content.cohortId !== args.cohortId) return Result({ _nay: { message: "Not found" } });
 	const entered = await files_pending_overlay_db_set_cohort_materialization(ctx, { ...args, mode: "abort" });
 	if (entered._nay) return entered;
-	if (content.phaseCursor === "abort:done") return Result({ _yay: { done: true } });
-	if (!(await db_cleanup_page(ctx, content, "abort"))) return Result({ _yay: { done: false } });
+	if (content.phaseCursor === "abort:done") return Result({ _yay: { done: true, paged: false } });
+	const cleaned = await db_cleanup_page(ctx, content, "abort");
+	if (!cleaned.done) return Result({ _yay: cleaned });
 	if (!content.prepared || changes_saved_content(content.prepared)) {
 		if (content.afterSnapshotId) await ctx.db.delete("files_yjs_snapshots", content.afterSnapshotId);
 		if (content.afterStatsId) await ctx.db.delete("file_stats", content.afterStatsId);
@@ -1492,7 +1502,7 @@ export async function files_move_content_db_abort(ctx: MutationCtx, args: Contex
 		await ctx.db.delete("files_yjs_docs_last_sequences", content.afterSequence.lastSequenceId);
 	await db_finish_resources(ctx, content, "abort");
 	await ctx.db.patch("files_move_cohort_content", content._id, { phaseCursor: "abort:done" });
-	return Result({ _yay: { done: true } });
+	return Result({ _yay: { done: true, paged: cleaned.paged } });
 }
 
 /**

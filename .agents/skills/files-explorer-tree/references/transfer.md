@@ -56,6 +56,13 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Normal names keep their old IDs and content until one small switch selects the complete group.
   Physical repair then drains before the next transfer item. A folder uses the same path.
   Existing Move, scope, Archive and Restore repairs must finish before a new Move starts.
+  Small exact work joins one transaction after derived writes flush and the budget passes. Every
+  native page ends that transaction. Heavy content work keeps its own step. One action carries
+  several committed transactions. Between advances it checks five seconds or 128 advance calls
+  and hands off. A content action can take longer. Every selection size uses this worker.
+  A scheduled job ID and generation fence late replies.
+  The existing five-minute recovery cron pages every idle group and restarts only a dead owner.
+  It leaves running preparation alone and never renews a deadline just to retry.
 - Each preparation transaction checks current membership lifetime, source and destination access,
   local write rules and version pins. A moved folder carries protected children unchanged.
   Reparenting checks nested restricted roots. Replacement checks every removed descendant.

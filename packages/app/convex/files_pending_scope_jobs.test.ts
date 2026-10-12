@@ -111,8 +111,7 @@ test("pending scope pages follow the latest saved path and archive state without
 		if (
 			cohort?.step !== step ||
 			cohort.origin.kind !== "transfer" ||
-			cohort.origin.runId !== moveRunId ||
-			cohort.workPhase !== "owners_stage"
+			cohort.origin.runId !== moveRunId
 		)
 			return result;
 		const chunks = await ctx.db
@@ -127,17 +126,24 @@ test("pending scope pages follow the latest saved path and archive state without
 				q.eq("pendingUpdateId", initial.proposal!._id).eq("moveView.cohortId", cohortId).eq("moveView.view", "after"),
 			)
 			.collect();
+		// Joined work can enter owner staging from an earlier phase. Count each real page.
+		let staged = false;
 		for (const [key, count] of [
 			["chunks", chunks.length],
 			["metadata", metadata.length],
 		] as const) {
 			if (count > stagedCounts[key]) {
+				staged = true;
 				expect(count - stagedCounts[key], `${key} stage in native pages`).toBeLessThanOrEqual(8);
 				scopePages[key]++;
 				stagedCounts[key] = count;
 			}
 		}
-		expect(cohort.publishedAt, "pending scope pages stage before publication").toBeNull();
+		if (!staged) return result;
+		expect(
+			(await ctx.db.get("files_move_cohorts", cohortId))?.publishedAt,
+			"pending scope pages stage before publication",
+		).toBeNull();
 		expect(
 			(await ctx.db.get("files_nodes", nodeId))?.path,
 			"the saved path stays visible while scope pages stage",

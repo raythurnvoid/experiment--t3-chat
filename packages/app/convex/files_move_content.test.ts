@@ -141,6 +141,7 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 	);
 	if (created._nay) throw new Error(created._nay.message);
 	const context = { cohortId: f.cohortId, contentId: created._yay, fence: 1, attemptFence: 1 };
+	const prepareContext = { ...context, runGeneration: null };
 	const chunks = () =>
 		f.t.run(async (ctx) => {
 			const node = await files_saved_placement_db_get_node(ctx.db, f.nodeId);
@@ -152,7 +153,7 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 				.join("");
 		});
 	const stage = async () => {
-		const prepared = await f.t.action((ctx) => files_move_content_action_prepare(ctx, context));
+		const prepared = await f.t.action((ctx) => files_move_content_action_prepare(ctx, prepareContext));
 		expect(prepared, "the real content action prepares a durable candidate").toEqual({ _yay: null });
 		for (let i = 0; i < 100; i++) {
 			const staged = await test_run_with_flush(f.t, (ctx) => files_move_content_db_stage(ctx, context));
@@ -173,8 +174,30 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 			});
 			return accounting;
 		});
-	return { ...f, itemId, context, chunks, stage, publish };
+	return { ...f, itemId, context, prepareContext, chunks, stage, publish };
 }
+
+test("reports content pages, including an empty update page", async () => {
+	const f = await fixture();
+	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.prepareContext))).toEqual({ _yay: null });
+	let sawEmptyUpdatePage = false;
+	for (let pass = 0; pass < 100; pass++) {
+		const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId)))!;
+		const staged = await test_run_with_flush(f.t, (ctx) => files_move_content_db_stage(ctx, f.context));
+		if (staged._nay) throw new Error(staged._nay.message);
+		if (content.phase === "updates") {
+			expect(content.prepared?.kind).toBe("saved_yjs");
+			if (content.prepared?.kind !== "saved_yjs") throw new Error("Expected saved Yjs content");
+			expect(content.sourceSnapshotSequence).toBe(content.prepared.baseYjsSequence);
+			expect(staged._yay.paged, "an empty native update page is reported").toBe(true);
+			sawEmptyUpdatePage = true;
+		}
+		if (content.phase === "text") expect(staged._yay.paged, "text creation uses no native page").toBe(false);
+		if (staged._yay.done) break;
+		if (pass === 99) throw new Error("Fixture content did not seal");
+	}
+	expect(sawEmptyUpdatePage, "the test reaches the empty native update page").toBe(true);
+});
 
 test("staging preserves saved content, then publishes exact partial content and quota once", async () => {
 	const f = await fixture();
@@ -238,7 +261,7 @@ test("staging preserves saved content, then publishes exact partial content and 
 		initial!.usedCount + content.privateByteDelta,
 	);
 	expect(await test_run_with_flush(f.t, (ctx) => files_move_content_db_finish(ctx, f.context))).toEqual({
-		_yay: { done: true },
+		_yay: { done: true, paged: false },
 	});
 	expect(
 		(
@@ -322,13 +345,13 @@ test("Stop restores content and keeps original private accounting", async () => 
 		"Stop does not change original private storage",
 	).toBe(quota!.usedCount);
 	expect(await test_run_with_flush(f.t, (ctx) => files_move_content_db_abort(ctx, f.context))).toEqual({
-		_yay: { done: true },
+		_yay: { done: true, paged: false },
 	});
 });
 
 test("each content page checks current membership before changing any side", async () => {
 	const f = await fixture();
-	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.context))).toEqual({ _yay: null });
+	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.prepareContext))).toEqual({ _yay: null });
 	const before = await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId));
 	await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
 	expect(
@@ -343,7 +366,7 @@ test("pages a long text from one chunking, also after a page loses the kept boun
 	// Long lines are cut mid-line, and a cut never splits an emoji. The text needs several pages.
 	const staged = `${Array.from({ length: 30 }, (_, index) => `${index} ${"😀 words ".repeat(index * 9)}`).join("\n")}\n`;
 	const f = await fixture({ staged, unstaged: `${staged}later draft` });
-	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.context))).toEqual({ _yay: null });
+	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.prepareContext))).toEqual({ _yay: null });
 	const chunker = vi.spyOn(await import("../server/files-plain-text-chunking.ts"), "files_chunk_plain_text");
 	let dropped = false;
 	for (let i = 0; i < 200; i++) {
@@ -421,7 +444,11 @@ test("a reviewed partial Save publishes at full private byte quotas and charges 
 	expect(content.privateNodeDelta).toBe(0);
 	const balances = await f.t.run(async (ctx) => {
 		const quotaDocs = [];
-		for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes", "files_private_nodes"] as const) {
+		for (const quotaName of [
+			"files_private_user_bytes",
+			"files_private_workspace_bytes",
+			"files_private_nodes",
+		] as const) {
 			const id = await quotas_db_ensure(ctx, {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
@@ -471,9 +498,64 @@ test("a reviewed partial Save publishes at full private byte quotas and charges 
 	await expectBalances("Physical repair keeps the published byte balances, caps and node count");
 });
 
+test("a stale runner cannot retire a successor's preparation at the same step", async () => {
+	const f = await fixture();
+	await f.t.mutation(internal.files_move_cohorts.handoff, { cohortId: f.cohortId, step: 0, runGeneration: null });
+	const first = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+	await f.t.mutation(internal.files_move_cohorts.handoff, {
+		cohortId: f.cohortId,
+		step: first.step,
+		runGeneration: first.runJob!.generation,
+	});
+	const successor = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+	expect(successor.step, "runner replacement keeps the preparation step").toBe(first.step);
+	const begun = await f.t.mutation(internal.files_pending_updates.begin_cohort_content_preparation, {
+		...f.context,
+		runGeneration: successor.runJob!.generation,
+	});
+	if (begun._nay) throw new Error(begun._nay.message);
+	const cohortContent = { ...f.context, preparationFence: begun._yay.preparationFence };
+	const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+		organizationId: f.db.organizationId,
+		workspaceId: f.db.workspaceId,
+		userId: f.db.userId,
+		target: { kind: "saved", id: f.nodeId },
+		cohortContent,
+	});
+	if (batch._nay) throw new Error(batch._nay.message);
+	const staged = await f.t.mutation(internal.files_pending_updates.stage_prepared_content_text, {
+		cohortContent,
+		userId: f.db.userId,
+		operationBatchId: batch._yay.operationBatchId,
+		role: "staged",
+		text: "successor output",
+	});
+	if (staged._nay) throw new Error(staged._nay.message);
+	const before = await f.t.run(async (ctx) => ({
+		content: await ctx.db.get("files_move_cohort_content", f.context.contentId),
+		batch: await ctx.db.get("files_pending_update_operation_batches", batch._yay.operationBatchId),
+		input: await ctx.db.get("files_pending_update_text_inputs", staged._yay),
+	}));
+	expect(
+		await f.t.mutation(internal.files_pending_updates.begin_cohort_content_preparation, {
+			...f.context,
+			runGeneration: first.runJob!.generation,
+		}),
+		"a stale runner cannot begin over its successor",
+	).toMatchObject({ _nay: { name: "stopped" } });
+	expect(
+		await f.t.run(async (ctx) => ({
+			content: await ctx.db.get("files_move_cohort_content", f.context.contentId),
+			batch: await ctx.db.get("files_pending_update_operation_batches", batch._yay.operationBatchId),
+			input: await ctx.db.get("files_pending_update_text_inputs", staged._yay),
+		})),
+		"the successor keeps its batch, bytes and preparation fence",
+	).toEqual(before);
+});
+
 test("a lost preparation keeps held output and fences the next attempt", async () => {
 	const f = await fixture();
-	const first = await f.t.mutation(internal.files_pending_updates.begin_cohort_content_preparation, f.context);
+	const first = await f.t.mutation(internal.files_pending_updates.begin_cohort_content_preparation, f.prepareContext);
 	if (first._nay) throw new Error(first._nay.message);
 	const oldContext = { ...f.context, preparationFence: first._yay.preparationFence };
 	const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
@@ -501,7 +583,7 @@ test("a lost preparation keeps held output and fences the next attempt", async (
 		await f.t.run((ctx) => ctx.db.get("files_pending_update_operation_batches", batch._yay.operationBatchId)),
 		"a long cohort keeps its preparation batch",
 	).not.toBeNull();
-	const second = await f.t.mutation(internal.files_pending_updates.begin_cohort_content_preparation, f.context);
+	const second = await f.t.mutation(internal.files_pending_updates.begin_cohort_content_preparation, f.prepareContext);
 	if (second._nay) throw new Error(second._nay.message);
 	expect(second._yay.preparationFence).toBe(first._yay.preparationFence + 1);
 	expect(

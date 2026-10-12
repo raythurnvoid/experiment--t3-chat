@@ -76,8 +76,7 @@ describe("public Move scale", () => {
 	}, 7_200_000);
 
 	test.each([
-		// Move reserves the folder, each descendant and the target. 7 descendants make 9 reservations,
-		// one past the 8 that a release step frees.
+		// Several descendants need separate native pages even when exact cleanup work joins.
 		7,
 		// 2001 was just past the old 2000-doc Move cap, which is gone. Run it with test:files:full-size.
 		2001,
@@ -118,7 +117,10 @@ describe("public Move scale", () => {
 		await expect_moved_markers(fixture, [source._id, ...descendants], (node) =>
 			node._id === source._id ? "/target/source" : `/target/source/${node.name}`,
 		);
-		expect(peaks.get("cohort/release (paged)")?.calls, "the folder needs two release pages").toBeGreaterThan(0);
+		expect(
+			peaks.get("cohort/descendants")?.calls,
+			"the folder needs several descendant transactions",
+		).toBeGreaterThan(1);
 		console.info("Move scale descendants", JSON.stringify(Object.fromEntries(peaks)));
 	}, 7_200_000);
 });

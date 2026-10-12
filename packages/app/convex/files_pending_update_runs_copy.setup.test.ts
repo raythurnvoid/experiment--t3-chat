@@ -333,7 +333,13 @@ export async function save_next(f: Awaited<ReturnType<typeof fixture>>, runId: I
 		if (!cohort) throw new Error("Expected the review cohort");
 		if (cohort.phase === "complete")
 			await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
-		else await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+		else
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 	}
 	throw new Error("No review unit became ready");
 }

@@ -229,6 +229,7 @@ export async function test_finish_transfer_run(
 	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
 	runId: Id<"files_transfer_runs">,
 	onStep?: () => Promise<void>,
+	options: { stepwise?: boolean } = {},
 ) {
 	let previous: string | undefined;
 	while (true) {
@@ -295,9 +296,12 @@ export async function test_finish_transfer_run(
 		if (cohort) {
 			const cohortId = cohort._id;
 			if (cohort.origin.kind !== "transfer" || cohort.origin.runId !== runId) throw new Error("Transfer waits for another Move");
-			await asUser.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
-			// Only release can complete the cohort.
-			if (cohort.workPhase === "release" && (await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete") {
+			const result = await asUser.action(internal.files_move_cohorts.run, {
+				cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null,
+				mode: onStep || options.stepwise ? "step" : "chain",
+			});
+			// The worker reports completion after release. No extra completion probe is needed.
+			if (result === "complete") {
 				await test_wake_move_cohort(asUser, cohortId);
 				await asUser.mutation(internal.files_transfer.settle_cohort, { cohortId });
 			}
@@ -408,6 +412,7 @@ async function test_save_file_pending_update_core(
 export async function test_finish_pending_update_run(
 	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
 	runId: Id<"files_pending_update_runs">,
+	options: { stepwise?: boolean } = {},
 ) {
 	let previous: string | undefined;
 	while (true) {
@@ -482,10 +487,11 @@ export async function test_finish_pending_update_run(
 			if (unit?.cohortId) {
 				if (!cohort) throw new Error("Missing review cohort");
 				const cohortId = cohort._id;
-				if (cohort.phase !== "complete") await asUser.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
-				// Only release can complete the cohort.
-				if (cohort.phase === "complete" || (cohort.workPhase === "release" &&
-					(await asUser.run(ctx => ctx.db.get("files_move_cohorts", cohortId)))?.phase === "complete")) {
+				const result = cohort.phase === "complete" ? "complete" : await asUser.action(internal.files_move_cohorts.run, {
+					cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null,
+					mode: options.stepwise ? "step" : "chain",
+				});
+				if (result === "complete") {
 					await test_wake_move_cohort(asUser, cohortId);
 					await asUser.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
 				}

@@ -75,7 +75,12 @@ describe("review job content", () => {
 				await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
 				break;
 			}
-			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 			if (pass === 49_999) throw new Error("Partial Save did not finish");
 		}
 		const remainder = await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id));
@@ -144,7 +149,12 @@ describe("review job content", () => {
 				expect(cohort.workPhase).toBe("finish_content");
 				break;
 			}
-			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 			if (pass === 49_999) throw new Error("Partial Save did not publish");
 		}
 		const beforeRepair = await f.t.run((ctx) => ctx.db.get("files_pending_updates", partial._id));
@@ -201,7 +211,12 @@ describe("review job content", () => {
 			if (!cohort) throw new Error("Expected the partial Save group");
 			repairProgress(cohort, `Move ${cohort.phase}/${cohort.workPhase} step ${cohort.step}`);
 			if (cohort.phase === "complete") break;
-			await f.t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, {
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 			if (pass === 49_999) throw new Error("Stopped partial Save did not finish repair");
 		}
 		await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });

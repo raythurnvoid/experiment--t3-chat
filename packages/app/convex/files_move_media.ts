@@ -31,12 +31,14 @@ const context_validator = {
 	contentId: v.id("files_move_cohort_content"),
 	fence: v.number(),
 	attemptFence: v.number(),
+	runGeneration: v.union(v.number(), v.null()),
 };
 type Context = {
 	cohortId: Id<"files_move_cohorts">;
 	contentId: Id<"files_move_cohort_content">;
 	fence: number;
 	attemptFence: number;
+	runGeneration: number | null;
 };
 type MediaResult<T> = { _yay: T; _nay?: undefined } | { _nay: { name?: string; message: string }; _yay?: undefined };
 
@@ -54,10 +56,13 @@ async function db_current(
 		fence?: number;
 		attemptFence?: number;
 		proofEpoch?: number;
+		runGeneration?: number | null;
 	},
 ) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	const content = await ctx.db.get("files_move_cohort_content", args.contentId);
+	if (args.runGeneration !== undefined && (cohort?.runJob?.generation ?? null) !== args.runGeneration)
+		return Result({ _nay: { name: "stopped", message: "This Move step is no longer current." } });
 	if (
 		!cohort ||
 		!content ||
@@ -108,7 +113,8 @@ async function db_current(
 		workspace.pluginDataPurgeStartedAt !== undefined
 	)
 		return Result({ _nay: { name: "permission_denied", message: "This review is no longer available." } });
-	const run = cohort.origin.kind === "review" ? await ctx.db.get("files_pending_update_runs", cohort.origin.runId) : null;
+	const run =
+		cohort.origin.kind === "review" ? await ctx.db.get("files_pending_update_runs", cohort.origin.runId) : null;
 	if (cohort.origin.kind === "review") {
 		const unit = await ctx.db.get("files_pending_update_run_units", cohort.origin.unitId);
 		if (
@@ -189,7 +195,10 @@ async function db_text(ctx: QueryCtx | MutationCtx, data: NonNullable<Awaited<Re
 	// One selected item cannot include another selected media file.
 	const ordinarySingle = !item.mediaDependencySet && run?.expectedItemCount === 1;
 	return Result({
-		_yay: { text: node.textKind === "rich_text" && !ordinarySingle ? input.text : null, digest: content.acceptedTextDigest! },
+		_yay: {
+			text: node.textKind === "rich_text" && !ordinarySingle ? input.text : null,
+			digest: content.acceptedTextDigest!,
+		},
 	});
 }
 
@@ -198,7 +207,9 @@ export const read = internalQuery({
 	handler: async (
 		ctx,
 		args,
-	): Promise<MediaResult<{ text: string | null; digest: string; sealed: boolean; offset: number; ordinary: boolean }>> => {
+	): Promise<
+		MediaResult<{ text: string | null; digest: string; sealed: boolean; offset: number; ordinary: boolean }>
+	> => {
 		const checked = await db_current(ctx, args);
 		if (checked._nay) return checked;
 		const text = await db_text(ctx, checked._yay);
@@ -267,9 +278,7 @@ async function db_selected(
 	if (!selected && original.kind === "private" && target?.kind === "saved")
 		selected = await ctx.db
 			.query("files_pending_update_run_items")
-			.withIndex("by_run_target", (q) =>
-				q.eq("runId", runId).eq("target.kind", target.kind).eq("target.id", target.id),
-			)
+			.withIndex("by_run_target", (q) => q.eq("runId", runId).eq("target.kind", target.kind).eq("target.id", target.id))
 			.unique();
 	return selected;
 }
@@ -286,19 +295,25 @@ export const select_refs = internalQuery({
 		for (const src of args.refs) {
 			const parsed = files_media_parse_src(src);
 			const savedId = parsed.kind === "file" ? ctx.db.normalizeId("files_nodes", parsed.fileNodeId) : null;
-			const privateId = parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
+			const privateId =
+				parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
 			const original = savedId
 				? { kind: "saved" as const, id: savedId }
 				: privateId
 					? { kind: "private" as const, id: privateId }
 					: null;
 			if (!original) continue;
-			const target = original.kind === "private"
-				? await files_saved_placement_db_resolve_read_target(ctx.db, { ...cohort, target: original }, {
-					cohortId: cohort._id,
-					view: "after",
-				})
-				: original;
+			const target =
+				original.kind === "private"
+					? await files_saved_placement_db_resolve_read_target(
+							ctx.db,
+							{ ...cohort, target: original },
+							{
+								cohortId: cohort._id,
+								view: "after",
+							},
+						)
+					: original;
 			if (await db_selected(ctx, cohort.origin.runId, original, target)) refs.push(src);
 		}
 		return Result({ _yay: refs });

@@ -309,7 +309,7 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 			if (!cohort) throw new Error("Expected the public Move group");
 			expect(cohort.errorCode).toBeNull();
 			if (cohort.workPhase === "publish") break;
-			await t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 		} else {
 			const jobs = await t.run((ctx) =>
 				ctx.db
@@ -444,7 +444,7 @@ test.each([false, true])(
 				if (!cohort) throw new Error("Expected the native Move group");
 				expect(cohort.errorCode).toBeNull();
 				if (cohort.publishedAt !== null) break;
-				await t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+				await t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 			} else {
 				const jobs = await t.run((ctx) =>
 					ctx.db

@@ -920,7 +920,7 @@ describe("review jobs", () => {
 				break;
 			}
 			if (cohort.phase === "complete") throw new Error("Review completed without metadata cleanup");
-			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 			if (pass === 9999) throw new Error("Review did not reach metadata cleanup");
 		}
 		const result = await finish_review(f, runId);
@@ -1305,7 +1305,7 @@ describe("review jobs", () => {
 				if (unit.cohortId) {
 					const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
 					if (cohort && cohort.phase !== "complete")
-						await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step });
+						await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 				}
 				done = await purge();
 			}

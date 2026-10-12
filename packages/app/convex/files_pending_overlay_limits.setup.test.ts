@@ -93,7 +93,7 @@ export function expect_under_convex_limits(cost: ReturnType<typeof transaction_c
 }
 
 /**
- * Peak cost per phase. A measured transaction includes the overlay flush, so also the metadata
+ * Peak cost per starting phase. A measured transaction includes the overlay flush, so also the metadata
  * catalog's deltas and marker.
  */
 export function budget_recorder() {
@@ -180,6 +180,10 @@ export function measure_cohort(
 			}
 			for (const [view, rowIds] of written) pages.push({ cohortId, phase, view, rowIds, fileNodeIds: rowIds.map((id) => rows.get(id)!.fileNodeId) });
 			record(`cohort/${phase}`, cost);
+			const after = await ctx.db.get("files_move_cohorts", cohortId);
+			// Joined work can publish after starting in another phase. Count the real view switch too.
+			if (phase !== "publish" && cohort?.publishedAt === null && after?.publishedAt !== null)
+				record("cohort/publish", cost);
 			return result;
 		} finally {
 			patch?.mockRestore();

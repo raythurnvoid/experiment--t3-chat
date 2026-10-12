@@ -273,7 +273,7 @@ describe("cohort Accept transaction budgets", () => {
 				else expect(cleanup[0]!.rowIds, "Metadata cleanup keeps the 1 MiB page bound").toEqual(bytePage);
 			}
 			if (cohort.phase === "complete") { completed = cohort; break; }
-			await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step });
+			await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 			if (pass === 9999) throw new Error("Metadata cohort did not finish");
 		}
 		await t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
