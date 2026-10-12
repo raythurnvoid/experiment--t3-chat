@@ -18,12 +18,14 @@ ConvexError<{ message: string; cause?: Cause; data?: Data }> {
  * split cursor and can grow on a rerun, so a text search query throws this when its page is larger
  * than it can check, before any per-row read. Relevance order has no stable position, so a restart
  * loses nothing.
+ * Saved-view reasons tell Files pagers to wait for changed args instead.
  */
-export function convex_invalid_cursor_error(message: string) {
+export function convex_invalid_cursor_error(message: string, reason?: "saved_move_view_changed" | "saved_search_view_changed") {
 	return new ConvexError({
 		message: `InvalidCursor: ${message}`,
 		isConvexSystemError: true,
 		paginationError: "InvalidCursor",
+		...(reason ? { reason } : {}),
 	});
 }
 

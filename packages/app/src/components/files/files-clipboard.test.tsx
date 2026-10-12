@@ -521,7 +521,7 @@ describe("FilesClipboardProvider", () => {
 		expect(mutationMock.mock.calls[3]![1]).toEqual({ membershipId: "membership", runId: RUN_ID });
 	});
 
-	test("saves a drag selection before upload and keeps the clipboard", async () => {
+	test("saves a fresh drag selection before upload without a recovery lookup and keeps the clipboard", async () => {
 		const saved = Promise.withResolvers<void>();
 		intakeSaveMock.mockImplementationOnce(async ({ request, sourceIds }) => {
 			await saved.promise;
@@ -544,6 +544,7 @@ describe("FilesClipboardProvider", () => {
 		expect(mutationMock).not.toHaveBeenCalled();
 		await act(async () => saved.resolve());
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(4));
+		expect(intakeQueryMock.mock.calls.length, "a fresh durable Move reaches start without get_move_intake").toBe(0);
 		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
 			kind: "move",
 			expectedSourceCount: 205,

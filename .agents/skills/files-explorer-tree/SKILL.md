@@ -231,8 +231,12 @@ Tree-item components:
   - A metadata chip: one `metadata` query per plan (at most 2), merged into one list. `file.link:public`: one `link` query.
   - A pasted draft link sends no query: `draftNodeId` holds its id, and Enter opens it.
   - Rows are kept once per node id. A problem row (`{ kind: "problem", message }`) is shown as the list's text. A finished list at 1,024 rows shows "Showing the top 1,024 matches. Add more words to narrow the search.", the most matches one search index read returns.
-  - A query that throws throws in render, like every `usePaginatedQuery`. There is no "Search failed" state.
+  - Other query errors throw in render. There is no "Search failed" state.
   - Every `search_saved` caller sends a `savedStream` from `useFilesSavedView`: the normal stream and, while a Move runs, the visible Move view too, merged once per node id. A call with no stream throws during a Move. The node picker search (`files_merge_search_lists`) and the `file.path` folder suggestions follow the same rule.
+  - Saved pagers use `useFilesPaginatedQuery`. The `saved_move_view_changed` and
+    `saved_search_view_changed` errors wait for new view args. They do not retry the same old
+    view. Other cursor errors restart normally.
+    Native page splits and end cursors stay supported. A waiting pager cannot load another page.
 - How the server answers: one clause plus an optional folder, one `.paginate()` per call, saved and active rows only, each row `{ kind, nodeId, path }`. `name` reads the `files_nodes.search_name` text index; a folder adds one `ancestor<folder depth>` equality from the folder's saved row, so it must be 12 levels deep or less. `content` reads committed chunks only and takes no folder. `metadata` reads one plan on the committed value indexes. `path` is an exact, case-sensitive path or a node id. `link` pages `files_share_links` (at most 500 per workspace). The folder is resolved from its exact path on the server and checked with `db_get_readable_tree_node`; a missing or unreadable folder, or one deeper than 12 levels, comes back as the only row of a done page: `{ kind: "problem", message }`. A text search page that grew past 100 rows throws `convex_invalid_cursor_error`, and the hook starts again from page 1.
 - While the first page loads, the list shows "Searching…". A finished empty list shows "No files match your search." in the sidebar and "No matching files" in the palette. An archived node never matches.
 - The free text loses its quotes before `detect_search_query_mode`, and a text of quotes alone matches nothing.
@@ -818,6 +822,8 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   Recovery looks up the exact server request before reading saved pages. A late tab can retire
   sealed input after another tab removes those pages. An unconfirmed Stop keeps its local header
   until the server confirms it, including after old run history is deleted.
+  A fresh request skips that recovery lookup only after this call saves its full selection.
+  Retry and reload still check the exact server request first.
 - While a move op exists in the workspace, a child can still carry its old stored path. The tree is
   right, because it lists children by `parentId`. `files_db_get_visible_node_by_path` in
   `server/files.ts` then walks names from the root instead of one path index read. The path picker

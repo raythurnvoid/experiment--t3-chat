@@ -80,6 +80,12 @@ vi.mock("@/hooks/files-search-hooks.ts", async (importOriginal) => {
 });
 
 // Push query changes into memoized children, as the live Convex subscriptions do.
+// Keep the fixed pager results used by this component test.
+vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return { useFilesPaginatedQuery: usePaginatedQuery };
+});
+
 vi.mock("convex/react", async () => {
 	const { useEffect, useId, useMemo, useState } = await import("react");
 	return {

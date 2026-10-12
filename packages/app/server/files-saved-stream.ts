@@ -38,7 +38,8 @@ export async function files_saved_stream_db_create(
 		source.generation !== view.generation ||
 		(source.kind === "cohort" && (source.cohortId !== view.cohortId || source.view !== view.view))
 	)) {
-		throw convex_invalid_cursor_error("The saved Move view changed.");
+		// Retrying the same view cannot fix this error.
+		throw convex_invalid_cursor_error("The saved Move view changed.", "saved_move_view_changed");
 	}
 	if (!source && view.cohortId !== null) {
 		throw should_never_happen("A saved listing has no Move view", scope);

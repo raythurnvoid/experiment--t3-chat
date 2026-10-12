@@ -54,6 +54,12 @@ const {
 // Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
 // `useQueryMock` returns each test's proposals for "list_files_pending_updates". The list, the
 // sources, the summary and each row's view are built from them, like the server builds them.
+// Keep the fixed pager results used by this component test.
+vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return { useFilesPaginatedQuery: usePaginatedQuery };
+});
+
 vi.mock("convex/react", () => ({
 	useQuery: (query: unknown, args: unknown) => {
 		const queryResultMock = useQueryMock;

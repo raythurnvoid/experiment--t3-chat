@@ -168,6 +168,7 @@ const FilesClipboardProvider = Object.assign(
 			startPendingRef.current = true;
 			setIsStarting(true);
 			(async (/* iife */) => {
+				let savedNewMove = false;
 				if (request.kind === "move" && !request.storedMove) {
 					const storedMove: FilesMoveIntake = {
 						userId,
@@ -185,6 +186,7 @@ const FilesClipboardProvider = Object.assign(
 					});
 					request.storedMove = storedMove;
 					request.sourceIds = null;
+					savedNewMove = true;
 				}
 				// Leaving the workspace pauses Move intake. Its saved pages resume when we return.
 				if (request.storedMove && !mountedRef.current) return;
@@ -192,7 +194,8 @@ const FilesClipboardProvider = Object.assign(
 					request.storedMove.stopRequested = true;
 					await files_move_intake_update(request.storedMove);
 				}
-				if (request.storedMove && (await retireAcceptedMove(request))) return;
+				// Replayed input still needs the accepted-run lookup.
+				if (request.storedMove && !savedNewMove && (await retireAcceptedMove(request))) return;
 				let refusal: string | undefined;
 				// A discarded Move that the server never accepted has no run to stop. Only delete its saved input.
 				if (!request.stopRequested) {

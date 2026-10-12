@@ -9865,7 +9865,7 @@ export const search_saved = query({
 			args.searchGeneration !== undefined &&
 			args.searchGeneration !== (await files_saved_placement_db_get_search_generation(ctx.db, membership))
 		) {
-			throw convex_invalid_cursor_error("The saved search view changed.");
+			throw convex_invalid_cursor_error("The saved search view changed.", "saved_search_view_changed");
 		}
 		const paginationOpts = {
 			...args.paginationOpts,

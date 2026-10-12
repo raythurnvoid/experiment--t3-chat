@@ -1,8 +1,8 @@
-import { usePaginatedQuery } from "convex/react";
 import { compareValues } from "convex/values";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { files_merge_sorted_streams } from "./files-search-hooks.ts";
 import { useFilesSavedView } from "./files-saved-view-hooks.ts";
+import { useFilesPaginatedQuery } from "./files-paginated-query-hooks.ts";
 
 /**
  * The Pending panel and editor pager share one owner list and sort order.
@@ -12,12 +12,12 @@ export function useFilesPendingUpdates(args: {
 	listKey: string;
 }) {
 	const view = useFilesSavedView(args.membershipId);
-	const normal = usePaginatedQuery(
+	const normal = useFilesPaginatedQuery(
 		app_convex_api.files_pending_updates.list_files_pending_updates,
 		view.normal ? { ...args, savedStream: view.normal } : "skip",
 		{ initialNumItems: 20 },
 	);
-	const cohort = usePaginatedQuery(
+	const cohort = useFilesPaginatedQuery(
 		app_convex_api.files_pending_updates.list_files_pending_updates,
 		view.cohort ? { ...args, savedStream: view.cohort } : "skip",
 		{ initialNumItems: 20 },

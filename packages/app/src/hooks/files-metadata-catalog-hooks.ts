@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-	usePaginatedQuery,
 	useQuery,
 	type PaginatedQueryArgs,
 	type PaginatedQueryItem,
@@ -15,6 +14,7 @@ import {
 } from "../../shared/files-metadata.ts";
 import type { files_SavedStream } from "../../shared/files.ts";
 import { useFilesSavedView } from "./files-saved-view-hooks.ts";
+import { useFilesPaginatedQuery } from "./files-paginated-query-hooks.ts";
 import { files_merge_sorted_streams } from "./files-search-hooks.ts";
 
 /**
@@ -83,16 +83,16 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 	const options = { initialNumItems: FILES_METADATA_CATALOG_PAGE_SIZE };
 	const groups = [
 		[
-			usePaginatedQuery(query, streamArgs(0, view.normal), options),
-			usePaginatedQuery(query, streamArgs(0, view.cohort), options),
-			usePaginatedQuery(query, streamArgs(0, view.normal, true), options),
-			usePaginatedQuery(query, streamArgs(0, view.cohort, true), options),
+			useFilesPaginatedQuery(query, streamArgs(0, view.normal), options),
+			useFilesPaginatedQuery(query, streamArgs(0, view.cohort), options),
+			useFilesPaginatedQuery(query, streamArgs(0, view.normal, true), options),
+			useFilesPaginatedQuery(query, streamArgs(0, view.cohort, true), options),
 		],
 		[
-			usePaginatedQuery(query, streamArgs(1, view.normal), options),
-			usePaginatedQuery(query, streamArgs(1, view.cohort), options),
-			usePaginatedQuery(query, streamArgs(1, view.normal, true), options),
-			usePaginatedQuery(query, streamArgs(1, view.cohort, true), options),
+			useFilesPaginatedQuery(query, streamArgs(1, view.normal), options),
+			useFilesPaginatedQuery(query, streamArgs(1, view.cohort), options),
+			useFilesPaginatedQuery(query, streamArgs(1, view.normal, true), options),
+			useFilesPaginatedQuery(query, streamArgs(1, view.cohort, true), options),
 		],
 	];
 	const merges = groups.slice(0, requests?.length ?? 0).map(([normal, cohort, twinNormal, twinCohort]) => {

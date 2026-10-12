@@ -3,7 +3,7 @@ import { CheckCheck, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPatch } from "diff";
 import { measureLineStats, prepareWithSegments } from "@chenglou/pretext";
-import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import { useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { compareValues } from "convex/values";
 import { toast } from "sonner";
@@ -12,6 +12,7 @@ import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
+import { useFilesPaginatedQuery } from "@/hooks/files-paginated-query-hooks.ts";
 import { useFilesPendingUpdates } from "@/hooks/files-pending-list-hooks.ts";
 import { files_merge_sorted_streams } from "@/hooks/files-search-hooks.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
@@ -1461,12 +1462,12 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 
 	// The sources that have changes, newest change first. "All changes" is always there.
 	const savedView = useFilesSavedView(membershipId);
-	const normalSources = usePaginatedQuery(
+	const normalSources = useFilesPaginatedQuery(
 		app_convex_api.files_pending_updates.list_files_pending_sources,
 		savedView.normal ? { membershipId, savedStream: savedView.normal } : "skip",
 		{ initialNumItems: 20 },
 	);
-	const cohortSources = usePaginatedQuery(
+	const cohortSources = useFilesPaginatedQuery(
 		app_convex_api.files_pending_updates.list_files_pending_sources,
 		savedView.cohort ? { membershipId, savedStream: savedView.cohort } : "skip",
 		{ initialNumItems: 20 },

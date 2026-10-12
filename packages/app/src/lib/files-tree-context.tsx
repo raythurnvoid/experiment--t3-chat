@@ -1,5 +1,5 @@
 import { createContext, memo, use, useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { usePaginatedQuery, useQuery, type UsePaginatedQueryResult } from "convex/react";
+import { useQuery, type UsePaginatedQueryResult } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { compareValues } from "convex/values";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -8,6 +8,7 @@ import { files_merge_sorted_streams } from "@/hooks/files-search-hooks.ts";
 import { files_sort_text_key } from "../../shared/files-sort.ts";
 import type { files_SavedStream } from "../../shared/files.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
+import { useFilesPaginatedQuery } from "@/hooks/files-paginated-query-hooks.ts";
 
 type FilesTreeRow = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children>["page"][number];
 
@@ -181,11 +182,11 @@ function useFilesTreeKindSource(
 	const twinArgs = !enabled || !args.savedStream || isOwner === false ? ("skip" as const) : streamArgs.children(true);
 	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
 		!enabled || !args.savedStream || isOwner === true ? ("skip" as const) : streamArgs.shared(principalIndex);
-	const open = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children, openArgs, options);
-	const twin = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children, twinArgs, options);
-	const shared0 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(0), options);
-	const shared1 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(1), options);
-	const shared2 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(2), options);
+	const open = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children, openArgs, options);
+	const twin = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children, twinArgs, options);
+	const shared0 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(0), options);
+	const shared1 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(1), options);
+	const shared2 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(2), options);
 	// A skipped stream reports `LoadingFirstPage` forever, so leave it out.
 	return [open, ...(isOwner === false ? [] : [twin]), ...(isOwner === true ? [] : [shared0, shared1, shared2])];
 }
@@ -253,14 +254,14 @@ function useFilesTreeSharedRootStreams(args: {
 	const sharedArgs = (principalIndex: 0 | 1 | 2, savedStream: files_SavedStream | null) =>
 		enabled && savedStream ? { membershipId, archived, principalIndex, savedStream } : ("skip" as const);
 	const normal = [
-		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0, view.normal), options),
-		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1, view.normal), options),
-		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2, view.normal), options),
+		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0, view.normal), options),
+		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1, view.normal), options),
+		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2, view.normal), options),
 	];
 	const cohort = [
-		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0, view.cohort), options),
-		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1, view.cohort), options),
-		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2, view.cohort), options),
+		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0, view.cohort), options),
+		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1, view.cohort), options),
+		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2, view.cohort), options),
 	];
 	if (!view.loading && !view.normal) return [];
 	return [...normal, ...(view.cohort ? cohort : [])];

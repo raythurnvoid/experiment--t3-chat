@@ -664,6 +664,9 @@ unused fields when a node moves to a shallower folder or root.
 - A workspace slot is either idle, with no view fields, or active, with both view fields required.
   Search cursors use only `files_move_search_generations`, indexed by workspace. A missing counter
   means zero; its first change writes one. Tree view reads use the slot and do not read the busy cohort.
+  Saved browser pagers wait for new view args on `saved_move_view_changed` or
+  `saved_search_view_changed`. They keep native page splits and stop loadMore while waiting.
+  Other cursor errors still restart normally.
 - Bash `meta get` merges the normal and selected exact file or proposal ranges. An unselected
   pending branch finds its staged scope through its source reservation. Cleanup keeps all fields visible.
 - A user's own draft write may add a hide or place of a saved node only while other users hold fewer than 32 of them. Past that, the flush refuses it with a clean error. Without this cap, one write to a saved node would update every user's copies inline. The user's own draft write is refused, also when it moves or creates a draft onto the name of a crowded saved node (the claim adds a hide). Folder side effects (a broken move cycle, a folder move), jobs and the user who accepts or discards never refuse, so a node can pass the cap, for example when a saved file moves onto a name that many users' drafts already hold. Discard, Accept and data deletion never fail on the cap.
