@@ -142,39 +142,128 @@ describe("Save ordinary rich-text media", () => {
 			}
 		},
 	);
-});
 
-describe("Save copied rich-text media", () => {
-	// A copied document saves like any other document. A link to a deleted image stays in the text.
-	// A replacement copy saves through the direct Save path. A new copy saves through a review run.
-	test.each([
-		{ embed: "copied", replacement: false },
-		{ embed: "copied", replacement: true },
-		{ embed: "added later", replacement: false },
-	] as const)("saves a link to a deleted image (embed $embed, replacement: $replacement)", async ({ embed, replacement }) => {
+	// The review reads the selected delete as reviewed, so the link joins it and the link stays text.
+	test("a saved private alias joins its new media delete in one review unit", async () => {
 		const f = await fixture();
 		const image = await media(f);
-		const savedImage = await save(f, image.pending);
-		if (savedImage._nay || savedImage._yay.target.kind !== "saved") throw new Error("Expected saved media");
-		const imageTarget = savedImage._yay.target;
-		const text = `Copied\n\n![Photo](${files_media_build_file_src(imageTarget.id)})\n`;
-		const source = await private_text(f, { path: "/source.md", staged: embed === "copied" ? text : "Copied\n" });
-		if (replacement) expect((await save(f, await private_text(f, { path: "/copy.md", staged: "Old\n" })))._nay).toBeUndefined();
-		let copied = await copy_replacement({ f, source: source.target, targetName: "copy.md" });
-		expect(copied.target.kind).toBe(replacement ? "saved" : "private");
-		expect(copied.copiedFrom).toBeDefined();
+		const saved = await save(f, image.pending);
+		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved media");
+		const target = saved._yay.target;
+		const text = `![Photo](${image.src})\n`;
+		const pending = await private_text(f, { staged: text });
 		expect(
-			await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.membershipId, nodeIds: [imageTarget.id] }),
-		).toEqual({ _yay: null });
-		if (embed === "added later") copied = await saved_proposal({ f, target: copied.target, staged: text });
-		expect((await save(f, copied))._nay, "a deleted image never blocks Save").toBeUndefined();
+			(await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...f.scope, target }))
+				._nay,
+		).toBeUndefined();
+		const archive = await proposal(f, target);
+		expect(archive._id).not.toBe(image.pending._id);
+		const result = await bulk_save({ f, selected: [pending, archive] });
+		expect(result?.activity, "the reviewed delete keeps the linked media readable for Save").toMatchObject({
+			status: "succeeded",
+			progress: { completed: 2, blocked: 0 },
+		});
+		expect(result?.run.unitCount, "the link joins the delete in one unit").toBe(1);
 		const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 			...f.scope,
-			path: "/copy.md",
+			path: "/document.md",
 			includePending: false,
 		});
 		expect(read?.content).toBe(text);
 	});
+
+	test("a saved private alias joins the new media replacement", async () => {
+		const f = await fixture();
+		const image = await media(f);
+		const saved = await save(f, image.pending);
+		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved media");
+		const target = saved._yay.target;
+		const source = await media(f, "/new.png");
+		const replacement = await copy_replacement({ f, source: source.pending.target, targetName: "photo.png" });
+		expect(replacement._id).not.toBe(image.pending._id);
+		if (!replacement.pendingReplacement) throw new Error("Expected media replacement");
+		const pending = await private_text(f, { staged: `![Photo](${image.src})\n` });
+		const result = await bulk_save({ f, selected: [pending, replacement] });
+		expect(result?.activity, result?.errors).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
+		expect(result?.run.unitCount, "the link joins the replacement in one unit").toBe(1);
+		// Save resolves the private alias to the saved file and proves the replacement it selected.
+		const content = await f.t.run(async (ctx) => {
+			const unit = await ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", result!.run._id))
+				.unique();
+			return await ctx.db
+				.query("files_move_cohort_content")
+				.withIndex("by_cohort_proposal", (q) => q.eq("cohortId", unit!.cohortId!).eq("pendingUpdateId", pending._id))
+				.unique();
+		});
+		expect(content?.mediaProof, "Save proves the selected replacement").toMatchObject({
+			expectedCount: 1,
+			validatedCount: 1,
+			sealed: true,
+		});
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", target.id))).toMatchObject({
+			assetId: replacement.pendingReplacement.assetId,
+		});
+	});
+});
+
+describe("Save copied rich-text media", () => {
+	// A copied document saves like any other document. A link to a deleted or changed image stays in
+	// the text. A replacement copy saves through the direct Save path. A new copy saves through a review
+	// run. A review of several items reads the copy's links, but does not select the image.
+	test.each([
+		{ embed: "copied", change: "deleted", replacement: false, review: false },
+		{ embed: "copied", change: "deleted", replacement: true, review: false },
+		{ embed: "added later", change: "deleted", replacement: false, review: false },
+		{ embed: "copied", change: "replaced", replacement: false, review: false },
+		{ embed: "copied", change: "deleted", replacement: false, review: true },
+	] as const)(
+		"saves a link to a $change image (embed $embed, replacement: $replacement, review: $review)",
+		async ({ embed, change, replacement, review }) => {
+			const f = await fixture();
+			const image = await media(f);
+			const savedImage = await save(f, image.pending);
+			if (savedImage._nay || savedImage._yay.target.kind !== "saved") throw new Error("Expected saved media");
+			const imageTarget = savedImage._yay.target;
+			const text = `Copied\n\n![Photo](${files_media_build_file_src(imageTarget.id)})\n`;
+			const source = await private_text(f, { path: "/source.md", staged: embed === "copied" ? text : "Copied\n" });
+			if (replacement)
+				expect((await save(f, await private_text(f, { path: "/copy.md", staged: "Old\n" })))._nay).toBeUndefined();
+			let copied = await copy_replacement({ f, source: source.target, targetName: "copy.md" });
+			expect(copied.target.kind).toBe(replacement ? "saved" : "private");
+			expect(copied.copiedFrom).toBeDefined();
+			if (change === "deleted")
+				expect(
+					await f.asUser.mutation(api.files_nodes.archive_nodes, {
+						membershipId: f.membershipId,
+						nodeIds: [imageTarget.id],
+					}),
+				).toEqual({ _yay: null });
+			else {
+				const imageAsset = async () => (await f.t.run((ctx) => ctx.db.get("files_nodes", imageTarget.id)))?.assetId;
+				const before = await imageAsset();
+				const other = await media(f, "/other.png");
+				const replaced = await copy_replacement({ f, source: other.pending.target, targetName: "photo.png" });
+				expect((await save(f, replaced))._nay).toBeUndefined();
+				expect(await imageAsset()).not.toBe(before);
+			}
+			if (embed === "added later") copied = await saved_proposal({ f, target: copied.target, staged: text });
+			if (review) {
+				const other = await private_text(f, { path: "/other.md", staged: "Other\n" });
+				expect(
+					(await bulk_save({ f, selected: [copied, other] }))?.activity,
+					"an unselected deleted image never blocks a review",
+				).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
+			} else expect((await save(f, copied))._nay, `a ${change} image never blocks Save`).toBeUndefined();
+			const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				...f.scope,
+				path: "/copy.md",
+				includePending: false,
+			});
+			expect(read?.content).toBe(text);
+		},
+	);
 });
 
 describe("Save near a draft move into a folder the member can no longer read", () => {
