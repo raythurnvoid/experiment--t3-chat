@@ -983,14 +983,15 @@ async function run_folder_import(args: {
 					if (refused) {
 						// The server checks every input before its first write, so the call wrote nothing. Only
 						// the named file fails with this reason. Retry without it, so each refused file gets its
-						// own reason and the others import. After the last retry the files left fail too.
+						// own reason and the others import. After the last retry the files left were never refused, so
+						// they get their own reason.
 						fail([refused], reason);
 						chunk = chunk.filter((item) => item !== refused);
 						if (chunk.length > 0 && refusalRetries < FILES_IMPORT_MAX_REFUSAL_RETRIES) {
 							refusalRetries += 1;
 							continue;
 						}
-						fail(chunk, reason);
+						fail(chunk, "Not sent: too many files in this request were refused");
 						return "continue";
 					}
 					fail(chunk, reason);
@@ -8449,9 +8450,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 
 			expect(createCalls, "one call and 5 retries").toBe(6);
-			// Each refused file has its own reason. The files never tried fail with the last one.
-			expect(failed).toEqual(
-				paths.map((relativePath, index) => ({ relativePath, reason: `Refused ${Math.min(index + 1, 6)}` })),
+			// Each refused file has its own reason. The files never tried say they were not sent.
+			expect(failed, "the files left say they were not sent").toEqual(
+				paths.map((relativePath, index) => ({
+					relativePath,
+					reason: index < 6 ? `Refused ${index + 1}` : "Not sent: too many files in this request were refused",
+				})),
 			);
 		});
 
