@@ -9798,7 +9798,7 @@ async function action_save_file_pending_update_non_collaborative(
 	// save when they differ from it.
 	const publish = stagedText._yay !== baseText._yay;
 	const partial = unstagedText._yay !== stagedText._yay;
-	// A no-op keeps the proposal. Copied media still needs trusted text for its review check.
+	// A no-op keeps the proposal. A review still stages trusted text for its media check.
 	const unchanged = !publish && partial;
 
 	// Upload the staged text under a version snapshot asset before the commit, like the member

@@ -2310,7 +2310,7 @@ export const seal_transfer_file_capture = internalMutation({
 			)
 				return Result({ _nay: { message: "The copied document's media has not been prepared" } });
 			await ctx.db.patch("files_media_dependency_sets", set._id, {
-				// Even an empty set must validate the sealed text before adoption.
+				// Even an empty set must validate the sealed text before publication.
 				captureProof: { ...set.captureProof, textDigest: await crypto_sha256_hex(args.text), validatedCount: -1 },
 			});
 		}
