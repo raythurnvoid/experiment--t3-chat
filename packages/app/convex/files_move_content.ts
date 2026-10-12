@@ -18,6 +18,7 @@ import { files_compute_wc_counts, files_nodes_db_insert_committed_text_chunks } 
 import { files_metadata_content_stage_docs } from "./files_metadata.ts";
 import { files_stored_uploads_cost_cents, files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { files_media_dependencies_db_retire } from "./files_media_dependencies.ts";
+import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops.ts";
 import { billing_db_check_paid_plan, billing_db_emit_file_save, billing_db_emit_file_upload } from "./billing_db.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
@@ -53,8 +54,10 @@ type Context = Omit<files_pending_updates_CohortContentContext, "preparationFenc
 const PAGE_SIZE = 8;
 
 /**
- * A stage or repair step runs pages while `files_pending_overlay_db_can_join_step` allows more work, up
- * to this many pages. Transaction metrics do not count run time, so this count bounds it.
+ * One stage or cleanup call runs at most this many pages. Transaction metrics do not count run time, so
+ * this count bounds a stage step. Cleanup reports no native page, so root may call it again in the same
+ * transaction while `files_pending_overlay_db_can_join_step` allows. There the metrics bound the
+ * transaction, and this count bounds only one call.
  */
 const STEP_MAX_PAGES = 32;
 
@@ -657,8 +660,8 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 			}
 			return await db_progress(ctx, content, "metadata", page.isDone ? part + 1 : part, null, true);
 		}
-		const accepted = await db_input(ctx, content, "staged");
-		const remainder = await db_input(ctx, content, "unstaged");
+		const accepted = await input("staged");
+		const remainder = await input("unstaged");
 		const afterProposal = db_after_proposal({ content, proposal, nextSequence, operationTime: cohort.operationTime });
 		const docs = files_metadata_content_stage_docs({
 			node: { ...node, textKind: shape.rootKind },
@@ -678,7 +681,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 }
 
 /**
- * Stage pages while the step may join more work. A `.paginate()` page ends the step. Root schedules the
+ * Stage pages until a transaction limit is near. A `.paginate()` page ends the step. Root schedules the
  * next call and owns the view switch.
  */
 export async function files_move_content_db_stage(ctx: MutationCtx, args: Context) {
@@ -690,7 +693,9 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 			staged._yay.done ||
 			staged._yay.paged ||
 			pages >= STEP_MAX_PAGES ||
-			!(await files_pending_overlay_db_can_join_step(ctx))
+			// Root ends the transaction after a stage step, so the step may use most of each limit. The
+			// join budget of 1/16 would stop a big text after one page: its first page reads the whole text.
+			(await files_subtree_ops_db_is_near_limits(ctx))
 		)
 			return staged;
 	}
