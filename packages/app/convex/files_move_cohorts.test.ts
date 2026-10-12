@@ -8,6 +8,7 @@ import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "./setup.
 import type { Doc, Id } from "./_generated/dataModel.js";
 import {
 	files_saved_placement_db_get_search_generation,
+	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
@@ -16,7 +17,8 @@ import { list_tree_children } from "./files_nodes.ts";
 import { activities_db_require_by_source_id, activities_get_controls } from "./activities_db.ts";
 import { files_pending_update_runs_db_request_stop } from "./files_pending_update_runs.ts";
 import { files_transfer_db_request_stop } from "./files_transfer.ts";
-import { files_ancestor_ids } from "../shared/files.ts";
+import { files_ancestor_ids, files_PATH_MAX_LENGTH } from "../shared/files.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -222,12 +224,12 @@ async function native_rotation(count: number) {
 }
 
 async function finish_cohort(
-	f: Awaited<ReturnType<typeof native_rotation>>,
+	f: Pick<Awaited<ReturnType<typeof native_rotation>>, "t" | "cohortId" | "runId">,
 	check?: (cohort: Doc<"files_move_cohorts">) => Promise<void>,
 ) {
 	for (let pass = 0; pass < 10_000; pass++) {
 		const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId));
-		if (!cohort) throw new Error("Missing rotation cohort");
+		if (!cohort) throw new Error("Missing cohort");
 		if (check) await check(cohort);
 		if (cohort.phase === "complete") {
 			await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
@@ -241,7 +243,7 @@ async function finish_cohort(
 			mode: check ? "step" : "chain",
 		});
 	}
-	throw new Error("Rotation cohort did not finish");
+	throw new Error("The cohort did not finish");
 }
 
 /**
@@ -685,6 +687,208 @@ async function transfer_workspace() {
 }
 
 describe("Move cohort and folder-wide jobs", () => {
+	test.each(["finish", "stop_before", "stop_after", "first_archive"] as const)(
+		"Save Archive keeps numeric and absent allowances through %s",
+		async (end) => {
+			const w = await transfer_workspace();
+			const root = await w.folder("/archive");
+			const short = await w.folder("/archive/short");
+			const chain = `/archive/${[..."abc"].map((letter) => letter.repeat(255)).join("/")}`;
+			const oldPath = `${chain}/${"d".repeat(247)}`;
+			const long = await w.folder(oldPath);
+			expect(oldPath.length).toBe(files_PATH_MAX_LENGTH);
+			// This models the proved active path stored above the normal limit.
+			await w.t.run((ctx) =>
+				ctx.db.patch("files_nodes", long, {
+					name: "d".repeat(248),
+					sortName: files_sort_text_key("d".repeat(248)),
+					path: `${oldPath}d`,
+					treePath: `${oldPath}d/`,
+				}),
+			);
+			expect(
+				await w.asUser.mutation(api.files_nodes.archive_nodes, {
+					membershipId: w.db.membershipId,
+					nodeIds: [long, short],
+				}),
+			).toHaveProperty("_yay");
+			await w.finish();
+			expect((await w.node(long))?.archivedPathLength, "public Archive records the historical length").toBe(1025);
+			expect((await w.node(short))?.archivedPathLength, "an ordinary Archive stores no allowance").toBeUndefined();
+			if (end === "first_archive") {
+				expect(
+					await w.asUser.mutation(api.files_nodes.unarchive_nodes, {
+						membershipId: w.db.membershipId,
+						nodeIds: [long],
+					}),
+				).toHaveProperty("_yay");
+				await w.finish();
+				expect(await w.node(long), "public Restore keeps the active historical path").toMatchObject({
+					_id: long,
+					archiveOperationId: null,
+					path: `${oldPath}d`,
+				});
+				expect(
+					(await w.node(long))?.archivedPathLength,
+					"public Restore clears the previous allowance",
+				).toBeUndefined();
+			}
+			const ids = [root, long, short];
+			const before = await Promise.all(ids.map(w.node));
+			const beforeAllowances = before.map((node) => node!.archivedPathLength);
+			const beforeOperations = before.map((node) => node!.archiveOperationId);
+			expect(beforeAllowances, "the before view has the expected allowances").toEqual([
+				undefined,
+				end === "first_archive" ? undefined : 1025,
+				undefined,
+			]);
+			expect(beforeOperations[0], "the parent starts active").toBeNull();
+			const scope = { organizationId: w.db.organizationId, workspaceId: w.db.workspaceId, userId: w.db.userId };
+			expect(
+				await w.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					...scope,
+					target: { kind: "saved", id: root },
+				}),
+			).toHaveProperty("_yay");
+			const proposal = (await w.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_user_target", (q) =>
+						q.eq("userId", scope.userId).eq("target.kind", "saved").eq("target.id", root),
+					)
+					.unique(),
+			))!;
+			const started = await w.asUser.mutation(api.files_pending_update_runs.start, {
+				membershipId: w.db.membershipId,
+				requestId: crypto.randomUUID(),
+				kind: "accept",
+				expectedItemCount: 1,
+				items: [{ pendingUpdateId: proposal._id, reviewedRevision: proposal.revision, selectedContentStateId: null }],
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			const { runId, activityId } = started._yay;
+			expect(
+				await w.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: w.db.membershipId, runId }),
+			).toEqual({ _yay: null });
+			let cohortId: Id<"files_move_cohorts"> | null = null;
+			for (let pass = 0; !cohortId; pass++) {
+				if (pass === 100) throw new Error("Save Archive did not start a cohort");
+				const job = await w.t.run((ctx) =>
+					ctx.db
+						.query("files_pending_overlay_jobs")
+						.withIndex("by_org_ws", (q) =>
+							q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId),
+						)
+						.first(),
+				);
+				if (job) {
+					await w.t.mutation(internal.files_pending_overlay.run_job, {
+						kind: job.kind,
+						key: job.key,
+						nextAttemptAt: job.nextAttemptAt,
+					});
+					continue;
+				}
+				const run = (await w.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))!;
+				if (run.step === "planning")
+					await w.t.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
+				else await w.t.mutation(internal.files_pending_update_runs.advance, { runId });
+				cohortId =
+					(
+						await w.t.run((ctx) =>
+							ctx.db
+								.query("files_pending_update_run_units")
+								.withIndex("by_run_order", (q) => q.eq("runId", runId))
+								.first(),
+						)
+					)?.cohortId ?? null;
+			}
+			const afterOperations = beforeOperations.map((operation) => operation ?? cohortId);
+			let staged = false;
+			let published = false;
+			let stopped = false;
+			const finished = await finish_cohort({ t: w.t, runId, cohortId }, async (cohort) => {
+				const selected = await w.t.run((ctx) =>
+					Promise.all(ids.map((id) => files_saved_placement_db_get_node(ctx.db, id))),
+				);
+				expect(
+					selected.map((node) => node?._id),
+					"each view keeps the same archived IDs",
+				).toEqual(ids);
+				expect(
+					selected.map((node) => node?.archivedPathLength),
+					"each selected view keeps numeric and absent allowances",
+				).toEqual(cohort.publishedAt === null ? beforeAllowances : [undefined, 1025, undefined]);
+				expect(
+					selected.map((node) => node?.archiveOperationId),
+					"each view selects new Archive operations and keeps the children's own operations",
+				).toEqual(cohort.publishedAt === null ? beforeOperations : afterOperations);
+				const places = await w.t.run(async (ctx) =>
+					Promise.all(
+						ids.map(async (id) => {
+							const record = await ctx.db
+								.query("files_move_cohort_nodes")
+								.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).eq("nodeId", id))
+								.unique();
+							return record?.status === "staged" && record.beforePlaceId && record.afterPlaceId
+								? [
+										await ctx.db.get("files_saved_places", record.beforePlaceId),
+										await ctx.db.get("files_saved_places", record.afterPlaceId),
+									]
+								: null;
+						}),
+					),
+				);
+				if (places.every((pair) => pair !== null)) {
+					staged = true;
+					for (const view of [0, 1]) {
+						expect(
+							places.map((pair) => pair![view]?.archivedPathLength),
+							end === "first_archive" && view === 1
+								? "the after header captures a new 1,025 allowance"
+								: "both cohort headers keep numeric and absent allowances",
+						).toEqual(view === 0 ? beforeAllowances : [undefined, 1025, undefined]);
+						expect(
+							places.map((pair) => pair![view]?.archiveOperationId),
+							"both cohort headers select the exact Archive operations",
+						).toEqual(view === 0 ? beforeOperations : afterOperations);
+					}
+				}
+				published ||= cohort.publishedAt !== null;
+				if (
+					!stopped &&
+					((end === "stop_before" && cohort.workPhase === "publish") ||
+						(end === "stop_after" && cohort.publishedAt !== null))
+				) {
+					expect(
+						await w.asUser.mutation(api.activities.request_stop, { membershipId: w.db.membershipId, activityId }),
+					).toEqual({ _yay: null });
+					stopped = true;
+				}
+			});
+			expect(staged, "the checks reached both fully staged headers").toBe(true);
+			expect(published).toBe(end !== "stop_before");
+			expect(stopped).toBe(end === "stop_before" || end === "stop_after");
+			expect(finished.errorCode).toBe(end === "stop_before" ? "stopped" : null);
+			const physical = await Promise.all(ids.map(w.node));
+			expect(physical.map((node) => node?._id)).toEqual(ids);
+			expect(
+				physical.map((node) => node?.archivedPathLength),
+				"physical finish or abort preserves the selected allowances",
+			).toEqual(end === "stop_before" ? beforeAllowances : [undefined, 1025, undefined]);
+			expect(physical.map((node) => node?.path)).toEqual(before.map((node) => node?.path));
+			expect(
+				physical.map((node) => node?.archiveOperationId),
+				"physical repair keeps the exact selected Archive operations",
+			).toEqual(end === "stop_before" ? beforeOperations : afterOperations);
+			expect(
+				physical.every((node) => node?.moveCohortId === undefined),
+				"cleanup releases every physical node",
+			).toBe(true);
+		},
+		120_000,
+	);
+
 	test("moving a folder to root clears its old ancestors", async () => {
 		const w = await transfer_workspace();
 		const P = await w.folder("/P");

@@ -51,6 +51,7 @@ import {
 	files_derive_tree_path_for_file_node,
 	files_lowercase_extension,
 	files_check_name_and_path_length,
+	files_PATH_MAX_LENGTH,
 	files_MOVE_REPAIR_STUCK_CODE,
 } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -122,8 +123,6 @@ function placement_header(node: Doc<"files_nodes">) {
 		writePolicy: _writePolicy,
 		newChildWritePolicy: _newChildWritePolicy,
 		moveCohortId: _moveCohortId,
-		// A Move keeps the length from the archive. The publish patch leaves it on the node.
-		archivedPathLength: _archivedPathLength,
 		...header
 	} = node;
 	return header;
@@ -142,8 +141,8 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 		contentId: _content,
 		...header
 	} = place;
-	// A shallower Move must clear the old ancestor fields.
-	return { ...header, ...files_ancestor_fields(files_ancestor_ids(place)) };
+	// Explicit optional fields clear values from the other view.
+	return { ...header, archivedPathLength: place.archivedPathLength, ...files_ancestor_fields(files_ancestor_ids(place)) };
 }
 
 async function db_get_membership(
@@ -1489,6 +1488,15 @@ async function db_headers(
 		restrictedScopeNodeId: scope,
 		isRestrictedScopeRoot: scope === physical._id,
 		archiveOperationId: afterArchive,
+		// Already archived nodes keep their allowance even if the path changes.
+		archivedPathLength:
+			afterArchive === null
+				? undefined
+				: old && old.archiveOperationId !== null
+					? old.archivedPathLength
+					: path.length > files_PATH_MAX_LENGTH
+						? path.length
+						: undefined,
 		...files_ancestor_fields(parent ? [...files_ancestor_ids(parent), parent._id] : []),
 		...(selected || (old && old.archiveOperationId !== afterArchive)
 			? { updatedAt: cohort.operationTime, updatedBy: cohort.userId }

@@ -78,6 +78,44 @@ describe("saved placement foundation", () => {
 		});
 	});
 
+	test.each([
+		{ before: 1030, after: undefined },
+		{ before: undefined, after: 1031 },
+	])("selects the archived allowance over the physical value (%o)", async ({ before, after }) => {
+		const f = await fixture();
+		await f.t.run(async (ctx) => {
+			const record = (await ctx.db.get("files_move_cohort_nodes", f.recordId))!;
+			await ctx.db.patch("files_saved_places", record.beforePlaceId!, {
+				archiveOperationId: "archive-before",
+				archivedPathLength: before,
+			});
+			await ctx.db.patch("files_saved_places", record.afterPlaceId!, {
+				archiveOperationId: "archive-after",
+				archivedPathLength: after,
+			});
+			// Physical cleanup may already hold the other view.
+			await ctx.db.patch("files_nodes", f.nodeId, {
+				archiveOperationId: "archive-after",
+				archivedPathLength: after,
+			});
+		});
+		expect(
+			(await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.archivedPathLength,
+			"the before view selects its numeric or absent allowance",
+		).toBe(before);
+		await f.t.run((ctx) =>
+			ctx.db.patch("files_nodes", f.nodeId, {
+				archiveOperationId: "archive-before",
+				archivedPathLength: before,
+			}),
+		);
+		await f.publish();
+		expect(
+			(await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.archivedPathLength,
+			"the after view selects its numeric or absent allowance",
+		).toBe(after);
+	});
+
 	test("uses exact slot claims for both paths and never fills a claimed empty slot", async () => {
 		const f = await fixture();
 		const read = (path: string, view: "before" | "after") =>

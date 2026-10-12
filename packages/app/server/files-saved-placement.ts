@@ -107,7 +107,7 @@ export async function files_saved_placement_db_get_node_view(
 }
 
 function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">): Doc<"files_nodes"> {
-	// Explicit optional fields also clear ancestors that only exist in the other view.
+	// Explicit optional fields clear values that only exist in the other view.
 	return {
 		...node,
 		parentId: place.parentId,
@@ -119,6 +119,7 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		pathDepth: place.pathDepth,
 		lowercaseExtension: place.lowercaseExtension,
 		archiveOperationId: place.archiveOperationId,
+		archivedPathLength: place.archivedPathLength,
 		restrictedScopeNodeId: place.restrictedScopeNodeId,
 		isRestrictedScopeRoot: place.isRestrictedScopeRoot,
 		updatedAt: place.updatedAt,

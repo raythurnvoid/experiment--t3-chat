@@ -1,4 +1,4 @@
-import { configDefaults, defineConfig, type TestProjectInlineConfiguration } from "vitest/config";
+import { configDefaults, defineConfig, type TestProjectInlineConfiguration, type TestUserConfig } from "vitest/config";
 import { playwright } from "@vitest/browser-playwright";
 import tailwindcss from "@tailwindcss/vite";
 import { reactCompilerPreset } from "@vitejs/plugin-react";
@@ -115,7 +115,7 @@ export default defineConfig({
 			{ name: "full-size", description: "Slow full-size checks. Run them with test:files:full-size." },
 			{ name: "typecheck-full", description: "Extra typecheck.ts checks. Run them with test:typecheck:full." },
 		],
-		tagsFilter: ["!full-size", "!typecheck-full"],
+		...({ tagsFilter: ["!full-size", "!typecheck-full"] } satisfies Pick<TestUserConfig, "tagsFilter">),
 		hookTimeout: 30_000,
 		teardownTimeout: 30_000,
 		projects: [

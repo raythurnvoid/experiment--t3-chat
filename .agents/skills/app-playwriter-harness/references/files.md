@@ -71,6 +71,8 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Archive from any menu (sidebar row, toolbar Archive selected, folder explorer row, breadcrumb) opens `getByRole("dialog", { name: /^Archive / })`; confirm with its `Archive` button, cancel with `Cancel`. When every item is refused, the refusal is a `role=alert` inside the dialog and the dialog stays open. When some items are refused and the others are archived, the dialog closes with a warning toast `Some items could not be archived. See Activity.`, and the refused items stay in the tree. From page context, match `.FilesArchiveModal:not([hidden])` and read `.MyModalHeading` (the dialog has `aria-labelledby`, no `aria-label`). After a sidebar confirm, `document.activeElement` is the next tree row (or the previous one when the archived row was last); it lands about 100 ms after the dialog has closed, after a brief stop on the button that opened the dialog, so poll for it instead of reading it the moment the dialog hides. Multi-select archive: hold Control and click each row's `.FilesSidebarTreeItemPrimaryAction` (a Control-click on the open file's row removes it from the selection), then the sidebar header `More options` menu item `Archive N selected items` opens `Archive N items?` with the names, one per line, in the read-only `textbox` named `Items to archive` (read its `textContent`); after the confirm only the open file's row is selected again. Cancel keeps a multi-selection: the sidebar's click-outside selection reset is off while the dialog is open. Archive with the mutation directly (see "Sidebar Create Then Rename By Id") when the dialog is not what you test.
 - Show archived: the sidebar header `More options` menu has a `menuitemcheckbox` whose `aria-checked` holds the state. Its visible text is `Show archived items` when off and `Hide archived items` when on, and the menu stays open after a click. Since the native menu (2026-09-25), `getByRole("menuitemcheckbox", { name: "Show archived items" }).click()` works and toggles it; the Ariakit menu needed a `page.mouse.click` on the box center. Press Escape after. Archived rows carry ` archived` at the end of their `aria-label` (verified 2026-09-25).
 - Folder explorer root: `.FileNodeViewFolderExplorer`.
+- The folder toolbar's `Create files and folders` group opens a New folder dialog. Use its
+  `Name` textbox and `Create folder` button. The sidebar's New folder action uses inline Rename.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
 - Folder table dragging state: `.FileNodeViewFolderExplorer-row-dragging`.
@@ -604,6 +606,13 @@ Use this when changing tree focus, context menus, selection, or route sync.
   root item on a real home tree. There is no Paste button in the sidebar or the folder toolbar.
   Control+V pastes into the focused folder, or into the focused file's parent. In the folder
   table, focus `Open <name>` before the shortcut. Check the resulting parent ids with Convex.
+  Focusing the Files tree container itself makes Control+V target root, even when the open view
+  shows a deeper folder. Use the destination folder's row menu for a folder paste.
+- Clear a path search with the `Clear search` button after Cut. It closes suggestions and keeps
+  the clipboard. Escape can cancel an idle Cut, so dismiss suggestions before cutting.
+- A one-item name clash can first appear in Notifications. `Resolve` opens the job dialog.
+  Escape closes that dialog but can leave Notifications open. Close the popover too before
+  clicking folder-table actions. Read `:popover-open` if an action is covered.
 - Sidebar Control+C / Control+X copy the **selected** rows, not the focused row. Arrow keys move
   focus only. After clicking a folder, ArrowDown onto a child and Control+C still copies the folder.
   A selected row's accessible name can end with `ready to move` after Control+X. Escape clears an

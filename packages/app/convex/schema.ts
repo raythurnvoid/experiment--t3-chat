@@ -513,6 +513,8 @@ const files_saved_placement_fields = {
 	pathDepth: v.number(),
 	lowercaseExtension: v.union(v.string(), v.null()),
 	archiveOperationId: v.union(v.string(), v.null()),
+	// Missing uses the normal Restore path limit.
+	archivedPathLength: v.optional(v.number()),
 	restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	isRestrictedScopeRoot: v.boolean(),
 	updatedAt: v.number(),
@@ -4660,9 +4662,9 @@ const app_convex_schema = defineSchema({
 		 */
 		archiveOperationId: v.union(v.string(), v.null()),
 		/**
-		 * The path length when the node was archived. A restore may give an archived child its folder's
-		 * new path, even over the limit. Restore checks the limit against this length, so that path cannot
-		 * come back longer. Read only while the node is archived. Older nodes have none and use `path`.
+		 * The first Archive path length, stored only when it is above 1,024. Missing means the normal
+		 * 1,024-character Restore limit. Active nodes have no field. An archived child keeps this
+		 * allowance even if its folder's Restore gives it a longer path.
 		 */
 		archivedPathLength: v.optional(v.number()),
 		/**
