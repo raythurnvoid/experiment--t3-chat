@@ -525,7 +525,8 @@ describe("Move cohort publication", () => {
 			await f.t.action(internal.files_move_cohorts.run, {
 				cohortId: f.cohortId,
 				step: 0,
-				runGeneration: (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.runJob?.generation ?? null,
+				runGeneration:
+					(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.runJob?.generation ?? null,
 				mode: "step",
 			});
 			if (end === "stop") {
@@ -898,12 +899,15 @@ describe("Move cohort repair retries", () => {
 			repairLastError: cause,
 		});
 		const { step } = await cohort();
-		expect(await await w.t.mutation(internal.files_move_cohorts.resume, {
-			cohortId,
-			step: (await cohort()).step,
-			runGeneration: (await cohort()).runJob?.generation ?? null,
-			error: null,
-		}), "a good step resets the wait, and the worker goes on").toEqual({
+		expect(
+			await w.t.mutation(internal.files_move_cohorts.resume, {
+				cohortId,
+				step: (await cohort()).step,
+				runGeneration: (await cohort()).runJob?.generation ?? null,
+				error: null,
+			}),
+			"a good step resets the wait, and the worker goes on",
+		).toEqual({
 			kind: "next",
 			step: step + 1,
 		});
@@ -929,11 +933,11 @@ describe("Move cohort repair retries", () => {
 		const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 		const error = { name: "move_step_failed", message: "This Move step failed. Review it again." };
 		await w.t.mutation(internal.files_move_cohorts.resume, {
-				cohortId,
-				step: (await cohort()).step,
-				runGeneration: (await cohort()).runJob?.generation ?? null,
-				error,
-			});
+			cohortId,
+			step: (await cohort()).step,
+			runGeneration: (await cohort()).runJob?.generation ?? null,
+			error,
+		});
 		expect(errorLog.mock.calls.filter(([text]) => text === "Move repair stuck")).toHaveLength(1);
 		errorLog.mockRestore();
 		const retryAt = Date.now() + 60 * 60_000;
@@ -1147,11 +1151,11 @@ describe("Move cohort repair retries", () => {
 			0, 120_000,
 		]);
 		await w.t.action(internal.files_move_cohorts.run, {
-				cohortId,
-				step: (await cohort()).step,
-				runGeneration: (await cohort()).runJob?.generation ?? null,
-				mode: "step",
-			});
+			cohortId,
+			step: (await cohort()).step,
+			runGeneration: (await cohort()).runJob?.generation ?? null,
+			mode: "step",
+		});
 		expect((await activity()).errorCode, "a try that works clears the notice").toBeUndefined();
 	});
 

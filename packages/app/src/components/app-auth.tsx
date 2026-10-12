@@ -163,6 +163,13 @@ function init_auth_token_manager() {
 	});
 }
 
+async function auth_navigate_to_home() {
+	// The router loads this component. Load it later to avoid a cycle.
+	// React Compiler needs this import outside the component.
+	const { app_router } = await import("../lib/app-router.ts");
+	await app_router().navigate({ to: "/", replace: true });
+}
+
 /**
  * Callers of `auth_get_token` will wait until the `auth_token_manager.promise` is resolved.
  *
@@ -390,10 +397,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		tokenFlowAbortControllerRef.current = new AbortController();
 
 		await getToken({ skipCache: true });
-		// Load the router here, not at the top. The router loads every route, and many routes load
-		// this file, so a top import makes a cycle that breaks when a route file loads first.
-		const { app_router } = await import("../lib/app-router.ts");
-		await app_router().navigate({ to: "/", replace: true });
+		await auth_navigate_to_home();
 	});
 
 	/**
