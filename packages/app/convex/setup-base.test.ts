@@ -46,10 +46,13 @@ export function test_convex(
 		modules: convex_test_modules,
 		transactionLimits: options.transactionLimits,
 	});
-	test_convex_instances.push(t);
+	const components: string[] = [];
+	test_convex_instances.push({ t, components });
 	const registerComponent = t.registerComponent.bind(t);
-	t.registerComponent = (name, componentSchema, modules) =>
+	t.registerComponent = (name, componentSchema, modules) => {
+		components.push(name);
 		registerComponent(name, test_convex_memo_schema_exports(componentSchema), modules);
+	};
 	const withIdentity = t.withIdentity.bind(t);
 	t.withIdentity = ((identity) => {
 		// Use realistic Clerk identities by default; tests that cover the missing
