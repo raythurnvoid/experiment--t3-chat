@@ -153,12 +153,7 @@ test.each([
 					if (typeof member !== "function") return member;
 					if (key === "query")
 						return (...queryArgs: unknown[]) =>
-							track_pages(
-								Reflect.apply(member, target, queryArgs),
-								String(queryArgs[0]),
-								transactionPages,
-								childIds,
-							);
+							track_pages(Reflect.apply(member, target, queryArgs), String(queryArgs[0]), transactionPages, childIds);
 					return member.bind(target);
 				},
 			});

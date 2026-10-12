@@ -1168,7 +1168,11 @@ async function db_descendants(
 						.withIndex("by_view_parent_name", (q) =>
 							q.eq("cohortId", cohort._id).eq("view", "before").eq("parentId", parentId),
 						)
-						.paginate({ cursor: cursor.cursor, numItems: DESCENDANT_PAGE_SIZE, maximumBytesRead: DESCENDANT_PAGE_BYTES })
+						.paginate({
+							cursor: cursor.cursor,
+							numItems: DESCENDANT_PAGE_SIZE,
+							maximumBytesRead: DESCENDANT_PAGE_BYTES,
+						})
 				: await ctx.db
 						.query("files_nodes")
 						.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
@@ -1178,7 +1182,11 @@ async function db_descendants(
 								.eq("moveCohortId", undefined)
 								.eq("parentId", parentId),
 						)
-						.paginate({ cursor: cursor.cursor, numItems: DESCENDANT_PAGE_SIZE, maximumBytesRead: DESCENDANT_PAGE_BYTES });
+						.paginate({
+							cursor: cursor.cursor,
+							numItems: DESCENDANT_PAGE_SIZE,
+							maximumBytesRead: DESCENDANT_PAGE_BYTES,
+						});
 		paged = true;
 		for (const entry of page.page) {
 			const nodeId = "nodeId" in entry ? entry.nodeId : entry._id;

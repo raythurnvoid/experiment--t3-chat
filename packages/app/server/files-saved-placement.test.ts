@@ -483,9 +483,10 @@ describe("saved placement foundation", () => {
 			const get = vi.spyOn(ctx.db, "get");
 			try {
 				const view = await files_saved_placement_db_get_view(ctx.db, f.db);
-				expect(query.mock.calls.map(([table]) => table), "view reads only its slot range").toEqual([
-					"files_move_workspace_slots",
-				]);
+				expect(
+					query.mock.calls.map(([table]) => table),
+					"view reads only its slot range",
+				).toEqual(["files_move_workspace_slots"]);
 				expect(get, "view never reads the Move cohort").not.toHaveBeenCalled();
 				return view;
 			} finally {
@@ -507,7 +508,9 @@ describe("saved placement foundation", () => {
 		await f.t.run(async (ctx) => {
 			const slot = await ctx.db
 				.query("files_move_workspace_slots")
-				.withIndex("by_workspace", (q) => q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId))
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+				)
 				.unique();
 			if (!slot?.cohortId) throw new Error("Expected the active fixture slot");
 			const { _id, _creationTime, ...active } = slot;
@@ -518,10 +521,9 @@ describe("saved placement foundation", () => {
 				cohortId: null,
 				generation: slot.generation,
 			};
-			expect(
-				validate(validator, active, { db: ctx.db }),
-				"the slot schema accepts the active producer shape",
-			).toBe(true);
+			expect(validate(validator, active, { db: ctx.db }), "the slot schema accepts the active producer shape").toBe(
+				true,
+			);
 			expect(
 				validate(validator, idle, { db: ctx.db }),
 				"the slot schema accepts an idle slot without view fields",
