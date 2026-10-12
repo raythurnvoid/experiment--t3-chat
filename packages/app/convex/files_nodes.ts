@@ -3578,7 +3578,8 @@ export const create_upload_node = mutation({
  * The batch contract: after validation, one file's problem never fails the whole call. Every
  * item ends as created or as skipped with a reason. A malformed item (bad path shape, bad
  * name, bad size, duplicate target) still fails the whole call, because the client
- * pre-normalizes and only a buggy or hostile caller sends one.
+ * pre-normalizes and only a buggy or hostile caller sends one. A file over the storage left is
+ * skipped as "storage_full"; the call answers `storage_full` only when no file fits.
  *
  * Unlike `data_import.create_upload_targets`, assets keep `processingWorkId` unset, so the R2
  * event finalizer runs Markdown conversion and plugin dispatch like any single-file upload.
@@ -3615,10 +3616,11 @@ export const create_upload_nodes = mutation({
 			// "conflict" covers every refusal about the target file itself, including permission
 			// refusals, so the payload never says which paths are restricted. "path_blocked" means
 			// the path cannot hold a file at all: a folder owns it, or a file owns an ancestor.
+			// "storage_full" means the file does not fit the storage left after the earlier files.
 			skipped: v.array(
 				v.object({
 					relativePath: v.string(),
-					reason: v.union(v.literal("conflict"), v.literal("path_blocked")),
+					reason: v.union(v.literal("conflict"), v.literal("path_blocked"), v.literal("storage_full")),
 				}),
 			),
 		}),
@@ -3800,7 +3802,7 @@ export const create_upload_nodes = mutation({
 		}
 
 		const now = Date.now();
-		const skipped: Array<{ relativePath: string; reason: "conflict" | "path_blocked" }> = [];
+		const skipped: Array<{ relativePath: string; reason: "conflict" | "path_blocked" | "storage_full" }> = [];
 		// Each folder on the way is looked up and checked once per call. Items in one folder share it.
 		const walkedFolders = new Map<
 			string,
@@ -3970,14 +3972,18 @@ export const create_upload_nodes = mutation({
 			runnable.push({ ...item, existingNodeId: existingNode?._id ?? null });
 		}
 
-		// Admit only accepted items, before replacing any existing file.
+		// Admit only accepted items, before replacing any existing file. A file that does not fit the
+		// storage left is skipped, and a replaced file keeps its old version. The call is refused only
+		// when no file fits.
 		const admission = await files_stored_uploads_db_admit(ctx, {
 			organization,
 			actorUserId: userAuth.id,
 			workspaceId: membership.workspaceId,
 			declaredBytes: runnable.map((item) => item.size),
+			admitWhatFits: true,
 		});
 		if (admission._nay) return admission;
+		const refusedIndexes = new Set(admission._yay.refusedIndexes);
 
 		const created: Array<{
 			relativePath: string;
@@ -3986,7 +3992,11 @@ export const create_upload_nodes = mutation({
 			url: string;
 			headers: Record<string, string>;
 		}> = [];
-		for (const item of runnable) {
+		for (const [index, item] of runnable.entries()) {
+			if (refusedIndexes.has(index)) {
+				skipped.push({ relativePath: item.relativePath, reason: "storage_full" });
+				continue;
+			}
 			if (item.existingNodeId) {
 				await files_nodes_db_archive_nodes({
 					ctx,

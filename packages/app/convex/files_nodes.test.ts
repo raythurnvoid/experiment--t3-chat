@@ -3003,6 +3003,38 @@ describe("files_nodes.create_upload_nodes", () => {
 		expect(result._yay?.skipped).toEqual([{ relativePath: "keep.bin", reason: "conflict" }]);
 	});
 
+	test("creates the files that fit the storage left and skips the others", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const original = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "keep.bin",
+			size: 5,
+		});
+		if (original._nay) throw new Error(original._nay.message);
+		await t.run(async (ctx) => {
+			const quotaId = await quotas_db_ensure(ctx, { ...db, quotaName: "stored_file_bytes", now: Date.now() });
+			const quota = await ctx.db.get("quotas", quotaId);
+			await ctx.db.patch("quotas", quotaId, { usedCount: quota!.maxCount - 100 });
+		});
+		const result = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "replace",
+			items: [
+				{ relativePath: "keep.bin", size: 200 },
+				{ relativePath: "a.bin", size: 50 },
+				{ relativePath: "b.bin", size: 40 },
+			],
+		});
+		expect(result._yay?.created.map((item) => item.relativePath)).toEqual(["a.bin", "b.bin"]);
+		expect(result._yay?.skipped).toEqual([{ relativePath: "keep.bin", reason: "storage_full" }]);
+		const kept = await t.run((ctx) => ctx.db.get("files_nodes", original._yay.nodeId));
+		expect(kept?.archiveOperationId, "the skipped replace keeps the old file").toBeNull();
+	});
+
 	test("creates nested files with presigned urls and reuses folders across calls", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));

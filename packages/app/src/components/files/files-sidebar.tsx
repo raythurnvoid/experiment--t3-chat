@@ -348,7 +348,8 @@ type FilesImportSkipReason =
 	| "path_too_long"
 	| "duplicate_after_normalization"
 	| "conflict"
-	| "path_blocked";
+	| "path_blocked"
+	| "storage_full";
 
 const FILES_IMPORT_SKIP_REASON_TEXT: Record<FilesImportSkipReason, string> = {
 	invalid_name: "Name not allowed",
@@ -361,6 +362,7 @@ const FILES_IMPORT_SKIP_REASON_TEXT: Record<FilesImportSkipReason, string> = {
 	// The server uses "conflict" for an existing file and for a refused permission alike.
 	conflict: "Already exists or not writable",
 	path_blocked: "Another item is in the way",
+	storage_full: "Not enough storage",
 };
 
 /**
@@ -1019,7 +1021,8 @@ async function run_folder_import(args: {
 					}
 					fail(chunk, reason);
 					// A refusal about one path or the folder count fails only this call. Any other refusal
-					// (sign-in, target folder, storage) would refuse every later call too, so stop.
+					// (sign-in, target folder, storage) would refuse every later call too, so stop. The server
+					// skips each file that does not fit the storage left, so `storage_full` here means no file fits.
 					return refusedPath !== undefined || result._nay.name === "too_many_folders" ? "continue" : "stop";
 				}
 
@@ -8442,6 +8445,53 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(createCalls).toBe(args.calls);
 			expect(useFilesImportStore.getState().phase).toBe("idle");
+		});
+
+		test("run_folder_import goes on after a file that does not fit the storage left", async () => {
+			// 51 files make two calls. The first call skips one file for storage and creates the others.
+			const paths = Array.from({ length: 51 }, (_, index) => `f${String(index).padStart(2, "0")}.pdf`);
+			let createCalls = 0;
+			const convexStub = {
+				query: async () => [],
+				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
+					createCalls += 1;
+					const items = mutationArgs.items.filter((item) => item.relativePath !== "f00.pdf");
+					return {
+						_yay: {
+							created: items.map((item) => ({
+								relativePath: item.relativePath,
+								nodeId: `node-${item.relativePath}`,
+								url: "https://r2.test/put",
+								headers: {},
+							})),
+							skipped:
+								items.length < mutationArgs.items.length ? [{ relativePath: "f00.pdf", reason: "storage_full" }] : [],
+						},
+					};
+				},
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 200 })),
+			);
+			const warningToast = vi.spyOn(toast, "warning").mockReturnValue("warning");
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries(paths.map((name) => test_file_with_path({ name, path: `./${name}` }))),
+				});
+				expect(warningToast).toHaveBeenCalledWith("Import finished: 50 imported, 1 skipped.", {
+					description: "Not imported: f00.pdf (Not enough storage).",
+				});
+			} finally {
+				vi.unstubAllGlobals();
+				warningToast.mockRestore();
+			}
+
+			expect(createCalls, "the next chunk is still sent").toBe(2);
 		});
 
 		test("run_folder_import retries a refused chunk at most 5 times", async () => {

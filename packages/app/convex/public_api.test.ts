@@ -5245,11 +5245,15 @@ describe("files upload-urls", () => {
 			await ctx.db.patch("quotas", quotaId, { usedCount: quota!.maxCount - 10, updatedAt: now });
 		});
 
+		// The small file fits alone, but the API batch stays all-or-nothing, unlike the app folder import.
 		const refused = await t.fetch("/api/v1/files/upload-urls", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({
-				files: [{ path: "/imports/big.bin", contentType: "application/octet-stream", size: 64 }],
+				files: [
+					{ path: "/imports/small.bin", contentType: "application/octet-stream", size: 5 },
+					{ path: "/imports/big.bin", contentType: "application/octet-stream", size: 64 },
+				],
 			}),
 		});
 		expect(refused.status).toBe(403);
@@ -5257,26 +5261,30 @@ describe("files upload-urls", () => {
 
 		// The refused batch neither minted a node nor consumed more budget.
 		const after = await t.run(async (ctx) => {
-			const node = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("path", "/imports/big.bin")
-						.eq("archiveOperationId", null),
-				)
-				.first();
+			const nodes = await Promise.all(
+				["/imports/small.bin", "/imports/big.bin"].map((path) =>
+					ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+							q
+								.eq("organizationId", db.organizationId)
+								.eq("workspaceId", db.workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("path", path)
+								.eq("archiveOperationId", null),
+						)
+						.first(),
+				),
+			);
 			const quota = await ctx.db
 				.query("quotas")
 				.withIndex("by_workspace_quotaName", (q) =>
 					q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
 				)
 				.first();
-			return { node, quota };
+			return { nodes, quota };
 		});
-		expect(after.node).toBeNull();
+		expect(after.nodes).toEqual([null, null]);
 		expect(after.quota!.usedCount).toBe(after.quota!.maxCount - 10);
 	});
 

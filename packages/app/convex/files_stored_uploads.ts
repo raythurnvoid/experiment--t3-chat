@@ -26,6 +26,11 @@ export async function files_stored_uploads_db_admit(
 		 * Copy and review jobs keep the payer they already pinned.
 		 */
 		billedUserId?: Id<"users">;
+		/**
+		 * Admit the items that fit and return the indexes of the others, instead of refusing the
+		 * whole batch. Only the app folder import uses it. The API doors keep an atomic batch.
+		 */
+		admitWhatFits?: boolean;
 	},
 ) {
 	const billedUserId =
@@ -47,10 +52,27 @@ export async function files_stored_uploads_db_admit(
 			q.eq("workspaceId", args.workspaceId).eq("quotaName", "stored_file_bytes"),
 		)
 		.first();
-	if ((quota?.usedCount ?? 0) + totalBytes > (quota?.maxCount ?? quotas.stored_file_bytes.maxCount)) {
+	let freeBytes = (quota?.maxCount ?? quotas.stored_file_bytes.maxCount) - (quota?.usedCount ?? 0);
+	const refusedIndexes: number[] = [];
+	if (args.admitWhatFits) {
+		// First fit, in order: keep each item that still fits and refuse the others.
+		for (const [index, bytes] of args.declaredBytes.entries()) {
+			if (bytes > freeBytes) {
+				refusedIndexes.push(index);
+			} else {
+				freeBytes -= bytes;
+			}
+		}
+		// Refuse the call only when nothing fits. An empty batch asks for no bytes, so it passes.
+		if (refusedIndexes.length > 0 && refusedIndexes.length === args.declaredBytes.length) {
+			return Result({ _nay: { name: "storage_full", message: quotas.stored_file_bytes.disabledReason } });
+		}
+	} else if (totalBytes > freeBytes) {
+		// An atomic batch: one item over the cap refuses all of them.
 		return Result({ _nay: { name: "storage_full", message: quotas.stored_file_bytes.disabledReason } });
 	}
-	return Result({ _yay: { billedUserId } });
+	// Atomic callers keep the `{ billedUserId }` answer, which some return validators check.
+	return Result({ _yay: args.admitWhatFits ? { billedUserId, refusedIndexes } : { billedUserId } });
 }
 
 /**
