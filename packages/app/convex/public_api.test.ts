@@ -40,7 +40,7 @@ import {
 import type { api_schemas_Main } from "../shared/api-schemas.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
-import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
@@ -4810,10 +4810,13 @@ describe("files upload-urls", () => {
 			message: "Paths can have at most 1,024 characters.",
 			path: longPath,
 		});
-		// Only authorization took a slot (1 of 20). The batch did not take one per extra file.
-		const chargeKey = `user_api_key:${credential.split(".")[0]}:/api/v1/files/upload-urls`;
+		// The refused batch took no slot from the upload bulk bucket, so all 20 are still free.
 		const remaining = await t.run(async (ctx) =>
-			rate_limiter_check_by_key(ctx, { name: "public_api_principal", key: chargeKey, count: 19 }),
+			rate_limiter_check_by_key(ctx, {
+				name: "public_api_files_upload_bulk",
+				key: `user_api_key:${credential.split(".")[0]}`,
+				count: 20,
+			}),
 		);
 		expect(remaining, "the refused batch takes no more rate limit slots").toBeNull();
 	});
