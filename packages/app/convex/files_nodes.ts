@@ -4577,47 +4577,6 @@ export const rename_node = mutation({
 // #region move nodes
 
 /**
- * A scope op or a move op writes the new scope to the items inside in later steps. Until then an item
- * can store its old scope. While one runs, the returned function gives a node the scope of its
- * parents, so a permission check asks about the scope the node really has.
- */
-export async function files_nodes_db_live_scope_reader(
-	ctx: QueryCtx | MutationCtx,
-	args: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId">,
-) {
-	const findOp = (kind: "scope" | "move") =>
-		ctx.db
-			.query("files_subtree_ops")
-			.withIndex("by_organization_workspace_kind", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("kind", kind),
-			)
-			.first();
-	const isScopeStale = (await findOp("scope")) !== null || (await findOp("move")) !== null;
-	const scopesInside = new Map<Id<"files_nodes">, Id<"files_nodes"> | null>();
-	async function readScopeInside(folderId: Doc<"files_nodes">["parentId"]): Promise<Id<"files_nodes"> | null> {
-		if (folderId === files_ROOT_ID) return null;
-		let scope = scopesInside.get(folderId);
-		if (scope === undefined) {
-			const folder = await ctx.db.get("files_nodes", folderId);
-			// A restrict or unrestrict writes the folder's own scope in the request, so it is never old.
-			scope = !folder
-				? null
-				: folder.restrictedScopeNodeId === folder._id
-					? folder._id
-					: await readScopeInside(folder.parentId);
-			scopesInside.set(folderId, scope);
-		}
-		return scope;
-	}
-
-	return async function withLiveScope(node: Doc<"files_nodes">) {
-		if (!isScopeStale || node.restrictedScopeNodeId === node._id) return node;
-		const scope = await readScopeInside(node.parentId);
-		return scope === node.restrictedScopeNodeId ? node : { ...node, restrictedScopeNodeId: scope };
-	};
-}
-
-/**
  * Give a child the path and restricted scope that its live parent implies. Its saved chunks and
  * metadata docs follow in a job. A move or restrict job calls this for each child after the parent is right. Returns whether it
  * wrote anything. The caller advances the media validation version once after its writes.

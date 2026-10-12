@@ -25,7 +25,6 @@ import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
-	files_nodes_db_live_scope_reader,
 	files_nodes_db_require_writable,
 	files_nodes_db_require_write_policy_management,
 	files_nodes_db_set_write_policy,
@@ -930,11 +929,7 @@ export const create_upload_target = internalMutation({
 		// deepest existing folder refuses cleanly before anything is written. Every answer that depends on
 		// what exists below that folder comes after its access checks.
 		const segments = path_extract_segments_from(args.path);
-		const found = await lookups.find_existing_parent(args.path);
-		// A scope job may not have reached this folder yet, so check the scope its parents give it.
-		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args.principal);
-		const effectiveDestinationAclNode = found.node && (await withLiveScope(found.node));
-		const parentDepth = found.depth;
+		const { node: effectiveDestinationAclNode, depth: parentDepth } = await lookups.find_existing_parent(args.path);
 		if (
 			effectiveDestinationAclNode &&
 			!(await access_control_db_can_act_on_file_node(ctx, {
