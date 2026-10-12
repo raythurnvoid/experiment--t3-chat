@@ -926,7 +926,9 @@ async function run_folder_import(args: {
 			}
 		};
 
-		// Folders the server refused because a file there needs too many new folders.
+		// Folders the server refused because a file there needs too many new folders. A refused call
+		// writes nothing, so the list holds until a call succeeds. That call may create some of their
+		// parent folders, so it empties the list.
 		const tooDeepFolders: string[] = [];
 
 		const process_chunk = async (chunkItems: FilesImportPlanItem[]): Promise<"continue" | "stop"> => {
@@ -1037,6 +1039,7 @@ async function run_folder_import(args: {
 					skippedExisting: state.skippedExisting + chosenSkipCount,
 				}));
 				createdItems = result._yay.created;
+				tooDeepFolders.length = 0;
 				for (const created of createdItems) {
 					files_in_flight_uploads_add(created.nodeId);
 				}
@@ -8478,6 +8481,66 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					reason: index < 6 ? `Refused ${index + 1}` : "Not sent: too many files in this request were refused",
 				})),
 			);
+		});
+
+		test("run_folder_import sends a refused folder's files again after a call creates folders", async () => {
+			const folder = `a/${Array.from({ length: 35 }, (_, index) => `d${index}`).join("/")}`;
+			// The shallow file creates 11 of the deep folder's 36 folders. It sorts first, so chunk 1 has it,
+			// the refused deep file and 48 more deep files. Chunk 2 has the last deep file.
+			const shallow = `a/${Array.from({ length: 10 }, (_, index) => `d${index}`).join("/")}/a.pdf`;
+			const deep = Array.from({ length: 50 }, (_, index) => `${folder}/f${String(index).padStart(2, "0")}.pdf`);
+			const sent: string[][] = [];
+			const convexStub = {
+				query: async () => [],
+				mutation: async (_fn: unknown, mutationArgs: { items?: Array<{ relativePath: string }> }) => {
+					if (!mutationArgs.items) return { _yay: { removed: true } };
+					const paths = mutationArgs.items.map((item) => item.relativePath);
+					sent.push(paths);
+					// Before the shallow file creates its folders, the deep files need too many new folders.
+					if (sent.length === 1)
+						return {
+							_nay: {
+								name: "too_many_folders",
+								message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+								data: { path: deep[0] },
+							},
+						};
+					return {
+						_yay: {
+							created: paths.map((relativePath) => ({
+								relativePath,
+								nodeId: `node-${relativePath}`,
+								url: "https://r2.test/put",
+								headers: {},
+							})),
+							skipped: [],
+						},
+					};
+				},
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 200 })),
+			);
+			const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries(
+						[shallow, ...deep].map((path) => test_file_with_path({ name: "f.pdf", path: `/${path}` })),
+					),
+				});
+			} finally {
+				vi.unstubAllGlobals();
+				errorToast.mockRestore();
+			}
+
+			// Chunk 1 drops the refused folder's files and sends the shallow file alone.
+			expect(sent.slice(0, 2).map((paths) => paths.length)).toEqual([50, 1]);
+			expect(sent[2], "chunk 2's file is sent").toEqual([deep[49]]);
 		});
 
 		test("run_folder_import fails a whole new folder that needs too many new folders after one refusal", async () => {
