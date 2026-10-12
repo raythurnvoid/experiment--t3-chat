@@ -180,6 +180,13 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   not all write this doc. A pin after a lapse, or a renewal within 60 seconds of the end, advances
   the clock first, because changes may have skipped it. `files_pending_review_versions` still
   advances on every proposal write.
+- `files_pending_review_fact_state.pendingJobCount` counts the workspace's overlay jobs with
+  `reviewFactsPending` (every kind except `place_fields` and `saved_scope`). The job insert adds 1,
+  and `files_pending_overlay_db_delete_job` subtracts 1. While it is above 0, the plan producer
+  waits and polls. Before commit 07816ba1, data deletion deleted jobs without subtracting, so some
+  counts stayed above 0 forever and every Save in that workspace polled for 30 minutes and failed.
+  The one-time migration `migrations:repair_review_fact_job_counts` sets each count to the real
+  number of counted jobs. Remove it, its runner, its audit query and its test after it has run.
 - Every preparation step checks current membership, its lifetime, the parent run and access clocks
   in its own transaction. The final switch checks the same proof. Changed access or input aborts
   unpublished candidates and returns `needs_review`. Completed groups stay saved.

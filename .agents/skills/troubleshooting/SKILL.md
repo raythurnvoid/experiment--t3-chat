@@ -129,6 +129,12 @@ cause first (the error says which step and why). Then run `files_move_cohorts:re
 `{ cohortId }` to try the step at once. It is safe to run twice: the try is fenced by step. Never
 release the slot by hand; the repair must finish.
 
+Every Save in one workspace polls for 30 minutes and then fails -> compare
+`files_pending_review_fact_state.pendingJobCount` with the workspace's counted jobs
+(`files_pending_overlay_jobs` with `reviewFactsPending: true`); run the repair migration
+`migrations:run_repair_review_fact_job_counts`. `migrations:audit_review_fact_job_count` with
+`{ organizationId, workspaceId }` returns both numbers.
+
 A failed function, including one that hits a Convex limit, also shows on the dashboard Logs page. In production the client sees only "Server Error", but the log keeps the details. Convex adds warning lines with a `system_code` field when a function gets close to a limit. No log stream or alert is set up yet; that needs the Convex Pro plan.
 
 # Convex HTTP Action Latency
