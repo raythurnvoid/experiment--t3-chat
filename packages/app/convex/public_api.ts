@@ -2592,7 +2592,10 @@ export async function public_api_db_revalidate_file_write_principal(
 					userId: args.userId,
 					serviceAccountId: pluginRun.serviceAccountId,
 					permission: "content.write",
-					...(labelledNode ? { fileNode: labelledNode } : {}),
+					// A scope job may not have reached this node yet, so check the scope its parents give it.
+					...(labelledNode
+						? { fileNode: await (await files_nodes_db_live_scope_reader(ctx, args))(labelledNode) }
+						: {}),
 				}))
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
@@ -3742,14 +3745,16 @@ export const publish_file_fill = internalMutation({
 
 		// `public_api_db_revalidate_file_write_principal` above asks about the workspace, and a write can be staged
 		// for a while. This is the commit, so the node itself is asked again here: a grant taken away
-		// during staging has to stop the write, not arrive too late.
+		// during staging has to stop the write, not arrive too late. A scope job may not have reached the
+		// file yet, so check the scope its parents give it.
+		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, stage);
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
 				workspaceId: stage.workspaceId,
 				userId: stage.userId,
 				permission: "content.write",
-				fileNode,
+				fileNode: await withLiveScope(fileNode),
 				serviceAccountId,
 			}))
 		) {
@@ -4216,6 +4221,7 @@ export const can_write_file_node = internalQuery({
 			return "permission_denied";
 		}
 		const writeContext = revalidated._yay.writeContext;
+		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
@@ -4223,7 +4229,8 @@ export const can_write_file_node = internalQuery({
 				userId: args.userId,
 				serviceAccountId:
 					writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined,
-				fileNode,
+				// A scope job may not have reached this file yet, so check the scope its parents give it.
+				fileNode: await withLiveScope(fileNode),
 				permission: "content.write",
 			}))
 		) {
