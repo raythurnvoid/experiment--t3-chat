@@ -2060,6 +2060,43 @@ describe("move", () => {
 		});
 	});
 
+	test("an agent mv to a new name lets a path over 1,024 characters get shorter", async () => {
+		const fixture = await create_folder_fixture([`/s${chainPath}`]);
+		await lengthen_s(fixture);
+		const parentPath = `/ssssssssss/${names.join("/")}`;
+		const parent = (await get_node(fixture, parentPath))!;
+		const deepest = (await get_node(fixture, `/ssssssssss${chainPath}`))!;
+		const thread = await fixture.asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: fixture.db.membershipId,
+			clientGeneratedId: "long-path-mv-thread",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const mv = (name: string) =>
+			start_agent_transfer(fixture.t, {
+				membershipId: fixture.db.membershipId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "current",
+				threadId: thread._yay.threadId,
+				requestId: `long-path-mv-${name.length}`,
+				kind: "move",
+				sources: [{ kind: "saved", id: deepest._id }],
+				targetParent: { kind: "saved", id: parent._id },
+				targetPath: parentPath,
+				targetName: name,
+				missingParentNames: [],
+				conflictPolicy: { file: "error", folder: "error" },
+			});
+
+		expect(await mv("d".repeat(252)), "an mv that makes the path 1 character longer").toMatchObject({
+			_nay: {
+				name: "path_too_long",
+				message: `…/${"d".repeat(252)} would have a path of 1,032 characters. Paths can have at most 1,024 characters. Shorten a folder name or move it higher.`,
+			},
+		});
+		expect((await mv("d".repeat(246)))._nay, "an mv that makes the path 5 characters shorter").toBeUndefined();
+	});
+
 	test("refuses a Copy that would push a path inside the folder past 1,024 characters, before any write", async () => {
 		const fixture = await create_folder_fixture([deepPath]);
 		const top = await get_node(fixture, topPath);

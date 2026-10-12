@@ -2670,7 +2670,7 @@ async function db_schedule_expiry_check(args: {
 /**
  * Remove one owner's due drafts in one workspace. A draft expires only when its `expiresAt` has
  * passed, the owner has had no visible app tab for 4 hours (or left the workspace), and no running
- * Copy or review holds it. Expiry changes neither the proposal revision nor the review clock of
+ * Copy, review, or Move holds it. Expiry changes neither the proposal revision nor the review clock of
  * a kept draft.
  */
 export const expire_file_pending_updates = internalMutation({
@@ -2714,8 +2714,10 @@ export const expire_file_pending_updates = internalMutation({
 			return null;
 		}
 
-		// Expiry can wait for the workspace's saved-view repair.
-		if (await files_move_reservations_db_find_blocker(ctx.db, { wholeWorkspace: args })) {
+		// A Move pins its user's review clock, and deleting any draft of that user changes it. So wait
+		// while the owner's own Move runs. Another user's Move only blocks the drafts it holds, below.
+		const moveId = await files_move_reservations_db_find_blocker(ctx.db, { wholeWorkspace: args });
+		if (moveId && (await ctx.db.get("files_move_cohorts", moveId))?.userId === args.userId) {
 			await db_schedule_expiry_check({ ctx, check, checkAt: now + EXPIRY_RETRY_MS });
 			return null;
 		}
@@ -2736,6 +2738,18 @@ export const expire_file_pending_updates = internalMutation({
 			// Deleting a draft also deletes its text chunks, and their number grows with the draft size.
 			// Stop after about one full-size draft, so one transaction stays well under Convex limits.
 			if (batchBytes >= files_MAX_TEXT_CONTENT_BYTES) break;
+			// The Move guard refuses every write to a draft that a Move holds, through the proposal or
+			// its file, even the retry patch below. So stop and try this draft and the later ones again.
+			if (
+				moveId &&
+				((await files_move_reservations_db_find_blocker(ctx.db, {
+					source: { kind: "proposal", id: pendingUpdate._id },
+				})) ||
+					(await files_move_reservations_db_find_blocker(ctx.db, { source: pendingUpdate.target })))
+			) {
+				await db_schedule_expiry_check({ ctx, check, checkAt: now + EXPIRY_RETRY_MS });
+				return null;
+			}
 			batchBytes += pendingUpdate.size;
 			handledCount += 1;
 

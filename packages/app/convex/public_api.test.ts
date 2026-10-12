@@ -12,6 +12,7 @@ import {
 	test_LIMITS_AT_75_PERCENT,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_spy_handler,
 } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
@@ -23,6 +24,7 @@ import {
 	r2_server_side_copy,
 } from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { prepare_file_write } from "./public_api.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	files_get_utf8_byte_size,
@@ -6803,6 +6805,63 @@ describe("files read-only locks", () => {
 		expect(touched._nay?.message, "touch publish").toBe("Permission denied");
 	});
 
+	test("write and touch of an existing file check the scope it gets from its parents while a scope job runs", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		stub_confirmed_deletes();
+		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-replace-stale-scope" });
+		const seeded = await write_file({ t, credential: writer.credential, path: "/a/b/old.md", content: "# O\n" });
+		expect(seeded.status).toBe(200);
+		const prepare = () =>
+			t.mutation(internal.public_api.prepare_file_write, {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				userId: writer.userId,
+				principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+				path: "/a/b/old.md",
+				overwrite: "replace",
+				contentType: "text/markdown",
+				yjsRootKind: "rich_text",
+				contentSize: 4,
+				yjsSnapshotSize: 7,
+			});
+		// Stage both before the restrict, so their publish checks the file again.
+		const write = await prepare();
+		const touch = await prepare();
+		expect(write._nay).toBeUndefined();
+		expect(touch._nay).toBeUndefined();
+		const folder = await find_active_node({ t, db: writer.db, path: "/a" });
+		const file = await find_active_node({ t, db: writer.db, path: "/a/b/old.md" });
+		await t.run(async (ctx) => {
+			// The folder was just restricted. The file keeps no scope until the scope job reaches it.
+			await ctx.db.patch("files_nodes", folder!._id, { restrictedScopeNodeId: folder!._id });
+			// A lock on the hidden file must not answer before access does.
+			await ctx.db.patch("files_nodes", file!._id, { writePolicy: { mode: "read_only" } });
+			await ctx.db.insert("files_subtree_ops", {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				userId: writer.db.userId,
+				status: "running",
+				blockedByOpId: null,
+				rootNodeIds: [folder!._id],
+				treePaths: ["/a/"],
+				kind: "scope",
+			});
+		});
+		expect((await prepare())._nay?.message, "preflight").toBe("Permission denied");
+		const written = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: write._yay!.stageId,
+			content: "# W\n",
+			targetAnchor: write._yay!.targetAnchor,
+		});
+		expect(written._nay?.message, "write publish").toBe("Permission denied");
+		const touched = await t.mutation(internal.public_api.publish_file_touch, {
+			stageId: touch._yay!.stageId,
+			targetAnchor: touch._yay!.targetAnchor,
+		});
+		expect(touched._nay?.message, "touch publish").toBe("Permission denied");
+	});
+
 	test("write and touch below a file answer 409 and say a file is in the way", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -8166,6 +8225,86 @@ describe("files read-only locks", () => {
 			body: JSON.stringify({ paths: [`${below("c")}/t.md`] }),
 		});
 		expect(touched.status, "a touch with new folders below the deep folder").toBe(200);
+	});
+
+	test("write prepare reads each folder once during a Move, and checks names below the folder it finds", async () => {
+		const t = test_convex();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-write-prepare-reads" });
+		const reads: number[] = [];
+		test_spy_handler(prepare_file_write, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			reads.push((await ctx.meta.getTransactionMetrics()).documentsRead.used - before.documentsRead.used);
+			return result;
+		});
+		await t.run(async (ctx) => {
+			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
+			let path = "";
+			for (let pathDepth = 1; pathDepth <= 100; pathDepth++) {
+				path = `${path}/a`;
+				parentId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: writer.db.organizationId,
+					workspaceId: writer.db.workspaceId,
+					createdBy: writer.db.userId,
+					updatedBy: writer.db.userId,
+					parentId,
+					name: "a",
+					sortName: files_sort_text_key("a"),
+					kind: "folder",
+					path,
+					treePath: `${path}/`,
+					// The Move has not reached these folders yet, so each one keeps a deeper old depth.
+					pathDepth: pathDepth + 10,
+				});
+			}
+			// Another folder is in a Move, so every path is found by name from the root.
+			const movingId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				createdBy: writer.db.userId,
+				updatedBy: writer.db.userId,
+				parentId: files_ROOT_ID,
+				name: "moving",
+				sortName: files_sort_text_key("moving"),
+				kind: "folder",
+				path: "/moving",
+				treePath: "/moving/",
+				pathDepth: 1,
+			});
+			await ctx.db.insert("files_move_source_reservations", {
+				cohortId: await test_db_hold_move_slot(ctx, writer.db),
+				source: { kind: "saved", id: movingId },
+				mode: "subtree",
+				userId: null,
+				generation: 1,
+			});
+		});
+		const prepare = (folders: number, name: string) =>
+			t.mutation(internal.public_api.prepare_file_write, {
+				organizationId: writer.db.organizationId,
+				workspaceId: writer.db.workspaceId,
+				userId: writer.db.userId,
+				principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
+				path: `/${Array<string>(folders).fill("a").join("/")}/${name}`,
+				overwrite: "fail",
+				contentType: "text/markdown",
+				yjsRootKind: "rich_text",
+				contentSize: 4,
+				yjsSnapshotSize: 7,
+			});
+
+		expect((await prepare(50, "f.md"))._nay).toBeUndefined();
+		expect((await prepare(100, "f.md"))._nay).toBeUndefined();
+		expect(reads[1]! - reads[0]!, "50 more folders on the path cost 50 more reads").toBe(50);
+		// The new name must be checked even though the folder's stored depth is deeper than the path.
+		expect(
+			await prepare(100, `${"n".repeat(files_NAME_MAX_LENGTH + 1)}.md`),
+			"a new name over the limit",
+		).toMatchObject({
+			_nay: { name: "invalid_input", message: "Names can have at most 255 characters." },
+		});
 	});
 
 	test("write and touch refuse a path with too many new folders with 400, before any upload", async () => {

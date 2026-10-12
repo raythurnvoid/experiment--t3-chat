@@ -187,7 +187,7 @@ async function private_folder(f: Fixture, name: string, parent: files_PendingPar
 	});
 }
 
-async function native_pending_scope(options: { otherFile?: boolean } = {}) {
+async function native_pending_scope(options: { otherFile?: boolean; editor?: boolean } = {}) {
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -220,6 +220,20 @@ async function native_pending_scope(options: { otherFile?: boolean } = {}) {
 			userIdToAdd: other.userId,
 		}),
 	).toEqual({ _yay: null });
+	// A third member with no draft yet. An invite changes the access clock, so it comes before the Move.
+	const editor = options.editor
+		? await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "editor", workspaceName: "editor-home" }),
+			)
+		: null;
+	if (editor)
+		expect(
+			await asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userIdToAdd: editor.userId,
+			}),
+		).toEqual({ _yay: null });
 	const proposals: Doc<"files_pending_updates">[] = [];
 	for (const userId of [db.userId, other.userId]) {
 		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId };
@@ -273,7 +287,18 @@ async function native_pending_scope(options: { otherFile?: boolean } = {}) {
 				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
 				.unique(),
 		);
-		if (slot?.cohortId) return { t, db, asUser, nodeId, otherNodeId, runId, cohortId: slot.cohortId, proposals };
+		if (slot?.cohortId)
+			return {
+				t,
+				db,
+				asUser,
+				nodeId,
+				otherNodeId,
+				editorUserId: editor?.userId,
+				runId,
+				cohortId: slot.cohortId,
+				proposals,
+			};
 		const job = await t.run((ctx) =>
 			ctx.db
 				.query("files_pending_overlay_jobs")
@@ -693,6 +718,238 @@ test("an edit of a big draft drains its old chunks while a Move holds another fi
 		chunks.filter((chunk) => chunk.sourceKind !== "pending" || chunk.proposalRevision !== current),
 		"old chunks of a draft the Move does not hold drain at once",
 	).toEqual([]);
+}, 120_000);
+
+test("draft expiry runs while another user's Move holds the workspace, and waits for a draft it holds", async () => {
+	const f = await native_pending_scope({ otherFile: true, editor: true });
+	const editorUserId = f.editorUserId!;
+	const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: editorUserId };
+	const target = { kind: "saved", id: f.otherNodeId! } as const;
+	const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+		...scope,
+		target,
+	});
+	if (batch._nay) throw new Error(batch._nay.message);
+	expect(
+		await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			...scope,
+			operationBatchId: batch._yay.operationBatchId,
+			role: "unstaged",
+			text: "Editor draft.\n",
+		}),
+	).toEqual({ _yay: null });
+	expect(
+		await f.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			...scope,
+			target,
+			operationBatchId: batch._yay.operationBatchId,
+		}),
+	).toEqual({ _yay: null });
+	const read = (id?: Id<"files_pending_updates">) =>
+		f.t.run(async (ctx) => ({
+			editorDraft: await ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_user_target", (q) =>
+					q.eq("userId", editorUserId).eq("target.kind", "saved").eq("target.id", f.otherNodeId!),
+				)
+				.unique(),
+			// The other user's draft on the moved file.
+			heldDraft: id ? await ctx.db.get("files_pending_updates", id) : null,
+			slot: await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+				)
+				.unique(),
+		}));
+	// Step the Move until it holds the moved file.
+	for (let pass = 0; pass < 1000; pass++) {
+		const reserved = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_move_source_reservations")
+				.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", f.nodeId))
+				.unique(),
+		);
+		if (reserved) break;
+		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: f.cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
+		if (pass === 999) throw new Error("The Move did not hold the moved file");
+	}
+	const before = await read(f.proposals[1]!._id);
+	if (!before.editorDraft || !before.heldDraft) throw new Error("Expected both drafts");
+	// Both owners are idle and both drafts are due.
+	vi.setSystemTime(Math.max(before.editorDraft.expiresAt, before.heldDraft.expiresAt) + 1);
+	await f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope);
+	await f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+		...scope,
+		userId: before.heldDraft.userId,
+	});
+
+	const after = await read(before.heldDraft._id);
+	expect(after.slot?.cohortId, "the Move still holds the workspace").toBe(f.cohortId);
+	expect(after.editorDraft, "a draft the Move does not hold expires while the Move runs").toBeNull();
+	expect(after.heldDraft, "a draft on the moved file waits for the Move").toEqual(before.heldDraft);
+}, 120_000);
+
+/**
+ * Copy the first pending doc of each table `count` times with the revision before, so the drain sees
+ * old docs. Returns the new IDs.
+ */
+async function insert_old_pending_docs(
+	f: Awaited<ReturnType<typeof native_pending_scope>>,
+	pendingUpdateId: Id<"files_pending_updates">,
+	counts: Partial<Record<"files_text_chunks" | "files_plain_text_chunks" | "files_metadata_docs", number>>,
+) {
+	return await f.t.run(async (ctx) => {
+		const ids: string[] = [];
+		for (const [table, count] of Object.entries(counts) as [keyof typeof counts, number][]) {
+			const doc =
+				table === "files_metadata_docs"
+					? await ctx.db
+							.query(table)
+							.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdateId))
+							.first()
+					: await ctx.db
+							.query(table)
+							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId))
+							.first();
+			if (doc?.sourceKind !== "pending") throw new Error(`Expected a pending doc in ${table}`);
+			const { _id: _id, _creationTime: _time, ...fields } = doc;
+			for (let index = 0; index < count; index++)
+				ids.push(await ctx.db.insert(table, { ...fields, proposalRevision: fields.proposalRevision - 1 } as never));
+		}
+		return ids;
+	});
+}
+
+/**
+ * The pending docs of a proposal that are not tagged by a Move and not at its current revision.
+ */
+async function read_old_pending_docs(
+	f: Awaited<ReturnType<typeof native_pending_scope>>,
+	pendingUpdateId: Id<"files_pending_updates">,
+) {
+	return await f.t.run(async (ctx) => {
+		const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
+		const current = proposal && files_pending_update_index_revision(proposal);
+		const docs: Doc<"files_metadata_docs" | "files_text_chunks" | "files_plain_text_chunks">[] = [
+			...(await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_pendingUpdate", (q) =>
+					q.eq("pendingUpdateId", pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+				)
+				.collect()),
+		];
+		for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const)
+			docs.push(
+				...(await ctx.db
+					.query(table)
+					.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+						q.eq("pendingUpdateId", pendingUpdateId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+					)
+					.collect()),
+			);
+		return docs.filter((doc) => doc.sourceKind !== "pending" || doc.proposalRevision !== current);
+	});
+}
+
+test("the drain removes old metadata docs of a draft while a Move holds another file", async () => {
+	const f = await native_pending_scope({ otherFile: true });
+	const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
+	const target = { kind: "saved", id: f.otherNodeId! } as const;
+	const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+		...scope,
+		target,
+	});
+	if (batch._nay) throw new Error(batch._nay.message);
+	expect(
+		await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			...scope,
+			operationBatchId: batch._yay.operationBatchId,
+			role: "unstaged",
+			text: "---\nstatus: draft\ntags: one\n---\n\nOther draft.\n",
+		}),
+	).toEqual({ _yay: null });
+	expect(
+		await f.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			...scope,
+			target,
+			operationBatchId: batch._yay.operationBatchId,
+		}),
+	).toEqual({ _yay: null });
+	const proposal = (await f.t.run((ctx) =>
+		ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_target", (q) =>
+				q.eq("userId", f.db.userId).eq("target.kind", "saved").eq("target.id", f.otherNodeId!),
+			)
+			.unique(),
+	))!;
+	await insert_old_pending_docs(f, proposal._id, { files_metadata_docs: 3 });
+	expect(await read_old_pending_docs(f, proposal._id)).toHaveLength(3);
+
+	await f.t.mutation(internal.files_pending_updates.drain_pending_update_docs, {
+		pendingUpdateId: proposal._id,
+		tableIndex: 2,
+	});
+	const slot = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) => q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId))
+			.unique(),
+	);
+	expect(slot?.cohortId, "the Move still holds the workspace").toBe(f.cohortId);
+	expect(await read_old_pending_docs(f, proposal._id), "old metadata docs drain while the Move runs").toEqual([]);
+}, 120_000);
+
+test("after a Stop, the drain removes many old docs of a proposal the Move held", async () => {
+	const f = await native_pending_scope();
+	const proposal = f.proposals[0]!;
+	const original = await pending_scope_docs(f, proposal);
+	// More old plain chunks than one drain page, and old docs in the tables before and after it.
+	await insert_old_pending_docs(f, proposal._id, {
+		files_text_chunks: 1,
+		files_plain_text_chunks: 600,
+		files_metadata_docs: 1,
+	});
+	for (let pass = 0; pass < 1000; pass++) {
+		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+		if ((await pending_scope_docs(f, proposal, "before")).plain.length > 0) break;
+		await f.t.action(internal.files_move_cohorts.run, {
+			cohortId: f.cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
+		if (pass === 999) throw new Error("Pending scope did not start");
+	}
+	// A drain that reached the plain chunks waits while the Move holds the proposal.
+	await f.t.mutation(internal.files_pending_updates.drain_pending_update_docs, {
+		pendingUpdateId: proposal._id,
+		tableIndex: 1,
+	});
+	expect(await f.asUser.mutation(api.files_transfer.stop, { membershipId: f.db.membershipId, runId: f.runId })).toEqual(
+		{ _yay: null },
+	);
+	await test_finish_transfer_run(f.asUser, f.runId);
+	// Run only the drain jobs that are already scheduled, page by page.
+	for (let pass = 0; pass < 50; pass++) {
+		const job = await f.t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).find(
+				(job) => job.name.includes("drain_pending_update_docs") && job.state.kind === "pending",
+			),
+		);
+		if (!job) break;
+		await f.t.run((ctx) => ctx.scheduler.cancel(job._id));
+		await f.t.mutation(internal.files_pending_updates.drain_pending_update_docs, job.args[0] as never);
+	}
+	expect(await read_old_pending_docs(f, proposal._id), "no old docs are left after the Stop").toEqual([]);
+	expect(await pending_scope_docs(f, proposal), "the current docs stay").toEqual(original);
 }, 120_000);
 
 test("public Move leaves unrelated drafts under an unchanged anchor in place", async () => {

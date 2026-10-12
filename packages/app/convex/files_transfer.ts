@@ -1739,11 +1739,20 @@ async function db_start(
 		if (normalized._nay || normalized._yay !== name) return Result({ _nay: { message: "Invalid folder name" } });
 	}
 	const newNames = args.targetName === null ? args.missingParentNames : [...args.missingParentNames, args.targetName];
-	// A Rename may make an older long path shorter.
+	// A Rename or a Move to a new name (one source) may make an older long path shorter.
+	const moveSource =
+		args.kind === "move" && args.targetName !== null && !args.rename
+			? await db_get_entry({
+					ctx,
+					run: { ...scope, ...sourceScope, sourceView },
+					target: args.sources[0]!,
+					reader: await files_visible_db_create_reader(ctx, { ...scope, ...sourceScope }),
+				})
+			: null;
 	const tooLong = files_check_name_and_path_length({
 		names: newNames,
 		path: newNames.reduce(path_join, args.targetPath),
-		oldPathLength: args.rename?.source.path.length,
+		oldPathLength: args.rename?.source.path.length ?? moveSource?.path.length,
 	});
 	if (tooLong._nay) return tooLong;
 
