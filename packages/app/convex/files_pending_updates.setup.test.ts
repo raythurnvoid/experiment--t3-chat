@@ -350,7 +350,7 @@ export async function seed_signed_in_file_with_markdown(
 /**
  * Seed a text file with collaboration off: a content asset, committed chunks, and no Yjs docs.
  * The name decides the shape (`.md` rich text, `.txt` plain text). The same seed as the fixture
- * in `files_nodes.test.ts`, on a mutation ctx instead of the test harness. The owner is a
+ * in `files_nodes.content_yjs.test.ts`, on a mutation ctx instead of the test harness. The owner is a
  * Clerk-backed user so its saves bill through the workpool the tests spy on; an anonymous user's
  * events take another path.
  */

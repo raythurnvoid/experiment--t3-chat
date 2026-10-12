@@ -23,7 +23,7 @@ const MAX_CHUNK_SIZE = 1200;
 // The cost is real but small: an over-size section is cut at a hard character offset, so a phrase lying
 // across the cut is in no single chunk and cannot be reported as an exact chunk match. Recall survives
 // because the full-text index scores each chunk on its own terms and both halves stay searchable — see
-// `bash.ts > finds content whose phrase spans a chunk boundary`. If boundary recall ever needs
+// `bash.search.test.ts > finds content whose phrase spans a chunk boundary`. If boundary recall ever needs
 // improving, split over-size sections on word boundaries rather than reintroducing overlap.
 const OVERLAP = 0;
 

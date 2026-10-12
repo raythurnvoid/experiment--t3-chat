@@ -16,6 +16,7 @@ import { list_tree_children } from "./files_nodes.ts";
 import { activities_db_require_by_source_id, activities_get_controls } from "./activities_db.ts";
 import { files_pending_update_runs_db_request_stop } from "./files_pending_update_runs.ts";
 import { files_transfer_db_request_stop } from "./files_transfer.ts";
+import { files_ancestor_ids } from "../shared/files.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -635,7 +636,7 @@ async function transfer_workspace() {
 	// Start a Move and step its group by hand until `isReady` holds.
 	const move = async (
 		sourceId: Id<"files_nodes">,
-		targetParentId: Id<"files_nodes">,
+		targetParentId: Id<"files_nodes"> | "root",
 		isReady: () => Promise<boolean>,
 	) => {
 		const started = await asUser.mutation(api.files_transfer.start, {
@@ -678,6 +679,27 @@ async function transfer_workspace() {
 }
 
 describe("Move cohort and folder-wide jobs", () => {
+	test("moving a folder to root clears its old ancestors", async () => {
+		const w = await transfer_workspace();
+		const P = await w.folder("/P");
+		const x = await w.folder("/P/x");
+		const inner = await w.folder("/P/x/inner");
+		expect(files_ancestor_ids((await w.node(x))!)).toEqual([P]);
+		await w.move(x, "root", async () => {
+			const moved = await w.node(x);
+			return moved?.path === "/x" && moved.moveCohortId === undefined;
+		});
+		await w.finish();
+		const moved = (await w.node(x))!;
+		const child = (await w.node(inner))!;
+		expect(moved.parentId).toBe("root");
+		expect(moved.path).toBe("/x");
+		expect(moved.moveCohortId).toBeUndefined();
+		expect(files_ancestor_ids(moved), "a Move to root clears every old ancestor field").toEqual([]);
+		expect(child.path).toBe("/x/inner");
+		expect(files_ancestor_ids(child), "the child keeps only its current ancestor").toEqual([x]);
+	});
+
 	test("Restrict reaches the items an unpublished Move holds", async () => {
 		const w = await transfer_workspace();
 		const P = await w.folder("/P");

@@ -1,4 +1,4 @@
-// Fixtures shared by files_nodes.test.ts and files_nodes.move_nodes.test.ts.
+// Fixtures shared by files_nodes.read_only.test.ts and files_nodes.move_nodes.test.ts.
 import { expect, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";

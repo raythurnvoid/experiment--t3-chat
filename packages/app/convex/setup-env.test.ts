@@ -1,3 +1,14 @@
+import { afterEach, vi } from "vitest";
+import { test_convex_teardown } from "./setup-teardown.test.ts";
+
+// Vitest runs this file again before each test file. Most convex test files share one worker and its
+// loaded modules (`isolate: false` in vitest.config.ts), so undo what an earlier file left behind:
+// some files never turn fake timers off or remove their global stubs.
+vi.useRealTimers();
+vi.unstubAllGlobals();
+
+afterEach(test_convex_teardown);
+
 if (process.env.AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED === undefined) {
 	process.env.AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED = "true";
 }

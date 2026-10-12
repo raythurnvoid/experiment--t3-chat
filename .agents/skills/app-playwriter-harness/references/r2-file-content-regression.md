@@ -32,7 +32,7 @@ vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bin
 Run these before browser QA:
 
 ```powershell
-vp env exec pnpm --dir packages/app exec vitest run convex/files_nodes.test.ts convex/files_nodes.move_nodes.test.ts convex/files_nodes.content_yjs.test.ts convex/r2.test.ts convex/files_pending_updates.test.ts convex/files_pending_updates.review.test.ts convex/files_pending_updates.structural.test.ts convex/data_deletion.test.ts src/lib/files-yjs-provider.test.ts
+vp env exec pnpm --dir packages/app exec vitest run convex/files_nodes.test.ts convex/files_nodes.read_only.test.ts convex/files_nodes.move_nodes.test.ts convex/files_nodes.content_yjs.test.ts convex/files_nodes.content_yjs_updates.test.ts convex/r2.test.ts convex/files_pending_updates.test.ts convex/files_pending_updates.review.test.ts convex/files_pending_updates.structural.test.ts convex/data_deletion.test.ts src/lib/files-yjs-provider.test.ts
 vp env exec pnpm --dir packages/app run test:once
 vp env exec pnpm --dir packages/r2-upload-finalizer test
 vp env exec pnpm --dir packages/app run lint
