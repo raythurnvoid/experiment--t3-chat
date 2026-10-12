@@ -6805,13 +6805,16 @@ describe("files read-only locks", () => {
 		expect(touched._nay?.message, "touch publish").toBe("Permission denied");
 	});
 
-	test("write and touch of an existing file check the scope it gets from its parents while a scope job runs", async () => {
+	test("write, fill, and touch of an existing file check the scope it gets from its parents while a scope job runs", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		stub_confirmed_deletes();
 		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-replace-stale-scope" });
 		const seeded = await write_file({ t, credential: writer.credential, path: "/a/b/old.md", content: "# O\n" });
 		expect(seeded.status).toBe(200);
+		// A file with no lock, so only access can stop the unchanged answer.
+		const plain = await write_file({ t, credential: writer.credential, path: "/a/b/plain.md", content: "# P\n" });
+		expect(plain.status).toBe(200);
 		const prepare = () =>
 			t.mutation(internal.public_api.prepare_file_write, {
 				organizationId: writer.db.organizationId,
@@ -6825,11 +6828,13 @@ describe("files read-only locks", () => {
 				contentSize: 4,
 				yjsSnapshotSize: 7,
 			});
-		// Stage both before the restrict, so their publish checks the file again.
+		// Stage these before the restrict, so their publish checks the file again.
 		const write = await prepare();
 		const touch = await prepare();
+		const fill = await prepare();
 		expect(write._nay).toBeUndefined();
 		expect(touch._nay).toBeUndefined();
+		expect(fill._nay).toBeUndefined();
 		const folder = await find_active_node({ t, db: writer.db, path: "/a" });
 		const file = await find_active_node({ t, db: writer.db, path: "/a/b/old.md" });
 		await t.run(async (ctx) => {
@@ -6860,6 +6865,27 @@ describe("files read-only locks", () => {
 			targetAnchor: touch._yay!.targetAnchor,
 		});
 		expect(touched._nay?.message, "touch publish").toBe("Permission denied");
+		const filled = await t.mutation(internal.public_api.publish_file_fill, {
+			stageId: fill._yay!.stageId,
+			content: "# F\n",
+			expectedNodeId: file!._id,
+		});
+		expect(filled._nay?.message, "fill publish").toBe("Permission denied");
+		// The routes ask before any mutation runs. They must not show the file's id, lock, or content.
+		const touchRoute = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ paths: ["/a/b/old.md"] }),
+		});
+		expect(touchRoute.status, "touch route").toBe(403);
+		const unchanged = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/a/b/plain.md",
+			content: "# P\n",
+			skipIfUnchanged: true,
+		});
+		expect(unchanged.status, "unchanged write route").toBe(403);
 	});
 
 	test("write and touch below a file answer 409 and say a file is in the way", async () => {
