@@ -2278,11 +2278,17 @@ const app_convex_schema = defineSchema({
 		errorCode: v.union(v.string(), v.null()),
 		errorMessage: v.union(v.string(), v.null()),
 		conflictItemId: v.union(v.id("files_move_cohort_items"), v.null()),
-		/** Repair steps that failed in a row. Each one doubles the wait before the next try. */
+		/**
+		 * Repair steps that failed in a row. Each one doubles the wait before the next try.
+		 */
 		repairFailureCount: v.optional(v.number()),
-		/** A failed repair does not try again before this time. */
+		/**
+		 * A failed repair does not try again before this time.
+		 */
 		repairNextRetryAt: v.optional(v.number()),
-		/** The error of the last failed repair step. */
+		/**
+		 * The error of the last failed repair step.
+		 */
 		repairLastError: v.optional(v.object({ name: v.string(), message: v.string() })),
 	})
 		.index("by_origin_run", ["origin.kind", "origin.runId"])

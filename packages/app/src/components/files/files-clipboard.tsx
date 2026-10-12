@@ -32,7 +32,7 @@ import {
 	type app_convex_FunctionReturnType,
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
-import { files_TRANSFER_SELECTION_PAGE_SIZE } from "@/lib/files.ts";
+import { files_MOVE_REPAIR_STUCK_CODE, files_MOVE_WAIT_CODE, files_TRANSFER_SELECTION_PAGE_SIZE } from "@/lib/files.ts";
 import {
 	files_move_intake_delete,
 	files_move_intake_load,
@@ -757,9 +757,9 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 				? "Loading…"
 				: run.step === "uploading" && !isTerminal && status !== "stopping"
 					? "Loading selection…"
-					: !isTerminal && run.activity.errorCode === "move_repair_stuck"
+					: !isTerminal && run.activity.errorCode === files_MOVE_REPAIR_STUCK_CODE
 						? "Files moved. Cleanup needs help."
-						: !isTerminal && run.activity.errorCode === "waiting_for_move"
+						: !isTerminal && run.activity.errorCode === files_MOVE_WAIT_CODE
 							? "Waiting for another Move in this workspace to finish."
 							: status === "queued" ||
 								  (status === "running" && (isSelecting || run.step === "discover" || run.step === "retry"))

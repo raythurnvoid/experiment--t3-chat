@@ -2003,8 +2003,8 @@ async function db_schedule_job(flush: Flush, scope: Omit<Scope, "userId">, input
  * Make a saved node's chunks and metadata docs follow its new path or archive state, in a
  * job. A job that has not started reads the node when it runs. One in the middle of a pass walks
  * once more when the pass ends, so steady writes cannot keep it from ending. One whose run failed
- * starts again. Callers must not
- * schedule the same node twice in parallel: both calls would insert a job doc.
+ * starts again. Callers must not schedule the same node twice in parallel: both calls would insert
+ * a job doc.
  */
 export async function files_pending_overlay_db_schedule_saved_scope(
 	ctx: MutationCtx,

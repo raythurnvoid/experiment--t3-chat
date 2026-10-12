@@ -722,6 +722,17 @@ export const files_IMPORT_MAX_ITEMS_PER_CALL = 50;
 export const files_TRANSFER_SELECTION_PAGE_SIZE = 100;
 
 /**
+ * The Activity `errorCode` of a published Move whose cleanup keeps failing. The files already
+ * moved, and the server keeps trying.
+ */
+export const files_MOVE_REPAIR_STUCK_CODE = "move_repair_stuck";
+
+/**
+ * The Activity `errorCode` while a Move or Paste waits for another Move in the workspace.
+ */
+export const files_MOVE_WAIT_CODE = "waiting_for_move";
+
+/**
  * What `files_nodes.create_upload_node` answers when the target path is taken and the caller
  * asked it to fail instead of replacing.
  *
@@ -751,6 +762,11 @@ export const files_PENDING_UPDATE_STALE_BASE_MESSAGE =
  * panel matches this message to show a "too deep" row instead of a generic error.
  */
 export const files_PENDING_PATH_TOO_DEEP_MESSAGE = "Pending path lookup exceeded its read limit.";
+
+/**
+ * A new path goes below a file. The create doors in `public_api.ts` answer it with 409.
+ */
+export const files_PATH_BELOW_FILE_MESSAGE = "An intermediate segment is owned by a file";
 
 export function files_create_tree_items_list_from_nodes(nodes: files_VisibleTreeNode[]) {
 	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
@@ -1053,7 +1069,9 @@ export const files_STORED_PATH_MAX_LENGTH = 4096;
  */
 export function files_check_name_and_path_length(args: { names?: string[]; path?: string; oldPathLength?: number }) {
 	if (args.names?.some((name) => name.length > files_NAME_MAX_LENGTH)) {
-		return Result({ _nay: { name: "name_too_long", message: "Names can have at most 255 characters." } });
+		return Result({
+			_nay: { name: "name_too_long", message: `Names can have at most ${files_NAME_MAX_LENGTH} characters.` },
+		});
 	}
 	if (
 		args.path !== undefined &&
@@ -1065,11 +1083,16 @@ export function files_check_name_and_path_length(args: { names?: string[]; path?
 			return Result({
 				_nay: {
 					name: "path_too_long",
-					message: `…/${name} would have a path of ${args.path.length.toLocaleString("en-US")} characters. Paths can have at most 1,024 characters. Shorten a folder name or move it higher.`,
+					message: `…/${name} would have a path of ${args.path.length.toLocaleString("en-US")} characters. Paths can have at most ${files_PATH_MAX_LENGTH.toLocaleString("en-US")} characters. Shorten a folder name or move it higher.`,
 				},
 			});
 		}
-		return Result({ _nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters." } });
+		return Result({
+			_nay: {
+				name: "path_too_long",
+				message: `Paths can have at most ${files_PATH_MAX_LENGTH.toLocaleString("en-US")} characters.`,
+			},
+		});
 	}
 	return Result({ _yay: null });
 }

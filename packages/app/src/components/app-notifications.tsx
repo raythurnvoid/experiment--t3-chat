@@ -25,6 +25,7 @@ import {
 } from "@/lib/app-convex-client.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
+import { files_MOVE_REPAIR_STUCK_CODE, files_MOVE_WAIT_CODE } from "@/lib/files.ts";
 import { cn } from "@/lib/utils.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import { app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
@@ -280,8 +281,8 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	const progress = activity.progress;
 	const isActive = activity.finishedAt === undefined;
 	// The files already moved, but a cleanup step keeps failing. The server keeps trying.
-	const isRepairStuck = isActive && activity.errorCode === "move_repair_stuck";
-	const isWaitingForMove = isActive && activity.errorCode === "waiting_for_move";
+	const isRepairStuck = isActive && activity.errorCode === files_MOVE_REPAIR_STUCK_CODE;
+	const isWaitingForMove = isActive && activity.errorCode === files_MOVE_WAIT_CODE;
 	const [now, setNow] = useState(Date.now);
 	useEffect(() => {
 		if (!isActive || activity.expectedFinishAt === undefined) return;
@@ -311,7 +312,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 			})
 			.catch((error) => {
 				console.error("[AppNotificationsActivityItem.handleRetryRepair] Failed to retry the Move cleanup", { error });
-				toast.error("Could not try again. Reconnect and try again.");
+				toast.error("Retry was not confirmed. Reconnect and try again.");
 			});
 	});
 

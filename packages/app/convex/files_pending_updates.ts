@@ -2833,11 +2833,13 @@ export const recover_file_pending_update_expiry_checks = internalMutation({
 });
 
 /**
- * How many rows one sweep pass handles, and how many retired states one cleanup task drains in it.
+ * How many docs one sweep pass handles, and how many retired states one cleanup task drains in it.
  * This keeps a pass under the per-mutation write limits.
  */
 const PENDING_STATE_SWEEP_BATCH_SIZE = 32;
-/** How many rows one sweep pass reads, handled or skipped, before it continues in a new pass. */
+/**
+ * How many docs one sweep pass reads, handled or skipped, before it continues in a new pass.
+ */
 const PENDING_STATE_SWEEP_ROW_LIMIT = 128;
 
 /**
@@ -2848,8 +2850,8 @@ const PENDING_STATE_SWEEP_ROW_LIMIT = 128;
  * the paths a crash or an abandoned tab left behind.
  *
  * Each pass walks the five tables in order from `cursor`. A pass that stops early schedules the
- * next one from where it stopped. A running Move refuses writes to its rows with `move_busy`, and
- * one throw would undo the whole pass. So rows in a workspace with a running Move are skipped,
+ * next one from where it stopped. A running Move refuses writes to its docs with `move_busy`, and
+ * one throw would undo the whole pass. So docs in a workspace with a running Move are skipped,
  * like draft expiry does, and the cursor moves past them. The next cron run starts from the top
  * again and deletes them after the Move ends.
  */
@@ -2857,9 +2859,13 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 	args: {
 		cursor: v.optional(
 			v.object({
-				/** The table the walk is in. Earlier tables are finished for this chain. */
+				/**
+				 * The table the walk is in. Earlier tables are finished for this chain.
+				 */
 				table: v.number(),
-				/** The last row passed in that table's index order, or null before its first row. */
+				/**
+				 * The last doc passed in that table's index order, or null before its first doc.
+				 */
 				after: v.union(v.object({ expiresAt: v.number(), creationTime: v.number() }), v.null()),
 			}),
 		),
@@ -2911,10 +2917,10 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 		type After = { expiresAt: number; creationTime: number } | null;
 		type Scope = Parameters<typeof isBusy>[0];
 		/**
-		 * Walk one table from `after` in index order. A large table spends one large value per row
-		 * it reads, even a skipped one. Only handled rows count toward `remainingHandled`, so skipped
-		 * rows still just move the cursor. `handle` returns false to retry its row in the next pass.
-		 * Returns "end", or the last row passed when the pass must stop.
+		 * Walk one table from `after` in index order. A large table spends one large value per doc
+		 * it reads, even a skipped one. Only handled docs count toward `remainingHandled`, so skipped
+		 * docs still just move the cursor. `handle` returns false to retry its doc in the next pass.
+		 * Returns "end", or the last doc passed when the pass must stop.
 		 */
 		const walk = async <Row extends Scope & { _creationTime: number }>(walkArgs: {
 			after: After;
@@ -3145,7 +3151,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 				break;
 			}
 		}
-		// Each pass deletes rows or moves the cursor, so the chain ends.
+		// Each pass deletes docs or moves the cursor, so the chain ends.
 		const done = table === tables.length;
 		if (!done && !args._test_disableReschedule) {
 			await ctx.scheduler.runAfter(0, internal.files_pending_updates.cleanup_expired_pending_state_rows, {
@@ -5585,7 +5591,9 @@ export async function files_pending_updates_db_remove_archived_node_proposal(
 	]);
 }
 
-/** The most docs one drain run reads. Convex allows one `.paginate()` per run, so a run is one page. */
+/**
+ * The most docs one drain run reads. Convex allows one `.paginate()` per run, so a run is one page.
+ */
 const DRAIN_PAGE_SIZE = 512;
 
 const DRAIN_TABLES = ["files_text_chunks", "files_plain_text_chunks", "files_metadata_docs"] as const;
@@ -5606,8 +5614,8 @@ export const drain_pending_update_docs = internalMutation({
 		const tableIndex = args.tableIndex ?? 0;
 		const table = DRAIN_TABLES[tableIndex];
 		if (!table) return null;
-		// The Move guard refuses these deletes only while a Move holds this proposal. Other drafts in the
-		// workspace drain at once. So wait for that Move, like expiry. Then start again from the first
+		// The Move guard refuses these deletes only while a Move holds this proposal. Other proposals in
+		// the workspace drain at once. So wait for that Move, like expiry. Then start again from the first
 		// table: a Stop puts the docs it tagged back in the range, maybe behind the cursor.
 		if (
 			await files_move_reservations_db_find_blocker(ctx.db, {

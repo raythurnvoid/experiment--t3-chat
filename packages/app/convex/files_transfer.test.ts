@@ -5089,7 +5089,7 @@ describe("copy deadline", () => {
 		await t.mutation(internal.files_transfer.handle_copy_complete, callback);
 		const finished = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
 		expect(finished).toMatchObject({
-			activity: { status: "timed_out", errorMessage: "Paste timed out", progress: { completed: 0, canceled: 1 } },
+			activity: { status: "timed_out", errorMessage: "Paste timed out.", progress: { completed: 0, canceled: 1 } },
 		});
 		vi.setSystemTime(deadlineAt + 1000);
 		await t.mutation(internal.files_transfer.handle_copy_complete, callback);

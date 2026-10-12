@@ -109,6 +109,7 @@ import {
 	type files_VisibleEntry,
 	files_check_name_and_path_length,
 	files_NAME_MAX_LENGTH,
+	files_MOVE_WAIT_CODE,
 } from "../shared/files.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -125,8 +126,6 @@ const ATTEMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const CHOICE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const STOP_BATCH_SIZE = 50;
-/** The Activity code while this run waits for another Move in the workspace. */
-const MOVE_WAIT_CODE = "waiting_for_move";
 
 const files_transfer_workpool = new Workpool(components.files_transfer_workpool, {
 	maxParallelism: MAX_IN_FLIGHT,
@@ -769,9 +768,9 @@ export async function files_transfer_db_request_stop(
 		errorMessage:
 			args.reason !== "timeout"
 				? null
-				: activity.errorCode === MOVE_WAIT_CODE
+				: activity.errorCode === files_MOVE_WAIT_CODE
 					? `Another Move in this workspace did not finish in time.${activity.progress?.completed ? "" : " Nothing was moved."} Try again later.`
-					: "Paste timed out",
+					: "Paste timed out.",
 		now: args.now,
 		errorCode: args.reason === "timeout" ? "timed_out" : "canceled",
 	});
@@ -801,7 +800,9 @@ async function db_resolve_name(
 		run: Doc<"files_transfer_runs">;
 		item: Doc<"files_transfer_items">;
 		membership: Doc<"organizations_workspaces_users">;
-		/** Null means a folder this run has not created yet, so nothing saved can be in it. */
+		/**
+		 * Null means a folder this run has not created yet, so nothing saved can be in it.
+		 */
 		parent: files_PendingParent | null;
 		parentPath: string;
 		reader?: Awaited<ReturnType<typeof files_visible_db_create_reader>>;
@@ -2754,10 +2755,11 @@ export const retry_remaining = mutation({
 			return Result({ _yay: { runId: previous._id, activityId: (await db_require_activity(ctx, previous._id))._id } });
 		}
 
+		const kindLabel = run.kind === "move" ? "Move" : "Copy";
 		// Retry reuses the old item list. It is complete only after discovery set the total.
 		if (!activities_is_active(activity.status) && activity.progress.total === null)
 			return Result({
-				_nay: { message: `This ${run.kind} stopped before it found all its files. Start a new ${run.kind} instead.` },
+				_nay: { message: `This ${kindLabel} stopped before it found all its files. Start a new ${kindLabel} instead.` },
 			});
 		if (!activities_get_controls(activity, run.userId).canRetry)
 			return Result({ _nay: { message: "This transfer has no stopped or failed work to retry" } });
@@ -3779,12 +3781,13 @@ export const advance = internalMutation({
 				updatedAt: Date.now(),
 				deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
 				// The card says why nothing moves. It never names the other Move or its files.
-				errorCode: MOVE_WAIT_CODE,
+				errorCode: files_MOVE_WAIT_CODE,
 			});
 			await ctx.scheduler.runAfter(1000, internal.files_transfer.advance, { runId: run._id });
 			return null;
 		}
-		if (activity.errorCode === MOVE_WAIT_CODE) await ctx.db.patch("activities", activity._id, { errorCode: undefined });
+		if (activity.errorCode === files_MOVE_WAIT_CODE)
+			await ctx.db.patch("activities", activity._id, { errorCode: undefined });
 
 		// Finish an owned group first. Rename then gets the next free boundary.
 		let waitingForRename = false;

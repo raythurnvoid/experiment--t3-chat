@@ -58,6 +58,7 @@ import {
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_check_name_and_path_length,
+	files_PATH_BELOW_FILE_MESSAGE,
 } from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
@@ -947,7 +948,7 @@ export const create_upload_target = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 		if (effectiveDestinationAclNode && effectiveDestinationAclNode.kind !== "folder") {
-			return Result({ _nay: { message: "An intermediate segment is owned by a file" } });
+			return Result({ _nay: { message: files_PATH_BELOW_FILE_MESSAGE } });
 		}
 
 		const writeContext: files_nodes_WriteContext = {

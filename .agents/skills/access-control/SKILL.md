@@ -836,7 +836,7 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
 - `isRestrictedScopeRoot` on `files_nodes` is a stored copy of `restrictedScopeNodeId === _id`, and
   committed metadata field docs carry the same copy. `files_nodes_db_set_restricted_scope` writes
   both whenever a node is restricted or unrestricted. The node streams of `list_tree_children` and
-  `list_tree_children_sorted` throw `should_never_happen` when a row's flag does not match the range
+  `list_tree_children_sorted` throw `should_never_happen` when a node's flag does not match the range
   it came from. The metadata stream leaves out a field doc whose node is archived, has another
   parent, or has another flag: a background job copies the node's scope onto its docs later, so the
   page can be short. A node of another workspace still throws. The share streams

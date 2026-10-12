@@ -39,6 +39,7 @@ import {
 	files_check_name_and_path_length,
 	files_check_new_folder_count,
 	files_check_request_path_length,
+	files_PATH_BELOW_FILE_MESSAGE,
 } from "../shared/files.ts";
 import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
@@ -202,8 +203,6 @@ const PLUGIN_SERVICE_PROCESSING_GRANT_TTL_MS = 6 * 24 * 60 * 60 * 1000;
 // references, so a stage must always die before its staged asset docs become sweepable.
 const FILE_WRITE_STAGE_TTL_MS = 15 * 60 * 1000;
 const FILE_WRITE_STAGE_CLEANUP_BATCH_SIZE = 25;
-// A new path goes below a file. The create doors answer it with 409.
-const PATH_BELOW_FILE_MESSAGE = "An intermediate segment is owned by a file";
 
 /** Stops buffering an unauthenticated request as soon as it crosses the route limit. */
 async function read_request_text_bounded(request: Request, maxBytes: number) {
@@ -3485,7 +3484,7 @@ export const publish_file_write = internalMutation({
 			});
 		}
 		// A file on the way blocks the create. The create helper would only answer `Not found` for it.
-		if (parentNode?.kind === "file") return Result({ _nay: { message: PATH_BELOW_FILE_MESSAGE } });
+		if (parentNode?.kind === "file") return Result({ _nay: { message: files_PATH_BELOW_FILE_MESSAGE } });
 		const pluginName = revalidated._yay.installation?.pluginName;
 		// Start at the folder found above, so the create does not walk the folders above it.
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -4094,7 +4093,7 @@ export const publish_file_touch = internalMutation({
 		}
 
 		// A file on the way blocks the create. The create helper would only answer `Not found` for it.
-		if (ancestor?.kind === "file") return Result({ _nay: { message: PATH_BELOW_FILE_MESSAGE } });
+		if (ancestor?.kind === "file") return Result({ _nay: { message: files_PATH_BELOW_FILE_MESSAGE } });
 		const pluginName = revalidated._yay.installation?.pluginName;
 
 		// Start at the folder found above, so the create does not walk the folders above it.
@@ -4571,7 +4570,7 @@ export const create_file_upload_targets = internalMutation({
 			const { node: parentNode, depth: parentDepth } = item.parent;
 			if (parentNode && parentNode.kind !== "folder") {
 				return Result({
-					_nay: { message: PATH_BELOW_FILE_MESSAGE, data: { path: item.path } },
+					_nay: { message: files_PATH_BELOW_FILE_MESSAGE, data: { path: item.path } },
 				});
 			}
 			// Check only the names this item adds: an older folder on the way and a replaced file keep their
@@ -7697,7 +7696,7 @@ export async function public_api_http_upload_urls(args: {
 						  created._nay.name === "move_busy" ||
 						  created._nay.message === "A file already exists at this path" ||
 						  created._nay.message === "The path cannot point to a folder" ||
-						  created._nay.message === PATH_BELOW_FILE_MESSAGE
+						  created._nay.message === files_PATH_BELOW_FILE_MESSAGE
 						? 409
 						: 400;
 		if (failedStatus === 401) {

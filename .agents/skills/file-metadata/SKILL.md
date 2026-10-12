@@ -496,7 +496,7 @@ answers its empty shape for a membership that is not the caller's.
   `by_org_ws_source_archive_docKind_field_*` with `sourceKind = "committed"`. With a folder only
   `eq` and `exists` run, as a `treePath` range of the folder's stored `treePath`; `prefix` and
   `range` with a folder get an empty page. Each row reads its node with one `get`, then one batch
-  read check. With a folder, the node's own `treePath` must be under it too: a move job gives the
+  read check. With a folder, the node's own `treePath` must be under it too: a move op gives the
   node its new path before its docs, so a doc can keep an old path for a while. The split guard is
   400 (comment at `SEARCH_SAVED_SPLIT_GUARD`). String prefix plans use `string_prefix_upper_bound`, which includes non-BMP text such as `op😀`.
 - `files_search_db_create_reader` serves the agent's `search`. It shares owner, ancestor, and permission reads across indexed results. It checks

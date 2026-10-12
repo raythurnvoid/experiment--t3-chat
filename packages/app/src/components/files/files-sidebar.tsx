@@ -327,7 +327,7 @@ const FILES_IMPORT_MAX_FILES = 1000;
 const FILES_IMPORT_MAX_CHUNK_BYTES = 1024 * 1024 * 1024;
 const FILES_IMPORT_PREPARE_CONCURRENCY = 4;
 const FILES_IMPORT_PUT_CONCURRENCY = 4;
-const FILES_IMPORT_TOAST_FAILED_PATHS = 5;
+const FILES_IMPORT_TOAST_MAX_PATHS = 5;
 const FILES_IMPORT_PROGRESS_TOAST_ID = "files-sidebar-import-progress";
 
 // `fromEvent` filters these junk files for drops but not for folder picker files, so the shared
@@ -359,7 +359,7 @@ const FILES_IMPORT_SKIP_REASON_TEXT: Record<FilesImportSkipReason, string> = {
 /**
  * Plain words for a server refusal or error. Unknown texts pass through without the final period.
  */
-function files_import_failure_reason(message: string) {
+function get_import_failure_reason(message: string) {
 	if (message.endsWith("Send fewer files per request.")) return "Too many folders in one request";
 	const plain: Record<string, string> = {
 		"Not found": "The target folder no longer exists",
@@ -390,11 +390,15 @@ type FilesImportStoreState = {
 	 * Existing upload objects still waiting for server confirmation.
 	 */
 	pendingConfirmation: number;
-	/** Existing files the user chose to skip in the conflict dialog. They are not a problem. */
+	/**
+	 * Existing files the user chose to skip in the conflict dialog. They are not a problem.
+	 */
 	skippedExisting: number;
 	/** Client-side and server-side skips, merged for the final report. */
 	skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }>;
-	/** `reason` is shown to the user next to the file. */
+	/**
+	 * `reason` is shown to the user next to the file.
+	 */
 	failed: Array<{ relativePath: string; reason: string }>;
 	/**
 	 * Non-empty exactly while the confirm modal is open.
@@ -708,7 +712,7 @@ function finish_import_run() {
 		})),
 	];
 	const listed = notImported
-		.slice(0, FILES_IMPORT_TOAST_FAILED_PATHS)
+		.slice(0, FILES_IMPORT_TOAST_MAX_PATHS)
 		.map(
 			(item) =>
 				`${item.relativePath.length > 60 ? `…${item.relativePath.slice(-59)}` : item.relativePath} (${item.reason})`,
@@ -754,7 +758,9 @@ async function run_folder_import(args: {
 	convex: ConvexReactClient;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
-	/** The target folder's path, `/` for the root. */
+	/**
+	 * The target folder's path, `/` for the root.
+	 */
 	parentPath: string;
 	entries: FilesImportEntry[];
 }) {
@@ -941,7 +947,7 @@ async function run_folder_import(args: {
 				// A thrown call wrote nothing, like a refusal. It fails only its own files: the later calls
 				// name other files and folders, so they can still pass.
 				if (!result) {
-					fail(chunk, files_import_failure_reason(thrownReason));
+					fail(chunk, get_import_failure_reason(thrownReason));
 					return "continue";
 				}
 				if (result._nay) {
@@ -953,7 +959,7 @@ async function run_folder_import(args: {
 					}
 
 					console.error("[FilesSidebar.runFolderImport] Failed to create upload nodes", { error: result._nay });
-					const reason = files_import_failure_reason(result._nay.message);
+					const reason = get_import_failure_reason(result._nay.message);
 					const refusedPath = result._nay.data?.path;
 					const refused = chunk.find((item) => item.normalizedPath === refusedPath);
 					if (refused) {
@@ -8186,11 +8192,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test.each<{
 			failure: string;
-			/** Answers to the first create calls, in order. Later calls succeed. */
+			/**
+			 * Answers to the first create calls, in order. Later calls succeed.
+			 */
 			answers: Array<(paths: string[]) => unknown>;
 			calls: number;
 			imported: number;
-			/** Index into `paths`, and the reason the toast shows. */
+			/**
+			 * Index into `paths`, and the reason the toast shows.
+			 */
 			failed: Array<readonly [number, string]>;
 		}>([
 			{

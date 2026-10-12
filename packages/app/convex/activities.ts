@@ -21,7 +21,7 @@ import {
 } from "./files_write_policy_runs.ts";
 import { files_archive_runs_db_delete_run_batch, files_archive_runs_db_request_stop } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_recover, files_subtree_ops_RECOVER_AFTER_MS } from "./files_subtree_ops.ts";
-import { files_move_cohorts_db_retry_repair_now, files_move_cohorts_REPAIR_STUCK_CODE } from "./files_move_cohorts.ts";
+import { files_move_cohorts_db_retry_repair_now } from "./files_move_cohorts.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { plugins_runtime_db_delete_run_history, plugins_runtime_db_timeout_run } from "./plugins_runtime.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -33,6 +33,7 @@ import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_MOVE_REPAIR_STUCK_CODE } from "../shared/files.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -310,7 +311,7 @@ export const retry_move_repair = mutation({
 			return Result({ _nay: { message: "Activity not found" } });
 		}
 		// The repair already went on, or the Move ended.
-		if (activity.errorCode !== files_move_cohorts_REPAIR_STUCK_CODE) return Result({ _yay: null });
+		if (activity.errorCode !== files_MOVE_REPAIR_STUCK_CODE) return Result({ _yay: null });
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
 		// A run has one group at a time, and it is the newest one.
@@ -441,7 +442,7 @@ async function db_keep_move_waiter(
 		.withIndex("by_worker", (q) => q.eq("worker.kind", worker.kind).eq("worker.id", worker.id))
 		.unique();
 	if (!waiter) return false;
-	// This deletes the row when no Move holds the workspace.
+	// This deletes the waiter doc when no Move holds the workspace.
 	if (
 		await files_move_reservations_db_pause_worker(ctx, { worker: waiter.worker, check: { wholeWorkspace: activity } })
 	)

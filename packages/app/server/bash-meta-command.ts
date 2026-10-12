@@ -41,7 +41,9 @@ function parse_field_path(value: unknown) {
 	}
 	// The index keeps no longer field, so a search for one would wrongly find nothing.
 	if (value.length > files_metadata_FIELD_PATH_MAX_LENGTH) {
-		return Result({ _nay: { message: "meta search fields can have at most 160 characters." } });
+		return Result({
+			_nay: { message: `meta search fields can have at most ${files_metadata_FIELD_PATH_MAX_LENGTH} characters.` },
+		});
 	}
 	const dotIndex = value.indexOf(".");
 	if (dotIndex <= 0 || dotIndex === value.length - 1) {
@@ -110,7 +112,11 @@ function parse_binary_args(value: unknown, operator: string) {
 	}
 	// The index cuts longer strings, so a longer value could match the wrong files.
 	if (typeof value[1] === "string" && value[1].length > files_metadata_SEARCH_VALUE_MAX_LENGTH) {
-		return Result({ _nay: { message: "meta search values can have at most 1,024 characters." } });
+		return Result({
+			_nay: {
+				message: `meta search values can have at most ${files_metadata_SEARCH_VALUE_MAX_LENGTH.toLocaleString("en-US")} characters.`,
+			},
+		});
 	}
 	return Result({ _yay: { fieldPath: fieldPath._yay, value: value[1] } });
 }

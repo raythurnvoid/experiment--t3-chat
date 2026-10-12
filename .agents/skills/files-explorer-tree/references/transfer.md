@@ -34,7 +34,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
   guaranteed to be included. Output starts only after discovery ends. The completed manifest stays
   fixed during Retry. So Retry needs a finished discovery: a run that stopped or failed while
   Activity `progress.total` is still null offers no Retry, and `retry_remaining` refuses it with
-  "This copy stopped before it found all its files. Start a new copy instead." Every publication checks source identity and destination placement. Copy into
+  "This Copy stopped before it found all its files. Start a new Copy instead." Every publication checks source identity and destination placement. Copy into
   a descendant is allowed when it cannot replace or merge into a captured source. It never discovers
   its own output. Move into a descendant is refused.
 - Full-folder Copy checks every included saved child. If one cannot be read, discovery refuses
@@ -58,8 +58,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Existing Move, scope, Archive and Restore repairs must finish before a new Move starts.
   A Move or Paste that waits for another Move's group checks every second and keeps its Activity
   deadline fresh. Its Activity has `errorCode: "waiting_for_move"`. If a fixed deadline ends that
-  wait, the message is `Another Move in this workspace did not finish in time.` A failing repair
-  keeps the slot and tries again after 30 s, doubling up to 1 h. Stuck repair runbook: see the
+  wait, the message is `Another Move in this workspace did not finish in time. Try again later.`,
+  with ` Nothing was moved.` before `Try again later.` when no item finished. A failing repair keeps
+  the slot and tries again after 30 s, doubling up to 1 h. Stuck repair runbook: see the
   troubleshooting skill (`Move repair stuck`).
 - Each preparation transaction checks current membership lifetime, source and destination access,
   local write rules and version pins. A moved folder carries protected children unchanged.

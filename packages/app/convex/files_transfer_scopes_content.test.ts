@@ -514,7 +514,7 @@ describe("complete folder Copy", () => {
 		});
 		const before = await f.t.run((ctx) => ctx.db.query("files_transfer_runs").collect());
 		expect(await f.asUser.mutation(api.files_transfer.retry_remaining, { ...args, requestId: "retry" })).toEqual({
-			_nay: { message: "This copy stopped before it found all its files. Start a new copy instead." },
+			_nay: { message: "This Copy stopped before it found all its files. Start a new Copy instead." },
 		});
 		await f.t.run(async (ctx) => {
 			expect(await ctx.db.query("files_transfer_runs").collect()).toEqual(before);
@@ -562,7 +562,7 @@ describe("complete folder Copy", () => {
 			controls: { canRetry: false },
 		});
 		expect(await f.asUser.mutation(api.files_transfer.retry_remaining, { ...args, requestId: "retry" })).toEqual({
-			_nay: { message: "This move stopped before it found all its files. Start a new move instead." },
+			_nay: { message: "This Move stopped before it found all its files. Start a new Move instead." },
 		});
 	});
 });

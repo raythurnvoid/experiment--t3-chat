@@ -10063,7 +10063,7 @@ export const search_saved = query({
 			);
 			return {
 				...result,
-				// A move job gives the node its new path first, and its docs get it later. So check the
+				// A move op gives the node its new path first, and its docs get it later. So check the
 				// folder on the node too: a doc with an old path must not show the file in its old folder.
 				page: await readable_rows(
 					nodes.filter((node) => folderTreePath === null || node?.treePath.startsWith(folderTreePath)),

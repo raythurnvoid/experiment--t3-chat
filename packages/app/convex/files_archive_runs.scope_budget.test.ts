@@ -10,6 +10,7 @@ import { api, internal } from "./_generated/api.js";
 import {
 	add_member,
 	archive,
+	find_node,
 	fixture,
 	read_node,
 	restore,
@@ -97,15 +98,12 @@ async function fill_max_chunks(f: Fixture, nodeIds: Array<Id<"files_nodes">>, he
 		expect(await test_fill_saved_file_with_max_chunks(f.t, nodeId, head)).toBeGreaterThan(2900);
 }
 
-async function find_node_id(f: Fixture, path: string) {
-	return await f.t.run(
-		async (ctx) => (await ctx.db.query("files_nodes").collect()).find((node) => node.path === path)!._id,
-	);
-}
-
 /**
  * Run the steps of an Archive or Restore job until it ends or waits. Returns the activity status.
  * A job that ended in the user's call returns no job.
+ *
+ * Not `run_to_end`: its `expect_consistent` reads every chunk of every file in one transaction, more
+ * than these max-size files fit in.
  */
 async function step_job_to_end(
 	f: Fixture,
@@ -175,7 +173,7 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 		const f = await fixture({ transactionLimits: test_LIMITS_AT_75_PERCENT });
 		const nodeIds = await max_files(f, [deep_path("a"), deep_path("b")]);
 
-		const archived = await archive(f, [await find_node_id(f, TOP_FOLDER)]);
+		const archived = await archive(f, [(await find_node(f, TOP_FOLDER))._id]);
 		expect(archived._nay).toBeUndefined();
 		expect(await step_job_to_end(f, archived._yay ?? null)).toBe("succeeded");
 		await finish_all_jobs(f);
@@ -187,7 +185,7 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 	test("folder Restore", async () => {
 		const f = await fixture({ transactionLimits: test_LIMITS_AT_75_PERCENT });
 		const nodeIds = await max_files(f, [deep_path("a"), deep_path("b")], { fill: false });
-		const topId = await find_node_id(f, TOP_FOLDER);
+		const topId = (await find_node(f, TOP_FOLDER))._id;
 		// Archive while the files are small, then give the archived files their full text.
 		expect(await step_job_to_end(f, (await archive(f, [topId]))._yay ?? null)).toBe("succeeded");
 		await fill_max_chunks(f, nodeIds);
@@ -341,7 +339,7 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 	test("Accept by another user is not blocked long after a big Archive", async () => {
 		const f = await fixture({ transactionLimits: test_LIMITS_AT_75_PERCENT });
 		await max_files(f, [deep_path("a"), deep_path("b")]);
-		const archived = await archive(f, [await find_node_id(f, TOP_FOLDER)]);
+		const archived = await archive(f, [(await find_node(f, TOP_FOLDER))._id]);
 		expect(archived._nay).toBeUndefined();
 		expect(await step_job_to_end(f, archived._yay ?? null)).toBe("succeeded");
 

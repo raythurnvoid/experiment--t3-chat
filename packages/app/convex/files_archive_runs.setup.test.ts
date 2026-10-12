@@ -340,6 +340,13 @@ export async function read_node(f: Fixture, nodeId: Id<"files_nodes">) {
 	return (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
 }
 
+export async function find_node(f: Fixture, path: string) {
+	const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+	const node = nodes.find((fileNode) => fileNode.path === path);
+	if (!node) throw new Error(`Missing node ${path}`);
+	return node;
+}
+
 /**
  * Make an archived node read-only. The lock API works on active nodes, so copy the policy from one.
  */

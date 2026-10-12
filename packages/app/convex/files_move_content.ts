@@ -357,25 +357,7 @@ function changes_saved_content(prepared: NonNullable<Doc<"files_move_cohort_cont
 }
 
 /**
- * Stage pages until a transaction limit is near. Root schedules the next call and owns the view switch.
- */
-export async function files_move_content_db_stage(ctx: MutationCtx, args: Context) {
-	const step: StageStep = { paginated: false, inputs: {} };
-	for (let pages = 1; ; pages++) {
-		const staged = await db_stage_page(ctx, args, step);
-		if (
-			staged._nay ||
-			staged._yay.done ||
-			step.paginated ||
-			pages >= STEP_MAX_PAGES ||
-			(await files_subtree_ops_db_is_near_limits(ctx))
-		)
-			return staged;
-	}
-}
-
-/**
- * One native page.
+ * One stage step. It reads at most one `.paginate()` page, the Convex limit per call.
  */
 async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 	const current = await db_current(ctx, args);
@@ -578,8 +560,8 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 		if (part < 2) {
 			const table = part === 0 ? "files_text_chunks" : "files_plain_text_chunks";
 			// The index is pendingUpdateId, moveView.cohortId, moveView.view, chunkIndex. Tagging sets
-			// moveView, so a tagged row leaves this range at once, also for later reads in this
-			// mutation. Each `take` from the start then gets the next untagged rows, with no cursor.
+			// moveView, so a tagged chunk leaves this range at once, also for later reads in this
+			// mutation. Each `take` from the start then gets the next untagged chunks, with no cursor.
 			const rows = await pending_chunks(table).take(PAGE_SIZE);
 			for (const row of rows) await ctx.db.patch(table, row._id, { moveView: beforeTag });
 			return await db_progress(ctx, content, "pending_text", rows.length < PAGE_SIZE ? part + 1 : part, null);
@@ -692,6 +674,24 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 		return await db_progress(ctx, content, "seal", 0, null);
 	}
 	return await db_seal(ctx, { content, cohort, proposal, node, afterPlaceId: record.afterPlaceId });
+}
+
+/**
+ * Stage pages until a transaction limit is near. Root schedules the next call and owns the view switch.
+ */
+export async function files_move_content_db_stage(ctx: MutationCtx, args: Context) {
+	const step: StageStep = { paginated: false, inputs: {} };
+	for (let pages = 1; ; pages++) {
+		const staged = await db_stage_page(ctx, args, step);
+		if (
+			staged._nay ||
+			staged._yay.done ||
+			step.paginated ||
+			pages >= STEP_MAX_PAGES ||
+			(await files_subtree_ops_db_is_near_limits(ctx))
+		)
+			return staged;
+	}
 }
 
 function db_after_proposal(args: {
@@ -1128,27 +1128,6 @@ export async function files_move_content_db_publish_accounting(ctx: MutationCtx,
 }
 
 /**
- * Move owned side pages back to normal, or remove the side that lost the switch, until a
- * transaction limit is near. True when every side is done.
- */
-async function db_cleanup_page(ctx: MutationCtx, content: Doc<"files_move_cohort_content">, mode: "finish" | "abort") {
-	const marker = `${mode}:`;
-	const progress = content.phaseCursor?.startsWith(marker) ? content.phaseCursor.slice(marker.length) : null;
-	if (progress === "done") return true;
-	let { part } = phase_cursor(progress);
-	const cohort = (await ctx.db.get("files_move_cohorts", content.cohortId))!;
-	const scope = { organizationId: cohort.organizationId, workspaceId: cohort.workspaceId };
-	for (let pages = 1; part < 14; pages++) {
-		if (await db_cleanup_part_page(ctx, { content, mode, part, scope })) part++;
-		if (pages >= STEP_MAX_PAGES || (await files_subtree_ops_db_is_near_limits(ctx))) {
-			await ctx.db.patch("files_move_cohort_content", content._id, { phaseCursor: `${marker}${part}|` });
-			return false;
-		}
-	}
-	return true;
-}
-
-/**
  * One page of one side part. True when the part is empty.
  */
 async function db_cleanup_part_page(
@@ -1226,7 +1205,7 @@ async function db_cleanup_part_page(
 								);
 	// Clearing or deleting each tag drains the range without storing a large metadata cursor.
 	// `take` lets one step run many pages, because Convex allows one `.paginate()` per function
-	// call. Chunks and metadata rows are small, and a Yjs update goes alone.
+	// call. Chunks and metadata docs are small, and a Yjs update goes alone.
 	const numItems = kind === 2 ? 1 : PAGE_SIZE;
 	const rows = await query.take(numItems);
 	for (const row of rows) {
@@ -1234,6 +1213,27 @@ async function db_cleanup_part_page(
 		else await ctx.db.patch(table, row._id, { moveView: undefined });
 	}
 	return rows.length < numItems;
+}
+
+/**
+ * Move owned side pages back to normal, or remove the side that lost the switch, until a
+ * transaction limit is near. True when every side is done.
+ */
+async function db_cleanup_page(ctx: MutationCtx, content: Doc<"files_move_cohort_content">, mode: "finish" | "abort") {
+	const marker = `${mode}:`;
+	const progress = content.phaseCursor?.startsWith(marker) ? content.phaseCursor.slice(marker.length) : null;
+	if (progress === "done") return true;
+	let { part } = phase_cursor(progress);
+	const cohort = (await ctx.db.get("files_move_cohorts", content.cohortId))!;
+	const scope = { organizationId: cohort.organizationId, workspaceId: cohort.workspaceId };
+	for (let pages = 1; part < 14; pages++) {
+		if (await db_cleanup_part_page(ctx, { content, mode, part, scope })) part++;
+		if (pages >= STEP_MAX_PAGES || (await files_subtree_ops_db_is_near_limits(ctx))) {
+			await ctx.db.patch("files_move_cohort_content", content._id, { phaseCursor: `${marker}${part}|` });
+			return false;
+		}
+	}
+	return true;
 }
 
 async function db_retire_states(

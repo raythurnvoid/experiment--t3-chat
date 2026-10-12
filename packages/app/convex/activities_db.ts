@@ -3,6 +3,7 @@
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_MOVE_REPAIR_STUCK_CODE } from "../shared/files.ts";
 
 /**
  * Maximum predicted duration, separate from the execution deadline.
@@ -35,7 +36,7 @@ export function activities_get_controls(activity: Doc<"activities">, userId: Id<
 			activities_is_active(activity.status) &&
 			activity.status !== "stopping" &&
 			// The files of a stuck Move repair are already moved. Stop cannot undo that.
-			activity.errorCode !== "move_repair_stuck" &&
+			activity.errorCode !== files_MOVE_REPAIR_STUCK_CODE &&
 			// Archive, move, and restrict have no Stop. A restore has Stop only while it waits for a clash choice.
 			activity.source.kind !== "files_subtree_op" &&
 			(activity.source.kind !== "files_archive_run" ||

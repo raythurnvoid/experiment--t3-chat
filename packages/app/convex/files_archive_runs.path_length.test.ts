@@ -11,10 +11,12 @@ import {
 	restore,
 	folder,
 	read_node,
+	find_node,
 	lock_archived,
 } from "./files_archive_runs.setup.test.ts";
 import { test_rename_node } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_NAME_MAX_LENGTH } from "../shared/files.ts";
 
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.
 beforeEach(() => {
@@ -26,14 +28,7 @@ afterEach(() => {
 });
 
 // Three folder names of 255 characters. `/p` and these make a path of 770 characters.
-const NAMES = [..."abc"].map((letter) => letter.repeat(255));
-
-async function find_node(f: Fixture, path: string) {
-	const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-	const node = nodes.find((fileNode) => fileNode.path === path);
-	if (!node) throw new Error(`Missing node ${path}`);
-	return node;
-}
+const NAMES = [..."abc"].map((letter) => letter.repeat(files_NAME_MAX_LENGTH));
 
 /**
  * Give the folder at `path` the name `name` and change no other node. Its archived items keep their

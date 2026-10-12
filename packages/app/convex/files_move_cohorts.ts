@@ -50,6 +50,7 @@ import {
 	files_derive_tree_path_for_file_node,
 	files_lowercase_extension,
 	files_check_name_and_path_length,
+	files_MOVE_REPAIR_STUCK_CODE,
 } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { path_join, path_extract_segments_from } from "../server/server-utils.ts";
@@ -93,14 +94,16 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 const WAKE_PAGE_SIZE = 8;
 const METADATA_PAGE_SIZE = 64;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
+const CLEANUP_DEADLINE_MS = 5 * 60 * 1000;
 const REPAIR_RETRY_MS = 30 * 1000;
 const REPAIR_RETRY_MAX_MS = 60 * 60 * 1000;
 const REPAIR_STUCK_COUNT = 8;
-/** After this many failed repair tries in a row, the starter sees that the Move needs help. */
+/**
+ * After this many failed repair tries in a row, the starter sees that the Move needs help.
+ */
 const REPAIR_HELP_COUNT = 3;
-export const files_move_cohorts_REPAIR_STUCK_CODE = "move_repair_stuck";
 const REPAIR_STUCK_MESSAGE =
-	"Your files are already in their new place. A cleanup step keeps failing. We try again on our own. Until it finishes, other moves, archives and access changes in this workspace wait.";
+	"Your files are already in their new place. A cleanup step keeps failing. We try again on our own. Until it finishes, other Moves, Archives and access changes in this workspace wait.";
 
 function placement_header(node: Doc<"files_nodes">) {
 	const {
@@ -2139,7 +2142,7 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 	});
 	// This last step skips `db_save_step`, so take the stuck notice away here too.
 	const activity = await activities_db_require_by_source_id(ctx, cohort.origin.runId);
-	if (activities_is_active(activity.status) && activity.errorCode === files_move_cohorts_REPAIR_STUCK_CODE)
+	if (activities_is_active(activity.status) && activity.errorCode === files_MOVE_REPAIR_STUCK_CODE)
 		await ctx.db.patch("activities", activity._id, { errorCode: undefined, errorMessage: null });
 	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.wake_waiters, { cohortId: cohort._id });
 	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.wake_owner_jobs, { cohortId: cohort._id });
@@ -2178,13 +2181,13 @@ async function db_save_step(
 	const needsHelp = (patch.repairFailureCount ?? 0) >= REPAIR_HELP_COUNT && cohort.publishedAt !== null;
 	if (
 		activities_is_active(activity.status) &&
-		(needsHelp ? activity.errorCode == null : activity.errorCode === files_move_cohorts_REPAIR_STUCK_CODE)
+		(needsHelp ? activity.errorCode == null : activity.errorCode === files_MOVE_REPAIR_STUCK_CODE)
 	)
 		await ctx.db.patch(
 			"activities",
 			activity._id,
 			needsHelp
-				? { errorCode: files_move_cohorts_REPAIR_STUCK_CODE, errorMessage: REPAIR_STUCK_MESSAGE }
+				? { errorCode: files_MOVE_REPAIR_STUCK_CODE, errorMessage: REPAIR_STUCK_MESSAGE }
 				: { errorCode: undefined, errorMessage: null },
 		);
 	if (cohort.publishedAt === null && cohort.phase !== "aborting") {
@@ -2195,6 +2198,20 @@ async function db_save_step(
 		}
 	}
 	await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id, delayMs });
+}
+
+/**
+ * An abort turns the saved view back to normal docs. Copy that onto the slot, which view reads use.
+ */
+async function db_save_slot_abort(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
+	const slot = await ctx.db
+		.query("files_move_workspace_slots")
+		.withIndex("by_workspace", (q) =>
+			q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
+		)
+		.unique();
+	if (slot?.cohortId === cohort._id)
+		await ctx.db.patch("files_move_workspace_slots", slot._id, { migrationDirection: "to_normal" });
 }
 
 async function db_abort(
@@ -2211,20 +2228,6 @@ async function db_abort(
 		errorMessage: error.message,
 	});
 	await db_save_slot_abort(ctx, cohort);
-}
-
-/**
- * An abort turns the saved view back to normal docs. Copy that onto the slot, which view reads use.
- */
-async function db_save_slot_abort(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
-	const slot = await ctx.db
-		.query("files_move_workspace_slots")
-		.withIndex("by_workspace", (q) =>
-			q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
-		)
-		.unique();
-	if (slot?.cohortId === cohort._id)
-		await ctx.db.patch("files_move_workspace_slots", slot._id, { migrationDirection: "to_normal" });
 }
 
 /**
@@ -2567,7 +2570,9 @@ export const resume = internalMutation({
 			v.object({
 				name: v.optional(v.string()),
 				message: v.string(),
-				/** The real error. Only repair keeps it, the user sees the message above. */
+				/**
+				 * The real error. Only repair keeps it, the user sees the message above.
+				 */
 				cause: v.optional(v.object({ name: v.string(), message: v.string() })),
 			}),
 			v.null(),
@@ -2663,37 +2668,10 @@ export const recover = internalMutation({
 });
 
 /**
- * For ops: groups whose repair failed several times in a row, most failures first.
- */
-export const list_stuck = internalQuery({
-	args: {},
-	returns: v.array(doc(app_convex_schema, "files_move_cohorts")),
-	handler: async (ctx) =>
-		await ctx.db
-			.query("files_move_cohorts")
-			.withIndex("by_repair_failure_count", (q) => q.gte("repairFailureCount", REPAIR_HELP_COUNT))
-			.order("desc")
-			.take(50),
-});
-
-/**
- * For ops: the same as the starter's "Try again now", without auth.
- */
-export const retry_now = internalMutation({
-	args: { cohortId: v.id("files_move_cohorts") },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
-		if (cohort) await files_move_cohorts_db_retry_repair_now(ctx, cohort);
-		return null;
-	},
-});
-
-/**
  * Cleanup sets the next deadline itself. Move it now, so another page does not start this group twice.
  */
 async function db_start_cleanup(ctx: MutationCtx, cohortId: Id<"files_move_cohorts">) {
-	await ctx.db.patch("files_move_cohorts", cohortId, { deadlineAt: Date.now() + 5 * 60 * 1000 });
+	await ctx.db.patch("files_move_cohorts", cohortId, { deadlineAt: Date.now() + CLEANUP_DEADLINE_MS });
 	await ctx.scheduler.runAfter(0, internal.files_move_cohorts.cleanup, { cohortId });
 }
 
@@ -2770,7 +2748,7 @@ export const cleanup = internalMutation({
 		if (waiter || ownerJob) {
 			await ctx.scheduler.runAfter(0, internal.files_move_cohorts.wake_waiters, args);
 			await ctx.scheduler.runAfter(0, internal.files_move_cohorts.wake_owner_jobs, args);
-			await ctx.db.patch("files_move_cohorts", cohort._id, { deadlineAt: Date.now() + 5 * 60 * 1000 });
+			await ctx.db.patch("files_move_cohorts", cohort._id, { deadlineAt: Date.now() + CLEANUP_DEADLINE_MS });
 			return null;
 		}
 		const content = await ctx.db
@@ -2779,7 +2757,7 @@ export const cleanup = internalMutation({
 			.first();
 		if (content) {
 			if (content.storageResourceCount > 0) {
-				await ctx.db.patch("files_move_cohorts", cohort._id, { deadlineAt: Date.now() + 5 * 60 * 1000 });
+				await ctx.db.patch("files_move_cohorts", cohort._id, { deadlineAt: Date.now() + CLEANUP_DEADLINE_MS });
 				return null;
 			}
 			await ctx.db.delete("files_move_cohort_content", content._id);
@@ -2824,7 +2802,7 @@ export const cleanup = internalMutation({
 							q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
 						)
 						.unique();
-					// A Move that still holds the slot needs the number. Its own cleanup removes the row later.
+					// A Move that still holds the slot needs the number. Its own cleanup removes this doc later.
 					if (search && !slot?.cohortId) await ctx.db.delete("files_move_search_generations", search._id);
 				}
 				await ctx.db.delete("files_move_cohorts", cohort._id);
@@ -2832,6 +2810,33 @@ export const cleanup = internalMutation({
 			}
 		}
 		await ctx.scheduler.runAfter(0, internal.files_move_cohorts.cleanup, args);
+		return null;
+	},
+});
+
+/**
+ * For ops: groups whose repair failed several times in a row, most failures first.
+ */
+export const list_stuck = internalQuery({
+	args: {},
+	returns: v.array(doc(app_convex_schema, "files_move_cohorts")),
+	handler: async (ctx) =>
+		await ctx.db
+			.query("files_move_cohorts")
+			.withIndex("by_repair_failure_count", (q) => q.gte("repairFailureCount", REPAIR_HELP_COUNT))
+			.order("desc")
+			.take(50),
+});
+
+/**
+ * For ops: the same as the starter's "Try again now", without auth.
+ */
+export const retry_now = internalMutation({
+	args: { cohortId: v.id("files_move_cohorts") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
+		if (cohort) await files_move_cohorts_db_retry_repair_now(ctx, cohort);
 		return null;
 	},
 });
