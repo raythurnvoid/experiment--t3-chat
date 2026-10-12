@@ -348,7 +348,8 @@ type FilesImportSkipReason =
 	| "path_too_long"
 	| "duplicate_after_normalization"
 	| "conflict"
-	| "path_blocked";
+	| "path_blocked"
+	| "storage_full";
 
 const FILES_IMPORT_SKIP_REASON_TEXT: Record<FilesImportSkipReason, string> = {
 	invalid_name: "Name not allowed",
@@ -361,6 +362,7 @@ const FILES_IMPORT_SKIP_REASON_TEXT: Record<FilesImportSkipReason, string> = {
 	// The server uses "conflict" for an existing file and for a refused permission alike.
 	conflict: "Already exists or not writable",
 	path_blocked: "Another item is in the way",
+	storage_full: "Not enough storage",
 };
 
 /**
@@ -930,6 +932,9 @@ async function run_folder_import(args: {
 		// writes nothing, so the list holds until a call succeeds. That call may create some of their
 		// parent folders, so it empties the list.
 		const tooDeepFolders: string[] = [];
+		// The free storage the server named when it refused a whole call. A later file over it cannot
+		// fit, so it fails without a call. It is not lowered after later calls; the server still checks.
+		let storageFreeBytes = Number.POSITIVE_INFINITY;
 
 		const process_chunk = async (chunkItems: FilesImportPlanItem[]): Promise<"continue" | "stop"> => {
 			const itemByPath = new Map(chunkItems.map((item) => [item.normalizedPath, item]));
@@ -949,6 +954,9 @@ async function run_folder_import(args: {
 				chunk = chunk.filter((item) => !tooDeep.includes(item));
 			};
 			drop_too_deep();
+			const tooBig = chunk.filter((item) => item.file.size > storageFreeBytes);
+			fail(tooBig, FILES_IMPORT_SKIP_REASON_TEXT.storage_full);
+			chunk = chunk.filter((item) => !tooBig.includes(item));
 			if (chunk.length === 0) {
 				return "continue";
 			}
@@ -1017,9 +1025,17 @@ async function run_folder_import(args: {
 						fail(chunk, "Not sent: too many files in this request were refused");
 						return "continue";
 					}
+					// The server skips each file that does not fit the storage left, so `storage_full` here
+					// means no file in this call fits. Keep what worked: the smaller files of later calls can
+					// still fit. Stop only when no storage is left.
+					if (result._nay.name === "storage_full") {
+						fail(chunk, FILES_IMPORT_SKIP_REASON_TEXT.storage_full);
+						storageFreeBytes = result._nay.data?.freeBytes ?? 0;
+						return storageFreeBytes > 0 ? "continue" : "stop";
+					}
 					fail(chunk, reason);
 					// A refusal about one path or the folder count fails only this call. Any other refusal
-					// (sign-in, target folder, storage) would refuse every later call too, so stop.
+					// (sign-in, target folder) would refuse every later call too, so stop.
 					return refusedPath !== undefined || result._nay.name === "too_many_folders" ? "continue" : "stop";
 				}
 
@@ -8383,10 +8399,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			},
 			{
 				failure: "is out of storage",
-				answers: [() => ({ _nay: { name: "storage_full", message: "This workspace has reached its storage limit." } })],
+				answers: [
+					() => ({
+						_nay: {
+							name: "storage_full",
+							message: "This workspace has reached its storage limit.",
+							data: { freeBytes: 0 },
+						},
+					}),
+				],
+				// No storage is left, so the run stops.
 				calls: 1,
 				imported: 0,
-				failed: [0, 1, 2, 3, 4].map((index) => [index, "This workspace has reached its storage limit"] as const),
+				failed: [0, 1, 2, 3, 4].map((index) => [index, "Not enough storage"] as const),
 			},
 		])("run_folder_import keeps the other chunks when a create call $failure", async (args) => {
 			// Five files in their own 21-folder chains: three, then two per call.
@@ -8442,6 +8467,118 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(createCalls).toBe(args.calls);
 			expect(useFilesImportStore.getState().phase).toBe("idle");
+		});
+
+		test("run_folder_import goes on after a file that does not fit the storage left", async () => {
+			// 51 files make two calls. The first call skips one file for storage and creates the others.
+			const paths = Array.from({ length: 51 }, (_, index) => `f${String(index).padStart(2, "0")}.pdf`);
+			let createCalls = 0;
+			const convexStub = {
+				query: async () => [],
+				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
+					createCalls += 1;
+					const items = mutationArgs.items.filter((item) => item.relativePath !== "f00.pdf");
+					return {
+						_yay: {
+							created: items.map((item) => ({
+								relativePath: item.relativePath,
+								nodeId: `node-${item.relativePath}`,
+								url: "https://r2.test/put",
+								headers: {},
+							})),
+							skipped:
+								items.length < mutationArgs.items.length ? [{ relativePath: "f00.pdf", reason: "storage_full" }] : [],
+						},
+					};
+				},
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 200 })),
+			);
+			const warningToast = vi.spyOn(toast, "warning").mockReturnValue("warning");
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries(paths.map((name) => test_file_with_path({ name, path: `./${name}` }))),
+				});
+				expect(warningToast).toHaveBeenCalledWith("Import finished: 50 imported, 1 skipped.", {
+					description: "Not imported: f00.pdf (Not enough storage).",
+				});
+			} finally {
+				vi.unstubAllGlobals();
+				warningToast.mockRestore();
+			}
+
+			expect(createCalls, "the next chunk is still sent").toBe(2);
+		});
+
+		test("run_folder_import sends the smaller files after a call where no file fits the storage left", async () => {
+			const freeBytes = 500 * 1024 * 1024;
+			const sized = (name: string, size: number) => {
+				const file = test_file_with_path({ name, path: `./${name}`, type: "video/mp4" });
+				Object.defineProperty(file, "size", { value: size });
+				return file;
+			};
+			const sent: string[][] = [];
+			const convexStub = {
+				query: async () => [],
+				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
+					const paths = mutationArgs.items.map((item) => item.relativePath);
+					sent.push(paths);
+					// Chunk 1 holds only the big video, and nothing in it fits.
+					if (sent.length === 1) {
+						return {
+							_nay: {
+								name: "storage_full",
+								message: "This workspace has reached its storage limit",
+								data: { freeBytes },
+							},
+						};
+					}
+					return {
+						_yay: {
+							created: paths.map((relativePath) => ({
+								relativePath,
+								nodeId: `node-${relativePath}`,
+								url: "https://r2.test/put",
+								headers: {},
+							})),
+							skipped: [],
+						},
+					};
+				},
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 200 })),
+			);
+			const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries([
+						// 1 GiB fills a call alone. The later 600 MB video is over the free bytes.
+						sized("a.mp4", 1024 * 1024 * 1024),
+						sized("b1.mp4", 7),
+						sized("b2.mp4", 7),
+						sized("c.mp4", 600 * 1024 * 1024),
+					]),
+				});
+				expect(sent.slice(1), "chunk 2 is sent without the file over the free bytes").toEqual([["b1.mp4", "b2.mp4"]]);
+				expect(errorToast).toHaveBeenCalledWith("Import finished: 2 imported, 2 failed.", {
+					description: "Not imported: a.mp4 (Not enough storage), c.mp4 (Not enough storage).",
+				});
+			} finally {
+				vi.unstubAllGlobals();
+				errorToast.mockRestore();
+			}
 		});
 
 		test("run_folder_import retries a refused chunk at most 5 times", async () => {
