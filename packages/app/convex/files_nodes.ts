@@ -3579,7 +3579,8 @@ export const create_upload_node = mutation({
  * item ends as created or as skipped with a reason. A malformed item (bad path shape, bad
  * name, bad size, duplicate target) still fails the whole call, because the client
  * pre-normalizes and only a buggy or hostile caller sends one. A file over the storage left is
- * skipped as "storage_full"; the call answers `storage_full` only when no file fits.
+ * skipped as "storage_full"; the call answers `storage_full` with the free bytes only when no
+ * file fits.
  *
  * Unlike `data_import.create_upload_targets`, assets keep `processingWorkId` unset, so the R2
  * event finalizer runs Markdown conversion and plugin dispatch like any single-file upload.
@@ -3628,6 +3629,9 @@ export const create_upload_nodes = mutation({
 			data: v.object({
 				retryAfterMs: v.optional(v.number()),
 				path: v.optional(v.string()),
+				// With `storage_full`: the caller's own free workspace storage, so the client can still
+				// send the smaller files of later calls.
+				freeBytes: v.optional(v.number()),
 			}),
 		},
 	}),
@@ -3984,6 +3988,15 @@ export const create_upload_nodes = mutation({
 		});
 		if (admission._nay) return admission;
 		const refusedIndexes = new Set(admission._yay.refusedIndexes);
+		if (runnable.length > 0 && refusedIndexes.size === runnable.length) {
+			return Result({
+				_nay: {
+					name: "storage_full",
+					message: quotas.stored_file_bytes.disabledReason,
+					data: { freeBytes: admission._yay.freeBytes },
+				},
+			});
+		}
 
 		const created: Array<{
 			relativePath: string;

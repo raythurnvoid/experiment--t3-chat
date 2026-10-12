@@ -2965,7 +2965,7 @@ describe("files_nodes.create_upload_nodes", () => {
 				{ relativePath: "new.bin", size: 6 },
 			],
 		});
-		expect(result._nay?.name).toBe("storage_full");
+		expect(result._nay).toMatchObject({ name: "storage_full", data: { freeBytes: 0 } });
 		expect(
 			await t.run(async (ctx) => ({
 				nodes: await ctx.db.query("files_nodes").collect(),
@@ -3033,6 +3033,15 @@ describe("files_nodes.create_upload_nodes", () => {
 		expect(result._yay?.skipped).toEqual([{ relativePath: "keep.bin", reason: "storage_full" }]);
 		const kept = await t.run((ctx) => ctx.db.get("files_nodes", original._yay.nodeId));
 		expect(kept?.archiveOperationId, "the skipped replace keeps the old file").toBeNull();
+
+		// Admission reserves nothing, so 100 bytes are still free. When no file fits, the call says so.
+		const refused = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "replace",
+			items: [{ relativePath: "c.bin", size: 200 }],
+		});
+		expect(refused._nay).toMatchObject({ name: "storage_full", data: { freeBytes: 100 } });
 	});
 
 	test("creates nested files with presigned urls and reuses folders across calls", async () => {

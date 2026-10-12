@@ -28,7 +28,9 @@ export async function files_stored_uploads_db_admit(
 		billedUserId?: Id<"users">;
 		/**
 		 * Admit the items that fit and return the indexes of the others, instead of refusing the
-		 * whole batch. Only the app folder import uses it. The API doors keep an atomic batch.
+		 * whole batch. It also returns the free bytes left after the admitted items. The caller decides
+		 * what to do when nothing fits. Only the app folder import uses it. The API doors keep an
+		 * atomic batch.
 		 */
 		admitWhatFits?: boolean;
 	},
@@ -63,16 +65,17 @@ export async function files_stored_uploads_db_admit(
 				freeBytes -= bytes;
 			}
 		}
-		// Refuse the call only when nothing fits. An empty batch asks for no bytes, so it passes.
-		if (refusedIndexes.length > 0 && refusedIndexes.length === args.declaredBytes.length) {
-			return Result({ _nay: { name: "storage_full", message: quotas.stored_file_bytes.disabledReason } });
-		}
 	} else if (totalBytes > freeBytes) {
 		// An atomic batch: one item over the cap refuses all of them.
 		return Result({ _nay: { name: "storage_full", message: quotas.stored_file_bytes.disabledReason } });
 	}
-	// Atomic callers keep the `{ billedUserId }` answer, which some return validators check.
-	return Result({ _yay: args.admitWhatFits ? { billedUserId, refusedIndexes } : { billedUserId } });
+	// Atomic callers keep the `{ billedUserId }` answer, which some return validators check. Usage can
+	// pass the cap when accepted uploads settle late, so the free bytes never go below 0.
+	return Result({
+		_yay: args.admitWhatFits
+			? { billedUserId, refusedIndexes, freeBytes: Math.max(0, freeBytes) }
+			: { billedUserId },
+	});
 }
 
 /**
