@@ -3,7 +3,7 @@ import "./main-app-header.css";
 import { memo, useEffect, useState, type ComponentPropsWithRef } from "react";
 import { useQuery } from "convex/react";
 import { useMatch, useNavigate } from "@tanstack/react-router";
-import { ChevronsUpDown } from "lucide-react";
+import { ChevronsUpDown, Github } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppNotifications } from "@/components/app-notifications.tsx";
@@ -19,6 +19,7 @@ import {
 	type MainAppHeaderOrganizationSwitcherModal_IntegrationPolicyTarget,
 } from "@/components/main-app-header-organization-controls-modal.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyModal, MyModalTrigger } from "@/components/my-modal.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
@@ -813,6 +814,17 @@ export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Pr
 				<FilesSearchPalette />
 				<AppNotifications />
 				{!isFilesRoute && <MainAppHeaderBillingIndicator />}
+				<MyIconButton
+					variant="ghost-highlightable"
+					tooltip="Open GitHub repository"
+					onClick={() =>
+						window.open("https://github.com/raythurnvoid/experiment--t3-chat", "_blank", "noopener,noreferrer")
+					}
+				>
+					<MyIconButtonIcon>
+						<Github aria-hidden />
+					</MyIconButtonIcon>
+				</MyIconButton>
 			</div>
 		</header>
 	);
