@@ -1,7 +1,7 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
-import { api, components, internal } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { getFunctionName } from "convex/server";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_drain_billing_usage_event_outbox, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -3530,15 +3530,14 @@ describe("public files API", () => {
 		});
 		expect(created._nay).toBeUndefined();
 
+		// Keep wrong-scope calls from refilling the principal budget on a slow machine.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now());
 		const readResponse = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(created._yay!.credential),
 			body: JSON.stringify({ path: "/anything.md" }),
 		});
 		expect(readResponse.status).toBe(403);
-		// The principal bucket has 4 shards. A random pick of two can refuse early and leave tokens in
-		// the others, so the last call could pass. A fixed `Math.random` reads the same two shards.
-		vi.spyOn(Math, "random").mockReturnValue(0);
 		let lastWrongScopeStatus = readResponse.status;
 		for (let index = 0; index < 20; index += 1) {
 			const response = await t.fetch("/api/v1/files/read", {
@@ -4010,12 +4009,6 @@ describe("files list hidden paths", () => {
 			const paths: string[] = [];
 			const cursors: string[] = [];
 			for (let cursor: string | null = null; ;) {
-				// The route bucket has 4 shards, and each call takes its token from one of 2 random shards.
-				// So the 18 pages in a row could get a random 429. Give the key its tokens back.
-				await t.mutation(components.rate_limiter.lib.resetRateLimit, {
-					name: "public_api_principal",
-					key: `user_api_key:${credential.split(".")[0]}:/api/v1/files/list`,
-				});
 				const page = await list(t, credential, { path: "/", recursive: true, limit: 1, cursor });
 				expect(page.status).toBe(200);
 				paths.push(...page.body.items.map((item) => item.path));
