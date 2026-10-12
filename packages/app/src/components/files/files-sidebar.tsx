@@ -362,6 +362,10 @@ const FILES_IMPORT_SKIP_REASON_TEXT: Record<FilesImportSkipReason, string> = {
 function get_import_failure_reason(message: string) {
 	if (message.endsWith("Send fewer files per request.")) return "Too many folders in one request";
 	const plain: Record<string, string> = {
+		Unauthenticated: "Sign in again",
+		Unauthorized: "You can't add files here",
+		"Permission denied": "You can't add files here",
+		"Too many files": "Too many files in one import",
 		"Not found": "The target folder no longer exists",
 		"Duplicate path in batch": "Same path as another file",
 		"Path must be relative and normalized": "Path not allowed",
@@ -483,10 +487,11 @@ type FilesImportPlanItem = {
 	normalizedPath: string;
 	contentType: string | undefined;
 	/**
-	 * The full path is over the length limit. The server still takes it when it replaces an existing
-	 * file, so the import skips it only after the conflict check says nothing is there.
+	 * The path has too many new folders or is over the length limit. The server checks neither for a
+	 * file it replaces, so the import skips it with this reason only after the conflict check says
+	 * nothing is there.
 	 */
-	pathTooLong?: true;
+	replaceOnly?: "too_deep" | "path_too_long";
 };
 
 /**
@@ -565,22 +570,18 @@ function build_import_plan(entries: FilesImportEntry[], parentPath: string) {
 		) {
 			invalidSkillPaths.push(entry.relativePath);
 		}
-		// The server refuses the whole call for a path over these limits, so skip the file here. Every
-		// folder on the relative path counts as new: the client does not know which ones exist. A long
-		// path that replaces an existing file is allowed, so a non-skill one is only marked here.
-		const pathTooLong =
-			(parentPath === "/" ? 0 : parentPath.length) + 1 + normalizedPath.length > files_PATH_MAX_LENGTH;
-		const depthOrLengthSkip =
+		// The server refuses the whole call for a path over these limits. Every folder on the relative
+		// path counts as new: the client does not know which ones exist. A path that replaces an existing
+		// file is allowed, so a non-skill one is only marked here. A skill file stops the import.
+		const replaceOnly =
 			normalizedSegments.length - 1 > files_NEW_FOLDER_DEPTH_MAX
 				? "too_deep"
-				: pathTooLong && skillRoot !== undefined
+				: (parentPath === "/" ? 0 : parentPath.length) + 1 + normalizedPath.length > files_PATH_MAX_LENGTH
 					? "path_too_long"
 					: null;
-		if (depthOrLengthSkip) {
-			if (skillRoot !== undefined) {
-				invalidSkillPaths.push(entry.relativePath);
-			}
-			skipped.push({ relativePath: entry.relativePath, reason: depthOrLengthSkip });
+		if (replaceOnly && skillRoot !== undefined) {
+			invalidSkillPaths.push(entry.relativePath);
+			skipped.push({ relativePath: entry.relativePath, reason: replaceOnly });
 			continue;
 		}
 
@@ -602,7 +603,7 @@ function build_import_plan(entries: FilesImportEntry[], parentPath: string) {
 			relativePath: entry.relativePath,
 			normalizedPath,
 			contentType,
-			...(pathTooLong ? { pathTooLong: true as const } : {}),
+			...(replaceOnly ? { replaceOnly } : {}),
 		});
 	}
 
@@ -820,17 +821,17 @@ async function run_folder_import(args: {
 			conflicts.push(...chunkConflicts);
 		}
 
-		// A path over the length limit imports only over an existing file, which the server then
-		// replaces or skips. Skip the other long paths now.
+		// A path with too many new folders or over the length limit imports only over an existing file,
+		// which the server then replaces or skips. Skip the others now.
 		const existingPaths = new Set(conflicts.map((conflict) => conflict.relativePath));
-		const createItems = uploadItems.filter((item) => !item.pathTooLong || existingPaths.has(item.normalizedPath));
+		const createItems = uploadItems.filter((item) => !item.replaceOnly || existingPaths.has(item.normalizedPath));
 		if (createItems.length < uploadItems.length) {
 			useFilesImportStore.setState((state) => ({
 				skipped: [
 					...state.skipped,
 					...uploadItems
 						.filter((item) => !createItems.includes(item))
-						.map((item) => ({ relativePath: item.relativePath, reason: "path_too_long" as const })),
+						.map((item) => ({ relativePath: item.relativePath, reason: item.replaceOnly! })),
 				],
 			}));
 		}
@@ -915,7 +916,6 @@ async function run_folder_import(args: {
 					failed: [...state.failed, ...items.map((item) => ({ relativePath: item.relativePath, reason }))],
 				}));
 			let chunk = chunkItems;
-			let retriedWithoutRefusedPath = false;
 			// Create the chunk's nodes, waiting out rate limits instead of failing the run. The
 			// bulk bucket refills at a fixed rate, so big imports pause between chunks by design.
 			let createdItems: FilesImportCreatedItem[] | null = null;
@@ -964,14 +964,11 @@ async function run_folder_import(args: {
 					const refused = chunk.find((item) => item.normalizedPath === refusedPath);
 					if (refused) {
 						// The server checks every input before its first write, so the call wrote nothing. Only
-						// the named file fails with this reason. Retry once without it, so the others import.
+						// the named file fails with this reason. Retry without it, so each refused file gets its
+						// own reason and the others import. Each retry drops one file, so this ends.
 						fail([refused], reason);
 						chunk = chunk.filter((item) => item !== refused);
-						if (!retriedWithoutRefusedPath && chunk.length > 0) {
-							retriedWithoutRefusedPath = true;
-							continue;
-						}
-						fail(chunk, "Another file in the same request was refused");
+						if (chunk.length > 0) continue;
 						return "continue";
 					}
 					fail(chunk, reason);
@@ -8059,15 +8056,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(plan.invalidSkillPaths).toEqual(["one/references/Output_Format.md", "one/references/readme.md"]);
 		});
 
-		test("build_import_plan keeps 32 new folders and skips 33", () => {
+		test("build_import_plan keeps 32 new folders and marks 33", () => {
 			const folders = (count: number) => Array.from({ length: count }, (_, index) => `d${index}`).join("/");
 			const fits = test_file_with_path({ name: "leaf.pdf", path: `/${folders(32)}/leaf.pdf` });
 			const deep = test_file_with_path({ name: "leaf.pdf", path: `/${folders(33)}/leaf.pdf` });
 
 			const plan = build_import_plan(get_import_file_entries([fits, deep]), "/");
 
-			expect(plan.items.map((item) => item.normalizedPath)).toEqual([`${folders(32)}/leaf.pdf`]);
-			expect(plan.skipped).toEqual([{ relativePath: `${folders(33)}/leaf.pdf`, reason: "too_deep" }]);
+			// The run skips the deep one only when no existing file is there to replace.
+			expect(plan.items.map((item) => [item.normalizedPath, item.replaceOnly])).toEqual([
+				[`${folders(32)}/leaf.pdf`, undefined],
+				[`${folders(33)}/leaf.pdf`, "too_deep"],
+			]);
+			expect(plan.skipped).toEqual([]);
 		});
 
 		test("build_import_plan marks a path over 1,024 characters with the target folder's path", () => {
@@ -8081,13 +8082,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const plan = build_import_plan(get_import_file_entries([fits, long]), parentPath);
 
 			// The run skips the long one only when no existing file is there to replace.
-			expect(plan.items.map((item) => [item.normalizedPath, item.pathTooLong])).toEqual([
+			expect(plan.items.map((item) => [item.normalizedPath, item.replaceOnly])).toEqual([
 				[fitsPath, undefined],
-				[`${"d".repeat(116)}/ab.pdf`, true],
+				[`${"d".repeat(116)}/ab.pdf`, "path_too_long"],
 			]);
 			expect(plan.skipped).toEqual([]);
 			// At the root the same relative path fits.
-			expect(build_import_plan(get_import_file_entries([long]), "/").items[0]!.pathTooLong).toBeUndefined();
+			expect(build_import_plan(get_import_file_entries([long]), "/").items[0]!.replaceOnly).toBeUndefined();
 		});
 
 		test("build_import_plan skips a name over 255 characters", () => {
@@ -8098,6 +8099,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(plan.items).toEqual([]);
 			expect(plan.skipped).toEqual([{ relativePath: `docs/${longName}`, reason: "invalid_name" }]);
+		});
+
+		test("get_import_failure_reason names server refusals in plain words", () => {
+			expect(
+				["Unauthenticated", "Unauthorized", "Permission denied", "Too many files", "Some new refusal."].map(
+					get_import_failure_reason,
+				),
+			).toEqual([
+				"Sign in again",
+				"You can't add files here",
+				"You can't add files here",
+				"Too many files in one import",
+				"Some new refusal",
+			]);
 		});
 
 		test("chunk_import_items bounds chunks by count and by declared bytes", () => {
@@ -8248,12 +8263,31 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					}),
 					(paths: string[]) => ({ _nay: { message: "Duplicate path in batch", data: { path: paths[1] } } }),
 				],
-				calls: 3,
-				imported: 2,
+				// Each retry drops the file it named. The third call imports the last file of the first chunk.
+				calls: 4,
+				imported: 3,
 				failed: [
 					[0, "Paths can have at most 1,024 characters"],
 					[1, "Same path as another file"],
-					[2, "Another file in the same request was refused"],
+				],
+			},
+			{
+				failure: "refuses every path in turn, with a rate limit between",
+				answers: [
+					(paths: string[]) => ({ _nay: { message: "Duplicate path in batch", data: { path: paths[0] } } }),
+					() => ({ _nay: { name: "nay", message: "Rate limit exceeded", data: { retryAfterMs: 5 } } }),
+					(paths: string[]) => ({
+						_nay: { message: "Path contains an invalid folder name", data: { path: paths[1] } },
+					}),
+					(paths: string[]) => ({ _nay: { message: "Path ends in an invalid file name", data: { path: paths[2] } } }),
+				],
+				// The rate limit is waited out and is no refusal. No file is left, so the next chunk goes on.
+				calls: 5,
+				imported: 2,
+				failed: [
+					[0, "Same path as another file"],
+					[1, "Folder name not allowed"],
+					[2, "Name not allowed"],
 				],
 			},
 			{
@@ -8281,6 +8315,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				calls: 1,
 				imported: 0,
 				failed: [0, 1, 2, 3, 4].map((index) => [index, "The target folder no longer exists"] as const),
+			},
+			{
+				failure: "is signed out",
+				answers: [() => ({ _nay: { message: "Unauthenticated" } })],
+				calls: 1,
+				imported: 0,
+				failed: [0, 1, 2, 3, 4].map((index) => [index, "Sign in again"] as const),
 			},
 			{
 				failure: "is out of storage",
@@ -8424,38 +8465,52 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 		});
 
-		test("run_folder_import sends a path over 1,024 characters only to replace an existing file", async () => {
-			const parentPath = `/${"p".repeat(1020)}`;
+		test.each([
+			{
+				case: "a path over 1,024 characters",
+				parentPath: `/${"p".repeat(1020)}`,
+				folder: "",
+				reason: "Path over 1,024 characters",
+			},
+			{
+				// The server counts only new folders, and an existing file has none.
+				case: "a file under 33 folders",
+				parentPath: "/",
+				folder: `${Array.from({ length: 33 }, (_, index) => `d${index}`).join("/")}/`,
+				reason: "More than 32 new folders",
+			},
+		])("run_folder_import sends $case only to replace an existing file", async ({ parentPath, folder, reason }) => {
 			const sent: string[] = [];
 			const convexStub = {
 				// Only `old.pdf` already exists.
-				query: async () => [{ relativePath: "old.pdf", kind: "file" }],
+				query: async () => [{ relativePath: `${folder}old.pdf`, kind: "file" }],
 				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
 					sent.push(...mutationArgs.items.map((item) => item.relativePath));
 					return { _yay: { created: [], skipped: [] } };
 				},
 			} as unknown as ConvexReactClient;
 			const warningToast = vi.spyOn(toast, "warning").mockReturnValue("warning");
+			// Choose "replace" when the conflict modal opens.
+			const unsubscribe = useFilesImportStore.subscribe((state) => state.confirmResolver?.("replace"));
 			try {
-				const run = run_folder_import({
+				await run_folder_import({
 					convex: convexStub,
 					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 					parentId: "parent" as app_convex_Id<"files_nodes">,
 					parentPath,
 					entries: get_import_file_entries([
-						test_file_with_path({ name: "old.pdf", path: "./old.pdf" }),
-						test_file_with_path({ name: "new-file.pdf", path: "./new-file.pdf" }),
+						test_file_with_path({ name: "old.pdf", path: `/${folder}old.pdf` }),
+						test_file_with_path({ name: "new-file.pdf", path: `/${folder}new-file.pdf` }),
 					]),
 				});
-				// Choose "replace" in the conflict modal.
-				await vi.waitFor(() => expect(useFilesImportStore.getState().confirmResolver).not.toBeNull());
-				useFilesImportStore.getState().confirmResolver!("replace");
-				await run;
-				expect(sent).toEqual(["old.pdf"]);
+				expect(sent, "only the existing file is sent").toEqual([`${folder}old.pdf`]);
+				// A long path keeps only its end.
+				const newPath = `${folder}new-file.pdf`;
 				expect(warningToast).toHaveBeenCalledWith("Import finished: 0 imported, 1 skipped.", {
-					description: "Not imported: new-file.pdf (Path over 1,024 characters).",
+					description: `Not imported: ${newPath.length > 60 ? `…${newPath.slice(-59)}` : newPath} (${reason}).`,
 				});
 			} finally {
+				unsubscribe();
 				warningToast.mockRestore();
 			}
 		});
