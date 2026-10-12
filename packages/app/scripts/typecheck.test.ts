@@ -83,7 +83,7 @@ describe("typecheck", () => {
 		fs.rmSync(fixtureRoot, { recursive: true, force: true });
 	});
 
-	test("leaves test errors to the full check and keeps separate caches", () => {
+	test("leaves test errors to the full check and keeps separate caches", { tags: ["typecheck-full"] }, () => {
 		write_app_configs();
 		for (const fileName of [
 			"src/value.test.ts",
@@ -126,7 +126,7 @@ describe("typecheck", () => {
 		}
 	});
 
-	test("checks excluded files imported by app code and tracks their changes", () => {
+	test("checks excluded files imported by app code and tracks their changes", { tags: ["typecheck-full"] }, () => {
 		write_app_configs();
 		write_fixture("src/value.test.ts", "export const value = 1;\n");
 		write_fixture("src/index.ts", 'import { value } from "./value.test.ts";\nexport const result: number = value;\n');
@@ -169,7 +169,7 @@ describe("typecheck", () => {
 		expect(fixed.output).toContain("Visible errors: 0, suppressed errors: 0");
 	});
 
-	test("rechecks an unchanged app file when an imported vendor type changes", () => {
+	test("rechecks an unchanged app file when an imported vendor type changes", { tags: ["typecheck-full"] }, () => {
 		write_fixture("vendor/index.ts", "export const value = 1;\n");
 		write_fixture("src/index.ts", 'import { value } from "../vendor/index";\nexport const result: number = value;\n');
 		expect(run_check().status).toBe(0);
@@ -180,26 +180,30 @@ describe("typecheck", () => {
 		expect(changed.output).toContain("TS2322");
 	});
 
-	test.each(["vendor", "node_modules/sample"])("tracks inferred return types through %s imports", (directory) => {
-		write_fixture(`${directory}/value.ts`, "export function get_value() { return 1; }\n");
-		write_fixture(`${directory}/index.ts`, 'export { get_value } from "./value";\n');
-		write_fixture(
-			"src/index.ts",
-			`import { get_value } from "../${directory}/index";\nexport const result: number = get_value();\n`,
-		);
-		expect(run_check().status).toBe(0);
-		write_fixture(`${directory}/value.ts`, 'export function get_value() { return "changed"; }\n');
-		for (let check = 0; check < 2; check++) {
-			const changed = run_check();
-			expect(changed.status, changed.output).toBe(2);
-			expect(changed.output).toContain("src/index.ts");
-			expect(changed.output).toContain("TS2322");
-		}
-		write_fixture(`${directory}/value.ts`, "export function get_value() { return 2; }\n");
-		expect(run_check().status).toBe(0);
-	});
+	test.each(["vendor", "node_modules/sample"])(
+		"tracks inferred return types through %s imports",
+		{ tags: ["typecheck-full"] },
+		(directory) => {
+			write_fixture(`${directory}/value.ts`, "export function get_value() { return 1; }\n");
+			write_fixture(`${directory}/index.ts`, 'export { get_value } from "./value";\n');
+			write_fixture(
+				"src/index.ts",
+				`import { get_value } from "../${directory}/index";\nexport const result: number = get_value();\n`,
+			);
+			expect(run_check().status).toBe(0);
+			write_fixture(`${directory}/value.ts`, 'export function get_value() { return "changed"; }\n');
+			for (let check = 0; check < 2; check++) {
+				const changed = run_check();
+				expect(changed.status, changed.output).toBe(2);
+				expect(changed.output).toContain("src/index.ts");
+				expect(changed.output).toContain("TS2322");
+			}
+			write_fixture(`${directory}/value.ts`, "export function get_value() { return 2; }\n");
+			expect(run_check().status).toBe(0);
+		},
+	);
 
-	test("rechecks app files when an ignored dependency changes a global type", () => {
+	test("rechecks app files when an ignored dependency changes a global type", { tags: ["typecheck-full"] }, () => {
 		write_fixture("vendor/globals.ts", "declare global { var externalValue: number; }\nexport {};\n");
 		write_fixture("src/index.ts", "export const result: number = externalValue;\n");
 		expect(run_check().status).toBe(0);
@@ -209,14 +213,14 @@ describe("typecheck", () => {
 		expect(changed.output).toContain("TS2322");
 	});
 
-	test("reports app syntax errors", () => {
+	test("reports app syntax errors", { tags: ["typecheck-full"] }, () => {
 		write_fixture("src/index.ts", "export const = 1;\n");
 		const result = run_check();
 		expect(result.status).toBe(2);
 		expect(result.output).toContain("TS1134");
 	});
 
-	test("rechecks unchanged files when compiler options change", () => {
+	test("rechecks unchanged files when compiler options change", { tags: ["typecheck-full"] }, () => {
 		write_fixture("src/index.ts", "export function get_value(value) { return value; }\n");
 		write_config({ strict: false });
 		expect(run_check().status).toBe(0);
@@ -226,21 +230,21 @@ describe("typecheck", () => {
 		expect(result.output).toContain("TS7006");
 	});
 
-	test("reports invalid config options even inside a vendor folder", () => {
+	test("reports invalid config options even inside a vendor folder", { tags: ["typecheck-full"] }, () => {
 		write_config({ target: "invalid" }, "vendor/tsconfig.json");
 		const result = run_check("vendor/tsconfig.json");
 		expect(result.status).toBe(2);
 		expect(result.output).toContain("TS6046");
 	});
 
-	test("reports conflicting compiler options even inside a vendor folder", () => {
+	test("reports conflicting compiler options even inside a vendor folder", { tags: ["typecheck-full"] }, () => {
 		write_config({ module: "CommonJS", moduleResolution: "NodeNext" }, "vendor/tsconfig.json");
 		const result = run_check("vendor/tsconfig.json");
 		expect(result.status, result.output).toBe(2);
 		expect(result.output).toContain("TS5110");
 	});
 
-	test("reports missing and malformed config files", () => {
+	test("reports missing and malformed config files", { tags: ["typecheck-full"] }, () => {
 		expect(run_check("missing.json").status).toBe(2);
 		write_fixture("vendor/tsconfig.json", "{ broken");
 		const malformed = run_check("vendor/tsconfig.json");
@@ -248,7 +252,7 @@ describe("typecheck", () => {
 		expect(malformed.output).toContain("TS");
 	});
 
-	test("keeps global errors visible on fresh and cached checks", () => {
+	test("keeps global errors visible on fresh and cached checks", { tags: ["typecheck-full"] }, () => {
 		write_config({ noLib: true, lib: undefined });
 		for (let check = 0; check < 2; check++) {
 			const result = run_check();

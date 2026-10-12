@@ -108,8 +108,12 @@ export default defineConfig({
 		testTimeout: 30_000,
 		// Slow full-size checks carry this tag and run only with test:files:full-size (vitest.full-size.config.ts).
 		// A tag does not depend on the test name, and `-t` cannot select a tagged test here.
-		tags: [{ name: "full-size", description: "Slow full-size checks. Run them with test:files:full-size." }],
-		tagsFilter: ["!full-size"],
+		// Extra typecheck.ts checks carry "typecheck-full" and run only with test:typecheck:full.
+		tags: [
+			{ name: "full-size", description: "Slow full-size checks. Run them with test:files:full-size." },
+			{ name: "typecheck-full", description: "Extra typecheck.ts checks. Run them with test:typecheck:full." },
+		],
+		tagsFilter: ["!full-size", "!typecheck-full"],
 		hookTimeout: 30_000,
 		teardownTimeout: 30_000,
 		projects: [
