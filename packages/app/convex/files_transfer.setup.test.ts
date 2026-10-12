@@ -138,7 +138,10 @@ export async function start_agent_transfer(
 	return started;
 }
 
-export async function start_copy(fixture: Awaited<ReturnType<typeof create_folder_fixture>>, sourceIds: Id<"files_nodes">[]) {
+export async function start_copy(
+	fixture: Awaited<ReturnType<typeof create_folder_fixture>>,
+	sourceIds: Id<"files_nodes">[],
+) {
 	const started = await start_transfer(fixture.asUser, {
 		membershipId: fixture.db.membershipId,
 		requestId: "copy-request",
@@ -177,7 +180,10 @@ export async function finish_folder_copy(
 	throw new Error("Folder copy did not finish");
 }
 
-export async function finish_move(fixture: Awaited<ReturnType<typeof create_folder_fixture>>, runId: Id<"files_transfer_runs">) {
+export async function finish_move(
+	fixture: Awaited<ReturnType<typeof create_folder_fixture>>,
+	runId: Id<"files_transfer_runs">,
+) {
 	await fixture.t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
 	return await fixture.asUser.query(api.files_transfer.get, { membershipId: fixture.db.membershipId, runId });
 }

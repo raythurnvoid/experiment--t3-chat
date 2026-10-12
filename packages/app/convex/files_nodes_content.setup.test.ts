@@ -46,7 +46,10 @@ export function mock_nodes_content_storage() {
 	);
 }
 
-export async function create_file_fixture(rootKind: "plain_text" | "rich_text" = "plain_text", text = "Original text\n") {
+export async function create_file_fixture(
+	rootKind: "plain_text" | "rich_text" = "plain_text",
+	text = "Original text\n",
+) {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
