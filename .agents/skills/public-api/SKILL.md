@@ -496,7 +496,7 @@ The workspace `API keys` page (`packages/app/src/routes/w/$organizationName/$wor
 
 - `convex/ai_chat_code_grants.test.ts` covers the trusted pair, same-home dedupe, shared concurrent byte limits, source removal and re-invitation, in-flight reads, ordinary grants, and indexed cleanup.
 - Coverage lives in `packages/app/convex/public_api.test.ts` (route behavior, batch semantics, quota, rate buckets), `packages/app/convex/http.test.ts` (root route inventory), and `packages/app/convex/r2.test.ts` (finalizer, sweeper).
-- The plugin file doors and the invoke door are covered in `packages/app/convex/plugins.test.ts` (`plugins backend invoke runs` and `plugins metadata file doors`) and `packages/app/convex/public_api.test.ts` (service write fence); the access-binding helpers in `packages/app/convex/plugins_data.test.ts`.
+- The plugin file doors and the invoke door are covered in `packages/app/convex/plugins.publish.test.ts` (`plugins backend invoke runs`), `packages/app/convex/plugins.test.ts` (`plugins metadata file doors`) and `packages/app/convex/public_api.test.ts` (service write fence); the access-binding helpers in `packages/app/convex/plugins_data.test.ts`.
 - The plugin-data routes, the service-grant mint and resolver, and `/api/v1/auth/verify` live in `packages/app/convex/plugins_data.test.ts`. The four service-grant exchange routes live in `packages/app/convex/plugins_service.test.ts`. The api-keys page's verify button is covered in `src/routes/w/$organizationName/$workspaceName/api-keys/index.test.tsx`.
 - Focused command: `vp env exec pnpm --dir packages/app exec vitest run --project convex convex/public_api.test.ts`.
 

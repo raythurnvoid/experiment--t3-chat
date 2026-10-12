@@ -200,7 +200,7 @@ retention. Producer tests cover final publication, late callbacks, tokens, and s
 `convex/files_pending_update_runs.test.ts` also checks review recovery and shared history cleanup.
 `convex/files_write_policy_runs.test.ts` checks the protection job steps, Stop, deadlines, and cleanup.
 `convex/files_archive_runs*.test.ts` check archive and restore job steps, Stop, clashes, and cleanup.
-`convex/files_subtree_ops.test.ts` checks op overlap and how waiting ops start. `convex/files_nodes.test.ts`
+`convex/files_subtree_ops.test.ts` checks op overlap and how waiting ops start. `convex/files_nodes.move_nodes.test.ts`
 checks the move and scope job Activities and walks.
 `src/components/app-notifications.test.tsx` and `src/components/files/files-clipboard.test.tsx`
 cover shared Stop state and the visible results. Verify reachable flows in the running app too.

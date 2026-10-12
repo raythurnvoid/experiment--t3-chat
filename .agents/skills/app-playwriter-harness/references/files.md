@@ -1575,7 +1575,7 @@ and the restored text must appear. This also proves the browser reaches the work
 Snapshot and log reads can run before the action ends; observe again before calling it a failure.
 Do not keep the temporary branch or the QA node id in committed code.
 
-Use `convex/files_nodes_content.test.ts` for the exact overlapping R2 PUT order. Browser request
+Use `convex/files_nodes_content.restore.test.ts` for the exact overlapping R2 PUT order. Browser request
 interception cannot pause those server-side uploads. The tests hold each PUT and cover stale
 materialization, same-counter workers, restore after an edit, and OFF/ON during materialization.
 

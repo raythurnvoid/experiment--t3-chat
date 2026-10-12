@@ -1214,8 +1214,8 @@ races between route authorization and the durable write.
 
 # Tests
 
-- Installation configuration parsing and folder matching: `packages/app/shared/plugins.test.ts`; authenticated saves, automatic dispatch filtering, and manual-run bypass: `packages/app/convex/plugins.test.ts`.
-- Manifest caps, duplicates, zero-fetch-on-declared-over-limit, streaming bounds, 4-wide concurrency, and the cleanup-attempt lifecycle: `packages/app/convex/plugins.test.ts`.
+- Installation configuration parsing and folder matching: `packages/app/shared/plugins.test.ts`; authenticated saves and automatic dispatch filtering: `packages/app/convex/plugins.test.ts`; manual-run bypass: `packages/app/convex/plugins.publish.test.ts`.
+- Manifest caps and duplicates: `packages/app/convex/plugins.test.ts`; zero-fetch-on-declared-over-limit, streaming bounds, 4-wide concurrency, and the cleanup-attempt lifecycle: `packages/app/convex/plugins.publish.test.ts`.
 - Secrets declaration validation: `packages/app/shared/plugins.test.ts`; declaration persistence and installation health (missing secrets, re-claim guard, installed-version evaluation, capability notice tier, failing-runs window, refusals): the "plugins get_installation_health" describe in `packages/app/convex/plugins.test.ts`.
 - Bounded session deletion on all three paths: `packages/app/convex/data_deletion.test.ts`.
 - Plugin document store (limits, accounting, reservations, the versioned producer fence, released-range fences, bounded scope cleanup, the drain, and the expiry cron): `packages/app/convex/plugins_data.test.ts`. The workspace purge is covered in `data_deletion.test.ts`, the registry pass plus bounded deletion-preview counts in `plugins.test.ts`, and one-time cleanup audits in `migrations.test.ts`. Ordinary member sharing/lock controls, inherited locks, and no-op origins: the `member controls on plugin-labeled nodes` describe in `packages/app/convex/files_nodes.test.ts`. Folder metadata permissions, lifecycle, and pending paths are in `packages/app/convex/files_nodes.search_metadata.test.ts`; bounded folder metadata deletion is in `data_deletion.test.ts`. Manual sharing detachment and scope sync are in `plugins_data.test.ts`. The plugin file doors themselves (ensure, write, archive, access): `plugins.test.ts` and `public_api.test.ts`.
@@ -1234,7 +1234,7 @@ races between route authorization and the durable write.
 Use the app workspace for app tests:
 
 ```powershell
-vp env exec pnpm --dir packages/app exec vitest run --project convex convex/plugins.test.ts
+vp env exec pnpm --dir packages/app exec vitest run --project convex convex/plugins.test.ts convex/plugins.publish.test.ts
 vp env exec pnpm --dir packages/app exec vitest run --project src 'src/routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId.test.tsx'
 ```
 
