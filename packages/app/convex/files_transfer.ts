@@ -44,7 +44,6 @@ import {
 	files_nodes_db_require_user_writable_or_matching_policy,
 	files_nodes_db_require_copiable_write_policy,
 	files_nodes_db_get_content_version,
-	files_nodes_db_live_scope_reader,
 } from "./files_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import {
@@ -1928,12 +1927,11 @@ export async function files_transfer_db_start_rename(
 	const source = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (!source || source.organizationId !== membership.organizationId || source.workspaceId !== membership.workspaceId)
 		return Result({ _nay: { message: "Not found" } });
-	const withLiveScope = await files_nodes_db_live_scope_reader(ctx, membership);
 	const authorized = await access_control_db_authorize_membership(ctx, {
 		userAuth: { id: membership.userId },
 		membership,
 		permission: "content.write",
-		fileNode: await withLiveScope(source),
+		fileNode: source,
 	});
 	if (authorized._nay) return authorized;
 	const writable = await files_nodes_db_require_user_writable(ctx, { node: source, userId: membership.userId });
@@ -1969,7 +1967,7 @@ export async function files_transfer_db_start_rename(
 				userAuth: { id: membership.userId },
 				membership,
 				permission: "content.write",
-				fileNode: await withLiveScope(occupant),
+				fileNode: occupant,
 			});
 			if (allowed._nay) return Result({ _nay: { name: "nay", message: "Permission denied" } });
 			return Result({ _nay: { name: "nay", message: "Path already exists" } });
