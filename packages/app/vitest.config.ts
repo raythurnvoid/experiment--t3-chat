@@ -147,8 +147,8 @@ export default defineConfig({
 				test: {
 					include: ["src/**/*.test.{ts,tsx}", "shared/**/*.test.ts"],
 					// Shared tests run here and in the convex project, because shared code must work in both
-					// runtimes. The diff budget files compute for about 30 s each, and their step counts are the
-					// same in every runtime, so they run only in the convex project.
+					// runtimes. The diff budget pass cases compute for about 30 s, and step counts are the same in
+					// every runtime, so the diff budget files run only in the convex project.
 					exclude: [
 						"src/**/*.browser.test.{ts,tsx}",
 						"shared/files.diff_budgets.test.ts",
