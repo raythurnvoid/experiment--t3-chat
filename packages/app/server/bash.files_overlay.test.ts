@@ -488,6 +488,8 @@ describe("bash_run_command", () => {
 				values: expect.arrayContaining([{ field: "metadata.source", valueKind: "string", value: "draft-copy" }]),
 			});
 		}
+		// Search reads private fields from a copy that a scheduled job writes. Let that job finish.
+		await drain_scheduled_continuations(runner);
 		const frontmatter = await runner.run({
 			command: `meta search --path private-meta --where '{"eq":["frontmatter.status","draft"]}'`,
 		});
