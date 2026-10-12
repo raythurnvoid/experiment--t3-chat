@@ -31,9 +31,9 @@ export async function test_convex_teardown() {
 	}
 
 	// Vitest registers this hook from a setup file, and its default `stack` order runs such hooks
-	// *after* each test file's own `afterEach` — including the ones that put the real `fetch` back. So
-	// a request sent from here would really leave the machine. We block it: these leftover jobs are
-	// checked by no test, and they fail with or without network, only slower.
+	// *after* each test file's own `afterEach`. A `fetch` mock that a test file left in place would get
+	// the requests sent from here (setup-env.test.ts already blocks real network requests). We block
+	// them: these leftover jobs are checked by no test.
 	const realFetch = globalThis.fetch;
 	globalThis.fetch = (() => Promise.reject(new Error("fetch is closed during test teardown"))) as typeof fetch;
 

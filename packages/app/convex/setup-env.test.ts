@@ -1,3 +1,4 @@
+import { S3Client } from "@aws-sdk/client-s3";
 import { afterEach, vi } from "vitest";
 import { test_convex_teardown } from "./setup-teardown.test.ts";
 
@@ -6,6 +7,18 @@ import { test_convex_teardown } from "./setup-teardown.test.ts";
 // some files never turn fake timers off or remove their global stubs.
 vi.useRealTimers();
 vi.unstubAllGlobals();
+
+// Tests must not use the network. App code that a test does not mock would send real requests, for
+// example to the fake R2_ENDPOINT below. They fail with a TLS or DNS error, or hang on a slow network.
+// Fail them at once instead, like a network error. Tests that need an answer mock `fetch`, `R2` or `send`.
+globalThis.fetch = (async (input: RequestInfo | URL) => {
+	const url = input instanceof Request ? input.url : String(input);
+	throw new TypeError("fetch failed", { cause: new Error(`Convex tests block network requests: ${url}`) });
+}) as typeof fetch;
+// The R2 component sends S3 requests through Node's https module, not through `fetch`.
+S3Client.prototype.send = (async (command: object) => {
+	throw new Error(`Convex tests block network requests: S3 ${command.constructor.name}`);
+}) as S3Client["send"];
 
 afterEach(test_convex_teardown);
 
