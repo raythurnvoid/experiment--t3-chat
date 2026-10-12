@@ -30,6 +30,8 @@ type State = {
 	securityNodes: Set<Id<"files_nodes">>;
 	knownScopes: Map<string, Scope>;
 	sourceReads: Map<string, Promise<Doc<"files_move_source_reservations"> | null>>;
+	slots: Map<string, Promise<Id<"files_move_cohorts"> | null>>;
+	holders: Map<string, Promise<Id<"files_move_cohorts"> | null>>;
 };
 type GuardedDb = MutationCtx["db"] & { [STATE]?: State };
 type Fields = Record<string, unknown>;
@@ -61,32 +63,76 @@ async function get_parent(db: QueryCtx["db"], source: Extract<Source, { kind: "s
 	return node && node.parent.kind !== "root" ? node.parent : null;
 }
 
+async function get_slot_cohort(db: QueryCtx["db"], scope: Scope) {
+	const organizationId = db.normalizeId("organizations", scope.organizationId);
+	const workspaceId = db.normalizeId("organizations_workspaces", scope.workspaceId);
+	// Only a workspace has a Move slot. A volume or global scope never holds a Move.
+	if (!organizationId || !workspaceId) return null;
+	const state = (db as GuardedDb)[STATE];
+	const key = `${organizationId}:${workspaceId}`;
+	let cohortId = state?.slots.get(key);
+	if (!cohortId) {
+		cohortId = db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
+			.unique()
+			.then((slot) => slot?.cohortId ?? null);
+		state?.slots.set(key, cohortId);
+	}
+	return await cohortId;
+}
+
+// The first subtree reservation on this node or above it. During a Move, each node is read
+// once per transaction, so a new chain or many files in one deep folder do not walk again.
+function get_subtree_holder(
+	db: QueryCtx["db"],
+	node: Extract<Source, { kind: "saved" | "private" }>,
+	holders = (db as GuardedDb)[STATE]?.holders,
+): Promise<Id<"files_move_cohorts"> | null> {
+	const key = `${node.kind}:${node.id}`;
+	let holder = holders?.get(key);
+	if (!holder) {
+		holder = (async () => {
+			const reservation = await files_move_reservations_db_get_source(db, node);
+			if (reservation?.mode === "subtree") return reservation.cohortId;
+			const parent = await get_parent(db, node);
+			return parent ? await get_subtree_holder(db, parent, holders) : null;
+		})();
+		holders?.set(key, holder);
+	}
+	return holder;
+}
+
 /**
  * Check one source, its ancestors, and one destination slot.
  */
 export async function files_move_reservations_db_find_blocker(db: QueryCtx["db"], args: Check) {
-	if (args.wholeWorkspace) {
-		const scope = args.wholeWorkspace;
-		const slot = await db
-			.query("files_move_workspace_slots")
-			.withIndex("by_workspace", (q) =>
-				q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId),
-			)
-			.unique();
-		if (slot?.cohortId) return slot.cohortId;
+	let parent = args.parent?.kind === "root" ? null : (args.parent ?? null);
+	const node = parent ?? (args.source?.kind === "saved" || args.source?.kind === "private" ? args.source : null);
+	const scope =
+		args.wholeWorkspace ??
+		args.slot ??
+		(node?.kind === "saved"
+			? await db.get("files_nodes", node.id)
+			: node
+				? await db.get("files_pending_nodes", node.id)
+				: null);
+	if (scope) {
+		// A Move holds its workspace slot while any of its reservations or slot claims exist.
+		// So a free slot means nothing here is busy, and no parent walk is needed.
+		const cohortId = await get_slot_cohort(db, scope);
+		if (!cohortId) return null;
+		if (args.wholeWorkspace) return cohortId;
 	}
 	if (args.source) {
 		const reservation = await files_move_reservations_db_get_source(db, args.source);
 		if (reservation) return reservation.cohortId;
 	}
-	let parent = args.parent?.kind === "root" ? null : (args.parent ?? null);
 	if (!parent && (args.source?.kind === "saved" || args.source?.kind === "private"))
 		parent = await get_parent(db, args.source);
-	// This walk follows only this item's parent IDs.
-	while (parent) {
-		const reservation = await files_move_reservations_db_get_source(db, parent);
-		if (reservation?.mode === "subtree") return reservation.cohortId;
-		parent = await get_parent(db, parent);
+	if (parent) {
+		const holder = await get_subtree_holder(db, parent);
+		if (holder) return holder;
 	}
 	if (args.slot) {
 		const claim = await db
@@ -355,29 +401,22 @@ export async function files_move_reservations_db_is_rename_allocation(
  */
 export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 	const raw = ctx.db;
-	const state: State = { capability: null, securityNodes: new Set(), knownScopes: new Map(), sourceReads: new Map() };
-	const activeScopes = new Map<string, Promise<boolean>>();
+	const state: State = {
+		capability: null,
+		securityNodes: new Set(),
+		knownScopes: new Map(),
+		sourceReads: new Map(),
+		slots: new Map(),
+		holders: new Map(),
+	};
 	const reservationTables = new Set([
 		"files_move_workspace_slots",
 		"files_move_source_reservations",
 		"files_move_slot_claims",
 	]);
 	async function scope_is_active(value: Scope) {
-		const organizationId = raw.normalizeId("organizations", value.organizationId);
-		const workspaceId = raw.normalizeId("organizations_workspaces", value.workspaceId);
-		if (!organizationId || !workspaceId) return false;
-		const key = `${organizationId}:${workspaceId}`;
-		// Keep the read in flight too, like the blockers below.
-		let active = activeScopes.get(key);
-		if (active === undefined) {
-			active = raw
-				.query("files_move_workspace_slots")
-				.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
-				.unique()
-				.then((slot) => slot?.cohortId != null);
-			activeScopes.set(key, active);
-		}
-		return await active;
+		// The slot read is shared with the busy checks below.
+		return (await get_slot_cohort(db, value)) !== null;
 	}
 	// One walk per check in this transaction: a bulk side write repeats the same file's check per doc.
 	// A reservation write or a parent change can change an answer, so it clears them all.
@@ -386,6 +425,8 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 	const blockers = new Map<string, Promise<Id<"files_move_cohorts"> | null>>();
 	function forget_blockers() {
 		blockers.clear();
+		// A new map, so a walk still in flight fills only the old one.
+		state.holders = new Map();
 	}
 	function find_blocker(check: Check) {
 		const key = JSON.stringify(check);
@@ -585,13 +626,14 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 			if (property === "insert")
 				return async (table: TableNames, value: Fields) => {
 					if (reservationTables.has(table)) {
-						activeScopes.clear();
+						state.slots.clear();
 						state.sourceReads.clear();
 						forget_blockers();
 						try {
 							return await target.insert(table, value as never);
 						} finally {
 							// A read started during this write must not stay cached after it.
+							state.slots.clear();
 							state.sourceReads.clear();
 							forget_blockers();
 						}
@@ -608,12 +650,13 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 								target.normalizeId(name as TableNames, args[0] as string),
 							) as TableNames | undefined);
 					if (table && reservationTables.has(table)) {
-						activeScopes.clear();
+						state.slots.clear();
 						state.sourceReads.clear();
 						forget_blockers();
 						try {
 							return await Reflect.apply(Reflect.get(target, property), target, args);
 						} finally {
+							state.slots.clear();
 							state.sourceReads.clear();
 							forget_blockers();
 						}

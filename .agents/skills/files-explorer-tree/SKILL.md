@@ -748,6 +748,27 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - An item whose path still gets too long while it lands (a job checked before this rule, or an item
   that joined another restore) stays archived under `longPathOperationId`, not the Skip operation.
   The job ends `partial` and its end text (also on failed, stopped or timed out) says how many.
+- Folder limits per create call (`shared/files.ts`), so one call stays under the 4,096 index reads
+  of a mutation: one path adds at most `files_NEW_FOLDER_DEPTH_MAX` (32) new folders
+  (`files_check_new_folder_count`, in the create helper and in each batch door's check pass; existing
+  folders do not count, so a file can still go into an existing deeper folder), and one call names at
+  most `files_REQUEST_FOLDER_PREFIXES_MAX` (64) distinct folders. `create_upload_nodes` counts the
+  prefixes of its relative paths from the strings before any read
+  (`files_check_request_folder_prefixes`). The API doors (upload-urls, service uploads, data import)
+  share one `files_db_create_path_lookups` per call: it finds each path's deepest existing folder (from
+  the bottom up without a Move, one walk from the root during a Move that the call shares). The doors
+  check access on that folder first, then call its `check_folder_counts`, which counts the new folders
+  plus the parents found (`files_check_request_folder_count`), so folders above a found parent never
+  count and a hidden folder does not reveal its names. All refuse the whole call with name `too_many_folders`. Batch doors
+  look up and check each folder once per call, start the create helper at the found parent, and pass
+  one `folders` map to every `files_nodes_db_create_node_recursively_at_path` call so later items
+  reuse found and new folders. Single doors map the helper's `too_many_folders` to 400 (`write`,
+  `touch`, plugin folder ensure).
+  The Move busy check (`files_move_reservations_db_find_blocker`) reads the workspace Move slot
+  first: a Move holds that slot while any of its reservations or slot claims exist, so a free slot
+  means no parent walk. During a Move, each parent's answer is kept for the rest of the transaction
+  and dropped when a reservation or a parent changes. Test fixtures that add reservations must hold
+  the slot too (`test_db_hold_move_slot` in `convex/setup.test.ts`).
 - Only an active folder takes new children. Every create door with a parent id answers `Not found`
   when the parent is a file or an archived folder: `create_folder_node`, `create_text_node` (its
   preflight refuses before any R2 write), `create_upload_node(s)`, and the shared

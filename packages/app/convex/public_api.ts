@@ -37,13 +37,15 @@ import {
 	files_normalize_upload_file_name,
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	files_check_name_and_path_length,
+	files_check_new_folder_count,
+	files_check_request_path_length,
 } from "../shared/files.ts";
 import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
-	files_db_get_visible_node_by_path,
+	files_db_create_path_lookups,
 	files_default_text_shape_for_name,
 	files_editable_text_content_type_of,
 	files_editable_text_shape_of,
@@ -68,6 +70,7 @@ import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_get_write_policy_management_state,
+	files_nodes_db_live_scope_reader,
 	files_nodes_db_set_write_policy,
 	files_nodes_db_require_writable,
 	files_nodes_db_require_write_policy_management,
@@ -2526,8 +2529,10 @@ export async function public_api_db_revalidate_file_write_principal(
 		}
 		return checked;
 	}
-	const targetNode = await db_get_active_node_at_path(ctx, args);
-	const ancestorNode = targetNode ?? (await db_get_deepest_existing_ancestor(ctx, args));
+	// The file lookup and the folder search share their reads: during a Move each folder is read once.
+	const lookups = await files_db_create_path_lookups(ctx, args);
+	const targetNode = await lookups.get(args.path);
+	const ancestorNode = targetNode ?? (await lookups.find_existing_parent(args.path)).node;
 	const resourceScope: files_nodes_WriteContext["resourceScope"] = targetNode
 		? { kind: targetNode.kind === "folder" ? "subtree" : "node", nodeId: targetNode._id }
 		: { kind: "create", parentNodeId: ancestorNode?._id ?? files_ROOT_ID, path: args.path };
@@ -2880,42 +2885,6 @@ function file_write_stale_refusal() {
 	});
 }
 
-async function db_get_active_node_at_path(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		path: string;
-	},
-) {
-	return await files_db_get_visible_node_by_path(ctx, args);
-}
-
-/**
- * Find the nearest existing node above `path`. Return null when only the workspace root exists.
- */
-async function db_get_deepest_existing_ancestor(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		path: string;
-	},
-) {
-	const segments = path_extract_segments_from(args.path);
-	for (let depth = segments.length - 1; depth >= 1; depth--) {
-		const ancestor = await db_get_active_node_at_path(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			path: `/${segments.slice(0, depth).join("/")}`,
-		});
-		if (ancestor) {
-			return ancestor;
-		}
-	}
-	return null;
-}
-
 /**
  * Check the target before creating temporary docs. Check access before policy so a hidden node's
  * policy stays private. Remember the target so publish cannot change a different file.
@@ -2933,7 +2902,9 @@ async function db_preflight_file_write_target(
 	const writeContext = args.pluginFacts.writeContext;
 	const serviceAccountId =
 		writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
-	const activeNode = await db_get_active_node_at_path(ctx, args);
+	// The file lookup and the folder search share their reads: during a Move each folder is read once.
+	const lookups = await files_db_create_path_lookups(ctx, args);
+	const activeNode = await lookups.get(args.path);
 	if (activeNode) {
 		if (
 			!(await has_workspace_content_permission(ctx, {
@@ -2965,7 +2936,7 @@ async function db_preflight_file_write_target(
 		});
 	}
 
-	const ancestor = await db_get_deepest_existing_ancestor(ctx, args);
+	const ancestor = (await lookups.find_existing_parent(args.path)).node;
 	if (
 		!(await has_workspace_content_permission(ctx, {
 			organizationId: args.organizationId,
@@ -2989,12 +2960,17 @@ async function db_preflight_file_write_target(
 	}
 	// Refuse before the caller uploads to R2. Check only the names this create adds: an older folder on
 	// the way may keep a longer name.
+	const segments = path_extract_segments_from(args.path);
 	const tooLong = files_check_name_and_path_length({
-		names: path_extract_segments_from(args.path).slice(ancestor?.pathDepth ?? 0),
+		names: segments.slice(ancestor?.pathDepth ?? 0),
 		path: args.path,
 	});
 	if (tooLong._nay) {
 		return Result({ _nay: { name: "invalid_input", message: tooLong._nay.message } });
+	}
+	const newFolders = files_check_new_folder_count(segments.length - 1 - (ancestor?.pathDepth ?? 0));
+	if (newFolders._nay) {
+		return Result({ _nay: { name: "invalid_input", message: newFolders._nay.message } });
 	}
 
 	return Result({ _yay: { targetAnchor: { kind: "create" as const } } });
@@ -3329,8 +3305,11 @@ export const publish_file_write = internalMutation({
 		const writeContext = revalidated._yay.writeContext;
 		const serviceAccountId =
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
-		const activeNode = await db_get_active_node_at_path(ctx, { ...stage, path: stage.path });
-		const parentNode = await db_get_deepest_existing_ancestor(ctx, { ...stage, path: stage.path });
+		// The file lookup and the folder search share their reads: during a Move each folder is read once.
+		const lookups = await files_db_create_path_lookups(ctx, stage);
+		const activeNode = await lookups.get(stage.path);
+		const parent = await lookups.find_existing_parent(stage.path);
+		const parentNode = parent.node;
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
@@ -3499,12 +3478,13 @@ export const publish_file_write = internalMutation({
 			});
 		}
 		const pluginName = revalidated._yay.installation?.pluginName;
+		// Start at the folder found above, so the create does not walk the folders above it.
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: stage.userId,
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
-			parentId: files_ROOT_ID,
-			path: stage.path,
+			parentId: parentNode?._id ?? files_ROOT_ID,
+			path: path_extract_segments_from(stage.path).slice(parent.depth).join("/"),
 			kind: "file",
 			contentType: stage.contentType,
 			assetId: stage.contentSnapshotAssetId,
@@ -3957,7 +3937,9 @@ export const publish_file_touch = internalMutation({
 		const serviceAccountId =
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 
-		const activeNode = await files_db_get_visible_node_by_path(ctx, stage);
+		// The file lookup and the folder search below share their reads: during a Move each folder is read once.
+		const lookups = await files_db_create_path_lookups(ctx, stage);
+		const activeNode = await lookups.get(stage.path);
 		if (activeNode) {
 			// This lookup does not check access. A restricted node still has to
 			// stop the create below. So it can find a file the caller may not touch, and answering the
@@ -4057,11 +4039,8 @@ export const publish_file_touch = internalMutation({
 			});
 			return staleRefusal;
 		}
-		const ancestor = await db_get_deepest_existing_ancestor(ctx, {
-			organizationId: stage.organizationId,
-			workspaceId: stage.workspaceId,
-			path: stage.path,
-		});
+		const found = await lookups.find_existing_parent(stage.path);
+		const ancestor = found.node;
 
 		// Check access first. A hidden restricted folder must not reveal its read-only state.
 		if (
@@ -4105,12 +4084,13 @@ export const publish_file_touch = internalMutation({
 
 		const pluginName = revalidated._yay.installation?.pluginName;
 
+		// Start at the folder found above, so the create does not walk the folders above it.
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: stage.userId,
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
-			parentId: files_ROOT_ID,
-			path: stage.path,
+			parentId: ancestor?._id ?? files_ROOT_ID,
+			path: path_extract_segments_from(stage.path).slice(found.depth).join("/"),
 			kind: "file",
 			contentType: stage.contentType,
 			// The staged empty content snapshot holds the file's current (empty) bytes. Below it
@@ -4129,7 +4109,11 @@ export const publish_file_touch = internalMutation({
 			now,
 		});
 		if (created._nay) {
-			// An intermediate segment is owned by a file, or an equivalent structural conflict.
+			// Too many new folders is bad input. Anything else here is a structural conflict, like an
+			// intermediate segment owned by a file.
+			if (created._nay.name === "too_many_folders") {
+				return Result({ _nay: { name: created._nay.name, message: created._nay.message } });
+			}
 			return Result({ _nay: { message: created._nay.message } });
 		}
 
@@ -4413,18 +4397,77 @@ export const create_file_upload_targets = internalMutation({
 			size: number;
 			collidingNodeId: Id<"files_nodes"> | null;
 			writePolicy?: Doc<"files_nodes">["writePolicy"];
+			parent: { node: Doc<"files_nodes"> | null; depth: number };
 		}> = [];
+		// One set of lookups for the whole call: during a Move, each folder on the way is read once.
+		const lookups = await files_db_create_path_lookups(ctx, args);
+		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
 		for (const rawItem of args.items) {
+			const pathLength = files_check_request_path_length(rawItem.path);
+			if (pathLength._nay) return Result({ _nay: { ...pathLength._nay, data: { path: rawItem.path } } });
 			// Existing literal targets win, including hidden files. Only missing paths are cased.
-			let existingNode = await files_db_get_visible_node_by_path(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				path: rawItem.path,
-			});
+			let existingNode = await lookups.get(rawItem.path);
 			const item = {
 				...rawItem,
 				path: existingNode ? rawItem.path : files_normalize_special_node_path("file", rawItem.path),
 			};
+			if (item.path !== rawItem.path) {
+				existingNode = await lookups.get(item.path);
+			}
+
+			// Check access before any other answer for this item: on the file, and on its deepest existing
+			// folder, so a file can go into an existing folder at any depth. Then a hidden item answers 403
+			// whether it exists or not, and before a later item's error. The refusal names the path as sent,
+			// since the casing above depends on what exists.
+			// The file lookup is raw on purpose, like publish_file_write: a path holds one active node, so a
+			// restricted file the caller cannot see still has to block the create, or two nodes would end up
+			// on one path. That makes this node-level check the only thing standing between the caller and
+			// somebody else's restricted file, which `replace` would archive.
+			if (
+				existingNode &&
+				!(await has_workspace_content_permission(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					permission: "content.write",
+					fileNode: existingNode,
+					serviceAccountId,
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied", data: { path: rawItem.path } } });
+			}
+			const found = await lookups.find_existing_parent(item.path);
+			// A scope job may not have reached this folder yet, so check the scope its parents give it.
+			const parentNode = found.node && (await withLiveScope(found.node));
+			if (
+				parentNode &&
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					fileNode: parentNode,
+					permission: "content.write",
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied", data: { path: rawItem.path } } });
+			}
+			if (
+				!(await has_workspace_content_permission(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					serviceAccountId,
+					fileNode: parentNode ?? undefined,
+					permission: "content.write",
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied", data: { path: rawItem.path } } });
+			}
+			// Refuse a path over the folder limits right after its access check, so at most one path in a call
+			// searches far for its deepest existing folder.
+			const folderCounts = lookups.check_folder_counts(item.path, found.depth);
+			if (folderCounts._nay) return Result({ _nay: { ...folderCounts._nay, data: { path: item.path } } });
+
 			// New conventional names are cased above. Other cleanup remains invalid.
 			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {
 				return Result({ _nay: { message: "Path must be absolute and normalized", data: { path: item.path } } });
@@ -4451,33 +4494,9 @@ export const create_file_upload_targets = internalMutation({
 			}
 			leafPaths.add(item.path);
 
-			if (item.path !== rawItem.path) {
-				existingNode = await files_db_get_visible_node_by_path(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					path: item.path,
-				});
-			}
 			if (existingNode) {
-				// This lookup is raw on purpose, like publish_file_write: a path holds one active
-				// node, so a restricted file the caller cannot see still has to block the create, or
-				// two nodes would end up on one path. That makes this node-level check the only thing
-				// standing between the caller and somebody else's restricted file, which `replace`
-				// would archive.
-				if (
-					!(await has_workspace_content_permission(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						userId: args.userId,
-						permission: "content.write",
-						fileNode: existingNode,
-						serviceAccountId,
-					}))
-				) {
-					return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
-				}
-				// Check access first so a hidden file still returns Permission denied. A read-only target
-				// then stops the whole batch before any upload URL is created.
+				// Access was checked above. A read-only target stops the whole batch before any upload URL is
+				// created.
 				const writable = await files_nodes_db_require_writable(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
@@ -4521,68 +4540,37 @@ export const create_file_upload_targets = internalMutation({
 				size: item.size,
 				collidingNodeId: existingNode?._id ?? null,
 				writePolicy: existingNode?.writePolicy ?? undefined,
+				parent: { node: parentNode, depth: found.depth },
 			});
 		}
 
-		// Ancestor pass. Structural checks keep the recursive create from failing mid-write, and the
-		// ACL check matters because an API key is not the organization owner: the create helper
-		// itself refuses restricted folders, and by then earlier items are already written. Asking
-		// here turns that case into a clean per-path refusal before anything is written.
+		// Ancestor pass. Structural checks keep the recursive create from failing mid-write. The first pass
+		// already checked access on each path's deepest existing folder: an API key is not the organization
+		// owner, and the create helper itself refuses restricted folders only after earlier items are
+		// written, so asking first turns that case into a clean per-path refusal.
 		for (const item of validated) {
 			const segments = path_extract_segments_from(item.path);
-			let parentNode: Doc<"files_nodes"> | null = null;
 			for (let depth = 1; depth < segments.length; depth++) {
-				const ancestorPath = `/${segments.slice(0, depth).join("/")}`;
-				if (leafPaths.has(ancestorPath)) {
+				if (leafPaths.has(`/${segments.slice(0, depth).join("/")}`)) {
 					return Result({
 						_nay: { message: "Path conflicts with another item in the batch", data: { path: item.path } },
 					});
 				}
-
-				const ancestor = await files_db_get_visible_node_by_path(ctx, { ...args, path: ancestorPath });
-				if (!ancestor) {
-					continue;
-				}
-				// Check access before checking whether this node is a file or folder. This stops a hidden file
-				// from revealing why the path failed.
-				if (
-					!(await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						userId: args.userId,
-						fileNode: ancestor,
-						permission: "content.write",
-					}))
-				) {
-					return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
-				}
-				if (ancestor.kind !== "folder") {
-					return Result({
-						_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
-					});
-				}
-				parentNode = ancestor;
+			}
+			const { node: parentNode, depth: parentDepth } = item.parent;
+			if (parentNode && parentNode.kind !== "folder") {
+				return Result({
+					_nay: { message: "An intermediate segment is owned by a file", data: { path: item.path } },
+				});
 			}
 			// Check only the names this item adds: an older folder on the way and a replaced file keep their
 			// names.
 			if (!item.collidingNodeId) {
 				const tooLong = files_check_name_and_path_length({
-					names: segments.slice(parentNode?.pathDepth ?? 0),
+					names: segments.slice(parentDepth),
 					path: item.path,
 				});
 				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
-			}
-			if (
-				!(await has_workspace_content_permission(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					userId: args.userId,
-					serviceAccountId,
-					fileNode: parentNode ?? undefined,
-					permission: "content.write",
-				}))
-			) {
-				return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
 			}
 			// The write pass meets a Move only after it wrote the earlier items, so refuse the batch here.
 			const busy = item.collidingNodeId
@@ -4590,7 +4578,7 @@ export const create_file_upload_targets = internalMutation({
 				: await files_nodes_db_check_create_busy(ctx, {
 						...args,
 						parentNode,
-						name: segments[parentNode?.pathDepth ?? 0]!,
+						name: segments[parentDepth]!,
 					});
 			if (busy._nay) {
 				return { ...busy, _nay: { ...busy._nay, data: { path: item.path } } };
@@ -4638,6 +4626,7 @@ export const create_file_upload_targets = internalMutation({
 		}> = [];
 		// Share one link cleanup across the replaced files, so the workspace links load only once.
 		const shareLinkCleanup = files_share_links_create_cleanup_state();
+		const folders = new Map<string, Doc<"files_nodes">>();
 		for (const item of validated) {
 			// Uploading over a name archives whatever holds it, like create_upload_node, so re-runs
 			// replace the previous upload instead of failing.
@@ -4663,12 +4652,14 @@ export const create_file_upload_targets = internalMutation({
 				updatedAt: now,
 			});
 
+			// Start at the folder the ancestor pass found, so the create does not walk the folders above it.
+			const parent = item.parent;
 			const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
-				parentId: files_ROOT_ID,
-				path: item.path,
+				parentId: parent.node?._id ?? files_ROOT_ID,
+				path: path_extract_segments_from(item.path).slice(parent.depth).join("/"),
 				kind: "file",
 				contentType: item.contentType,
 				assetId,
@@ -4677,6 +4668,7 @@ export const create_file_upload_targets = internalMutation({
 				writePolicy: item.writePolicy,
 				...(item.writePolicy !== undefined ? { keepsReplacedPolicy: true as const } : {}),
 				...(item.collidingNodeId ? { replacesArchivedFile: true as const } : {}),
+				folders,
 				now,
 			});
 			// The validation pass cleared every failure this helper can hit (collisions, ancestor
@@ -5502,7 +5494,9 @@ export async function public_api_write_one_text_file(
 					? { status: 403 as const, errorCode: "permission_denied" as const }
 					: published._nay.message === "Write was not published"
 						? { status: 500 as const, errorCode: "storage_failure" as const }
-						: { status: 409 as const, errorCode: "conflict" as const };
+						: published._nay.name === "too_many_folders"
+							? { status: 400 as const, errorCode: "invalid_input" as const }
+							: { status: 409 as const, errorCode: "conflict" as const };
 		// A read-only refusal already cleaned up the stage during publish. Running cleanup again
 		// would change the plugin call to the wrong unpublished_write/500 error.
 		if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
@@ -7204,7 +7198,9 @@ export async function public_api_http_touch_files(args: {
 						? 403
 						: published._nay.message === "Write was not published"
 							? 500
-							: 409;
+							: published._nay.name === "too_many_folders"
+								? 400
+								: 409;
 			const failBody = await fail({
 				status: failedStatus,
 				message: published._nay.message,
@@ -7215,7 +7211,9 @@ export async function public_api_http_touch_files(args: {
 							? "permission_denied"
 							: failedStatus === 401
 								? "unauthenticated"
-								: "storage_failure",
+								: failedStatus === 400
+									? "invalid_input"
+									: "storage_failure",
 			});
 			// A read-only refusal already cleaned up the stage during publish.
 			if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
@@ -7233,6 +7231,9 @@ export async function public_api_http_touch_files(args: {
 			}
 			if (failedStatus === 401) {
 				return { status: 401, body: failBody } as const;
+			}
+			if (failedStatus === 400) {
+				return { status: 400, body: failBody } as const;
 			}
 			return { status: 500, body: failBody } as const;
 		}
@@ -7691,6 +7692,12 @@ export async function public_api_http_upload_urls(args: {
 		}
 		if (failedStatus === 409) {
 			return { status: 409, body: { message: created._nay.message, path: failedPath } } as const;
+		}
+		if (created._nay.name === "too_many_folders") {
+			return {
+				status: 400,
+				body: { message: created._nay.message, path: failedPath, code: created._nay.name },
+			} as const;
 		}
 		return { status: 400, body: { message: created._nay.message, path: failedPath } } as const;
 	}

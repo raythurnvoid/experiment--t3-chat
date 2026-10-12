@@ -166,6 +166,9 @@ import {
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	type files_VisibleEntry,
 	files_check_name_and_path_length,
+	files_check_new_folder_count,
+	files_check_request_folder_prefixes,
+	files_NEW_FOLDER_DEPTH_MAX,
 } from "../shared/files.ts";
 import {
 	files_metadata_db_patch_file_scope,
@@ -1949,20 +1952,28 @@ async function db_insert_node(
 		 * Omitted on a new folder means copy the parent default too. Files always store null.
 		 */
 		newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
+		/**
+		 * The raw parent doc, when the caller just read or inserted it. It saves the two parent reads.
+		 */
+		parent?: Doc<"files_nodes">;
 		now: number;
 	},
 ) {
 	// A new node sits inside its parent, so it starts with the parent's restricted scope. Without
 	// this, a file created inside a restricted folder would be open to the whole workspace, which is
 	// the one thing the person who restricted that folder asked us not to do.
-	const restrictedScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
-		parentId: args.parentId,
-	});
+	const restrictedScopeNodeId = args.parent
+		? args.parent.restrictedScopeNodeId
+		: await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+				parentId: args.parentId,
+			});
 
 	// Copying the default is an ordinary creation step. It needs no policy-management right.
-	const parentDefault = await files_nodes_db_resolve_parent_new_child_policy(ctx, {
-		parentId: args.parentId,
-	});
+	const parentDefault = args.parent
+		? args.parent.newChildWritePolicy
+		: await files_nodes_db_resolve_parent_new_child_policy(ctx, {
+				parentId: args.parentId,
+			});
 
 	// Upload assets are inserted with their declared size, and the R2 upload event corrects it later.
 	const asset = args.assetId ? await ctx.db.get("files_r2_assets", args.assetId) : null;
@@ -2107,6 +2118,12 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 * Never set this from client input.
 		 */
 		expectedParentWritePolicy?: Doc<"files_nodes">["writePolicy"];
+		/**
+		 * Folders by path that earlier creates of this request already found or made. Pass one new map
+		 * per request with the same writer on every call: a hit skips the folder's lookup and access
+		 * checks, so one request walks each folder once. This helper fills it.
+		 */
+		folders?: Map<string, Doc<"files_nodes">>;
 	},
 ) {
 	let parentNode =
@@ -2139,6 +2156,12 @@ export async function files_nodes_db_create_node_recursively_at_path(
 
 	// Resolve every existing segment before creating anything. A later refusal must leave no folders.
 	for (const [i, name] of segments.entries()) {
+		const known = i < segments.length - 1 ? args.folders?.get(path_join(parentPath, name)) : undefined;
+		if (known) {
+			parentNode = known;
+			parentPath = known.path;
+			continue;
+		}
 		const existing = await files_saved_placement_db_get_slot(ctx.db, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -2187,10 +2210,13 @@ export async function files_nodes_db_create_node_recursively_at_path(
 
 		parentNode = existing;
 		parentPath = existing.path;
+		args.folders?.set(existing.path, existing);
 	}
 
 	const missingNames = segments.slice(firstMissing);
 	const intendedPath = missingNames.reduce((path, name) => path_join(path, name), parentPath);
+	const newFolders = files_check_new_folder_count(missingNames.length - (args.kind === "file" ? 1 : 0));
+	if (newFolders._nay) return newFolders;
 	// Check only the names this create adds: an older folder on the way may keep a longer name.
 	if (!args.replacesArchivedFile) {
 		const tooLong = files_check_name_and_path_length({ names: missingNames, path: intendedPath });
@@ -2271,6 +2297,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	}
 
 	let currentParent = parentNode?._id ?? files_ROOT_ID;
+	let createdParent: Doc<"files_nodes"> | undefined;
 	let path = parentPath;
 	for (const [i, name] of missingNames.entries()) {
 		const isLeaf = i === missingNames.length - 1;
@@ -2289,10 +2316,16 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			expectsTextContent: isLeaf ? args.expectsTextContent : undefined,
 			writePolicy: isLeaf ? args.writePolicy : undefined,
 			newChildWritePolicy: isLeaf ? args.newChildWritePolicy : undefined,
+			parent: createdParent,
 			now: args.now,
 		});
 		if (nodeIdResult._nay) {
 			return nodeIdResult;
+		}
+		// One read here replaces the two parent reads of the next insert.
+		if (!isLeaf) {
+			createdParent = (await ctx.db.get("files_nodes", nodeIdResult._yay))!;
+			args.folders?.set(path, createdParent);
 		}
 
 		const metadata =
@@ -2630,7 +2663,7 @@ export async function files_nodes_db_plan_private_node_by_path(
 
 	const missingCount = segments.length - missingFrom;
 	// Bound the ancestor checks and writes of one implicit-parent create.
-	if (missingCount > 32 || privateDepth + missingCount > 256) {
+	if (missingCount > files_NEW_FOLDER_DEPTH_MAX || privateDepth + missingCount > 256) {
 		return Result({ _nay: { name: "too_large", message: "Create the parent folders in smaller groups" } });
 	}
 
@@ -3760,12 +3793,23 @@ export const create_upload_nodes = mutation({
 				size: item.size,
 			});
 		}
+		// Bound the folder lookups of this call before the first one.
+		const folderCount = files_check_request_folder_prefixes(validated.map((item) => item.relativePath));
+		if (folderCount._nay) {
+			return folderCount;
+		}
 
 		const now = Date.now();
 		const skipped: Array<{ relativePath: string; reason: "conflict" | "path_blocked" }> = [];
+		// Each folder on the way is looked up and checked once per call. Items in one folder share it.
+		const walkedFolders = new Map<
+			string,
+			{ node: Doc<"files_nodes"> | null; skipReason: "conflict" | "path_blocked" | null }
+		>();
 		const runnable: Array<(typeof validated)[number] & { existingNodeId: Id<"files_nodes"> | null }> = [];
 		// Share one link cleanup across the replaced files, so the workspace links load only once.
 		const shareLinkCleanup = files_share_links_create_cleanup_state();
+		const folders = new Map<string, Doc<"files_nodes">>();
 
 		// Conflicts with nodes that already exist in the workspace are per-item skips, never call
 		// failures. The walk below also asks `content.write` about every folder that already
@@ -3795,55 +3839,59 @@ export const create_upload_nodes = mutation({
 				// `walkParentId` depends on `intermediate`, whose query depends on this constant.
 				const currentWalkParentId: Doc<"files_nodes">["parentId"] = walkParentId;
 
-				const intermediate = await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-						q
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
-							.eq("moveCohortId", undefined)
-							.eq("parentId", currentWalkParentId)
-							.eq("name", name)
-							.eq("archiveOperationId", null),
-					)
-					.first();
-				if (!intermediate) {
+				let walked = walkedFolders.get(ancestorTargetPath);
+				if (!walked) {
+					const intermediate = await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+							q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("parentId", currentWalkParentId)
+								.eq("name", name)
+								.eq("archiveOperationId", null),
+						)
+						.first();
+					walked = { node: intermediate, skipReason: null };
+					// "path_blocked" says a file sits on this path. Report it only when the caller can
+					// read that node; otherwise the reason would reveal the kind of a hidden node, which
+					// the conflict pre-check and the tree (`list_tree_children`) both hide.
+					if (intermediate && intermediate.kind !== "folder") {
+						walked.skipReason = (await access_control_db_can_act_on_file_node(ctx, {
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							userId: userAuth.id,
+							fileNode: intermediate,
+							permission: "content.read",
+						}))
+							? "path_blocked"
+							: "conflict";
+					} else if (
+						intermediate &&
+						(!(await access_control_db_can_act_on_file_node(ctx, {
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							userId: userAuth.id,
+							fileNode: intermediate,
+							permission: "content.write",
+						})) ||
+							// Report a general conflict. Do not reveal that a hidden folder is read-only.
+							(await files_nodes_db_require_user_writable(ctx, { node: intermediate, userId: userAuth.id }))._nay)
+					) {
+						walked.skipReason = "conflict";
+					}
+					walkedFolders.set(ancestorTargetPath, walked);
+				}
+				if (!walked.node) {
 					walkParentId = null;
 					continue;
 				}
-				// "path_blocked" says a file sits on this path. Report it only when the caller can
-				// read that node; otherwise the reason would reveal the kind of a hidden node, which
-				// the conflict pre-check and the tree (`list_tree_children`) both hide.
-				if (intermediate.kind !== "folder") {
-					itemSkipReason = (await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						userId: userAuth.id,
-						fileNode: intermediate,
-						permission: "content.read",
-					}))
-						? "path_blocked"
-						: "conflict";
+				if (walked.skipReason) {
+					itemSkipReason = walked.skipReason;
 					break;
 				}
-				if (
-					!(await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						userId: userAuth.id,
-						fileNode: intermediate,
-						permission: "content.write",
-					}))
-				) {
-					itemSkipReason = "conflict";
-					break;
-				}
-				// Report a general conflict. Do not reveal that a hidden folder is read-only.
-				if ((await files_nodes_db_require_user_writable(ctx, { node: intermediate, userId: userAuth.id }))._nay) {
-					itemSkipReason = "conflict";
-					break;
-				}
-				walkParentId = intermediate._id;
+				walkParentId = walked.node._id;
 				existingSegmentCount++;
 			}
 			if (itemSkipReason) {
@@ -3913,6 +3961,10 @@ export const create_upload_nodes = mutation({
 				if (tooLong._nay) {
 					return Result({ _nay: { message: tooLong._nay.message, data: { path: item.relativePath } } });
 				}
+				const newFolders = files_check_new_folder_count(item.segments.length - 1 - existingSegmentCount);
+				if (newFolders._nay) {
+					return Result({ _nay: { ...newFolders._nay, data: { path: item.relativePath } } });
+				}
 			}
 
 			runnable.push({ ...item, existingNodeId: existingNode?._id ?? null });
@@ -3965,6 +4017,7 @@ export const create_upload_nodes = mutation({
 				contentType: item.contentType,
 				assetId,
 				...(item.existingNodeId ? { replacesArchivedFile: true as const } : {}),
+				folders,
 				// A folder import also records the path the file had inside the imported folder. Once
 				// the import is placed under another parent, the stored path no longer shows it.
 				metadata: [

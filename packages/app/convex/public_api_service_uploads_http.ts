@@ -21,6 +21,7 @@ import type {
 import { public_api_authorize_request } from "./public_api_http_auth.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
+import { files_check_request_path_length } from "../shared/files.ts";
 
 // #region shared
 
@@ -60,6 +61,9 @@ function upload_failure(failure: { name?: string; message: string }) {
 	}
 	if (failure.name === "read_only" || failure.name === "move_busy") {
 		return { status: 409, body: { message } } as const;
+	}
+	if (failure.name === "too_many_folders") {
+		return { status: 400, body: { message, code: failure.name } } as const;
 	}
 	if (message === "Unauthenticated") {
 		return { status: 401, body: { message } } as const;
@@ -147,6 +151,10 @@ export async function public_api_service_uploads_http_create_target(args: {
 	const body = await server_request_json_parse_and_validate(request, create_target_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	const pathLength = files_check_request_path_length(body._yay.path);
+	if (pathLength._nay) {
+		return upload_failure(pathLength._nay);
 	}
 
 	const created: public_api_service_uploads_create_upload_target_Result = await ctx.runMutation(

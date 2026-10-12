@@ -7,11 +7,11 @@
 import { v } from "convex/values";
 import { internalQuery } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
+import { files_db_create_path_lookups, files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import {
 	files_check_name_and_path_length,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
@@ -19,6 +19,7 @@ import {
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
+	files_check_request_path_length,
 } from "../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
@@ -94,6 +95,8 @@ export const create_upload_targets = internalMutation({
 			collidingNodeId: Id<"files_nodes"> | null;
 		}> = [];
 		for (const rawItem of args.items) {
+			const pathLength = files_check_request_path_length(rawItem.path);
+			if (pathLength._nay) return Result({ _nay: { ...pathLength._nay, data: { path: rawItem.path } } });
 			const item = { ...rawItem, path: files_normalize_special_node_path("file", rawItem.path) };
 			// Conventional names are cased above. Every other path must already be canonical.
 			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {
@@ -163,43 +166,37 @@ export const create_upload_targets = internalMutation({
 		}
 
 		// An ancestor folder that already exists as a file would make the recursive create fail
-		// mid-write, so check every ancestor path up front too.
+		// mid-write, so check each path's deepest existing folder up front too. A file can go into an existing
+		// folder at any depth. The folder caps come after the checks on that folder, like the API doors.
+		const lookups = await files_db_create_path_lookups(ctx, args);
+		const parents = new Map<string, { node: Doc<"files_nodes"> | null; depth: number }>();
 		for (const item of validated) {
 			const segments = path_extract_segments_from(item.path);
-			let existingDepth = 0;
 			for (let depth = 1; depth < segments.length; depth++) {
-				const ancestorPath = `/${segments.slice(0, depth).join("/")}`;
-				if (leafPaths.has(ancestorPath)) {
+				if (leafPaths.has(`/${segments.slice(0, depth).join("/")}`)) {
 					return Result({
 						_nay: { message: "Path conflicts with another item in the batch", data: { path: item.path } },
 					});
 				}
-
-				const ancestor = await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
-							.eq("path", ancestorPath)
-							.eq("archiveOperationId", null),
-					)
-					.first();
-				if (ancestor && ancestor.kind !== "folder") {
-					return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
-				}
-				// A read-only parent folder stops the whole batch before its first write.
-				if (ancestor) {
-					const ancestorWritable = await files_nodes_db_require_user_writable(ctx, {
-						node: ancestor,
-						userId: args.createdBy,
-					});
-					if (ancestorWritable._nay) {
-						return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
-					}
-					existingDepth = depth;
+			}
+			const found = await lookups.find_existing_parent(item.path);
+			const { node: ancestor, depth: existingDepth } = found;
+			parents.set(item.path, found);
+			if (ancestor && ancestor.kind !== "folder") {
+				return Result({ _nay: { message: "The path cannot point to a folder", data: { path: item.path } } });
+			}
+			// A read-only parent folder stops the whole batch before its first write.
+			if (ancestor) {
+				const ancestorWritable = await files_nodes_db_require_user_writable(ctx, {
+					node: ancestor,
+					userId: args.createdBy,
+				});
+				if (ancestorWritable._nay) {
+					return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
 				}
 			}
+			const folderCounts = lookups.check_folder_counts(item.path, existingDepth);
+			if (folderCounts._nay) return Result({ _nay: { ...folderCounts._nay, data: { path: item.path } } });
 			// Check only the names this item adds: an older folder on the way and a replaced file keep their
 			// names.
 			if (!item.collidingNodeId) {
@@ -219,6 +216,7 @@ export const create_upload_targets = internalMutation({
 		}> = [];
 		// Share one link cleanup across the replaced files, so the workspace links load only once.
 		const shareLinkCleanup = files_share_links_create_cleanup_state();
+		const folders = new Map<string, Doc<"files_nodes">>();
 		for (const item of validated) {
 			// Importing over a name archives whatever holds it, like create_upload_node, so re-runs
 			// replace the previous import instead of failing.
@@ -247,16 +245,19 @@ export const create_upload_targets = internalMutation({
 				updatedAt: now,
 			});
 
+			// Start at the folder the ancestor pass found, so the create does not walk the folders above it.
+			const parent = parents.get(item.path)!;
 			const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.createdBy,
-				parentId: files_ROOT_ID,
-				path: item.path,
+				parentId: parent.node?._id ?? files_ROOT_ID,
+				path: path_extract_segments_from(item.path).slice(parent.depth).join("/"),
 				kind: "file",
 				contentType: item.contentType,
 				assetId,
 				...(item.collidingNodeId ? { replacesArchivedFile: true as const } : {}),
+				folders,
 				// Say the file arrived through an operator import, so `meta search` can tell imported
 				// content from what somebody uploaded here. The size and the media type are
 				// client-declared at this point. The R2 event publish stamps the real ones.

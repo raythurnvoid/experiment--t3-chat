@@ -2,10 +2,16 @@ import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
-import { files_NAME_MAX_LENGTH } from "../shared/files.ts";
+import {
+	files_NAME_MAX_LENGTH,
+	files_NEW_FOLDER_DEPTH_MAX,
+	files_REQUEST_FOLDER_PREFIXES_MAX,
+	files_STORED_PATH_MAX_LENGTH,
+} from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
 let enqueueActionSpy: MockInstance;
@@ -55,6 +61,80 @@ describe("data_import.create_upload_targets", () => {
 				assets: await ctx.db.query("files_r2_assets").collect(),
 			})),
 		).toEqual({ nodes: [], assets: [] });
+	});
+
+	test("a path over 4,096 characters refuses the batch before any lookup, like any new path over the limit", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const longPath = `/${"d/".repeat(files_STORED_PATH_MAX_LENGTH / 2)}f.pdf`;
+
+		const created = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			items: [{ path: longPath, contentType: "application/pdf", size: 10 }],
+		});
+		expect(created, "a path over the stored path cap").toEqual({
+			_nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters.", data: { path: longPath } },
+		});
+	});
+
+	test("50 files that use every folder slot fit the real read limits, and one folder more refuses before any write", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const chain = (head: string, folders: number) => `/${[head, ...Array<string>(folders - 1).fill("a")].join("/")}`;
+		const create = (paths: string[]) =>
+			t.mutation(internal.data_import.create_upload_targets, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				items: paths.map((path) => ({ path, contentType: "application/pdf", size: 10 })),
+			});
+
+		// Each path stays under the new-folder cap, so only the per-call folder cap can refuse this.
+		const tooMany = await create([
+			`${chain("p", files_NEW_FOLDER_DEPTH_MAX)}/0.pdf`,
+			`${chain("q", files_REQUEST_FOLDER_PREFIXES_MAX - files_NEW_FOLDER_DEPTH_MAX)}/1.pdf`,
+			`${chain("r", 1)}/2.pdf`,
+		]);
+		expect(tooMany._nay, "one folder more than a call may name").toMatchObject({ name: "too_many_folders" });
+		expect(
+			await t.run(async (ctx) => ({
+				nodes: await ctx.db.query("files_nodes").collect(),
+				assets: await ctx.db.query("files_r2_assets").collect(),
+			})),
+		).toEqual({ nodes: [], assets: [] });
+
+		const chains = [chain("p", files_NEW_FOLDER_DEPTH_MAX), chain("q", files_NEW_FOLDER_DEPTH_MAX)];
+		expect(chains.length * files_NEW_FOLDER_DEPTH_MAX).toBe(files_REQUEST_FOLDER_PREFIXES_MAX);
+		const fits = await create(Array.from({ length: 50 }, (_, i) => `${chains[i % 2]}/${i}.pdf`));
+		expect(fits._yay, "50 files at the folder limits").toHaveLength(50);
+
+		// An existing chain four times deeper than a call may name. Only its deepest folder counts.
+		const deepPath = await t.run(async (ctx) => {
+			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
+			let path = "";
+			for (let pathDepth = 1; pathDepth <= files_REQUEST_FOLDER_PREFIXES_MAX * 4; pathDepth++) {
+				path = `${path}/e`;
+				parentId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId,
+					name: "e",
+					sortName: files_sort_text_key("e"),
+					kind: "folder",
+					path,
+					treePath: `${path}/`,
+					pathDepth,
+				});
+			}
+			return path;
+		});
+		const deep = await create(Array.from({ length: 50 }, (_, i) => `${deepPath}/${i}.pdf`));
+		expect(deep._yay, "50 files in the deepest existing folder").toHaveLength(50);
 	});
 
 	test("old names over the limit stay usable: replace a long-named file and import into a long-named folder", async () => {

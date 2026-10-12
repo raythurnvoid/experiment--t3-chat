@@ -13,11 +13,14 @@ import type { WithoutSystemFields } from "convex/server";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import {
+	files_check_new_folder_count,
+	files_check_request_folder_count,
 	files_pending_update_has_asset_content,
 	files_pending_update_has_yjs_content,
 	files_MAX_YJS_WIRE_BYTES,
 	files_ROOT_ID,
 } from "../shared/files.ts";
+import { path_extract_segments_from } from "../shared/paths.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "./server-utils.ts";
@@ -27,7 +30,13 @@ import {
 } from "../convex/files_private_storage.ts";
 import { files_media_dependencies_db_retire } from "../convex/files_media_dependencies.ts";
 import { files_db_resolve_scope } from "../convex/files_scopes.ts";
-import { files_saved_placement_db_get_node, files_saved_placement_db_get_path, files_saved_placement_db_get_sequence, files_saved_placement_db_get_view } from "./files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_path,
+	files_saved_placement_db_get_sequence,
+	files_saved_placement_db_get_slot,
+	files_saved_placement_db_get_view,
+} from "./files-saved-placement.ts";
 import { files_saved_content_db_yjs_updates } from "./files-saved-content.ts";
 
 export * from "../shared/files.ts";
@@ -365,6 +374,140 @@ export async function files_db_get_visible_node_by_path(
 				.eq("archiveOperationId", null),
 		)
 		.first();
+}
+
+/**
+ * Path lookups for one request, with the same rules as `files_db_get_visible_node_by_path`. Without a
+ * Move, a path is one index read. While a Move holds the workspace, or a move op rewrites stored paths,
+ * a path is found by name from the root. Then every folder on the way is kept, so the paths of one
+ * request read each folder only once.
+ */
+export async function files_db_create_path_lookups(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+	},
+) {
+	const { organizationId, workspaceId } = args;
+	const scope = files_db_resolve_scope(ctx, workspaceId);
+	// Global and mount scopes never have a Move or a move op.
+	const workspace =
+		!organizations_is_global_organization_id(organizationId) && scope.kind === "workspace"
+			? { organizationId, workspaceId: scope.workspaceId }
+			: null;
+	const view = workspace ? await files_saved_placement_db_get_view(ctx.db, workspace) : null;
+	const fixedView = view?.cohortId && view.view ? { cohortId: view.cohortId, view: view.view } : undefined;
+	// While a move op rewrites stored paths, an item inside the moved folder can still carry its old `path`.
+	const moveOp =
+		workspace && !fixedView
+			? await ctx.db
+					.query("files_subtree_ops")
+					.withIndex("by_organization_workspace_kind", (q) =>
+						q
+							.eq("organizationId", workspace.organizationId)
+							.eq("workspaceId", workspace.workspaceId)
+							.eq("kind", "move"),
+					)
+					.first()
+			: null;
+	const walk = fixedView !== undefined || moveOp !== null;
+	const nodes = new Map<string, Doc<"files_nodes"> | null>();
+	// The folders the request names: each found parent and each new folder.
+	const named = new Set<string>();
+
+	// Walk the first `count` names from the root and keep each prefix. A missing name or a file ends the
+	// walk, so the last node found is the deepest one that exists.
+	async function walk_names(names: string[], count: number) {
+		let found: { node: Doc<"files_nodes"> | null; depth: number } = { node: null, depth: 0 };
+		let path = "";
+		for (let index = 0; index < count; index++) {
+			const name = names[index]!;
+			const parentId = found.node?._id ?? files_ROOT_ID;
+			path += `/${name}`;
+			let node = nodes.get(path);
+			if (node === undefined) {
+				node = fixedView
+					? await files_saved_placement_db_get_slot(ctx.db, { organizationId, workspaceId, parentId, name }, fixedView)
+					: await ctx.db
+							.query("files_nodes")
+							.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+								q
+									.eq("organizationId", organizationId)
+									.eq("workspaceId", workspaceId)
+									.eq("moveCohortId", undefined)
+									.eq("parentId", parentId)
+									.eq("name", name)
+									.eq("archiveOperationId", null),
+							)
+							.first();
+				nodes.set(path, node);
+			}
+			if (!node) break;
+			found = { node, depth: index + 1 };
+			if (node.kind !== "folder") break;
+		}
+		return found;
+	}
+
+	/**
+	 * Look up one path.
+	 */
+	async function get(path: string) {
+		if (walk) {
+			const names = path.slice(1).split("/");
+			const found = await walk_names(names, names.length);
+			return found.depth === names.length ? found.node : null;
+		}
+		let node = nodes.get(path);
+		if (node === undefined) {
+			node = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("path", path)
+						.eq("archiveOperationId", null),
+				)
+				.first();
+			nodes.set(path, node);
+		}
+		return node;
+	}
+
+	/**
+	 * Find the deepest node that exists on a new file path, and its depth. It keeps looking past the
+	 * new-folder cap on purpose: the caller checks access on this node before any answer that depends on
+	 * what exists below it. Without a Move it looks up the parent first and walks up through the missing
+	 * folders, so a file in an existing deep folder costs one read.
+	 */
+	async function find_existing_parent(path: string) {
+		const segments = path_extract_segments_from(path);
+		if (walk) return await walk_names(segments, segments.length - 1);
+		for (let depth = segments.length - 1; depth >= 1; depth--) {
+			const node = await get(`/${segments.slice(0, depth).join("/")}`);
+			if (node) return { node, depth };
+		}
+		return { node: null, depth: 0 };
+	}
+
+	/**
+	 * Call after the access check on the found parent. Refuse a path that adds too many new folders, then
+	 * count the found parent and the new folders toward the request cap.
+	 */
+	function check_folder_counts(path: string, parentDepth: number) {
+		const segments = path_extract_segments_from(path);
+		const newFolders = files_check_new_folder_count(segments.length - 1 - parentDepth);
+		if (newFolders._nay) return newFolders;
+		for (let depth = Math.max(parentDepth, 1); depth < segments.length; depth++) {
+			named.add(`/${segments.slice(0, depth).join("/")}`);
+		}
+		return files_check_request_folder_count(named.size);
+	}
+
+	return { get, find_existing_parent, check_folder_counts };
 }
 
 /**

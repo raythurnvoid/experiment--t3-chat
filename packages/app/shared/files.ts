@@ -1039,6 +1039,11 @@ const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set<string>([
  */
 export const files_NAME_MAX_LENGTH = 255;
 export const files_PATH_MAX_LENGTH = 1024;
+/**
+ * The path cap before it was lowered to 1,024. Older paths can be this long, so a request may still name
+ * one to replace it.
+ */
+export const files_STORED_PATH_MAX_LENGTH = 4096;
 
 /**
  * Refuse a name or a path over the limits. Pass only the names and the path a write sets: an old
@@ -1065,6 +1070,74 @@ export function files_check_name_and_path_length(args: { names?: string[]; path?
 			});
 		}
 		return Result({ _nay: { name: "path_too_long", message: "Paths can have at most 1,024 characters." } });
+	}
+	return Result({ _yay: null });
+}
+
+/**
+ * Refuse a request path longer than any stored path, before any lookup, so the work for each path stays
+ * bounded. Such a path can only be new, so it gets the same answer as a new path over the current cap.
+ */
+export function files_check_request_path_length(path: string) {
+	if (path.length > files_STORED_PATH_MAX_LENGTH) return files_check_name_and_path_length({ path });
+	return Result({ _yay: null });
+}
+
+/**
+ * Folder limits for one create call. Each folder on a path costs database reads, and each new
+ * folder costs about 17 index reads, so these keep one call well under the 4,096 index reads a
+ * mutation may do. The new folder limit matches the app folder import, volumes, and Move parents.
+ */
+export const files_NEW_FOLDER_DEPTH_MAX = 32;
+export const files_REQUEST_FOLDER_PREFIXES_MAX = 64;
+
+/**
+ * Refuse a call whose paths name too many distinct folders. It reads only the strings, so callers run
+ * it before any database read. Pass paths relative to the parent the call starts from, since it walks
+ * every folder on them. Doors that take absolute paths count with `files_check_request_folder_count`.
+ */
+export function files_check_request_folder_prefixes(paths: string[]) {
+	const prefixes = new Set<string>();
+	for (const path of paths) {
+		let prefix = "";
+		for (const segment of path_extract_segments_from(path).slice(0, -1)) {
+			prefix += `/${segment}`;
+			prefixes.add(prefix);
+			// Stop early, so a huge request does not build a huge set.
+			const folderCount = files_check_request_folder_count(prefixes.size);
+			if (folderCount._nay) return folderCount;
+		}
+	}
+	return Result({ _yay: null });
+}
+
+/**
+ * Refuse a call that names too many distinct folders: the new ones plus the existing parents it found.
+ */
+export function files_check_request_folder_count(count: number) {
+	if (count > files_REQUEST_FOLDER_PREFIXES_MAX) {
+		return Result({
+			_nay: {
+				name: "too_many_folders",
+				message: `This request uses too many folders (limit ${files_REQUEST_FOLDER_PREFIXES_MAX}). Send fewer files per request.`,
+			},
+		});
+	}
+	return Result({ _yay: null });
+}
+
+/**
+ * Refuse a path that adds too many new folders. Count only the missing folders, so a file can still go
+ * into an existing deeper folder.
+ */
+export function files_check_new_folder_count(count: number) {
+	if (count > files_NEW_FOLDER_DEPTH_MAX) {
+		return Result({
+			_nay: {
+				name: "too_many_folders",
+				message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+			},
+		});
 	}
 	return Result({ _yay: null });
 }

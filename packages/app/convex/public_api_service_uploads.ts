@@ -25,6 +25,7 @@ import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
+	files_nodes_db_live_scope_reader,
 	files_nodes_db_require_writable,
 	files_nodes_db_require_write_policy_management,
 	files_nodes_db_set_write_policy,
@@ -44,6 +45,7 @@ import {
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
+	files_db_create_path_lookups,
 	files_db_get_visible_node_by_path,
 	files_editable_text_content_type_of,
 	files_normalize_content_type,
@@ -902,11 +904,9 @@ export const create_upload_target = internalMutation({
 
 		// A service never overwrites. A meeting's files land on fresh paths; a collision means either a
 		// replay under a new target key (a caller bug) or a member's file, and both must survive.
-		const existingNode = await files_db_get_visible_node_by_path(ctx, {
-			organizationId: args.principal.organizationId,
-			workspaceId: args.principal.workspaceId,
-			path: args.path,
-		});
+		// The file lookup and the folder search below share their reads: during a Move each folder is read once.
+		const lookups = await files_db_create_path_lookups(ctx, args.principal);
+		const existingNode = await lookups.get(args.path);
 		if (existingNode) {
 			// Check access first so a restricted file the actor cannot see still answers Permission
 			// denied instead of revealing that the path is taken.
@@ -926,34 +926,28 @@ export const create_upload_target = internalMutation({
 		}
 
 		// Ancestor pass, same as `/api/v1/files/upload-urls`: a restricted, file-owned, or read-only
-		// ancestor refuses cleanly before anything is written.
+		// deepest existing folder refuses cleanly before anything is written. Every answer that depends on
+		// what exists below that folder comes after its access checks.
 		const segments = path_extract_segments_from(args.path);
-		let effectiveDestinationAclNode: Doc<"files_nodes"> | null = null;
-		for (let index = 1; index < segments.length; index++) {
-			const ancestorPath = `/${segments.slice(0, index).join("/")}`;
-			const ancestor = await files_db_get_visible_node_by_path(ctx, {
+		const found = await lookups.find_existing_parent(args.path);
+		// A scope job may not have reached this folder yet, so check the scope its parents give it.
+		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args.principal);
+		const effectiveDestinationAclNode = found.node && (await withLiveScope(found.node));
+		const parentDepth = found.depth;
+		if (
+			effectiveDestinationAclNode &&
+			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.principal.organizationId,
 				workspaceId: args.principal.workspaceId,
-				path: ancestorPath,
-			});
-			if (!ancestor) {
-				continue;
-			}
-			effectiveDestinationAclNode = ancestor;
-			if (
-				!(await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
-					userId: args.principal.actorUserId,
-					fileNode: ancestor,
-					permission: "content.write",
-				}))
-			) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-			if (ancestor.kind !== "folder") {
-				return Result({ _nay: { message: "An intermediate segment is owned by a file" } });
-			}
+				userId: args.principal.actorUserId,
+				fileNode: effectiveDestinationAclNode,
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		if (effectiveDestinationAclNode && effectiveDestinationAclNode.kind !== "folder") {
+			return Result({ _nay: { message: "An intermediate segment is owned by a file" } });
 		}
 
 		const writeContext: files_nodes_WriteContext = {
@@ -994,9 +988,13 @@ export const create_upload_target = internalMutation({
 		if (writable._nay) {
 			return writable;
 		}
+		const folderCounts = lookups.check_folder_counts(args.path, parentDepth);
+		if (folderCounts._nay) {
+			return folderCounts;
+		}
 		// Check only the names this upload adds: an older folder on the way may keep a longer name.
 		const tooLong = files_check_name_and_path_length({
-			names: segments.slice(effectiveDestinationAclNode?.pathDepth ?? 0),
+			names: segments.slice(parentDepth),
 			path: args.path,
 		});
 		if (tooLong._nay) {
@@ -1006,7 +1004,7 @@ export const create_upload_target = internalMutation({
 		const busy = await files_nodes_db_check_create_busy(ctx, {
 			...args.principal,
 			parentNode: effectiveDestinationAclNode,
-			name: segments[effectiveDestinationAclNode?.pathDepth ?? 0]!,
+			name: segments[parentDepth]!,
 		});
 		if (busy._nay) {
 			return busy;
@@ -1081,12 +1079,13 @@ export const create_upload_target = internalMutation({
 			updatedAt: now,
 		});
 
+		// Start at the folder the ancestor pass found, so the create does not walk the folders above it.
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			userId: args.principal.actorUserId,
-			parentId: files_ROOT_ID,
-			path: args.path,
+			parentId: effectiveDestinationAclNode?._id ?? files_ROOT_ID,
+			path: segments.slice(parentDepth).join("/"),
 			kind: "file",
 			contentType,
 			assetId,

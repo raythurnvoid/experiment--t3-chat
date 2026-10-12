@@ -992,6 +992,149 @@ describe("Move write reservations", () => {
 		expect(written, "only the write before the reservation passes").toEqual(["metadata.a"]);
 	});
 
+	test("a busy check reads the free Move slot only, and a Move reads each parent once per mutation", async () => {
+		const f = await fixture();
+		// A chain of 64 folders below the fixture's target folder, outside the Move.
+		const chain = await f.t.run(async (ctx) => {
+			const ids: Id<"files_nodes">[] = [];
+			let parentId = f.parentId;
+			let path = "/target";
+			for (let pathDepth = 2; pathDepth <= 65; pathDepth++) {
+				path = `${path}/a`;
+				parentId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId,
+					name: "a",
+					sortName: files_sort_text_key("a"),
+					kind: "folder",
+					path,
+					treePath: `${path}/`,
+					pathDepth,
+				});
+				ids.push(parentId);
+			}
+			return ids;
+		});
+		const deepId = chain.at(-1)!;
+		const create = (name: string) => ({
+			parent: { kind: "saved" as const, id: deepId },
+			slot: { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, parentId: deepId, name },
+		});
+		// The index ranges each check reads, in one mutation.
+		const ranges = async (
+			ctx: MutationCtx,
+			db: MutationCtx["db"],
+			check: Parameters<typeof files_move_reservations_db_find_blocker>[1],
+		) => {
+			const before = (await ctx.meta.getTransactionMetrics()).databaseQueries.used;
+			const blocker = await files_move_reservations_db_find_blocker(db, check);
+			return { blocker, ranges: (await ctx.meta.getTransactionMetrics()).databaseQueries.used - before };
+		};
+
+		await f.t.run(async (ctx) => {
+			const { db } = files_move_reservations_db_wrap(ctx);
+			const first = await ranges(ctx, db, create("x"));
+			expect(first.blocker).toBeNull();
+			expect(first.ranges, "the first create walks the 65 parents").toBeGreaterThan(65);
+			const second = await ranges(ctx, db, create("y"));
+			expect(second, "the second create in the same folder reads no parent again").toEqual({
+				blocker: null,
+				ranges: 1,
+			});
+			// A new reservation drops the kept answers, so a Move that starts here is seen at once.
+			await db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source: { kind: "saved", id: chain[10]! },
+				mode: "subtree",
+				userId: null,
+				generation: 1,
+			});
+			expect((await ranges(ctx, db, create("z"))).blocker).toBe(f.cohortId);
+		});
+
+		// No Move holds the slot, so there is no reservation anywhere and no parent walk.
+		await f.t.run(async (ctx) => {
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+				)
+				.unique();
+			for (const reservation of await ctx.db.query("files_move_source_reservations").collect())
+				await ctx.db.delete("files_move_source_reservations", reservation._id);
+			await ctx.db.patch("files_move_workspace_slots", slot!._id, { cohortId: null });
+		});
+		await f.t.run(async (ctx) => {
+			expect(await ranges(ctx, ctx.db, create("x")), "a create reads only the free slot").toEqual({
+				blocker: null,
+				ranges: 1,
+			});
+			expect(
+				await ranges(ctx, ctx.db, { source: { kind: "saved", id: deepId } }),
+				"a node check reads only the node and the free slot",
+			).toEqual({ blocker: null, ranges: 2 });
+		});
+	});
+
+	test("a Move's own parent change drops the kept parent answers in the same mutation", async () => {
+		const f = await fixture();
+		const outsideId = await f.t.run(async (ctx) => {
+			await ctx.db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source: { kind: "saved", id: f.parentId },
+				mode: "subtree",
+				userId: null,
+				generation: 1,
+			});
+			return await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId: "root",
+				name: "outside",
+				sortName: files_sort_text_key("outside"),
+				kind: "folder",
+				path: "/outside",
+				treePath: "/outside/",
+				pathDepth: 1,
+			});
+		});
+		await f.publish();
+		const create = {
+			parent: { kind: "saved" as const, id: outsideId },
+			slot: {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				parentId: outsideId,
+				name: "new.txt",
+			},
+		};
+		await f.t.run(async (ctx) => {
+			const guarded = { ...ctx, ...files_move_reservations_db_wrap(ctx) };
+			expect(
+				await files_move_reservations_db_enter(guarded, {
+					cohortId: f.cohortId,
+					fence: 1,
+					attemptFence: 1,
+					mode: "finish",
+				}),
+			).toEqual({ _yay: null });
+			expect(await files_move_reservations_db_find_blocker(guarded.db, create)).toBeNull();
+			// The Move itself puts the folder inside its source, so a create there must wait from now on.
+			await guarded.db.patch("files_nodes", outsideId, { parentId: f.parentId });
+			expect(
+				await files_move_reservations_db_find_blocker(guarded.db, create),
+				"a create in the folder after its parent changed",
+			).toBe(f.cohortId);
+		});
+	});
+
 	test("the pending-state sweep does not reschedule a pass that only skipped busy rows", async () => {
 		const f = await fixture();
 		// A full page of tasks in the Move's workspace. Each one is skipped this pass.
