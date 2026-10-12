@@ -76,6 +76,7 @@ import {
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
+import { files_archive_runs_CHECK_STEP_MAX_NODES } from "../server/files-archive-runs.ts";
 import { files_db_get_pending_update, files_ROOT_ID } from "../server/files.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { files_check_name_and_path_length, files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
@@ -90,11 +91,6 @@ export const experimental_reuseContext = true;
  * database time and one restored node about 16 ms, so a step stays near 1 to 3 seconds.
  */
 export const files_archive_runs_STEP_MAX_NODES = 75;
-
-/**
- * A check step reads at most this many nodes. It writes nothing, so it can read more than an apply step.
- */
-const CHECK_STEP_MAX_NODES = 500;
 
 const PAGE_SIZE = 50;
 
@@ -429,7 +425,7 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	let readCount = 0;
 
 	while (true) {
-		if (readCount >= CHECK_STEP_MAX_NODES || (await files_subtree_ops_db_is_near_limits(ctx))) {
+		if (readCount >= files_archive_runs_CHECK_STEP_MAX_NODES || (await files_subtree_ops_db_is_near_limits(ctx))) {
 			return { kind: "continue" };
 		}
 
@@ -711,8 +707,8 @@ async function db_can_replace(
 	if (args.occupant.kind === "file") return true;
 
 	// Like a pasted move, no read-only item may end up hidden inside the archived folder. The `get` query
-	// runs this too, so read at most `CHECK_STEP_MAX_NODES` items inside. A bigger folder cannot be
-	// replaced. Keep both and Skip still work.
+	// runs this too, so read at most `files_archive_runs_CHECK_STEP_MAX_NODES` items inside. A bigger folder
+	// cannot be replaced. Keep both and Skip still work.
 	const inside: Doc<"files_nodes">[] = [];
 	const folderIds = [args.occupant._id];
 	while (folderIds.length > 0) {
@@ -725,9 +721,9 @@ async function db_can_replace(
 					.eq("workspaceId", args.occupant.workspaceId).eq("moveCohortId", undefined)
 					.eq("parentId", folderId),
 			)
-			.take(CHECK_STEP_MAX_NODES + 1 - inside.length);
+			.take(files_archive_runs_CHECK_STEP_MAX_NODES + 1 - inside.length);
 		inside.push(...children);
-		if (inside.length > CHECK_STEP_MAX_NODES) return false;
+		if (inside.length > files_archive_runs_CHECK_STEP_MAX_NODES) return false;
 		folderIds.push(...children.filter((child) => child.kind === "folder").map((child) => child._id));
 	}
 	const swept = await files_nodes_db_require_swept_nodes_writable(ctx, {
@@ -940,7 +936,7 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	let readCount = 0;
 
 	while (true) {
-		if (readCount >= CHECK_STEP_MAX_NODES || (await files_subtree_ops_db_is_near_limits(ctx))) {
+		if (readCount >= files_archive_runs_CHECK_STEP_MAX_NODES || (await files_subtree_ops_db_is_near_limits(ctx))) {
 			return { kind: "continue" };
 		}
 
@@ -974,9 +970,9 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 							.eq("treePath", lastNode.treePath)
 							.gte("_creationTime", lastNode._creationTime),
 					)
-					.take(CHECK_STEP_MAX_NODES + 1 + pageIds.size)
+					.take(files_archive_runs_CHECK_STEP_MAX_NODES + 1 + pageIds.size)
 			).filter((node) => !pageIds.has(node._id));
-			if (sameTreePath.length > CHECK_STEP_MAX_NODES)
+			if (sameTreePath.length > files_archive_runs_CHECK_STEP_MAX_NODES)
 				return { kind: "failed", nay: { message: "Too many archived items share one path." } };
 			page.push(...sameTreePath);
 		}

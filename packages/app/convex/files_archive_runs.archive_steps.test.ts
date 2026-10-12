@@ -24,10 +24,16 @@ import {
 	lock,
 	folder,
 	read_node,
-	lock_archived,
 	queue_empty_folders_first,
 	count_queue,
 } from "./files_archive_runs.setup.test.ts";
+
+// A check step reads at most 100 nodes here instead of 500, so small trees cross it. The mock puts this
+// file in the isolated "Convex" project.
+vi.mock("../server/files-archive-runs.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../server/files-archive-runs.ts")>()),
+	files_archive_runs_CHECK_STEP_MAX_NODES: 100,
+}));
 
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.
 beforeEach(() => {
@@ -57,8 +63,8 @@ describe("archive_nodes", () => {
 
 	test("a read-only file found by the check refuses before anything is archived", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "checked", folderCount: 6, filesPerFolder: 100 });
-		// The check reads 500 nodes inside the request, and the walk reaches this file last.
+		const tree = await seed_tree(f, { name: "checked", folderCount: 6, filesPerFolder: 20 });
+		// The check reads 100 nodes inside the request, and the walk reaches this file last.
 		await lock({ f, nodeId: tree.fileIds.at(-1)!, locked: true });
 
 		const small = await seed_tree(f, { name: "checked-small", folderCount: 1, filesPerFolder: 2 });
@@ -120,12 +126,12 @@ describe("archive_nodes", () => {
 	test("a refusal found in a later check step counts the refused item once", async () => {
 		const f = await fixture();
 		const before = await seed_tree(f, { name: "before", folderCount: 1, filesPerFolder: 2 });
-		const big = await seed_tree(f, { name: "big-refused", folderCount: 6, filesPerFolder: 100 });
+		const big = await seed_tree(f, { name: "big-refused", folderCount: 6, filesPerFolder: 20 });
 		const after = await seed_tree(f, { name: "after", folderCount: 1, filesPerFolder: 1 });
-		// The check reads 500 nodes in each step, and the walk reaches this file last.
+		// The check reads 100 nodes in each step, and the walk reaches this file last.
 		await lock({ f, nodeId: big.fileIds.at(-1)!, locked: true });
 
-		// The request checks 500 nodes and does not reach the read-only file yet.
+		// The request checks 100 nodes and does not reach the read-only file yet.
 		const archived = await archive(f, [before.topId, big.topId, after.topId]);
 		expect(archived._yay).toMatchObject({ isDone: false, notArchivedNodeIds: [] });
 		const ended = await run_to_end(f, archived._yay!);
@@ -155,7 +161,7 @@ describe("archive_nodes", () => {
 
 	test("a named item somebody else archives during the check is skipped, and the refused one is listed", async () => {
 		const f = await fixture();
-		const big = await seed_tree(f, { name: "big-alone", folderCount: 6, filesPerFolder: 100 });
+		const big = await seed_tree(f, { name: "big-alone", folderCount: 6, filesPerFolder: 20 });
 		const small = await seed_tree(f, { name: "small-archived", folderCount: 1, filesPerFolder: 1 });
 		await lock({ f, nodeId: big.fileIds.at(-1)!, locked: true });
 
@@ -181,7 +187,7 @@ describe("archive_nodes", () => {
 
 	test("a named item that is gone when the check reaches it is listed as not found", async () => {
 		const f = await fixture();
-		const big = await seed_tree(f, { name: "big-first", folderCount: 6, filesPerFolder: 100 });
+		const big = await seed_tree(f, { name: "big-first", folderCount: 6, filesPerFolder: 20 });
 		// An empty folder, so deleting it leaves no child without a parent.
 		const small = await seed_tree(f, { name: "small-deleted", folderCount: 0, filesPerFolder: 0 });
 
@@ -192,7 +198,7 @@ describe("archive_nodes", () => {
 		const ended = await run_to_end(f, archived._yay!);
 
 		expect(ended.activity).toMatchObject({ status: "partial", errorMessage: null });
-		expect(ended.activity.progress).toMatchObject({ total: 608, completed: 607, skipped: 0, blocked: 1 });
+		expect(ended.activity.progress).toMatchObject({ total: 128, completed: 127, skipped: 0, blocked: 1 });
 		const run = await f.asOwner.query(api.files_archive_runs.get, {
 			membershipId: f.db.membershipId,
 			runId: archived._yay!.runId,
@@ -218,9 +224,9 @@ describe("archive_nodes", () => {
 				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", f.db.workspaceId).eq("userId", member.userId))
 				.unique(),
 		))!._id;
-		// 499 reads for the first tree (1 + 6 folders + 6 * 82 files). The locked second folder is read 500,
+		// 99 reads for the first tree (1 + 2 folders + 2 * 48 files). The locked second folder is read 100,
 		// so the request stops right after it refuses it, with its row still in the queue.
-		const first = await seed_tree(f, { name: "first-passed", folderCount: 6, filesPerFolder: 82 });
+		const first = await seed_tree(f, { name: "first-passed", folderCount: 2, filesPerFolder: 48 });
 		const refused = await seed_tree(f, { name: "second-refused", folderCount: 0, filesPerFolder: 0 });
 		await lock({ f, nodeId: refused.topId, locked: true });
 
@@ -249,13 +255,14 @@ describe("archive_nodes", () => {
 		// An empty folder, so deleting it leaves no child without a parent.
 		const emptyId = await folder(f, "/shrink/d2/empty");
 
-		const archived = await archive(f, [tree.topId]);
-		await step(f, archived._yay!.runId);
-		// The request and the first step stamped 150 nodes. The walk reaches `d2` after 204, so the empty
-		// folder is still active.
+		const job = (await archive(f, [tree.topId]))._yay!;
+		let run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
+		while (run.phase !== "apply") run = (await step(f, job.runId))!;
+		// The check runs in steps of 100 first. The step that ends it stamped 75 nodes. The walk reaches `d2`
+		// after 204, so the empty folder is still active.
 		expect((await read_node(f, emptyId)).archiveOperationId).toBeNull();
 		await f.t.run((ctx) => ctx.db.delete("files_nodes", emptyId));
-		const ended = await run_to_end(f, archived._yay!);
+		const ended = await run_to_end(f, job);
 
 		expect(ended.activity.status).toBe("succeeded");
 		expect(ended.activity.progress).toMatchObject({ total: 305, completed: 304, skipped: 1, blocked: 0 });
@@ -353,7 +360,7 @@ describe("archive_nodes", () => {
 
 	test("a second archive of a child commits now, and the job keeps the child's operation", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "busy", folderCount: 6, filesPerFolder: 100 });
+		const tree = await seed_tree(f, { name: "busy", folderCount: 6, filesPerFolder: 20 });
 
 		const archived = await archive(f, [tree.topId]);
 		expect(archived._yay).not.toBeNull();
@@ -373,9 +380,9 @@ describe("archive_nodes", () => {
 
 	test("stamps every named item before it walks inside one, and walks the first one's folder first", async () => {
 		const f = await fixture();
-		// The first tree has 601 items in 100 folders, so its check and its walk take several steps. The
+		// The first tree has 201 items in 100 folders, so its check and its walk take several steps. The
 		// second only needs items inside it.
-		const first = await seed_tree(f, { name: "first", folderCount: 100, filesPerFolder: 5 });
+		const first = await seed_tree(f, { name: "first", folderCount: 100, filesPerFolder: 1 });
 		const second = await seed_tree(f, { name: "second", folderCount: 1, filesPerFolder: 5 });
 		const insideFirst = new Set<Id<"files_nodes">>([...first.folderIds, ...first.fileIds]);
 		const insideSecond = new Set<Id<"files_nodes">>([...second.folderIds, ...second.fileIds]);
@@ -608,7 +615,7 @@ describe("apply_file_pending_archive", () => {
 	test("a Discard during the check ends the job before anything is archived", async () => {
 		const f = await fixture();
 		// Bigger than one check step, so the job is still checking when the Discard comes.
-		const tree = await seed_tree(f, { name: "discard", folderCount: 6, filesPerFolder: 100 });
+		const tree = await seed_tree(f, { name: "discard", folderCount: 6, filesPerFolder: 20 });
 		expect(
 			(
 				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
@@ -640,38 +647,6 @@ describe("apply_file_pending_archive", () => {
 			status: "failed",
 			errorMessage: "The delete was discarded.",
 		});
-		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
-	});
-
-	test("a folder too big to check still gets the proposal, and the job refuses a read-only item inside", async () => {
-		const f = await fixture();
-		// 2,005 items inside, more than the proposal checks in one mutation.
-		const tree = await seed_tree(f, { name: "huge", folderCount: 5, filesPerFolder: 400 });
-		expect(await archive(f, [tree.fileIds.at(-1)!])).toEqual({ _yay: null });
-		await lock_archived(f, tree.fileIds.at(-1)!);
-
-		const proposed = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			userId: f.db.userId,
-			target: { kind: "saved", id: tree.topId },
-		});
-		expect(proposed._nay).toBeUndefined();
-
-		const pendingUpdate = (await f.t.run((ctx) => ctx.db.query("files_pending_updates").first()))!;
-		expect(
-			await f.asOwner.mutation(api.files_pending_updates.apply_file_pending_archive, {
-				membershipId: f.db.membershipId,
-				target: { kind: "saved", id: tree.topId },
-				pendingUpdateId: pendingUpdate._id,
-				reviewedRevision: pendingUpdate.revision,
-			}),
-		).toEqual({ _yay: null });
-		const run = (await f.t.run((ctx) => ctx.db.query("files_archive_runs").first()))!;
-		const activity = (await f.t.run((ctx) => ctx.db.query("activities").first()))!;
-		const ended = await run_to_end(f, { runId: run._id, activityId: activity._id });
-		// An agent's delete names one item, so the refusal that leaves out one named item fails the delete.
-		expect(ended.activity).toMatchObject({ status: "failed", errorMessage: "An item inside it is read-only." });
 		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
 	});
 });

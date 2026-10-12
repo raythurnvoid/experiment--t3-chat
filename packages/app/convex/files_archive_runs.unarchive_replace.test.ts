@@ -397,9 +397,9 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "wide", folderCount: 1, filesPerFolder: 1 });
 			expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
-			// A new `/wide` with 501 archived items inside and no active child.
-			const occupantTree = await seed_tree(f, { name: "wide", folderCount: 1, filesPerFolder: 500 });
-			await archive_to_end(f, occupantTree.folderIds[0]!);
+			// A new `/wide` with 501 archived items inside and no active child. They are inserted archived,
+			// so no archive job runs first.
+			await seed_same_path(f, { name: "wide", count: 501, archiveOperationId: null });
 
 			const restored = await restore(f, [tree.topId]);
 			const shown = await f.asOwner.query(api.files_archive_runs.get, {

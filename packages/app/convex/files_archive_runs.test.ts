@@ -15,6 +15,13 @@ import {
 	read_node,
 } from "./files_archive_runs.setup.test.ts";
 
+// A check step reads at most 100 nodes here instead of 500, so small trees cross it. The mock puts this
+// file in the isolated "Convex" project.
+vi.mock("../server/files-archive-runs.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../server/files-archive-runs.ts")>()),
+	files_archive_runs_CHECK_STEP_MAX_NODES: 100,
+}));
+
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -44,14 +51,15 @@ describe("archive_nodes", () => {
 
 	test("a big archive runs as a job, and after every step the side docs match and no active node is inside a finished archive", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "big", folderCount: 6, filesPerFolder: 100 });
+		// 247 items: more than one check step of 100, and more than 3 steps of 75 stamps.
+		const tree = await seed_tree(f, { name: "big", folderCount: 6, filesPerFolder: 40 });
 
 		const archived = await archive(f, [tree.topId]);
 		expect(archived._nay).toBeUndefined();
 		const ended = await run_to_end(f, archived._yay!);
 
 		expect(ended.activity).toMatchObject({ status: "succeeded", title: "Archive files" });
-		expect(ended.activity.progress).toMatchObject({ total: 607, completed: 607 });
+		expect(ended.activity.progress).toMatchObject({ total: 247, completed: 247 });
 		expect(ended.steps).toBeGreaterThan(3);
 		const state = await read_state(f);
 		const operationIds = new Set(state.nodes.map((node) => node.archiveOperationId));
@@ -65,11 +73,11 @@ describe("archive_nodes", () => {
 
 	test("the named folder leaves the tree in the first step that writes, before its children", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "first", folderCount: 6, filesPerFolder: 100 });
+		const tree = await seed_tree(f, { name: "first", folderCount: 6, filesPerFolder: 20 });
 
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;
-		// The check reads 500 nodes inside the request, so nothing is stamped yet.
+		// The check of 127 nodes does not fit in the 100 reads of the request, so nothing is stamped yet.
 		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
 		await step(f, job.runId);
 
@@ -80,7 +88,7 @@ describe("archive_nodes", () => {
 
 	test("a folder created inside during the check is archived with the rest", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "grow", folderCount: 6, filesPerFolder: 100 });
+		const tree = await seed_tree(f, { name: "grow", folderCount: 6, filesPerFolder: 20 });
 
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;
