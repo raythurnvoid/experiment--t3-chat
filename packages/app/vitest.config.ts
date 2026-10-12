@@ -1,4 +1,4 @@
-import { configDefaults, defineConfig } from "vitest/config";
+import { configDefaults, defineConfig, type TestProjectInlineConfiguration } from "vitest/config";
 import { playwright } from "@vitest/browser-playwright";
 import tailwindcss from "@tailwindcss/vite";
 import { reactCompilerPreset } from "@vitejs/plugin-react";
@@ -7,6 +7,88 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// These convex project files cannot share loaded modules with other test files, so they run in the
+// isolated "Convex" project. They use `vi.mock` (a mock stays registered for later files and misses a
+// module that an earlier file already loaded), call `vi.resetModules`, set env values before an app
+// module reads them once at load, or import a helper that adds `beforeEach`/`afterEach` hooks when it
+// loads (bash.setup.test.ts, files_browser.setup.test.ts). A loaded helper adds its hooks only to the
+// first file that imports it.
+const convex_isolated_files = [
+	"convex/ai_chat_billing_workspaces.test.ts",
+	"convex/ai_chat_context_gate.test.ts",
+	"convex/ai_chat_context_manager.test.ts",
+	"convex/ai_chat_context_route.test.ts",
+	"convex/ai_chat_credit_gate.test.ts",
+	"convex/ai_chat_image_generation.test.ts",
+	"convex/ai_chat_mcp_route.test.ts",
+	"convex/ai_chat_reply_storage.test.ts",
+	"convex/billing.test.ts",
+	"convex/billing_alerts.test.ts",
+	"convex/billing_inspection.test.ts",
+	"convex/files_browser.outputs.test.ts",
+	"convex/files_browser.sessions.test.ts",
+	"convex/files_browser.test.ts",
+	"convex/files_nodes.content_yjs.test.ts",
+	"convex/files_nodes.move_nodes.test.ts",
+	"convex/files_nodes.search_box.test.ts",
+	"convex/files_nodes.search_box_catalog.test.ts",
+	"convex/files_nodes.search_metadata.test.ts",
+	"convex/files_nodes.test.ts",
+	"convex/files_pending_updates.drafts.test.ts",
+	"convex/files_pending_updates.drafts_private.test.ts",
+	"convex/files_pending_updates.drafts_replace.test.ts",
+	"convex/files_pending_updates.review.test.ts",
+	"convex/files_pending_updates.structural.test.ts",
+	"convex/files_pending_updates.test.ts",
+	"convex/files_share_links.test.ts",
+	"convex/files_transfer_media.adopt.test.ts",
+	"convex/files_transfer_media.pages.test.ts",
+	"convex/github_mounts_inventory.test.ts",
+	"convex/r2.test.ts",
+	"server/bash.files.test.ts",
+	"server/bash.files_overlay.test.ts",
+	"server/bash.jobs-copy-crash.test.ts",
+	"server/bash.jobs-copy-intake.test.ts",
+	"server/bash.jobs-copy.test.ts",
+	"server/bash.jobs.test.ts",
+	"server/bash.test.ts",
+	"server/bash.writes.test.ts",
+	"server/bash.writes_cwd.test.ts",
+	"server/crypto-utils.test.ts",
+	"server/server-ai-tools.test.ts",
+	"shared/files.test.ts",
+];
+
+const convex_project = {
+	extends: true,
+	resolve: {
+		alias: [
+			// The package index also loads every other locale, 0.4 s to 1.7 s more in each test file.
+			// `locale/en` exports the same `faker` object, and the tests use only that.
+			{ find: /^@faker-js\/faker$/, replacement: "@faker-js/faker/locale/en" },
+		],
+	},
+	test: {
+		include: ["convex/**/*.test.ts", "server/**/*.test.ts", "shared/**/*.test.ts"],
+		// Setup helpers have no tests, but each one would still take a worker and import the app.
+		exclude: [...configDefaults.exclude, "**/setup.test.ts", "**/setup-*.test.ts", "**/*.setup.test.ts"],
+		includeSource: ["convex/**/*.ts", "server/bash.ts", "server/server-ai-tools.ts"],
+		globals: true,
+		environment: "edge-runtime",
+		server: {
+			deps: {
+				// Vendored workspace packages must be inlined for tests,
+				// otherwise the runtime tries to execute raw `.ts` sources and fails with unknown extension errors.
+				// Keep this list as small as possible and scoped to the convex/server test dependency graph.
+				inline: ["convex-test", "@tiptap/extension-collaboration"],
+			},
+		},
+		// Preload only environment values and per-file cleanup; helper imports would load app modules
+		// before per-file mocks.
+		setupFiles: ["./convex/setup-env.test.ts"],
+	},
+} satisfies TestProjectInlineConfiguration;
 
 export default defineConfig({
 	plugins: [
@@ -153,33 +235,21 @@ export default defineConfig({
 				},
 			},
 			{
-				extends: true,
-				resolve: {
-					alias: [
-						// The package index also loads every other locale, 0.4 s to 1.7 s more in each test file.
-						// `locale/en` exports the same `faker` object, and the tests use only that.
-						{ find: /^@faker-js\/faker$/, replacement: "@faker-js/faker/locale/en" },
-					],
-				},
+				...convex_project,
 				test: {
-					include: ["convex/**/*.test.ts", "server/**/*.test.ts", "shared/**/*.test.ts"],
-					// Setup helpers have no tests, but each one would still take a worker and import the app.
-					exclude: [...configDefaults.exclude, "**/setup.test.ts", "**/setup-*.test.ts", "**/*.setup.test.ts"],
-					includeSource: ["convex/**/*.ts", "server/bash.ts", "server/server-ai-tools.ts"],
+					...convex_project.test,
 					name: "convex",
-					globals: true,
-					environment: "edge-runtime",
-					server: {
-						deps: {
-							// Vendored workspace packages must be inlined for tests,
-							// otherwise the runtime tries to execute raw `.ts` sources and fails with unknown extension errors.
-							// Keep this list as small as possible and scoped to the convex/server test dependency graph.
-							inline: ["convex-test", "@tiptap/extension-collaboration"],
-						},
-					},
-					// Preload only environment values; helper imports would load app modules before per-file mocks.
-					setupFiles: ["./convex/setup-env.test.ts"],
+					// Files in one worker share loaded modules, so the app loads once per worker, not once per
+					// file. setup-env.test.ts resets what files leave behind.
+					isolate: false,
+					exclude: [...convex_project.test.exclude, ...convex_isolated_files],
 				},
+			},
+			{
+				...convex_project,
+				// Vitest matches `--project` names without case and needs unique names, so "Convex" keeps
+				// `--project convex` running both convex projects.
+				test: { ...convex_project.test, name: "Convex", include: convex_isolated_files, includeSource: [] },
 			},
 		],
 	},
