@@ -328,6 +328,11 @@ const FILES_IMPORT_MAX_CHUNK_BYTES = 1024 * 1024 * 1024;
 const FILES_IMPORT_PREPARE_CONCURRENCY = 4;
 const FILES_IMPORT_PUT_CONCURRENCY = 4;
 const FILES_IMPORT_TOAST_MAX_PATHS = 5;
+/**
+ * Each retry of a create call charges the rate limits again, so a chunk drops a refused file and
+ * retries at most this many times.
+ */
+const FILES_IMPORT_MAX_REFUSAL_RETRIES = 5;
 const FILES_IMPORT_PROGRESS_TOAST_ID = "files-sidebar-import-progress";
 
 // `fromEvent` filters these junk files for drops but not for folder picker files, so the shared
@@ -339,6 +344,7 @@ type FilesImportSkipReason =
 	| "missing_extension"
 	| "too_large"
 	| "too_deep"
+	| "too_many_folders"
 	| "path_too_long"
 	| "duplicate_after_normalization"
 	| "conflict"
@@ -349,6 +355,7 @@ const FILES_IMPORT_SKIP_REASON_TEXT: Record<FilesImportSkipReason, string> = {
 	missing_extension: "No file extension",
 	too_large: "File too large",
 	too_deep: `More than ${files_NEW_FOLDER_DEPTH_MAX} new folders`,
+	too_many_folders: `More than ${files_REQUEST_FOLDER_PREFIXES_MAX} folders deep`,
 	path_too_long: `Path over ${files_PATH_MAX_LENGTH.toLocaleString("en-US")} characters`,
 	duplicate_after_normalization: "Same name as another file",
 	// The server uses "conflict" for an existing file and for a refused permission alike.
@@ -362,6 +369,13 @@ const FILES_IMPORT_SKIP_REASON_TEXT: Record<FilesImportSkipReason, string> = {
 function get_import_failure_reason(message: string) {
 	if (message.endsWith("Send fewer files per request.")) return "Too many folders in one request";
 	const plain: Record<string, string> = {
+		Unauthenticated: "Sign in again",
+		Unauthorized: "You can't add files here",
+		"Permission denied": "You can't add files here",
+		// The chunks stay under the server limit, so this one is not expected.
+		"Too many files": "Too many files in one request",
+		[`This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`]:
+			FILES_IMPORT_SKIP_REASON_TEXT.too_deep,
 		"Not found": "The target folder no longer exists",
 		"Duplicate path in batch": "Same path as another file",
 		"Path must be relative and normalized": "Path not allowed",
@@ -565,17 +579,21 @@ function build_import_plan(entries: FilesImportEntry[], parentPath: string) {
 		) {
 			invalidSkillPaths.push(entry.relativePath);
 		}
-		// The server refuses the whole call for a path over these limits, so skip the file here. Every
-		// folder on the relative path counts as new: the client does not know which ones exist. A long
-		// path that replaces an existing file is allowed, so a non-skill one is only marked here.
+		// The server refuses the whole call when it names more than `files_REQUEST_FOLDER_PREFIXES_MAX`
+		// folders, even to replace a file, so skip such a file here. It counts only new folders against
+		// `files_NEW_FOLDER_DEPTH_MAX` and names the refused path, so a file under fewer folders is sent:
+		// the run retries without it when it needs too many new folders. A skill file stops the import.
+		// A long path that replaces an existing file is allowed, so a non-skill one is only marked here.
 		const pathTooLong =
 			(parentPath === "/" ? 0 : parentPath.length) + 1 + normalizedPath.length > files_PATH_MAX_LENGTH;
 		const depthOrLengthSkip =
-			normalizedSegments.length - 1 > files_NEW_FOLDER_DEPTH_MAX
-				? "too_deep"
-				: pathTooLong && skillRoot !== undefined
-					? "path_too_long"
-					: null;
+			normalizedSegments.length - 1 > files_REQUEST_FOLDER_PREFIXES_MAX
+				? "too_many_folders"
+				: skillRoot !== undefined && normalizedSegments.length - 1 > files_NEW_FOLDER_DEPTH_MAX
+					? "too_deep"
+					: pathTooLong && skillRoot !== undefined
+						? "path_too_long"
+						: null;
 		if (depthOrLengthSkip) {
 			if (skillRoot !== undefined) {
 				invalidSkillPaths.push(entry.relativePath);
@@ -908,6 +926,11 @@ async function run_folder_import(args: {
 			}
 		};
 
+		// Folders the server refused because a file there needs too many new folders. A refused call
+		// writes nothing, so the list holds until a call succeeds. That call may create some of their
+		// parent folders, so it empties the list.
+		const tooDeepFolders: string[] = [];
+
 		const process_chunk = async (chunkItems: FilesImportPlanItem[]): Promise<"continue" | "stop"> => {
 			const itemByPath = new Map(chunkItems.map((item) => [item.normalizedPath, item]));
 			const fail = (items: FilesImportPlanItem[], reason: string) =>
@@ -915,7 +938,20 @@ async function run_folder_import(args: {
 					failed: [...state.failed, ...items.map((item) => ({ relativePath: item.relativePath, reason }))],
 				}));
 			let chunk = chunkItems;
-			let retriedWithoutRefusedPath = false;
+			let refusalRetries = 0;
+			// A file in a refused folder or below it needs at least as many new folders, so it fails with the
+			// same reason and is not sent.
+			const drop_too_deep = () => {
+				const tooDeep = chunk.filter((item) =>
+					tooDeepFolders.some((folder) => item.normalizedPath.startsWith(`${folder}/`)),
+				);
+				fail(tooDeep, FILES_IMPORT_SKIP_REASON_TEXT.too_deep);
+				chunk = chunk.filter((item) => !tooDeep.includes(item));
+			};
+			drop_too_deep();
+			if (chunk.length === 0) {
+				return "continue";
+			}
 			// Create the chunk's nodes, waiting out rate limits instead of failing the run. The
 			// bulk bucket refills at a fixed rate, so big imports pause between chunks by design.
 			let createdItems: FilesImportCreatedItem[] | null = null;
@@ -964,14 +1000,21 @@ async function run_folder_import(args: {
 					const refused = chunk.find((item) => item.normalizedPath === refusedPath);
 					if (refused) {
 						// The server checks every input before its first write, so the call wrote nothing. Only
-						// the named file fails with this reason. Retry once without it, so the others import.
+						// the named file fails with this reason. Retry without it, so each refused file gets its
+						// own reason and the others import. After the last retry the files left were never
+						// refused, so they get their own reason.
 						fail([refused], reason);
 						chunk = chunk.filter((item) => item !== refused);
-						if (!retriedWithoutRefusedPath && chunk.length > 0) {
-							retriedWithoutRefusedPath = true;
+						// A path-named "too_many_folders" is the new-folder refusal.
+						if (result._nay.name === "too_many_folders") {
+							tooDeepFolders.push(refused.normalizedPath.slice(0, refused.normalizedPath.lastIndexOf("/")));
+							drop_too_deep();
+						}
+						if (chunk.length > 0 && refusalRetries < FILES_IMPORT_MAX_REFUSAL_RETRIES) {
+							refusalRetries += 1;
 							continue;
 						}
-						fail(chunk, "Another file in the same request was refused");
+						fail(chunk, "Not sent: too many files in this request were refused");
 						return "continue";
 					}
 					fail(chunk, reason);
@@ -996,6 +1039,7 @@ async function run_folder_import(args: {
 					skippedExisting: state.skippedExisting + chosenSkipCount,
 				}));
 				createdItems = result._yay.created;
+				tooDeepFolders.length = 0;
 				for (const created of createdItems) {
 					files_in_flight_uploads_add(created.nodeId);
 				}
@@ -8059,15 +8103,24 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(plan.invalidSkillPaths).toEqual(["one/references/Output_Format.md", "one/references/readme.md"]);
 		});
 
-		test("build_import_plan keeps 32 new folders and skips 33", () => {
+		test("build_import_plan keeps 64 folders and skips 65", () => {
 			const folders = (count: number) => Array.from({ length: count }, (_, index) => `d${index}`).join("/");
-			const fits = test_file_with_path({ name: "leaf.pdf", path: `/${folders(32)}/leaf.pdf` });
-			const deep = test_file_with_path({ name: "leaf.pdf", path: `/${folders(33)}/leaf.pdf` });
+			const deep = test_file_with_path({ name: "leaf.pdf", path: `/${folders(64)}/leaf.pdf` });
+			const tooDeep = test_file_with_path({ name: "leaf.pdf", path: `/${folders(65)}/leaf.pdf` });
 
-			const plan = build_import_plan(get_import_file_entries([fits, deep]), "/");
+			const plan = build_import_plan(get_import_file_entries([deep, tooDeep]), "/");
 
-			expect(plan.items.map((item) => item.normalizedPath)).toEqual([`${folders(32)}/leaf.pdf`]);
-			expect(plan.skipped).toEqual([{ relativePath: `${folders(33)}/leaf.pdf`, reason: "too_deep" }]);
+			// The server counts only new folders, so the run sends the file under 64 folders.
+			expect(
+				plan.items.map((item) => item.normalizedPath),
+				"a file under 64 folders is sent",
+			).toEqual([`${folders(64)}/leaf.pdf`]);
+			expect(plan.skipped).toEqual([{ relativePath: `${folders(65)}/leaf.pdf`, reason: "too_many_folders" }]);
+			// A skill file under 33 folders still stops the import.
+			const skill = test_file_with_path({ name: "SKILL.md", path: `/${folders(33)}/SKILL.md`, type: "text/markdown" });
+			expect(build_import_plan(get_import_file_entries([skill]), "/").invalidSkillPaths).toEqual([
+				`${folders(33)}/SKILL.md`,
+			]);
 		});
 
 		test("build_import_plan marks a path over 1,024 characters with the target folder's path", () => {
@@ -8100,6 +8153,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(plan.skipped).toEqual([{ relativePath: `docs/${longName}`, reason: "invalid_name" }]);
 		});
 
+		test("get_import_failure_reason names server refusals in plain words", () => {
+			expect(
+				[
+					"Unauthenticated",
+					"Unauthorized",
+					"Permission denied",
+					"Too many files",
+					`This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+					"Some new refusal.",
+				].map(get_import_failure_reason),
+			).toEqual([
+				"Sign in again",
+				"You can't add files here",
+				"You can't add files here",
+				"Too many files in one request",
+				`More than ${files_NEW_FOLDER_DEPTH_MAX} new folders`,
+				"Some new refusal",
+			]);
+		});
+
 		test("chunk_import_items bounds chunks by count and by declared bytes", () => {
 			const item = (size: number, name: string): FilesImportPlanItem => ({
 				file: { size } as unknown as File,
@@ -8125,7 +8198,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				normalizedPath: name,
 				contentType: undefined,
 			});
-			// 31 folders each, the most an import keeps.
+			// 31 folders each.
 			const deepA = `a/${Array.from({ length: 30 }, (_, index) => `d${index}`).join("/")}/f.pdf`;
 			const deepB = `b/${Array.from({ length: 30 }, (_, index) => `d${index}`).join("/")}/f.pdf`;
 
@@ -8248,12 +8321,31 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					}),
 					(paths: string[]) => ({ _nay: { message: "Duplicate path in batch", data: { path: paths[1] } } }),
 				],
-				calls: 3,
-				imported: 2,
+				// Each retry drops the file it named. The third call imports the last file of the first chunk.
+				calls: 4,
+				imported: 3,
 				failed: [
 					[0, "Paths can have at most 1,024 characters"],
 					[1, "Same path as another file"],
-					[2, "Another file in the same request was refused"],
+				],
+			},
+			{
+				failure: "refuses every path in turn, with a rate limit between",
+				answers: [
+					(paths: string[]) => ({ _nay: { message: "Duplicate path in batch", data: { path: paths[0] } } }),
+					() => ({ _nay: { name: "nay", message: "Rate limit exceeded", data: { retryAfterMs: 5 } } }),
+					(paths: string[]) => ({
+						_nay: { message: "Path contains an invalid folder name", data: { path: paths[1] } },
+					}),
+					(paths: string[]) => ({ _nay: { message: "Path ends in an invalid file name", data: { path: paths[2] } } }),
+				],
+				// The rate limit is waited out and is no refusal. No file is left, so the next chunk goes on.
+				calls: 5,
+				imported: 2,
+				failed: [
+					[0, "Same path as another file"],
+					[1, "Folder name not allowed"],
+					[2, "Name not allowed"],
 				],
 			},
 			{
@@ -8281,6 +8373,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				calls: 1,
 				imported: 0,
 				failed: [0, 1, 2, 3, 4].map((index) => [index, "The target folder no longer exists"] as const),
+			},
+			{
+				failure: "is signed out",
+				answers: [() => ({ _nay: { message: "Unauthenticated" } })],
+				calls: 1,
+				imported: 0,
+				failed: [0, 1, 2, 3, 4].map((index) => [index, "Sign in again"] as const),
 			},
 			{
 				failure: "is out of storage",
@@ -8343,6 +8442,149 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(createCalls).toBe(args.calls);
 			expect(useFilesImportStore.getState().phase).toBe("idle");
+		});
+
+		test("run_folder_import retries a refused chunk at most 5 times", async () => {
+			const paths = Array.from({ length: 8 }, (_, index) => `f${index}.pdf`);
+			let createCalls = 0;
+			let failed: Array<{ relativePath: string; reason: string }> = [];
+			const convexStub = {
+				query: async () => [],
+				// Every call refuses its first file.
+				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
+					createCalls += 1;
+					return { _nay: { message: `Refused ${createCalls}.`, data: { path: mutationArgs.items[0]!.relativePath } } };
+				},
+			} as unknown as ConvexReactClient;
+			const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+			const unsubscribe = useFilesImportStore.subscribe((state) => {
+				if (state.failed.length > failed.length) failed = state.failed;
+			});
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries(paths.map((name) => test_file_with_path({ name, path: `./${name}` }))),
+				});
+			} finally {
+				unsubscribe();
+				errorToast.mockRestore();
+			}
+
+			expect(createCalls, "one call and 5 retries").toBe(6);
+			// Each refused file has its own reason. The files never tried say they were not sent.
+			expect(failed, "the files left say they were not sent").toEqual(
+				paths.map((relativePath, index) => ({
+					relativePath,
+					reason: index < 6 ? `Refused ${index + 1}` : "Not sent: too many files in this request were refused",
+				})),
+			);
+		});
+
+		test("run_folder_import sends a refused folder's files again after a call creates folders", async () => {
+			const folder = `a/${Array.from({ length: 35 }, (_, index) => `d${index}`).join("/")}`;
+			// The shallow file creates 11 of the deep folder's 36 folders. It sorts first, so chunk 1 has it,
+			// the refused deep file and 48 more deep files. Chunk 2 has the last deep file.
+			const shallow = `a/${Array.from({ length: 10 }, (_, index) => `d${index}`).join("/")}/a.pdf`;
+			const deep = Array.from({ length: 50 }, (_, index) => `${folder}/f${String(index).padStart(2, "0")}.pdf`);
+			const sent: string[][] = [];
+			const convexStub = {
+				query: async () => [],
+				mutation: async (_fn: unknown, mutationArgs: { items?: Array<{ relativePath: string }> }) => {
+					if (!mutationArgs.items) return { _yay: { removed: true } };
+					const paths = mutationArgs.items.map((item) => item.relativePath);
+					sent.push(paths);
+					// Before the shallow file creates its folders, the deep files need too many new folders.
+					if (sent.length === 1)
+						return {
+							_nay: {
+								name: "too_many_folders",
+								message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+								data: { path: deep[0] },
+							},
+						};
+					return {
+						_yay: {
+							created: paths.map((relativePath) => ({
+								relativePath,
+								nodeId: `node-${relativePath}`,
+								url: "https://r2.test/put",
+								headers: {},
+							})),
+							skipped: [],
+						},
+					};
+				},
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 200 })),
+			);
+			const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries(
+						[shallow, ...deep].map((path) => test_file_with_path({ name: "f.pdf", path: `/${path}` })),
+					),
+				});
+			} finally {
+				vi.unstubAllGlobals();
+				errorToast.mockRestore();
+			}
+
+			// Chunk 1 drops the refused folder's files and sends the shallow file alone.
+			expect(sent.slice(0, 2).map((paths) => paths.length)).toEqual([50, 1]);
+			expect(sent[2], "chunk 2's file is sent").toEqual([deep[49]]);
+		});
+
+		test("run_folder_import fails a whole new folder that needs too many new folders after one refusal", async () => {
+			const folder = Array.from({ length: 40 }, (_, index) => `d${index}`).join("/");
+			const paths = Array.from({ length: 120 }, (_, index) => `${folder}/f${String(index).padStart(3, "0")}.pdf`);
+			let createCalls = 0;
+			let failed: Array<{ relativePath: string; reason: string }> = [];
+			const convexStub = {
+				query: async () => [],
+				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
+					createCalls += 1;
+					return {
+						_nay: {
+							name: "too_many_folders",
+							message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+							data: { path: mutationArgs.items[0]!.relativePath },
+						},
+					};
+				},
+			} as unknown as ConvexReactClient;
+			const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+			const unsubscribe = useFilesImportStore.subscribe((state) => {
+				if (state.failed.length > failed.length) failed = state.failed;
+			});
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries(
+						paths.map((path) => test_file_with_path({ name: "f.pdf", path: `/${path}` })),
+					),
+				});
+			} finally {
+				unsubscribe();
+				errorToast.mockRestore();
+			}
+
+			// Three chunks of the same folder. The first call's refusal fails them all.
+			expect(createCalls, "one call for the whole folder").toBe(1);
+			expect(failed).toEqual(
+				paths.map((relativePath) => ({ relativePath, reason: `More than ${files_NEW_FOLDER_DEPTH_MAX} new folders` })),
+			);
 		});
 
 		test("run_folder_import names skipped and failed files by their browser path", async () => {
@@ -8457,6 +8699,68 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				});
 			} finally {
 				warningToast.mockRestore();
+			}
+		});
+
+		test("run_folder_import sends a file under 33 to 64 folders, and the server refuses it only with new folders", async () => {
+			const folders = (count: number) => Array.from({ length: count }, (_, index) => `d${index}`).join("/");
+			// The first file replaces an existing one, so it adds no folder. The second needs 33 new folders.
+			const existing = `${folders(64)}/old.pdf`;
+			const deep = `e/${folders(32)}/new.pdf`;
+			const sent: string[][] = [];
+			const convexStub = {
+				query: async () => [{ relativePath: existing, kind: "file" }],
+				mutation: async (_fn: unknown, mutationArgs: { items: Array<{ relativePath: string }> }) => {
+					const paths = mutationArgs.items.map((item) => item.relativePath);
+					sent.push(paths);
+					if (paths.includes(deep))
+						return {
+							_nay: {
+								name: "too_many_folders",
+								message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+								data: { path: deep },
+							},
+						};
+					return {
+						_yay: {
+							created: paths.map((relativePath) => ({
+								relativePath,
+								nodeId: `node-${relativePath}`,
+								url: "https://r2.test/put",
+								headers: {},
+							})),
+							skipped: [],
+						},
+					};
+				},
+			} as unknown as ConvexReactClient;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response(null, { status: 200 })),
+			);
+			const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+			// Choose "replace" when the conflict modal opens.
+			const unsubscribe = useFilesImportStore.subscribe((state) => state.confirmResolver?.("replace"));
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					parentPath: "/",
+					entries: get_import_file_entries([
+						test_file_with_path({ name: "old.pdf", path: `/${existing}` }),
+						test_file_with_path({ name: "new.pdf", path: `/${deep}` }),
+					]),
+				});
+				// 64 + 33 folder paths need two calls. The second is refused and leaves no file to retry.
+				expect(sent, "both deep files are sent").toEqual([[existing], [deep]]);
+				expect(errorToast).toHaveBeenCalledWith("Import finished: 1 imported, 1 failed.", {
+					description: `Not imported: …${deep.slice(-59)} (More than ${files_NEW_FOLDER_DEPTH_MAX} new folders).`,
+				});
+			} finally {
+				unsubscribe();
+				vi.unstubAllGlobals();
+				errorToast.mockRestore();
 			}
 		});
 
