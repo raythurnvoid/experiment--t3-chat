@@ -42,17 +42,20 @@ vp env exec pnpm --dir packages/app exec tsx scripts/typecheck.ts C:/absolute/pa
 Test fixtures and benchmark caches must stay in the personal sibling folder,
 outside the code repository.
 
-Run the CLI tests:
+Run all CLI tests when you change `typecheck.ts`:
 
 ```powershell
-vp env exec pnpm --dir packages/app exec vitest run --project scripts scripts/typecheck.test.ts
+vp env exec pnpm --dir packages/app run test:typecheck:full
 ```
 
 They check both fresh and cached runs, skipped vendor type errors, visible app
 errors, changed dependency types, and config errors. Dependency tests cover types
-inferred from function returns, re-exported types, and global types. The app's
-normal test command includes this project. They also check both app configs:
-test errors fail the full check, app errors fail both, and imported test files
-still get checked. Both caches keep working when switching between commands.
+inferred from function returns, re-exported types, and global types. They also
+check both app configs: test errors fail the full check, app errors fail both, and
+imported test files still get checked. Both caches keep working when switching between commands.
+
+The app's normal test command runs only 4 core tests: app errors on fresh and
+cached checks, skipped vendor errors, and a cache from another compiler version.
+The other tests carry the `typecheck-full` tag and run only with the command above.
 
 The plugin SDK generator has its own compiler program and does not use this cache.
