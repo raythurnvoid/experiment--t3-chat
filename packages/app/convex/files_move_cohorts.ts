@@ -138,7 +138,8 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 		contentId: _content,
 		...header
 	} = place;
-	return header;
+	// A shallower Move must clear the old ancestor fields.
+	return { ...header, ...files_ancestor_fields(files_ancestor_ids(place)) };
 }
 
 async function db_get_membership(
