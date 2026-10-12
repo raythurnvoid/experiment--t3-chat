@@ -1,7 +1,7 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { FunctionArgs } from "convex/server";
+import { getFunctionName, type FunctionArgs } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { run } from "./files_move_cohorts.ts";
@@ -229,6 +229,131 @@ describe("Move cohort recovery", () => {
 		});
 		expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.publishedAt).not.toBeNull();
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).toMatchObject({ path: "/target/source" });
+	});
+
+	test("recovers a committed step after its action loses the reply", async () => {
+		const f = await fixture();
+		const before = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+		const owned = (await f.t.run((ctx) => ctx.db.system.get(before.runJob!.id)))!;
+		await f.t.run(async (ctx) => {
+			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
+				if (job.state.kind === "pending" && job._id !== owned._id) await ctx.scheduler.cancel(job._id);
+		});
+		let lostReplies = 0;
+		let committed = before;
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		test_spy_handler(run, async (handler, ctx, args) => {
+			const runMutation = ctx.runMutation.bind(ctx);
+			vi.spyOn(ctx, "runMutation").mockImplementation(async (...mutationArgs) => {
+				const reference = mutationArgs[0];
+				const result = await runMutation(reference, mutationArgs[1], mutationArgs[2]);
+				if (lostReplies === 0 && getFunctionName(reference) === "files_move_cohorts:advance") {
+					// Lose the reply only after the real transaction commits.
+					committed = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+					expect(result).toMatchObject({ kind: "next" });
+					lostReplies++;
+					throw new Error("Move test lost the committed advance reply");
+				}
+				return result;
+			});
+			return await handler(ctx, args);
+		});
+		vi.advanceTimersByTime(0);
+		await f.t.finishInProgressScheduledFunctions();
+		expect(lostReplies).toBe(1);
+		expect(committed.step).toBeGreaterThan(before.step);
+		expect(committed.runJob).toMatchObject({ id: owned._id, step: committed.step });
+		expect((await f.t.run((ctx) => ctx.db.system.get(owned._id)))!.state.kind).toBe("success");
+		expect(
+			await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)),
+			"a lost reply preserves committed progress",
+		).toEqual(committed);
+		expect(committed).toMatchObject({ publishedAt: null, errorCode: null });
+		expect((await run_jobs(f.t, f.cohortId)).filter((job) => job.state.kind === "pending")).toEqual([]);
+		expect(
+			await f.asUser.query(api.files_nodes.get_authorized_by_path, {
+				membershipId: f.db.membershipId,
+				path: "/source",
+			}),
+		).toMatchObject({ nodeId: f.sourceId });
+		expect(
+			await f.t.run((ctx) =>
+				ctx.db
+					.query("files_move_source_reservations")
+					.withIndex("by_cohort", (q) => q.eq("cohortId", f.cohortId))
+					.first(),
+			),
+		).not.toBeNull();
+		const activity = (await f.t.run((ctx) => ctx.db.get("activities", f.activityId)))!;
+		vi.setSystemTime(Date.now() + 3 * 60_000);
+		await f.t.mutation(internal.files_move_cohorts.recover, {});
+		await drain_recovery(f.t);
+		const replacements = (await run_jobs(f.t, f.cohortId)).filter((job) => job.state.kind === "pending");
+		expect(replacements, "a lost committed reply gets one replacement").toHaveLength(1);
+		const recovered = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+		expect(recovered.runJob!.generation).toBeGreaterThan(committed.runJob!.generation);
+		expect(replacements[0]!.args[0]).toMatchObject({
+			cohortId: f.cohortId,
+			step: committed.step,
+			runGeneration: recovered.runJob!.generation,
+		});
+		expect(recovered.deadlineAt).toBe(committed.deadlineAt);
+		expect((await f.t.run((ctx) => ctx.db.get("activities", f.activityId)))!.deadlineAt).toBe(activity.deadlineAt);
+		for (let pass = 0; pass < 20; pass++) {
+			vi.advanceTimersByTime(0);
+			await f.t.finishInProgressScheduledFunctions();
+			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+			const activity = (await f.t.run((ctx) => ctx.db.get("activities", f.activityId)))!;
+			if (cohort.phase === "complete" && activity.status === "succeeded") break;
+		}
+		const completed = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+		expect(completed).toMatchObject({ phase: "complete", errorCode: null });
+		expect(completed.runJob).toBeUndefined();
+		expect(await f.t.run((ctx) => ctx.db.get("activities", f.activityId))).toMatchObject({ status: "succeeded" });
+		const source = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId)))!;
+		expect(source).toMatchObject({
+			path: "/target/source",
+			parentId: f.targetId,
+		});
+		expect(source.moveCohortId).toBeUndefined();
+		expect(
+			await f.asUser.query(api.files_nodes.get_authorized_by_path, {
+				membershipId: f.db.membershipId,
+				path: "/source",
+			}),
+		).toBeNull();
+		expect(
+			await f.asUser.query(api.files_nodes.get_authorized_by_path, {
+				membershipId: f.db.membershipId,
+				path: "/target/source",
+			}),
+		).toMatchObject({ nodeId: f.sourceId });
+		expect(
+			(
+				await f.t.run((ctx) =>
+					ctx.db
+						.query("files_move_workspace_slots")
+						.withIndex("by_workspace", (q) =>
+							q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+						)
+						.unique(),
+				)
+			)?.cohortId,
+		).toBeNull();
+		for (const table of [
+			"files_move_source_reservations",
+			"files_move_slot_claims",
+			"files_move_asset_claims",
+		] as const)
+			expect(
+				await f.t.run((ctx) =>
+					ctx.db
+						.query(table)
+						.withIndex("by_cohort", (q) => q.eq("cohortId", f.cohortId))
+						.first(),
+				),
+				`the completed Move releases ${table}`,
+			).toBeNull();
 	});
 
 	test("recovery kicks keep the original cohort and Activity deadlines", async () => {
