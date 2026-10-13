@@ -2137,12 +2137,13 @@ async function db_drain_user_pending_review_runs_batch(
 		.query("files_pending_update_runs")
 		.withIndex("by_user", (q) => q.eq("userId", args.userId))
 		.first();
-	if (!run) return 0;
+	if (!run) return { done: true, deletedCount: 0 };
 	const purged = await files_pending_update_runs_db_delete_run_batch(ctx, {
 		runId: run._id,
 		batchSize: args.batchSize,
 	});
-	return purged.deletedCount;
+	// An abort can still hold drafts without deleting anything.
+	return { done: false, deletedCount: purged.deletedCount };
 }
 
 /**
@@ -2892,8 +2893,8 @@ async function db_drain_user_finalization_batch(
 	const bashJobCount = await db_drain_user_bash_jobs_batch(ctx, args);
 	if (bashJobCount > 0) return { done: false, deletedCount: bashJobCount };
 
-	const reviewRunCount = await db_drain_user_pending_review_runs_batch(ctx, args);
-	if (reviewRunCount > 0) return { done: false, deletedCount: reviewRunCount };
+	const reviewRuns = await db_drain_user_pending_review_runs_batch(ctx, args);
+	if (!reviewRuns.done) return reviewRuns;
 
 	const writePolicyRunCount = await db_drain_user_write_policy_runs_batch(ctx, args);
 	if (writePolicyRunCount > 0) return { done: false, deletedCount: writePolicyRunCount };
@@ -4257,11 +4258,11 @@ export const prepare_user_for_hard_deletion = internalMutation({
 		const deletedBashJobCount = await db_drain_user_bash_jobs_batch(ctx, { userId: args.userId, batchSize });
 		if (deletedBashJobCount > 0) return false;
 
-		const deletedReviewRunCount = await db_drain_user_pending_review_runs_batch(ctx, {
+		const reviewRuns = await db_drain_user_pending_review_runs_batch(ctx, {
 			userId: args.userId,
 			batchSize,
 		});
-		if (deletedReviewRunCount > 0) return false;
+		if (!reviewRuns.done) return false;
 
 		const deletedWritePolicyRunCount = await db_drain_user_write_policy_runs_batch(ctx, { userId: args.userId });
 		if (deletedWritePolicyRunCount > 0) return false;

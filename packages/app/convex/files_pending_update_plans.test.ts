@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Result } from "common/errors-as-values-utils.ts";
 import { api, internal } from "./_generated/api.js";
 import { advance as produce_advance } from "./files_pending_update_plan_producer.ts";
+import { agent_copied_folders, pending_move } from "./files_pending_update_runs_copy.setup.test.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import {
@@ -248,10 +249,7 @@ async function add_relations(
 	return sealed._yay;
 }
 
-async function finish_plan(
-	f: Awaited<ReturnType<typeof fixture>>,
-	initial: Doc<"files_pending_update_plans">,
-) {
+async function finish_plan(f: Awaited<ReturnType<typeof fixture>>, initial: Doc<"files_pending_update_plans">) {
 	let plan = initial;
 	while (plan.phase !== "ready") {
 		const next = await f.t.mutation(internal.files_pending_update_plans.advance, { planId: plan._id, step: plan.step });
@@ -403,6 +401,283 @@ describe("paged review graph", () => {
 				.unique(),
 		);
 		expect(item?.errorCode, "a published private parent needs no new reviewed proposal").toBeNull();
+	});
+
+	test("reuses ordinary private parent links and keeps complete final walks", async () => {
+		const f = await fixture();
+		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...f.scope,
+			path: "/root/parent/child",
+			kind: "folder",
+		});
+		if (created._nay || created._yay.target.kind !== "private") throw new Error("Expected the private child");
+		const childId = created._yay.target.id;
+		const chain = await f.t.run(async (ctx) => {
+			const child = (await ctx.db.get("files_pending_nodes", childId))!;
+			if (child.parent.kind !== "private") throw new Error("Expected the private parent");
+			const parent = (await ctx.db.get("files_pending_nodes", child.parent.id))!;
+			if (parent.parent.kind !== "private") throw new Error("Expected the private root");
+			const root = (await ctx.db.get("files_pending_nodes", parent.parent.id))!;
+			return [child, parent, root];
+		});
+		const proposals = await f.t.run((ctx) =>
+			Promise.all(
+				chain.map((node) =>
+					ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_user_target", (q) =>
+							q.eq("userId", f.db.userId).eq("target.kind", "private").eq("target.id", node._id),
+						)
+						.unique(),
+				),
+			),
+		);
+		const review = await start_review(
+			f,
+			proposals.map((proposal) => proposal!),
+			true,
+		);
+		const walks = await f.t.run(async (ctx) => {
+			const item = await ctx.db
+				.query("files_pending_update_plan_items")
+				.withIndex("by_plan_runItem", (q) => q.eq("planId", review.plan._id).eq("runItemId", review.runItems[0]!._id))
+				.unique();
+			if (!item) throw new Error("Expected the child plan item");
+			return await Promise.all(
+				(["source", "destination", "final_source", "final_destination"] as const).map(async (kind) => {
+					const rows = await ctx.db
+						.query("files_pending_update_plan_walks")
+						.withIndex("by_plan_item_kind_target", (q) =>
+							q.eq("planId", review.plan._id).eq("itemId", item._id).eq("kind", kind),
+						)
+						.collect();
+					return rows.sort((a, b) => a.step - b.step).map((row) => row.target);
+				}),
+			);
+		});
+		const targets = chain.map((node) => ({ kind: "private" as const, id: node._id }));
+		expect(walks[0], "an ordinary child stops its non-final walk at its selected ordinary parent").toEqual(
+			targets.slice(0, 2),
+		);
+		expect(walks[1], "the destination walk delegates the same ordinary parent chain").toEqual([targets[1]]);
+		expect(walks[2], "the final source walk still checks the complete chain").toEqual(targets);
+		expect(walks[3], "the final destination walk still checks the complete chain").toEqual(targets.slice(1));
+		const ready = await finish_plan(f, review.plan);
+		expect(ready).toMatchObject({ itemCount: 3, assignedItemCount: 3, unitCount: 1 });
+		await test_finish_pending_update_run(f.asUser, review.runId);
+		expect(
+			await f.asUser.query(api.files_pending_update_runs.get, {
+				membershipId: f.db.membershipId,
+				runId: review.runId,
+			}),
+		).toMatchObject({ activity: { status: "succeeded", progress: { completed: 3, blocked: 0, failed: 0 } } });
+		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+		const receipts = await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
+		expect(saved.map((node) => node.path).sort()).toEqual(["/root", "/root/parent", "/root/parent/child"]);
+		expect(receipts.map((receipt) => receipt.privateNodeId).sort()).toEqual(chain.map((node) => node._id).sort());
+		const root = saved.find((node) => node.publishedFromPrivateNodeId === chain[2]!._id)!;
+		const parent = saved.find((node) => node.publishedFromPrivateNodeId === chain[1]!._id)!;
+		const child = saved.find((node) => node.publishedFromPrivateNodeId === chain[0]!._id)!;
+		expect([root.parentId, parent.parentId, child.parentId]).toEqual(["root", root._id, parent._id]);
+		for (const node of saved)
+			expect(receipts.find((receipt) => receipt.privateNodeId === node.publishedFromPrivateNodeId)?.savedNodeId).toBe(
+				node._id,
+			);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
+	});
+
+	test.each(["move", "archive"] as const)(
+		"delegates an omitted saved ancestor %s error to the ordinary group",
+		async (kind) => {
+			const f = await fixture();
+			const made = await f.asUser.mutation(api.files_nodes.create_folder_node, {
+				membershipId: f.db.membershipId,
+				parentId: "root",
+				path: "/saved",
+			});
+			if (made._nay) throw new Error(made._nay.message);
+			const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+				...f.scope,
+				path: "/saved/parent/child",
+				kind: "folder",
+			});
+			if (created._nay || created._yay.target.kind !== "private") throw new Error("Expected the private child");
+			const childId = created._yay.target.id;
+			const before = await f.t.run(async (ctx) => {
+				const child = (await ctx.db.get("files_pending_nodes", childId))!;
+				if (child.parent.kind !== "private") throw new Error("Expected the private parent");
+				const parent = (await ctx.db.get("files_pending_nodes", child.parent.id))!;
+				return { saved: await ctx.db.get("files_nodes", made._yay.nodeId), private: [child, parent] };
+			});
+			if (kind === "move") await propose_move(f, made._yay.nodeId, "moved-saved");
+			else
+				expect(
+					await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+						...f.scope,
+						target: { kind: "saved", id: made._yay.nodeId },
+					}),
+				).toMatchObject({ _yay: { outcome: "proposed" } });
+			const proposals = await f.t.run((ctx) =>
+				Promise.all(
+					[
+						...before.private.map((node) => ({ kind: "private" as const, id: node._id })),
+						{ kind: "saved" as const, id: made._yay.nodeId },
+					].map((target) =>
+						ctx.db
+							.query("files_pending_updates")
+							.withIndex("by_user_target", (q) =>
+								q.eq("userId", f.db.userId).eq("target.kind", target.kind).eq("target.id", target.id),
+							)
+							.unique(),
+					),
+				),
+			);
+			const review = await start_review(f, [proposals[0]!, proposals[1]!], true);
+			const ready = await finish_plan(f, review.plan);
+			expect(ready).toMatchObject({ itemCount: 2, assignedItemCount: 2, unitCount: 1 });
+			const parent = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_update_plan_items")
+					.withIndex("by_plan_target", (q) =>
+						q.eq("planId", ready._id).eq("target.kind", "private").eq("target.id", before.private[1]!._id),
+					)
+					.unique(),
+			);
+			expect(parent).toMatchObject({
+				errorCode: "needs_review",
+				errorMessage: "This action also affects an unselected change. Review them together.",
+			});
+			expect(
+				await f.t.run((ctx) =>
+					ctx.db
+						.query("files_pending_update_plan_walks")
+						.withIndex("by_plan_item_kind_target", (q) =>
+							q
+								.eq("planId", ready._id)
+								.eq("itemId", parent!._id)
+								.eq("kind", "source")
+								.eq("target.kind", "saved")
+								.eq("target.id", made._yay.nodeId),
+						)
+						.unique(),
+				),
+				"the parent's own walk checks the omitted saved ancestor",
+			).not.toBeNull();
+			expect((await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", review.runId)))?.needsReviewIds).toContain(
+				proposals[2]!._id,
+			);
+			await test_finish_pending_update_run(f.asUser, review.runId);
+			expect(
+				await f.asUser.query(api.files_pending_update_runs.get, {
+					membershipId: f.db.membershipId,
+					runId: review.runId,
+				}),
+			).toMatchObject({ activity: { status: "failed", progress: { completed: 0, blocked: 2, failed: 0 } } });
+			expect(
+				await f.t.run((ctx) =>
+					ctx.db
+						.query("files_pending_update_run_units")
+						.withIndex("by_run_order", (q) => q.eq("runId", review.runId))
+						.unique(),
+				),
+			).toMatchObject({ itemCount: 2, status: "blocked", errorCode: "needs_review" });
+			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", made._yay.nodeId))).toEqual(before.saved);
+			expect(
+				await f.t.run((ctx) => Promise.all(before.private.map((node) => ctx.db.get("files_pending_nodes", node._id)))),
+			).toEqual(before.private);
+			expect(
+				await f.t.run((ctx) =>
+					Promise.all(proposals.map((proposal) => ctx.db.get("files_pending_updates", proposal!._id))),
+				),
+			).toEqual(proposals);
+		},
+	);
+
+	test("keeps a Copy linked to the saved Move above its ordinary private parent", async () => {
+		const f = await agent_copied_folders();
+		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...f.scope,
+			path: "/target/parent",
+			kind: "folder",
+		});
+		if (created._nay || created._yay.target.kind !== "private" || !created._yay.pendingUpdateId)
+			throw new Error("Expected the private parent");
+		const parentProposalId = created._yay.pendingUpdateId;
+		const parent = (await f.t.run((ctx) => ctx.db.get("files_pending_updates", parentProposalId)))!;
+		const child = await pending_move({
+			f,
+			target: f.copies[0]!.target,
+			destParent: created._yay.target,
+			destName: "copy-child",
+		});
+		const move = await propose_move(f, f.targetId, "moved-target");
+		const review = await start_review(f, [child, parent, move], true);
+		const ready = await finish_plan(f, review.plan);
+		expect(ready.unitCount, "a Copy retains its hard reviewed ancestor Move link").toBe(1);
+		const vertices = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_plan_items")
+				.withIndex("by_plan_order", (q) => q.eq("planId", ready._id))
+				.collect(),
+		);
+		expect(vertices.map((item) => [item.target, item.mode, item.errorCode])).toEqual([
+			[child.target, "copy", null],
+			[parent.target, "ordinary", null],
+			[move.target, "ordinary", null],
+		]);
+		expect(new Set(vertices.map((item) => item.unitId)).size).toBe(1);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", vertices[0]!.unitId!))).toMatchObject({
+			kind: "cohort",
+			itemCount: 3,
+			errorCode: null,
+		});
+	});
+
+	test("keeps an ordinary child linked above its copied private parent", async () => {
+		const f = await agent_copied_folders();
+		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...f.scope,
+			path: "/grand",
+			kind: "folder",
+		});
+		if (created._nay || created._yay.target.kind !== "private" || !created._yay.pendingUpdateId)
+			throw new Error("Expected the private grandparent");
+		const grandparentProposalId = created._yay.pendingUpdateId;
+		const grandparent = (await f.t.run((ctx) => ctx.db.get("files_pending_updates", grandparentProposalId)))!;
+		const parent = await pending_move({
+			f,
+			target: f.copies[0]!.target,
+			destParent: created._yay.target,
+			destName: "copy-parent",
+		});
+		const made = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...f.scope,
+			path: "/grand/copy-parent/child",
+			kind: "folder",
+		});
+		if (made._nay || !made._yay.pendingUpdateId) throw new Error("Expected the ordinary child");
+		const childProposalId = made._yay.pendingUpdateId;
+		const child = (await f.t.run((ctx) => ctx.db.get("files_pending_updates", childProposalId)))!;
+		const review = await start_review(f, [child, parent, grandparent], true);
+		const ready = await finish_plan(f, review.plan);
+		expect(ready.unitCount, "an ordinary child keeps hard links above a copied parent").toBe(1);
+		const vertices = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_plan_items")
+				.withIndex("by_plan_order", (q) => q.eq("planId", ready._id))
+				.collect(),
+		);
+		expect(vertices.map((item) => [item.target, item.mode, item.errorCode])).toEqual([
+			[child.target, "ordinary", null],
+			[parent.target, "copy", null],
+			[grandparent.target, "ordinary", null],
+		]);
+		expect(new Set(vertices.map((item) => item.unitId)).size).toBe(1);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", vertices[0]!.unitId!))).toMatchObject({
+			kind: "cohort",
+			itemCount: 3,
+			errorCode: null,
+		});
 	});
 
 	test("seals native saved Move inputs through the relation producer", async () => {

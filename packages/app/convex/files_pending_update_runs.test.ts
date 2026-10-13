@@ -1283,6 +1283,44 @@ describe("review jobs", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 	});
 
+	test("admin preparation waits for the active Move before provider cleanup", async () => {
+		const f = await fixture();
+		const parent = await private_folder(f, "/parent");
+		const child = await private_folder(f, "/parent/child");
+		const { runId } = await start_review({ f, kind: "accept", proposals: [parent, child] });
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").first());
+		if (!unit?.cohortId) throw new Error("Expected the active Save cohort");
+		const before = await f.t.run(async (ctx) => ({
+			proposals: await Promise.all(
+				[parent, child].map((proposal) => ctx.db.get("files_pending_updates", proposal._id)),
+			),
+			receipts: await ctx.db.query("files_pending_node_publish_receipts").collect(),
+			holds: await ctx.db.query("files_pending_holds").collect(),
+		}));
+		await expect(
+			f.t.mutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+				userId: f.db.userId,
+				_test_batchSize: 1,
+			}),
+			"admin preparation waits for Move repair",
+		).resolves.toBe(false);
+		expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!))).toMatchObject({
+			phase: "aborting",
+			visibleView: "before",
+			publishedAt: null,
+		});
+		expect(
+			await f.t.run(async (ctx) => ({
+				proposals: await Promise.all(
+					[parent, child].map((proposal) => ctx.db.get("files_pending_updates", proposal._id)),
+				),
+				receipts: await ctx.db.query("files_pending_node_publish_receipts").collect(),
+				holds: await ctx.db.query("files_pending_holds").collect(),
+			})),
+		).toEqual(before);
+	});
+
 	test.each(["user", "workspace"] as const)(
 		"purges active review workers before proposals, one item at a time (%s)",
 		async (scope) => {
@@ -1294,6 +1332,18 @@ describe("review jobs", () => {
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 			const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").first());
 			if (!unit) throw new Error("Expected an active unit");
+			// Initial Move work has tagged the proposal before purge starts.
+			const parentBeforePurge = await f.t.run((ctx) => ctx.db.get("files_pending_updates", parent._id));
+			expect(parentBeforePurge).toEqual({ ...parent, moveCohortId: unit.cohortId });
+			const receiptsBeforePurge = await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
+			expect(receiptsBeforePurge).toMatchObject([
+				{ privateNodeId: parent.target.id, moveView: { cohortId: unit.cohortId, view: "after" } },
+			]);
+			expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!))).toMatchObject({
+				phase: "staging",
+				visibleView: "before",
+				publishedAt: null,
+			});
 			const control = await f.t.run((ctx) =>
 				test_mocks_fill_db_with.membership(ctx, { organizationName: "review-purge-control" }),
 			);
@@ -1332,22 +1382,31 @@ describe("review jobs", () => {
 			expect(await purge()).toBe(false);
 			expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toEqual(holdsBefore);
 			expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toHaveLength(2);
-			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", parent._id))).toEqual(parent);
+			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", parent._id))).toEqual(parentBeforePurge);
 			await f.t.action(internal.files_pending_update_runs.prepare_unit, {
 				runId,
 				fence: 0,
 				unitId: unit._id,
 				attemptFence: unit.attemptFence,
 			});
-			expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
+			expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual(
+				receiptsBeforePurge,
+			);
 			let done = false;
 			for (let pass = 0; pass < 150 && !done; pass++) {
 				if (unit.cohortId) {
 					const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
 					if (cohort && cohort.phase !== "complete")
-						await f.t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+						await f.t.action(internal.files_move_run.run, {
+							cohortId: cohort._id,
+							step: cohort.step,
+							runGeneration: cohort.runJob?.generation ?? null,
+							mode: "step",
+						});
 				}
-				done = await purge();
+				const next = purge();
+				await expect(next, "purge waits for Move repair before deleting drafts").resolves.toBeTypeOf("boolean");
+				done = await next;
 			}
 			expect(done).toBe(true);
 			for (const table of [
@@ -1357,6 +1416,7 @@ describe("review jobs", () => {
 			] as const)
 				expect(await f.t.run((ctx) => ctx.db.query(table).collect())).toEqual([]);
 			expect(await f.t.run((ctx) => ctx.db.get("activities", activityId))).toBeNull();
+			expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
 			expect(
 				await f.t.run((ctx) => ctx.db.get("files_pending_updates", controlDraft._yay.pendingUpdateId!)),
 			).not.toBeNull();
