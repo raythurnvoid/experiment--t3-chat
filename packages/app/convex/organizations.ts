@@ -4,7 +4,7 @@ import { internal } from "./_generated/api.js";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalQuery, query, type MutationCtx } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
 import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
@@ -40,6 +40,7 @@ import { plugins_mcp_db_drain_member_batch } from "./plugins_mcp.ts";
 import { channels_db_drain_member_batch } from "./channels.ts";
 import { files_browser_db_delete_profile } from "./files_browser.ts";
 import { playwriter_browser_db_disconnect } from "./playwriter_browser.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -113,20 +114,6 @@ async function organizations_db_drain_member_plugin_service_grants_batch(
 	}
 
 	return { drainedAny: remaining < ORGANIZATION_MEMBER_GRANT_DRAIN_BATCH_SIZE };
-}
-
-/**
- * Get a membership doc by id and verify it belongs to the given user.
- */
-export async function organizations_db_get_membership(
-	ctx: QueryCtx | MutationCtx,
-	args: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> },
-) {
-	const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
-	if (!membership || membership.userId !== args.userId || membership.active === false) {
-		return null;
-	}
-	return membership;
 }
 
 export async function organizations_db_create(

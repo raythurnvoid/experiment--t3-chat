@@ -8,7 +8,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
-import { files_nodes_db_require_writable } from "./files_nodes.ts";
+import { files_nodes_db_require_writable } from "../server/files-write-policy.ts";
 import { plugins_external_files_db_replace_readers } from "./plugins_external_files.ts";
 import { plugins_external_files_db_authorize } from "./plugins_external_files_access.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";

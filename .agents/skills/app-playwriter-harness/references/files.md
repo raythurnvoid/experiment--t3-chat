@@ -137,7 +137,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Load time (verified 2026-09-23 on `sybill-demo/demo`, whose `/people` holds 9666 children): the
   sidebar loads open folders only, so time the root and a big folder separately. For the root, open
   the route in a fresh tab and poll `[role="tree"] [role="treeitem"]` every 100 ms until one exists.
-  Count `files_nodes:list_tree_children` in `page.on("websocket")` `framesent` payloads. For a
+  Count `files_tree:list_tree_children` in `page.on("websocket")` `framesent` payloads. For a
   folder, focus its row, press ArrowRight, and poll `[aria-level="2"]`. Expected on local dev: root
   rows about 300 ms after the first `list_tree_children` frame, `/people` children in about 400–500 ms.
   The first run after a Convex push or a Vite reload is slower; measure twice.
@@ -335,7 +335,7 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   member cannot open, the member must see 0 items under it. After unrestrict, all of them again.
 - A UI list while a Move runs (search box, `file.path` suggestions, `@` picker): open the list and
   type first, then accept the complete Move from page context (`files_transfer.accept_input`
-  through `app_convex`), so focus stays in the list. Read `files_nodes.get_workspace_move_view`:
+  through `app_convex`), so focus stays in the list. Read `files_tree.get_workspace_move_view`:
   `cohortId` is set while the Move view is on. Read the rows in the same call. A list that reads
   only one stream throws or goes empty in that window. `chitchat-qa/xfer-qa-0914:/g4-many` (about
   60 files) into `/u16` and back works. Its Move view stayed on from seconds to over an hour on
@@ -1142,9 +1142,9 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 - Ask it to make one real Markdown edit; verify the new turn uses `edit_file` or Bash and leaves the change pending.
 - **`sed -i` does not work on app files.** The db-backed tree exposes a fixed command set, and `sed` is not in it: `sed -i 's/a/b/' u39/target.md` answers `sed: u39/target.md: No such file or directory` plus `Native Just Bash /tmp commands cannot access app files directly`. To make a content proposal with an exact text, ask the agent for `printf '<the whole new file>' > <path>` instead — that writes the file the tool does know about and produces one proposal per file. Verified 2026-09-15.
 - **Pick fixture names that no name rule rewrites.** The Bash writer leaves an existing occupant's path alone, but a **missing** target is normalized before the file is created (`server/bash-utils.ts:600-660`), and `readme` in any casing becomes `README.md` (`shared/files.test.ts:937-940`). So `mv u05/readme.md u05/guide.md ; echo new > u05/readme.md` puts the new private node at `/u05/README.md`, not at the path you vacated, and the case you were testing quietly stops being the case you meant. `create_text_node` called directly does **not** normalize, so a door-built fixture and a Bash-written file can sit at two different paths for the same requested name. Use a neutral name such as `notes.md`. Verified 2026-09-15. Keep fixture names lowercase too: `mkdir -p qa-bugA-0923` exits 1 with `mkdir: cannot create directory 'qa-bugA-0923': Invalid file path`, while `qa-buga-0923` works. Verified 2026-09-23.
-- **The two writers answer that name rule differently, so pick your check deliberately.** A redirect refuses: `echo hello > 'my other.md'` exits 1 with `cannot write '<path>/my other.md': app file names are normalized; write to '<path>/my-other.md' instead`. A `cp` renames silently and still reports `1 ready for review`: `my copy.md` lands at `my-copy.md`, `café 🎉-copy.md` at `cafe-copy.md`, `-weird-copy.md` at `weird-copy.md`. The transfer's success line never names the output path, so always read the destination back instead of trusting the command's own output: ask the agent for `ls` on the folder, or read the Pending rows (`files_pending_updates.list_files_pending_updates`, then `files_visible.get_path({ membershipId, target: row.target })` for each path). Verified 2026-09-15.
+- **The two writers answer that name rule differently, so pick your check deliberately.** A redirect refuses: `echo hello > 'my other.md'` exits 1 with `cannot write '<path>/my other.md': app file names are normalized; write to '<path>/my-other.md' instead`. A `cp` renames silently and still reports `1 ready for review`: `my copy.md` lands at `my-copy.md`, `café 🎉-copy.md` at `cafe-copy.md`, `-weird-copy.md` at `weird-copy.md`. The transfer's success line never names the output path, so always read the destination back instead of trusting the command's own output: ask the agent for `ls` on the folder, or read the Pending rows (`files_pending_list.list_files_pending_updates`, then `files_visible.get_path({ membershipId, target: row.target })` for each path). Verified 2026-09-15.
 - `cd` works in the agent shell, the terminal footer reports it (`exit 0 · cwd changed: /home/cloud-usr/w/<org>/<ws> -> /home/cloud-usr/w/<org>/<ws>/u10`), and the new cwd **persists into later turns of the same chat**. A runner that sends workspace-relative paths after an earlier `cd` will address the wrong folder, so either `cd` back or keep every command anchored at the workspace root. Verified 2026-09-15.
-- After a `cp -R`, the rows of `files_pending_updates.list_files_pending_updates` can lag the agent turn. A read 8 s after the agent turn finished showed 5 of 8 rows; a re-read showed all 8. Poll the pending list until its count stops changing before asserting a missing row. Verified 2026-09-15.
+- After a `cp -R`, the rows of `files_pending_list.list_files_pending_updates` can lag the agent turn. A read 8 s after the agent turn finished showed 5 of 8 rows; a re-read showed all 8. Poll the pending list until its count stops changing before asserting a missing row. Verified 2026-09-15.
 - **`sha256sum` and `cmp` are not in that command set either**, so you cannot checksum or diff two app files from inside the agent's shell — both answer `No such file or directory` followed by the same `Native Just Bash /tmp commands cannot access app files directly` note. To compare content, use `stat` for size and `cat` for text, or read the nodes through Convex in page context. There is no digest to read on the server side either: `files_r2_assets` (`convex/schema.ts:1660`) stores `size`, `r2Key` and `kind`, but no hash column. Verified 2026-09-15.
 - Inspect the latest assistant tool parts and verify new turns do not show legacy `Read file`, `List files`, `Glob files`, `Grep files`, or `Search files` disclosures unless they came from older transcript history.
 
@@ -1209,7 +1209,7 @@ Use this when creating many QA files through the app agent.
 - Keep each prompt to 3-4 `edit_file` paths. Larger batches can make the assistant claim success before every file is actually persisted.
 - After clicking `New chat`, verify `[aria-label="Open chats"] [role="tab"][aria-selected="true"]` has an id that starts with `ai_thread-` before sending. If it immediately reverts to an older persisted id, debug the optimistic tab cleanup before continuing.
 - Include a unique batch token in every requested file, but treat the Convex file-node query as the source of truth for count and paths.
-- Count the files from Convex after every batch: saved files with "Walk The Files Tree From Page Context" in `snippets.md` (start at the batch folder), and drafts with `files_pending_updates.list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`, following `continueCursor` until `isDone`. Do not rely on assistant summary text or visible tool previews for the final count.
+- Count the files from Convex after every batch: saved files with "Walk The Files Tree From Page Context" in `snippets.md` (start at the batch folder), and drafts with `files_pending_list.list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`, following `continueCursor` until `isDone`. Do not rely on assistant summary text or visible tool previews for the final count.
 - Repair missing files in separate one-file chats instead of resending a large batch.
 
 ### AI Chat Parent Id Race
@@ -1290,11 +1290,11 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 - An abandoned upload placeholder no longer lingers forever (since 2026-08-09): a src-less `Uploading…` embed with no local registry entry (collaborator view, or the uploader's tab after a reload) flips to a non-retryable `Upload failed` after 2 minutes. Repro: abort the PUT via `page.route`, reload the tab, wait ~2min.
 - The Markdown view shows the server-materialized markdown, which lags rich-text edits by up to ~30s. An attribute missing right after a commit is usually this lag, not a serialization bug — poll the Markdown view for the expected substring instead of reading it once, or read the live node attrs via `el.pmViewDesc.node.attrs` in the Rich view.
 - Paste and drop uploads can be driven synthetically: build a real `DataTransfer`, `dt.items.add(new File([bytes], "name.png", { type: "image/png" }))`, then dispatch `new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })` (or `new DragEvent("drop", { dataTransfer: dt, ... })` with `clientX/clientY` over the editor) on `.FileEditorRichText-editor-content`. This is the exception to the no-`dispatchEvent` rule: it exercises the app's own `editorProps.handlePaste`/`handleDrop`, the same code a real gesture reaches. `dispatchEvent` returns synchronously after the handler ran, so counting `.FileEditorRichTextMedia-state-uploading` in the same `evaluate` proves the placeholder is inserted before any network I/O.
-- Uploads land in an `assets` folder created next to the document (fall back to the document's folder); clipboard pastes are named `pasted-image-YYYYMMDD-HHMMSS.png`, dropped/picked files keep their name with ` 2`, ` 3`... suffixes on collision. Assert final names from the `assets` folder's rows (`files_nodes.list_tree_children` with `parentId` set to the folder id, `kind: "file"`, `archived: false`, `restricted: false`), not the toast.
+- Uploads land in an `assets` folder created next to the document (fall back to the document's folder); clipboard pastes are named `pasted-image-YYYYMMDD-HHMMSS.png`, dropped/picked files keep their name with ` 2`, ` 3`... suffixes on collision. Assert final names from the `assets` folder's rows (`files_tree.list_tree_children` with `parentId` set to the folder id, `kind: "file"`, `archived: false`, `restricted: false`), not the toast.
 - The image node is **inline** (`isInline: true`), so a shape dump that maps only `doc.content.content` never lists it — a dropped image "disappears" into its paragraph. Find media nodes with `doc.descendants((n) => ...)` instead. A drop lands at the pointer (`posAtCoords`), not at the caret; prove placement by parking the caret with `Ctrl+Home` and dropping onto a specific paragraph, then resolving the found node's parent (verified 2026-08-09).
 - The signed-url grant is per membership: `r2.create_signed_download_url` with the caller's own valid membership plus a file node from another workspace answers `_nay "Not found"`, and an invited member's browser renders the embed from the R2 origin with no extra step (verified 2026-08-09 with the `second-user-fixtures.md` flow).
 - `list_tree_children` pages one kind of child of one folder: `{ membershipId, parentId, kind, archived, restricted, paginationOpts: { numItems, cursor } }`, with `parentId` `"root"` or a folder id, `kind` `"folder"` or `"file"`, and `numItems` capped at 200. It returns `{ page, isDone, continueCursor }`. Follow each cursor until `isDone` before checking all children; a page can be empty. Only the owner gets rows with `restricted: true`; a member gets restricted children from `list_tree_children_shared`. To read many folders, use "Walk The Files Tree From Page Context" in `snippets.md`. A node has `kind`, not `type`; use `kind`, `lowercaseExtension`, or `contentType`.
-- **Tree rows are saved nodes only; drafts are not in them.** Read drafts from the Pending tab door `files_pending_updates.list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`, whose rows carry `target: { kind, id }` (see `file-node-view.md`, "Reading the pending rows from the page"), or ask the agent for `ls`/`find`. `target.kind` tells you which read door to use: `"saved"` is a real `files_nodes` row, `"private"` is a `files_pending_nodes` row that only the proposal's owner can see. Passing a private id to `files_nodes_content.get_non_collaborative_file_content` fails the validator with `Found ID ... from table files_pending_nodes, which does not match ... v.id("files_nodes")`. Read a private one with `files_fetch_private_file_pending_text({ membershipId, target })` from `/src/lib/files.ts` instead. An agent `cp`/`touch`/`>` into a new path always produces a private item, so a listing right after an agent write mixes both kinds. Verified 2026-09-15.
+- **Tree rows are saved nodes only; drafts are not in them.** Read drafts from the Pending tab door `files_pending_list.list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`, whose rows carry `target: { kind, id }` (see `file-node-view.md`, "Reading the pending rows from the page"), or ask the agent for `ls`/`find`. `target.kind` tells you which read door to use: `"saved"` is a real `files_nodes` row, `"private"` is a `files_pending_nodes` row that only the proposal's owner can see. Passing a private id to `files_nodes_content.get_non_collaborative_file_content` fails the validator with `Found ID ... from table files_pending_nodes, which does not match ... v.id("files_nodes")`. Read a private one with `files_fetch_private_file_pending_text({ membershipId, target })` from `/src/lib/files.ts` instead. An agent `cp`/`touch`/`>` into a new path always produces a private item, so a listing right after an agent write mixes both kinds. Verified 2026-09-15.
 - `files_nodes.get_file_node_for_membership` takes **`fileNodeId`**, not `nodeId` (nearly every other files door takes `nodeId`). It returns the raw node doc plus `canWrite`, so it is the quickest way to read `assetId`, `collaborationEnabled`, `textKind` and `writePolicyState` for a node. Verified 2026-09-15.
 - To decode a pending branch by hand in page context, the two helpers live in different modules: `files_yjs_doc_create_from_array_buffer_update` is in `/shared/files-yjs.ts` and `files_yjs_doc_get_text` is in `/shared/files-tiptap.ts`. Pair either with `files_fetch_file_pending_update_yjs_state({ membershipId, target, stateId })` from `/src/lib/files.ts` to read the base, staged or unstaged text of a saved-target proposal. Verified 2026-09-15.
 - A copy is **not** byte-identical to its source for a `rich_text` file. The copy runs the text through a headless Tiptap editor to drop comment marks, and that markdown round-trip removes a single trailing newline (`"a\nb\n"` becomes `"a\nb"`; a trailing blank line, `"a\n\nb\n\n"`, survives) and writes a fresh asset. A file written straight through `replace_file_content` keeps whatever bytes you passed, so a fixture built that way and then copied shows a one-byte diff that is the serializer, not the transfer. Compare content after the same round-trip, or assert without the trailing newline. Verified 2026-09-15.
@@ -1657,7 +1657,7 @@ That is the cheap way to stage a partial run and then press `Retry remaining fil
 Read the result back from the server, not from the modal text alone:
 `files_transfer:list_items` with `{ membershipId, runId, paginationOpts }` gives each item's
 `state`, `outcome`, resolved `source` and `output` paths, and `conflictKind`. List the destination
-folder with `files_nodes:list_tree_children` (`parentId` set to the folder id, once with
+folder with `files_tree:list_tree_children` (`parentId` set to the folder id, once with
 `kind: "folder"` and once with `kind: "file"`, `archived: false`, `restricted: false`).
 
 A run that ends blocked stays reachable. Reopen it from the notifications bell (focus + Enter; the
@@ -1739,7 +1739,7 @@ runs, and clicking it repeatedly changes nothing. For test cleanup, go through t
 instead and page until the list is empty:
 
 ```js
-const rows = /* page files_pending_updates.list_files_pending_updates with listKey and paginationOpts */;
+const rows = /* page files_pending_list.list_files_pending_updates with listKey and paginationOpts */;
 for (const row of rows) {
 	const door = row.target.kind === "private"
 		? api.files_pending_updates.discard_file_pending_structural
@@ -1846,7 +1846,7 @@ is usually the second row, not the first — check each one's `_creationTime` ag
 
 ### Listing And Draining Pending Rows From A Runner
 
-`files_pending_updates.list_files_pending_updates` requires `listKey` (`"all"`, `"own"` or a chat id)
+`files_pending_list.list_files_pending_updates` requires `listKey` (`"all"`, `"own"` or a chat id)
 and `paginationOpts`. Each row has only stored fields: `{target, pendingUpdateId, revision, threadIds?,
 hasReadyContent}`. There is no path; read it with `get_file_pending_target({membershipId, target})`.
 
@@ -1860,7 +1860,7 @@ for (let pass = 0; pass < 5; pass++) {
 	const rows = [];
 	let cursor = null;
 	for (;;) {
-		const page = await m.app_convex.query(m.app_convex_api.files_pending_updates.list_files_pending_updates, {
+		const page = await m.app_convex.query(m.app_convex_api.files_pending_list.list_files_pending_updates, {
 			membershipId,
 			listKey: "all",
 			paginationOpts: { cursor, numItems: 5 },
@@ -1991,7 +1991,7 @@ When the agent chat cannot run, make the same folder drafts with the internal mu
 `files_nodes:create_private_node_by_path` (args: `organizationId`, `workspaceId`, `userId`, `path`,
 `kind: 'folder'`, `threadId`). Pass the args as JSON5 with single quotes, because PowerShell breaks
 escaped double quotes. Verified 2026-09-24. To check the server list, page through
-`files_pending_updates:list_files_pending_updates` from page context: a folder that holds a draft
+`files_pending_list:list_files_pending_updates` from page context: a folder that holds a draft
 never appears, and each draft row's `requiredParents` carry the folders' `threadIds`. Pass function
 names as strings: importing `/convex/_generated/api.js` in the page can take longer than the 5 s step
 timeout.

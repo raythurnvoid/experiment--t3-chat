@@ -9,7 +9,7 @@ import type { Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { access_control_db_authorize_node } from "./access_control.ts";
 import { channels_db_ensure_file_channel, channels_db_get_access } from "./channels.ts";
 import { channels_messages_db_is_visible } from "./channels_messages.ts";

@@ -3,10 +3,11 @@ import type { WithoutSystemFields } from "convex/server";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { access_control_db_authorize_node, access_control_db_authorize_membership } from "./access_control.ts";
-import { files_nodes_db_get_content_version, files_nodes_db_require_user_writable } from "./files_nodes.ts";
+import { files_nodes_db_get_content_version } from "./files_nodes.ts";
+import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { files_pending_nodes_db_get_ancestry } from "./files_pending_nodes.ts";
 import {
 	files_pending_updates_action_prepare_content,

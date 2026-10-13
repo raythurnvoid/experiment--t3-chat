@@ -43,7 +43,7 @@ import {
 } from "../server/server-utils.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2, r2_fetch_object_from_bucket } from "./r2_client.ts";
 import { users_ANONYMOUS_JWT_DEFAULT_KID, users_get_anonymous_jwt_private_key } from "./users.ts";

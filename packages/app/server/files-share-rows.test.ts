@@ -65,7 +65,7 @@ async function shared_fixture() {
 			level: "read",
 		}),
 	).toEqual({ _yay: null });
-	const view = await asOwner.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+	const view = await asOwner.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
 	return { ...f, member, asOwner, asMember, principal, generation: view!.generation };
 }
 
@@ -83,7 +83,7 @@ describe("share rows during a Move", () => {
 			["before", "old.txt"],
 		]);
 		const read = (view: "before" | "after") =>
-			f.asMember.query(api.files_nodes.list_tree_shared_roots, {
+			f.asMember.query(api.files_tree.list_tree_shared_roots, {
 				membershipId: f.member.membershipId,
 				principalIndex: 0,
 				archived: false,
@@ -93,7 +93,7 @@ describe("share rows during a Move", () => {
 		expect((await read("before")).page.map((row) => row.name)).toEqual(["old.txt"]);
 		expect(
 			(
-				await f.asMember.query(api.files_nodes.list_tree_shared_roots, {
+				await f.asMember.query(api.files_tree.list_tree_shared_roots, {
 					membershipId: f.member.membershipId,
 					principalIndex: 0,
 					archived: false,
@@ -142,7 +142,7 @@ describe("share rows during a Move", () => {
 		await f.publish();
 		expect(
 			(
-				await f.asMember.query(api.files_nodes.list_tree_shared_roots, {
+				await f.asMember.query(api.files_tree.list_tree_shared_roots, {
 					membershipId: f.member.membershipId,
 					principalIndex: 0,
 					archived: false,

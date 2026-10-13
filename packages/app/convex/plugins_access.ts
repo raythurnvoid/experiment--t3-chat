@@ -9,7 +9,7 @@ import { mutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import { access_control_db_caller_cannot_share_with_role, access_control_db_has_permission } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import {
 	plugins_scheduled_access_db_validate_consent,

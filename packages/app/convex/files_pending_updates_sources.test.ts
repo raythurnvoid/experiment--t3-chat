@@ -122,7 +122,7 @@ describe("pending source summaries", () => {
 					runId: started._yay.runId,
 				}),
 			).toMatchObject({ activity: { status: "succeeded" } });
-			const before = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			const before = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 				membershipId: f.home.membershipId,
 				listKey: "all",
 				paginationOpts: { cursor: null, numItems: 5 },
@@ -166,7 +166,7 @@ describe("pending source summaries", () => {
 			const args = { membershipId: f.home.membershipId, target: proposal.target };
 			const detail = await f.asUser.query(api.files_pending_updates.get_file_pending_target, args);
 			const pending = await f.asUser.query(api.files_pending_updates.get_file_pending_update, args);
-			const page = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			const page = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 				membershipId: f.home.membershipId,
 				listKey: "all",
 				paginationOpts: { cursor: null, numItems: 5 },
@@ -247,7 +247,7 @@ describe("pending source summaries", () => {
 		expect(
 			await f.asUser.query(api.files_transfer.get, { membershipId: f.current.membershipId, runId: started._yay.runId }),
 		).toMatchObject({ activity: { status: "succeeded" } });
-		const page = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+		const page = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 			membershipId: f.current.membershipId,
 			listKey: "all",
 			paginationOpts: { cursor: null, numItems: 5 },
@@ -334,7 +334,7 @@ describe("pending source summaries", () => {
 			}
 			expect(await f.summary()).toBeNull();
 			expect(await f.counts()).toEqual([]);
-			const page = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			const page = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 				membershipId: f.home.membershipId,
 				listKey: "all",
 				paginationOpts: { cursor: null, numItems: 20 },

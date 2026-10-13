@@ -9,7 +9,7 @@ import { internalMutation } from "./functions.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
 import { ai_chat_workspaces_db_resolve, ai_chat_workspaces_SELECTORS } from "./ai_chat_workspaces.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_integration_policy_db_allows_mcp_server } from "./organizations_integration_policy.ts";
 import { plugins_access_db_authorize_management } from "./plugins_access.ts";
 import app_convex_schema, { ai_chat_workspaces_source_validator, plugins_mcp_target_validator } from "./schema.ts";

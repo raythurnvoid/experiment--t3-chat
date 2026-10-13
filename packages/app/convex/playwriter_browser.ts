@@ -33,7 +33,7 @@ import {
 } from "../server/crypto-utils.ts";
 import { playwriter_runner_call } from "../server/playwriter-browser.ts";
 import { playwriter_parse_share } from "../shared/playwriter-browser.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
 	organizations_membership_lifetimes_db_get,

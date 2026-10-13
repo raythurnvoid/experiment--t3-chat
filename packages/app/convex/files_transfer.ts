@@ -17,7 +17,7 @@ import {
 	activities_get_result_status,
 	activities_is_active,
 } from "./activities_db.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	ai_chat_files_db_check_copy_admission,
 	ai_chat_files_db_check_copy_sources,
@@ -40,11 +40,13 @@ import {
 	authorize_file_write,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_copied_from_policy_fields,
-	files_nodes_db_require_user_writable,
-	files_nodes_db_require_user_writable_or_matching_policy,
 	files_nodes_db_require_copiable_write_policy,
 	files_nodes_db_get_content_version,
 } from "./files_nodes.ts";
+import {
+	files_nodes_db_require_user_writable,
+	files_nodes_db_require_user_writable_or_matching_policy,
+} from "../server/files-write-policy.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import {
 	files_move_cohorts_db_begin_transfer_item,

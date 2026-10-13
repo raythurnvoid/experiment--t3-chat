@@ -367,7 +367,7 @@ gets an empty, done catalog too.
 
 # Folder Table Filter
 
-The table applies one structured filter through `files_nodes.list_tree_children_sorted`: one
+The table applies one structured filter through `files_tree.list_tree_children_sorted`: one
 filter, or `name starts with` plus one "is" filter. The shared type and predicate live in
 `shared/files-table.ts`; the reused Convex validator lives in `convex/schema.ts`. This filter is
 separate from the search language below. The `files-explorer-tree` skill lists the operations and

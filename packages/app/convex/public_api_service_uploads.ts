@@ -25,11 +25,10 @@ import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
-	files_nodes_db_require_writable,
 	files_nodes_db_require_write_policy_management,
 	files_nodes_db_set_write_policy,
-	type files_nodes_WriteContext,
 } from "./files_nodes.ts";
+import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {

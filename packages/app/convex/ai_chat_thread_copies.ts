@@ -18,7 +18,7 @@ import { internalMutation } from "./functions.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
 import { ai_chat_outputs_db_copy_owners } from "./ai_chat_outputs.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { v_result } from "../server/convex-utils.ts";
 import type { ai_chat_UiMessage } from "../shared/ai-chat.ts";

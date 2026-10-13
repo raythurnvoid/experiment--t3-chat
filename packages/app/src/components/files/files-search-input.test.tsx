@@ -17,7 +17,7 @@ vi.mock("convex/react", async (importOriginal) => ({
 			? undefined
 			: getFunctionName(query) === "organizations:list"
 				? { workspaceIdsPermissionsDict: { "test-workspace": test_catalog.permissions } }
-				: getFunctionName(query) === "files_nodes:get_workspace_move_view"
+				: getFunctionName(query) === "files_tree:get_workspace_move_view"
 					? test_catalog.cohortKeys
 						? { generation: 1, cohortId: "cohort_1", view: "after", searchGeneration: 1 }
 						: { generation: 1, cohortId: null, view: null, searchGeneration: 1 }

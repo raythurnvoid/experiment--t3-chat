@@ -29,7 +29,7 @@ import {
 	activities_is_active,
 	activities_db_delete,
 } from "./activities_db.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
 	organizations_membership_lifetimes_db_get,

@@ -2702,7 +2702,7 @@ describe("list_tree_children_sorted", () => {
 		const refused = { page: [], isDone: true, continueCursor: "" };
 
 		expect(
-			await asOwner.query(api.files_nodes.list_tree_children_sorted, {
+			await asOwner.query(api.files_tree.list_tree_children_sorted, {
 				...args,
 				sort: [{ field: "metadata.bad key", direction: "asc" }],
 			}),
@@ -2711,7 +2711,7 @@ describe("list_tree_children_sorted", () => {
 		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
 		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
 		expect(
-			await asOther.query(api.files_nodes.list_tree_children_sorted, { ...args, membershipId: other.membershipId }),
+			await asOther.query(api.files_tree.list_tree_children_sorted, { ...args, membershipId: other.membershipId }),
 		).toEqual(refused);
 	});
 
@@ -2728,7 +2728,7 @@ describe("list_tree_children_sorted", () => {
 			});
 		});
 		const read_tree = (archived: boolean) =>
-			asOwner.query(api.files_nodes.list_tree_children, {
+			asOwner.query(api.files_tree.list_tree_children, {
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
@@ -2963,7 +2963,7 @@ describe("list_tree_children_sorted filter", () => {
 		];
 		for (const { filter, sort = "name", namePrefix = null, numItems = 50 } of cases)
 			await expect(
-				asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				asOwner.query(api.files_tree.list_tree_children_sorted, {
 					membershipId: db.membershipId,
 					parentId,
 					kind: "file",
@@ -3017,7 +3017,7 @@ describe("table filter caller", () => {
 			const asAnonymous = t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: db.userId });
 			for (const as of [asOwner, asAnonymous]) {
 				await expect(
-					as.query(api.files_nodes.list_tree_children_sorted, {
+					as.query(api.files_tree.list_tree_children_sorted, {
 						membershipId: db.membershipId,
 						parentId,
 						kind: "file",
@@ -3030,7 +3030,7 @@ describe("table filter caller", () => {
 					}),
 				).rejects.toThrow("Unauthenticated");
 				await expect(
-					as.query(api.files_nodes.list_tree_children_shared, {
+					as.query(api.files_tree.list_tree_children_shared, {
 						membershipId: db.membershipId,
 						parentId,
 						kind: "file",
@@ -3057,7 +3057,7 @@ describe("table filter caller", () => {
 			});
 			const as = t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: db.userId });
 			await expect(
-				as.query(api.files_nodes.list_tree_children_sorted, {
+				as.query(api.files_tree.list_tree_children_sorted, {
 					membershipId: db.membershipId,
 					parentId,
 					kind: "file",
@@ -3070,7 +3070,7 @@ describe("table filter caller", () => {
 				}),
 			).rejects.toThrow("Unauthenticated");
 			await expect(
-				as.query(api.files_nodes.list_tree_children_shared, {
+				as.query(api.files_tree.list_tree_children_shared, {
 					membershipId: db.membershipId,
 					parentId,
 					kind: "file",

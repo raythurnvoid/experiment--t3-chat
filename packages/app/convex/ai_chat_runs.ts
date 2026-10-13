@@ -18,7 +18,7 @@ import {
 } from "./ai_chat_outputs.ts";
 import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";

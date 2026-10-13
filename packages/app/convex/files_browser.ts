@@ -11,7 +11,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { access_control_db_authorize_membership, access_control_db_authorize_node } from "./access_control.ts";
 import { billing_db_check_paid_plan, billing_ingest_events, billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";

@@ -125,4 +125,38 @@ describe("functions.ts", () => {
 			.filter((from) => !allowed.has(from));
 		expect(wrong, "the Move runner does not eagerly load the file engine").toEqual([]);
 	});
+
+	test("saved list entries do not load editor handlers", () => {
+		const forbidden = new Set([
+			"convex/files_nodes.ts",
+			"convex/files_pending_updates.ts",
+			"convex/files_metadata.ts",
+			"convex/organizations.ts",
+			"server/files.ts",
+			"server/files-saved-content.ts",
+			"shared/files-yjs.ts",
+		]);
+		const queue = ["files_tree.ts", "files_pending_list.ts"].map((name) => path.join(convexRoot, name));
+		const reached = new Set(queue);
+		const wrong = [];
+		for (const importer of queue) {
+			for (const { from } of read_imports(importer)) {
+				if (
+					/^(?:@tiptap\/|@mastra\/rag(?:\/|$)|yjs(?:\/|$)|y-prosemirror(?:\/|$)|prosemirror-|novel(?:\/|$)|marked(?:\/|$)|linkedom(?:\/|$))/.test(
+						from,
+					)
+				) {
+					wrong.push(`${relative(importer)} -> ${from}`);
+				}
+				const file = resolve_import(importer, from);
+				if (!file || reached.has(file)) continue;
+				reached.add(file);
+				// Generated references do not load the modules their types name.
+				if (file.startsWith(path.join(convexRoot, "_generated"))) continue;
+				if (forbidden.has(relative(file))) wrong.push(`${relative(importer)} -> ${relative(file)}`);
+				queue.push(file);
+			}
+		}
+		expect(wrong, "saved list entries do not load editor handlers").toEqual([]);
+	});
 });

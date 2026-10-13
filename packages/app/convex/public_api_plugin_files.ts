@@ -14,14 +14,16 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import {
-	files_nodes_db_require_writable,
 	files_nodes_db_require_write_policy_management,
 	files_nodes_db_set_write_policy,
-	type files_nodes_WriteContext,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
-	files_nodes_writer_matches_policy,
 } from "./files_nodes.ts";
+import {
+	files_nodes_db_require_writable,
+	type files_nodes_WriteContext,
+	files_nodes_writer_matches_policy,
+} from "../server/files-write-policy.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";

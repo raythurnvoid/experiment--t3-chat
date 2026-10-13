@@ -13,7 +13,7 @@ import {
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import { list_tree_children } from "./files_nodes.ts";
+import { list_tree_children } from "./files_tree.ts";
 import { activities_db_require_by_source_id, activities_get_controls } from "./activities_db.ts";
 import { files_pending_update_runs_db_request_stop } from "./files_pending_update_runs.ts";
 import { files_transfer_db_request_stop } from "./files_transfer.ts";
@@ -627,7 +627,7 @@ describe("Move cohort publication", () => {
 			return result;
 		});
 		const view = await f.t.run((ctx) => files_saved_placement_db_get_view(ctx.db, f.scope));
-		const page = await f.asUser.query(api.files_nodes.list_tree_children, {
+		const page = await f.asUser.query(api.files_tree.list_tree_children, {
 			membershipId: f.db.membershipId,
 			savedStream: { kind: "normal", generation: view.generation },
 			parentId: outside._yay.nodeId,

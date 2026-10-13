@@ -12,9 +12,9 @@ import type { files_table_Filter } from "../../shared/files-table.ts";
 import type { files_SavedStream } from "../../shared/files.ts";
 import { useFilesSearchSaved, useFilesSortedChildren } from "./files-search-hooks.ts";
 
-type SortedPage = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sorted>;
+type SortedPage = FunctionReturnType<typeof app_convex_api.files_tree.list_tree_children_sorted>;
 type SortedRow = SortedPage["page"][number];
-type HasShared = FunctionReturnType<typeof app_convex_api.files_nodes.has_tree_children_shared>;
+type HasShared = FunctionReturnType<typeof app_convex_api.files_tree.has_tree_children_shared>;
 type SavedArgs = FunctionArgs<typeof app_convex_api.files_nodes.search_saved>;
 type SavedRow = FunctionReturnType<typeof app_convex_api.files_nodes.search_saved>["page"][number];
 
@@ -30,7 +30,7 @@ const { paginatedArgsSeen, sorted, saved } = vi.hoisted(() => ({
 	paginatedArgsSeen: [] as SortedArgs[],
 	sorted: {
 		view: { cohortId: null, view: null, generation: 0, searchGeneration: 0 } as
-			FunctionReturnType<typeof app_convex_api.files_nodes.get_workspace_move_view> | undefined,
+			FunctionReturnType<typeof app_convex_api.files_tree.get_workspace_move_view> | undefined,
 		rows: new Map<string, SortedRow[]>(),
 		hasShared: false as HasShared | Error | undefined,
 		loadingFields: new Set<string>(),

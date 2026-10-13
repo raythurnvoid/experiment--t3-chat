@@ -711,7 +711,7 @@ describe("private pending text", () => {
 			}),
 		).toBeNull();
 		expect(
-			await asOther.query(api.files_pending_updates.list_files_pending_updates, {
+			await asOther.query(api.files_pending_list.list_files_pending_updates, {
 				membershipId: other.membershipId,
 				listKey: "all",
 				paginationOpts: { numItems: 5, cursor: null },
@@ -735,7 +735,7 @@ describe("private pending text", () => {
 		// The row's own view is null above, so the Pending tab shows it as restricted.
 		expect(
 			(
-				await asUser.query(api.files_pending_updates.list_files_pending_updates, {
+				await asUser.query(api.files_pending_list.list_files_pending_updates, {
 					membershipId,
 					listKey: "all",
 					paginationOpts: { numItems: 5, cursor: null },

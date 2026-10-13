@@ -46,7 +46,7 @@ import {
 	files_ingestion_db_prepare_file,
 	files_ingestion_db_finalize_file,
 } from "./files_ingestion.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
 	organizations_membership_lifetimes_db_get,

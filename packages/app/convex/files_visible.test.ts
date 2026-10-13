@@ -723,7 +723,7 @@ describe("list_files_pending_updates", () => {
 		listKey: string,
 		paginationOpts: { numItems: number; cursor: string | null; endCursor?: string },
 	) {
-		return f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+		return f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 			membershipId: f.db.membershipId,
 			listKey,
 			paginationOpts,
@@ -735,7 +735,7 @@ describe("list_files_pending_updates", () => {
 		const paths: string[] = [];
 		let cursor: string | null = null;
 		do {
-			const page: FunctionReturnType<typeof api.files_pending_updates.list_files_pending_updates> = await list(
+			const page: FunctionReturnType<typeof api.files_pending_list.list_files_pending_updates> = await list(
 				f,
 				listKey,
 				{ numItems: 20, cursor },
@@ -818,7 +818,7 @@ describe("list_files_pending_updates", () => {
 		// folder never uses a slot.
 		let cursor: string | null = null;
 		do {
-			const page: FunctionReturnType<typeof api.files_pending_updates.list_files_pending_updates> = await list(
+			const page: FunctionReturnType<typeof api.files_pending_list.list_files_pending_updates> = await list(
 				f,
 				"all",
 				{ numItems: 1, cursor },
@@ -886,7 +886,7 @@ describe("list_files_pending_updates", () => {
 		const cost = () =>
 			f.asUser.run(async (ctx) => {
 				const before = await ctx.meta.getTransactionMetrics();
-				await ctx.runQuery(api.files_pending_updates.list_files_pending_updates, {
+				await ctx.runQuery(api.files_pending_list.list_files_pending_updates, {
 					membershipId: f.db.membershipId,
 					listKey: "all",
 					paginationOpts: { numItems: 5, cursor: null },
@@ -974,7 +974,7 @@ describe("list_files_pending_sources", () => {
 		}
 
 		const read = (cursor: string | null) =>
-			f.asUser.query(api.files_pending_updates.list_files_pending_sources, {
+			f.asUser.query(api.files_pending_list.list_files_pending_sources, {
 				membershipId: f.db.membershipId,
 				paginationOpts: { numItems: 20, cursor },
 			});

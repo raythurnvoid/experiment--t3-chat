@@ -443,7 +443,7 @@ describe("saved placement foundation", () => {
 
 	test.each(["normal", "cohort"] as const)("a stale %s stream carries the Move view reason", async (kind) => {
 		const f = await fixture();
-		const before = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		const before = await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
 		if (!before?.cohortId || !before.view) throw new Error("Expected the active saved view");
 		const savedStream = kind === "normal"
 			? { kind, generation: before.generation - 1 }
@@ -458,10 +458,10 @@ describe("saved placement foundation", () => {
 			paginationOpts: { cursor: null, numItems: 1 },
 		};
 		// A normal stream becomes stale at intake; a cohort stream becomes stale at publication.
-		if (kind === "cohort") await f.asUser.query(api.files_nodes.list_tree_children, args);
+		if (kind === "cohort") await f.asUser.query(api.files_tree.list_tree_children, args);
 		await f.publish();
 		await expect(
-			f.asUser.query(api.files_nodes.list_tree_children, args),
+			f.asUser.query(api.files_tree.list_tree_children, args),
 			"a stale view stays refused and carries its machine-readable reason",
 		).rejects.toMatchObject({
 			data: {
@@ -471,9 +471,9 @@ describe("saved placement foundation", () => {
 				reason: "saved_move_view_changed",
 			},
 		});
-		const after = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		const after = await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
 		if (!after?.cohortId || !after.view) throw new Error("Expected the new saved view");
-		const fresh = await f.asUser.query(api.files_nodes.list_tree_children, {
+		const fresh = await f.asUser.query(api.files_tree.list_tree_children, {
 			...args,
 			parentId: f.parentId,
 			savedStream: { kind: "cohort", cohortId: after.cohortId, view: after.view, generation: after.generation },
@@ -483,7 +483,7 @@ describe("saved placement foundation", () => {
 
 	test("a search counter change rejects search continuation but keeps tree continuation", async () => {
 		const f = await fixture({ normalPaths: ["/cursor-a.txt", "/cursor-b.txt"] });
-		const view = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		const view = await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
 		if (!view?.cohortId) throw new Error("Expected the active saved view");
 		const slot = await f.t.run((ctx) =>
 			ctx.db
@@ -513,7 +513,7 @@ describe("saved placement foundation", () => {
 			...searchArgs,
 			paginationOpts: { cursor: null, numItems: 1 },
 		});
-		const tree = await f.asUser.query(api.files_nodes.list_tree_children, {
+		const tree = await f.asUser.query(api.files_tree.list_tree_children, {
 			...treeArgs,
 			paginationOpts: { cursor: null, numItems: 1 },
 		});
@@ -522,7 +522,7 @@ describe("saved placement foundation", () => {
 		expect(tree.page).toHaveLength(1);
 		expect(tree.isDone, "the saved tree has a real next page").toBe(false);
 		await f.t.run((ctx) => files_saved_placement_db_bump_search_generation(ctx, f.db));
-		expect(await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId })).toEqual({
+		expect(await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId })).toEqual({
 			...view,
 			searchGeneration: view.searchGeneration + 1,
 		});
@@ -530,7 +530,7 @@ describe("saved placement foundation", () => {
 			await f.t.run((ctx) => ctx.db.get("files_move_workspace_slots", slot._id)),
 			"only the search counter changes; the slot and saved view stay fixed",
 		).toEqual(slot);
-		const nextTree = await f.asUser.query(api.files_nodes.list_tree_children, {
+		const nextTree = await f.asUser.query(api.files_tree.list_tree_children, {
 			...treeArgs,
 			paginationOpts: { cursor: tree.continueCursor, numItems: 1 },
 		});

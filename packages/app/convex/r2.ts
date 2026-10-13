@@ -37,7 +37,7 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import { organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,

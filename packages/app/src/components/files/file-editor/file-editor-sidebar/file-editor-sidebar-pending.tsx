@@ -71,7 +71,7 @@ const PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE = "Changes waiting for review are 
 
 /** A list row: stored fields only. Each shown row loads its view with `get_file_pending_target`. */
 type FileEditorSidebarPendingListRow = FunctionReturnType<
-	typeof app_convex_api.files_pending_updates.list_files_pending_updates
+	typeof app_convex_api.files_pending_list.list_files_pending_updates
 >["page"][number];
 
 type FileEditorSidebarPendingView = NonNullable<
@@ -1463,12 +1463,12 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	// The sources that have changes, newest change first. "All changes" is always there.
 	const savedView = useFilesSavedView(membershipId);
 	const normalSources = useFilesPaginatedQuery(
-		app_convex_api.files_pending_updates.list_files_pending_sources,
+		app_convex_api.files_pending_list.list_files_pending_sources,
 		savedView.normal ? { membershipId, savedStream: savedView.normal } : "skip",
 		{ initialNumItems: 20 },
 	);
 	const cohortSources = useFilesPaginatedQuery(
-		app_convex_api.files_pending_updates.list_files_pending_sources,
+		app_convex_api.files_pending_list.list_files_pending_sources,
 		savedView.cohort ? { membershipId, savedStream: savedView.cohort } : "skip",
 		{ initialNumItems: 20 },
 	);

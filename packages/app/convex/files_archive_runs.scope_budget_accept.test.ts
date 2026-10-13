@@ -140,7 +140,7 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 		expect(await step_job_to_end(f, archived._yay ?? null)).toBe("succeeded");
 		// Read the table before any scheduled job runs: the archived file's metadata docs may still
 		// say "active".
-		const table = await f.asOwner.query(api.files_nodes.list_tree_children_sorted, {
+		const table = await f.asOwner.query(api.files_tree.list_tree_children_sorted, {
 			membershipId: f.db.membershipId,
 			parentId: (await read_node(f, archivedId!)).parentId,
 			kind: "file",

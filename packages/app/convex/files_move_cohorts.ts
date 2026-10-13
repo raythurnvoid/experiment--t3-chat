@@ -9,9 +9,9 @@ import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import {
 	files_nodes_db_get_content_version,
-	files_nodes_db_require_user_writable,
 	files_nodes_db_resume_file_content_materialization,
 } from "./files_nodes.ts";
+import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { files_subtree_ops_db_recover } from "./files_subtree_ops.ts";
 import { files_move_reservations_db_take_waiters } from "../server/files-move-reservations.ts";
 import {
@@ -35,7 +35,7 @@ import {
 	activities_db_require_by_source_id,
 	activities_is_active,
 } from "./activities_db.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_pending_nodes_db_can_save_to_copied_parent } from "./files_pending_nodes.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";

@@ -60,11 +60,11 @@ function children_key(args: {
 	});
 
 	return principalIndex === undefined
-		? watch_key(getFunctionName(app_convex_api.files_nodes.list_tree_children), {
+		? watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children), {
 				...streamArgs.children(restricted),
 				paginationOpts: { cursor },
 			})
-		: watch_key(getFunctionName(app_convex_api.files_nodes.list_tree_children_shared), {
+		: watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children_shared), {
 				...streamArgs.shared(principalIndex),
 				paginationOpts: { cursor },
 			});
@@ -86,7 +86,7 @@ function receive_empty_twins(parentId: string) {
 function shared_roots_key(args: { principalIndex: 0 | 1 | 2; archived?: boolean; cursor?: string | null; savedStream?: files_SavedStream }) {
 	const { archived = false, cursor = null, principalIndex } = args;
 
-	return watch_key(getFunctionName(app_convex_api.files_nodes.list_tree_shared_roots), {
+	return watch_key(getFunctionName(app_convex_api.files_tree.list_tree_shared_roots), {
 		membershipId: "membership_1",
 		archived,
 		principalIndex,
@@ -96,7 +96,7 @@ function shared_roots_key(args: { principalIndex: 0 | 1 | 2; archived?: boolean;
 }
 
 function ancestors_key(nodeId: string) {
-	return watch_key(getFunctionName(app_convex_api.files_nodes.get_tree_ancestors), {
+	return watch_key(getFunctionName(app_convex_api.files_tree.get_tree_ancestors), {
 		membershipId: "membership_1",
 		nodeId,
 	});
@@ -165,7 +165,7 @@ function TestWorkspace(props: { membershipId: string; children?: ReactNode }) {
 beforeEach(() => {
 	results.clear();
 	listeners.clear();
-	results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: "membership_1" }), {
+	results.set(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }), {
 		cohortId: null, view: null, generation: 0, searchGeneration: 0,
 	});
 	client = new ConvexReactClient("https://tree-test.convex.cloud");
@@ -194,7 +194,7 @@ afterEach(async () => {
 
 describe("FilesTreeProvider.useFolders", () => {
 	test("finishes empty when the workspace view refuses access", () => {
-		results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: "membership_1" }), null);
+		results.set(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }), null);
 		render(<TestWorkspace membershipId="membership_1"><FoldersConsumer folderIds={[]} /></TestWorkspace>);
 		expect(screen.getByLabelText("Rows").textContent).toBe("");
 		expect(screen.getByLabelText("Status").textContent).toBe("root:done");
@@ -205,7 +205,7 @@ describe("FilesTreeProvider.useFolders", () => {
 		const cohortId = "cohort_1" as app_convex_Id<"files_move_cohorts">;
 		const normal: files_SavedStream = { kind: "normal", generation: 1 };
 		const cohort: files_SavedStream = { kind: "cohort", cohortId, view: "before", generation: 1 };
-		results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: "membership_1" }), {
+		results.set(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }), {
 			cohortId, view: "before", generation: 1, searchGeneration: 1,
 		});
 		for (const savedStream of [normal, cohort]) {

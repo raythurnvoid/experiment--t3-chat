@@ -21,8 +21,9 @@ import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
-import { files_nodes_db_get_tree_reader, files_nodes_db_require_user_writable } from "./files_nodes.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { files_nodes_db_get_tree_reader } from "./files_tree_db.ts";
+import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";

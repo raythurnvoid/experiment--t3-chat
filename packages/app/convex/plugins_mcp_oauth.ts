@@ -20,7 +20,7 @@ import {
 	mcp_custom_servers_SIGN_IN_CHANGED_MESSAGE,
 	type mcp_custom_servers_record_test_Result,
 } from "./mcp_custom_servers.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_integration_policy_db_allows_mcp_server } from "./organizations_integration_policy.ts";
 import {
 	plugins_mcp_CANNOT_USE_MESSAGE,

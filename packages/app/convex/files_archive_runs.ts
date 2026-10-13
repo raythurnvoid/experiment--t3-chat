@@ -40,9 +40,9 @@ import {
 	files_nodes_db_archive_node,
 	files_nodes_db_rebuild_node,
 	files_nodes_db_require_swept_nodes_writable,
-	files_nodes_db_require_user_writable,
 	files_nodes_db_restore_node,
 } from "./files_nodes.ts";
+import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
 	files_pending_updates_db_remove_archived_node_proposal,
 	files_pending_updates_db_require_reviewed_archive_node,
@@ -68,7 +68,7 @@ import {
 	files_subtree_ops_db_save_page,
 	files_subtree_ops_db_schedule_step,
 } from "./files_subtree_ops.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
 	organizations_membership_lifetimes_db_get,

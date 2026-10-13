@@ -157,7 +157,7 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 			useFolders: (request: { pinnedNodeIds: string[] }) => {
 				const membershipId = tenantContextMock().membershipId;
 				// The query mock ignores these args and answers with every tree row as a plain array, not one folder page.
-				const rows = useQuery(api.files_nodes.list_tree_children, {
+				const rows = useQuery(api.files_tree.list_tree_children, {
 					membershipId,
 					parentId: "root",
 					kind: "folder",
@@ -167,7 +167,7 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 				}) as unknown as Array<{ _id: string }> | undefined;
 				// Like the store, add the pinned node and its ancestors. The file view pins at most one node.
 				const pin = useQuery(
-					api.files_nodes.get_tree_ancestors,
+					api.files_tree.get_tree_ancestors,
 					request.pinnedNodeIds[0] ? { membershipId, nodeId: request.pinnedNodeIds[0] } : "skip",
 				);
 				const pinRows = pin
@@ -490,11 +490,11 @@ beforeEach(() => {
 	queryMock.mockImplementation((reference: never, args: unknown) => {
 		if (args === "skip") return undefined;
 		switch (getFunctionName(reference)) {
-			case "files_nodes:get_workspace_move_view":
+			case "files_tree:get_workspace_move_view":
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
-			case "files_nodes:list_tree_children":
+			case "files_tree:list_tree_children":
 				return treeNodes ?? [node];
-			case "files_nodes:get_tree_ancestors": {
+			case "files_tree:get_tree_ancestors": {
 				const nodes = [...(treeNodes ?? [node]), ...unloadedTreeNodes];
 				const chain: (typeof NODE)[] = [];
 				let row = nodes.find((item) => item._id === (args as { nodeId: string }).nodeId);
@@ -521,7 +521,7 @@ beforeEach(() => {
 				return nodeQueryStatus === "loading" ? undefined : nodeQueryStatus === "missing" ? null : node;
 			// Tests write owner views. The list returns only the stored fields of each row, and each row
 			// loads its view with `get_file_pending_target`.
-			case "files_pending_updates:list_files_pending_updates":
+			case "files_pending_list:list_files_pending_updates":
 				return (pendingUpdates as PendingViewFixture[]).map((view, index) => ({
 					...(view.kind === "restricted"
 						? {
@@ -540,7 +540,7 @@ beforeEach(() => {
 					listRowCreationTime: index,
 					listRowId: `pending_row_${index}`,
 				}));
-			case "files_pending_updates:list_files_pending_sources":
+			case "files_pending_list:list_files_pending_sources":
 				return pendingUpdates.length > 0
 					? [{ listKey: "own", lastUpdatedAt: 1, keyCreationTime: 1, keyId: "own_key" }]
 					: [];
@@ -577,8 +577,8 @@ beforeEach(() => {
 				return node.path;
 			case "files_folder_sorts:get_folder_sort":
 				return folderSort;
-			case "files_nodes:list_tree_children_sorted":
-			case "files_nodes:list_tree_children_shared": {
+			case "files_tree:list_tree_children_sorted":
+			case "files_tree:list_tree_children_shared": {
 				// Serve a whole segment at once. The hook's paging has its own tests. The tree rows are open, and
 				// `sharedRows` come on the member's own share stream.
 				const { parentId, kind, segment, sort, filter, restricted, principalIndex } = args as {
@@ -631,7 +631,7 @@ beforeEach(() => {
 							}))
 							.sort((a, b) => files_sort_compare({ a: a.sortKey, b: b.sortKey, sort }));
 			}
-			case "files_nodes:has_tree_children_shared":
+			case "files_tree:has_tree_children_shared":
 				return hasShared;
 			case "files_metadata:list_search_fields":
 				return [{ fieldPath: "metadata.status", valueKinds: ["string"] }];

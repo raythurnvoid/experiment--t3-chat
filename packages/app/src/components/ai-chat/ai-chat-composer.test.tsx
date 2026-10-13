@@ -45,7 +45,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		// The saved view and popup's folder lookup answer. The other queries stay loading.
 		useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") => {
 			if (args === "skip") return undefined;
-			if (getFunctionName(query) === "files_nodes:get_workspace_move_view") {
+			if (getFunctionName(query) === "files_tree:get_workspace_move_view") {
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			}
 			return getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.get_authorized_by_path) &&
@@ -70,7 +70,7 @@ const mentionTreeNodes = [
  */
 function mention_pages(query: unknown, args: Record<string, unknown>) {
 	return getFunctionName(query as FunctionReference<"query">) ===
-		getFunctionName(app_convex_api.files_nodes.list_tree_children) && args.restricted === false
+		getFunctionName(app_convex_api.files_tree.list_tree_children) && args.restricted === false
 		? mentionTreeNodes.filter((node) => node.parentId === args.parentId && node.kind === args.kind)
 		: [];
 }
@@ -698,7 +698,7 @@ describe("AiChatComposer", () => {
 		});
 		const [, fileOption] = screen.getAllByRole("option");
 		expect(treeNodesMock).toHaveBeenCalledWith(
-			app_convex_api.files_nodes.list_tree_children,
+			app_convex_api.files_tree.list_tree_children,
 			{
 				membershipId: "membership-1",
 				parentId: "root",

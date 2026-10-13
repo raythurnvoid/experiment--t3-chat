@@ -38,7 +38,7 @@ afterEach(() => {
 test("saved tree sources keep the normal names until publication", async () => {
 	const f = await test_create_saved_placement_fixture({ normalPaths: ["/normal.txt"] });
 	const read = async () => {
-		const view = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		const view = await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
 		if (!view?.cohortId || !view.view) throw new Error("Expected the fixture Move view");
 		const pages = await Promise.all(
 			([
@@ -47,7 +47,7 @@ test("saved tree sources keep the normal names until publication", async () => {
 			] as const).flatMap((savedStream) =>
 				(["root", f.parentId] as const).flatMap((parentId) =>
 					(["folder", "file"] as const).map((kind) =>
-						f.asUser.query(api.files_nodes.list_tree_children, {
+						f.asUser.query(api.files_tree.list_tree_children, {
 							membershipId: f.db.membershipId,
 							parentId,
 							kind,
@@ -120,7 +120,7 @@ test("metadata reads merge normal and selected facts before and after the switch
 		const now = Date.now();
 		await test_compact_metadata_catalog(f.t);
 		vi.setSystemTime(now);
-		const view = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		const view = await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
 		if (!view) throw new Error("Expected the workspace view");
 		const streams: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
 		if (view.cohortId && view.view)

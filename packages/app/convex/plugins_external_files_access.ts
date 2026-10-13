@@ -2,7 +2,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
-import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "./files_nodes.ts";
+import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { files_db_get_visible_node_by_path, files_ROOT_ID } from "../server/files.ts";

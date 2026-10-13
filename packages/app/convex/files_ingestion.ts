@@ -15,7 +15,7 @@ import { files_editable_text_shape_of, files_normalize_content_type } from "../s
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { files_nodes_db_create_private_node_by_path, files_nodes_db_plan_private_node_by_path } from "./files_nodes.ts";
 import { files_pending_nodes_db_discard, files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
 import { files_pending_updates_db_commit_private_file } from "./files_pending_updates.ts";

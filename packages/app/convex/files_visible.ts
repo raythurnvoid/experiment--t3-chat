@@ -24,7 +24,7 @@ import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { files_metadata_db_query_saved_plan } from "./files_metadata.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { files_visible_resolve_db_create } from "../server/files-visible-resolve.ts";

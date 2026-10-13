@@ -383,7 +383,7 @@ describe("Move owner views", () => {
 		}
 		const generation = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.slotGeneration;
 		const read = (view: "before" | "after") =>
-			f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 				membershipId: f.db.membershipId,
 				listKey: "all",
 				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation },

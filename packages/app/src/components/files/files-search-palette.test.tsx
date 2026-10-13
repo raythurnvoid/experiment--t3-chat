@@ -45,7 +45,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") => {
 			if (args === "skip") return undefined;
 			const name = getFunctionName(query);
-			if (name === "files_nodes:get_workspace_move_view") {
+			if (name === "files_tree:get_workspace_move_view") {
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			}
 			if (name === "files_metadata:get_search_field") return null;

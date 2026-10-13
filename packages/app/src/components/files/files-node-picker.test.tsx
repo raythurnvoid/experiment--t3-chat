@@ -71,7 +71,7 @@ function set_folder(args: {
 			archived: false,
 			savedStream: NORMAL_STREAM,
 		});
-		const children = getFunctionName(app_convex_api.files_nodes.list_tree_children);
+		const children = getFunctionName(app_convex_api.files_tree.list_tree_children);
 		const page = kind === "folder" ? folders : files;
 		const hasNext = kind === "file" && nextFiles !== undefined;
 		results.set(watch_key(children, { ...streamArgs.children(false), paginationOpts: { cursor: null } }), {
@@ -88,7 +88,7 @@ function set_folder(args: {
 		results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), EMPTY_PAGE);
 		for (const principalIndex of [0, 1, 2] as const) {
 			results.set(
-				watch_key(getFunctionName(app_convex_api.files_nodes.list_tree_children_shared), {
+				watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children_shared), {
 					...streamArgs.shared(principalIndex),
 					paginationOpts: { cursor: null },
 				}),
@@ -104,7 +104,7 @@ function set_folder(args: {
 function set_shared_roots(rows: Array<ReturnType<typeof tree_row>>) {
 	for (const principalIndex of [0, 1, 2] as const) {
 		results.set(
-			watch_key(getFunctionName(app_convex_api.files_nodes.list_tree_shared_roots), {
+			watch_key(getFunctionName(app_convex_api.files_tree.list_tree_shared_roots), {
 				membershipId: MEMBERSHIP_ID,
 				archived: false,
 				principalIndex,
@@ -120,7 +120,7 @@ function set_shared_roots(rows: Array<ReturnType<typeof tree_row>>) {
  * Answer the workspace view: no Move, or a Move with the given cohort.
  */
 function set_move_view(cohortId: string | null) {
-	results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }), {
+	results.set(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }), {
 		generation: 1,
 		searchGeneration: 1,
 		cohortId,
@@ -322,7 +322,7 @@ describe("FilesNodePicker", () => {
 	test.each(["before", "after"] as const)("searches both saved Move streams in the %s view and pages each one", async (view) => {
 		const folderPath = view === "before" ? "/source" : "/destination";
 		results.set(
-			watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+			watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
 			{ cohortId: "cohort_1", view, generation: 7, searchGeneration: 11 },
 		);
 		const searchArgs = {
@@ -405,7 +405,7 @@ describe("FilesNodePicker", () => {
 
 	test("waits for the Move view before starting a saved search", () => {
 		results.delete(
-			watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+			watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
 		);
 		render(<PickerHarness initialQuery="note" />);
 

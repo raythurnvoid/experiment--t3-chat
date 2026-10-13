@@ -10,7 +10,7 @@ import type { files_SavedStream } from "../../shared/files.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useFilesPaginatedQuery } from "@/hooks/files-paginated-query-hooks.ts";
 
-type FilesTreeRow = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children>["page"][number];
+type FilesTreeRow = FunctionReturnType<typeof app_convex_api.files_tree.list_tree_children>["page"][number];
 
 type FilesTreeFolderId = app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
 
@@ -24,7 +24,7 @@ type FilesTreeFolderResult = {
 	loadMore: () => void;
 };
 
-type FilesTreePinResult = FunctionReturnType<typeof app_convex_api.files_nodes.get_tree_ancestors>;
+type FilesTreePinResult = FunctionReturnType<typeof app_convex_api.files_tree.get_tree_ancestors>;
 
 type FilesTreeFoldersRequest = {
 	folderIds: FilesTreeFolderId[];
@@ -182,11 +182,11 @@ function useFilesTreeKindSource(
 	const twinArgs = !enabled || !args.savedStream || isOwner === false ? ("skip" as const) : streamArgs.children(true);
 	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
 		!enabled || !args.savedStream || isOwner === true ? ("skip" as const) : streamArgs.shared(principalIndex);
-	const open = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children, openArgs, options);
-	const twin = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children, twinArgs, options);
-	const shared0 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(0), options);
-	const shared1 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(1), options);
-	const shared2 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(2), options);
+	const open = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children, openArgs, options);
+	const twin = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children, twinArgs, options);
+	const shared0 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(0), options);
+	const shared1 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(1), options);
+	const shared2 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(2), options);
 	// A skipped stream reports `LoadingFirstPage` forever, so leave it out.
 	return [open, ...(isOwner === false ? [] : [twin]), ...(isOwner === true ? [] : [shared0, shared1, shared2])];
 }
@@ -254,14 +254,14 @@ function useFilesTreeSharedRootStreams(args: {
 	const sharedArgs = (principalIndex: 0 | 1 | 2, savedStream: files_SavedStream | null) =>
 		enabled && savedStream ? { membershipId, archived, principalIndex, savedStream } : ("skip" as const);
 	const normal = [
-		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0, view.normal), options),
-		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1, view.normal), options),
-		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2, view.normal), options),
+		useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_shared_roots, sharedArgs(0, view.normal), options),
+		useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_shared_roots, sharedArgs(1, view.normal), options),
+		useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_shared_roots, sharedArgs(2, view.normal), options),
 	];
 	const cohort = [
-		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0, view.cohort), options),
-		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1, view.cohort), options),
-		useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2, view.cohort), options),
+		useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_shared_roots, sharedArgs(0, view.cohort), options),
+		useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_shared_roots, sharedArgs(1, view.cohort), options),
+		useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_shared_roots, sharedArgs(2, view.cohort), options),
 	];
 	if (!view.loading && !view.normal) return [];
 	return [...normal, ...(view.cohort ? cohort : [])];
@@ -314,7 +314,7 @@ type FilesTreePinWatcher_Props = {
  */
 const FilesTreePinWatcher = memo(function FilesTreePinWatcher(props: FilesTreePinWatcher_Props) {
 	const { membershipId, nodeId, onResult } = props;
-	const result = useQuery(app_convex_api.files_nodes.get_tree_ancestors, { membershipId, nodeId });
+	const result = useQuery(app_convex_api.files_tree.get_tree_ancestors, { membershipId, nodeId });
 
 	useEffect(() => {
 		if (result !== undefined) {

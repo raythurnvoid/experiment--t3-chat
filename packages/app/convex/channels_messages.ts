@@ -9,7 +9,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema, { ai_chat_workspaces_source_validator, file_quote_validator } from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { access_control_db_authorize_node } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -30,7 +30,7 @@ import {
 } from "../shared/channels.ts";
 import { file_quotes_db_shape, file_quotes_db_validate } from "./file_quotes.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
-import { files_nodes_db_require_user_writable } from "./files_nodes.ts";
+import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 

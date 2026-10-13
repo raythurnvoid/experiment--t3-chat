@@ -54,7 +54,7 @@ async function fixture() {
 			await t.run((ctx) => ctx.db.get("files_nodes", sourceId)),
 			"public creation made the complete source path",
 		).toMatchObject({ _id: sourceId, parentId, path: sourcePaths[index], name: String(index) });
-		const children = await asUser.query(api.files_nodes.list_tree_children, {
+		const children = await asUser.query(api.files_tree.list_tree_children, {
 			membershipId: scope.membershipId,
 			parentId: sourceId,
 			kind: "folder",

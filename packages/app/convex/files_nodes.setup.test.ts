@@ -248,7 +248,7 @@ export async function seed_tree_access_fixture(t: ReturnType<typeof test_convex>
 	};
 }
 
-type Page = FunctionReturnType<typeof api.files_nodes.list_tree_children_sorted>;
+type Page = FunctionReturnType<typeof api.files_tree.list_tree_children_sorted>;
 
 /**
  * A folder `/table` for the folder table queries, with helpers that add children and read its sorted pages.
@@ -361,9 +361,9 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 	});
 	const read_page = (args: PageArgs) =>
 		args.principalIndex === undefined
-			? (args.as ?? asOwner).query(api.files_nodes.list_tree_children_sorted, page_query_args(args))
+			? (args.as ?? asOwner).query(api.files_tree.list_tree_children_sorted, page_query_args(args))
 			: (args.as ?? asOwner).query(
-					api.files_nodes.list_tree_children_shared,
+					api.files_tree.list_tree_children_shared,
 					shared_query_args(args, args.principalIndex),
 				);
 
@@ -376,8 +376,8 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 			const before = await ctx.meta.getTransactionMetrics();
 			const result =
 				args.principalIndex === undefined
-					? await ctx.runQuery(api.files_nodes.list_tree_children_sorted, page_query_args(args))
-					: await ctx.runQuery(api.files_nodes.list_tree_children_shared, shared_query_args(args, args.principalIndex));
+					? await ctx.runQuery(api.files_tree.list_tree_children_sorted, page_query_args(args))
+					: await ctx.runQuery(api.files_tree.list_tree_children_shared, shared_query_args(args, args.principalIndex));
 			const after = await ctx.meta.getTransactionMetrics();
 			return {
 				rows: result.page.length,
@@ -830,7 +830,7 @@ export async function seed_search_box_fixture(t: ReturnType<typeof test_convex>)
 	});
 	if (written._nay) throw new Error(written._nay.message);
 
-	const { page: rootFolders } = await asOwner.query(api.files_nodes.list_tree_children, {
+	const { page: rootFolders } = await asOwner.query(api.files_tree.list_tree_children, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		kind: "folder",

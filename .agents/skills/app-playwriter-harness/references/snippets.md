@@ -786,7 +786,7 @@ await state.page.evaluate(
 			if (startId === "root") {
 				for (const a of archived) {
 					for (const principalIndex of [0, 1, 2]) {
-						add(await readAll(api.files_nodes.list_tree_shared_roots, { membershipId, archived: a, principalIndex }));
+						add(await readAll(api.files_tree.list_tree_shared_roots, { membershipId, archived: a, principalIndex }));
 					}
 				}
 			}
@@ -797,10 +797,10 @@ await state.page.evaluate(
 						const args = { membershipId, parentId, kind, archived: a };
 						const shared = { ...args, sort: [{ field: "name", direction: "asc" }], filter: null, namePrefix: null, segment: "value" };
 						const pages = await Promise.all([
-							readAll(api.files_nodes.list_tree_children, { ...args, restricted: false }),
-							readAll(api.files_nodes.list_tree_children, { ...args, restricted: true }),
+							readAll(api.files_tree.list_tree_children, { ...args, restricted: false }),
+							readAll(api.files_tree.list_tree_children, { ...args, restricted: true }),
 							...[0, 1, 2].map((principalIndex) =>
-								readAll(api.files_nodes.list_tree_children_shared, { ...shared, principalIndex }),
+								readAll(api.files_tree.list_tree_children_shared, { ...shared, principalIndex }),
 							),
 						]);
 						add(pages.flat());
@@ -825,7 +825,7 @@ await state.page.evaluate(async () => {
 (`null` when the caller cannot read it), and `files_nodes.get_visible_target_by_path({ membershipId,
 path })` returns `{ target: { kind, id }, kind }` for the active saved node at a path, or for your
 own draft there. To list drafts, use the Pending tab door
-`files_pending_updates.list_files_pending_updates` (see `file-node-view.md`, "Reading the pending
+`files_pending_list.list_files_pending_updates` (see `file-node-view.md`, "Reading the pending
 rows from the page") or the agent's `ls` and `find`.
 
 ## Prove A Cross-Origin Iframe Permissions-Policy Grant Without The Host App

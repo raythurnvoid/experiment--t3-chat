@@ -100,7 +100,7 @@ import { api, internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { access_control_db_authorize_node } from "./access_control.ts";
 import {
 	billing_db_check_credits,
@@ -153,7 +153,6 @@ import {
 	files_READ_RANGE_MAX_LINES,
 	files_line_range_from_text,
 	files_merge_contiguous_chunks,
-	files_nodes_db_require_user_writable,
 	files_nodes_db_get_content_version,
 	type files_nodes_get_user_file_write_access_Result,
 	type files_nodes_get_visible_entry_by_path_Result,
@@ -168,6 +167,7 @@ import {
 	type get_file_content_materialization_state_Result,
 	type get_file_next_yjs_update_Result,
 } from "./files_nodes.ts";
+import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
 	files_transfer_db_complete_copy_item,
 	files_transfer_db_fail_copy_item,

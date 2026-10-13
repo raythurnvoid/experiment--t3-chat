@@ -349,7 +349,7 @@ describe("saved list action", () => {
 
 	test("refuses a seek key outside its recursive source range", async () => {
 		const f = await test_create_saved_placement_fixture();
-		const view = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		const view = await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
 		const args = {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,

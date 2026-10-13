@@ -191,10 +191,10 @@ async function access_control_test_read_tree_child_ids(
 	const pages = await Promise.all(
 		(["folder", "file"] as const).flatMap((kind) => [
 			...[false, true].map((restricted) =>
-				as.query(api.files_nodes.list_tree_children, { ...stream, kind, restricted }),
+				as.query(api.files_tree.list_tree_children, { ...stream, kind, restricted }),
 			),
 			...([0, 1, 2] as const).map((principalIndex) =>
-				as.query(api.files_nodes.list_tree_children_shared, {
+				as.query(api.files_tree.list_tree_children_shared, {
 					...stream,
 					kind,
 					principalIndex,
@@ -8059,7 +8059,7 @@ describe("file sharing", () => {
 		expect(lowered._nay).toBeUndefined();
 
 		const [listedAfterLowering, canWriteAfterLowering] = await Promise.all([
-			fixture.asMember.query(api.files_pending_updates.list_files_pending_updates, {
+			fixture.asMember.query(api.files_pending_list.list_files_pending_updates, {
 				membershipId: fixture.memberMembershipId,
 				listKey: "all",
 				paginationOpts: { cursor: null, numItems: 20 },

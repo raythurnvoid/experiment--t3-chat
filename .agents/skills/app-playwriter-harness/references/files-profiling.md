@@ -70,6 +70,12 @@ empty ready table. Save a later receipt with the raw case/start/startedAt and bo
 restoration checks. Keep the new ID as a named catalog fixture, or archive only this run's new item
 after its checks. Repeat the full setup and action for seven samples.
 
+For a menu command, arm before opening the menu. The helper brings the tab to the front, which
+can close an open popover. Use a stable selector for the final menu command. If its DOM ID is made
+only when the menu opens, use the visible menuitem selector and click only the intended command.
+Read the live menu before clicking. Save a missing-menu attempt as an incomplete setup sample;
+it does not measure the command. Reopen the menu through its normal button before retrying.
+
 Call `state.qa.filesProfile.cleanup()` when finished. It removes its own page and CDP listeners;
 it leaves the shared CDP session open. Keep the raw output, receipts, source pin, replay scripts,
 and result table together in the personal run folder.

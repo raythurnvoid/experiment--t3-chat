@@ -8,13 +8,12 @@ import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "v
 import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import {
-	files_nodes_db_require_writable,
 	files_nodes_db_set_write_policy,
 	files_nodes_db_get_write_policy_management_state,
-	type files_nodes_WriteContext,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
 } from "./files_nodes.ts";
+import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_nodes_create_yjs_snapshot_update_from_text } from "./files_nodes_content.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
@@ -2460,7 +2459,7 @@ describe("selected file writers", () => {
 
 		const [{ page: outerFolders }, { page: innerFolders }] = await Promise.all(
 			[outerId, innerId].map((parentId) =>
-				asMember.query(api.files_nodes.list_tree_children, {
+				asMember.query(api.files_tree.list_tree_children, {
 					membershipId: member.membershipId,
 					parentId,
 					kind: "folder",
@@ -4738,7 +4737,7 @@ describe("files_nodes public read-only view", () => {
 			kind: "folder" | "file";
 			restricted: boolean;
 		}) =>
-			args.as.query(api.files_nodes.list_tree_children, {
+			args.as.query(api.files_tree.list_tree_children, {
 				membershipId: args.membershipId,
 				parentId: args.parentId,
 				kind: args.kind,
@@ -4752,7 +4751,7 @@ describe("files_nodes public read-only view", () => {
 		const member = { as: f.asMember, membershipId: f.memberMembershipId, restricted: false };
 		const [{ page: memberRoot }, { page: memberShares }, { page: memberFiles }] = await Promise.all([
 			list_children({ ...member, parentId: files_ROOT_ID, kind: "folder" }),
-			f.asMember.query(api.files_nodes.list_tree_shared_roots, {
+			f.asMember.query(api.files_tree.list_tree_shared_roots, {
 				membershipId: f.memberMembershipId,
 				archived: false,
 				principalIndex: 0,
@@ -4904,7 +4903,7 @@ describe("member controls on plugin-labeled nodes", () => {
 		});
 		if (created._nay) throw new Error(created._nay.message);
 		const list_folders = (parentId: Id<"files_nodes"> | typeof files_ROOT_ID) =>
-			asOwner.query(api.files_nodes.list_tree_children, {
+			asOwner.query(api.files_tree.list_tree_children, {
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",

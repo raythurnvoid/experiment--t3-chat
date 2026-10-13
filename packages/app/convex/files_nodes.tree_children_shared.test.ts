@@ -199,7 +199,7 @@ describe("list_tree_children_shared", () => {
 		await grant_read({ userId: member.userId }, ids);
 		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", ids[1]!, { archiveOperationId: "archive-1" }));
 		const read = (archived: boolean, sort: files_sort_Clause = BY_NAME) =>
-			member.as.query(api.files_nodes.list_tree_children_shared, {
+			member.as.query(api.files_tree.list_tree_children_shared, {
 				membershipId: member.membershipId,
 				parentId,
 				kind: "folder",
@@ -317,7 +317,7 @@ describe("list_tree_children_shared", () => {
 		const paginationOpts = { numItems: 50, cursor: null };
 
 		// The tree's first page of the folder: the open stream and the member's own share stream.
-		const open = await member.as.query(api.files_nodes.list_tree_children, {
+		const open = await member.as.query(api.files_tree.list_tree_children, {
 			membershipId: member.membershipId,
 			parentId,
 			kind: "folder",
@@ -326,7 +326,7 @@ describe("list_tree_children_shared", () => {
 			paginationOpts,
 		});
 		expect(open).toMatchObject({ page: [], isDone: true });
-		const shared = await member.as.query(api.files_nodes.list_tree_children_shared, {
+		const shared = await member.as.query(api.files_tree.list_tree_children_shared, {
 			membershipId: member.membershipId,
 			parentId,
 			kind: "folder",
@@ -360,7 +360,7 @@ describe("list_tree_children_shared", () => {
 			paginationOpts: FIRST_PAGE,
 		};
 
-		const root = await member.as.query(api.files_nodes.list_tree_children_shared, {
+		const root = await member.as.query(api.files_tree.list_tree_children_shared, {
 			...args,
 			archived: false,
 			principalIndex: 0,
@@ -368,17 +368,17 @@ describe("list_tree_children_shared", () => {
 		expect(root.page.map((row) => row.name)).toEqual(["table"]);
 		// The member has no role, so no role stream.
 		expect(
-			await member.as.query(api.files_nodes.list_tree_children_shared, { ...args, archived: false, principalIndex: 1 }),
+			await member.as.query(api.files_tree.list_tree_children_shared, { ...args, archived: false, principalIndex: 1 }),
 		).toEqual(REFUSED);
 		// The sorted pages give this member nothing at the root.
-		expect(await member.as.query(api.files_nodes.list_tree_children_sorted, { ...args, restricted: false })).toEqual(
+		expect(await member.as.query(api.files_tree.list_tree_children_sorted, { ...args, restricted: false })).toEqual(
 			REFUSED,
 		);
 
 		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
 		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
 		expect(
-			await asOther.query(api.files_nodes.list_tree_children_shared, {
+			await asOther.query(api.files_tree.list_tree_children_shared, {
 				...args,
 				membershipId: other.membershipId,
 				parentId,
@@ -414,7 +414,7 @@ describe("list_tree_children_shared", () => {
 		const read_cost = (as: typeof asOwner, args: (typeof cases)[number]["args"], at: Id<"files_nodes"> | "root") =>
 			as.run(async (ctx) => {
 				const before = await ctx.meta.getTransactionMetrics();
-				const result = await ctx.runQuery(api.files_nodes.list_tree_children_shared, { ...args, parentId: at });
+				const result = await ctx.runQuery(api.files_tree.list_tree_children_shared, { ...args, parentId: at });
 				const after = await ctx.meta.getTransactionMetrics();
 				return { result, ranges: after.databaseQueries.used - before.databaseQueries.used };
 			});
@@ -517,7 +517,7 @@ describe("list_tree_children_shared", () => {
 					const before = await ctx.meta.getTransactionMetrics();
 					const result =
 						query === "children"
-							? await ctx.runQuery(api.files_nodes.list_tree_children_shared, {
+							? await ctx.runQuery(api.files_tree.list_tree_children_shared, {
 									membershipId: f.admin.membershipId,
 									parentId: f.nodes.openId,
 									kind: "folder",
@@ -529,7 +529,7 @@ describe("list_tree_children_shared", () => {
 									segment: "value",
 									paginationOpts,
 								})
-							: await ctx.runQuery(api.files_nodes.list_tree_shared_roots, {
+							: await ctx.runQuery(api.files_tree.list_tree_shared_roots, {
 									membershipId: f.admin.membershipId,
 									archived: false,
 									principalIndex,
@@ -565,7 +565,7 @@ describe("has_tree_children_shared", () => {
 		await grant_read({ userId: member.userId }, [ids[1]!]);
 		await grant_read({ userId: db.userId }, [ids[1]!]);
 		const has_shared = (as: typeof asOwner, membershipId: Id<"organizations_workspaces_users">) =>
-			as.query(api.files_nodes.has_tree_children_shared, { membershipId, parentId, archived: false });
+			as.query(api.files_tree.has_tree_children_shared, { membershipId, parentId, archived: false });
 
 		expect(await has_shared(member.as, member.membershipId)).toBe(true);
 		expect(await has_shared(other.as, other.membershipId)).toBe(false);
@@ -580,7 +580,7 @@ describe("has_tree_children_shared", () => {
 		await grant_read({ userId: member.userId }, [nodeId]);
 		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", nodeId, { archiveOperationId: "archive-1" }));
 		const has_shared = (archived: boolean) =>
-			member.as.query(api.files_nodes.has_tree_children_shared, {
+			member.as.query(api.files_tree.has_tree_children_shared, {
 				membershipId: member.membershipId,
 				parentId,
 				archived,
@@ -606,7 +606,7 @@ describe("has_tree_children_shared", () => {
 			}),
 		);
 		const has_shared = () =>
-			member.as.query(api.files_nodes.has_tree_children_shared, {
+			member.as.query(api.files_tree.has_tree_children_shared, {
 				membershipId: member.membershipId,
 				parentId,
 				archived: false,
@@ -627,7 +627,7 @@ describe("has_tree_children_shared", () => {
 		await grant_read({ userId: member.userId }, [parentId]);
 
 		expect(
-			await member.as.query(api.files_nodes.has_tree_children_shared, {
+			await member.as.query(api.files_tree.has_tree_children_shared, {
 				membershipId: member.membershipId,
 				parentId: "root",
 				archived: false,
@@ -637,7 +637,7 @@ describe("has_tree_children_shared", () => {
 		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
 		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
 		expect(
-			await asOther.query(api.files_nodes.has_tree_children_shared, {
+			await asOther.query(api.files_tree.has_tree_children_shared, {
 				membershipId: other.membershipId,
 				parentId,
 				archived: false,

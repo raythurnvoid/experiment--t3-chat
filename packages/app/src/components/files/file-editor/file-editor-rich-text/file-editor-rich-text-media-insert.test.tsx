@@ -60,7 +60,7 @@ function set_root_files() {
 			archived: false,
 			savedStream: { kind: "normal", generation: 0 },
 		});
-		const children = getFunctionName(app_convex_api.files_nodes.list_tree_children);
+		const children = getFunctionName(app_convex_api.files_tree.list_tree_children);
 		results.set(watch_key(children, { ...streamArgs.children(false), paginationOpts: { cursor: null } }), {
 			...EMPTY_PAGE,
 			page: kind === "file" ? files : [],
@@ -68,14 +68,14 @@ function set_root_files() {
 		results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), EMPTY_PAGE);
 		for (const principalIndex of [0, 1, 2] as const) {
 			results.set(
-				watch_key(getFunctionName(app_convex_api.files_nodes.list_tree_children_shared), {
+				watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children_shared), {
 					...streamArgs.shared(principalIndex),
 					paginationOpts: { cursor: null },
 				}),
 				EMPTY_PAGE,
 			);
 			results.set(
-				watch_key(getFunctionName(app_convex_api.files_nodes.list_tree_shared_roots), {
+				watch_key(getFunctionName(app_convex_api.files_tree.list_tree_shared_roots), {
 					membershipId: MEMBERSHIP_ID,
 					archived: false,
 					principalIndex,
@@ -123,13 +123,13 @@ function render_picker() {
 beforeEach(() => {
 	results.clear();
 	results.set(
-		watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+		watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
 		{ cohortId: null, view: null, generation: 0, searchGeneration: 0 },
 	);
 	insertContent.mockReset();
 	onClose.mockReset();
 	// The saved streams wait for the workspace view. No Move is running.
-	results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }), {
+	results.set(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }), {
 		cohortId: null,
 		view: null,
 		generation: 0,

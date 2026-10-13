@@ -9,13 +9,7 @@ import {
 } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
 import type { Id } from "./_generated/dataModel.js";
-import {
-	paginationOptsValidator,
-	paginationResultValidator,
-	type RegisteredAction,
-	type RegisteredMutation,
-	type RegisteredQuery,
-} from "convex/server";
+import { type RegisteredAction, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import { v, type Infer } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
@@ -29,20 +23,15 @@ import app_convex_schema, {
 	files_pending_prepared_content_validator,
 	files_pending_prepared_state_family_validator,
 	files_pending_updates_state_family_validator,
-	files_saved_stream_validator,
 } from "./schema.ts";
-import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+
 import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
-import {
-	files_saved_placement_db_get_proposal,
-	files_saved_placement_db_get_view,
-} from "../server/files-saved-placement.ts";
+import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 import { api, internal } from "./_generated/api.js";
 import {
 	db_get_file_content_materialization_db_state,
 	files_db_yjs_push_update,
 	files_merge_contiguous_chunks,
-	files_nodes_db_require_user_writable,
 	files_nodes_db_get_content_version,
 	type files_nodes_get_user_file_write_access_Result,
 	files_nodes_db_require_subtree_writable,
@@ -52,6 +41,7 @@ import {
 	type get_file_content_materialization_header_Result,
 	type get_file_next_yjs_update_Result,
 } from "./files_nodes.ts";
+import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import {
 	files_nodes_db_commit_text_replacement,
@@ -82,7 +72,7 @@ import { billing_event } from "../server/billing.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import {
 	files_move_reservations_db_enter,
@@ -171,6 +161,7 @@ import {
 } from "./r2_client.ts";
 import { files_metadata_db_delete_pending, files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
+import { files_pending_list_normalize_key } from "./files_pending_list.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -283,17 +274,6 @@ const PENDING_STATE_MAX_PAGES_PER_STATE = 5;
 
 /** One batch phase (input or output) holds at most this many page bytes across its three states. */
 const PENDING_STATE_MAX_PHASE_TOTAL_BYTES = 12 * 1024 * 1024;
-
-/** The page cap of `list_files_pending_updates`. */
-const PENDING_LIST_PAGE_MAX_ITEMS = 5;
-
-/**
- * The split guard of `list_files_pending_updates`. A row reads only its stored proposal, never its
- * path or access, so it costs 1 range at any depth (measured in `files_visible.test.ts`; the page
- * itself costs 2 more). With a 3,000-range budget: floor(3,000 / 1) = 3,000 rows. The page cap
- * keeps a first load far below it. A reactive rerun has no cap, so the guard is for those.
- */
-const PENDING_LIST_SPLIT_GUARD = 3000;
 
 /**
  * Reconstruct the latest live file state in action memory, reading only through the frozen
@@ -7874,172 +7854,6 @@ export const get_file_pending_update_internal = internalQuery({
 });
 
 /**
- * List keys: `"all"`, `"own"` (no chat touched the change) or a chat id.
- */
-function db_normalize_pending_list_key(ctx: QueryCtx, listKey: string) {
-	return listKey === "all" || listKey === "own" ? listKey : ctx.db.normalizeId("ai_chat_threads", listKey);
-}
-
-/**
- * One page of the Pending tab, newest change first. A row has only stored fields. Resolving a path
- * and checking access can cost about 1,300 reads for a draft 255 folders deep, so 5 rows would not
- * fit in one query. Each shown row loads its own view with `get_file_pending_target` instead.
- */
-export const list_files_pending_updates = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		listKey: v.string(),
-		paginationOpts: paginationOptsValidator,
-		savedStream: v.optional(files_saved_stream_validator),
-	},
-	returns: paginationResultValidator(
-		v.object({
-			target: files_pending_target_validator,
-			pendingUpdateId: v.id("files_pending_updates"),
-			revision: v.number(),
-			updatedAt: v.number(),
-			listRowCreationTime: v.number(),
-			listRowId: v.id("files_pending_list_rows"),
-			threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
-			// Ready content to review, for the editor's review pager. Same rule as the view's `readiness`.
-			hasReadyContent: v.boolean(),
-		}),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return { page: [], isDone: true, continueCursor: "" };
-		}
-
-		const listKey = db_normalize_pending_list_key(ctx, args.listKey);
-		if (listKey === null) return { page: [], isDone: true, continueCursor: "" };
-		await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
-		const tag = args.savedStream?.kind === "cohort" ? args.savedStream : undefined;
-
-		// The overlay flush keeps one list row per listed proposal and list key.
-		const result = await ctx.db
-			.query("files_pending_list_rows")
-			.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", userAuth.id)
-					.eq("moveView.cohortId", tag?.cohortId)
-					.eq("moveView.view", tag?.view)
-					.eq("listKey", listKey),
-			)
-			.order("desc")
-			.paginate({
-				...args.paginationOpts,
-				numItems: Math.min(args.paginationOpts.numItems, PENDING_LIST_PAGE_MAX_ITEMS),
-			});
-
-		// Split before any per-row read, like `tree_page_needs_split` in `files_nodes.ts`: a reactive
-		// rerun has no row cap, and a new change always lands on the first page.
-		if (result.splitCursor && (result.page.length > PENDING_LIST_SPLIT_GUARD || result.pageStatus)) {
-			return {
-				page: [],
-				isDone: result.isDone,
-				continueCursor: result.continueCursor,
-				splitCursor: result.splitCursor,
-				pageStatus: "SplitRequired" as const,
-			};
-		}
-
-		const rows = [];
-		for (const row of result.page) {
-			const pendingUpdate = await files_saved_placement_db_get_proposal(ctx.db, row.pendingUpdateId);
-			if (!pendingUpdate) continue;
-			const { target, preparation, createIntent, content } = pendingUpdate;
-			rows.push({
-				target,
-				pendingUpdateId: pendingUpdate._id,
-				revision: pendingUpdate.revision,
-				updatedAt: row.updatedAt,
-				listRowCreationTime: row._creationTime,
-				listRowId: row._id,
-				...(pendingUpdate.threadIds ? { threadIds: pendingUpdate.threadIds } : {}),
-				hasReadyContent:
-					content !== undefined &&
-					(target.kind === "saved" ||
-						(!preparation &&
-							createIntent !== undefined &&
-							(createIntent.kind !== "text" || content.base.kind === "new"))),
-			});
-		}
-
-		return { ...result, page: rows };
-	},
-});
-
-/**
- * The Pending tab's source dropdown: the list keys that have changes, newest change first. `"all"`
- * is left out, because the dropdown always shows it.
- */
-export const list_files_pending_sources = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		paginationOpts: paginationOptsValidator,
-		savedStream: v.optional(files_saved_stream_validator),
-	},
-	returns: paginationResultValidator(
-		v.object({
-			listKey: doc(app_convex_schema, "files_pending_list_keys").fields.listKey,
-			lastUpdatedAt: v.number(),
-			keyCreationTime: v.number(),
-			keyId: v.id("files_pending_list_keys"),
-		}),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) return { page: [], isDone: true, continueCursor: "" };
-		await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
-		const tag = args.savedStream?.kind === "cohort" ? args.savedStream : undefined;
-
-		const result = await ctx.db
-			.query("files_pending_list_keys")
-			.withIndex("by_org_ws_user_lastUpdatedAt", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", userAuth.id)
-					.eq("moveView.cohortId", tag?.cohortId)
-					.eq("moveView.view", tag?.view),
-			)
-			.order("desc")
-			.paginate(args.paginationOpts);
-		return {
-			...result,
-			page: result.page.flatMap((key) =>
-				key.listKey === "all"
-					? []
-					: [
-							{
-								listKey: key.listKey,
-								lastUpdatedAt: key.lastUpdatedAt,
-								keyCreationTime: key._creationTime,
-								keyId: key._id,
-							},
-						],
-			),
-		};
-	},
-});
-
-/**
  * Source chats can belong to a different workspace from their proposals.
  */
 export const get_pending_source_summary = query({
@@ -8145,7 +7959,7 @@ export const get_files_pending_updates_summary = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) return { count: 0, truncated: false };
-		const listKey = db_normalize_pending_list_key(ctx, args.listKey ?? "all");
+		const listKey = files_pending_list_normalize_key(ctx, args.listKey ?? "all");
 		if (listKey === null) return { count: 0, truncated: false };
 		return await db_get_files_pending_updates_summary({ ctx, membership, listKey });
 	},
@@ -11750,3 +11564,6 @@ export const accept_file_pending_replacement = action({
 });
 
 // #endregion whole-file replacement
+
+// Old query names stay until the new client is loaded.
+export { list_files_pending_updates, list_files_pending_sources } from "./files_pending_list.ts";

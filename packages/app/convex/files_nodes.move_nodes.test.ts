@@ -4,11 +4,8 @@ import { R2 } from "@convex-dev/r2";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import {
-	files_nodes_db_require_writable,
-	type files_nodes_WriteContext,
-	files_nodes_db_get_content_version,
-} from "./files_nodes.ts";
+import { files_nodes_db_get_content_version } from "./files_nodes.ts";
+import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {

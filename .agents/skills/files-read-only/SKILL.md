@@ -137,6 +137,9 @@ content. Resolve hides the mark through plugin metadata. The Yjs gate checks any
 internal management helpers. HTTP and plugin adapters use the same helpers after their own live
 identity, token, capability, and resource checks.
 
+The shared local policy checks live in `server/files-write-policy.ts`. File writers and saved tree
+reads import the same checks. The tree can read current write access without loading editor code.
+
 Folder management (`files_nodes_db_require_write_policy_management`) checks only the target. It
 reads no children, so Properties and policy saves cost the same on a folder like `/people` (about
 9,700 children) as on an empty one. A folder's rule never changes a child's own rule. It only limits

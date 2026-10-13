@@ -840,7 +840,7 @@ describe("catalog lifecycle", () => {
 		membershipId: Id<"organizations_workspaces_users">,
 		parentIds: Id<"files_nodes">[],
 	) {
-		const view = await asOwner.query(api.files_nodes.get_workspace_move_view, { membershipId });
+		const view = await asOwner.query(api.files_tree.get_workspace_move_view, { membershipId });
 		if (!view) throw new Error("no move view");
 		const streams = [
 			{ kind: "normal" as const, generation: view.generation },
@@ -934,7 +934,7 @@ describe("catalog lifecycle", () => {
 			itemIds: [a],
 			targetParentId: dst,
 			onStep: async () => {
-				const view = await asOwner.query(api.files_nodes.get_workspace_move_view, { membershipId: db.membershipId });
+				const view = await asOwner.query(api.files_tree.get_workspace_move_view, { membershipId: db.membershipId });
 				if (view?.cohortId && view.view === "before" && !draftAdded) {
 					await test_run_with_flush(t, async (ctx) => {
 						await ctx.db.insert("files_metadata_docs", {

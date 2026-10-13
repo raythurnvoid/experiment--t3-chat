@@ -8,7 +8,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { action, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_integration_policy_db_allows_mcp_server } from "./organizations_integration_policy.ts";
 import {
 	plugins_mcp_CANNOT_USE_MESSAGE,

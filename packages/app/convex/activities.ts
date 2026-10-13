@@ -24,7 +24,7 @@ import { files_subtree_ops_db_recover, files_subtree_ops_RECOVER_AFTER_MS } from
 import { files_move_cohorts_db_retry_repair_now } from "./files_move_cohorts.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { plugins_runtime_db_delete_run_history, plugins_runtime_db_timeout_run } from "./plugins_runtime.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,

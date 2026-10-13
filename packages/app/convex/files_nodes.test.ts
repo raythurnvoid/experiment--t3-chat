@@ -306,7 +306,7 @@ describe("list_tree_children", () => {
 		});
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		const list_page = (kind: "folder" | "file", cursor: string | null) =>
-			asOwner.query(api.files_nodes.list_tree_children, {
+			asOwner.query(api.files_tree.list_tree_children, {
 				membershipId: db.membershipId,
 				parentId: db.bigId,
 				kind,
@@ -336,7 +336,7 @@ describe("list_tree_children", () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const list = (kind: "folder" | "file", archived: boolean) =>
-			f.asOwner.query(api.files_nodes.list_tree_children, {
+			f.asOwner.query(api.files_tree.list_tree_children, {
 				membershipId: f.owner.membershipId,
 				parentId: f.nodes.openId,
 				kind,
@@ -388,7 +388,7 @@ describe("list_tree_children", () => {
 
 		const folders = await t
 			.withIdentity({ issuer: "https://clerk.test", external_id: db.userId })
-			.query(api.files_nodes.list_tree_children, {
+			.query(api.files_tree.list_tree_children, {
 				membershipId: db.membershipId,
 				parentId: db.binId,
 				kind: "folder",
@@ -405,7 +405,7 @@ describe("list_tree_children", () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const list = (as: typeof f.asAdmin, membershipId: Id<"organizations_workspaces_users">, restricted: boolean) =>
-			as.query(api.files_nodes.list_tree_children, {
+			as.query(api.files_tree.list_tree_children, {
 				membershipId,
 				parentId: f.nodes.boxId,
 				kind: "folder",
@@ -430,7 +430,7 @@ describe("list_tree_children", () => {
 		const nodeId = await insert_child({ name: "gone", kind: "folder", updatedAt: 1, restricted: true });
 		await t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { archiveOperationId: "archive-1" }));
 		const list = (archived: boolean, restricted: boolean) =>
-			asOwner.query(api.files_nodes.list_tree_children, {
+			asOwner.query(api.files_tree.list_tree_children, {
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
@@ -452,7 +452,7 @@ describe("list_tree_children", () => {
 		const read_cost = (at: Id<"files_nodes"> | typeof files_ROOT_ID) =>
 			member.as.run(async (ctx) => {
 				const before = await ctx.meta.getTransactionMetrics();
-				const result = await ctx.runQuery(api.files_nodes.list_tree_children, {
+				const result = await ctx.runQuery(api.files_tree.list_tree_children, {
 					membershipId: member.membershipId,
 					parentId: at,
 					kind: "folder",
@@ -483,7 +483,7 @@ describe("list_tree_children", () => {
 			})),
 		);
 		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			asOwner.query(api.files_nodes.list_tree_children, {
+			asOwner.query(api.files_tree.list_tree_children, {
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
@@ -514,7 +514,7 @@ describe("list_tree_children", () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const list = (parentId: Id<"files_nodes">) =>
-			f.asAdmin.query(api.files_nodes.list_tree_children, {
+			f.asAdmin.query(api.files_tree.list_tree_children, {
 				membershipId: f.admin.membershipId,
 				parentId,
 				kind: "folder",
@@ -537,7 +537,7 @@ describe("list_tree_children", () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const list = (parentId: Id<"files_nodes"> | typeof files_ROOT_ID, kind: "folder" | "file") =>
-			f.asGrantOnly.query(api.files_nodes.list_tree_children, {
+			f.asGrantOnly.query(api.files_tree.list_tree_children, {
 				membershipId: f.grantOnly.membershipId,
 				parentId,
 				kind,
@@ -566,20 +566,20 @@ describe("list_tree_children", () => {
 			restricted: false,
 			paginationOpts: { numItems: 50, cursor: null },
 		};
-		await expect(t.query(api.files_nodes.list_tree_children, args)).rejects.toThrow("Unauthenticated");
-		expect((await f.asGrantOnly.query(api.files_nodes.list_tree_children, args)).page).toHaveLength(1);
+		await expect(t.query(api.files_tree.list_tree_children, args)).rejects.toThrow("Unauthenticated");
+		expect((await f.asGrantOnly.query(api.files_tree.list_tree_children, args)).page).toHaveLength(1);
 
 		// Only "Permission denied" means grant-only mode. A deleted user must not keep reading grants.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("users", f.grantOnly.userId, { deletedAt: Date.now() });
 		});
-		expect(await f.asGrantOnly.query(api.files_nodes.list_tree_children, args)).toEqual(REFUSED);
+		expect(await f.asGrantOnly.query(api.files_tree.list_tree_children, args)).toEqual(REFUSED);
 
 		await t.run(async (ctx) => {
 			await ctx.db.patch("organizations_workspaces_users", f.admin.membershipId, { active: false });
 		});
 		expect(
-			await f.asAdmin.query(api.files_nodes.list_tree_children, {
+			await f.asAdmin.query(api.files_tree.list_tree_children, {
 				...args,
 				membershipId: f.admin.membershipId,
 				parentId: f.nodes.openId,
@@ -593,7 +593,7 @@ describe("get_tree_ancestors", () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 
-		const result = await f.asOwner.query(api.files_nodes.get_tree_ancestors, {
+		const result = await f.asOwner.query(api.files_tree.get_tree_ancestors, {
 			membershipId: f.owner.membershipId,
 			nodeId: String(f.nodes.deepFileId),
 		});
@@ -612,7 +612,7 @@ describe("get_tree_ancestors", () => {
 			const { as, nodeId, membershipId } = args;
 
 			return (
-				await as.query(api.files_nodes.get_tree_ancestors, { membershipId, nodeId: String(nodeId) })
+				await as.query(api.files_tree.get_tree_ancestors, { membershipId, nodeId: String(nodeId) })
 			)?.ancestors.map((row) => row.path);
 		};
 
@@ -636,7 +636,7 @@ describe("get_tree_ancestors", () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const get = (nodeId: string) =>
-			f.asAdmin.query(api.files_nodes.get_tree_ancestors, { membershipId: f.admin.membershipId, nodeId });
+			f.asAdmin.query(api.files_tree.get_tree_ancestors, { membershipId: f.admin.membershipId, nodeId });
 
 		expect(await get(String(f.nodes.hiddenId))).toBeNull();
 		expect(await get(String(f.nodes.boxSecretId))).toBeNull();
@@ -646,7 +646,7 @@ describe("get_tree_ancestors", () => {
 		expect(await get("not-a-node-id")).toBeNull();
 		expect(await get(files_ROOT_ID)).toBeNull();
 		await expect(
-			t.query(api.files_nodes.get_tree_ancestors, {
+			t.query(api.files_tree.get_tree_ancestors, {
 				membershipId: f.admin.membershipId,
 				nodeId: String(f.nodes.openId),
 			}),
@@ -670,8 +670,8 @@ describe("list_tree_shared_roots", () => {
 			const paths: string[] = [];
 			let cursor: string | null = null;
 			for (let index = 0; index < 100; index++) {
-				const result: FunctionReturnType<typeof api.files_nodes.list_tree_shared_roots> = await args.as.query(
-					api.files_nodes.list_tree_shared_roots,
+				const result: FunctionReturnType<typeof api.files_tree.list_tree_shared_roots> = await args.as.query(
+					api.files_tree.list_tree_shared_roots,
 					{
 						membershipId: args.membershipId,
 						archived: args.archived,
@@ -746,25 +746,25 @@ describe("list_tree_shared_roots", () => {
 		});
 
 		expect(
-			await f.asOwner.query(api.files_nodes.list_tree_shared_roots, { ...args, membershipId: f.owner.membershipId }),
+			await f.asOwner.query(api.files_tree.list_tree_shared_roots, { ...args, membershipId: f.owner.membershipId }),
 		).toEqual(REFUSED);
 		// Another user's membership.
 		expect(
-			await f.asAdmin.query(api.files_nodes.list_tree_shared_roots, {
+			await f.asAdmin.query(api.files_tree.list_tree_shared_roots, {
 				...args,
 				membershipId: f.grantOnly.membershipId,
 			}),
 		).toEqual(REFUSED);
 		// The grant-only member has no role.
 		expect(
-			await f.asGrantOnly.query(api.files_nodes.list_tree_shared_roots, {
+			await f.asGrantOnly.query(api.files_tree.list_tree_shared_roots, {
 				...args,
 				principalIndex: 1,
 				membershipId: f.grantOnly.membershipId,
 			}),
 		).toEqual(REFUSED);
 		await expect(
-			t.query(api.files_nodes.list_tree_shared_roots, { ...args, membershipId: f.admin.membershipId }),
+			t.query(api.files_tree.list_tree_shared_roots, { ...args, membershipId: f.admin.membershipId }),
 		).rejects.toThrow("Unauthenticated");
 	});
 
@@ -874,7 +874,7 @@ describe("list_tree_shared_roots", () => {
 			return nodeIds;
 		});
 		const read_page = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			f.asGrantOnly.query(api.files_nodes.list_tree_shared_roots, {
+			f.asGrantOnly.query(api.files_tree.list_tree_shared_roots, {
 				membershipId: f.grantOnly.membershipId,
 				archived: false,
 				principalIndex: 0,
@@ -1890,7 +1890,7 @@ test("generated sibling file is visible in the tree query", async () => {
 		return { sourceNodeId, markdownNodeId };
 	});
 
-	const { page: treeNodesList } = await asUser.query(api.files_nodes.list_tree_children, {
+	const { page: treeNodesList } = await asUser.query(api.files_tree.list_tree_children, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		kind: "file",

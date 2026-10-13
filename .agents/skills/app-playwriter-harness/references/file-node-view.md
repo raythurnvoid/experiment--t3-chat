@@ -406,7 +406,7 @@ Run both halves, because only the pair proves anything. Accept must change the c
 drop the row; Discard must drop the row and leave the text alone. Verified 2026-09-14 on a rich-text
 Markdown file: 1 pending -> Accept -> 0 pending and the text moved from "first line" to "second
 line"; a second proposal -> Discard -> 0 pending and the text stayed "second line". Check the row
-count through `files_pending_updates:list_files_pending_updates` as well as the panel, so a stale
+count through `files_pending_list:list_files_pending_updates` as well as the panel, so a stale
 render cannot pass for a settled proposal.
 
 ### Pending Source Selector QA
@@ -547,7 +547,7 @@ other's proposal. Both of these refuse with
 
 ### Reading the pending rows from the page
 
-`files_pending_updates:list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`
+`files_pending_list:list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`
 returns short rows: `{ target, pendingUpdateId, revision, threadIds, hasReadyContent }`. `listKey` is
 `"all"`, `"own"`, or a chat id. Load each row's view with
 `files_pending_updates:get_file_pending_target({ membershipId, target: row.target })`. The view holds

@@ -365,7 +365,7 @@ describe("search box doors", () => {
 	test("archiving a folder drops its keys and values from the catalog", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const { page: rootFolders } = await seeded.asOwner.query(api.files_nodes.list_tree_children, {
+		const { page: rootFolders } = await seeded.asOwner.query(api.files_tree.list_tree_children, {
 			membershipId: seeded.db.membershipId,
 			parentId: files_ROOT_ID,
 			kind: "folder",

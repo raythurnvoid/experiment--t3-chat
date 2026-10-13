@@ -13,12 +13,12 @@ export function useFilesPendingUpdates(args: {
 }) {
 	const view = useFilesSavedView(args.membershipId);
 	const normal = useFilesPaginatedQuery(
-		app_convex_api.files_pending_updates.list_files_pending_updates,
+		app_convex_api.files_pending_list.list_files_pending_updates,
 		view.normal ? { ...args, savedStream: view.normal } : "skip",
 		{ initialNumItems: 20 },
 	);
 	const cohort = useFilesPaginatedQuery(
-		app_convex_api.files_pending_updates.list_files_pending_updates,
+		app_convex_api.files_pending_list.list_files_pending_updates,
 		view.cohort ? { ...args, savedStream: view.cohort } : "skip",
 		{ initialNumItems: 20 },
 	);

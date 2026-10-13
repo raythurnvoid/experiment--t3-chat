@@ -16,6 +16,9 @@ Primary:
 - `../../../packages/app/src/components/files/file-node-view/file-node-view.css`
 - `../../../packages/app/src/routes/w/$organizationName/$workspaceName/files/index.tsx`
 - `../../../packages/app/convex/files_nodes.ts`
+- `../../../packages/app/convex/files_tree.ts`
+- `../../../packages/app/convex/files_tree_db.ts`
+- `../../../packages/app/server/files-write-policy.ts`
 - `../../../packages/app/convex/files_transfer.ts`
 - `../../../packages/app/convex/files_folder_sorts.ts`
 - `../../../packages/app/shared/files-sort.ts`
@@ -38,8 +41,9 @@ Primary:
 The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tree` with Convex-backed data.
 
 - Tree engine: `@headless-tree/core` + `@headless-tree/react`
-- Backend data: Convex `files_nodes` queries and mutations
-- Primary data source: `files_nodes.list_tree_children`, one open folder at a time (see Server-Driven Data)
+- Backend data: saved list queries in `files_tree`, file reads and writes in `files_nodes`
+- Primary data source: `files_tree.list_tree_children`, one open folder at a time (see Server-Driven Data)
+- `files_tree.get_workspace_move_view` selects the current normal and cohort streams. Tree and table queries use `files_tree_db` for the same current access and public fields as file detail reads. These modules keep editor code out of list queries. The view, index ranges and native page rules stay the same.
 - Local state is UI-only (`expandedItems`, search/selection, busy/pending flags) plus derived indexes from query data
 - Prefer Convex mutation `optimisticUpdate` over ad-hoc local mirrored tree state
 - The client prepends `files_SYNTHETIC_ROOT_FOLDER` to the returned `files_nodes` docs.
@@ -365,7 +369,7 @@ and `find` also keep raw name order.
 
 ### Data path
 
-- `files_nodes.list_tree_children_sorted` pages one stream of one folder: one `kind` (folder or
+- `files_tree.list_tree_children_sorted` pages one stream of one folder: one `kind` (folder or
   file), one `segment` (`value` or `missing`), and `restricted` (the open children, or the children
   that are their own restricted root). Each stream is one index range, read with one `.paginate()`
   and the client's `numItems` (at most 200). There is no scan, no work limit, no custom cursor, and
@@ -410,7 +414,7 @@ and `find` also keep raw name order.
     metadata row reads 3: 1,000, guard 700. A test measures each with
     `ctx.meta.getTransactionMetrics()`. The open built-in stream reads nothing per row (its rows
     share one access scope), so it has no guard.
-- `files_nodes.list_tree_children_shared` pages one share stream: the restricted children shared
+- `files_tree.list_tree_children_shared` pages one share stream: the restricted children shared
   with a member, read from the share rows (`files_share_rows`, the `access-control` skill explains
   them). It takes the args of `list_tree_children_sorted` without `restricted`, plus `archived` and
   `principalIndex`: 0 reads the member's own shares, 1 and 2 the shares of their workspace role and
@@ -434,7 +438,7 @@ and `find` also keep raw name order.
     with the member's second role, with an old plugin grant) reads 16 index ranges,
     floor(3,000 / 16) = 187. `list_tree_shared_roots` uses the same guard.
   - Refusals that need no folder read come before the folder check, so they cost nothing.
-- `files_nodes.has_tree_children_shared` says whether the member has a share in this folder, in the
+- `files_tree.has_tree_children_shared` says whether the member has a share in this folder, in the
   `archived` state it asks for: one `.first()` per principal and kind. A plugin grant's row counts
   only with the member's live membership lifetime. Only the first row per principal and kind is
   checked, so a stale first row can give a short false "no". It returns null when the caller cannot
@@ -1054,7 +1058,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 
 # Verification Checklist
 
-- Tree updates come from `files_nodes.list_tree_children` pages of the open folders, plus pinned
+- Tree updates come from `files_tree.list_tree_children` pages of the open folders, plus pinned
   rows and shared roots. No query loads the whole workspace.
 - The sidebar search shows a flat list with each row's folder, and the tree comes back with its expanded folders when the search closes.
 - Search matches a name word, a path, a node id, and a pasted app link. Enter opens the exact match, or the only match of a finished search.

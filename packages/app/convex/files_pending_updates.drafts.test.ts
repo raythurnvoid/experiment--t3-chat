@@ -483,7 +483,7 @@ describe("archived-parent draft recovery", () => {
 			canAcceptWithParents: false,
 			recovery: { savedParentId: f.parentId, expiresAt: expect.any(Number) },
 		});
-		const page = await asUser.query(api.files_pending_updates.list_files_pending_updates, {
+		const page = await asUser.query(api.files_pending_list.list_files_pending_updates, {
 			membershipId,
 			listKey: "all",
 			paginationOpts: { cursor: null, numItems: 5 },
@@ -709,7 +709,7 @@ describe("archived-parent draft recovery", () => {
 				pageIndex: 0,
 			}),
 		).toBeNull();
-		const rows = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+		const rows = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 			membershipId,
 			listKey: "all",
 			paginationOpts: { cursor: null, numItems: 5 },

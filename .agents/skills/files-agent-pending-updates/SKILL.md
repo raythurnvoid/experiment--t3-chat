@@ -453,9 +453,10 @@ Structural review follows a parallel path:
 
 # Backend Responsibilities
 
-Main module:
+Main modules:
 
 - `packages/app/convex/files_pending_updates.ts`
+- `packages/app/convex/files_pending_list.ts`: stored Pending change and source pages, without editor code.
 
 Public and internal functions, grouped by role:
 
@@ -464,7 +465,8 @@ Public and internal functions, grouped by role:
 - Upsert and rebase: `upsert_file_pending_update` (action), `upsert_file_pending_update_internal_action`, `commit_file_pending_update_upsert_in_db`, `persist_file_pending_update_rebased_state` (action), `prepare_file_pending_update_for_review` (action), `prepare_file_pending_update_for_agent` (internal action), `commit_file_pending_update_rebase_in_db`, `settle_file_pending_update_no_change_in_db`, `refresh_file_pending_update_in_db`
 - Structural: `upsert_file_pending_move_in_db`, `upsert_file_pending_archive_in_db`, `apply_file_pending_archive`, `discard_file_pending_structural`, `discard_file_pending_content`. Save applies reviewed moves through the durable review job.
 - Save: `save_file_pending_update` (action), `save_file_pending_update_in_db`, `save_file_pending_update_non_collaborative_in_db`
-- Reads: `get_file_pending_update`, `get_file_pending_update_internal`, `get_by_file_node`, `list_files_pending_updates`, `get_pending_path_overlay_data`, `get_file_pending_update_last_sequence_saved`
+- Reads: `get_file_pending_update`, `get_file_pending_update_internal`, `get_by_file_node`, `get_pending_path_overlay_data`, `get_file_pending_update_last_sequence_saved`
+- Stored lists: `files_pending_list.list_files_pending_updates`, `files_pending_list.list_files_pending_sources`. They keep the same membership, selected-view, index and native cursor checks. `get_files_pending_updates_summary` and source details stay in `files_pending_updates`.
 - Cleanup: `expire_file_pending_updates` (one scheduled job per user and workspace), `recover_file_pending_update_expiry_checks` (15-minute cron), `cleanup_expired_pending_state_rows` (15-minute cron)
 
 Important behavior:

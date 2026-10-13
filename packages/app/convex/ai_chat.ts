@@ -49,7 +49,7 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
-import { organizations_db_get_membership } from "./organizations.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import { files_READ_RANGE_MAX_LINES } from "./files_nodes.ts";

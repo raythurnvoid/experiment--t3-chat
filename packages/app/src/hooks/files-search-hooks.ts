@@ -204,7 +204,7 @@ type FilesSortedChildrenRow = {
 	contentByteSize: number | null;
 	updatedBy: app_convex_Id<"users">;
 	contentType: app_convex_Doc<"files_nodes">["contentType"];
-	treeRow: FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sorted>["page"][number];
+	treeRow: FunctionReturnType<typeof app_convex_api.files_tree.list_tree_children_sorted>["page"][number];
 	sortKey: files_sort_RowKey;
 	segment: "value" | "missing";
 };
@@ -331,11 +331,11 @@ function useFilesSortedChildrenSource(
 			: { membershipId, parentId: folderId, kind, archived: false, principalIndex, sort, filter, namePrefix, segment, savedStream: props.savedStream };
 	const options = { initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE };
 
-	const open = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_sorted, sortedArgs(false), options);
-	const restricted = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_sorted, sortedArgs(true), options);
-	const shared0 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(0), options);
-	const shared1 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(1), options);
-	const shared2 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(2), options);
+	const open = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_sorted, sortedArgs(false), options);
+	const restricted = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_sorted, sortedArgs(true), options);
+	const shared0 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(0), options);
+	const shared1 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(1), options);
+	const shared2 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(2), options);
 
 	return [open, restricted, shared0, shared1, shared2].map((result, index) => ({
 		rows: result.results.map((row): FilesSortedChildrenRow => ({
@@ -458,7 +458,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 				? {}
 				: {
 						hasShared: {
-							query: app_convex_api.files_nodes.has_tree_children_shared,
+							query: app_convex_api.files_tree.has_tree_children_shared,
 							args: { membershipId, parentId: folderId, archived: false },
 						},
 					},
