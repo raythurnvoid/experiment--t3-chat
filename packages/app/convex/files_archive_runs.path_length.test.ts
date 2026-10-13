@@ -324,7 +324,7 @@ describe("unarchive_nodes path limit", () => {
 		expect((await read_node(f, childId)).path.length).toBe(1023);
 		const incomingId = await create_folder("root", name);
 		const move_incoming = async (targetParentId: Id<"files_nodes"> | "root") => {
-			const started = await f.asOwner.mutation(api.files_transfer.start, {
+			const started = await f.asOwner.mutation(api.files_transfer.accept_input, {
 				membershipId: f.db.membershipId,
 				requestId: crypto.randomUUID(),
 				kind: "move",

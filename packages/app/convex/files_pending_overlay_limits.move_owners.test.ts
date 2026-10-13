@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import { advance as advance_transfer } from "./files_transfer.ts";
+import { accept_input as accept_transfer_input, advance as advance_transfer } from "./files_transfer.ts";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import {
 	add_member,
@@ -96,7 +96,15 @@ describe("paged Move transaction budgets", () => {
 				chunks.reduce((sum, chunk) => sum + new TextEncoder().encode(chunk.plainTextChunk).byteLength, 0),
 			).toBeGreaterThan(4 * 1024 * 1024);
 		});
-		const started = await asOwner.mutation(api.files_transfer.start, {
+		const { peaks, record } = budget_recorder();
+		measure_cohort(record);
+		test_spy_handler(accept_transfer_input, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			record("accept", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
+		const started = await asOwner.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: "move-six-heavy-drafts",
 			kind: "move",
@@ -106,8 +114,6 @@ describe("paged Move transaction budgets", () => {
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const { runId } = started._yay;
-		const { peaks, record } = budget_recorder();
-		measure_cohort(record);
 		test_spy_handler(advance_transfer, async (handler, ctx, args) => {
 			const run = (await ctx.db.get("files_transfer_runs", runId))!;
 			const before = await ctx.meta.getTransactionMetrics();
@@ -116,9 +122,6 @@ describe("paged Move transaction budgets", () => {
 			record(`transfer/${run.step}`, cost);
 			return result;
 		});
-		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
-			_yay: null,
-		});
 		await finish_scheduled(
 			t,
 			async () =>
@@ -126,6 +129,7 @@ describe("paged Move transaction budgets", () => {
 				undefined,
 		);
 		const receipt = await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
+		expect(peaks.get("accept")?.calls, "the large draft budget includes automatic acceptance").toBe(1);
 		console.info(
 			"singleton Move with six native 800KiB drafts",
 			JSON.stringify({ phases: Object.fromEntries(peaks), receipt }),

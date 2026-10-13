@@ -1482,7 +1482,7 @@ describe("reviewed Move names and paths", () => {
 						.first(),
 				);
 				if (cohort && cohort.phase !== "complete")
-					await asUser.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+					await asUser.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 				else if (cohort) await t.mutation(internal.files_transfer.settle_cohort, { cohortId: cohort._id });
 				await t.mutation(internal.files_transfer.advance, { runId: rename.runId });
 				if (pass === 4_999) throw new Error("Rename did not finish");

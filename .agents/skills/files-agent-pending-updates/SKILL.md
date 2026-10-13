@@ -141,8 +141,10 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   saved headers, content, search chunks and every owner's pending overlay in small transactions.
   One transaction joins small exact work after flushing derived writes and checking its budget.
   Any native page ends the transaction, even an empty page. Heavy text preparation keeps its own
-  step. Between advances, one action checks whether five seconds or 128 advance calls have
-  passed, then hands off. A content action can take longer. These bounds never refuse a selection.
+  step. `files_move_run.run` carries the committed steps. It loads the content or media helper
+  with a literal `import()` only when the step needs it. It calls that helper locally, with no new
+  remote action call. Between advances, it checks whether five seconds or 128 advance calls have
+  passed, then hands off. A content helper can take longer. These bounds never refuse a selection.
   Before publication, all normal names still resolve to the old saved IDs and content. One small
   transaction selects the complete after view. Physical cleanup then finishes in pages.
   This also serves one change. It never exposes a temporary folder or parking name.

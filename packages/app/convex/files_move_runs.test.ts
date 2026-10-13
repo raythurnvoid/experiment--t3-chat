@@ -35,7 +35,7 @@ async function create_fixture(paths: string[]) {
 
 async function start_move(fixture: Awaited<ReturnType<typeof create_fixture>>, sourceIds: Id<"files_nodes">[]) {
 	const { asUser, db, nodes } = fixture;
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: "paged-move",
 		kind: "move",
@@ -52,7 +52,7 @@ async function start_move(fixture: Awaited<ReturnType<typeof create_fixture>>, s
 		offset += files_TRANSFER_SELECTION_PAGE_SIZE
 	) {
 		expect(
-			await asUser.mutation(api.files_transfer.append_sources, {
+			await asUser.mutation(api.files_transfer.append_input, {
 				membershipId: db.membershipId,
 				runId,
 				offset,

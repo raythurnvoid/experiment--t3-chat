@@ -9627,7 +9627,7 @@ describe("file sharing", () => {
 						membershipId: fixture.memberMembershipId,
 						fileNodeId: String(childId),
 					}), "A published Move hides unrepaired descendants").toBeNull();
-					const started = await fixture.asMember.mutation(api.files_transfer.start, {
+					const started = await fixture.asMember.mutation(api.files_transfer.accept_input, {
 						membershipId: fixture.memberMembershipId,
 						requestId: "move-unrepaired-child-out",
 						kind: "move",

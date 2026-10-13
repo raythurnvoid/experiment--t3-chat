@@ -89,7 +89,7 @@ describe("copy_transfer_file media", () => {
 			path: "/copies",
 		});
 		if (folder._nay) throw new Error(folder._nay.message);
-		const started = await f.asUser.mutation(api.files_transfer.start, {
+		const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: f.source.membershipId,
 			requestId: "clipboard-media",
 			kind: "copy",

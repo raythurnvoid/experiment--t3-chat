@@ -722,7 +722,7 @@ the door, and read `_nay.message`:
 
 ```js
 // /qa-<run> and /qa-<run>/child, then move the parent into its own child
-await state.qaCall("mutation", "files_transfer:start", {
+await state.qaCall("mutation", "files_transfer:accept_input", {
 	membershipId: state.qaMembershipId,
 	requestId: "probe-" + Date.now(),
 	kind: "move",

@@ -39,7 +39,7 @@ async function start(args: {
 }) {
 	const { f, sources, expectedCount = sources.length } = args;
 
-	return await f.asUser.mutation(api.files_transfer.start, {
+	return await f.asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: f.scope.membershipId,
 		requestId: "selection",
 		kind: "copy",
@@ -56,7 +56,7 @@ describe("Transfer selection pages", () => {
 	])("$title", async ({ kind }) => {
 		const f = await fixture();
 		const sourceId = f.folders.get("/source")!;
-		const started = await f.asUser.mutation(api.files_transfer.start, {
+		const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: f.scope.membershipId,
 			requestId: `joined-${kind}`,
 			kind,
@@ -124,7 +124,7 @@ describe("Transfer selection pages", () => {
 				costs.push(await ctx.meta.getTransactionMetrics());
 				return result;
 			});
-			const started = await f.asUser.mutation(api.files_transfer.start, {
+			const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 				membershipId: f.scope.membershipId,
 				requestId: `joined-budget-${scenario}`,
 				kind: "move",
@@ -422,10 +422,10 @@ describe("Transfer selection pages", () => {
 			_nay: { name: "incomplete_selection" },
 		});
 		const page = { ...args, offset: 1, sourceIds: [source, source] };
-		expect(await f.asUser.mutation(api.files_transfer.append_sources, page)).toEqual({ _yay: null });
-		expect(await f.asUser.mutation(api.files_transfer.append_sources, page)).toEqual({ _yay: null });
+		expect(await f.asUser.mutation(api.files_transfer.append_input, page)).toEqual({ _yay: null });
+		expect(await f.asUser.mutation(api.files_transfer.append_input, page)).toEqual({ _yay: null });
 		expect(
-			await f.asUser.mutation(api.files_transfer.append_sources, {
+			await f.asUser.mutation(api.files_transfer.append_input, {
 				...page,
 				sourceIds: [f.folders.get("/target")!, source],
 			}),
@@ -433,7 +433,7 @@ describe("Transfer selection pages", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_selection_items").collect())).toHaveLength(3);
 		expect(await f.asUser.mutation(api.files_transfer.seal, args)).toEqual({ _yay: null });
 		expect(await f.asUser.mutation(api.files_transfer.seal, args)).toEqual({ _yay: null });
-		expect(await f.asUser.mutation(api.files_transfer.append_sources, page)).toEqual({ _yay: null });
+		expect(await f.asUser.mutation(api.files_transfer.append_input, page)).toEqual({ _yay: null });
 		for (let step = 0; step < 2; step++) await f.t.mutation(internal.files_transfer.advance, { runId: args.runId });
 		const items = await f.t.run((ctx) => ctx.db.query("files_transfer_items").collect());
 		expect(items).toHaveLength(1);
@@ -453,14 +453,14 @@ describe("Transfer selection pages", () => {
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		expect(
-			await f.asUser.mutation(api.files_transfer.append_sources, {
+			await f.asUser.mutation(api.files_transfer.append_input, {
 				...args,
 				offset: 100,
 				sourceIds: Array.from({ length: 100 }, () => child),
 			}),
 		).toEqual({ _yay: null });
 		expect(
-			await f.asUser.mutation(api.files_transfer.append_sources, {
+			await f.asUser.mutation(api.files_transfer.append_input, {
 				...args,
 				offset: 200,
 				sourceIds: [f.folders.get("/source")!],
@@ -484,7 +484,7 @@ describe("Transfer selection pages", () => {
 		const started = await start({ f, sources: [source], expectedCount: 2 });
 		if (started._nay) throw new Error(started._nay.message);
 		expect(
-			await f.asUser.mutation(api.files_transfer.append_sources, {
+			await f.asUser.mutation(api.files_transfer.append_input, {
 				membershipId: f.scope.membershipId,
 				runId: started._yay.runId,
 				offset,
@@ -498,7 +498,7 @@ describe("Transfer selection pages", () => {
 		const paths = Array.from({ length: 140 }, (_, index) => `/source-${index}`);
 		const f = await fixture(["/target", ...paths]);
 		const sourceIds = paths.map((path) => f.folders.get(path)!);
-		const started = await f.asUser.mutation(api.files_transfer.start, {
+		const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: f.scope.membershipId,
 			requestId: "move-140",
 			kind: "move",
@@ -510,7 +510,7 @@ describe("Transfer selection pages", () => {
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		expect(
-			await f.asUser.mutation(api.files_transfer.append_sources, {
+			await f.asUser.mutation(api.files_transfer.append_input, {
 				...args,
 				offset: 100,
 				sourceIds: sourceIds.slice(100),
@@ -530,7 +530,7 @@ describe("Transfer selection pages", () => {
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		for (let offset = 100; offset < sourceIds.length; offset += 100)
 			expect(
-				await f.asUser.mutation(api.files_transfer.append_sources, {
+				await f.asUser.mutation(api.files_transfer.append_input, {
 					...args,
 					offset,
 					sourceIds: sourceIds.slice(offset, offset + 100),
@@ -629,7 +629,7 @@ describe("Transfer selection pages", () => {
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		expect(await f.asUser.mutation(api.files_transfer.stop, args)).toEqual({ _yay: null });
 		expect(
-			await f.asUser.mutation(api.files_transfer.append_sources, { ...args, offset: 1, sourceIds: [source] }),
+			await f.asUser.mutation(api.files_transfer.append_input, { ...args, offset: 1, sourceIds: [source] }),
 		).toMatchObject({ _nay: { name: "timed_out" } });
 		expect(await f.asUser.mutation(api.files_transfer.seal, args)).toHaveProperty("_nay");
 		for (let step = 0; step < 3; step++)

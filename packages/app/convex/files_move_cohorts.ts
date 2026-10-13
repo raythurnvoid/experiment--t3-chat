@@ -96,6 +96,8 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 // Reuse loaded modules. Keep each request's state inside its handler.
 export const experimental_reuseContext = true;
 
+console.info("Move startup module", { module: "files_move_cohorts" });
+
 const WAKE_PAGE_SIZE = 8;
 // Bound one native page. Long headers reach the byte bound first.
 const DESCENDANT_PAGE_SIZE = 32;
@@ -515,7 +517,7 @@ export async function files_move_cohorts_db_schedule(
 		if (job?.state.kind === "pending" || job?.state.kind === "inProgress") return;
 	}
 	const generation = (cohort.runJob?.generation ?? 0) + 1;
-	const id = await ctx.scheduler.runAfter(args.delayMs ?? 0, internal.files_move_cohorts.run, {
+	const id = await ctx.scheduler.runAfter(args.delayMs ?? 0, internal.files_move_run.run, {
 		cohortId: cohort._id,
 		step: cohort.step,
 		runGeneration: generation,
@@ -2808,6 +2810,18 @@ export const run = internalAction({
 		}
 		return null;
 	},
+});
+
+export const profile_move_startup = internalAction({
+	args: { sample: v.number() },
+	returns: v.null(),
+	handler: async () => null,
+});
+
+export const profile_move_db_startup = internalMutation({
+	args: { sample: v.number() },
+	returns: v.null(),
+	handler: async () => null,
 });
 
 export const recover = internalMutation({

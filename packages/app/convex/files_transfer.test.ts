@@ -5,7 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
-import { advance as advance_transfer, files_transfer_db_delete_run_batch } from "./files_transfer.ts";
+import { accept_input, advance as advance_transfer, files_transfer_db_delete_run_batch } from "./files_transfer.ts";
 import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops.ts";
 import {
 	test_save_file_pending_update,
@@ -321,7 +321,12 @@ describe("Rename at a group boundary", () => {
 		for (let pass = 0; pass < 500; pass++) {
 			const cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 			if (cohort.phase === "complete") break;
-			await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+			await t.action(internal.files_move_run.run, {
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 		}
 		expect((await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))?.phase).toBe("complete");
 		await t.mutation(internal.files_transfer.settle_cohort, { cohortId });
@@ -2303,7 +2308,7 @@ describe("move", () => {
 		for (let step = 0; step < 10 && !(await slot())?.cohortId; step++)
 			await t.mutation(internal.files_transfer.advance, { runId: first._yay.runId });
 		expect((await slot())?.cohortId, "the first Move holds the workspace").not.toBeNull();
-		const second = await member.asUser.mutation(api.files_transfer.start, {
+		const second = await member.asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: member.membershipId,
 			requestId: "waiting-move",
 			kind: "move",
@@ -2823,7 +2828,7 @@ describe("move", () => {
 				}),
 			).toHaveProperty("_yay");
 		}
-		// Complete the normal scope jobs before the direct parent calls under test.
+		// Complete normal scope jobs before acceptance and parent work.
 		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
 		const actor = member?.asUser ?? asUser;
 		const membershipId = member?.membershipId ?? db.membershipId;
@@ -2831,24 +2836,25 @@ describe("move", () => {
 		const sourceBefore = await t.run((ctx) => ctx.db.get("files_nodes", sourceId));
 		const pages: Array<{ ids: Id<"files_nodes">[]; done: boolean }> = [];
 		const costs: Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>[] = [];
-		test_spy_handler(advance_transfer, async (handler, ctx, args) => {
-			const trackedDb = new Proxy(ctx.db, {
-				get(target, key) {
-					const method: unknown = Reflect.get(target, key);
-					if (typeof method !== "function") return method;
-					if (key === "query")
-						return (...args: unknown[]) =>
-							args[0] === "files_nodes"
-								? track_restricted_root_query(Reflect.apply(method, target, args), pages)
-								: Reflect.apply(method, target, args);
-					return method.bind(target);
-				},
+		for (const registered of [accept_input, advance_transfer])
+			test_spy_handler(registered, async (handler, ctx, args) => {
+				const trackedDb = new Proxy(ctx.db, {
+					get(target, key) {
+						const method: unknown = Reflect.get(target, key);
+						if (typeof method !== "function") return method;
+						if (key === "query")
+							return (...args: unknown[]) =>
+								args[0] === "files_nodes"
+									? track_restricted_root_query(Reflect.apply(method, target, args), pages)
+									: Reflect.apply(method, target, args);
+						return method.bind(target);
+					},
+				});
+				const result = await handler({ ...ctx, db: trackedDb }, args);
+				costs.push(await ctx.meta.getTransactionMetrics());
+				return result;
 			});
-			const result = await handler({ ...ctx, db: trackedDb }, args);
-			costs.push(await ctx.meta.getTransactionMetrics());
-			return result;
-		});
-		const started = await actor.mutation(api.files_transfer.start, {
+		const started = await actor.mutation(api.files_transfer.accept_input, {
 			membershipId,
 			requestId: `restricted-root-boundary-${end}`,
 			kind: "move",
@@ -3149,7 +3155,7 @@ describe("move", () => {
 			restrictedScopeNodeId: null,
 		});
 
-		const started = await member.asUser.mutation(api.files_transfer.start, {
+		const started = await member.asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: member.membershipId,
 			requestId: "move-during-scope-repair",
 			kind: "move",
@@ -3197,7 +3203,7 @@ describe("seal", () => {
 				now: Date.now(),
 			}),
 		);
-		const started = await asUser.mutation(api.files_transfer.start, {
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: "queued-copy",
 			kind: "copy",
@@ -3272,7 +3278,7 @@ describe("seal", () => {
 				pathDepth: 2,
 			});
 		});
-		const started = await asUser.mutation(api.files_transfer.start, {
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: "foreign-copy",
 			kind: "copy",

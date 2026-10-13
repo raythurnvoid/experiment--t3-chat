@@ -129,7 +129,7 @@ export async function test_move_nodes(
 	const hadFakeTimers = vi.isFakeTimers();
 	if (!hadFakeTimers) vi.useFakeTimers();
 	try {
-		const started = await asUser.mutation(api.files_transfer.start, {
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: args.membershipId,
 			requestId: crypto.randomUUID(),
 			kind: "move",
@@ -140,7 +140,7 @@ export async function test_move_nodes(
 		if (started._nay) return Result({ _nay: started._nay });
 		const { runId, activityId } = started._yay;
 		for (let offset = files_TRANSFER_SELECTION_PAGE_SIZE; offset < args.itemIds.length; offset += files_TRANSFER_SELECTION_PAGE_SIZE) {
-			const appended = await asUser.mutation(api.files_transfer.append_sources, {
+			const appended = await asUser.mutation(api.files_transfer.append_input, {
 				membershipId: args.membershipId, runId, offset, sourceIds: args.itemIds.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
 			});
 			if (appended._nay) return Result({ _nay: appended._nay });
@@ -305,7 +305,7 @@ export async function test_finish_transfer_run(
 		if (cohort) {
 			const cohortId = cohort._id;
 			if (cohort.origin.kind !== "transfer" || cohort.origin.runId !== runId) throw new Error("Transfer waits for another Move");
-			const result = await asUser.action(internal.files_move_cohorts.run, {
+			const result = await asUser.action(internal.files_move_run.run, {
 				cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null,
 				mode: onStep || options.stepwise ? "step" : "chain",
 			});
@@ -607,7 +607,7 @@ export async function test_finish_pending_update_run(
 			if (unit?.cohortId) {
 				if (!cohort) throw new Error("Missing review cohort");
 				const cohortId = cohort._id;
-				const result = cohort.phase === "complete" ? "complete" : await asUser.action(internal.files_move_cohorts.run, {
+				const result = cohort.phase === "complete" ? "complete" : await asUser.action(internal.files_move_run.run, {
 					cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null,
 					mode: options.stepwise ? "step" : "chain",
 				});

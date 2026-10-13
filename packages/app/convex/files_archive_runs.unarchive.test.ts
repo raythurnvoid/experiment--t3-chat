@@ -213,7 +213,7 @@ describe("unarchive_nodes", () => {
 			await step(f, job.runId);
 		}
 		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
-		const moved = await f.asOwner.mutation(api.files_transfer.start, {
+		const moved = await f.asOwner.mutation(api.files_transfer.accept_input, {
 			membershipId: f.db.membershipId,
 			requestId: crypto.randomUUID(),
 			kind: "move",

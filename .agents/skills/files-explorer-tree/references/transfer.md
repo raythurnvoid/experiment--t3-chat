@@ -8,7 +8,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
 ## Scope and saved state
 
 - Runs use `files_transfer_runs.kind: move|copy`. Items live in `files_transfer_items`.
-  The browser clipboard keeps `mode: cut|copy`; Paste translates Cut into Move at `start`.
+  The browser clipboard keeps `mode: cut|copy`; Paste translates Cut into Move at `accept_input`.
 - Human runs read saved content and publish saved output. Agent runs read the owner's current
   saved/private view and publish proposals. Each run stores `sourceView`, `publication`, and its
   immutable origin. It never changes modes during Retry.
@@ -21,14 +21,16 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - The in-memory clipboard lasts for the current tab and workspace. Paste saves a run, which can
   continue after navigation or reload. Copy and Move share one active bulk run per user and
   chat workspace. Rename has its own queue and is accepted while that bulk run is active.
-- Copy and Move intake use `start`, `append_sources`, and `seal`, with at most 100 sources per page
+- Human Copy and Move input use `accept_input` and `append_input`, with at most 100 sources per page
   (`files_TRANSFER_SELECTION_PAGE_SIZE` in `shared/files.ts`; Paste and Bash use the same constant).
   The expected count includes duplicate entries. Page replay must match the accepted page exactly.
-  An incomplete selection cannot start discovery. After sealing, indexed selection docs remove
+  Complete human Move input starts in the accepting transaction. Copy still needs `seal`.
+  Bash keeps its checked input and explicit readiness doors. Incomplete input cannot start work.
+  After input closes, indexed selection docs remove
   duplicates and children covered by a selected ancestor, including an ancestor on a later page.
   There is no total selection cap. Sources and destination parents use tagged saved/private
   IDs. The destination path, parent, optional target name, and missing Copy parents are fixed at
-  start. A repeated request ID returns its original run; changed intent or expired membership refuses.
+  acceptance. A repeated request ID returns its original run; changed intent or expired membership refuses.
 - Copy discovers active descendants in pages of 50 before creating output.
   This is a paged scan, not a snapshot of the whole tree at one instant. Later additions are not
   guaranteed to be included. Output starts only after discovery ends. The completed manifest stays
@@ -44,10 +46,14 @@ the same producer with private proposals. `files_pending_updates.ts` and
   completed node. A repeated callback cannot create another copy or bill it again. Reserving
   cross-workspace output IDs does not spend one of the three content-worker attempts.
 - Cut and drag/drop queue one selected root at a time. The browser saves all input pages in
-  IndexedDB before Start. Accepted input replays with the same request ID after reload. Unstarted
-  input asks for Resume. Storage keys bind the exact user and membership.
-  `get_move_intake` reads the exact owner/workspace/request index. A late tab can retire sealed
+  IndexedDB before acceptance. Accepted input replays with the same request ID after reload. Unstarted
+  input asks for Resume after the exact receipt check. Storage keys bind the exact user and membership.
+  `get_move_acceptance` reads the exact owner/workspace/request index. A late tab can retire accepted
   input after another tab removes its pages. Stop keeps a local header until the server confirms it.
+  A lost reply may hide the run ID. A null receipt does not prove no Move was accepted. Keep input
+  and Retry. Unknown Stop also keeps its header after reload. Explicit `Forget saved selection`
+  removes only browser input and its matching Cut. An accepted Move may continue. It sends no Stop
+  and preserves a newer clipboard or request. Completed Cut IDs come from paged receipts.
   The public Transfer Stop door treats missing and unowned runs as a no-op after checking current
   auth and active owned membership. This lets recovery finish after history cleanup. Auth and
   membership failures still refuse. Other Stop doors keep their own rules.
@@ -56,9 +62,11 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Normal names keep their old IDs and content until one small switch selects the complete group.
   Physical repair then drains before the next transfer item. A folder uses the same path.
   Existing Move, scope, Archive and Restore repairs must finish before a new Move starts.
-  Small exact work joins one transaction after derived writes flush and the budget passes. Every
+  Complete human Move input can join the real parent body after derived writes flush and the budget
+  passes. It ends at a native page or cohort creation. Small exact cohort work also joins. Every
   native page ends that transaction. Heavy content work keeps its own step. One action carries
-  several committed transactions. Between advances it checks five seconds or 128 advance calls
+  several committed transactions through `files_move_run.run`. Content and media helpers load only
+  for their own steps. Between advances it checks five seconds or 128 advance calls
   and hands off. A content action can take longer. Every selection size uses this worker.
   A scheduled job ID and generation fence late replies.
   The existing five-minute recovery cron pages every idle group and restarts only a dead owner.

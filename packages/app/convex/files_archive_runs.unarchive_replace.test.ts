@@ -247,7 +247,7 @@ describe("unarchive_nodes", () => {
 			await step_until_restored({ f, runId: job.runId, nodeId: tree.folderIds[1]! });
 			expect((await read_node(f, tree.fileIds[100]!)).archiveOperationId).not.toBeNull();
 			const restoreActivity = await read_activity(f, job.activityId);
-			const started = await f.asOwner.mutation(api.files_transfer.start, {
+			const started = await f.asOwner.mutation(api.files_transfer.accept_input, {
 				membershipId: f.db.membershipId,
 				requestId: "move-waits-for-restore",
 				kind: "move",

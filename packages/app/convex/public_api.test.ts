@@ -6944,7 +6944,7 @@ describe("files read-only locks", () => {
 			});
 			expect(before.status, "the member can write the open source").toBe(200);
 			expect(await before.json()).toMatchObject({ nodeId: file._id, unchanged: true });
-			const started = await writer.owner.mutation(api.files_transfer.start, {
+			const started = await writer.owner.mutation(api.files_transfer.accept_input, {
 				membershipId: writer.db.membershipId,
 				requestId: "move-live-parent-scope",
 				kind: "move",

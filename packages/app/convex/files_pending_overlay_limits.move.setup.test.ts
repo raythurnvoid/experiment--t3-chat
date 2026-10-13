@@ -4,9 +4,8 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import {
 	advance as advance_transfer,
-	start as start_transfer,
-	append_sources as append_transfer_sources,
-	seal as seal_transfer,
+	accept_input as accept_transfer_input,
+	append_input as append_transfer_input,
 } from "./files_transfer.ts";
 import { advance as advance_subtree } from "./files_subtree_ops.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
@@ -293,9 +292,8 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		return result;
 	});
 	for (const [phase, registered] of [
-		["start", start_transfer],
-		["append", append_transfer_sources],
-		["seal", seal_transfer],
+		["accept", accept_transfer_input],
+		["append", append_transfer_input],
 	] as const) {
 		test_spy_handler(registered, async (handler, ctx, args) => {
 			const before = await ctx.meta.getTransactionMetrics();
@@ -306,7 +304,7 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 	}
 	// The native 140-root test covers selection size. These roots keep the maximum per-node cost.
 	const sources = [heavyId, seeded.shared._id, seeded.light[0]!._id];
-	const started = await asOwner.mutation(api.files_transfer.start, {
+	const started = await asOwner.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: "move-budget",
 		kind: "move",
@@ -337,16 +335,13 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		return result;
 	});
 	expect(
-		await asOwner.mutation(api.files_transfer.append_sources, {
+		await asOwner.mutation(api.files_transfer.append_input, {
 			membershipId: db.membershipId,
 			runId,
 			offset: 1,
 			sourceIds: sources.slice(1),
 		}),
 	).toEqual({ _yay: null });
-	expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
-		_yay: null,
-	});
 	// Move completion can come before its delayed catalog work.
 	await finish_scheduled(t, async () => {
 		if (args.dense && metadataPages.length) {

@@ -168,7 +168,7 @@ test("pending scope pages follow the latest saved path and archive state without
 	expect(initial.proposal?.pendingMove).toBeUndefined();
 	const stagedCounts = { chunks: 0, metadata: 0 };
 	const scopePages = { chunks: 0, metadata: 0 };
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: "pending-scope-parent-move",
 		kind: "move",
@@ -397,7 +397,7 @@ test("a saved scope job waits while a Move holds its file, then follows the move
 	for (let pass = 0; pass < 100 && !(await holder()); pass++) {
 		const cohort = await t.run((ctx) => test_db_get_slot_cohort(ctx, db));
 		if (cohort)
-			await asUser.action(internal.files_move_cohorts.run, {
+			await asUser.action(internal.files_move_run.run, {
 				cohortId: cohort._id,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,

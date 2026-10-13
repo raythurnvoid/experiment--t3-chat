@@ -8,9 +8,8 @@ import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { files_metadata_db_write_entries } from "./files_metadata.ts";
 import {
 	advance as advance_transfer,
-	start as start_transfer,
-	append_sources as append_transfer_sources,
-	seal as seal_transfer,
+	accept_input as accept_transfer_input,
+	append_input as append_transfer_input,
 } from "./files_transfer.ts";
 import { test_convex, test_mocks_fill_db_with, test_run_with_flush, test_spy_handler } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
@@ -111,9 +110,8 @@ export function measure_move(
 		if (peak.calls === 1 || peak.calls % 100 === 0) console.info("Move scale phase", phase, peak.calls);
 	};
 	for (const [phase, registered] of [
-		["start", start_transfer],
-		["append", append_transfer_sources],
-		["seal", seal_transfer],
+		["accept", accept_transfer_input],
+		["append", append_transfer_input],
 		["transfer", advance_transfer],
 	] as const) {
 		test_spy_handler(registered, async (handler, ctx, args) => {
@@ -168,7 +166,7 @@ export function measure_move(
 
 export async function start_move(fixture: Fixture, sourceIds: Id<"files_nodes">[], targetParentId: Id<"files_nodes">) {
 	const { db, asUser } = fixture;
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: "move-scale",
 		kind: "move",
@@ -185,7 +183,7 @@ export async function start_move(fixture: Fixture, sourceIds: Id<"files_nodes">[
 		offset += files_TRANSFER_SELECTION_PAGE_SIZE
 	) {
 		expect(
-			await asUser.mutation(api.files_transfer.append_sources, {
+			await asUser.mutation(api.files_transfer.append_input, {
 				membershipId: db.membershipId,
 				runId,
 				offset,
@@ -194,9 +192,6 @@ export async function start_move(fixture: Fixture, sourceIds: Id<"files_nodes">[
 			`Move accepts input page at ${offset}`,
 		).toEqual({ _yay: null });
 	}
-	expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
-		_yay: null,
-	});
 	return started._yay;
 }
 

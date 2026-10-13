@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { FunctionArgs } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { advance, run } from "./files_move_cohorts.ts";
+import { advance } from "./files_move_cohorts.ts";
+import { run } from "./files_move_run.ts";
 import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -36,7 +37,7 @@ async function fixture(depth = 2, childCount = 0) {
 		childIds.push(await folder(`child-${index}`, sourceId));
 	}
 	const targetId = await folder("/target", "root");
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind: "move",
@@ -55,6 +56,17 @@ async function fixture(depth = 2, childCount = 0) {
 	}
 	throw new Error("Transfer did not start a Move group");
 }
+
+test("new Move groups schedule the leaf action", async () => {
+	const f = await fixture();
+	const owner = await f.t.run((ctx) => ctx.db.system.get(f.cohort.runJob!.id));
+	expect(owner?.name, "the saved Move owner uses files_move_run:run").toBe("files_move_run:run");
+	await test_finish_transfer_run(f.asUser, f.runId);
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).toMatchObject({
+		path: "/target/source",
+	});
+	expect(await f.t.run((ctx) => ctx.db.get("activities", f.activityId))).toMatchObject({ status: "succeeded" });
+});
 
 test("a selected folder queues its child range in the item step", async () => {
 	const f = await fixture();
@@ -153,10 +165,7 @@ test("an action yields its committed step when the time budget ends", async () =
 		vi.setSystemTime(Date.now() + 5_001);
 		return result;
 	});
-	await f.t.action(
-		internal.files_move_cohorts.run,
-		owner.args[0] as FunctionArgs<typeof internal.files_move_cohorts.run>,
-	);
+	await f.t.action(internal.files_move_run.run, owner.args[0] as FunctionArgs<typeof internal.files_move_run.run>);
 	const after = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", before._id)))!;
 	expect(transactions, "the time budget ends the action after a committed transaction").toBe(1);
 	expect(after.step).toBeGreaterThan(before.step);
@@ -233,10 +242,7 @@ test("a thrown transaction after progress aborts from the current step", async (
 	});
 	const error = vi.spyOn(console, "error").mockImplementation(() => {});
 	const owner = (await f.t.run((ctx) => ctx.db.system.get(f.cohort.runJob!.id)))!;
-	await f.t.action(
-		internal.files_move_cohorts.run,
-		owner.args[0] as FunctionArgs<typeof internal.files_move_cohorts.run>,
-	);
+	await f.t.action(internal.files_move_run.run, owner.args[0] as FunctionArgs<typeof internal.files_move_run.run>);
 	expect(
 		await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id)),
 		"the failed current step enters abort",
@@ -282,10 +288,7 @@ test("a thrown joined phase aborts from its last committed step", async () => {
 	});
 	vi.spyOn(console, "error").mockImplementation(() => {});
 	const owner = (await f.t.run((ctx) => ctx.db.system.get(f.cohort.runJob!.id)))!;
-	await f.t.action(
-		internal.files_move_cohorts.run,
-		owner.args[0] as FunctionArgs<typeof internal.files_move_cohorts.run>,
-	);
+	await f.t.action(internal.files_move_run.run, owner.args[0] as FunctionArgs<typeof internal.files_move_run.run>);
 	expect(reachedJoinedPhase, "the fault runs after joined descendant work").toBe(true);
 	expect(
 		await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id)),
@@ -298,9 +301,10 @@ test("a thrown joined phase aborts from its last committed step", async () => {
 		affectedNodeCount: entry.affectedNodeCount,
 		pendingWorkCount: entry.pendingWorkCount,
 	});
-	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId)), "the thrown call keeps its entry header").toEqual(
-		sourceEntry,
-	);
+	expect(
+		await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId)),
+		"the thrown call keeps its entry header",
+	).toEqual(sourceEntry);
 	await test_finish_transfer_run(f.asUser, f.runId);
 	expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id))).toMatchObject({
 		phase: "complete",

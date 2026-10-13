@@ -668,7 +668,8 @@ and `find` also keep raw name order.
   Cut rows are muted and their accessible names say `ready to move`. Escape clears only an idle
   cut while file navigation has focus. Copy stays until the next Cut or Copy, or until the
   workspace changes. There is no Clear button.
-- Paste calls `files_transfer.start`. The provider keeps one request id after a lost response,
+- Paste calls `files_transfer.accept_input`, then `append_input` for later pages. Complete Move
+  input starts in that transaction. Copy still calls `seal`. The provider keeps one request id after a lost response,
   and blocks another start while this member has an active run in the workspace. Run progress
   comes from `get` and `list_current`. Tree changes come from the live `list_tree_children` pages
   of the open folders.
@@ -779,7 +780,7 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   when the parent is a file or an archived folder: `create_folder_node`, `create_text_node` (its
   preflight refuses before any R2 write), `create_upload_node(s)`, and the shared
   `files_nodes_db_create_node_recursively_at_path` that the copy and publish paths use. Paste
-  (`files_transfer.start`) answers `Destination changed`, moves answer `Not found`, and a draft whose
+  (`files_transfer.accept_input`) answers `Destination changed`, moves answer `Not found`, and a draft whose
   saved parent is archived cannot be saved. A live child under an archived parent would stay hidden
   until the folder is restored.
 - The folder view of an archived folder (reached from the draft recovery link `Open archived folder`)
@@ -823,9 +824,13 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - Before sending Move input, the browser saves its full selection in IndexedDB, in pages of 100.
   The key binds the user and membership. Accepted input replays after reload. Unstarted input
   asks for Resume. A new Cut or Copy has a new revision, so old receipts cannot clear it.
-  Recovery looks up the exact server request before reading saved pages. A late tab can retire
-  sealed input after another tab removes those pages. An unconfirmed Stop keeps its local header
+  Recovery looks up the exact server request before reading saved pages or showing Resume. A late tab can retire
+  accepted input after another tab removes those pages. An unconfirmed Stop keeps its local header
   until the server confirms it, including after old run history is deleted.
+  Unknown run IDs and failed receipt checks keep a visible Retry. A null receipt does not prove
+  the server accepted nothing. `Forget saved selection` removes only local input and a matching Cut;
+  accepted work may continue. A newer clipboard or request stays. Stop headers can keep an unknown
+  run ID after another tab removed the pages. Completed Cut IDs use paged server receipts.
   A fresh request skips that recovery lookup only after this call saves its full selection.
   Retry and reload still check the exact server request first.
 - While a move op exists in the workspace, a child can still carry its old stored path. The tree is

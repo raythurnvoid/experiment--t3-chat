@@ -179,7 +179,7 @@ test("another accepted Move waits for the workspace cohort before reading its so
 	);
 	if (!membership) throw new Error("Expected the invited member");
 	const asOther = f.t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
-	const started = await asOther.mutation(api.files_transfer.start, {
+	const started = await asOther.mutation(api.files_transfer.accept_input, {
 		membershipId: membership._id,
 		requestId: "other-move",
 		kind: "move",
@@ -237,7 +237,7 @@ test("a public saved Move enters and finishes the bounded cohort producer", asyn
 		path: "/target",
 	});
 	if (source._nay || target._nay) throw new Error("Expected native saved folders");
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: "native-cohort",
 		kind: "move",

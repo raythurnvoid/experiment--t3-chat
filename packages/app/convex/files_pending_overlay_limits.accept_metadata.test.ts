@@ -125,7 +125,7 @@ describe("cohort Accept transaction budgets", () => {
 				expect(cleanup[0]!.rowIds.length, "Saved metadata cleanup takes 64 rows when they fit").toBe(64);
 			}
 			if (cohort.phase === "complete") { completed = cohort; break; }
-			await t.action(internal.files_move_cohorts.run, { cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+			await t.action(internal.files_move_run.run, { cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 			if (pass === 9999) throw new Error("Metadata cohort did not finish");
 		}
 		await t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });

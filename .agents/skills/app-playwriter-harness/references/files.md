@@ -334,15 +334,15 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   The owner sees everything, so an owner readback proves nothing. After a restrict of a folder the
   member cannot open, the member must see 0 items under it. After unrestrict, all of them again.
 - A UI list while a Move runs (search box, `file.path` suggestions, `@` picker): open the list and
-  type first, then start and seal the Move from page context (`files_transfer.start` + `seal`
+  type first, then accept the complete Move from page context (`files_transfer.accept_input`
   through `app_convex`), so focus stays in the list. Read `files_nodes.get_workspace_move_view`:
   `cohortId` is set while the Move view is on. Read the rows in the same call. A list that reads
   only one stream throws or goes empty in that window. `chitchat-qa/xfer-qa-0914:/g4-many` (about
   60 files) into `/u16` and back works. Its Move view stayed on from seconds to over an hour on
   2026-10-10, depending on machine load. To move it back without a browser, run
-  `files_transfer:start` and `seal` with `convex run --identity` (the identity needs `email`, see
+  `files_transfer:accept_input` with `convex run --identity` (the identity needs `email`, see
   `snippets.md`).
-- Move access while another job runs: start and seal a public Transfer request. Check its
+- Move access while another job runs: accept complete public Move input. Check its
   accepted wait, then change the actor's access before the next root starts. Read `get` and
   `list_items` until the run ends. The next worker must check fresh access. Completed roots stay
   moved; a denied root keeps its old placement. Check every path and the error. Use a separate

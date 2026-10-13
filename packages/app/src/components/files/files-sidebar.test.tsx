@@ -116,7 +116,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		...original,
 		useConvex: () => ({
 			query: async (query: FunctionReference<"query">, args: unknown) =>
-				getFunctionName(query) === "files_transfer:get_move_intake" ? null : creationPolicy(query, args),
+				getFunctionName(query) === "files_transfer:get_move_acceptance" ? null : creationPolicy(query, args),
 			mutation: createNode,
 			action: createNode,
 		}),

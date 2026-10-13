@@ -334,7 +334,7 @@ export async function save_next(f: Awaited<ReturnType<typeof fixture>>, runId: I
 		if (cohort.phase === "complete")
 			await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
 		else
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId: cohort._id,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,

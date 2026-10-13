@@ -236,7 +236,7 @@ async function finish_cohort(
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId: f.runId });
 			return cohort;
 		}
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: cohort._id,
 			step: cohort.step,
 			runGeneration: cohort.runJob?.generation ?? null,
@@ -336,7 +336,7 @@ describe("Move cohort publication", () => {
 
 	test("Stop before publication keeps all old names and proposals", async () => {
 		const f = await native_rotation(3);
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: f.cohortId,
 			step: 0,
 			mode: "step",
@@ -398,7 +398,7 @@ describe("Move cohort publication", () => {
 			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 			if (cohort.publishedAt !== null) break;
 			if (pass === 1_000) throw new Error("The group did not publish");
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId: cohort._id,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,
@@ -424,7 +424,7 @@ describe("Move cohort publication", () => {
 			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 			if (cohort.publishedAt !== null) break;
 			if (pass === 1_000) throw new Error("The group did not publish");
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId: cohort._id,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,
@@ -445,7 +445,7 @@ describe("Move cohort publication", () => {
 
 	test("a new folder elsewhere does not stop publication", async () => {
 		const f = await native_rotation(3);
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: f.cohortId,
 			step: 0,
 			mode: "step",
@@ -466,7 +466,7 @@ describe("Move cohort publication", () => {
 
 	test("a fresh access change stops publication without changing old names", async () => {
 		const f = await native_rotation(3);
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: f.cohortId,
 			step: 0,
 			mode: "step",
@@ -560,7 +560,7 @@ describe("Move cohort publication", () => {
 		async (end) => {
 			const f = await native_rotation(3);
 			await expect_slot_copies_view(f);
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId: f.cohortId,
 				step: 0,
 				runGeneration:
@@ -676,7 +676,7 @@ async function transfer_workspace() {
 		targetParentId: Id<"files_nodes"> | "root",
 		isReady: () => Promise<boolean>,
 	) => {
-		const started = await asUser.mutation(api.files_transfer.start, {
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: crypto.randomUUID(),
 			kind: "move",
@@ -1127,7 +1127,7 @@ describe("Move cohort repair retries", () => {
 			return (await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()))
 				.filter(
 					(job) =>
-						job.name.endsWith("files_move_cohorts:run") &&
+						job.name.endsWith("files_move_run:run") &&
 						job.state.kind === "pending" &&
 						(job.args[0] as { step: number }).step === step,
 				)
@@ -1379,7 +1379,7 @@ describe("Move cohort repair retries", () => {
 			return (await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()))
 				.filter(
 					(job) =>
-						job.name.endsWith("files_move_cohorts:run") &&
+						job.name.endsWith("files_move_run:run") &&
 						job.state.kind === "pending" &&
 						(job.args[0] as { step: number }).step === step,
 				)
@@ -1411,7 +1411,7 @@ describe("Move cohort repair retries", () => {
 		expect(await pendingRunDelays(), "the starter's try runs at once, and a second click adds nothing").toEqual([
 			0, 120_000,
 		]);
-		await w.t.action(internal.files_move_cohorts.run, {
+		await w.t.action(internal.files_move_run.run, {
 			cohortId,
 			step: (await cohort()).step,
 			runGeneration: (await cohort()).runJob?.generation ?? null,
@@ -1442,7 +1442,7 @@ describe("Move cohort repair retries", () => {
 		).toEqual([cohortId]);
 		await w.t.mutation(internal.files_move_cohorts.retry_now, { cohortId });
 		for (let pass = 0; (await cohort()).phase !== "complete" && pass < 100; pass++)
-			await w.t.action(internal.files_move_cohorts.run, {
+			await w.t.action(internal.files_move_run.run, {
 				cohortId,
 				step: (await cohort()).step,
 				runGeneration: (await cohort()).runJob?.generation ?? null,

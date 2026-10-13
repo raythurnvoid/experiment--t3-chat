@@ -58,7 +58,7 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 		destName: "new.txt",
 	});
 	if (moved._nay) throw new Error(moved._nay.message);
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: "foundation",
 		kind: "move",

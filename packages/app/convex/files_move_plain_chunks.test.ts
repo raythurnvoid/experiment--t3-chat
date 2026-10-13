@@ -69,7 +69,7 @@ async function start_move(
 	targetParentId: Id<"files_nodes"> | "root" = f.targetId,
 	replace = false,
 ) {
-	const started = await f.asUser.mutation(api.files_transfer.start, {
+	const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: f.db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind: "move",
@@ -139,8 +139,8 @@ async function drive_to(
 		if (cohort.phase === "complete") throw new Error(`Move ended before ${workPhase}: ${cohort.errorCode}`);
 		progress(cohort, `plain chunk Move ${workPhase}`);
 		const job = (await f.t.run((ctx) => ctx.db.system.get(cohort.runJob!.id)))!;
-		await f.t.action(internal.files_move_cohorts.run, {
-			...(job.args[0] as FunctionArgs<typeof internal.files_move_cohorts.run>),
+		await f.t.action(internal.files_move_run.run, {
+			...(job.args[0] as FunctionArgs<typeof internal.files_move_run.run>),
 			mode: "step",
 		});
 	}

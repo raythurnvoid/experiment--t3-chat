@@ -170,7 +170,7 @@ test.each([
 			}
 			return result;
 		});
-		const started = await asUser.mutation(api.files_transfer.start, {
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: "descendant-pages",
 			kind: "move",

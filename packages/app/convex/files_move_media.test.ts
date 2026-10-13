@@ -1,9 +1,13 @@
 import { R2 } from "@convex-dev/r2";
+import type { FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
-import { test_convex, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
-import { files_move_media_db_validate_next } from "./files_move_media.ts";
+import { test_convex, test_mocks_fill_db_with, test_run_with_flush, test_spy_handler } from "./setup.test.ts";
+import { advance } from "./files_move_cohorts.ts";
+import { run } from "./files_move_run.ts";
+import { files_move_content_action_prepare } from "./files_move_content.ts";
+import { files_move_media_action_prepare_refs, files_move_media_db_validate_next } from "./files_move_media.ts";
 import { files_media_build_private_src } from "../shared/files-media.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 import { files_saved_placement_db_resolve_read_target } from "../server/files-saved-placement.ts";
@@ -128,7 +132,10 @@ async function fixture(imageCount = 1) {
 	return { t, db, scope, asUser, image, images, document, src, text };
 }
 
-async function stage_review(f: Awaited<ReturnType<typeof fixture>>, phase: "ready" | "validating" = "ready") {
+async function stage_review(
+	f: Awaited<ReturnType<typeof fixture>>,
+	phase: "staging" | "ready" | "validating" = "ready",
+) {
 	const selected = [f.document, ...f.images];
 	const started = await f.asUser.mutation(api.files_pending_update_runs.start, {
 		membershipId: f.db.membershipId,
@@ -187,7 +194,7 @@ async function stage_review(f: Awaited<ReturnType<typeof fixture>>, phase: "read
 		if (cohort.phase === phase) return cohort;
 		if (cohort.phase === "aborting" || cohort.phase === "complete")
 			throw new Error(`Media staging stopped: ${cohort.errorCode}: ${cohort.errorMessage}`);
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: cohort._id,
 			step: cohort.step,
 			runGeneration: cohort.runJob?.generation ?? null,
@@ -196,6 +203,119 @@ async function stage_review(f: Awaited<ReturnType<typeof fixture>>, phase: "read
 	}
 	throw new Error(`Media staging did not finish: ${cohort?.phase}/${cohort?.workPhase}`);
 }
+
+test.each(["prepare", "media"] as const)(
+	"the scheduled leaf action saves real %s output",
+	async (kind) => {
+		const f = await fixture();
+		let cohort = await stage_review(f, "staging");
+		let pending: FunctionReturnType<typeof internal.files_move_cohorts.advance> = null;
+		// Stop before this helper. Its one scheduled delivery must save the real output.
+		for (let pass = 0; pass < 2_000; pass++) {
+			pending = await f.t.mutation(internal.files_move_cohorts.advance, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				join: false,
+			});
+			if (pending?.kind === "prepare" || pending?.kind === "media") {
+				const pendingId = pending.contentId;
+				if (
+					pending.kind === kind &&
+					(await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", pendingId)))?.pendingUpdateId ===
+						f.document._id
+				)
+					break;
+				const call = {
+					cohortId: cohort._id,
+					contentId: pending.contentId,
+					fence: pending.fence,
+					attemptFence: pending.attemptFence,
+					runGeneration: cohort.runJob?.generation ?? null,
+				};
+				const prepare =
+					pending.kind === "prepare" ? files_move_content_action_prepare : files_move_media_action_prepare_refs;
+				expect(await f.t.action((ctx) => prepare(ctx, call))).toEqual({ _yay: null });
+				await f.t.mutation(internal.files_move_cohorts.resume, {
+					cohortId: cohort._id,
+					step: pending.step,
+					runGeneration: call.runGeneration,
+					error: null,
+				});
+			}
+			cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohort._id)))!;
+			if (cohort.phase === "aborting" || cohort.phase === "complete")
+				throw new Error(`Helper setup stopped: ${cohort.errorCode}: ${cohort.errorMessage}`);
+		}
+		if (!pending || pending.kind !== kind) throw new Error(`Expected the ${kind} step`);
+		const contentId = pending.contentId;
+		cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohort._id)))!;
+		await f.t.mutation(internal.files_move_cohorts.handoff, {
+			cohortId: cohort._id,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+		});
+		cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohort._id)))!;
+		const owner = (await f.t.run((ctx) => ctx.db.system.get(cohort.runJob!.id)))!;
+		expect(owner.name).toBe("files_move_run:run");
+		await f.t.run(async (ctx) => {
+			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
+				if (job.state.kind === "pending" && job._id !== owner._id) await ctx.scheduler.cancel(job._id);
+		});
+		let deliveries = 0;
+		test_spy_handler(run, async (handler, ctx, args) => {
+			deliveries++;
+			return await handler(ctx, args);
+		});
+		test_spy_handler(advance, async (handler, ctx, args) => {
+			const output = await handler(ctx, args);
+			const result = output as FunctionReturnType<typeof internal.files_move_cohorts.advance>;
+			if (result?.kind === kind) vi.setSystemTime(Date.now() + 5_001);
+			return output;
+		});
+		vi.advanceTimersByTime(0);
+		await f.t.finishInProgressScheduledFunctions();
+		expect(deliveries, "one actual scheduled action runs the selected helper").toBe(1);
+		const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", contentId)))!;
+		if (kind === "prepare") {
+			expect(content.prepared, "the leaf action saves a durable prepared content candidate").toMatchObject({
+				kind: "private",
+				pendingUpdateId: f.document._id,
+				reviewedRevision: f.document.revision,
+				prepared: { textInputId: expect.any(String), contentAssetId: expect.any(String) },
+			});
+			if (content.prepared?.kind !== "private" || !content.prepared.prepared) throw new Error("Expected prepared text");
+			const prepared = content.prepared.prepared;
+			expect(
+				(await f.t.run((ctx) => ctx.db.get("files_pending_update_text_inputs", prepared.textInputId)))?.text.trimEnd(),
+			).toBe(f.text);
+			const asset = (await f.t.run((ctx) => ctx.db.get("files_r2_assets", prepared.contentAssetId)))!;
+			expect(objects.get(asset.r2Key!), "the real helper uploaded the selected text").toBe(f.text + "\n");
+		} else {
+			expect(content.preparedMediaSet, "the leaf action saves a sealed prepared media set").toMatchObject({
+				setId: expect.any(String),
+				generation: expect.any(Number),
+			});
+			const set = (await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", content.preparedMediaSet!.setId)))!;
+			expect(set).toMatchObject({ count: 1, expectedCount: 1, sealed: true });
+			const refs = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_media_dependencies")
+					.withIndex("by_set_order", (q) => q.eq("setId", set._id))
+					.collect(),
+			);
+			expect(
+				refs.map((ref) => ref.sourceSrc),
+				"the sealed set keeps the actual selected private embed",
+			).toEqual([f.src]);
+		}
+		expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohort._id))).toMatchObject({
+			publishedAt: null,
+			visibleView: "before",
+		});
+	},
+	120_000,
+);
 
 test("proves actual prepared private embeds through the native AFTER receipt", async () => {
 	const f = await fixture();
@@ -496,7 +616,7 @@ test.each(["finish", "abort"] as const)(
 			});
 		}
 		for (let pass = 0; pass < 2_000 && cohort.phase !== "complete"; pass++) {
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId: cohort._id,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,

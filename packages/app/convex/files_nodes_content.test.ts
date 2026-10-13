@@ -216,7 +216,7 @@ describe("copy_transfer_file", () => {
 			path: "/copies",
 		});
 		if (folder._nay) throw new Error(folder._nay.message);
-		const started = await asUser.mutation(api.files_transfer.start, {
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: "parallel-copy",
 			kind: "copy",

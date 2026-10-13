@@ -27,7 +27,7 @@ async function fixture() {
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 	const source = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/source" });
 	if (source._nay) throw new Error(source._nay.message);
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind: "copy",
@@ -329,7 +329,7 @@ describe("proposal hold expiry", () => {
 		for (let i = 0; i < 8; i++) {
 			await hold({ f: current, d: parent, role: "source" });
 			await finish(current);
-			const next = await f.asUser.mutation(api.files_transfer.start, {
+			const next = await f.asUser.mutation(api.files_transfer.accept_input, {
 				membershipId: f.db.membershipId,
 				requestId: `ancestor-${i}`,
 				kind: "copy",
