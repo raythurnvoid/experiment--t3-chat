@@ -376,12 +376,13 @@ export const ensure_plugin_folder = internalMutation({
 				preparedAccess = prepared._yay;
 			}
 
+			// Create below the checked folder; its parents may be hidden.
 			const createdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				userId: args.userId,
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				parentId: files_ROOT_ID,
-				path: args.path,
+				parentId: deepest?._id ?? files_ROOT_ID,
+				path: segments.slice(firstMissingIndex).join("/"),
 				kind: "folder",
 				writeContext,
 				writePolicy: preparedAccess?.writePolicy,

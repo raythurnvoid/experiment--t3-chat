@@ -74,7 +74,7 @@ describe("copy_transfer_file media", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toEqual(retired);
 	});
 
-	test("retires a saved clipboard copy's set without deleting its media", async () => {
+	test("creates no media set for a saved clipboard copy and keeps its media", async () => {
 		const f = await fixture();
 		expect(
 			await f.asUser.mutation(api.files_transfer.stop, {
@@ -89,6 +89,10 @@ describe("copy_transfer_file media", () => {
 			path: "/copies",
 		});
 		if (folder._nay) throw new Error(folder._nay.message);
+		const mediaStateBefore = await f.t.run(async (ctx) => ({
+			sets: await ctx.db.query("files_media_dependency_sets").collect(),
+			dependencies: await ctx.db.query("files_media_dependencies").collect(),
+		}));
 		const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: f.source.membershipId,
 			requestId: "clipboard-media",
@@ -116,13 +120,13 @@ describe("copy_transfer_file media", () => {
 			await f.t.action(internal.files_nodes_content.copy_transfer_file, { itemId: item._id, attempt: item.attempt });
 			const completed = await f.t.run((ctx) => ctx.db.get("files_transfer_items", item._id));
 			expect(completed).toMatchObject({ state: "completed", outputTarget: { kind: "saved" } });
-			const setId = completed!.capture!.mediaDependencySetId!;
-			expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toMatchObject({
-				owner: { kind: "cleanup" },
-				count: 1,
-			});
-			await f.t.mutation(internal.files_media_dependencies.cleanup_set, { setId });
-			expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toBeNull();
+			expect(completed!.capture!.mediaDependencySetId).toBeUndefined();
+			expect(
+				await f.t.run(async (ctx) => ({
+					sets: await ctx.db.query("files_media_dependency_sets").collect(),
+					dependencies: await ctx.db.query("files_media_dependencies").collect(),
+				})),
+			).toEqual(mediaStateBefore);
 			expect(await f.t.run((ctx) => ctx.db.get("files_r2_assets", f.media.assetId))).not.toBeNull();
 			return;
 		}

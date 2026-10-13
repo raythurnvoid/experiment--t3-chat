@@ -785,9 +785,12 @@ function copy_candidate_name(args: { kind: "file" | "folder"; name: string; coun
 	// A normalized file name never starts with a dot. `.env` becomes `untitled.env`, because an empty
 	// base name falls back to "untitled". Start at index 1 so a leading dot could never be read as
 	// the extension separator if that ever changes.
-	const dot = kind === "file" ? name.indexOf(".", 1) : -1;
+	let dot = kind === "file" ? name.indexOf(".", 1) : -1;
+	const counterSuffix = `-copy-${counter}`;
+	// Keep compound extensions unless the counter leaves no base character.
+	if (dot >= 0 && files_NAME_MAX_LENGTH - counterSuffix.length - (name.length - dot) < 1) dot = name.lastIndexOf(".");
 	const base = dot < 0 ? name : name.slice(0, dot);
-	const suffix = `-copy-${counter}${dot < 0 ? "" : name.slice(dot)}`;
+	const suffix = `${counterSuffix}${dot < 0 ? "" : name.slice(dot)}`;
 	// Cut the base, so a long name still gets a copy name inside the limit.
 	const candidate = `${base.slice(0, Math.max(1, files_NAME_MAX_LENGTH - suffix.length))}${suffix}`;
 	return kind === "folder" ? files_normalize_name("folder", candidate) : files_normalize_file_rename_name(candidate);

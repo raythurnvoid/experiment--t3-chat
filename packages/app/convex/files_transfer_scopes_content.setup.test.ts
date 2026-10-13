@@ -193,7 +193,7 @@ export async function media_proposal(args: {
 		attemptId: "media",
 		path,
 		size: 4,
-		contentType: "image/png",
+		contentType: path.endsWith(".mp4") ? "video/mp4" : "image/png",
 		digest: "a".repeat(64),
 		content: { kind: "stored" },
 	});

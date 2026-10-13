@@ -109,7 +109,7 @@ async function copy_media(row: { documentReplacement: boolean; mediaCount: numbe
 
 // Tests that copy media links that need more than one page. Each media file needs its own Save.
 describe("copy_transfer_file media", () => {
-	test("a same-workspace copy of a copy keeps its media links, in pages", async () => {
+	test("a same-workspace copy of a copy keeps its media links without mapping", async () => {
 		const f = await fixture({ mediaCount: 4 });
 		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
 			itemId: f.document._id,
@@ -123,7 +123,7 @@ describe("copy_transfer_file media", () => {
 			return await handler(ctx, args);
 		});
 		const clone = await copy_again({ f, source: original!.outputTarget!, targetName: "cloned.md" });
-		expect(pages).toBe(2);
+		expect(pages).toBe(0);
 		const read = (path: string) =>
 			f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 				organizationId: f.destination.organizationId,

@@ -203,23 +203,60 @@ describe("unarchive_nodes", () => {
 			});
 		});
 
-		test("Keep both cuts a long name, so the new name stays inside the limit", async () => {
+		test.each([
+			{ label: "long", sourceName: `${"n".repeat(252)}.md`, restoredName: `${"n".repeat(250)}-2.md` },
+			{
+				label: "early-dot",
+				sourceName: `x.${"n".repeat(250)}.md`,
+				restoredName: `x.${"n".repeat(248)}-2.md`,
+			},
+			{
+				label: "early-dot at counter 10",
+				sourceName: `x.${"n".repeat(248)}.md`,
+				restoredName: `x.${"n".repeat(247)}-10.md`,
+				takenNames: Array.from({ length: 8 }, (_entry, index) => `x-${index + 2}.${"n".repeat(248)}.md`),
+			},
+			{ label: "compound extension", sourceName: "backup.tar.gz", restoredName: "backup-2.tar.gz" },
+		])("Keep both restores a $label name inside the limit", async (nameCase) => {
+			const { label, sourceName, restoredName } = nameCase;
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "long", folderCount: 1, filesPerFolder: 2 });
-			const longName = `${"n".repeat(252)}.md`;
-			// The second file takes the longest name while the first one is archived.
+			// The second file takes the name while the first one is archived.
 			const rename = (nodeId: Id<"files_nodes">) =>
-				test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId, path: longName });
+				test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId, path: sourceName });
 			expect((await rename(tree.fileIds[0]!))._nay).toBeUndefined();
 			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 			expect((await rename(tree.fileIds[1]!))._nay).toBeUndefined();
+			for (const filename of nameCase.takenNames ?? []) {
+				expect(
+					(
+						await f.asOwner.mutation(api.files_nodes.create_upload_node, {
+							membershipId: f.db.membershipId,
+							parentId: tree.folderIds[0]!,
+							filename,
+							contentType: "text/markdown",
+							size: 0,
+							onConflict: "fail",
+						})
+					)._nay,
+				).toBeUndefined();
+			}
 			const job = (await restore(f, [tree.fileIds[0]!]))._yay!;
 
 			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
 			await run_to_end(f, job);
-			expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({
+			expect(
+				await read_node(f, tree.fileIds[0]!),
+				`Keep both restores the ${label} file under a valid name`,
+			).toMatchObject({
 				archiveOperationId: null,
-				name: `${"n".repeat(250)}-2.md`,
+				name: restoredName,
+				path: `/long/d0/${restoredName}`,
+			});
+			expect(await read_node(f, tree.fileIds[1]!)).toMatchObject({
+				archiveOperationId: null,
+				name: sourceName,
+				path: `/long/d0/${sourceName}`,
 			});
 		});
 

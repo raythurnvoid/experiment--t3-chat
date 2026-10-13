@@ -40,13 +40,18 @@ the exact proposal revision and creation generation.
 
 # Copy And Save
 
+Same-workspace Copy keeps exact image/video links. It does not resolve them or import their bytes.
+Missing, hidden, or unready media never blocks this Copy. Readers still check current access.
+Copying the image or video file itself still needs read access.
+
 Cross-workspace Copy rewrites only real rich-text image/video embeds. The media must be selected
 explicitly, directly or through a selected folder. Plain links and code do not import media.
-New media copies have destination-owned assets and use destination access.
+New media copies have destination-owned assets and use destination access. Missing or unreadable
+linked media still refuses cross-workspace Copy.
 
-Mappings are sealed paged sets owned by the Copy item, not arrays on the document. They only
-rewrite the copied text, and they retire when the Copy finishes. Large Copy review saves selected
-media first; it never silently selects it.
+Cross-workspace mappings are sealed paged sets owned by the Copy item, not arrays on the document.
+They only rewrite the copied text, and they retire when the Copy finishes. Large Copy review saves
+selected media first; it never silently selects it.
 
 A copied document saves like any other document. A missing or changed image stays as a link and
 never blocks Save, like Notion and Google Docs. We chose this because blocking a whole Save for one
