@@ -401,7 +401,7 @@ async function data_deletion_test_start_transfer_run(
 		return { membershipId: membership._id, sourceIds };
 	});
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", subject: args.userId, external_id: args.userId });
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId,
 		requestId: args.tag,
 		kind: "copy",
@@ -413,7 +413,7 @@ async function data_deletion_test_start_transfer_run(
 	const { runId } = started._yay;
 	for (let offset = 100; offset < sourceIds.length; offset += 100) {
 		expect(
-			await asUser.mutation(api.files_transfer.append_sources, {
+			await asUser.mutation(api.files_transfer.append_input, {
 				membershipId,
 				runId,
 				offset,

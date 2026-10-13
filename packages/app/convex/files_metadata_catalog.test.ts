@@ -1001,7 +1001,7 @@ describe("catalog lifecycle", () => {
 		const dst = await create_folder(t, scope, "/dst");
 		await set_status(t, db, a);
 		await reset_tree_write_limit(t, db.userId);
-		const started = await asOwner.mutation(api.files_transfer.start, {
+		const started = await asOwner.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: crypto.randomUUID(),
 			kind: "copy",

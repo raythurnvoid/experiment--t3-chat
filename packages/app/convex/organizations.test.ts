@@ -6242,15 +6242,19 @@ describe("process_workspace_deletion_request", () => {
 			email: "organizations-test-user@test.local",
 		});
 
-		const created = await t.run(async (ctx) =>
-			organizations_db_create(ctx, {
+		// The home file seed runs in the background and adds asset rows when it gets the time. Cancel it,
+		// so the row counts below do not depend on timing.
+		const created = await t.run(async (ctx) => {
+			const created = await organizations_db_create(ctx, {
 				userId,
 				name: "purge-requests-ws",
 				description: "",
 				now: Date.now(),
 				default: false,
-			}),
-		);
+			});
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return created;
+		});
 		expect(created._yay).toBeTruthy();
 
 		const victimWorkspace = await asUser.mutation(api.organizations.create_workspace, {
@@ -6261,6 +6265,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(victimWorkspace._yay).toBeTruthy();
 
 		const purgeRequest = await t.run(async (ctx) => {
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
 			await organizations_test_seed_workspace_scoped_rows(ctx, {
 				userId,
 				organizationId: created._yay!.organizationId,

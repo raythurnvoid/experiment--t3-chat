@@ -139,7 +139,7 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 
 	const move = async (targetParentId: Id<"files_nodes">) => {
 		vi.setSystemTime(Date.now() + 3_000);
-		const started = await asOwner.mutation(api.files_transfer.start, {
+		const started = await asOwner.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: crypto.randomUUID(),
 			kind: "move",

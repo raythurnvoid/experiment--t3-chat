@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getFunctionName, type FunctionArgs } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { run } from "./files_move_cohorts.ts";
+import { run } from "./files_move_run.ts";
 import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 
@@ -34,7 +34,7 @@ async function fixture(t = test_convex({ transactionLimits: true }), organizatio
 	};
 	const sourceId = await folder("/source");
 	const targetId = await folder("/target");
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind: "move",
@@ -167,7 +167,7 @@ async function preparing_fixture() {
 function run_jobs(t: ReturnType<typeof test_convex>, cohortId: Id<"files_move_cohorts">) {
 	return t.run(async (ctx) =>
 		(await ctx.db.system.query("_scheduled_functions").collect()).filter(
-			(job) => job.name.endsWith("files_move_cohorts:run") && job.args[0]?.cohortId === cohortId,
+			(job) => job.name.endsWith("files_move_run:run") && job.args[0]?.cohortId === cohortId,
 		),
 	);
 }
@@ -211,16 +211,16 @@ describe("Move cohort recovery", () => {
 			runGeneration: current.runJob!.generation,
 		});
 		await f.t.action(
-			internal.files_move_cohorts.run,
-			replacement.args[0] as FunctionArgs<typeof internal.files_move_cohorts.run>,
+			internal.files_move_run.run,
+			replacement.args[0] as FunctionArgs<typeof internal.files_move_run.run>,
 		);
 		for (let pass = 0; pass < 100; pass++) {
 			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 			if (cohort.phase === "complete") break;
 			const job = (await f.t.run((ctx) => ctx.db.system.get(cohort.runJob!.id)))!;
 			await f.t.action(
-				internal.files_move_cohorts.run,
-				job.args[0] as FunctionArgs<typeof internal.files_move_cohorts.run>,
+				internal.files_move_run.run,
+				job.args[0] as FunctionArgs<typeof internal.files_move_run.run>,
 			);
 		}
 		expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId))).toMatchObject({
@@ -433,7 +433,7 @@ describe("Move cohort recovery", () => {
 		const before = await t.run((ctx) => Promise.all(fixtures.map((f) => ctx.db.get("files_move_cohorts", f.cohortId))));
 		await t.run(async (ctx) => {
 			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
-				if (job.name.endsWith("files_move_cohorts:run") && job.state.kind === "pending")
+				if (job.name.endsWith("files_move_run:run") && job.state.kind === "pending")
 					await ctx.scheduler.cancel(job._id);
 		});
 		vi.setSystemTime(Date.now() + 3 * 60_000);
@@ -445,7 +445,7 @@ describe("Move cohort recovery", () => {
 		);
 		const pending = await t.run(async (ctx) =>
 			(await ctx.db.system.query("_scheduled_functions").collect()).filter(
-				(job) => job.name.endsWith("files_move_cohorts:run") && job.state.kind === "pending",
+				(job) => job.name.endsWith("files_move_run:run") && job.state.kind === "pending",
 			),
 		);
 		expect(pending, "every lost group must get its own replacement").toHaveLength(fixtures.length);
@@ -537,14 +537,14 @@ describe("Move cohort recovery", () => {
 	test("old deliveries cannot advance or resume a replacement at the same step", async () => {
 		const f = await fixture();
 		const old = (await run_jobs(f.t, f.cohortId)).find((job) => job.state.kind === "pending")!;
-		const oldArgs = old.args[0] as FunctionArgs<typeof internal.files_move_cohorts.run>;
+		const oldArgs = old.args[0] as FunctionArgs<typeof internal.files_move_run.run>;
 		await f.t.run((ctx) => ctx.scheduler.cancel(old._id));
 		vi.setSystemTime(Date.now() + 3 * 60_000);
 		await f.t.mutation(internal.files_move_cohorts.recover, {});
 		await drain_recovery(f.t);
 		const before = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 		expect(before.runJob!.generation).toBeGreaterThan(oldArgs.runGeneration!);
-		await f.t.action(internal.files_move_cohorts.run, oldArgs);
+		await f.t.action(internal.files_move_run.run, oldArgs);
 		await f.t.mutation(internal.files_move_cohorts.resume, {
 			cohortId: oldArgs.cohortId,
 			step: oldArgs.step,

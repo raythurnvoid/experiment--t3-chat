@@ -983,7 +983,8 @@ browser is still up, since a dead scratch browser and a wrong flag fail the same
 - Rapid files-tree create/move/archive sequences can hit the `files_tree_write` rate limiter. If a create dialog stays open with `Rate limit exceeded`, wait for the retry window, keep the dialog open, and submit the same draft again instead of restarting the flow.
 - `files_nodes.archive_nodes` and `unarchive_nodes` finish up to 75 nodes inside the request and return `_yay: null`. A bigger one returns `_yay: { runId, activityId }` and goes on as an archive job (Activity titled `Archive files` / `Restore files`). Poll it with `files_archive_runs.get({ membershipId, runId })` until the Activity status is final or `awaiting_input`. A 1,311-node archive took about 18 s and its restore about 29 s on dev (2026-09-25). A restore of several operations in one call runs its jobs one at a time: the first is `running` and the rest are `queued` until the one before ends (since 2026-09-25; 10 operations / 1,311 nodes took about 36 s with no `willRetry: true` in Convex logs). Poll every job until it is final, not only the first. Separate archive calls still run at once. Restore brings back one archive operation only; items archived earlier on their own stay archived.
 - The old `files_nodes.move_nodes` door had a total selection cap (seen 2026-09-25). It is removed.
-  Cut/Paste and drag/drop now use `files_transfer.start`, paged `append_sources`, then `seal`.
+  Cut/Paste and drag/drop now use `files_transfer.accept_input` and paged `append_input`.
+  Complete Move input starts in that transaction. Copy still needs `seal`.
   Poll the transfer Activity and page its conflicts and receipts through `list_items`.
   Stop keeps completed roots. Linked Pending Save uses the same paged cohort worker and one group switch.
 - The `Restoring in the background. See Activity.` / `Archiving in the background. See Activity.` toast closes after about 4 s, so a separate CLI call that clicks its `View` button usually misses it. Open `Notifications` and use the card button (`View progress`, or `Review conflicts` while a restore waits on a name clash) instead.
@@ -2776,7 +2777,7 @@ honest shape of the work. To get several units, make several independent roots: 
 files into an already-saved folder (`for i in 1 2 3; do cp README.md x-$i.md; done`) gives one unit
 per file, and units run in the order of the `items` array you submitted.
 
-## `files_transfer.start` uses the literal `"root"`, and a name clash parks the run
+## `files_transfer.accept_input` uses the literal `"root"`, and a name clash parks the run
 
 `targetParentId` is `v.union(v.id("files_nodes"), v.literal("root"))`. Any other spelling comes back
 as an `ArgumentValidationError` from the server, not a client-side type error.

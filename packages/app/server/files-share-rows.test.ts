@@ -212,7 +212,7 @@ describe("share rows during a Move", () => {
 			).toEqual({ _yay: null });
 		}
 
-		const started = await asOwner.mutation(api.files_transfer.start, {
+		const started = await asOwner.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: "share-rows-long-name",
 			kind: "move",

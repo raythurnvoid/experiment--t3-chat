@@ -80,7 +80,7 @@ async function mark_credential_used_best_effort(
 	if (!credentialId) return;
 
 	try {
-		await ctx.runMutation(internal.public_api.mark_credential_used, {
+		await ctx.runMutation(internal.public_api_credential_usage.mark_credential_used, {
 			credentialId,
 			now: args.now,
 		});

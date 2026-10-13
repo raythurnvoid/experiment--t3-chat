@@ -214,7 +214,7 @@ describe("list_bash_invocation_transfers", () => {
 			path: "source",
 		});
 		if (source._nay) throw new Error(source._nay.message);
-		const started = await f.asUser.mutation(api.files_transfer.start, {
+		const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: f.db.membershipId,
 			requestId: "linked-job",
 			sourceIds: [source._yay.nodeId],

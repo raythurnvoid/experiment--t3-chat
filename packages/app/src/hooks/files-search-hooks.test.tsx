@@ -121,6 +121,12 @@ const notify_sorted = () => {
 	for (const listener of sorted.listeners) listener();
 };
 
+// This file tests stream merging with fixed pager results.
+vi.mock("./files-paginated-query-hooks.ts", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return { useFilesPaginatedQuery: usePaginatedQuery };
+});
+
 // Answer each query at once from the fixtures.
 vi.mock("convex/react", async (importOriginal) => {
 	const { useState, useMemo, useSyncExternalStore } = await import("react");

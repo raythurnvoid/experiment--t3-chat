@@ -144,7 +144,7 @@ describe("process_workspace_deletion_request transfer scopes", () => {
 			path: "/untouched",
 		});
 		if (siblingFolder._nay) throw new Error(siblingFolder._nay.message);
-		const control = await asUser.mutation(api.files_transfer.start, {
+		const control = await asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: sibling._id,
 			requestId: "untouched",
 			kind: "copy",

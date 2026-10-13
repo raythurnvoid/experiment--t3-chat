@@ -2689,8 +2689,8 @@ export function files_pending_overlay_list_over_budget(metrics: TransactionMetri
 
 /**
  * Whether a Move step may join one more small sub-step of the same unit. It flushes first, so the next
- * sub-step reads fresh derived docs and the metrics count the derived writes. A joined step stays
- * under 1/16 of every Convex transaction limit.
+ * sub-step reads fresh derived docs and the metrics count the derived writes. Join only while each
+ * used metric is below 1/16 of its limit. The next unit and final flush need their measured reserve.
  */
 export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx) {
 	await files_pending_overlay_db_flush(ctx);

@@ -116,4 +116,13 @@ describe("functions.ts", () => {
 		}
 		expect(wrong).toEqual([]);
 	});
+
+	test("the Move runner does not eagerly load the file engine", () => {
+		// Content helpers load only after a committed step asks for them.
+		const allowed = new Set(["convex/values", "./_generated/api.js", "./_generated/server.js"]);
+		const wrong = read_imports(path.join(convexRoot, "files_move_run.ts"))
+			.map(({ from }) => from)
+			.filter((from) => !allowed.has(from));
+		expect(wrong, "the Move runner does not eagerly load the file engine").toEqual([]);
+	});
 });

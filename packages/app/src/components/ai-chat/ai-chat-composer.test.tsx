@@ -24,6 +24,12 @@ const { treeNodesMock } = vi.hoisted(() => ({
 	treeNodesMock: vi.fn<(query: unknown, args: Record<string, unknown>, options: unknown) => unknown[] | undefined>(),
 }));
 
+// Keep the fixed pager results used by this component test.
+vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return { useFilesPaginatedQuery: usePaginatedQuery };
+});
+
 vi.mock("convex/react", async (importOriginal) => {
 	const original = await importOriginal<typeof import("convex/react")>();
 	return {

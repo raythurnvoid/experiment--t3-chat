@@ -19,10 +19,14 @@ Use the relevant section before measuring latency. To drive the live app in the 
 
 ## Procedure
 
-1. Get real per-execution numbers without changing code. Use the bounded Convex log-capture workflow in `.agents/skills/troubleshooting/SKILL.md` so the live stream is handled correctly in PowerShell. JSONL `executionTime` and `userExecutionTime` are in seconds; `userExecutionTime` includes user code and module evaluation. `usageStats` reports read/write bytes, docs read, storage/index/network usage, and memory, but not a docs-written count. The human log line rounds `executionTime` to milliseconds. `caller: "SyncWorker"` marks real client-driven executions.
-2. Check module tax: deploy a noop `internalMutation` in a new lean file (imports only `./_generated/server.js` + `convex/values`) and a noop that imports one symbol from the suspect module (reference it with `void theImport;` so bundling keeps it). Run each about six times with `vp env exec pnpm --dir packages/app exec convex run`, then compare them. A large gap means the module should be split. Use one probe module per suspect import; if several probes share one file, every probe pays the union of all imports, including the control. Capture timings with the troubleshooting skill's bounded `convex logs` workflow and compare `identifier` and `executionTime`.
+1. Get real per-execution numbers without changing code. Use the bounded Convex log-capture workflow in `.agents/skills/troubleshooting/SKILL.md` so the live stream is handled correctly in PowerShell. JSONL `executionTime` and `userExecutionTime` are in seconds; `userExecutionTime` includes user code and module evaluation. `usageStats` reports read/write bytes, document counts, storage/index/network usage, and memory. Check which fields the current logs provide; keep missing values unknown. The human log line rounds `executionTime` to milliseconds. `caller: "SyncWorker"` marks real client-driven executions.
+2. Check module startup with matching no-op mutations in the real heavy module and the intended small production module. Both must use `internalMutation` from `./functions.ts`, with the same args, return shape, and context-reuse setting. Keep them in separate files so the small control does not load the heavy imports. Run at least seven alternating calls per control. Use the direct Node CLI form in `convex-admin-ops`; internal controls need admin auth without `--identity`. Warm controls may hide startup cost, so they provide supporting evidence only. Remove every control before the final deployment.
 3. Phase-time the handler with `console.time("phase")` / `console.timeEnd("phase")` around each await. Output appears in `convex logs` log lines.
 4. Dashboard per-function p50/p90/p95/p99 charts exist for trends; no in-function breakdown.
+
+Choose the native workload and speed assertion before measuring. Keep every sample. A fix-off check must add a real heavy value import while keeping the handler, caller, key, builder, and reuse setting unchanged. Verify that the import runs, the assertion fails, and restoring the small module makes it pass. Check the real API route and saved data too; a missing function hidden by an error catch is not a speed fix. Deploy the final source without controls and repeat the same check.
+
+API key usage writes live in `convex/public_api_credential_usage.ts`. This small module keeps file editor imports out of timestamp calls.
 
 ## Traps
 
@@ -31,6 +35,10 @@ Use the relevant section before measuring latency. To drive the live app in the 
 - Probe mutations that insert data should delete it in the same transaction (net no-op).
 - Dev deployments are noisy; take ≥5-7 samples per variant, interleave variants round-robin, compare medians.
 - Exclude `cachedResult: true` records from execution-cost totals. A cache hit can keep the original execution timestamp and user execution time while reporting zero total time. Use its current `requestId` only to trace the call, not to time new work.
+- A module-init marker on an uncached mutation shows a fresh module load. Reused mutations do not replay that marker. Its absence alone does not prove reuse; query cache hits can replay old logs.
+- `userExecutionTime` is runtime time, not CPU time. Handler timers include waits that runtime time may exclude. Do not subtract separate medians to claim an exact startup time.
+- `--identity` creates an acting user. Automatic CLI dispatch can hide internal functions from that identity even when native metadata lists them. Use it for public auth checks. Run internal timing controls without it.
+- For HTTP checks, send a unique 16-hex `convex-request-id` and join that exact ID to the root and its children. Do not assume the response has a request-ID header. Match log labels with exact delimiters, so label `1` cannot match `10`.
 - Server exec time is only one leg. The client perceives: WS round trip + mutation exec + subscription update pushed to the client + client render. Capture Convex WS frames (CDP `Network.webSocketFrameSent/Received`) to split those legs.
 - Before comparing numbers across dependency versions, verify what actually resolves with `vp env exec pnpm --dir packages/app exec node -p "require('<pkg>/package.json').version"`. A pnpm-workspace `overrides:` entry can pin the whole workspace regardless of package.json ranges.
 

@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ConvexProvider, ConvexReactClient } from "convex/react";
 import { getFunctionName } from "convex/server";
+import { convexToJson } from "convex/values";
 import { useRef, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -38,8 +39,8 @@ let client: ConvexReactClient;
  */
 function watch_key(name: string, args: Record<string, unknown>) {
 	const { paginationOpts, ...rest } = args as { paginationOpts?: { cursor: string | null } };
-	const sorted = Object.fromEntries(Object.entries(rest).sort(([a], [b]) => a.localeCompare(b)));
-	return JSON.stringify({ name, ...sorted, cursor: paginationOpts?.cursor });
+	// Match Convex's field order, including nested args.
+	return JSON.stringify(convexToJson({ name, ...rest, cursor: paginationOpts?.cursor }));
 }
 
 function tree_row(args: { id: string; parentId: string; kind: "file" | "folder"; contentType?: string }) {

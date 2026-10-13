@@ -111,6 +111,24 @@ describe("typecheck", () => {
 		}
 	});
 
+	test("reports app errors when the checkout is inside a vendor folder", () => {
+		const outerRoot = fixtureRoot;
+		fixtureRoot = path.join(outerRoot, "vendor", "app");
+		try {
+			write_fixture("src/index.ts", 'export const value: number = "app";\n');
+			write_fixture("vendor/index.ts", 'export const vendorValue: number = "vendor";\n');
+			write_fixture("node_modules/sample/index.ts", 'export const packageValue: number = "package";\n');
+			write_config();
+			const result = run_check();
+			expect(result.status, result.output).toBe(2);
+			expect(result.output).toContain("src/index.ts");
+			expect(result.output).toContain("TS2322");
+			expect(result.output).toContain("Visible errors: 1, suppressed errors: 0");
+		} finally {
+			fixtureRoot = outerRoot;
+		}
+	});
+
 	test("reports app errors in both checks and clears them after a fix", () => {
 		write_app_configs();
 		write_fixture("src/index.ts", 'export const value: number = "app";\n');

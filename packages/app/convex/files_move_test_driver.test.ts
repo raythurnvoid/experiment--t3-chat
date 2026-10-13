@@ -99,7 +99,7 @@ async function review_first_draft(f: Awaited<ReturnType<typeof fixture>>) {
 
 test("Move completion wakes every owner page before the next Review", async () => {
 	const f = await fixture(9);
-	const started = await f.asUser.mutation(api.files_transfer.start, {
+	const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: f.db.membershipId,
 		requestId: "move-with-owner-jobs",
 		kind: "move",
@@ -123,7 +123,7 @@ test("Move completion wakes every owner page before the next Review", async () =
 		.withIndex("by_source", q => q.eq("source.kind", "saved").eq("source.id", f.sourceId)).unique());
 	while (!(await reservation())) {
 		const before = (await cohort())!;
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId, step: before.step, runGeneration: before.runJob?.generation ?? null, mode: "step",
 		});
 		expect((await cohort())?.step).not.toBe(before.step);
@@ -214,7 +214,7 @@ test("Review completion runs due overlay work before a deferred job without firi
 
 test("Move driver still drives Stop while a cohort owns the workspace", async () => {
 	const f = await fixture(1);
-	const started = await f.asUser.mutation(api.files_transfer.start, {
+	const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: f.db.membershipId,
 		requestId: "stop-owned-cohort",
 		kind: "move",
@@ -248,7 +248,7 @@ test("Move driver still drives Stop while a cohort owns the workspace", async ()
 
 test.each(["Transfer", "Review"] as const)("%s driver finishes its owned Move before a waiting scope repair", async kind => {
 	const f = await fixture(1);
-	const transfer = kind === "Transfer" ? await f.asUser.mutation(api.files_transfer.start, {
+	const transfer = kind === "Transfer" ? await f.asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: f.db.membershipId,
 		requestId: "move-with-scope-repair",
 		kind: "move",
@@ -356,7 +356,7 @@ test("Copy driver completes an empty saved folder", async () => {
 		if (created._nay) throw new Error(created._nay.message);
 		folders.push(created._yay.nodeId);
 	}
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: "copy-empty-folder",
 		kind: "copy",
@@ -499,7 +499,7 @@ test("Review driver tracks a copied parent's dependency page", async () => {
 		return await handler(ctx, args);
 	});
 	const cohortIds = new Set<string>();
-	test_spy_handler((await import("./files_move_cohorts.ts")).run, async (handler, ctx, args) => {
+	test_spy_handler((await import("./files_move_run.ts")).run, async (handler, ctx, args) => {
 		cohortIds.add((args as { cohortId: string }).cohortId);
 		return await handler(ctx, args);
 	});

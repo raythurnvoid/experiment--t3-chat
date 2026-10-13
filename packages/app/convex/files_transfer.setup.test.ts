@@ -81,9 +81,9 @@ export async function finish_selection(args: {
 
 export async function start_transfer(
 	t: Pick<ReturnType<typeof test_convex>, "mutation" | "run">,
-	args: FunctionArgs<typeof api.files_transfer.start>,
+	args: FunctionArgs<typeof api.files_transfer.accept_input>,
 ) {
-	const started = await t.mutation(api.files_transfer.start, {
+	const started = await t.mutation(api.files_transfer.accept_input, {
 		...args,
 		expectedSourceCount: args.sourceIds.length,
 		sourceIds: args.sourceIds.slice(0, 100),
@@ -92,7 +92,7 @@ export async function start_transfer(
 	const runId = started._yay.runId;
 	for (let offset = 100; offset < args.sourceIds.length; offset += 100) {
 		expect(
-			await t.mutation(api.files_transfer.append_sources, {
+			await t.mutation(api.files_transfer.append_input, {
 				membershipId: args.membershipId,
 				runId,
 				offset,

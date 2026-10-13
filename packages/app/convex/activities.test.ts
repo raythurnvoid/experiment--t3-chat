@@ -39,7 +39,7 @@ async function create_transfer_activity() {
 		path: "source",
 	});
 	if (source._nay) throw new Error(source._nay.message);
-	const started = await asMember.mutation(api.files_transfer.start, {
+	const started = await asMember.mutation(api.files_transfer.accept_input, {
 		membershipId: member.membershipId,
 		requestId: "copy-activity",
 		sourceIds: [source._yay.nodeId],

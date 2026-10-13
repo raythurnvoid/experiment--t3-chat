@@ -1,6 +1,6 @@
 import "./files-node-picker.css";
 
-import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import { useQueries, useQuery } from "convex/react";
 import type { FunctionArgs, FunctionReference } from "convex/server";
 import { FileText, Folder } from "lucide-react";
 import {
@@ -21,6 +21,7 @@ import type { MyMenuItem_ClassNames } from "@/components/my-menu.tsx";
 import { MySearchSelectItem, MySearchSelectList } from "@/components/my-search-select.tsx";
 import { MySelectItemsGroup, MySelectItemsGroupText } from "@/components/my-select.tsx";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
+import { useFilesPaginatedQuery } from "@/hooks/files-paginated-query-hooks.ts";
 import { files_merge_search_lists } from "@/hooks/files-search-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -307,8 +308,8 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 				}
 			: ("skip" as const);
 	const searchOptions = { initialNumItems: FILES_NODE_PICKER_PAGE_SIZE };
-	const normalSearch = usePaginatedQuery(app_convex_api.files_nodes.search_saved, searchArgs(savedView.normal), searchOptions);
-	const cohortSearch = usePaginatedQuery(app_convex_api.files_nodes.search_saved, searchArgs(savedView.cohort), searchOptions);
+	const normalSearch = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, searchArgs(savedView.normal), searchOptions);
+	const cohortSearch = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, searchArgs(savedView.cohort), searchOptions);
 	const search = files_merge_search_lists(
 		savedView.normal === null ? [] : [normalSearch, ...(savedView.cohort === null ? [] : [cohortSearch])],
 		true,

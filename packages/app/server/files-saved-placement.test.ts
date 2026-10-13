@@ -441,6 +441,46 @@ describe("saved placement foundation", () => {
 		).toEqual(slot);
 	});
 
+	test.each(["normal", "cohort"] as const)("a stale %s stream carries the Move view reason", async (kind) => {
+		const f = await fixture();
+		const before = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		if (!before?.cohortId || !before.view) throw new Error("Expected the active saved view");
+		const savedStream = kind === "normal"
+			? { kind, generation: before.generation - 1 }
+			: { kind, cohortId: before.cohortId, view: before.view, generation: before.generation };
+		const args = {
+			membershipId: f.db.membershipId,
+			savedStream,
+			parentId: "root" as const,
+			kind: "file" as const,
+			archived: false,
+			restricted: false,
+			paginationOpts: { cursor: null, numItems: 1 },
+		};
+		// A normal stream becomes stale at intake; a cohort stream becomes stale at publication.
+		if (kind === "cohort") await f.asUser.query(api.files_nodes.list_tree_children, args);
+		await f.publish();
+		await expect(
+			f.asUser.query(api.files_nodes.list_tree_children, args),
+			"a stale view stays refused and carries its machine-readable reason",
+		).rejects.toMatchObject({
+			data: {
+				message: "InvalidCursor: The saved Move view changed.",
+				isConvexSystemError: true,
+				paginationError: "InvalidCursor",
+				reason: "saved_move_view_changed",
+			},
+		});
+		const after = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
+		if (!after?.cohortId || !after.view) throw new Error("Expected the new saved view");
+		const fresh = await f.asUser.query(api.files_nodes.list_tree_children, {
+			...args,
+			parentId: f.parentId,
+			savedStream: { kind: "cohort", cohortId: after.cohortId, view: after.view, generation: after.generation },
+		});
+		expect(fresh.page.map((node) => node._id), "the new view still returns the same saved file").toEqual([f.nodeId]);
+	});
+
 	test("a search counter change rejects search continuation but keeps tree continuation", async () => {
 		const f = await fixture({ normalPaths: ["/cursor-a.txt", "/cursor-b.txt"] });
 		const view = await f.asUser.query(api.files_nodes.get_workspace_move_view, { membershipId: f.db.membershipId });
@@ -505,7 +545,13 @@ describe("saved placement foundation", () => {
 				paginationOpts: { cursor: search.continueCursor, numItems: 1 },
 			}),
 			"a counter-only bump rejects the old saved search continuation",
-		).rejects.toThrow("InvalidCursor: The saved search view changed.");
+		).rejects.toMatchObject({
+			data: {
+				message: "InvalidCursor: The saved search view changed.",
+				paginationError: "InvalidCursor",
+				reason: "saved_search_view_changed",
+			},
+		});
 		const fresh = await f.asUser.query(api.files_nodes.search_saved, {
 			...searchArgs,
 			searchGeneration: view.searchGeneration + 1,

@@ -284,7 +284,7 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 	for (const op of ["exists", "eq"] as const)
 		for (const path of ["/target", "/target/source"])
 			expect(await matches(path, op), "normal metadata pages include all draft paths").toEqual(expected);
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind: "move",
@@ -309,7 +309,7 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 			if (!cohort) throw new Error("Expected the public Move group");
 			expect(cohort.errorCode).toBeNull();
 			if (cohort.workPhase === "publish") break;
-			await t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+			await t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 		} else {
 			const jobs = await t.run((ctx) =>
 				ctx.db
@@ -419,7 +419,7 @@ test.each([false, true])(
 		expect((await list()).snapshots.length > 0).toBe(!restrictedBefore);
 		expect((await get()) !== null).toBe(!restrictedBefore);
 		expect((await sign()) !== null).toBe(!restrictedBefore);
-		const started = await asUser.mutation(api.files_transfer.start, {
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: crypto.randomUUID(),
 			kind: "move",
@@ -444,7 +444,7 @@ test.each([false, true])(
 				if (!cohort) throw new Error("Expected the native Move group");
 				expect(cohort.errorCode).toBeNull();
 				if (cohort.publishedAt !== null) break;
-				await t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+				await t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 			} else {
 				const jobs = await t.run((ctx) =>
 					ctx.db

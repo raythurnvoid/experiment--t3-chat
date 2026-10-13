@@ -75,7 +75,7 @@ describe("review job content", () => {
 				await f.t.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId: cohort._id });
 				break;
 			}
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId: cohort._id,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,
@@ -149,7 +149,7 @@ describe("review job content", () => {
 				expect(cohort.workPhase).toBe("finish_content");
 				break;
 			}
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,
@@ -210,7 +210,7 @@ describe("review job content", () => {
 			if (!cohort) throw new Error("Expected the partial Save group");
 			repairProgress(cohort, `Move ${cohort.phase}/${cohort.workPhase} step ${cohort.step}`);
 			if (cohort.phase === "complete") break;
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,
@@ -273,7 +273,7 @@ describe("review job content", () => {
 		const cohort = async () => (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 		for (let pass = 0; (await cohort()).publishedAt === null; pass++) {
 			if (pass === 5_000) throw new Error("The Save did not publish");
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId,
 				step: (await cohort()).step,
 				runGeneration: (await cohort()).runJob?.generation ?? null,
@@ -289,7 +289,7 @@ describe("review job content", () => {
 		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 		for (let pass = 0; (await cohort()).phase !== "complete"; pass++) {
 			if (pass === 100) break;
-			await f.t.action(internal.files_move_cohorts.run, {
+			await f.t.action(internal.files_move_run.run, {
 				cohortId,
 				step: (await cohort()).step,
 				runGeneration: (await cohort()).runJob?.generation ?? null,

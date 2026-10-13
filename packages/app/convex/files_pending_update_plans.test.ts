@@ -307,7 +307,7 @@ describe("paged review graph", () => {
 			return { userId, membershipId };
 		});
 		const asCopier = f.t.withIdentity({ issuer: "https://clerk.test", external_id: copier.userId });
-		const copying = await asCopier.mutation(api.files_transfer.start, {
+		const copying = await asCopier.mutation(api.files_transfer.accept_input, {
 			membershipId: copier.membershipId,
 			requestId: "paused-unrelated-copy",
 			kind: "copy",

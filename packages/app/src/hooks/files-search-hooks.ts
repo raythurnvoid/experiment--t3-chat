@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { usePaginatedQuery, useQueries, type UsePaginatedQueryResult } from "convex/react";
+import { useQueries, type UsePaginatedQueryResult } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { useFn } from "./utils-hooks.ts";
 import { useFilesSavedView } from "./files-saved-view-hooks.ts";
+import { useFilesPaginatedQuery } from "./files-paginated-query-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { detect_search_query_mode, search_free_text, search_path_filter } from "@/lib/files-search.ts";
 import { files_TEXT_SEARCH_MAX_RESULTS, type files_SavedStream } from "../../shared/files.ts";
@@ -152,10 +153,10 @@ export function useFilesSearchSaved(args: {
 			? ("skip" as const)
 			: { ...query, savedStream, searchGeneration: savedView.searchGeneration! };
 	const options = { initialNumItems: FILES_SEARCH_SAVED_PAGE_SIZE };
-	const firstResult = usePaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(first, savedView.normal), options);
-	const secondResult = usePaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(second, savedView.normal), options);
-	const firstCohort = usePaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(first, savedView.cohort), options);
-	const secondCohort = usePaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(second, savedView.cohort), options);
+	const firstResult = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(first, savedView.normal), options);
+	const secondResult = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(second, savedView.normal), options);
+	const firstCohort = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(first, savedView.cohort), options);
+	const secondCohort = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(second, savedView.cohort), options);
 	const firstResults = first === null || savedView.normal === null ? [] : [firstResult,
 		...(savedView.cohort === null || first.clause.kind === "path" ? [] : [firstCohort])];
 	const secondResults = second === null || savedView.normal === null ? [] : [secondResult,
@@ -330,11 +331,11 @@ function useFilesSortedChildrenSource(
 			: { membershipId, parentId: folderId, kind, archived: false, principalIndex, sort, filter, namePrefix, segment, savedStream: props.savedStream };
 	const options = { initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE };
 
-	const open = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_sorted, sortedArgs(false), options);
-	const restricted = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_sorted, sortedArgs(true), options);
-	const shared0 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(0), options);
-	const shared1 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(1), options);
-	const shared2 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(2), options);
+	const open = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_sorted, sortedArgs(false), options);
+	const restricted = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_sorted, sortedArgs(true), options);
+	const shared0 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(0), options);
+	const shared1 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(1), options);
+	const shared2 = useFilesPaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(2), options);
 
 	return [open, restricted, shared0, shared1, shared2].map((result, index) => ({
 		rows: result.results.map((row): FilesSortedChildrenRow => ({

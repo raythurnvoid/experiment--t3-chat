@@ -93,6 +93,11 @@ import {
 } from "./files_pending_updates.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
+// Reuse loaded modules. Keep each request's state inside its handler.
+export const experimental_reuseContext = true;
+
+console.info("Move startup module", { module: "files_move_cohorts" });
+
 const WAKE_PAGE_SIZE = 8;
 // Bound one native page. Long headers reach the byte bound first.
 const DESCENDANT_PAGE_SIZE = 32;
@@ -512,7 +517,7 @@ export async function files_move_cohorts_db_schedule(
 		if (job?.state.kind === "pending" || job?.state.kind === "inProgress") return;
 	}
 	const generation = (cohort.runJob?.generation ?? 0) + 1;
-	const id = await ctx.scheduler.runAfter(args.delayMs ?? 0, internal.files_move_cohorts.run, {
+	const id = await ctx.scheduler.runAfter(args.delayMs ?? 0, internal.files_move_run.run, {
 		cohortId: cohort._id,
 		step: cohort.step,
 		runGeneration: generation,
@@ -869,6 +874,7 @@ async function db_items(
 		itemId,
 		role: target.kind === "private" ? "allocated" : settlementOnly ? "replacement" : "selected",
 	});
+	await db_add_subtree(ctx, cohort, (await ctx.db.get("files_move_cohort_nodes", reserved._yay))!);
 	if (proposal) await ctx.db.patch("files_pending_updates", proposal._id, { moveCohortId: cohort._id });
 	await ctx.db.patch("files_move_cohorts", cohort._id, { stagedItemCount: order + 1 });
 	// The unit's exact item count ends the phase, so no extra step reads an empty page.
@@ -1086,20 +1092,7 @@ async function db_descendants(
 	cohort: Doc<"files_move_cohorts">,
 	membership: Doc<"organizations_workspaces_users">,
 ) {
-	// Add one selected tree at a time, then walk its physical children by exact parent ID.
-	if (cohort.planningCursor !== "trees") {
-		const page = await ctx.db
-			.query("files_move_cohort_nodes")
-			.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id))
-			.paginate({ cursor: cohort.planningCursor, numItems: 1 });
-		let added = 0;
-		for (const record of page.page) if (await db_add_subtree(ctx, cohort, record)) added++;
-		await ctx.db.patch("files_move_cohorts", cohort._id, {
-			planningCursor: page.isDone ? "trees" : page.continueCursor,
-		});
-		// In this phase the work count holds only open child ranges. With none, no tree walk is left.
-		return Result({ _yay: { done: page.isDone && cohort.pendingWorkCount + added === 0, paged: true } });
-	}
+	// Item, child and replacement producers queue their physical child ranges.
 	let range = await ctx.db
 		.query("files_move_work_ranges")
 		.withIndex("by_cohort_phase_status_order", (q) =>
@@ -2633,7 +2626,12 @@ async function db_advance_step(
 		0,
 		false,
 	);
-	return { kind: "next" as const, step: cohort.step + 1, yield: result._yay.paged === true };
+	// Commit the new view before doing physical repair.
+	return {
+		kind: "next" as const,
+		step: cohort.step + 1,
+		yield: result._yay.paged === true || cohort.workPhase === "publish",
+	};
 }
 
 /**
@@ -2812,6 +2810,18 @@ export const run = internalAction({
 		}
 		return null;
 	},
+});
+
+export const profile_move_startup = internalAction({
+	args: { sample: v.number() },
+	returns: v.null(),
+	handler: async () => null,
+});
+
+export const profile_move_db_startup = internalMutation({
+	args: { sample: v.number() },
+	returns: v.null(),
+	handler: async () => null,
 });
 
 export const recover = internalMutation({

@@ -123,7 +123,7 @@ export async function files_move_intake_update(request: FilesMoveIntake) {
 			if (parsed.success && parsed.data.requestId === request.requestId)
 				store.put({ ...request, stopRequested: parsed.data.stopRequested || request.stopRequested });
 			// Another tab may have retired the pages before this tab learned the run ID.
-			else if (current.result === undefined && request.stopRequested && request.runId) store.add(request);
+			else if (current.result === undefined && request.stopRequested) store.add(request);
 		};
 		await completed;
 	} finally {
@@ -131,7 +131,7 @@ export async function files_move_intake_update(request: FilesMoveIntake) {
 	}
 }
 
-export async function files_move_intake_delete(request: FilesMoveIntake) {
+export async function files_move_intake_delete(request: FilesMoveIntake, options?: { forget: true }) {
 	const database = await open_database();
 	try {
 		const transaction = database.transaction(["requests", "pages"], "readwrite");
@@ -141,8 +141,8 @@ export async function files_move_intake_delete(request: FilesMoveIntake) {
 		current.onsuccess = () => {
 			const parsed = request_schema.safeParse(current.result);
 			if (parsed.success && parsed.data.requestId === request.requestId) {
-				// A sealed tab must keep another tab's unconfirmed Stop and its input.
-				if (parsed.data.stopRequested && !request.stopRequested) return;
+				// Keep unconfirmed Stop unless the user chooses to forget the browser input.
+				if (parsed.data.stopRequested && !request.stopRequested && !options?.forget) return;
 				store.delete([request.userId, request.membershipId]);
 			}
 			transaction

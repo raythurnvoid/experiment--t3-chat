@@ -82,6 +82,12 @@ vi.mock("@/hooks/files-search-hooks.ts", async (importOriginal) => {
 });
 
 // Push query changes into memoized children, as the live Convex subscriptions do.
+// Keep the fixed pager results used by this component test.
+vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return { useFilesPaginatedQuery: usePaginatedQuery };
+});
+
 vi.mock("convex/react", async () => {
 	const { useEffect, useId, useMemo, useState } = await import("react");
 	return {
@@ -1763,7 +1769,7 @@ describe("FileNodeView folder clipboard", () => {
 		await waitFor(() => expect(screen.queryByRole("menuitem", { name: /^Copy$/ })).toBeNull());
 		fireEvent.click(screen.getByRole("button", { name: "More actions for Target" }));
 		fireEvent.click(await screen.findByRole("menuitem", { name: /^Paste$/ }));
-		expect(getFunctionName(mutationMock.mock.calls[0]![0])).toBe("files_transfer:start");
+		expect(getFunctionName(mutationMock.mock.calls[0]![0])).toBe("files_transfer:accept_input");
 		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
 			kind: "copy",
 			sourceIds: [child._id],

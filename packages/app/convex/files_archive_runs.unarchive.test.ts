@@ -21,6 +21,13 @@ import {
 	archive_to_end,
 } from "./files_archive_runs.setup.test.ts";
 
+// A check step reads at most 100 nodes here instead of 500, so small trees cross it. The mock puts this
+// file in the isolated "Convex" project.
+vi.mock("../server/files-archive-runs.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../server/files-archive-runs.ts")>()),
+	files_archive_runs_CHECK_STEP_MAX_NODES: 100,
+}));
+
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -177,18 +184,18 @@ describe("unarchive_nodes", () => {
 		expect((await read_node(f, archived.fileIds[0]!)).archiveOperationId).not.toBeNull();
 	});
 
-	// It takes about 10 s alone and more than 30 s while the full suite runs.
 	test("a big restore runs as a job, and no node is ever active inside an archived folder", async () => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "back", folderCount: 6, filesPerFolder: 100 });
+		// 127 items: more than one check step of 100 and one apply step of 75.
+		const tree = await seed_tree(f, { name: "back", folderCount: 6, filesPerFolder: 20 });
 		await archive_to_end(f, tree.topId);
 
-		const restored = await restore(f, [tree.fileIds[250]!]);
+		const restored = await restore(f, [tree.fileIds[50]!]);
 		expect(restored._nay).toBeUndefined();
 		const ended = await run_to_end(f, restored._yay!);
 
 		expect(ended.activity).toMatchObject({ status: "succeeded", title: "Restore files" });
-		expect(ended.activity.progress).toMatchObject({ total: 607, completed: 607 });
+		expect(ended.activity.progress).toMatchObject({ total: 127, completed: 127 });
 		const state = await read_state(f);
 		expect(state.nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/back/d0/f000.md");
@@ -206,7 +213,7 @@ describe("unarchive_nodes", () => {
 			await step(f, job.runId);
 		}
 		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
-		const moved = await f.asOwner.mutation(api.files_transfer.start, {
+		const moved = await f.asOwner.mutation(api.files_transfer.accept_input, {
 			membershipId: f.db.membershipId,
 			requestId: crypto.randomUUID(),
 			kind: "move",

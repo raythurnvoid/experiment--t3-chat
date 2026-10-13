@@ -186,7 +186,6 @@ const CREDENTIAL_SECRET_BYTES = 32;
 const API_CREDENTIAL_NAME_MAX_CHARS = 80;
 // Keep the API key list bounded. The active API credential quota is stored in `quotas`.
 const API_CREDENTIAL_LIST_MAX = 100;
-const API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS = 60_000;
 const PUBLIC_API_GRANT_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_API_GRANT_CLEANUP_BATCH_SIZE = 100;
 const PLUGIN_SERVICE_GRANT_TOKEN_PREFIX = "psg_";
@@ -2091,44 +2090,6 @@ function has_same_download_authority(
 			);
 	}
 }
-
-// Route authorization
-
-export const mark_credential_used = internalMutation({
-	args: {
-		credentialId: v.id("api_credentials"),
-		now: v.number(),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		// Never write the credential doc here: every file publish reads it to check revocation, so a
-		// write there would conflict with parallel publishes. The usage doc has its own table.
-		const usage = await ctx.db
-			.query("api_credentials_last_used")
-			.withIndex("by_credential", (q) => q.eq("credentialId", args.credentialId))
-			.first();
-		if (usage) {
-			// Write at most once per minute, so parallel requests of one key rarely touch this doc.
-			if (args.now - usage.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS) {
-				await ctx.db.patch("api_credentials_last_used", usage._id, { lastUsedAt: args.now });
-			}
-			return null;
-		}
-
-		const credential = await ctx.db.get("api_credentials", args.credentialId);
-		if (credential) {
-			await ctx.db.insert("api_credentials_last_used", {
-				credentialId: credential._id,
-				organizationId: credential.organizationId,
-				workspaceId: credential.workspaceId,
-				userId: credential.userId,
-				lastUsedAt: args.now,
-			});
-		}
-
-		return null;
-	},
-});
 
 // Staged file writes
 

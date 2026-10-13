@@ -231,8 +231,12 @@ Tree-item components:
   - A metadata chip: one `metadata` query per plan (at most 2), merged into one list. `file.link:public`: one `link` query.
   - A pasted draft link sends no query: `draftNodeId` holds its id, and Enter opens it.
   - Rows are kept once per node id. A problem row (`{ kind: "problem", message }`) is shown as the list's text. A finished list at 1,024 rows shows "Showing the top 1,024 matches. Add more words to narrow the search.", the most matches one search index read returns.
-  - A query that throws throws in render, like every `usePaginatedQuery`. There is no "Search failed" state.
+  - Other query errors throw in render. There is no "Search failed" state.
   - Every `search_saved` caller sends a `savedStream` from `useFilesSavedView`: the normal stream and, while a Move runs, the visible Move view too, merged once per node id. A call with no stream throws during a Move. The node picker search (`files_merge_search_lists`) and the `file.path` folder suggestions follow the same rule.
+  - Saved pagers use `useFilesPaginatedQuery`. The `saved_move_view_changed` and
+    `saved_search_view_changed` errors wait for new view args. They do not retry the same old
+    view. Other cursor errors restart normally.
+    Native page splits and end cursors stay supported. A waiting pager cannot load another page.
 - How the server answers: one clause plus an optional folder, one `.paginate()` per call, saved and active rows only, each row `{ kind, nodeId, path }`. `name` reads the `files_nodes.search_name` text index; a folder adds one `ancestor<folder depth>` equality from the folder's saved row, so it must be 12 levels deep or less. `content` reads committed chunks only and takes no folder. `metadata` reads one plan on the committed value indexes. `path` is an exact, case-sensitive path or a node id. `link` pages `files_share_links` (at most 500 per workspace). The folder is resolved from its exact path on the server and checked with `db_get_readable_tree_node`; a missing or unreadable folder, or one deeper than 12 levels, comes back as the only row of a done page: `{ kind: "problem", message }`. A text search page that grew past 100 rows throws `convex_invalid_cursor_error`, and the hook starts again from page 1.
 - While the first page loads, the list shows "Searching…". A finished empty list shows "No files match your search." in the sidebar and "No matching files" in the palette. An archived node never matches.
 - The free text loses its quotes before `detect_search_query_mode`, and a text of quotes alone matches nothing.
@@ -664,7 +668,8 @@ and `find` also keep raw name order.
   Cut rows are muted and their accessible names say `ready to move`. Escape clears only an idle
   cut while file navigation has focus. Copy stays until the next Cut or Copy, or until the
   workspace changes. There is no Clear button.
-- Paste calls `files_transfer.start`. The provider keeps one request id after a lost response,
+- Paste calls `files_transfer.accept_input`, then `append_input` for later pages. Complete Move
+  input starts in that transaction. Copy still calls `seal`. The provider keeps one request id after a lost response,
   and blocks another start while this member has an active run in the workspace. Run progress
   comes from `get` and `list_current`. Tree changes come from the live `list_tree_children` pages
   of the open folders.
@@ -775,7 +780,7 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   when the parent is a file or an archived folder: `create_folder_node`, `create_text_node` (its
   preflight refuses before any R2 write), `create_upload_node(s)`, and the shared
   `files_nodes_db_create_node_recursively_at_path` that the copy and publish paths use. Paste
-  (`files_transfer.start`) answers `Destination changed`, moves answer `Not found`, and a draft whose
+  (`files_transfer.accept_input`) answers `Destination changed`, moves answer `Not found`, and a draft whose
   saved parent is archived cannot be saved. A live child under an archived parent would stay hidden
   until the folder is restored.
 - The folder view of an archived folder (reached from the draft recovery link `Open archived folder`)
@@ -812,12 +817,22 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   The Move Activity waits for physical repair before the next root. Stop keeps completed roots;
   their repair still finishes. A later name conflict pauses the remaining roots.
   The dialog pages conflicts and completed receipts with `list_items`.
+  The parent joins exact selection and planning work under the existing flushed transaction
+  budget. Each logical step checks access again. Selected folders queue their child ranges
+  when selected. The final view switch ends its transaction, so physical repair starts after
+  the new location can be read. A native page always ends its transaction.
 - Before sending Move input, the browser saves its full selection in IndexedDB, in pages of 100.
   The key binds the user and membership. Accepted input replays after reload. Unstarted input
   asks for Resume. A new Cut or Copy has a new revision, so old receipts cannot clear it.
-  Recovery looks up the exact server request before reading saved pages. A late tab can retire
-  sealed input after another tab removes those pages. An unconfirmed Stop keeps its local header
+  Recovery looks up the exact server request before reading saved pages or showing Resume. A late tab can retire
+  accepted input after another tab removes those pages. An unconfirmed Stop keeps its local header
   until the server confirms it, including after old run history is deleted.
+  Unknown run IDs and failed receipt checks keep a visible Retry. A null receipt does not prove
+  the server accepted nothing. `Forget saved selection` removes only local input and a matching Cut;
+  accepted work may continue. A newer clipboard or request stays. Stop headers can keep an unknown
+  run ID after another tab removed the pages. Completed Cut IDs use paged server receipts.
+  A fresh request skips that recovery lookup only after this call saves its full selection.
+  Retry and reload still check the exact server request first.
 - While a move op exists in the workspace, a child can still carry its old stored path. The tree is
   right, because it lists children by `parentId`. `files_db_get_visible_node_by_path` in
   `server/files.ts` then walks names from the root instead of one path index read. The path picker

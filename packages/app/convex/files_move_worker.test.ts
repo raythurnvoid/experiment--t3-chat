@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { FunctionArgs } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { advance, run } from "./files_move_cohorts.ts";
+import { advance } from "./files_move_cohorts.ts";
+import { run } from "./files_move_run.ts";
 import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -36,7 +37,7 @@ async function fixture(depth = 2, childCount = 0) {
 		childIds.push(await folder(`child-${index}`, sourceId));
 	}
 	const targetId = await folder("/target", "root");
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind: "move",
@@ -55,6 +56,74 @@ async function fixture(depth = 2, childCount = 0) {
 	}
 	throw new Error("Transfer did not start a Move group");
 }
+
+test("new Move groups schedule the leaf action", async () => {
+	const f = await fixture();
+	const owner = await f.t.run((ctx) => ctx.db.system.get(f.cohort.runJob!.id));
+	expect(owner?.name, "the saved Move owner uses files_move_run:run").toBe("files_move_run:run");
+	await test_finish_transfer_run(f.asUser, f.runId);
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).toMatchObject({
+		path: "/target/source",
+	});
+	expect(await f.t.run((ctx) => ctx.db.get("activities", f.activityId))).toMatchObject({ status: "succeeded" });
+});
+
+test("a selected folder queues its child range in the item step", async () => {
+	const f = await fixture();
+	await f.t.mutation(internal.files_move_cohorts.advance, {
+		cohortId: f.cohort._id,
+		step: f.cohort.step,
+		runGeneration: f.cohort.runJob?.generation ?? null,
+		join: false,
+	});
+	const ranges = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_move_work_ranges")
+			.withIndex("by_cohort_key", (q) => q.eq("cohortId", f.cohort._id))
+			.collect(),
+	);
+	expect(ranges, "the item producer queues the selected saved subtree").toMatchObject([
+		{ key: `saved-children:${f.sourceId}`, range: { kind: "node", nodeId: f.sourceId }, status: "queued" },
+	]);
+	expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id))).toMatchObject({
+		workPhase: "descendants",
+		pendingWorkCount: 1,
+	});
+	await test_finish_transfer_run(f.asUser, f.runId);
+});
+
+test("publication commits before physical repair", async () => {
+	const f = await fixture();
+	for (let pass = 0; pass < 100; pass++) {
+		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id)))!;
+		if (cohort.publishedAt !== null) break;
+		await f.t.mutation(internal.files_move_cohorts.advance, {
+			cohortId: cohort._id,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			join: true,
+		});
+	}
+	const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id)))!;
+	expect(cohort.publishedAt, "the joined steps reach publication").not.toBeNull();
+	expect(cohort.workPhase, "publication returns at finish_content before repair").toBe("finish_content");
+	expect(cohort.runJob?.step, "the saved owner points to the repair step").toBe(cohort.step);
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId)), "stored repair is still pending").toMatchObject(
+		{
+			path: "/level-1/source",
+			moveCohortId: cohort._id,
+		},
+	);
+	expect(
+		await f.asUser.query(api.files_nodes.get_file_node_for_membership, {
+			membershipId: f.db.membershipId,
+			fileNodeId: String(f.sourceId),
+		}),
+		"the selected view already shows the new path",
+	).toMatchObject({ parentId: f.targetId, path: "/target/source" });
+	expect(await f.t.run((ctx) => ctx.db.get("activities", f.activityId))).toMatchObject({ progress: { completed: 1 } });
+	await test_finish_transfer_run(f.asUser, f.runId);
+});
 
 test.each([2, 3])("an empty folder at depth %i publishes in three transactions", async (depth) => {
 	const f = await fixture(depth);
@@ -96,10 +165,7 @@ test("an action yields its committed step when the time budget ends", async () =
 		vi.setSystemTime(Date.now() + 5_001);
 		return result;
 	});
-	await f.t.action(
-		internal.files_move_cohorts.run,
-		owner.args[0] as FunctionArgs<typeof internal.files_move_cohorts.run>,
-	);
+	await f.t.action(internal.files_move_run.run, owner.args[0] as FunctionArgs<typeof internal.files_move_run.run>);
 	const after = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", before._id)))!;
 	expect(transactions, "the time budget ends the action after a committed transaction").toBe(1);
 	expect(after.step).toBeGreaterThan(before.step);
@@ -176,10 +242,7 @@ test("a thrown transaction after progress aborts from the current step", async (
 	});
 	const error = vi.spyOn(console, "error").mockImplementation(() => {});
 	const owner = (await f.t.run((ctx) => ctx.db.system.get(f.cohort.runJob!.id)))!;
-	await f.t.action(
-		internal.files_move_cohorts.run,
-		owner.args[0] as FunctionArgs<typeof internal.files_move_cohorts.run>,
-	);
+	await f.t.action(internal.files_move_run.run, owner.args[0] as FunctionArgs<typeof internal.files_move_run.run>);
 	expect(
 		await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id)),
 		"the failed current step enters abort",
@@ -195,4 +258,58 @@ test("a thrown transaction after progress aborts from the current step", async (
 	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).toMatchObject({
 		path: "/level-1/source",
 	});
+});
+
+test("a thrown joined phase aborts from its last committed step", async () => {
+	const f = await fixture();
+	let reachedJoinedPhase = false;
+	let entry = f.cohort;
+	let sourceEntry = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId)))!;
+	test_spy_handler(advance, async (handler, ctx, args) => {
+		entry = (await ctx.db.get("files_move_cohorts", f.cohort._id))!;
+		sourceEntry = (await ctx.db.get("files_nodes", f.sourceId))!;
+		const db = new Proxy(ctx.db, {
+			get(target, key) {
+				const member: unknown = Reflect.get(target, key);
+				if (typeof member !== "function") return member;
+				if (key === "patch")
+					return (...patchArgs: unknown[]) => {
+						const fields = patchArgs[2] as { workPhase?: string };
+						if (!reachedJoinedPhase && patchArgs[0] === "files_move_cohorts" && fields.workPhase === "headers") {
+							reachedJoinedPhase = true;
+							throw new Error("Move test failure inside a joined transaction");
+						}
+						return Reflect.apply(member, target, patchArgs);
+					};
+				return member.bind(target);
+			},
+		});
+		return await handler({ ...ctx, db }, args);
+	});
+	vi.spyOn(console, "error").mockImplementation(() => {});
+	const owner = (await f.t.run((ctx) => ctx.db.system.get(f.cohort.runJob!.id)))!;
+	await f.t.action(internal.files_move_run.run, owner.args[0] as FunctionArgs<typeof internal.files_move_run.run>);
+	expect(reachedJoinedPhase, "the fault runs after joined descendant work").toBe(true);
+	expect(
+		await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id)),
+		"resume uses the rolled-back entry step",
+	).toMatchObject({
+		step: entry.step + 1,
+		phase: "aborting",
+		publishedAt: null,
+		stagedItemCount: entry.stagedItemCount,
+		affectedNodeCount: entry.affectedNodeCount,
+		pendingWorkCount: entry.pendingWorkCount,
+	});
+	expect(
+		await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId)),
+		"the thrown call keeps its entry header",
+	).toEqual(sourceEntry);
+	await test_finish_transfer_run(f.asUser, f.runId);
+	expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id))).toMatchObject({
+		phase: "complete",
+		publishedAt: null,
+	});
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).toMatchObject({ path: "/level-1/source" });
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).not.toHaveProperty("moveCohortId");
 });

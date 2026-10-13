@@ -138,8 +138,10 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   saved headers, content, search chunks and every owner's pending overlay in small transactions.
   One transaction joins small exact work after flushing derived writes and checking its budget.
   Any native page ends the transaction, even an empty page. Heavy text preparation keeps its own
-  step. Between advances, one action checks whether five seconds or 128 advance calls have
-  passed, then hands off. A content action can take longer. These bounds never refuse a selection.
+  step. `files_move_run.run` carries the committed steps. It loads the content or media helper
+  with a literal `import()` only when the step needs it. It calls that helper locally, with no new
+  remote action call. Between advances, it checks whether five seconds or 128 advance calls have
+  passed, then hands off. A content helper can take longer. These bounds never refuse a selection.
   Before publication, all normal names still resolve to the old saved IDs and content. One small
   transaction selects the complete after view. Physical cleanup then finishes in pages.
   This also serves one change. It never exposes a temporary folder or parking name.
@@ -191,6 +193,12 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 - Every preparation step checks current membership, its lifetime, the parent run and access clocks
   in its own transaction. The final switch checks the same proof. Changed access or input aborts
   unpublished candidates and returns `needs_review`. Completed groups stay saved.
+  Move joins exact selection, normalization and planning work while the flushed transaction
+  metrics allow it. Each joined step repeats the current checks. Copy keeps its existing step
+  boundaries. An empty indexed restricted-root range needs no native page. Every actual native
+  page still ends the transaction. Selected item, child and replacement producers queue their
+  saved subtree ranges directly. The publication step commits the after view and next repair
+  step together, then returns. Physical repair starts in a fresh transaction and keeps the slot.
 - Private subtree Discard checks the selected descendants in pages, then fences the approved roots in one small transaction. The unchanged unit clock protects that checked set. Activity counts the full unit when the roots close; cleanup continues after Stop. Discard's other final transactions count their reads, writes, bytes, and query ranges and roll back as `review_too_large` before exceeding the supported budget.
 - Before the switch, each Save group checks its full cost for the pinned payer. Folders, moves,
   unchanged text and replaced occupants add no charge. Private quota changes settle once at the
@@ -668,6 +676,12 @@ unused fields when a node moves to a shallower folder or root.
 - A workspace slot is either idle, with no view fields, or active, with both view fields required.
   Search cursors use only `files_move_search_generations`, indexed by workspace. A missing counter
   means zero; its first change writes one. Tree view reads use the slot and do not read the busy cohort.
+  Saved browser pagers wait for new view args on `saved_move_view_changed` or
+  `saved_search_view_changed`. They keep native page splits and stop loadMore while waiting.
+  Pending keeps the selected chat while source pages load. It falls back to All changes
+  only when the exact source summary is empty. A chat outside the loaded source pages
+  keeps its selected option and title.
+  Other cursor errors still restart normally.
 - Bash `meta get` merges the normal and selected exact file or proposal ranges. An unselected
   pending branch finds its staged scope through its source reservation. Cleanup keeps all fields visible.
 - A user's own draft write may add a hide or place of a saved node only while other users hold fewer than 32 of them. Past that, the flush refuses it with a clean error. Without this cap, one write to a saved node would update every user's copies inline. The user's own draft write is refused, also when it moves or creates a draft onto the name of a crowded saved node (the claim adds a hide). Folder side effects (a broken move cycle, a folder move), jobs and the user who accepts or discards never refuse, so a node can pass the cap, for example when a saved file moves onto a name that many users' drafts already hold. Discard, Accept and data deletion never fail on the cap.

@@ -91,7 +91,7 @@ async function mutation<T>(f: Fixture, handler: (ctx: MutationCtx) => Promise<T>
 	});
 }
 
-const step_args = (f: Fixture) => ({ cohortId: f.cohortId, fence: 1, attemptFence: 1 });
+const step_args = (f: Fixture) => ({ cohortId: f.cohortId, fence: f.fence, attemptFence: f.attemptFence });
 
 async function phase(
 	f: Fixture,
@@ -267,7 +267,7 @@ async function native_pending_scope(options: { otherFile?: boolean; editor?: boo
 		if (!proposal) throw new Error("Expected the native pending branch");
 		proposals.push(proposal);
 	}
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind: "move",
@@ -367,6 +367,7 @@ test("public Move joins empty owner phases in one step", async () => {
 	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
 		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
 		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
+		let childRangeId: Id<"files_move_work_ranges"> | null = null;
 		if (cohort?.step === step && cohort.workPhase === "finish_owners") cleanupSteps++;
 		if (cohort?.step === step && (cohort.workPhase === "owners_collect" || cohort.workPhase === "sides")) {
 			const cursor = cohort.stagingCursor ? (JSON.parse(cohort.stagingCursor) as { order: number }) : { order: -1 };
@@ -379,7 +380,7 @@ test("public Move joins empty owner phases in one step", async () => {
 				else sideSteps++;
 			}
 		}
-		if (cohort?.step === step && cohort.workPhase === "descendants" && cohort.planningCursor === "trees") {
+		if (cohort?.step === step && cohort.workPhase === "descendants") {
 			let range = await ctx.db
 				.query("files_move_work_ranges")
 				.withIndex("by_cohort_phase_status_order", (q) =>
@@ -393,11 +394,13 @@ test("public Move joins empty owner phases in one step", async () => {
 				)
 				.first();
 			if (range?.kind === "saved_subtree" && range.range.kind === "node" && range.range.nodeId === sourceId)
-				childSteps++;
+				childRangeId = range._id;
 		}
-		return await handler(ctx, args);
+		const result = await handler(ctx, args);
+		if (childRangeId && (await ctx.db.get("files_move_work_ranges", childRangeId))?.status === "complete") childSteps++;
+		return result;
 	});
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind: "move",
@@ -436,7 +439,7 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 		if (cohort.workPhase === "publish") break;
 		expect(cohort.errorCode).toBeNull();
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: f.cohortId,
 			step: cohort.step,
 			runGeneration: cohort.runJob?.generation ?? null,
@@ -490,7 +493,7 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 		).toEqual(before.plain.map((doc) => doc._id));
 	}
 	const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
-	await f.t.action(internal.files_move_cohorts.run, {
+	await f.t.action(internal.files_move_run.run, {
 		cohortId: f.cohortId,
 		step: cohort.step,
 		runGeneration: cohort.runJob?.generation ?? null,
@@ -554,7 +557,7 @@ test("public Stop restores a partly staged unselected pending scope page", async
 		const before = await pending_scope_docs(f, proposal, "before");
 		if (before.plain.length > 0) break;
 		expect(cohort.publishedAt).toBeNull();
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: f.cohortId,
 			step: cohort.step,
 			runGeneration: cohort.runJob?.generation ?? null,
@@ -601,7 +604,7 @@ test("public Move tags an old pending chunk without copying it, and the drain wa
 	for (let pass = 0; pass < 1000; pass++) {
 		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 		if ((await pending_scope_docs(f, proposal, "before")).plain.length > 0) break;
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: f.cohortId,
 			step: cohort.step,
 			runGeneration: cohort.runJob?.generation ?? null,
@@ -772,7 +775,7 @@ test("draft expiry runs while another user's Move holds the workspace, and waits
 		);
 		if (reserved) break;
 		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: f.cohortId,
 			step: cohort.step,
 			runGeneration: cohort.runJob?.generation ?? null,
@@ -990,7 +993,7 @@ test("after a Stop, the drain removes many old docs of a proposal the Move held"
 	for (let pass = 0; pass < 1000; pass++) {
 		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 		if ((await pending_scope_docs(f, proposal, "before")).plain.length > 0) break;
-		await f.t.action(internal.files_move_cohorts.run, {
+		await f.t.action(internal.files_move_run.run, {
 			cohortId: f.cohortId,
 			step: cohort.step,
 			runGeneration: cohort.runJob?.generation ?? null,
@@ -1210,7 +1213,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 	expect(originalDocs[1]!.metadata.length).toBeGreaterThan(8);
 	const originalPaths = await paths("/target");
 	expect(originalPaths).toHaveLength(18);
-	const started = await asUser.mutation(api.files_transfer.start, {
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind: "move",
@@ -1235,7 +1238,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 		if (cohort?.workPhase === "publish") break;
 		if (cohort) {
 			expect(cohort.errorCode).toBeNull();
-			await t.action(internal.files_move_cohorts.run, {
+			await t.action(internal.files_move_run.run, {
 				cohortId: cohort._id,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,
@@ -1333,7 +1336,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 		expect(affectedMetadata?.fields).toEqual(["metadata.affected"]);
 	}
 	await check_unrelated(false);
-	await t.action(internal.files_move_cohorts.run, {
+	await t.action(internal.files_move_run.run, {
 		cohortId,
 		step: cohort.step,
 		runGeneration: cohort.runJob?.generation ?? null,
@@ -1343,7 +1346,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 	cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 	expect(cohort.phase).toBe("published");
 	for (let pass = 0; pass < 1000; pass++) {
-		await t.action(internal.files_move_cohorts.run, {
+		await t.action(internal.files_move_run.run, {
 			cohortId,
 			step: cohort.step,
 			runGeneration: cohort.runJob?.generation ?? null,
@@ -1527,7 +1530,7 @@ test("closes after-only private parent aliases and restores partial owner stagin
 		}
 		if (cohort) {
 			expect(cohort.errorCode).toBeNull();
-			await t.action(internal.files_move_cohorts.run, {
+			await t.action(internal.files_move_run.run, {
 				cohortId: cohort._id,
 				step: cohort.step,
 				runGeneration: cohort.runJob?.generation ?? null,
@@ -1592,7 +1595,7 @@ test("closes after-only private parent aliases and restores partial owner stagin
 	for (let pass = 0; pass < 2000; pass++) {
 		cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 		if (cohort.phase === "complete") break;
-		await t.action(internal.files_move_cohorts.run, {
+		await t.action(internal.files_move_run.run, {
 			cohortId,
 			step: cohort.step,
 			runGeneration: cohort.runJob?.generation ?? null,
@@ -1693,9 +1696,10 @@ test("owner collection rejects stale attempts and stale page replies", async () 
 	await add_owners(f, 1);
 	await phase(f, "owners_collect");
 	const args = { ...step_args(f), nodeRecordId: f.recordId, cursor: null };
-	expect(
-		(await mutation(f, (ctx) => files_move_owner_work_db_collect_node(ctx, { ...args, attemptFence: 0 })))._nay?.name,
-	).toBe("stopped");
+	const staleAttempt = { ...args, attemptFence: args.attemptFence - 1 };
+	expect((await mutation(f, (ctx) => files_move_owner_work_db_collect_node(ctx, staleAttempt)))._nay?.name).toBe(
+		"stopped",
+	);
 	expect((await mutation(f, (ctx) => files_move_owner_work_db_collect_node(ctx, args)))._nay).toBeUndefined();
 	expect((await mutation(f, (ctx) => files_move_owner_work_db_collect_node(ctx, args)))._nay?.name).toBe("stopped");
 });

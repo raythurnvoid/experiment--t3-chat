@@ -4,6 +4,12 @@ import { getFunctionName, type FunctionReference } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { FilesSearchInput, type FilesSearchInput_Props } from "./files-search-input.tsx";
 
+// Keep the fixed pager results used by this component test.
+vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return { useFilesPaginatedQuery: usePaginatedQuery };
+});
+
 vi.mock("convex/react", async (importOriginal) => ({
 	...(await importOriginal<typeof import("convex/react")>()),
 	useQuery: (query: FunctionReference<"query">, args: Record<string, string> | "skip") =>

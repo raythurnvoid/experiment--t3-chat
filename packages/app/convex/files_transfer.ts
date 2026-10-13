@@ -51,7 +51,7 @@ import {
 	files_move_cohorts_db_request_stop,
 	files_move_cohorts_db_schedule,
 } from "./files_move_cohorts.ts";
-import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
+import { files_pending_overlay_list, files_pending_overlay_db_can_join_step } from "../server/files-pending-overlay.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_slot,
@@ -114,6 +114,8 @@ import {
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
+
+console.info("Move startup module", { module: "files_transfer" });
 
 const MAX_SELECTED_NODES = 200;
 const DISCOVERY_PAGE_SIZE = 50;
@@ -1451,7 +1453,7 @@ export const get = query({
 	},
 });
 
-export const get_move_intake = query({
+export const get_move_acceptance = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), requestId: v.string() },
 	returns: v.union(
 		v.object({
@@ -2025,7 +2027,7 @@ export async function files_transfer_db_start_rename(
 	return started;
 }
 
-export const start = mutation({
+export const accept_input = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		requestId: v.string(),
@@ -2050,7 +2052,7 @@ export const start = mutation({
 			args.targetParentId === files_ROOT_ID
 				? null
 				: await files_saved_placement_db_get_node(ctx.db, args.targetParentId);
-		return await db_start(ctx, {
+		const started = await db_start(ctx, {
 			membership,
 			sourceMembership: membership,
 			destinationMembership: membership,
@@ -2067,6 +2069,11 @@ export const start = mutation({
 			origin: { kind: "clipboard" },
 			feedVisible: true,
 		});
+		if (started._nay) return started;
+		const run = (await ctx.db.get("files_transfer_runs", started._yay.runId))!;
+		const accepted = await db_accept_complete_move({ ctx, run });
+		if (accepted._nay) return accepted;
+		return started;
 	},
 });
 
@@ -2397,6 +2404,12 @@ async function db_seal(args: {
 	) {
 		// A waiting paste shows no card until it starts.
 		await ctx.db.patch("activities", activity._id, { feedVisible: false });
+	} else if (
+		run.kind === "move" &&
+		run.origin.kind === "clipboard" &&
+		(await files_pending_overlay_db_can_join_step(ctx))
+	) {
+		await db_advance(ctx, { runId: run._id });
 	} else {
 		await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 	}
@@ -2410,7 +2423,23 @@ async function db_seal(args: {
 	return Result({ _yay: null });
 }
 
-export const append_sources = mutation({
+async function db_accept_complete_move(args: { ctx: MutationCtx; run: Doc<"files_transfer_runs"> }) {
+	const { ctx, run } = args;
+	if (
+		run.kind !== "move" ||
+		run.origin.kind !== "clipboard" ||
+		run.step !== "uploading" ||
+		!run.selection ||
+		run.selection.count !== run.selection.expectedCount
+	)
+		return Result({ _yay: null });
+	const activity = await db_require_activity(ctx, run._id);
+	// Exact accepted replays never restart a stopped or finished run.
+	if (!activities_is_active(activity.status) || activity.status === "stopping") return Result({ _yay: null });
+	return await db_seal(args);
+}
+
+export const append_input = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		runId: v.id("files_transfer_runs"),
@@ -2421,12 +2450,16 @@ export const append_sources = mutation({
 	handler: async (ctx, args) => {
 		const owned = await db_get_owned_run(ctx, args);
 		if (owned._nay) return owned;
-		return await db_append_sources({
+		const appended = await db_append_sources({
 			ctx,
 			run: owned._yay.run,
 			offset: args.offset,
 			sources: args.sourceIds.map((id) => ({ kind: "saved", id })),
 		});
+		if (appended._nay) return appended;
+		// The accepted page changed the count in this transaction.
+		const run = (await ctx.db.get("files_transfer_runs", args.runId))!;
+		return await db_accept_complete_move({ ctx, run });
 	},
 });
 
@@ -3008,11 +3041,11 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 				run,
 				errorMessage: reader.exhausted ? "The source path needs too many reads" : "Permission denied",
 			});
-			return;
+			return false;
 		}
 		if (entry.pendingUpdate?.preparation || (entry.kind === "private" && !entry.pendingUpdate.createIntent)) {
 			await db_stop_run({ ctx, run, errorMessage: "The source draft is still preparing" });
-			return;
+			return false;
 		}
 		if (run.step === "select") {
 			if (
@@ -3021,7 +3054,7 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 				(run.targetPath === entry.path || run.targetPath.startsWith(entry.path + "/"))
 			) {
 				await db_stop_run({ ctx, run, errorMessage: "A folder cannot be transferred inside itself" });
-				return;
+				return false;
 			}
 			await ctx.db.patch("files_transfer_selection_items", item._id, { path: entry.path, kind: entry.node.kind });
 		} else {
@@ -3048,7 +3081,7 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 						: files_normalize_file_rename_name(targetName);
 				if (normalized._nay || !targetName || targetName === "." || /[/\\]/.test(targetName)) {
 					await db_stop_run({ ctx, run, errorMessage: "Invalid destination name" });
-					return;
+					return false;
 				}
 				await db_insert_item(ctx, {
 					organizationId: run.organizationId,
@@ -3100,7 +3133,7 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 		deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
 		updatedAt: Date.now(),
 	});
-	await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
+	return true;
 }
 
 async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
@@ -3278,7 +3311,7 @@ async function db_plan(args: {
 		if (reader.exhausted && cursor !== run.planCursor) break;
 		if (!source || source.path !== item.sourcePath) {
 			await db_pause_item({ ctx, item, kind: "source_changed" });
-			return;
+			return false;
 		}
 
 		const parentPath = parent
@@ -3300,7 +3333,7 @@ async function db_plan(args: {
 			});
 			if (destination._nay) {
 				await db_pause_item({ ctx, item, kind: "destination_changed" });
-				return;
+				return false;
 			}
 		}
 
@@ -3316,7 +3349,7 @@ async function db_plan(args: {
 		});
 		if (resolved._nay) {
 			await db_stop_run({ ctx, run, errorMessage: resolved._nay.message });
-			return;
+			return false;
 		}
 		if (!resolved._yay) {
 			const current = await ctx.db.get("files_transfer_items", item._id);
@@ -3324,7 +3357,8 @@ async function db_plan(args: {
 				cursor = item.order;
 				continue;
 			}
-			return;
+			// A pending suffix search already scheduled its next call.
+			return false;
 		}
 
 		await ctx.db.patch("files_transfer_items", item._id, { plannedPath: resolved._yay.path });
@@ -3359,7 +3393,7 @@ async function db_plan(args: {
 		});
 	}
 
-	if (!done || !conflict) await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
+	return !done || !conflict;
 }
 
 async function db_commit_move(args: {
@@ -3499,6 +3533,24 @@ async function db_commit_move(args: {
 				versions: pins.versions.slice(0, 2),
 				done: false,
 			};
+		}
+		if (!validation.done && validation.cursor === null) {
+			const first = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_isRestrictedScopeRoot_treePath", (q) =>
+					q
+						.eq("organizationId", source.organizationId)
+						.eq("workspaceId", source.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("isRestrictedScopeRoot", true)
+						.gt("treePath", source.treePath)
+						.lt("treePath", path_tree_prefix_upper_bound(source.treePath)),
+				)
+				.first();
+			if (!first) {
+				validation = { ...validation, done: true };
+				await ctx.db.patch("files_transfer_runs", run._id, { moveValidation: validation });
+			}
 		}
 		if (!validation.done) {
 			const page = await ctx.db
@@ -3749,10 +3801,9 @@ async function db_prepare_parent_folders(ctx: MutationCtx, run: Doc<"files_trans
 	return false;
 }
 
-export const advance = internalMutation({
-	args: { runId: v.id("files_transfer_runs") },
-	returns: v.null(),
-	handler: async (ctx, args) => {
+async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_runs"> }) {
+	// Each joined unit repeats the current access, Stop, destination and workspace checks.
+	while (true) {
 		const run = await ctx.db.get("files_transfer_runs", args.runId);
 		if (!run) return null;
 		const activity = await db_require_activity(ctx, run._id);
@@ -3798,7 +3849,11 @@ export const advance = internalMutation({
 
 		// Finish an owned group first. Rename then gets the next free boundary.
 		let waitingForRename = false;
-		for (const workspaceId of new Set([run.workspaceId, run.sourceScope.workspaceId, run.destinationScope.workspaceId])) {
+		for (const workspaceId of new Set([
+			run.workspaceId,
+			run.sourceScope.workspaceId,
+			run.destinationScope.workspaceId,
+		])) {
 			const nextRename = await db_get_current_activity(ctx, { userId: run.userId, workspaceId }, true);
 			if (nextRename && nextRename.source.id !== run._id) {
 				waitingForRename = true;
@@ -3880,7 +3935,9 @@ export const advance = internalMutation({
 			return null;
 		}
 		if (run.step === "select" || run.step === "normalize") {
-			await db_select_sources(ctx, run);
+			if (!(await db_select_sources(ctx, run))) return null;
+			if (run.kind === "move" && (await files_pending_overlay_db_can_join_step(ctx))) continue;
+			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 			return null;
 		}
 		if (run.step === "discover") {
@@ -3888,7 +3945,9 @@ export const advance = internalMutation({
 			return null;
 		}
 		if (run.step === "plan") {
-			await db_plan({ ctx, run, membership });
+			if (!(await db_plan({ ctx, run, membership }))) return null;
+			if (run.kind === "move" && (await files_pending_overlay_db_can_join_step(ctx))) continue;
+			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 			return null;
 		}
 		if (!run.rename && !(await db_prepare_parent_folders(ctx, run))) return null;
@@ -4178,7 +4237,20 @@ export const advance = internalMutation({
 
 		await ctx.scheduler.runAfter(0, internal.files_transfer.advance, args);
 		return null;
-	},
+	}
+}
+
+export const advance = internalMutation({
+	args: { runId: v.id("files_transfer_runs") },
+	returns: v.null(),
+	handler: db_advance,
+});
+
+// Temporary startup control. Remove it after the measured experiment.
+export const profile_move_db_startup = internalMutation({
+	args: { sample: v.number() },
+	returns: v.null(),
+	handler: async () => null,
 });
 
 /**

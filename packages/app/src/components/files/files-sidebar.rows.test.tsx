@@ -104,6 +104,12 @@ vi.mock("@/lib/files-move-intake.ts", () => ({
 	files_move_intake_delete: async () => {},
 }));
 
+// Keep the fixed pager results used by this component test.
+vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return { useFilesPaginatedQuery: usePaginatedQuery };
+});
+
 vi.mock("convex/react", async (importOriginal) => {
 	const original = await importOriginal<typeof import("convex/react")>();
 	const { getFunctionName } = await import("convex/server");
@@ -125,7 +131,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		...original,
 		useConvex: () => ({
 			query: async (query: FunctionReference<"query">, args: unknown) =>
-				getFunctionName(query) === "files_transfer:get_move_intake" ? null : creationPolicy(query, args),
+				getFunctionName(query) === "files_transfer:get_move_acceptance" ? null : creationPolicy(query, args),
 			mutation: createNode,
 			action: createNode,
 		}),

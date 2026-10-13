@@ -31,6 +31,12 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 }));
 
 // Keep the real palette, filters, and loading UI. Replace only the query boundary.
+// Keep the fixed pager results used by this component test.
+vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return { useFilesPaginatedQuery: usePaginatedQuery };
+});
+
 vi.mock("convex/react", async (importOriginal) => {
 	const { useEffect, useState } = await import("react");
 	return {

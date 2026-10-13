@@ -371,7 +371,7 @@ describe("review jobs", () => {
 		const target = await saved_folder(f, "target");
 
 		// Each lane admits its own job. They only meet later, in the shared two-worker pool.
-		const copy = await f.asUser.mutation(api.files_transfer.start, {
+		const copy = await f.asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: f.db.membershipId,
 			requestId: "copy-next-to-review",
 			kind: "copy",
@@ -960,7 +960,7 @@ describe("review jobs", () => {
 				break;
 			}
 			if (cohort.phase === "complete") throw new Error("Review completed without metadata cleanup");
-			await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+			await f.t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 			if (pass === 9999) throw new Error("Review did not reach metadata cleanup");
 		}
 		const result = await finish_review(f, runId);
@@ -1345,7 +1345,7 @@ describe("review jobs", () => {
 				if (unit.cohortId) {
 					const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", unit.cohortId!));
 					if (cohort && cohort.phase !== "complete")
-						await f.t.action(internal.files_move_cohorts.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+						await f.t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 				}
 				done = await purge();
 			}

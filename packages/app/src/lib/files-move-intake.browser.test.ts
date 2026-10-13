@@ -81,6 +81,24 @@ describe("files_move_intake", () => {
 		await expect(files_move_intake_read_page({ request, offset: 200 })).rejects.toThrow("missing a page");
 	});
 
+	test("forgets the exact saved selection only after an explicit choice", async () => {
+		const request = make_request(201);
+		const sourceIds = Array.from({ length: 201 }, (_, index) => `source-${index}` as app_convex_Id<"files_nodes">);
+		await files_move_intake_save({ request, sourceIds });
+		const stopped = { ...request, stopRequested: true };
+		await files_move_intake_update(stopped);
+
+		await files_move_intake_delete(request);
+		expect(await files_move_intake_load(request), "normal retirement keeps the saved Stop header").toEqual(stopped);
+		expect(await files_move_intake_read_page({ request, offset: 0 })).toEqual(sourceIds.slice(0, 100));
+		expect(await files_move_intake_read_page({ request, offset: 200 })).toEqual(sourceIds.slice(200));
+
+		await files_move_intake_delete(request, { forget: true });
+		expect(await files_move_intake_load(request), "explicit Forget removes the saved Stop header").toBeNull();
+		await expect(files_move_intake_read_page({ request, offset: 0 })).rejects.toThrow("missing a page");
+		await expect(files_move_intake_read_page({ request, offset: 200 })).rejects.toThrow("missing a page");
+	});
+
 	test("keeps a second tab's request when an older request finishes", async () => {
 		const oldRequest = make_request(1);
 		await files_move_intake_save({ request: oldRequest, sourceIds: ["old" as app_convex_Id<"files_nodes">] });
@@ -98,29 +116,39 @@ describe("files_move_intake", () => {
 		await files_move_intake_delete(oldRequest);
 		expect(await files_move_intake_load(newRequest)).toEqual(newRequest);
 		expect(await files_move_intake_read_page({ request: newRequest, offset: 0 })).toEqual(["new"]);
+		await files_move_intake_delete(oldRequest, { forget: true });
+		expect(await files_move_intake_load(newRequest), "stale Forget keeps a newer request").toEqual(newRequest);
+		expect(await files_move_intake_read_page({ request: newRequest, offset: 0 })).toEqual(["new"]);
 	});
 
-	test("saves a Stop-only header after another tab retired the input", async () => {
-		const request = make_request(1);
-		await files_move_intake_save({ request, sourceIds: ["source" as app_convex_Id<"files_nodes">] });
-		await files_move_intake_delete(request);
-		await files_move_intake_update({ ...request, stopRequested: true });
-		expect(await files_move_intake_load(request)).toBeNull();
-		const stopped = { ...request, runId: "run" as app_convex_Id<"files_transfer_runs">, stopRequested: true };
-		await files_move_intake_update(stopped);
-		expect(await files_move_intake_load(request), "the Stop retry survives database reopen without pages").toEqual(
-			stopped,
-		);
-		await expect(files_move_intake_read_page({ request, offset: 0 })).rejects.toThrow("missing a page");
-		await files_move_intake_delete(stopped);
-		await files_move_intake_update({ ...stopped, stopRequested: false });
-		expect(await files_move_intake_load(request)).toBeNull();
+	test.each([null, "run" as app_convex_Id<"files_transfer_runs">])(
+		"saves a Stop-only header after another tab retired the input with run ID %s",
+		async (runId) => {
+			const request = make_request(1);
+			await files_move_intake_save({ request, sourceIds: ["source" as app_convex_Id<"files_nodes">] });
+			await files_move_intake_delete(request);
+			const stopped = { ...request, runId, stopRequested: true };
+			await files_move_intake_update(stopped);
+			expect(await files_move_intake_load(request), "the Stop retry survives database reopen without pages").toEqual(
+				stopped,
+			);
+			await expect(files_move_intake_read_page({ request, offset: 0 })).rejects.toThrow("missing a page");
+			await files_move_intake_delete(request, { forget: true });
+			await files_move_intake_update({ ...stopped, stopRequested: false });
+			expect(await files_move_intake_load(request)).toBeNull();
+			await files_move_intake_update(stopped);
+			expect(await files_move_intake_load(request), "a late Stop recreates its exact header after Forget").toEqual(
+				stopped,
+			);
+			await files_move_intake_delete(request, { forget: true });
+			expect(await files_move_intake_load(request)).toBeNull();
 
-		const newer = { ...request, requestId: crypto.randomUUID() };
-		requests.push(newer);
-		await files_move_intake_save({ request: newer, sourceIds: ["newer" as app_convex_Id<"files_nodes">] });
-		await files_move_intake_update(stopped);
-		expect(await files_move_intake_load(newer)).toEqual(newer);
-		expect(await files_move_intake_read_page({ request: newer, offset: 0 })).toEqual(["newer"]);
-	});
+			const newer = { ...request, requestId: crypto.randomUUID() };
+			requests.push(newer);
+			await files_move_intake_save({ request: newer, sourceIds: ["newer" as app_convex_Id<"files_nodes">] });
+			await files_move_intake_update(stopped);
+			expect(await files_move_intake_load(newer), "a late Stop keeps a newer request").toEqual(newer);
+			expect(await files_move_intake_read_page({ request: newer, offset: 0 })).toEqual(["newer"]);
+		},
+	);
 });

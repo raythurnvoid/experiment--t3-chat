@@ -76,8 +76,8 @@ describe("public Move scale", () => {
 	}, 7_200_000);
 
 	for (const { count, tags } of [
-		// Several descendants need separate native pages even when exact cleanup work joins.
-		{ count: 7, tags: [] },
+		// 33 descendants cross the 32-child native page even when exact cleanup work joins.
+		{ count: 33, tags: [] },
 		// 2001 was just past the old 2000-doc Move cap, which is gone. Run it with test:files:full-size.
 		{ count: 2001, tags: ["full-size"] },
 	])

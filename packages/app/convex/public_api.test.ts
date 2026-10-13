@@ -1307,16 +1307,16 @@ describe("mark_credential_used", () => {
 				)
 			)?.lastUsedAt;
 
-		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now });
+		await t.mutation(internal.public_api_credential_usage.mark_credential_used, { credentialId, now });
 		expect(await usedAt()).toBe(now);
 
-		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 59_999 });
+		await t.mutation(internal.public_api_credential_usage.mark_credential_used, { credentialId, now: now + 59_999 });
 		expect(await usedAt()).toBe(now);
 
-		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 60_000 });
+		await t.mutation(internal.public_api_credential_usage.mark_credential_used, { credentialId, now: now + 60_000 });
 		expect(await usedAt()).toBe(now + 60_000);
 
-		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 30_000 });
+		await t.mutation(internal.public_api_credential_usage.mark_credential_used, { credentialId, now: now + 30_000 });
 		expect(await usedAt()).toBe(now + 60_000);
 
 		// Every file publish reads the credential doc, so marking use must never write it.
@@ -1340,7 +1340,7 @@ describe("mark_credential_used", () => {
 		const usedId = await create("Used");
 		const legacyId = await create("Legacy");
 		await t.run((ctx) => ctx.db.patch("api_credentials", legacyId, { lastUsedAt: 1_000 }));
-		await t.mutation(internal.public_api.mark_credential_used, { credentialId: usedId, now: 2_000 });
+		await t.mutation(internal.public_api_credential_usage.mark_credential_used, { credentialId: usedId, now: 2_000 });
 
 		const listed = await asUser.query(api.public_api.api_credentials_list, { membershipId: db.membershipId });
 		if (listed._nay) throw new Error(listed._nay.message);
@@ -1543,6 +1543,15 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/payments", recursive: true, kind: "file", extension: "md" }),
 		});
 		expect(listResponse.status).toBe(200);
+		// Check usage here, before another route can update it.
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("api_credentials_last_used")
+					.withIndex("by_credential", (q) => q.eq("credentialId", created._yay!.credentialId))
+					.first(),
+			),
+		).toMatchObject({ credentialId: created._yay!.credentialId, lastUsedAt: expect.any(Number) });
 		const listBody = (await listResponse.json()) as { items: Array<{ path: string }> };
 		expect(listBody.items.map((item) => item.path)).toEqual(["/payments/payment-001.md"]);
 
@@ -6760,7 +6769,7 @@ describe("files read-only locks", () => {
 			});
 			expect(before.status, "the member can write the open source").toBe(200);
 			expect(await before.json()).toMatchObject({ nodeId: file._id, unchanged: true });
-			const started = await writer.owner.mutation(api.files_transfer.start, {
+			const started = await writer.owner.mutation(api.files_transfer.accept_input, {
 				membershipId: writer.db.membershipId,
 				requestId: "move-live-parent-scope",
 				kind: "move",

@@ -264,8 +264,8 @@ describe("Move owner views", () => {
 				await f.t.run((ctx) =>
 					files_pending_overlay_db_stage_owner(ctx, {
 						cohortId: f.cohortId,
-						fence: 1,
-						attemptFence: 0,
+						fence: f.fence,
+						attemptFence: f.attemptFence - 1,
 						ownerWorkId,
 					}),
 				)
@@ -274,7 +274,12 @@ describe("Move owner views", () => {
 		).toBe("stopped");
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_places", original._id)))?.moveView).toBeUndefined();
 		const staged = await f.t.run((ctx) =>
-			files_pending_overlay_db_stage_owner(ctx, { cohortId: f.cohortId, fence: 1, attemptFence: 1, ownerWorkId }),
+			files_pending_overlay_db_stage_owner(ctx, {
+				cohortId: f.cohortId,
+				fence: f.fence,
+				attemptFence: f.attemptFence,
+				ownerWorkId,
+			}),
 		);
 		expect(staged._nay).toBeUndefined();
 		const work = staged._yay!;
@@ -305,8 +310,8 @@ describe("Move owner views", () => {
 			const result = await f.t.run((ctx) =>
 				files_pending_overlay_db_stage_owner_fields(ctx, {
 					cohortId: f.cohortId,
-					fence: 1,
-					attemptFence: 1,
+					fence: f.fence,
+					attemptFence: f.attemptFence,
 					ownerWorkId,
 					cursor,
 				}),
@@ -336,8 +341,8 @@ describe("Move owner views", () => {
 				await f.t.run((ctx) =>
 					files_pending_overlay_db_stage_owner_fields(ctx, {
 						cohortId: f.cohortId,
-						fence: 1,
-						attemptFence: 1,
+						fence: f.fence,
+						attemptFence: f.attemptFence,
 						ownerWorkId,
 						cursor: null,
 					}),
@@ -352,7 +357,12 @@ describe("Move owner views", () => {
 		expect(
 			(
 				await f.t.run((ctx) =>
-					files_pending_overlay_db_stage_owner(ctx, { cohortId: f.cohortId, fence: 1, attemptFence: 1, ownerWorkId }),
+					files_pending_overlay_db_stage_owner(ctx, {
+						cohortId: f.cohortId,
+						fence: f.fence,
+						attemptFence: f.attemptFence,
+						ownerWorkId,
+					}),
 				)
 			)._nay,
 		).toBeUndefined();
@@ -361,8 +371,8 @@ describe("Move owner views", () => {
 			const result = await f.t.run((ctx) =>
 				files_pending_overlay_db_stage_owner_lists(ctx, {
 					cohortId: f.cohortId,
-					fence: 1,
-					attemptFence: 1,
+					fence: f.fence,
+					attemptFence: f.attemptFence,
 					ownerWorkId,
 					cursor,
 				}),

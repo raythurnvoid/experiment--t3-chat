@@ -1461,7 +1461,7 @@ describe("copy_transfer_file saved replacement", () => {
 				).toBeUndefined();
 				editor.destroy();
 			}
-			const started = await asUser.mutation(api.files_transfer.start, {
+			const started = await asUser.mutation(api.files_transfer.accept_input, {
 				membershipId: db.membershipId,
 				requestId: "saved-replacement",
 				kind: "copy",

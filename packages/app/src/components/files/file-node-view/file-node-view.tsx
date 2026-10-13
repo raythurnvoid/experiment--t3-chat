@@ -89,6 +89,7 @@ import {
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { useFilesSortedChildren, files_merge_sorted_streams } from "@/hooks/files-search-hooks.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
+import { useFilesPaginatedQuery } from "@/hooks/files-paginated-query-hooks.ts";
 import { useFilesPendingUpdates } from "@/hooks/files-pending-list-hooks.ts";
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -132,7 +133,7 @@ import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
-import { useConvex, usePaginatedQuery as useConvexPaginatedQuery, useQueries, useQuery } from "convex/react";
+import { useConvex, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { compareValues } from "convex/values";
 import {
@@ -1815,12 +1816,12 @@ const FileNodeViewPrivateFolder = memo(function FileNodeViewPrivateFolder(props:
 	const { folderId, onNavigateTarget } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const view = useFilesSavedView(membershipId);
-	const normal = useConvexPaginatedQuery(
+	const normal = useFilesPaginatedQuery(
 		app_convex_api.files_visible.list_private_folder_children,
 		view.normal ? { membershipId, folderId, savedStream: view.normal } : "skip",
 		{ initialNumItems: FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE },
 	);
-	const cohort = useConvexPaginatedQuery(
+	const cohort = useFilesPaginatedQuery(
 		app_convex_api.files_visible.list_private_folder_children,
 		view.cohort ? { membershipId, folderId, savedStream: view.cohort } : "skip",
 		{ initialNumItems: FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE },

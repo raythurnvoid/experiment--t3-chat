@@ -42,7 +42,7 @@ describe("paged Move transaction budgets", () => {
 			folders.push(created._yay.nodeId);
 		}
 		await t.finishAllScheduledFunctions(vi.runAllTimers);
-		const started = await asOwner.mutation(api.files_transfer.start, {
+		const started = await asOwner.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: "move-with-old-worker-history",
 			kind: "move",
@@ -52,9 +52,6 @@ describe("paged Move transaction budgets", () => {
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const { runId } = started._yay;
-		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
-			_yay: null,
-		});
 		const historyDelay = 24 * 60 * 60 * 1000;
 		const historyDueAt = Date.now() + historyDelay;
 		const scheduledCount = await t.run(async (ctx) => {

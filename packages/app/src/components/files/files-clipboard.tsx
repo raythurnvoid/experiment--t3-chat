@@ -81,6 +81,7 @@ const FilesClipboardProvider = Object.assign(
 			message: string;
 			stopRequested: boolean;
 			resumeRequired?: boolean;
+			canForgetSelection?: boolean;
 		} | null>(null);
 		const run = useQuery(app_convex_api.files_transfer.get, runId ? { membershipId, runId } : "skip");
 		const [cutRuns, setCutRuns] = useState<
@@ -131,6 +132,14 @@ const FilesClipboardProvider = Object.assign(
 			setIsRunOpen(true);
 		});
 
+		const addCutRun = useFn((nextRunId: app_convex_Id<"files_transfer_runs">, revision: string | null) => {
+			if (!revision) return;
+			const cutRun = { runId: nextRunId, revision, finished: false };
+			setCutRuns((current) =>
+				current.some((item) => item.runId === cutRun.runId) ? current : [...current, cutRun],
+			);
+		});
+
 		const isIntakeStopped = useFn((nextRunId: app_convex_Id<"files_transfer_runs">) => {
 			const current = run?._id === nextRunId ? run : currentRuns?.find((item) => item._id === nextRunId);
 			return (
@@ -143,13 +152,15 @@ const FilesClipboardProvider = Object.assign(
 
 		const retireAcceptedMove = useFn(async (request: NonNullable<typeof startRequestRef.current>) => {
 			if (!request.storedMove || (request.runId && request.stopRequested)) return false;
-			// Another tab may have sealed the selection and removed its saved pages.
-			const accepted = await convex.query(app_convex_api.files_transfer.get_move_intake, {
+			// Another tab may have accepted the selection and removed its saved pages.
+			const accepted = await convex.query(app_convex_api.files_transfer.get_move_acceptance, {
 				membershipId,
 				requestId: request.requestId,
 			});
 			if (!accepted) return false;
 			request.runId = accepted.runId;
+			// A lost reply may hide a finished Move. Track its Cut before retiring the input.
+			addCutRun(request.runId, request.revision);
 			request.storedMove.runId = accepted.runId;
 			await files_move_intake_update(request.storedMove);
 			if (request.stopRequested || (accepted.step === "uploading" && !accepted.isFinished)) return false;
@@ -168,6 +179,7 @@ const FilesClipboardProvider = Object.assign(
 			startPendingRef.current = true;
 			setIsStarting(true);
 			(async (/* iife */) => {
+				let savedNewMove = false;
 				if (request.kind === "move" && !request.storedMove) {
 					const storedMove: FilesMoveIntake = {
 						userId,
@@ -185,19 +197,21 @@ const FilesClipboardProvider = Object.assign(
 					});
 					request.storedMove = storedMove;
 					request.sourceIds = null;
+					savedNewMove = true;
 				}
-				// Leaving the workspace pauses Move intake. Its saved pages resume when we return.
+				// Leaving pauses incomplete input. Complete accepted input keeps running on the server.
 				if (request.storedMove && !mountedRef.current) return;
 				if (request.storedMove && request.stopRequested) {
 					request.storedMove.stopRequested = true;
 					await files_move_intake_update(request.storedMove);
 				}
-				if (request.storedMove && (await retireAcceptedMove(request))) return;
+				// Replayed input still needs the accepted-run lookup.
+				if (request.storedMove && !savedNewMove && (await retireAcceptedMove(request))) return;
 				let refusal: string | undefined;
-				// A discarded Move that the server never accepted has no run to stop. Only delete its saved input.
+				// Stop retries must not send more input.
 				if (!request.stopRequested) {
 					// Replay the original selection and pages after a lost reply, even if the clipboard changed.
-					const started = await convex.mutation(app_convex_api.files_transfer.start, {
+					const started = await convex.mutation(app_convex_api.files_transfer.accept_input, {
 						membershipId,
 						requestId: request.requestId,
 						kind: request.kind,
@@ -213,6 +227,7 @@ const FilesClipboardProvider = Object.assign(
 					refusal = started._nay?.message;
 					if (!started._nay) {
 						request.runId = started._yay.runId;
+						if (request.kind === "move") addCutRun(request.runId, request.revision);
 						if (request.storedMove) {
 							request.storedMove.runId = request.runId;
 							await files_move_intake_update(request.storedMove);
@@ -220,16 +235,6 @@ const FilesClipboardProvider = Object.assign(
 						}
 						// A one-item paste shows only its Activity card. The card can still open this dialog.
 						if (mountedRef.current && request.sourceCount > 1) openRun(request.runId);
-						if (request.kind === "move" && request.revision) {
-							const cutRun = {
-								runId: request.runId,
-								revision: request.revision,
-								finished: false,
-							};
-							setCutRuns((current) =>
-								current.some((item) => item.runId === cutRun.runId) ? current : [...current, cutRun],
-							);
-						}
 						for (
 							let offset = files_TRANSFER_SELECTION_PAGE_SIZE;
 							offset < request.sourceCount;
@@ -237,7 +242,7 @@ const FilesClipboardProvider = Object.assign(
 						) {
 							if (request.storedMove && !mountedRef.current) return;
 							if (request.stopRequested || isIntakeStopped(request.runId)) break;
-							const appended = await convex.mutation(app_convex_api.files_transfer.append_sources, {
+							const appended = await convex.mutation(app_convex_api.files_transfer.append_input, {
 								membershipId,
 								runId: request.runId,
 								offset,
@@ -255,7 +260,7 @@ const FilesClipboardProvider = Object.assign(
 						}
 						if (request.storedMove && !mountedRef.current) return;
 						request.stopRequested = !!request.stopRequested || !!refusal || isIntakeStopped(request.runId);
-						if (!request.stopRequested) {
+						if (request.kind === "copy" && !request.stopRequested) {
 							const sealed = await convex.mutation(app_convex_api.files_transfer.seal, {
 								membershipId,
 								runId: request.runId,
@@ -264,7 +269,26 @@ const FilesClipboardProvider = Object.assign(
 						}
 					}
 				}
+				if (request.stopRequested && request.storedMove && !request.runId) {
+					setStartError({
+						message: "Stop is not confirmed. Retry Stop when connected.",
+						stopRequested: true,
+						canForgetSelection: true,
+					});
+					return;
+				}
 				if (refusal) toast.error(refusal);
+				if (refusal && request.storedMove && !request.runId) {
+					if (await retireAcceptedMove(request)) return;
+					if (!request.runId) {
+						setStartError({
+							message: `${refusal}. The saved selection is kept. Retry to check this request.`,
+							stopRequested: !!request.stopRequested,
+							canForgetSelection: true,
+						});
+						return;
+					}
+				}
 				if (request.runId && (refusal || request.stopRequested)) {
 					request.stopRequested = true;
 					if (request.storedMove) {
@@ -306,6 +330,7 @@ const FilesClipboardProvider = Object.assign(
 							? "Stop was not confirmed. Retry to stop this request."
 							: "Could not confirm Paste. Retry the same request when connected, or stop it from Activity.",
 						stopRequested: !!request.stopRequested,
+						canForgetSelection: !!request.storedMove && !request.runId,
 					});
 				})
 				.finally(() => {
@@ -317,7 +342,7 @@ const FilesClipboardProvider = Object.assign(
 		const recoverMove = useFn(() => {
 			setIsRecovering(true);
 			files_move_intake_load({ userId, membershipId })
-				.then((saved) => {
+				.then(async (saved) => {
 					if (!mountedRef.current) return;
 					if (saved) {
 						startRequestRef.current = {
@@ -327,8 +352,11 @@ const FilesClipboardProvider = Object.assign(
 							runId: saved.runId ?? undefined,
 							storedMove: saved,
 						};
-						// An unstarted request has no server membership lifetime yet. Ask after any reload.
-						if (saved.runId === null && !saved.stopRequested) {
+						const request = startRequestRef.current;
+						if (await retireAcceptedMove(request)) return;
+						if (!mountedRef.current) return;
+						// Resolve a lost reply before asking to start saved input.
+						if (!request.runId && !request.stopRequested) {
 							setStartError({
 								message:
 									"A Move selection is saved in this browser. Resume only if you still want to move these items.",
@@ -343,6 +371,17 @@ const FilesClipboardProvider = Object.assign(
 				})
 				.catch((error) => {
 					console.error("[FilesClipboardProvider.recoverMove] Failed to load Move selection", { error });
+					const request = startRequestRef.current;
+					if (mountedRef.current && request) {
+						setStartError({
+							message: request.stopRequested
+								? "Stop is not confirmed. Retry Stop when connected."
+								: "Could not check the saved Move. Retry only if you still want to move these items.",
+							stopRequested: !!request.stopRequested,
+							canForgetSelection: !request.runId,
+						});
+						return;
+					}
 					// Do not block Paste here. Copy does not need browser storage, and a new Move refuses when it cannot save.
 					if (mountedRef.current) toast.error("Could not load the saved Move. Reload the page to try again.");
 				})
@@ -410,6 +449,26 @@ const FilesClipboardProvider = Object.assign(
 			request.stopRequested = true;
 			sendPaste();
 		});
+		const forgetSavedSelection = useFn(() => {
+			const request = startRequestRef.current;
+			if (!request?.storedMove || startPendingRef.current) return;
+			startPendingRef.current = true;
+			setIsStarting(true);
+			files_move_intake_delete(request.storedMove, { forget: true })
+				.then(() => {
+					startRequestRef.current = null;
+					setStartError(null);
+					setClipboardValue((current) => (current?.revision === request.revision ? null : current));
+				})
+				.catch((error) => {
+					console.error("[FilesClipboardProvider.forgetSavedSelection] Failed to forget selection", { error });
+					toast.error("Could not forget the saved selection. Try again.");
+				})
+				.finally(() => {
+					startPendingRef.current = false;
+					setIsStarting(false);
+				});
+		});
 
 		return (
 			<FilesClipboardContext.Provider
@@ -445,6 +504,14 @@ const FilesClipboardProvider = Object.assign(
 							<MyButton disabled={isStarting || isRecovering} onClick={discardSavedMove}>
 								Discard saved Move
 							</MyButton>
+						) : null}
+						{startError.canForgetSelection ? (
+							<>
+								<p>Accepted moves may continue. This removes only the saved selection in this browser.</p>
+								<MyButton disabled={isStarting || isRecovering} onClick={forgetSavedSelection}>
+									Forget saved selection
+								</MyButton>
+							</>
 						) : null}
 					</div>
 				) : null}

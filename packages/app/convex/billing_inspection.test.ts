@@ -469,8 +469,10 @@ describe("inspect_polar_billing_page", () => {
 			setTimeout(() => controller.abort(), ms);
 			return controller.signal;
 		});
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-			const request = new Request(input, init);
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			// Listen on the app's own Request. A copy made with `new Request` follows its abort only
+			// through a weak ref, so garbage collection can drop the copy before the abort arrives.
+			const request = input as Request;
 			return await new Promise<Response>((_resolve, reject) => {
 				request.signal.addEventListener("abort", () => reject(new Error("private_timeout")), { once: true });
 			});
