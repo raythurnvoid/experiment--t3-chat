@@ -30,6 +30,10 @@ export function files_visible_resolve_db_create(
 		fixedView?: { cohortId: Id<"files_move_cohorts">; view: "before" | "after" };
 		currentView?: files_saved_placement_View;
 		readLimit?: number;
+		/**
+		 * Owner staging runs after all selected parent headers are sealed.
+		 */
+		stagedPrivateParents?: boolean;
 		/** Review preparation may read children before applying these exact parent deletes. */
 		reviewedArchiveIds?: ReadonlySet<Id<"files_pending_updates">>;
 		isReviewedArchive?: (proposal: Doc<"files_pending_updates">) => Promise<boolean>;
@@ -201,6 +205,30 @@ export function files_visible_resolve_db_create(
 					),
 				);
 				if (receipt) {
+					if (
+						args.stagedPrivateParents &&
+						args.fixedView?.view === "after" &&
+						receipt.moveView?.cohortId === args.fixedView.cohortId &&
+						receipt.moveView.view === "after"
+					) {
+						// The sealed header includes the selected ancestor Moves and inherited scope.
+						const saved = await read(() => files_saved_placement_db_get_node(db, receipt.savedNodeId, args.fixedView));
+						if (
+							!saved ||
+							saved.kind !== "folder" ||
+							saved.moveCohortId !== args.fixedView.cohortId ||
+							saved.publishedFromPrivateNodeId !== parent.id ||
+							saved.organizationId !== args.organizationId ||
+							saved.workspaceId !== args.workspaceId
+						)
+							return null;
+						return {
+							path: saved.path,
+							accessNode: saved,
+							hidden: saved.archiveOperationId !== null,
+							destinationAccessNodeIds: [],
+						};
+					}
 					const saved = await resolve_parent({ kind: "saved", id: receipt.savedNodeId });
 					// The draft folder is blocked when the saved folder it became is.
 					if (blockedKeys.has(`saved:${receipt.savedNodeId}`)) blockedKeys.set(`private:${parent.id}`, null);

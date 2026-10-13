@@ -1041,12 +1041,18 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 /**
  * One user's reader for the flush. `includeHidden` gives paths of hidden targets too, so a place
  * keeps its destination while the owner does not see it.
+ * Fixed After is used only by owner staging, after all saved headers are sealed.
  */
 export function files_pending_overlay_db_create_reader(
 	db: QueryCtx["db"],
 	scope: Scope & { fixedView?: files_saved_placement_FixedView },
 ) {
-	return files_visible_resolve_db_create(db, { ...scope, readLimit: TRANSACTION_RANGES, includeHidden: true });
+	return files_visible_resolve_db_create(db, {
+		...scope,
+		readLimit: TRANSACTION_RANGES,
+		includeHidden: true,
+		stagedPrivateParents: scope.fixedView?.view === "after",
+	});
 }
 
 /**
@@ -1132,7 +1138,7 @@ export async function files_pending_overlay_db_compute_target(
 			return { hide, place, listKeys: [], savedNode };
 		savedNode = node;
 
-		const own = await reader.resolve(target);
+		const own = pendingUpdate?.pendingMove ? await reader.resolve(target) : null;
 		const destination = pendingUpdate?.pendingMove
 			? await reader.resolveParent(pendingUpdate.pendingMove.destParent)
 			: null;
