@@ -3110,7 +3110,7 @@ export const list_private_folder_children = query({
 				numItems: Math.min(args.paginationOpts.numItems, PRIVATE_FOLDER_PAGE_MAX_ITEMS),
 			});
 
-		// Split before any per-row read, like `tree_page_needs_split` in `files_nodes.ts`: a reactive
+		// Split before any per-row read, like `files_tree_db_page_needs_split` in `files_tree_db.ts`: a reactive
 		// rerun has no row cap, so a page can grow far past `numItems`.
 		if (result.splitCursor && (result.page.length > PRIVATE_FOLDER_PAGE_MAX_ITEMS || result.pageStatus)) {
 			return {
