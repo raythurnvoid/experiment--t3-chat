@@ -570,7 +570,14 @@ describe("Move owner parent resolution", () => {
 					.withIndex("by_cohort", (q) => q.eq("cohortId", state.cohort!._id))
 					.collect(),
 			}));
-			expect(cleanup.owners).toHaveLength(257);
+			// The saved root's slot also needs owner work while its private draft uses that name.
+			const rootReceipt = state.receipts.find((receipt) => receipt.privateNodeId === groups[7]!.root)!;
+			expect(cleanup.owners.map((owner) => [owner.userId, owner.target.kind, owner.target.id]).sort()).toEqual(
+				[
+					...original.map((node) => [f.scope.userId, "private", node._id]),
+					[f.scope.userId, "saved", rootReceipt.savedNodeId],
+				].sort(),
+			);
 			expect(cleanup.owners.every((owner) => owner.status === "materialized")).toBe(true);
 			expect(cleanup.sources).toEqual([]);
 			expect(cleanup.claims).toEqual([]);
