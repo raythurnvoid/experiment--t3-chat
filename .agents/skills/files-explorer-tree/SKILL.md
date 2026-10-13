@@ -816,6 +816,10 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   The Move Activity waits for physical repair before the next root. Stop keeps completed roots;
   their repair still finishes. A later name conflict pauses the remaining roots.
   The dialog pages conflicts and completed receipts with `list_items`.
+  The parent joins exact selection and planning work under the existing flushed transaction
+  budget. Each logical step checks access again. Selected folders queue their child ranges
+  when selected. The final view switch ends its transaction, so physical repair starts after
+  the new location can be read. A native page always ends its transaction.
 - Before sending Move input, the browser saves its full selection in IndexedDB, in pages of 100.
   The key binds the user and membership. Accepted input replays after reload. Unstarted input
   asks for Resume. A new Cut or Copy has a new revision, so old receipts cannot clear it.

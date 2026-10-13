@@ -119,10 +119,10 @@ describe("paged Move runs", () => {
 			const { runId, activityId } = await start_move(actor, [nodes.get("/a")!, nodes.get("/b")!]);
 			let reachedFirstRoot = false;
 			test_spy_handler(advance, async (handler, ctx, args) => {
-				const result = await handler(ctx, args);
 				const activity = await ctx.db.get("activities", activityId);
-				if (reachedFirstRoot || activity?.progress?.completed !== 1) return result;
+				if (reachedFirstRoot || activity?.progress?.completed !== 1) return await handler(ctx, args);
 				reachedFirstRoot = true;
+				// Interrupt before this call can begin the next root.
 				if (interruption === "stop") {
 					await files_transfer_db_request_stop(ctx, { runId, reason: "user", now: Date.now() });
 				} else if (interruption === "reinvite") {
@@ -132,7 +132,7 @@ describe("paged Move runs", () => {
 					await ctx.db.patch("organizations_workspaces_users", membership._id, { active: true });
 					await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: true }]);
 				}
-				return result;
+				return await handler(ctx, args);
 			});
 			await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
 			expect(reachedFirstRoot, "the first root publishes before access or Stop changes").toBe(true);

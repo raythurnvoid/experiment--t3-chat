@@ -151,7 +151,12 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 		files_move_content_db_create(ctx, { cohortId: f.cohortId, itemId, nodeId: f.nodeId }),
 	);
 	if (created._nay) throw new Error(created._nay.message);
-	const context = { cohortId: f.cohortId, contentId: created._yay, fence: 1, attemptFence: 1 };
+	const context = {
+		cohortId: f.cohortId,
+		contentId: created._yay,
+		fence: f.fence,
+		attemptFence: f.attemptFence,
+	};
 	const prepareContext = { ...context, runGeneration: null };
 	const chunks = () =>
 		f.t.run(async (ctx) => {

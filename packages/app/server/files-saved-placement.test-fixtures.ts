@@ -1,13 +1,9 @@
 import { expect } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
-import { files_media_validation_db_capture_versions } from "../convex/files_media_validation.ts";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import {
-	files_saved_placement_db_bump_search_generation,
-	files_saved_placement_db_get_node,
-} from "./files-saved-placement.ts";
+import { files_saved_placement_db_get_node } from "./files-saved-placement.ts";
 
 function placement_header(node: Doc<"files_nodes">) {
 	const {
@@ -81,7 +77,8 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 			.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
 			.first(),
 	);
-	for (let step = 0; !originItem && step < 20; step++) {
+	let startedCohortId: Id<"files_move_cohorts"> | null = null;
+	for (let step = 0; (!originItem || !startedCohortId) && step < 20; step++) {
 		await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 		originItem = await t.run((ctx) =>
 			ctx.db
@@ -89,8 +86,20 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 				.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
 				.first(),
 		);
+		startedCohortId = await t.run(
+			async (ctx) =>
+				(
+					await ctx.db
+						.query("files_move_workspace_slots")
+						.withIndex("by_workspace", (q) =>
+							q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
+						)
+						.unique()
+				)?.cohortId ?? null,
+		);
 	}
-	if (!originItem) throw new Error("Expected the public Transfer origin item");
+	if (!originItem || !startedCohortId) throw new Error("Expected the public Transfer origin item and cohort");
+	const cohortId = startedCohortId;
 	const itemId = originItem._id;
 	const saved = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 	if (!saved) throw new Error("Expected the saved source");
@@ -101,77 +110,18 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 			.unique(),
 	);
 	if (!proposal) throw new Error("Expected the move proposal");
-	const cohortId = await t.run(async (ctx) => {
-		const run = await ctx.db.get("files_transfer_runs", started._yay.runId);
-		if (!run) throw new Error("Expected the Transfer origin");
-		const slot = await ctx.db
-			.query("files_move_workspace_slots")
-			.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-			.unique();
-		if (slot?.cohortId) throw new Error("Expected finished fixture Save jobs");
-		const generation = (slot?.generation ?? 0) + 1;
-		const pins = await files_media_validation_db_capture_versions(ctx, { userId: db.userId, scopes: [db] });
-		const organization = pins.versions[0] as Doc<"files_move_cohorts">["clockPins"]["organization"];
-		const workspace = pins.versions[1] as Doc<"files_move_cohorts">["clockPins"]["workspace"];
-		const review = pins.pendingVersions[0]!;
-		const cohortId = await ctx.db.insert("files_move_cohorts", {
-			...db,
-			membershipLifetime: run.sourceScope.membershipLifetime,
-			origin: { kind: "transfer", runId: run._id, itemId },
-			slotGeneration: generation,
-			fence: 1,
-			attemptFence: 1,
-			workId: null,
-			deadlineAt: Date.now() + 60_000,
+	// Reader tests own these views. Pause the real worker before filling its candidates.
+	const cohort = await t.run(async (ctx) => {
+		const cohort = (await ctx.db.get("files_move_cohorts", cohortId))!;
+		if (cohort.runJob) await ctx.scheduler.cancel(cohort.runJob.id);
+		await ctx.db.patch("files_move_cohorts", cohortId, {
+			runJob: undefined,
 			reviewDeadlineAt: Date.now() + 60_000,
 			phase: "staging",
-			visibleView: "before",
-			step: 0,
-			workPhase: "items",
-			operationTime: Date.now(),
-			publishedAt: null,
-			itemCount: 1,
 			stagedItemCount: 1,
-			validatedItemCount: 0,
-			pendingWorkCount: 0,
 			affectedNodeCount: 1,
-			materializedNodeCount: 0,
-			proofEpoch: 1,
-			clockPins: { organization, workspace, review },
-			billedUserId: db.userId,
-			contentCostCents: 0,
-			storedByteDelta: 0,
-			storedFileCount: 0,
-			privateByteDelta: 0,
-			privateNodeDelta: 0,
-			privateAccountingApplied: false,
-			billingApplied: false,
-			planningCursor: null,
-			stagingCursor: null,
-			validationCursor: null,
-			cleanupCursor: null,
-			errorCode: null,
-			errorMessage: null,
-			conflictItemId: null,
 		});
-		if (slot)
-			await ctx.db.patch("files_move_workspace_slots", slot._id, {
-				cohortId,
-				generation,
-				visibleView: "before",
-				migrationDirection: "to_cohort",
-			});
-		else
-			await ctx.db.insert("files_move_workspace_slots", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				cohortId,
-				generation,
-				visibleView: "before",
-				migrationDirection: "to_cohort",
-			});
-		await files_saved_placement_db_bump_search_generation(ctx, db);
-		return cohortId;
+		return cohort;
 	});
 	const header = placement_header(saved);
 	const before = {
@@ -330,6 +280,8 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 		nodeId,
 		parentId,
 		cohortId,
+		fence: cohort.fence,
+		attemptFence: cohort.attemptFence,
 		itemId,
 		recordId,
 		proposal,

@@ -187,6 +187,12 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 - Every preparation step checks current membership, its lifetime, the parent run and access clocks
   in its own transaction. The final switch checks the same proof. Changed access or input aborts
   unpublished candidates and returns `needs_review`. Completed groups stay saved.
+  Move joins exact selection, normalization and planning work while the flushed transaction
+  metrics allow it. Each joined step repeats the current checks. Copy keeps its existing step
+  boundaries. An empty indexed restricted-root range needs no native page. Every actual native
+  page still ends the transaction. Selected item, child and replacement producers queue their
+  saved subtree ranges directly. The publication step commits the after view and next repair
+  step together, then returns. Physical repair starts in a fresh transaction and keeps the slot.
 - Private subtree Discard checks the selected descendants in pages, then fences the approved roots in one small transaction. The unchanged unit clock protects that checked set. Activity counts the full unit when the roots close; cleanup continues after Stop. Discard's other final transactions count their reads, writes, bytes, and query ranges and roll back as `review_too_large` before exceeding the supported budget.
 - Before the switch, each Save group checks its full cost for the pinned payer. Folders, moves,
   unchanged text and replaced occupants add no charge. Private quota changes settle once at the

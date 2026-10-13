@@ -91,7 +91,7 @@ async function mutation<T>(f: Fixture, handler: (ctx: MutationCtx) => Promise<T>
 	});
 }
 
-const step_args = (f: Fixture) => ({ cohortId: f.cohortId, fence: 1, attemptFence: 1 });
+const step_args = (f: Fixture) => ({ cohortId: f.cohortId, fence: f.fence, attemptFence: f.attemptFence });
 
 async function phase(
 	f: Fixture,
@@ -367,6 +367,7 @@ test("public Move joins empty owner phases in one step", async () => {
 	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
 		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
 		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
+		let childRangeId: Id<"files_move_work_ranges"> | null = null;
 		if (cohort?.step === step && cohort.workPhase === "finish_owners") cleanupSteps++;
 		if (cohort?.step === step && (cohort.workPhase === "owners_collect" || cohort.workPhase === "sides")) {
 			const cursor = cohort.stagingCursor ? (JSON.parse(cohort.stagingCursor) as { order: number }) : { order: -1 };
@@ -379,7 +380,7 @@ test("public Move joins empty owner phases in one step", async () => {
 				else sideSteps++;
 			}
 		}
-		if (cohort?.step === step && cohort.workPhase === "descendants" && cohort.planningCursor === "trees") {
+		if (cohort?.step === step && cohort.workPhase === "descendants") {
 			let range = await ctx.db
 				.query("files_move_work_ranges")
 				.withIndex("by_cohort_phase_status_order", (q) =>
@@ -393,9 +394,11 @@ test("public Move joins empty owner phases in one step", async () => {
 				)
 				.first();
 			if (range?.kind === "saved_subtree" && range.range.kind === "node" && range.range.nodeId === sourceId)
-				childSteps++;
+				childRangeId = range._id;
 		}
-		return await handler(ctx, args);
+		const result = await handler(ctx, args);
+		if (childRangeId && (await ctx.db.get("files_move_work_ranges", childRangeId))?.status === "complete") childSteps++;
+		return result;
 	});
 	const started = await asUser.mutation(api.files_transfer.start, {
 		membershipId: db.membershipId,
@@ -1693,9 +1696,10 @@ test("owner collection rejects stale attempts and stale page replies", async () 
 	await add_owners(f, 1);
 	await phase(f, "owners_collect");
 	const args = { ...step_args(f), nodeRecordId: f.recordId, cursor: null };
-	expect(
-		(await mutation(f, (ctx) => files_move_owner_work_db_collect_node(ctx, { ...args, attemptFence: 0 })))._nay?.name,
-	).toBe("stopped");
+	const staleAttempt = { ...args, attemptFence: args.attemptFence - 1 };
+	expect((await mutation(f, (ctx) => files_move_owner_work_db_collect_node(ctx, staleAttempt)))._nay?.name).toBe(
+		"stopped",
+	);
 	expect((await mutation(f, (ctx) => files_move_owner_work_db_collect_node(ctx, args)))._nay).toBeUndefined();
 	expect((await mutation(f, (ctx) => files_move_owner_work_db_collect_node(ctx, args)))._nay?.name).toBe("stopped");
 });

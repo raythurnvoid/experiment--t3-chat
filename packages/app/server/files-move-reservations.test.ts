@@ -194,14 +194,14 @@ describe("Move write reservations", () => {
 				generation: 1,
 			}),
 		);
-		const enter = { cohortId: f.cohortId, fence: 1, attemptFence: 1, mode: "stage" as const };
+		const enter = { cohortId: f.cohortId, fence: f.fence, attemptFence: f.attemptFence, mode: "stage" as const };
 		expect(
 			await f.t.run(async (ctx) =>
 				files_move_reservations_db_enter(
 					{ ...ctx, ...files_move_reservations_db_wrap(ctx) },
 					{
 						...enter,
-						attemptFence: 0,
+						attemptFence: f.attemptFence - 1,
 					},
 				),
 			),
@@ -233,7 +233,7 @@ describe("Move write reservations", () => {
 
 	test("allows abort cleanup only while the old saved view is still visible", async () => {
 		const f = await fixture();
-		const enter = { cohortId: f.cohortId, fence: 1, attemptFence: 1, mode: "abort" as const };
+		const enter = { cohortId: f.cohortId, fence: f.fence, attemptFence: f.attemptFence, mode: "abort" as const };
 		const check = () =>
 			f.t.run((ctx) => files_move_reservations_db_enter({ ...ctx, ...files_move_reservations_db_wrap(ctx) }, enter));
 		expect(await check()).toMatchObject({ _nay: { name: "stopped" } });
@@ -287,8 +287,8 @@ describe("Move write reservations", () => {
 				expect(
 					await files_move_reservations_db_enter(guarded, {
 						cohortId: f.cohortId,
-						fence: 1,
-						attemptFence: 1,
+						fence: f.fence,
+						attemptFence: f.attemptFence,
 						mode: "stage",
 					}),
 				).toEqual({ _yay: null });
@@ -320,8 +320,8 @@ describe("Move write reservations", () => {
 				expect(
 					await files_move_reservations_db_enter(guarded, {
 						cohortId: f.cohortId,
-						fence: 1,
-						attemptFence: 1,
+						fence: f.fence,
+						attemptFence: f.attemptFence,
 						mode: "stage",
 					}),
 				).toEqual({ _yay: null });
@@ -335,7 +335,6 @@ describe("Move write reservations", () => {
 		await f.t.run(async (ctx) => {
 			const item = (await ctx.db.get("files_transfer_items", f.itemId))!;
 			await ctx.db.patch("files_transfer_runs", item.runId, {
-				revision: 1,
 				origin: { kind: "rename" },
 				rename: {
 					inputPath: "missing/final.txt",
@@ -344,7 +343,6 @@ describe("Move write reservations", () => {
 					parentArchiveOperationId: null,
 				},
 			});
-			await ctx.db.patch("files_transfer_items", item._id, { state: "pending", attempt: 1 });
 			await ctx.db.patch("files_move_cohorts", f.cohortId, {
 				workPhase: "rename_parents",
 				planningCursor: JSON.stringify({
@@ -376,8 +374,8 @@ describe("Move write reservations", () => {
 				expect(
 					await files_move_reservations_db_enter(guarded, {
 						cohortId: f.cohortId,
-						fence: 1,
-						attemptFence: 1,
+						fence: f.fence,
+						attemptFence: f.attemptFence,
 						mode: "stage",
 					}),
 				).toEqual({ _yay: null });
@@ -1139,8 +1137,8 @@ describe("Move write reservations", () => {
 			expect(
 				await files_move_reservations_db_enter(guarded, {
 					cohortId: f.cohortId,
-					fence: 1,
-					attemptFence: 1,
+					fence: f.fence,
+					attemptFence: f.attemptFence,
 					mode: "finish",
 				}),
 			).toEqual({ _yay: null });

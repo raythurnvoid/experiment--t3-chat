@@ -64,6 +64,29 @@ async function upload_repeated_source(fixture: Awaited<ReturnType<typeof create_
 	return started._yay;
 }
 
+function track_selection_query<T extends object>(
+	query: T,
+	pages: Array<{ limit: number; length: number }>,
+	indexed = false,
+): T {
+	return new Proxy(query, {
+		get(target, key) {
+			const method: unknown = Reflect.get(target, key);
+			if (typeof method !== "function") return method;
+			if (key === "withIndex")
+				return (...args: unknown[]) =>
+					track_selection_query(Reflect.apply(method, target, args), pages, args[0] === "by_run_order");
+			if (key === "take" && indexed)
+				return async (limit: number) => {
+					const page = (await Reflect.apply(method, target, [limit])) as readonly unknown[];
+					pages.push({ limit, length: page.length });
+					return page;
+				};
+			return method.bind(target);
+		},
+	});
+}
+
 describe("paged Move input scale", () => {
 	test("completes 1001 duplicate input positions as one root through real scheduled steps", async () => {
 		const fixture = await create_fixture();
@@ -127,14 +150,29 @@ describe("paged Move input scale", () => {
 			"100000 source positions seal without an array or read-limit error",
 		).resolves.toEqual({ _yay: null });
 		const phases = new Set<string>();
+		const pages: Array<{ limit: number; length: number }> = [];
 		test_spy_handler(advance, async (handler, ctx, args) => {
 			const run = (await ctx.db.get("files_transfer_runs", runId))!;
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await handler(ctx, args);
+			const trackedDb = new Proxy(ctx.db, {
+				get(target, key) {
+					const method: unknown = Reflect.get(target, key);
+					if (typeof method !== "function") return method;
+					if (key === "query")
+						return (...args: unknown[]) =>
+							args[0] === "files_transfer_selection_items"
+								? track_selection_query(Reflect.apply(method, target, args), pages)
+								: Reflect.apply(method, target, args);
+					return method.bind(target);
+				},
+			});
+			const result = await handler({ ...ctx, db: trackedDb }, args);
 			const after = await ctx.meta.getTransactionMetrics();
 			phases.add(run.step);
-			expect(after.documentsRead.used - before.documentsRead.used, `${run.step} reads one page`).toBeLessThan(256);
-			expect(after.bytesRead.used - before.bytesRead.used, `${run.step} bytes stay bounded`).toBeLessThan(128 * 1024);
+			// A call can join several small units. Include the final derived writes in its budget.
+			for (const [key, metric] of Object.entries(after))
+				expect(metric.used, `${run.step}: ${key} leaves 25% free`).toBeLessThan(
+					(metric.used + metric.remaining) * 0.75,
+				);
 			return result;
 		});
 		await expect(
@@ -144,7 +182,10 @@ describe("paged Move input scale", () => {
 		await t.run(async (ctx) => {
 			const run = (await ctx.db.get("files_transfer_runs", runId))!;
 			expect(run.step).toBe("select");
-			expect(run.selection!.cursor).toBeGreaterThanOrEqual(0);
+			expect(
+				run.selection!.cursor,
+				"selection joins bounded units without collecting 100000 positions",
+			).toBeGreaterThan(7);
 			expect(run.selection!.cursor).toBeLessThan(count - 1);
 			// Seek this phase fixture to its last duplicate. Full scheduler completion is tested above.
 			await ctx.db.patch("files_transfer_runs", runId, { selection: { ...run.selection!, cursor: count - 2 } });
@@ -152,7 +193,6 @@ describe("paged Move input scale", () => {
 		await t.mutation(internal.files_transfer.advance, { runId });
 		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId))).toMatchObject({
 			step: "normalize",
-			selection: { cursor: -1 },
 		});
 		await expect(
 			t.mutation(internal.files_transfer.advance, { runId }),
@@ -168,7 +208,7 @@ describe("paged Move input scale", () => {
 		await t.mutation(internal.files_transfer.advance, { runId });
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_transfer_runs", runId)).toMatchObject({
-				step: "plan",
+				step: "apply",
 				selection: { expectedCount: count, count, cursor: count - 1 },
 			});
 			expect(await ctx.db.get("activities", activityId)).toMatchObject({
@@ -182,5 +222,10 @@ describe("paged Move input scale", () => {
 			).toMatchObject([{ source: { kind: "saved", id: sourceId }, discoveryDone: true }]);
 		});
 		expect(phases).toEqual(new Set(["select", "normalize"]));
+		expect(pages.length, "joined calls still read exact selection batches").toBeGreaterThan(1);
+		for (const page of pages) {
+			expect(page.limit, "each selection query asks for eight input positions").toBe(8);
+			expect(page.length, "each selection query returns at most eight input positions").toBeLessThanOrEqual(8);
+		}
 	}, 600_000);
 });

@@ -274,6 +274,35 @@ async function expect_slot_copies_view(f: Awaited<ReturnType<typeof native_rotat
 }
 
 describe("Move cohort publication", () => {
+	test("linked review items queue every selected saved subtree before descendants", async () => {
+		const f = await native_rotation(3);
+		for (let pass = 0; pass < 3; pass++) {
+			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+			await f.t.mutation(internal.files_move_cohorts.advance, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				join: false,
+			});
+		}
+		const ranges = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_move_work_ranges")
+				.withIndex("by_cohort_key", (q) => q.eq("cohortId", f.cohortId))
+				.collect(),
+		);
+		expect(
+			ranges.map((range) => range.key).sort(),
+			"each review item producer queues its selected saved subtree",
+		).toEqual(f.nodes.map((id) => `saved-children:${id}`).sort());
+		expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId))).toMatchObject({
+			workPhase: "descendants",
+			pendingWorkCount: 3,
+		});
+		await finish_cohort(f);
+		expect((await f.readNames()).map((node) => node?._id)).toEqual([f.nodes[2], f.nodes[0], f.nodes[1]]);
+	});
+
 	test("moves 140 linked items without a selection cap", async () => {
 		const f = await native_rotation(140);
 		expect((await f.readNames()).map((node) => node?._id)).toEqual(f.nodes);

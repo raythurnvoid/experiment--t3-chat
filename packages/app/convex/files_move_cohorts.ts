@@ -93,6 +93,9 @@ import {
 } from "./files_pending_updates.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
+// Reuse loaded modules. Keep each request's state inside its handler.
+export const experimental_reuseContext = true;
+
 const WAKE_PAGE_SIZE = 8;
 // Bound one native page. Long headers reach the byte bound first.
 const DESCENDANT_PAGE_SIZE = 32;
@@ -869,6 +872,7 @@ async function db_items(
 		itemId,
 		role: target.kind === "private" ? "allocated" : settlementOnly ? "replacement" : "selected",
 	});
+	await db_add_subtree(ctx, cohort, (await ctx.db.get("files_move_cohort_nodes", reserved._yay))!);
 	if (proposal) await ctx.db.patch("files_pending_updates", proposal._id, { moveCohortId: cohort._id });
 	await ctx.db.patch("files_move_cohorts", cohort._id, { stagedItemCount: order + 1 });
 	// The unit's exact item count ends the phase, so no extra step reads an empty page.
@@ -2633,7 +2637,12 @@ async function db_advance_step(
 		0,
 		false,
 	);
-	return { kind: "next" as const, step: cohort.step + 1, yield: result._yay.paged === true };
+	// Commit the new view before doing physical repair.
+	return {
+		kind: "next" as const,
+		step: cohort.step + 1,
+		yield: result._yay.paged === true || cohort.workPhase === "publish",
+	};
 }
 
 /**
