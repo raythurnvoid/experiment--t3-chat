@@ -664,7 +664,7 @@ unused fields when a node moves to a shallower folder or root.
 
 **Derived docs are discovery, not facts.** The flush computes each derived doc from the source docs and the owner's reader. It reads derived docs only to learn what to recompute or delete. A read that uses a derived doc still checks what can change after the write, for example access on `accessNodeId` and `destinationAccessNodeIds`. Never decide a write from a derived doc alone.
 
-**Sealed private parents.** Fixed-After owner staging runs only after every saved header is sealed.
+**Sealed private parents.** Owner staging uses the After view after every saved header is sealed.
 For a private parent, its checked receipt must name that same cohort and After. The reader then
 uses the exact new saved folder header, including its path, Archive state and inherited scope.
 The planner has included and consumed ancestor Moves. This avoids walking the new saved parent
