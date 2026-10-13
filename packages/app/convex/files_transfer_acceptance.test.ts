@@ -431,7 +431,7 @@ test.each([8, 100, 200])(
 				});
 			} else {
 				expect(
-					Object.values(costs.at(-1)!).some((metric) => metric.used * 4 >= metric.used + metric.remaining),
+					Object.values(costs.at(-1)!).some((metric) => metric.used * 16 >= metric.used + metric.remaining),
 					"the flushed join guard yields before cohort creation",
 				).toBe(true);
 				expect(["select", "normalize", "plan"]).toContain(run.step);

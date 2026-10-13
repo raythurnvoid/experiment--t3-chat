@@ -1,4 +1,4 @@
-import { expect } from "vitest";
+import { vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "../convex/setup.test.ts";
@@ -58,45 +58,52 @@ export async function test_create_saved_placement_fixture(args?: { normalPaths?:
 		destName: "new.txt",
 	});
 	if (moved._nay) throw new Error(moved._nay.message);
-	const started = await asUser.mutation(api.files_transfer.accept_input, {
-		membershipId: db.membershipId,
-		requestId: "foundation",
-		kind: "move",
-		sourceIds: [nodeId],
-		expectedSourceCount: 1,
-		targetParentId: parentId,
+	const overlay = await import("./files-pending-overlay.ts");
+	const canJoin = overlay.files_pending_overlay_db_can_join_step;
+	// These reader tests seed candidates by hand. Yield before the real cohort starts them.
+	const join = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx) => {
+		const allowed = await canJoin(ctx);
+		const slot = await ctx.db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+			.unique();
+		return allowed && !slot?.cohortId;
 	});
-	if (started._nay) throw new Error(started._nay.message);
-	expect(
-		await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId: started._yay.runId }),
-	).toEqual({ _yay: null });
-	// Public intake produces the origin item. These reader tests stage its candidates below.
-	let originItem = await t.run((ctx) =>
-		ctx.db
-			.query("files_transfer_items")
-			.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
-			.first(),
-	);
+	let originItem: Doc<"files_transfer_items"> | null = null;
 	let startedCohortId: Id<"files_move_cohorts"> | null = null;
-	for (let step = 0; (!originItem || !startedCohortId) && step < 20; step++) {
-		await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
-		originItem = await t.run((ctx) =>
-			ctx.db
-				.query("files_transfer_items")
-				.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
-				.first(),
-		);
-		startedCohortId = await t.run(
-			async (ctx) =>
-				(
-					await ctx.db
-						.query("files_move_workspace_slots")
-						.withIndex("by_workspace", (q) =>
-							q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
-						)
-						.unique()
-				)?.cohortId ?? null,
-		);
+	try {
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: db.membershipId,
+			requestId: "foundation",
+			kind: "move",
+			sourceIds: [nodeId],
+			expectedSourceCount: 1,
+			targetParentId: parentId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		for (let step = 0; step < 20; step++) {
+			originItem = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
+					.first(),
+			);
+			startedCohortId = await t.run(
+				async (ctx) =>
+					(
+						await ctx.db
+							.query("files_move_workspace_slots")
+							.withIndex("by_workspace", (q) =>
+								q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
+							)
+							.unique()
+					)?.cohortId ?? null,
+			);
+			if (originItem && startedCohortId) break;
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+		}
+	} finally {
+		join.mockRestore();
 	}
 	if (!originItem || !startedCohortId) throw new Error("Expected the public Transfer origin item and cohort");
 	const cohortId = startedCohortId;

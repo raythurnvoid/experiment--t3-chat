@@ -5,6 +5,7 @@ import { api, internal } from "./_generated/api.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
+import { accept_input } from "./files_transfer.ts";
 import {
 	files_pending_update_index_revision,
 	files_u8_to_array_buffer,
@@ -187,7 +188,9 @@ async function private_folder(f: Fixture, name: string, parent: files_PendingPar
 	});
 }
 
-async function native_pending_scope(options: { otherFile?: boolean; editor?: boolean } = {}) {
+async function native_pending_scope(
+	options: { otherFile?: boolean; editor?: boolean; pauseBeforeInitialStep?: boolean } = {},
+) {
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -267,51 +270,68 @@ async function native_pending_scope(options: { otherFile?: boolean; editor?: boo
 		if (!proposal) throw new Error("Expected the native pending branch");
 		proposals.push(proposal);
 	}
-	const started = await asUser.mutation(api.files_transfer.accept_input, {
-		membershipId: db.membershipId,
-		requestId: crypto.randomUUID(),
-		kind: "move",
-		sourceIds: [nodeId],
-		expectedSourceCount: 1,
-		targetParentId: target._yay.nodeId,
-	});
-	if (started._nay) throw new Error(started._nay.message);
-	const runId = started._yay.runId;
-	expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
-		_yay: null,
-	});
-	for (let pass = 0; pass < 1000; pass++) {
-		const slot = await t.run((ctx) =>
-			ctx.db
-				.query("files_move_workspace_slots")
-				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-				.unique(),
-		);
-		if (slot?.cohortId)
-			return {
-				t,
-				db,
-				asUser,
-				nodeId,
-				otherNodeId,
-				editorUserId: editor?.userId,
-				runId,
-				cohortId: slot.cohortId,
-				proposals,
-			};
-		const job = await t.run((ctx) =>
-			ctx.db
-				.query("files_pending_overlay_jobs")
-				.withIndex("by_org_ws", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-				.first(),
-		);
-		if (job)
-			await t.mutation(internal.files_pending_overlay.run_job, {
-				kind: job.kind,
-				key: job.key,
-				nextAttemptAt: job.nextAttemptAt,
-			});
-		else await t.mutation(internal.files_transfer.advance, { runId });
+	const overlay = await import("../server/files-pending-overlay.ts");
+	const canJoin = overlay.files_pending_overlay_db_can_join_step;
+	// Model a resource yield before source holds. The expiry test uses this boundary, not its budget.
+	const join = options.pauseBeforeInitialStep
+		? vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx) => {
+				const allowed = await canJoin(ctx);
+				const slot = await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.unique();
+				return allowed && !slot?.cohortId;
+			})
+		: null;
+	try {
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: db.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "move",
+			sourceIds: [nodeId],
+			expectedSourceCount: 1,
+			targetParentId: target._yay.nodeId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
+			_yay: null,
+		});
+		for (let pass = 0; pass < 1000; pass++) {
+			const slot = await t.run((ctx) =>
+				ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.unique(),
+			);
+			if (slot?.cohortId)
+				return {
+					t,
+					db,
+					asUser,
+					nodeId,
+					otherNodeId,
+					editorUserId: editor?.userId,
+					runId,
+					cohortId: slot.cohortId,
+					proposals,
+				};
+			const job = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_org_ws", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.first(),
+			);
+			if (job)
+				await t.mutation(internal.files_pending_overlay.run_job, {
+					kind: job.kind,
+					key: job.key,
+					nextAttemptAt: job.nextAttemptAt,
+				});
+			else await t.mutation(internal.files_transfer.advance, { runId });
+		}
+	} finally {
+		join?.mockRestore();
 	}
 	throw new Error("The public Move did not start its cohort");
 }
@@ -364,42 +384,73 @@ test("public Move joins empty owner phases in one step", async () => {
 	let sideSteps = 0;
 	let childSteps = 0;
 	let cleanupSteps = 0;
-	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
-		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
-		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
-		let childRangeId: Id<"files_move_work_ranges"> | null = null;
-		if (cohort?.step === step && cohort.workPhase === "finish_owners") cleanupSteps++;
-		if (cohort?.step === step && (cohort.workPhase === "owners_collect" || cohort.workPhase === "sides")) {
-			const cursor = cohort.stagingCursor ? (JSON.parse(cohort.stagingCursor) as { order: number }) : { order: -1 };
-			const record = await ctx.db
-				.query("files_move_cohort_nodes")
-				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohortId).gt("order", cursor.order))
-				.first();
-			if (record?.nodeId === sourceId) {
-				if (cohort.workPhase === "owners_collect") ownerSteps++;
-				else sideSteps++;
-			}
-		}
-		if (cohort?.step === step && cohort.workPhase === "descendants") {
-			let range = await ctx.db
-				.query("files_move_work_ranges")
-				.withIndex("by_cohort_phase_status_order", (q) =>
-					q.eq("cohortId", cohortId).eq("phase", "collect").eq("status", "running"),
-				)
-				.first();
-			range ??= await ctx.db
-				.query("files_move_work_ranges")
-				.withIndex("by_cohort_phase_status_order", (q) =>
-					q.eq("cohortId", cohortId).eq("phase", "collect").eq("status", "queued"),
-				)
-				.first();
-			if (range?.kind === "saved_subtree" && range.range.kind === "node" && range.range.nodeId === sourceId)
-				childRangeId = range._id;
-		}
-		const result = await handler(ctx, args);
-		if (childRangeId && (await ctx.db.get("files_move_work_ranges", childRangeId))?.status === "complete") childSteps++;
-		return result;
-	});
+	const seen = new Set<string>();
+	const childRanges = new Set<Id<"files_move_work_ranges">>();
+	const completedChildRanges = new Set<Id<"files_move_work_ranges">>();
+	// Acceptance can join these phases before the first scheduled advance.
+	for (const registered of [accept_input, advance_cohort])
+		test_spy_handler(registered, async (handler, ctx, args) => {
+			const countedPhases = new Set<string>();
+			const trackedDb = new Proxy(ctx.db, {
+				get(target, key) {
+					const member: unknown = Reflect.get(target, key);
+					if (typeof member !== "function") return member;
+					if (key !== "get") return member.bind(target);
+					return async (...getArgs: unknown[]) => {
+						const result: unknown = await Reflect.apply(member, target, getArgs);
+						if (getArgs[0] !== "files_move_cohorts") return result;
+						const cohort = result as Doc<"files_move_cohorts"> | null;
+						if (!cohort || seen.has(`${cohort._id}:${cohort.step}`)) return result;
+						seen.add(`${cohort._id}:${cohort.step}`);
+						if (cohort.workPhase === "finish_owners") cleanupSteps++;
+						if (cohort.workPhase === "owners_collect" || cohort.workPhase === "sides") {
+							const cursor = cohort.stagingCursor
+								? (JSON.parse(cohort.stagingCursor) as { order: number })
+								: { order: -1 };
+							const record = await ctx.db
+								.query("files_move_cohort_nodes")
+								.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id).gt("order", cursor.order))
+								.first();
+							if (record?.nodeId === sourceId) {
+								const phaseKey = `${cohort._id}:${cohort.workPhase}:${record._id}`;
+								if (!countedPhases.has(phaseKey)) {
+									countedPhases.add(phaseKey);
+									if (cohort.workPhase === "owners_collect") ownerSteps++;
+									else sideSteps++;
+								}
+							}
+						}
+						if (cohort.workPhase === "descendants") {
+							let range = await ctx.db
+								.query("files_move_work_ranges")
+								.withIndex("by_cohort_phase_status_order", (q) =>
+									q.eq("cohortId", cohort._id).eq("phase", "collect").eq("status", "running"),
+								)
+								.first();
+							range ??= await ctx.db
+								.query("files_move_work_ranges")
+								.withIndex("by_cohort_phase_status_order", (q) =>
+									q.eq("cohortId", cohort._id).eq("phase", "collect").eq("status", "queued"),
+								)
+								.first();
+							if (range?.kind === "saved_subtree" && range.range.kind === "node" && range.range.nodeId === sourceId)
+								childRanges.add(range._id);
+						}
+						return result;
+					};
+				},
+			});
+			const result = await handler({ ...ctx, db: trackedDb }, args);
+			for (const rangeId of childRanges)
+				if (
+					!completedChildRanges.has(rangeId) &&
+					(await ctx.db.get("files_move_work_ranges", rangeId))?.status === "complete"
+				) {
+					completedChildRanges.add(rangeId);
+					childSteps++;
+				}
+			return result;
+		});
 	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
@@ -422,8 +473,8 @@ test("public Move joins empty owner phases in one step", async () => {
 		parentId: target._yay.nodeId,
 		path: "/target/source",
 	});
-	expect(ownerSteps, "A node without owner or receipt docs needs one owner collection step").toBe(1);
-	expect.soft(sideSteps, "An empty folder needs one side staging step").toBe(1);
+	expect(ownerSteps, "A node without owner or receipt docs needs one owner collection transaction").toBe(1);
+	expect.soft(sideSteps, "An empty folder needs one side staging transaction").toBe(1);
 	expect.soft(childSteps, "An empty folder needs one child collection step").toBe(1);
 	expect(cleanupSteps, "An empty folder needs one owner cleanup step").toBe(1);
 });
@@ -716,7 +767,9 @@ test("an edit of a big draft drains its old chunks while a Move holds another fi
 	});
 	expect(slot?.cohortId, "the Move still holds the workspace").toBe(f.cohortId);
 	const current = files_pending_update_index_revision(proposal);
-	expect(chunks.filter((chunk) => chunk.sourceKind === "pending" && chunk.proposalRevision === current).length).toBeGreaterThan(2 * 128);
+	expect(
+		chunks.filter((chunk) => chunk.sourceKind === "pending" && chunk.proposalRevision === current).length,
+	).toBeGreaterThan(2 * 128);
 	expect(
 		chunks.filter((chunk) => chunk.sourceKind !== "pending" || chunk.proposalRevision !== current),
 		"old chunks of a draft the Move does not hold drain at once",
@@ -800,7 +853,7 @@ test("draft expiry runs while another user's Move holds the workspace, and waits
 }, 120_000);
 
 test("draft expiry waits while the owner's own Move runs, even for a draft it does not hold", async () => {
-	const f = await native_pending_scope();
+	const f = await native_pending_scope({ pauseBeforeInitialStep: true });
 	const draft = f.proposals[0]!;
 	const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
 	const read = () =>

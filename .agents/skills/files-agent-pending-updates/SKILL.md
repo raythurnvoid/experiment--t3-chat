@@ -138,8 +138,9 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   saved headers, content, search chunks and every owner's pending overlay in small transactions.
   One transaction joins small exact work after flushing derived writes and checking its budget.
   A new group starts that work in the accepting transaction. A ready empty folder can publish
-  before the request returns. Each checked metric must stay below one quarter of its Convex
-  limit before joining another unit. Tests include the final flush and keep 25% free.
+  before the request returns. Only initial cohort work uses a one-quarter join budget and stops
+  at its first native page. Background calls and nested helpers keep the one-sixteenth budget.
+  Both check all seven metrics after flushing. Tests include the final flush and keep 25% free.
   Any native page ends the transaction, even an empty page. Heavy text preparation keeps its own
   step. `files_move_run.run` carries the committed steps. It loads the content or media helper
   with a literal `import()` only when the step needs it. It calls that helper locally, with no new
@@ -662,6 +663,14 @@ Physical Move cleanup writes all twelve ancestor fields from the selected place.
 unused fields when a node moves to a shallower folder or root.
 
 **Derived docs are discovery, not facts.** The flush computes each derived doc from the source docs and the owner's reader. It reads derived docs only to learn what to recompute or delete. A read that uses a derived doc still checks what can change after the write, for example access on `accessNodeId` and `destinationAccessNodeIds`. Never decide a write from a derived doc alone.
+
+**Sealed private parents.** Fixed-After owner staging runs only after every saved header is sealed.
+For a private parent, its checked receipt must name that same cohort and After. The reader then
+uses the exact new saved folder header, including its path, Archive state and inherited scope.
+The planner has included and consumed ancestor Moves. This avoids walking the new saved parent
+chain again for an unselected private child. Normal receipts and Before readers still resolve
+the owner's drafts. A receipt grants no access; read-side and per-step permission checks remain.
+Content-only saved proposals do not resolve an unused owner path.
 
 **Drift.** A Convex dashboard edit or `convex import` writes without the wrapper, so derived docs drift. After one, run `files_pending_overlay:check_user` for each affected user (organization, workspace, user, `cursor: null`; call again with the returned cursor until it is null). It returns the differences and `moveInProgress`. If that flag is true, wait for the workspace Move to finish, then start the audit again with `cursor: null`. An empty differences list with that flag is not a clean audit. Cohort staging uses its exact work proofs instead of this normal-doc audit. `files_pending_overlay:repair_user` with the same args recomputes the user's docs and deletes orphans; reserved targets stay parked until the Move ends. QA steps are in `../app-playwriter-harness/references/pending-path-overlay.md`.
 

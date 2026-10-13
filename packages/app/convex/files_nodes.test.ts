@@ -2034,6 +2034,15 @@ test("rename_node Stop removes staged parents and keeps the old name visible", a
 			path: "original",
 		});
 		if (!created._yay) throw new Error("Source was not created");
+		// A real child page leaves time to Stop before publication.
+		for (let index = 0; index < 33; index++) {
+			const child = await asUser.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: created._yay.nodeId,
+				path: `original/child-${index}`,
+			});
+			expect(child._nay).toBeUndefined();
+		}
 		const accepted = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			requestId: "rename-stop",

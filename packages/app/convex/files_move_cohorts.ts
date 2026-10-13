@@ -508,8 +508,8 @@ export async function files_move_cohorts_db_schedule(
 	let cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (!cohort || cohort.phase === "complete") return;
 	// Start ready steps before scheduling the first job. Stop at a page or publication.
-	if (!cohort.runJob && cohort.step === 0 && (await files_pending_overlay_db_can_join_step(ctx))) {
-		await db_advance(ctx, { cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true });
+	if (!args.handoff && !cohort.runJob && cohort.step === 0 && (await files_pending_overlay_db_can_join_step(ctx, 4))) {
+		await db_advance(ctx, { cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true }, 4);
 		cohort = (await ctx.db.get("files_move_cohorts", args.cohortId))!;
 		if (cohort.phase === "complete") return;
 	}
@@ -2641,6 +2641,7 @@ async function db_advance_step(
 async function db_advance(
 	ctx: MutationCtx,
 	args: { cohortId: Id<"files_move_cohorts">; step: number; runGeneration: number | null; join: boolean },
+	limitFactor: 4 | 16 = 16,
 ) {
 	let step = args.step;
 	while (true) {
@@ -2651,7 +2652,7 @@ async function db_advance(
 			await files_move_cohorts_db_schedule(ctx, { cohortId: args.cohortId, handoff: true });
 			return { kind: "next" as const, step };
 		}
-		if (result.yield || !(await files_pending_overlay_db_can_join_step(ctx))) return { kind: "next" as const, step };
+		if (result.yield || !(await files_pending_overlay_db_can_join_step(ctx, limitFactor))) return { kind: "next" as const, step };
 	}
 }
 

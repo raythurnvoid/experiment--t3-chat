@@ -68,8 +68,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Existing Move, scope, Archive and Restore repairs must finish before a new Move starts.
   Complete human Move input can join the real parent body after derived writes flush and the budget
   passes. A new cohort starts its ready exact work in that same transaction. Empty folders can
-  publish before acceptance returns. Joining checks all seven metrics after the overlay flush;
-  each must be below one quarter of its limit. Tests keep 25% free after the final flush. Every
+  publish before acceptance returns. Only initial cohort work uses the one-quarter budget and
+  stops at its first native page. Background calls and nested helpers keep one sixteenth.
+  Both check all seven metrics after the overlay flush. Tests keep 25% free after the final flush. Every
   native page ends that transaction. Heavy content work keeps its own step. One action carries
   several committed transactions through `files_move_run.run`. Content and media helpers load only
   for their own steps. Between advances it checks five seconds or 128 advance calls
