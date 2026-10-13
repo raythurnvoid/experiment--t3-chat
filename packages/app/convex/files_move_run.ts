@@ -3,8 +3,10 @@ import type { RegisteredMutation } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import { internalAction } from "./_generated/server.js";
+import { files_move_content_action_prepare } from "./files_move_content.ts";
 
 console.info("Move startup module", { module: "files_move_run" });
+console.info("Move startup helper", files_move_content_action_prepare.name);
 
 const RUN_BUDGET_MS = 5_000;
 const RUN_MAX_ADVANCE_CALLS = 128;
