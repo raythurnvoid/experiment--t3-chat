@@ -867,7 +867,7 @@ async function db_items(
 		reviewedRevision: proposal?.revision ?? null,
 		selectedContentStateId: input?.selectedContentStateId ?? null,
 		privateVersion: input?.reviewSource?.privateVersion ?? null,
-		mediaDependencySet: input?.mediaDependencySet ?? null,
+		mediaDependencySet: null,
 		nodeRecordId: reserved._yay,
 		afterProposal,
 		contentId: null,

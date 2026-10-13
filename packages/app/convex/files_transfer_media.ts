@@ -98,7 +98,6 @@ export async function files_transfer_media_db_map_refs(
 			"run" | "item" | "sourceMembership" | "destinationMembership"
 		>;
 		refs: string[];
-		validateOnly?: boolean;
 	},
 ) {
 	if (args.refs.length > files_media_dependencies_PAGE_SIZE)
@@ -135,29 +134,9 @@ export async function files_transfer_media_db_map_refs(
 		if (run.sourceScope.workspaceId === run.destinationScope.workspaceId) {
 			const ready = await files_transfer_media_db_get_ready_media({ ctx, entry: source, membership: sourceMembership });
 			if (!ready) return Result({ _nay: { message: "A linked media file is not available" } });
-			const sourceSetPin = args.validateOnly ? undefined : args.prepared.item.capture?.mediaSourceSet;
-			const sourceSet = sourceSetPin ? await ctx.db.get("files_media_dependency_sets", sourceSetPin.setId) : null;
-			if (
-				sourceSetPin &&
-				(!sourceSet?.sealed || sourceSet.generation !== sourceSetPin.generation || sourceSet.owner.kind === "cleanup")
-			)
-				return Result({ _nay: { message: "The copied document's media selection changed. Try again." } });
-			const inherited = sourceSet
-				? await ctx.db
-						.query("files_media_dependencies")
-						.withIndex("by_set_src", (q) => q.eq("setId", sourceSet._id).eq("dependency.src", src))
-						.first()
-				: null;
-			if (
-				inherited &&
-				!files_transfer_media_dependencies_equal(inherited.dependency, { ...inherited.dependency, ...ready })
-			)
-				return Result({
-					_nay: { message: "The copied media changed while this document was being copied. Try again." },
-				});
-			// A same-workspace copy keeps the original ref and its exact Save requirement.
+			// A same-workspace copy keeps the original ref.
 			referencePairs.push([src, src]);
-			mediaDependencies.push(inherited?.dependency ?? { src, target: original, ...ready });
+			mediaDependencies.push({ src, target: original, ...ready });
 			continue;
 		}
 

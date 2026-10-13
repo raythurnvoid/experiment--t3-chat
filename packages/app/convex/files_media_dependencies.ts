@@ -116,30 +116,6 @@ export async function files_media_dependencies_db_retire(
 	await ctx.scheduler.runAfter(0, internal.files_media_dependencies.cleanup_set, { setId: set._id });
 }
 
-export async function files_media_dependencies_db_adopt(
-	ctx: MutationCtx,
-	args: {
-		set: Doc<"files_media_dependency_sets">;
-		itemId: Id<"files_transfer_items">;
-		pendingUpdateId: Id<"files_pending_updates">;
-	},
-) {
-	const current = await ctx.db.get("files_media_dependency_sets", args.set._id);
-	if (
-		!current?.sealed ||
-		current.generation !== args.set.generation ||
-		current.owner.kind !== "capture" ||
-		current.owner.itemId !== args.itemId
-	)
-		return Result({ _nay: { message: "The media selection is no longer current" } });
-	await ctx.db.patch("files_media_dependency_sets", current._id, {
-		owner: { kind: "proposal", pendingUpdateId: args.pendingUpdateId },
-		generation: current.generation + 1,
-		captureProof: undefined,
-	});
-	return Result({ _yay: null });
-}
-
 async function db_delete_batch(ctx: MutationCtx, setId: Id<"files_media_dependency_sets">) {
 	const set = await ctx.db.get("files_media_dependency_sets", setId);
 	if (!set) return true;

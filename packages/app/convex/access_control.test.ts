@@ -26,7 +26,6 @@ import {
 	organizations_db_create_workspace,
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
-import { files_nodes_db_live_scope_reader } from "./files_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
 	access_control_ENFORCED_PERMISSIONS,
@@ -9131,7 +9130,7 @@ describe("file sharing", () => {
 	describe("move checks while a restrict or move job runs", () => {
 		// A restrict, an unrestrict, or a move into a restricted folder writes the named folder now. Later
 		// steps write the new scope of each item inside. Until a step reaches an item, the item stores its
-		// old scope, so these checks must read the scope from the item's parents.
+		// old scope, and the checks trust that stored scope. A move waits for the job before it checks.
 
 		// Scheduled steps never run on their own under fake timers, so the job stays where the request left it.
 		beforeEach(() => {
@@ -9218,7 +9217,7 @@ describe("file sharing", () => {
 			return { outerId, folderId, childId };
 		}
 
-		test("a member without a grant cannot rename or move out an item the job has not reached", async () => {
+		test("a member without a grant cannot move out an item the job has not reached", async () => {
 			const t = test_convex();
 			const fixture = await access_control_test_seed_enforcement_fixture(t, {
 				name: "rj-org",
@@ -9226,14 +9225,6 @@ describe("file sharing", () => {
 			});
 			const { folderId, childId } = await seed_folder_job({ t, fixture, restricted: false, outerRestricted: false });
 
-			const renamed = await test_rename_node(t, fixture.asMember, {
-				membershipId: fixture.memberMembershipId,
-				nodeId: childId,
-				path: "renamed",
-			});
-			expect(renamed._nay?.message).toBe("Permission denied");
-
-			await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 			const moved = await test_move_nodes(t, fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
 				itemIds: [childId],
@@ -9279,98 +9270,6 @@ describe("file sharing", () => {
 				parentId: folderId,
 				name: "renamed",
 			});
-		});
-
-		test("a guest with a grant on the folder the job restricts can rename an item the job has not reached", async () => {
-			const t = test_convex();
-			const fixture = await access_control_test_seed_enforcement_fixture(t, {
-				name: "rj-guest-org",
-				suffix: "restrict-job-guest",
-			});
-			await demote_to_guest_role(fixture);
-			const { folderId, childId } = await seed_folder_job({ t, fixture, restricted: false, outerRestricted: false });
-			const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-				membershipId: fixture.ownerMembershipId,
-				nodeId: folderId,
-				principal: { kind: "user", userId: fixture.memberId },
-				level: "write",
-			});
-			expect(shared._nay).toBeUndefined();
-
-			// The child still stores no scope, and the guest role may write nothing outside its grants.
-			const renamed = await test_rename_node(t, fixture.asMember, {
-				membershipId: fixture.memberMembershipId,
-				nodeId: childId,
-				path: "renamed",
-			});
-			expect(renamed._nay).toBeUndefined();
-			expect(await t.run((ctx) => ctx.db.get("files_nodes", childId))).toMatchObject({
-				name: "renamed",
-				restrictedScopeNodeId: folderId,
-			});
-		});
-
-		test("a service account needs a grant on the folder the job restricts", async () => {
-			const t = test_convex();
-			const fixture = await access_control_test_seed_enforcement_fixture(t, {
-				name: "rj-service-org",
-				suffix: "restrict-job-service",
-			});
-			const { folderId, childId } = await seed_folder_job({ t, fixture, restricted: false, outerRestricted: false });
-			const serviceAccountId = await t.run(async (ctx) => {
-				const now = Date.now();
-				const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.defaultWorkspaceId,
-					name: "Writer",
-					createdBy: fixture.ownerId,
-					createdAt: now,
-					updatedAt: now,
-					revokedAt: null,
-				});
-				const granted = await access_control_db_set_service_account_grant(ctx, {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.defaultWorkspaceId,
-					serviceAccountId,
-					resource: { kind: "workspace" },
-					level: "write",
-				});
-				expect(granted._nay).toBeUndefined();
-				return serviceAccountId;
-			});
-			const mayWrite = () =>
-				t.run(async (ctx) => {
-					const stored = (await ctx.db.get("files_nodes", childId))!;
-					const withLiveScope = await files_nodes_db_live_scope_reader(ctx, {
-						organizationId: fixture.organizationId,
-						workspaceId: fixture.defaultWorkspaceId,
-					});
-					const node = await withLiveScope(stored);
-					expect(node?.restrictedScopeNodeId).toBe(folderId);
-					return await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: fixture.organizationId,
-						workspaceId: fixture.defaultWorkspaceId,
-						userId: fixture.ownerId,
-						serviceAccountId,
-						fileNode: node!,
-						permission: "content.write",
-					});
-				});
-
-			expect(await mayWrite()).toBe(false);
-
-			// The public API's file guard needs the live folder grant too.
-			await t.run(async (ctx) => {
-				const granted = await access_control_db_set_service_account_grant(ctx, {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.defaultWorkspaceId,
-					serviceAccountId,
-					resource: { kind: "file", nodeId: folderId },
-					level: "write",
-				});
-				expect(granted._nay).toBeUndefined();
-			});
-			expect(await mayWrite()).toBe(true);
 		});
 
 		test("after an unrestrict, a member can rename an item that still stores the old scope", async () => {

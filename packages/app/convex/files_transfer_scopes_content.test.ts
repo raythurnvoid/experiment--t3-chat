@@ -6,8 +6,6 @@ import { test_create_saved_text_file } from "./setup.test.ts";
 import {
 	mock_scope_copy_storage,
 	fixture,
-	get_proposal,
-	get_dependencies,
 	save_proposal,
 	copy_files,
 	media_copy_source,
@@ -267,7 +265,7 @@ describe("copy_transfer_file scopes", () => {
 		["saved", "private"],
 		["saved", "saved"],
 	] as const)(
-		"keeps copied media dependencies from a %s proposal over a %s destination",
+		"saves a copy of a copied %s document over a %s destination before its media",
 		async (sourceKind, destination) => {
 			const f = await fixture();
 			const sources = await media_copy_source(f);
@@ -280,9 +278,6 @@ describe("copy_transfer_file scopes", () => {
 			const first = await copy_files(f, { sources, sourceWorkspace: "current", destinationWorkspace: "personal" });
 			expect(first.every((item) => item.state === "completed")).toBe(true);
 			const source = first[0]!.outputTarget!;
-			const original = await get_proposal({ f, workspace: "personal", target: source });
-			const originalDependencies = await get_dependencies(f, original.mediaDependencySetId);
-			expect(originalDependencies).toHaveLength(1);
 			if (destination === "saved")
 				await test_create_saved_text_file(f.t, {
 					membershipId: f.personal.membershipId,
@@ -304,19 +299,20 @@ describe("copy_transfer_file scopes", () => {
 			});
 			expect(second[0]).toMatchObject({ state: "completed" });
 			const target = second[0]!.outputTarget!;
-			const pending = await get_proposal({ f, workspace: "personal", target });
-			const before = target.kind === "saved" ? await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)) : null;
-			expect(await save_proposal({ f, workspace: "personal", target })).toMatchObject({
-				_nay: { message: expect.stringContaining("Save the selected media") },
-			});
-			expect(await get_proposal({ f, workspace: "personal", target })).toEqual(pending);
-			expect(await get_dependencies(f, pending.mediaDependencySetId)).toEqual(originalDependencies);
-			expect(second[0]!.capture!.mediaDependencySetId).toBe(pending.mediaDependencySetId);
-			if (target.kind === "saved") expect(await f.t.run((ctx) => ctx.db.get("files_nodes", target.id))).toEqual(before);
-			else
-				expect(await f.t.run((ctx) => ctx.db.get("files_pending_nodes", target.id))).toMatchObject({ state: "active" });
-			expect(await save_proposal({ f, workspace: "personal", target: first[1]!.outputTarget! })).toHaveProperty("_yay");
+			const read = (path: string, includePending: boolean) =>
+				f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					organizationId: f.personal.organizationId,
+					workspaceId: f.personal.workspaceId,
+					userId: f.personal.userId,
+					overlayUserId: f.personal.userId,
+					path,
+					includePending,
+				});
+			const text = (await read("/document.md", true))?.content;
+			expect(text).toContain("![Photo](");
+			// A copied document saves like any other document. Its media draft is not saved yet.
 			expect(await save_proposal({ f, workspace: "personal", target })).toHaveProperty("_yay");
+			expect((await read("/second.md", false))?.content).toBe(text);
 		},
 	);
 });

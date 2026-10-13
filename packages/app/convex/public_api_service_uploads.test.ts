@@ -1470,8 +1470,7 @@ describe("service upload targets", () => {
 	});
 
 	// A member grant on /meetings. /meetings/secret is restricted, and /meetings/secret/known is inside it.
-	// With `staleScope`, the inner folder keeps no scope, as while a scope job has not reached it yet.
-	async function seed_hidden_folder_grant(t: ReturnType<typeof test_convex>, staleScope = false) {
+	async function seed_hidden_folder_grant(t: ReturnType<typeof test_convex>) {
 		const fixture = await seed_installation(t);
 		const memberUserId = await t.run(async (ctx) => {
 			const now = Date.now();
@@ -1512,20 +1511,8 @@ describe("service upload targets", () => {
 					pathDepth: path.split("/").length - 1,
 				});
 				if (name === "secret") hiddenId = parentId;
-				if (hiddenId && !(staleScope && name === "known"))
-					await ctx.db.patch("files_nodes", parentId, { restrictedScopeNodeId: hiddenId });
+				if (hiddenId) await ctx.db.patch("files_nodes", parentId, { restrictedScopeNodeId: hiddenId });
 			}
-			if (staleScope)
-				await ctx.db.insert("files_subtree_ops", {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					userId: fixture.userId,
-					status: "running",
-					blockedByOpId: null,
-					rootNodeIds: [hiddenId!],
-					treePaths: ["/meetings/secret/"],
-					kind: "scope",
-				});
 			return userId;
 		});
 		return await seal_token({ t, fixture, destinationPathPrefix: "/meetings", actorUserId: memberUserId });
@@ -1550,20 +1537,6 @@ describe("service upload targets", () => {
 		const known = await guess("known");
 		expect(known).toEqual({ status: 403, body: { message: "Permission denied" } });
 		expect(await guess("missing"), "a missing name inside a hidden folder answers like an existing one").toEqual(known);
-		expect(await read_targets(t)).toHaveLength(0);
-	});
-
-	test("checks the scope a folder gets from its parents while a scope job runs", async () => {
-		const t = test_convex();
-		const memberGrant = await seed_hidden_folder_grant(t, true);
-		const response = await call({
-			t,
-			path: CREATE_TARGET_PATH,
-			bearer: memberGrant,
-			body: target_body({ path: "/meetings/secret/known/f.mp4" }),
-		});
-		expect(response.status, "a new file in a folder whose parent was just restricted").toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 

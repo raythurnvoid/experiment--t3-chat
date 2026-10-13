@@ -176,10 +176,6 @@ import {
 	files_transfer_source_versions_equal,
 } from "./files_transfer.ts";
 import {
-	files_pending_media_db_require_validation,
-	type files_pending_media_ValidatedSave,
-} from "./files_pending_media.ts";
-import {
 	files_media_validation_db_advance_content_version,
 	files_media_validation_db_can_back_media,
 	files_media_validation_db_capture_versions,
@@ -193,7 +189,6 @@ import {
 	files_media_dependencies_db_append,
 	files_media_dependencies_db_seal,
 	files_media_dependencies_db_retire,
-	files_media_dependencies_db_adopt,
 } from "./files_media_dependencies.ts";
 import { files_pending_holds_db_release } from "./files_pending_holds.ts";
 import { files_transfer_rewrite_media_refs } from "../server/files-transfer-media.ts";
@@ -1732,19 +1727,6 @@ export const get_transfer_file_copy_data = internalMutation({
 				yjsSnapshotAsset = header.yjsSnapshotAsset;
 			}
 
-			const sourceSet =
-				run.sourceScope.workspaceId === run.destinationScope.workspaceId &&
-				sourceEntry.pendingUpdate?.mediaDependencySetId
-					? await ctx.db.get("files_media_dependency_sets", sourceEntry.pendingUpdate.mediaDependencySetId)
-					: null;
-			if (
-				sourceEntry.pendingUpdate?.mediaDependencySetId &&
-				run.sourceScope.workspaceId === run.destinationScope.workspaceId &&
-				(!sourceSet?.sealed ||
-					sourceSet.owner.kind !== "proposal" ||
-					sourceSet.owner.pendingUpdateId !== sourceEntry.pendingUpdate._id)
-			)
-				return await fail("The source draft's media is still preparing");
 			capture = {
 				sourceVersion: version._yay,
 				sourceAssetId: asset?._id ?? null,
@@ -1752,7 +1734,6 @@ export const get_transfer_file_copy_data = internalMutation({
 				sourceYjsSnapshot,
 				metadata,
 				artifact: null,
-				...(sourceSet ? { mediaSourceSet: { setId: sourceSet._id, generation: sourceSet.generation } } : {}),
 			};
 
 			await ctx.db.patch("files_transfer_items", item._id, { capture });
@@ -2015,7 +1996,6 @@ export const validate_transfer_file_media = internalMutation({
 		const mapped = await files_transfer_media_db_map_refs(ctx, {
 			prepared: prepared._yay,
 			refs: rows.map((row) => row.sourceSrc),
-			validateOnly: true,
 		});
 		if (mapped._nay) return mapped;
 		if (
@@ -2330,7 +2310,7 @@ export const seal_transfer_file_capture = internalMutation({
 			)
 				return Result({ _nay: { message: "The copied document's media has not been prepared" } });
 			await ctx.db.patch("files_media_dependency_sets", set._id, {
-				// Even an empty set must validate the sealed text before adoption.
+				// Even an empty set must validate the sealed text before publication.
 				captureProof: { ...set.captureProof, textDigest: await crypto_sha256_hex(args.text), validatedCount: -1 },
 			});
 		}
@@ -2507,32 +2487,21 @@ type stage_transfer_saved_replacement_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-async function db_adopt_transfer_media_set(
+async function db_retire_transfer_media_set(
 	ctx: MutationCtx,
 	args: {
 		item: Doc<"files_transfer_items">;
 		mediaSet: Doc<"files_media_dependency_sets"> | null;
-		pendingUpdateId: Id<"files_pending_updates">;
-		previousSetId?: Id<"files_media_dependency_sets">;
 	},
 ) {
-	if (args.previousSetId && args.previousSetId !== args.mediaSet?._id) {
-		const previous = await ctx.db.get("files_media_dependency_sets", args.previousSetId);
-		if (previous)
-			await files_media_dependencies_db_retire(ctx, {
-				setId: previous._id,
-				generation: previous.generation,
-				owner: { kind: "proposal", pendingUpdateId: args.pendingUpdateId },
-			});
-	}
-	if (args.mediaSet) {
-		const adopted = await files_media_dependencies_db_adopt(ctx, {
-			set: args.mediaSet,
-			itemId: args.item._id,
-			pendingUpdateId: args.pendingUpdateId,
+	// The mappings only rewrite the copied text. A copied document saves like any other document,
+	// so its proposal keeps no media requirement.
+	if (args.mediaSet)
+		await files_media_dependencies_db_retire(ctx, {
+			setId: args.mediaSet._id,
+			generation: args.mediaSet.generation,
+			owner: { kind: "capture", itemId: args.item._id },
 		});
-		if (adopted._nay) throw should_never_happen(adopted._nay.message, { itemId: args.item._id });
-	}
 	const source = args.item.capture?.sourceVersion;
 	// Stored media can still be read by later documents in this run; its hold ends with the run.
 	if (source?.kind === "pending" && source.textKind !== null)
@@ -2655,7 +2624,6 @@ export const finalize_transfer_file_copy = internalMutation({
 						},
 						content: undefined,
 						preparation: undefined,
-						mediaDependencySetId: mediaSet?._id,
 						revision: proposalRevision + 1,
 						size: contentAsset.size,
 						copiedFrom: {
@@ -2764,7 +2732,6 @@ export const finalize_transfer_file_copy = internalMutation({
 						preparation: undefined,
 						revision: proposalRevision + 1,
 						size: files_get_utf8_byte_size(capturedText),
-						mediaDependencySetId: mediaSet?._id,
 						copiedFrom: {
 							target: item.source,
 							path: item.sourcePath,
@@ -2804,12 +2771,7 @@ export const finalize_transfer_file_copy = internalMutation({
 					assetId: previous.createIntent.assetId,
 				});
 
-			await db_adopt_transfer_media_set(ctx, {
-				item,
-				mediaSet,
-				pendingUpdateId,
-				previousSetId: previous?.mediaDependencySetId,
-			});
+			await db_retire_transfer_media_set(ctx, { item, mediaSet });
 
 			await files_transfer_db_complete_copy_item(ctx, {
 				itemId: item._id,
@@ -2861,7 +2823,6 @@ export const finalize_transfer_file_copy = internalMutation({
 			const changes = {
 				revision,
 				pendingReplacement,
-				mediaDependencySetId: mediaSet?._id,
 				copiedFrom: { target: item.source, path: item.sourcePath },
 				threadIds,
 				size: contentAsset.size,
@@ -2914,12 +2875,7 @@ export const finalize_transfer_file_copy = internalMutation({
 				await ctx.db.delete("files_r2_assets", yjsSnapshotAsset._id);
 			}
 
-			await db_adopt_transfer_media_set(ctx, {
-				item,
-				mediaSet,
-				pendingUpdateId,
-				previousSetId: previous?.mediaDependencySetId,
-			});
+			await db_retire_transfer_media_set(ctx, { item, mediaSet });
 
 			await files_transfer_db_complete_copy_item(ctx, {
 				itemId: item._id,
@@ -6714,9 +6670,6 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 	actor: {
 		billedUserId: Id<"users">;
 		publicationBatchId?: Id<"files_pending_update_operation_batches">;
-		reviewedPendingUpdateIds?: ReadonlySet<Id<"files_pending_updates">>;
-		reviewRunId?: Id<"files_pending_update_runs">;
-		validatedMedia?: files_pending_media_ValidatedSave;
 	};
 }) {
 	const { ctx, actor, ...previousArgs } = args;
@@ -6805,20 +6758,6 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 		) {
 			return Result({ _nay: { message: files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE } });
 		}
-	}
-
-	if (pendingUpdate.mediaDependencySetId && args.yjsRootKind === "rich_text" && args.text !== undefined) {
-		if (!actor.publicationBatchId)
-			return Result({ _nay: { message: "The prepared media check is no longer available" } });
-		const media = await files_pending_media_db_require_validation(ctx, {
-			pendingUpdate,
-			text: args.text,
-			operationBatchId: actor.publicationBatchId,
-			reviewedPendingUpdateIds: actor.reviewedPendingUpdateIds,
-			reviewRunId: actor.reviewRunId,
-			validated: actor.validatedMedia,
-		});
-		if (media._nay) return media;
 	}
 
 	const publicationReservations: Doc<"files_private_storage_reservations">[] = [];
@@ -6950,15 +6889,6 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 
 	// The proposal is consumed. A move proposal on the same doc survives as a move-only doc.
 	const now = Date.now();
-	if (pendingUpdate.mediaDependencySetId) {
-		const set = await ctx.db.get("files_media_dependency_sets", pendingUpdate.mediaDependencySetId);
-		if (set)
-			await files_media_dependencies_db_retire(ctx, {
-				setId: set._id,
-				generation: set.generation,
-				owner: { kind: "proposal", pendingUpdateId: pendingUpdate._id },
-			});
-	}
 	if (pendingUpdate.pendingMove) {
 		await Promise.all([
 			files_db_patch_pending_update({
@@ -6968,7 +6898,6 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 					revision: pendingUpdate.revision + 1,
 					pendingReplacement: undefined,
 					copiedFrom: undefined,
-					mediaDependencySetId: undefined,
 					size: 0,
 					updatedAt: now,
 				},

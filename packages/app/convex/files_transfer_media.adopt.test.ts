@@ -4,11 +4,11 @@ import type { Id } from "./_generated/dataModel.js";
 import { test_save_file_pending_update, test_spy_handler } from "./setup.test.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { prepare_transfer_file_media } from "./files_nodes_content.ts";
+import { files_media_build_private_src } from "../shared/files-media.ts";
 import {
 	mock_media_storage,
 	save_all_media,
 	fixture,
-	read_dependencies,
 	finish_document,
 	copy_again,
 } from "./files_transfer_media.setup.test.ts";
@@ -33,9 +33,9 @@ afterEach(() => {
 });
 
 /**
- * Copy a document with `mediaCount` distinct media, check its dependency set and text, then Save it.
+ * Copy a document with `mediaCount` distinct media, check its text, then Save it.
  */
-async function adopt_media(row: { documentReplacement: boolean; mediaCount: number; mediaPages: number }) {
+async function copy_media(row: { documentReplacement: boolean; mediaCount: number; mediaPages: number }) {
 	const { documentReplacement, mediaCount, mediaPages } = row;
 
 	const f = await fixture({ mediaCount, documentReplacement });
@@ -67,20 +67,9 @@ async function adopt_media(row: { documentReplacement: boolean; mediaCount: numb
 			)
 			.unique(),
 	);
-	const dependencies = await read_dependencies(f.t, pending!.mediaDependencySetId);
-	expect(dependencies).toHaveLength(mediaCount);
-	expect(new Set(dependencies.map((dependency) => dependency.assetId)).size).toBe(mediaCount);
-	expect(new Set(dependencies.map((dependency) => dependency.assetId))).toEqual(
-		new Set(f.selectedMediaItems.map((media) => media.outputMediaAssetId)),
-	);
-	expect(
-		await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", pending!.mediaDependencySetId!)),
-	).toMatchObject({
-		count: mediaCount,
-		expectedCount: mediaCount,
-		sealed: true,
-		owner: { kind: "proposal", pendingUpdateId: pending!._id },
-	});
+	// Each copied link points at the media copy from the same Copy.
+	const srcs = f.selectedMediaItems.map((media) => files_media_build_private_src(media.outputTarget!.id));
+	expect(new Set(srcs).size).toBe(mediaCount);
 	const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 		organizationId: f.destination.organizationId,
 		workspaceId: f.destination.workspaceId,
@@ -88,7 +77,7 @@ async function adopt_media(row: { documentReplacement: boolean; mediaCount: numb
 		overlayUserId: f.destination.userId,
 		path: "/document.md",
 	});
-	for (const dependency of dependencies) expect(read?.content).toContain(`![Photo](${dependency.src})`);
+	for (const src of srcs) expect(read?.content).toContain(`![Photo](${src})`);
 	for (const src of f.sourceRefs) expect(read?.content).not.toContain(src);
 	// Each Move step is one advance call. Count the steps that repair saved content.
 	let repairSteps = 0;
@@ -114,14 +103,13 @@ async function adopt_media(row: { documentReplacement: boolean; mediaCount: numb
 			reviewedRevision: pending!.revision,
 		}),
 	).toMatchObject({ _yay: { target: { kind: "saved" } } });
-	for (const dependency of dependencies)
-		expect(await f.t.run((ctx) => ctx.db.get("files_r2_assets", dependency.assetId))).not.toBeNull();
+	for (const media of f.selectedMediaItems)
+		expect(await f.t.run((ctx) => ctx.db.get("files_r2_assets", media.outputMediaAssetId!))).not.toBeNull();
 }
 
-// Tests that adopt or clone a copied media set that needs more than one page. Each media file needs its
-// own Save.
+// Tests that copy media links that need more than one page. Each media file needs its own Save.
 describe("copy_transfer_file media", () => {
-	test("clones a same-workspace dependency set in pages without sharing its owner", async () => {
+	test("a same-workspace copy of a copy keeps its media links, in pages", async () => {
 		const f = await fixture({ mediaCount: 4 });
 		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
 			itemId: f.document._id,
@@ -129,8 +117,6 @@ describe("copy_transfer_file media", () => {
 		});
 		await finish_document(f);
 		const original = await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id));
-		const setId = original!.capture!.mediaDependencySetId!;
-		const before = await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId));
 		let pages = 0;
 		test_spy_handler(prepare_transfer_file_media, async (handler, ctx, args) => {
 			pages++;
@@ -138,29 +124,33 @@ describe("copy_transfer_file media", () => {
 		});
 		const clone = await copy_again({ f, source: original!.outputTarget!, targetName: "cloned.md" });
 		expect(pages).toBe(2);
-		expect(clone!.mediaDependencySetId).not.toBe(setId);
-		expect(await read_dependencies(f.t, clone!.mediaDependencySetId)).toEqual(await read_dependencies(f.t, setId));
-		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toEqual(before);
-		expect(
-			await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", clone!.mediaDependencySetId!)),
-		).toMatchObject({ count: 4, owner: { kind: "proposal", pendingUpdateId: clone!._id } });
+		const read = (path: string) =>
+			f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				organizationId: f.destination.organizationId,
+				workspaceId: f.destination.workspaceId,
+				userId: f.destination.userId,
+				overlayUserId: f.destination.userId,
+				path,
+			});
+		expect(clone?.copiedFrom).toBeDefined();
+		expect((await read("/cloned.md"))?.content).toBe((await read("/document.md"))?.content);
 	}, 120_000);
 
 	// 4 media files fill one media page of 3 and start a second one, for a private and a saved output.
 	test.each([
 		{ documentReplacement: false, mediaCount: 4, mediaPages: 2 },
 		{ documentReplacement: true, mediaCount: 4, mediaPages: 2 },
-	])("adopts $mediaCount distinct media references (replacement: $documentReplacement)", adopt_media, 120_000);
+	])("copies $mediaCount distinct media references (replacement: $documentReplacement)", copy_media, 120_000);
 
 	// 101 media files fill two real media pages of 50 and start a third one. With the document they are 102
 	// sources, so the selection also needs a second intake page of 100. Each media file needs its own
 	// Save, so this takes minutes. It runs only with test:files:full-size.
 	test(
-		"adopts 101 distinct media references (replacement: false)",
+		"copies 101 distinct media references (replacement: false)",
 		{ tags: ["full-size"], timeout: 1_800_000 },
 		async () => {
 			media_page.size = 50;
-			await adopt_media({ documentReplacement: false, mediaCount: 101, mediaPages: 3 });
+			await copy_media({ documentReplacement: false, mediaCount: 101, mediaPages: 3 });
 		},
 	);
 });

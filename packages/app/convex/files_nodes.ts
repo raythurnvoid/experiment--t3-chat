@@ -3579,7 +3579,8 @@ export const create_upload_node = mutation({
  * The batch contract: after validation, one file's problem never fails the whole call. Every
  * item ends as created or as skipped with a reason. A malformed item (bad path shape, bad
  * name, bad size, duplicate target) still fails the whole call, because the client
- * pre-normalizes and only a buggy or hostile caller sends one.
+ * pre-normalizes and only a buggy or hostile caller sends one. A file over the storage left is
+ * skipped as "storage_full", even when no file fits.
  *
  * Unlike `data_import.create_upload_targets`, assets keep `processingWorkId` unset, so the R2
  * event finalizer runs Markdown conversion and plugin dispatch like any single-file upload.
@@ -3616,12 +3617,16 @@ export const create_upload_nodes = mutation({
 			// "conflict" covers every refusal about the target file itself, including permission
 			// refusals, so the payload never says which paths are restricted. "path_blocked" means
 			// the path cannot hold a file at all: a folder owns it, or a file owns an ancestor.
+			// "storage_full" means the file does not fit the storage left after the earlier files.
 			skipped: v.array(
 				v.object({
 					relativePath: v.string(),
-					reason: v.union(v.literal("conflict"), v.literal("path_blocked")),
+					reason: v.union(v.literal("conflict"), v.literal("path_blocked"), v.literal("storage_full")),
 				}),
 			),
+			// The caller's own free workspace storage after this call's files, so the client can skip
+			// later files over it without a call.
+			freeBytes: v.number(),
 		}),
 		_nay: {
 			data: v.object({
@@ -3801,7 +3806,7 @@ export const create_upload_nodes = mutation({
 		}
 
 		const now = Date.now();
-		const skipped: Array<{ relativePath: string; reason: "conflict" | "path_blocked" }> = [];
+		const skipped: Array<{ relativePath: string; reason: "conflict" | "path_blocked" | "storage_full" }> = [];
 		// Each folder on the way is looked up and checked once per call. Items in one folder share it.
 		const walkedFolders = new Map<
 			string,
@@ -3971,14 +3976,20 @@ export const create_upload_nodes = mutation({
 			runnable.push({ ...item, existingNodeId: existingNode?._id ?? null });
 		}
 
-		// Admit only accepted items, before replacing any existing file.
+		// Admit only accepted items, before replacing any existing file. A file that does not fit the
+		// storage left is skipped, and a replaced file keeps its old version. Storage never refuses the
+		// whole call, so the other skips still reach the client.
 		const admission = await files_stored_uploads_db_admit(ctx, {
 			organization,
 			actorUserId: userAuth.id,
 			workspaceId: membership.workspaceId,
 			declaredBytes: runnable.map((item) => item.size),
+			admitWhatFits: true,
 		});
 		if (admission._nay) return admission;
+		const refusedIndexes = new Set(admission._yay.refusedIndexes);
+		// `admitWhatFits` always sets it; the fallback only satisfies the type.
+		const freeBytes = admission._yay.freeBytes ?? 0;
 
 		const created: Array<{
 			relativePath: string;
@@ -3987,7 +3998,11 @@ export const create_upload_nodes = mutation({
 			url: string;
 			headers: Record<string, string>;
 		}> = [];
-		for (const item of runnable) {
+		for (const [index, item] of runnable.entries()) {
+			if (refusedIndexes.has(index)) {
+				skipped.push({ relativePath: item.relativePath, reason: "storage_full" });
+				continue;
+			}
 			if (item.existingNodeId) {
 				await files_nodes_db_archive_nodes({
 					ctx,
@@ -4068,7 +4083,7 @@ export const create_upload_nodes = mutation({
 			});
 		}
 
-		return Result({ _yay: { created, skipped } });
+		return Result({ _yay: { created, skipped, freeBytes } });
 	},
 });
 
@@ -4576,48 +4591,6 @@ export const rename_node = mutation({
 });
 
 // #region move nodes
-
-/**
- * A scope op or a move op writes the new scope to the items inside in later steps. Until then an item
- * can store its old scope. While one runs, the returned function gives a node the scope of its
- * parents, so a permission check asks about the scope the node really has.
- */
-export async function files_nodes_db_live_scope_reader(
-	ctx: QueryCtx | MutationCtx,
-	args: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId">,
-) {
-	const findOp = (kind: "scope" | "move") =>
-		ctx.db
-			.query("files_subtree_ops")
-			.withIndex("by_organization_workspace_kind", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("kind", kind),
-			)
-			.first();
-	const isScopeStale = (await findOp("scope")) !== null || (await findOp("move")) !== null;
-	const scopesInside = new Map<Id<"files_nodes">, Id<"files_nodes"> | null>();
-	async function readScopeInside(folderId: Doc<"files_nodes">["parentId"]): Promise<Id<"files_nodes"> | null> {
-		if (folderId === files_ROOT_ID) return null;
-		let scope = scopesInside.get(folderId);
-		if (scope === undefined) {
-			// A published Move can still leave the old parent in the physical node.
-			const folder = await files_saved_placement_db_get_node(ctx.db, folderId);
-			// A restrict or unrestrict writes the folder's own scope in the request, so it is never old.
-			scope = !folder
-				? null
-				: folder.restrictedScopeNodeId === folder._id
-					? folder._id
-					: await readScopeInside(folder.parentId);
-			scopesInside.set(folderId, scope);
-		}
-		return scope;
-	}
-
-	return async function withLiveScope(node: Doc<"files_nodes">) {
-		if (!isScopeStale || node.restrictedScopeNodeId === node._id) return node;
-		const scope = await readScopeInside(node.parentId);
-		return scope === node.restrictedScopeNodeId ? node : { ...node, restrictedScopeNodeId: scope };
-	};
-}
 
 /**
  * Give a child the path and restricted scope that its live parent implies. Its saved chunks and

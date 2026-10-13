@@ -5255,11 +5255,15 @@ describe("files upload-urls", () => {
 			await ctx.db.patch("quotas", quotaId, { usedCount: quota!.maxCount - 10, updatedAt: now });
 		});
 
+		// The small file fits alone, but the API batch stays all-or-nothing, unlike the app folder import.
 		const refused = await t.fetch("/api/v1/files/upload-urls", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({
-				files: [{ path: "/imports/big.bin", contentType: "application/octet-stream", size: 64 }],
+				files: [
+					{ path: "/imports/small.bin", contentType: "application/octet-stream", size: 5 },
+					{ path: "/imports/big.bin", contentType: "application/octet-stream", size: 64 },
+				],
 			}),
 		});
 		expect(refused.status).toBe(403);
@@ -5267,26 +5271,30 @@ describe("files upload-urls", () => {
 
 		// The refused batch neither minted a node nor consumed more budget.
 		const after = await t.run(async (ctx) => {
-			const node = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("path", "/imports/big.bin")
-						.eq("archiveOperationId", null),
-				)
-				.first();
+			const nodes = await Promise.all(
+				["/imports/small.bin", "/imports/big.bin"].map((path) =>
+					ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+							q
+								.eq("organizationId", db.organizationId)
+								.eq("workspaceId", db.workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("path", path)
+								.eq("archiveOperationId", null),
+						)
+						.first(),
+				),
+			);
 			const quota = await ctx.db
 				.query("quotas")
 				.withIndex("by_workspace_quotaName", (q) =>
 					q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
 				)
 				.first();
-			return { node, quota };
+			return { nodes, quota };
 		});
-		expect(after.node).toBeNull();
+		expect(after.nodes).toEqual([null, null]);
 		expect(after.quota!.usedCount).toBe(after.quota!.maxCount - 10);
 	});
 
@@ -6713,189 +6721,6 @@ describe("files read-only locks", () => {
 		expect(await guesses("missing"), "a missing name inside a hidden folder answers like an existing one").toEqual(
 			known,
 		);
-	});
-
-	test("upload-urls checks the scope a folder gets from its parents while a scope job runs", async () => {
-		const t = test_convex();
-		install_r2_object_reads();
-		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-hidden-stale-scope" });
-		const hiddenId = await seed_restricted_root_folder({ t, db: writer.db, name: "secret" });
-		await t.run(async (ctx) => {
-			// The folder was just restricted. Its child keeps no scope until the scope job reaches it.
-			await ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				organizationId: writer.db.organizationId,
-				workspaceId: writer.db.workspaceId,
-				createdBy: writer.db.userId,
-				updatedBy: writer.db.userId,
-				parentId: hiddenId,
-				name: "child",
-				sortName: files_sort_text_key("child"),
-				kind: "folder",
-				path: "/secret/child",
-				treePath: "/secret/child/",
-				pathDepth: 2,
-			});
-			await ctx.db.insert("files_subtree_ops", {
-				organizationId: writer.db.organizationId,
-				workspaceId: writer.db.workspaceId,
-				userId: writer.db.userId,
-				status: "running",
-				blockedByOpId: null,
-				rootNodeIds: [hiddenId],
-				treePaths: ["/secret/"],
-				kind: "scope",
-			});
-		});
-		const response = await t.fetch("/api/v1/files/upload-urls", {
-			method: "POST",
-			headers: auth_headers(writer.credential),
-			body: JSON.stringify({ files: [{ path: "/secret/child/new.bin", contentType: "image/png", size: 64 }] }),
-		});
-		expect(response.status, "a new file in a folder whose parent was just restricted").toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied", path: "/secret/child/new.bin" });
-	});
-
-	test("write and touch check the scope a folder gets from its parents while a scope job runs", async () => {
-		const t = test_convex();
-		install_r2_object_reads();
-		stub_confirmed_deletes();
-		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-write-stale-scope" });
-		const seeded = await write_file({
-			t,
-			credential: writer.credential,
-			path: "/secret/child/seed.md",
-			content: "# S\n",
-		});
-		expect(seeded.status).toBe(200);
-		const prepare = (path: string) =>
-			t.mutation(internal.public_api.prepare_file_write, {
-				organizationId: writer.db.organizationId,
-				workspaceId: writer.db.workspaceId,
-				userId: writer.userId,
-				principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
-				path,
-				overwrite: "fail",
-				contentType: "text/markdown",
-				yjsRootKind: "rich_text",
-				contentSize: 4,
-				yjsSnapshotSize: 7,
-			});
-		// Stage both before the restrict, so their publish checks the folder again.
-		const write = await prepare("/secret/child/write.md");
-		const touch = await prepare("/secret/child/touch.md");
-		expect(write._nay).toBeUndefined();
-		expect(touch._nay).toBeUndefined();
-		const secret = await find_active_node({ t, db: writer.db, path: "/secret" });
-		await t.run(async (ctx) => {
-			// The folder was just restricted. Its child keeps no scope until the scope job reaches it.
-			await ctx.db.patch("files_nodes", secret!._id, { restrictedScopeNodeId: secret!._id });
-			await ctx.db.insert("files_subtree_ops", {
-				organizationId: writer.db.organizationId,
-				workspaceId: writer.db.workspaceId,
-				userId: writer.db.userId,
-				status: "running",
-				blockedByOpId: null,
-				rootNodeIds: [secret!._id],
-				treePaths: ["/secret/"],
-				kind: "scope",
-			});
-		});
-		expect((await prepare("/secret/child/new.md"))._nay?.message, "preflight").toBe("Permission denied");
-		const written = await t.mutation(internal.public_api.publish_file_write, {
-			stageId: write._yay!.stageId,
-			content: "# W\n",
-			targetAnchor: write._yay!.targetAnchor,
-		});
-		expect(written._nay?.message, "write publish").toBe("Permission denied");
-		const touched = await t.mutation(internal.public_api.publish_file_touch, {
-			stageId: touch._yay!.stageId,
-			targetAnchor: touch._yay!.targetAnchor,
-		});
-		expect(touched._nay?.message, "touch publish").toBe("Permission denied");
-	});
-
-	test("write, fill, and touch of an existing file check the scope it gets from its parents while a scope job runs", async () => {
-		const t = test_convex();
-		install_r2_object_reads();
-		stub_confirmed_deletes();
-		const writer = await seed_locks_member_writer({ t, clerkUserId: "clerk-replace-stale-scope" });
-		const seeded = await write_file({ t, credential: writer.credential, path: "/a/b/old.md", content: "# O\n" });
-		expect(seeded.status).toBe(200);
-		// A file with no lock, so only access can stop the unchanged answer.
-		const plain = await write_file({ t, credential: writer.credential, path: "/a/b/plain.md", content: "# P\n" });
-		expect(plain.status).toBe(200);
-		const prepare = () =>
-			t.mutation(internal.public_api.prepare_file_write, {
-				organizationId: writer.db.organizationId,
-				workspaceId: writer.db.workspaceId,
-				userId: writer.userId,
-				principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
-				path: "/a/b/old.md",
-				overwrite: "replace",
-				contentType: "text/markdown",
-				yjsRootKind: "rich_text",
-				contentSize: 4,
-				yjsSnapshotSize: 7,
-			});
-		// Stage these before the restrict, so their publish checks the file again.
-		const write = await prepare();
-		const touch = await prepare();
-		const fill = await prepare();
-		expect(write._nay).toBeUndefined();
-		expect(touch._nay).toBeUndefined();
-		expect(fill._nay).toBeUndefined();
-		const folder = await find_active_node({ t, db: writer.db, path: "/a" });
-		const file = await find_active_node({ t, db: writer.db, path: "/a/b/old.md" });
-		await t.run(async (ctx) => {
-			// The folder was just restricted. The file keeps no scope until the scope job reaches it.
-			await ctx.db.patch("files_nodes", folder!._id, { restrictedScopeNodeId: folder!._id });
-			// A lock on the hidden file must not answer before access does.
-			await ctx.db.patch("files_nodes", file!._id, { writePolicy: { mode: "read_only" } });
-			await ctx.db.insert("files_subtree_ops", {
-				organizationId: writer.db.organizationId,
-				workspaceId: writer.db.workspaceId,
-				userId: writer.db.userId,
-				status: "running",
-				blockedByOpId: null,
-				rootNodeIds: [folder!._id],
-				treePaths: ["/a/"],
-				kind: "scope",
-			});
-		});
-		expect((await prepare())._nay?.message, "preflight").toBe("Permission denied");
-		const written = await t.mutation(internal.public_api.publish_file_write, {
-			stageId: write._yay!.stageId,
-			content: "# W\n",
-			targetAnchor: write._yay!.targetAnchor,
-		});
-		expect(written._nay?.message, "write publish").toBe("Permission denied");
-		const touched = await t.mutation(internal.public_api.publish_file_touch, {
-			stageId: touch._yay!.stageId,
-			targetAnchor: touch._yay!.targetAnchor,
-		});
-		expect(touched._nay?.message, "touch publish").toBe("Permission denied");
-		const filled = await t.mutation(internal.public_api.publish_file_fill, {
-			stageId: fill._yay!.stageId,
-			content: "# F\n",
-			expectedNodeId: file!._id,
-		});
-		expect(filled._nay?.message, "fill publish").toBe("Permission denied");
-		// The routes ask before any mutation runs. They must not show the file's id, lock, or content.
-		const touchRoute = await t.fetch("/api/v1/files/touch", {
-			method: "POST",
-			headers: auth_headers(writer.credential),
-			body: JSON.stringify({ paths: ["/a/b/old.md"] }),
-		});
-		expect(touchRoute.status, "touch route").toBe(403);
-		const unchanged = await write_file({
-			t,
-			credential: writer.credential,
-			path: "/a/b/plain.md",
-			content: "# P\n",
-			skipIfUnchanged: true,
-		});
-		expect(unchanged.status, "unchanged write route").toBe(403);
 	});
 
 	test("touch and unchanged write keep the published Move scope while an unrelated Restrict waits", async () => {

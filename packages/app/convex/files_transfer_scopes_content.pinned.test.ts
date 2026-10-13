@@ -21,7 +21,6 @@ import {
 	append_saved_text,
 	media_proposal,
 	get_proposal,
-	get_dependencies,
 	save_proposal,
 	copy_files,
 	media_copy_source,
@@ -117,10 +116,6 @@ describe("copy_transfer_file scopes", () => {
 				return;
 			}
 			expect(copied[0]).toMatchObject({ state: "completed" });
-			const pending = await get_proposal({ f, workspace: "personal", target: copied[0]!.outputTarget! });
-			expect(await get_dependencies(f, pending.mediaDependencySetId)).toEqual([
-				expect.objectContaining({ src: mediaRef, assetId: pinnedAssetId }),
-			]);
 			expect(await save_proposal({ f, workspace: "personal", target: copied[0]!.outputTarget! })).toHaveProperty(
 				"_yay",
 			);
