@@ -461,7 +461,7 @@ The R2 finalizer confirms the object and publishes its metadata. Reusing the URL
 The whole batch validates before any write. Existing literal paths select their own target, even when hidden.
 Replacement archives that target and creates the upload at the same path; it never changes a different canonical sibling.
 New paths get conventional README/AGENTS/SKILL basename casing and `.agents` folder casing. The batch checks names, sizes, collisions, per-path
-actor/account ACL on the deepest existing folder (with the scope its parents give it while a scope job runs), current write policies on replacement files and destination folders,
+actor/account ACL on the deepest existing folder (with the scope stored on it), current write policies on replacement files and destination folders,
 and quota. It also refuses a path a Move holds (409 `This item is being moved. Try again when the Move ends.`),
 and a new path with a name over 255 characters or over 1,024 characters in total (400 `Names can have at
 most 255 characters.` or `Paths can have at most 1,024 characters.`). A replace keeps its path.
@@ -485,8 +485,8 @@ the HTTP action, before the batch takes more rate limit slots and before any loo
 bounded. Paths had no cap before that one, so an older stored path can be longer, and no request can name it.
 This route has no raw body byte limit (the 64 KiB limit above is for the plugin data routes): the item
 count and this path check bound it. `write` and `touch` share one walk per mutation the same way and start
-the create at the found folder. Like upload-urls, they check that folder with the scope its parents give
-it while a scope job runs, and a file on the way answers 409 `An intermediate segment is owned by a file`.
+the create at the found folder. Like upload-urls, they check that folder with the scope stored on it, and a
+file on the way answers 409 `An intermediate segment is owned by a file`.
 One bad item returns 400, 403, or 409 with its `path`, and creates nothing. Each asset stores
 `uploadUrlExpiresAt`, like `create_upload_node`. Creating these docs accepts
 the upload. A later policy change does not cancel publication or processing. The finished node keeps its current policy.

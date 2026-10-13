@@ -128,7 +128,6 @@ async function fixture(imageCount = 1) {
 	if (edited._nay) throw new Error(edited._nay.message);
 	const document = await t.run((ctx) => ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!));
 	if (!document) throw new Error("Expected the document proposal");
-	expect(document.mediaDependencySetId, "ordinary rich text has no Copy mapping").toBeUndefined();
 	return { t, db, scope, asUser, image, images, document, src, text };
 }
 

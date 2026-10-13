@@ -3,9 +3,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
-import { files_visible_db_create_reader } from "./files_visible.ts";
-import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
-import { files_media_build_private_src } from "../shared/files-media.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
@@ -16,7 +13,6 @@ import {
 	private_text,
 	saved_proposal,
 	media,
-	attach_dependencies,
 	save,
 	saved_doc,
 	bulk_save,
@@ -32,41 +28,6 @@ afterEach(() => {
 });
 
 describe("cross-workspace Copy from public Save", () => {
-	test("a later document refusal rolls back the earlier copied media Save", async () => {
-		const f = await fixture();
-		const source = await media(f);
-		const savedSource = await save(f, source.pending);
-		if (savedSource._nay) throw new Error(savedSource._nay.message);
-		const copied = await cross_workspace_copy({ f, source: savedSource._yay.target });
-		const target = copied.pending.target;
-		if (target.kind !== "private" || copied.pending.createIntent?.kind !== "stored")
-			throw new Error("Expected private media");
-		const version = await f.t.run(async (ctx) => {
-			const entry = await (await files_visible_db_create_reader(ctx, copied.destination.scope)).resolveTarget(target);
-			if (!entry) throw new Error("Expected copied media");
-			return await files_transfer_db_get_entry_version(ctx, entry);
-		});
-		if (!version) throw new Error("Expected copied media version");
-		const selected = {
-			src: files_media_build_private_src(target.id),
-			target,
-			assetId: copied.pending.createIntent.assetId,
-			version,
-		};
-		const unselected = await media(copied.destination, "/clip.mp4");
-		const doc = await attach_dependencies({
-			f: copied.destination,
-			pending: await private_text(copied.destination, {
-				staged: `![Photo](${selected.src})\n\n<video src="${unselected.dependency.src}" controls></video>\n`,
-			}),
-			dependencies: [selected, unselected.dependency],
-		});
-		const result = await bulk_save({ f: copied.destination, selected: [copied.pending, doc] });
-		expect(result?.activity).toMatchObject({ status: "failed", progress: { completed: 0, blocked: 2 } });
-		expect(await proposal(copied.destination, target)).toEqual(copied.pending);
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_nodes", target.id))).toMatchObject({ state: "active" });
-	});
-
 	test.each(["document.md", "document.txt", "asset.md", "photo.png", "folder"])(
 		"full %s Copy Save publishes the file and removes its proposal",
 		async (name) => {

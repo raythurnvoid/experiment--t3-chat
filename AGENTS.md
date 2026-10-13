@@ -252,6 +252,30 @@ When product requirements or business logic change, update the relevant spec ski
 - [packages/app/index.html](packages/app/index.html) - HTML entry point for Vite
 - [packages/app/vite.config.ts](packages/app/vite.config.ts) - Vite development server configuration
 
+# Product UX Principles
+
+Files should feel like apps people already know. When an edge case has more than one sane behavior, look at what these apps do first:
+
+- **Windows Explorer, macOS Finder, Linux file managers (GNOME Files):** the file tree, names, rename, copy and move, name clashes, path limits.
+- **Dropbox, Google Drive:** uploads, sync, sharing, trash, storage limits, work that resumes after a restart.
+- **Notion (and Google Docs):** documents, pages, embeds, comments.
+
+If they agree, do the same. If they disagree, pick the behavior most of them share, or the one that fits our product best, and write down the choice and the reason in the owning spec skill.
+
+Rules for edge cases:
+
+- **Keep what worked.** A partial failure must not throw away the parts that worked. A folder upload sends the files that fit and names each file that failed, with its reason (like Google Drive).
+- **Do not block a whole action for one small broken part** when the reference apps do not. A copied document with a missing image still saves, and the image stays a link (like Notion and Google Docs).
+- **Every refusal names the item and says how to fix it,** in plain words. Example: "…/leaf would have a path of 4,853 characters. Paths can have at most 1,024 characters. Shorten a folder name or move it higher."
+- **Late is fine, wrong is not.** If an early check would have to read a whole folder (a scan, see "Reads must scale" below), accept the action and refuse later, at the step that already visits each item, naming the item. Linux `rename()` and the Dropbox desktop app work the same way.
+- **Background work shows as a pause, not an error.** After a deploy or a restart, work resumes on its own (like Dropbox and Google Drive after an update).
+- **One simple rule beats an exact patch.** Prefer a rule that users and code can both follow over a workaround for a short window. Example: a file is restricted once the background job has reached it. Until then it keeps its old access, for reads and writes. We accept this window and do not patch it by reading parent folders.
+- **Hidden looks like missing.** A refusal must not show that a hidden item exists. Answer the same way for a hidden item and a missing one.
+- **All-or-nothing only where callers expect it.** Public API batches stay atomic, because API callers can split their own batch. App flows keep what works.
+- **Limits follow common systems and are explained.** Names have at most 255 characters, like every common file system. Paths have at most 1,024 characters, like macOS. A refusal states the limit.
+
+Before you build user-facing behavior for an edge case, check the reference apps and say what each one does (with a source when you can). If the choice changes what users see, ask the user.
+
 # Code guidelines and patterns
 
 You must not use `any` to bypass TypeScript errors unless the user asks for it.

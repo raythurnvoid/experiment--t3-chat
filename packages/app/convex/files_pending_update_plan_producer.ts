@@ -186,20 +186,6 @@ async function db_facts(ctx: MutationCtx, run: Run, plan: Plan) {
 			)
 				error ??= "A reviewed draft moved. Review it again.";
 		}
-		if (header.mediaDependencySetId) {
-			const set = await ctx.db.get("files_media_dependency_sets", header.mediaDependencySetId);
-			if (
-				!set?.sealed ||
-				input.mediaDependencySet?.setId !== set._id ||
-				input.mediaDependencySet?.generation !== set.generation ||
-				set.organizationId !== run.organizationId ||
-				set.workspaceId !== run.workspaceId ||
-				set.userId !== run.userId ||
-				set.owner.kind !== "proposal" ||
-				set.owner.pendingUpdateId !== input.pendingUpdateId
-			)
-				error ??= "The reviewed media changed. Review it again.";
-		}
 		const destinationParent =
 			header.pendingMove?.destParent ??
 			(header.target.kind === "private" ? (input.reviewSource?.parent ?? null) : null);
@@ -566,7 +552,7 @@ export const advance = internalMutation({
 				textKind !== "rich_text" ||
 				next.settlementOnly ||
 				next.structuralKind === "archive" ||
-				(!item.mediaDependencySet && run.expectedItemCount === 1)
+				run.expectedItemCount === 1
 			) {
 				plan = await db_save(ctx, plan, { producerOrder: next.order, producerItemId: null, producerMediaOffset: 0 });
 				continue;
@@ -634,41 +620,30 @@ export const stage_media = internalMutation({
 		const reviewedArchiveIds = new Set<Id<"files_pending_updates">>();
 		const reader = await files_visible_db_create_reader(ctx, { ...run, readLimit: 4096, reviewedArchiveIds });
 		for (const src of args.refs) {
-			const mapping = item.mediaDependencySet
-				? await ctx.db
-						.query("files_media_dependencies")
-						.withIndex("by_set_src", (q) => q.eq("setId", item.mediaDependencySet!.setId).eq("dependency.src", src))
-						.first()
-				: null;
 			const parsed = files_media_parse_src(src);
 			const savedId = parsed.kind === "file" ? ctx.db.normalizeId("files_nodes", parsed.fileNodeId) : null;
 			const privateId =
 				parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
-			const original =
-				mapping?.dependency.target ??
-				(savedId
-					? { kind: "saved" as const, id: savedId }
-					: privateId
-						? { kind: "private" as const, id: privateId }
-						: null);
+			const original = savedId
+				? { kind: "saved" as const, id: savedId }
+				: privateId
+					? { kind: "private" as const, id: privateId }
+					: null;
 			const target = original
 				? await files_pending_nodes_db_resolve_read_target(ctx, { ...run, target: original })
 				: null;
 			let selected = target ? await db_selected(ctx, plan, target) : null;
 			if (!selected && original) selected = await db_selected(ctx, plan, original);
-			// Ordinary links outside this selection stay text. Readers check their access.
-			if (!item.mediaDependencySet && !selected) continue;
-			if (selected?.structuralKind === "archive")
+			// Links outside this selection stay text, also in a copied document. Readers check their access.
+			if (!selected) continue;
+			if (selected.structuralKind === "archive")
 				reviewedArchiveIds.add((await db_input(ctx, selected)).pendingUpdateId);
 			const visible = target ? await reader.resolveTargetForSave(target) : null;
 			if (!visible || !original) {
 				await db_error(ctx, vertex, "The reviewed media is no longer available.");
 				continue;
 			}
-			if (selected)
-				plan = await db_link(ctx, plan, vertex, selected, vertex.mode === "copy" ? "copy_media" : "ordinary_media");
-			else if (target?.kind === "private")
-				await db_error(ctx, vertex, "Save the selected media first, or review it with this document.");
+			plan = await db_link(ctx, plan, vertex, selected, vertex.mode === "copy" ? "copy_media" : "ordinary_media");
 		}
 		return Result({
 			_yay: await db_save(ctx, plan, {

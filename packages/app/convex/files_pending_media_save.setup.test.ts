@@ -10,13 +10,6 @@ import {
 	test_convex,
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
-import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
-import {
-	files_media_dependencies_db_create,
-	files_media_dependencies_db_append,
-	files_media_dependencies_db_seal,
-} from "./files_media_dependencies.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
 import { files_media_build_private_src } from "../shared/files-media.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
@@ -196,67 +189,7 @@ export async function media(f: Awaited<ReturnType<typeof fixture>>, path = "/pho
 	});
 	if (completed._nay || completed._yay.target.kind !== "private") throw new Error("Expected private media");
 	const target = completed._yay.target;
-	const version = await f.t.run(async (ctx) => {
-		const reader = await files_visible_db_create_reader(ctx, f.scope);
-		const entry = await reader.resolveTarget(target);
-		if (!entry) throw new Error("Expected readable media");
-		return await files_transfer_db_get_entry_version(ctx, entry);
-	});
-	if (!version) throw new Error("Expected a media version");
-	return {
-		pending: await proposal(f, target),
-		dependency: {
-			src: files_media_build_private_src(target.id),
-			target,
-			assetId: prepared._yay.assetId,
-			version,
-		},
-	};
-}
-
-export async function attach_dependencies(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	pending: Doc<"files_pending_updates">;
-	dependencies: Doc<"files_media_dependencies">["dependency"][];
-}) {
-	const { f, pending, dependencies } = args;
-
-	// Only dependency metadata is seeded: transfer mapping is covered by the copy tests.
-	await f.t.run(async (ctx) => {
-		const set = await files_media_dependencies_db_create(ctx, {
-			...f.scope,
-			owner: { kind: "proposal", pendingUpdateId: pending._id },
-			expectedCount: dependencies.length,
-		});
-		if (set._nay) throw new Error(set._nay.message);
-		for (let offset = 0; offset < dependencies.length; offset += 50) {
-			const appended = await files_media_dependencies_db_append(ctx, {
-				setId: set._yay,
-				generation: 0,
-				offset,
-				mappings: dependencies
-					.slice(offset, offset + 50)
-					.map((dependency) => ({ sourceSrc: dependency.src, dependency })),
-			});
-			if (appended._nay) throw new Error(appended._nay.message);
-		}
-		expect(await files_media_dependencies_db_seal(ctx, { setId: set._yay, generation: 0 })).toEqual({ _yay: null });
-		await ctx.db.patch("files_pending_updates", pending._id, { mediaDependencySetId: set._yay });
-	});
-	return await proposal(f, pending.target);
-}
-
-export async function dependencies(f: Awaited<ReturnType<typeof fixture>>, pending: Doc<"files_pending_updates">) {
-	if (!pending.mediaDependencySetId) throw new Error("Expected copied media dependencies");
-	const setId = pending.mediaDependencySetId;
-	return await f.t.run(async (ctx) =>
-		(
-			await ctx.db
-				.query("files_media_dependencies")
-				.withIndex("by_set_order", (q) => q.eq("setId", setId))
-				.collect()
-		).map((row) => row.dependency),
-	);
+	return { pending: await proposal(f, target), src: files_media_build_private_src(target.id) };
 }
 
 export async function save(f: Awaited<ReturnType<typeof fixture>>, pending: Doc<"files_pending_updates">) {
@@ -266,21 +199,6 @@ export async function save(f: Awaited<ReturnType<typeof fixture>>, pending: Doc<
 		pendingUpdateId: pending._id,
 		reviewedRevision: pending.revision,
 	});
-}
-
-export async function document_proposal(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	kind: "private" | "yjs" | "asset";
-	staged: string;
-	unstaged?: string;
-}) {
-	const { f, kind, staged, unstaged = staged } = args;
-
-	if (kind === "private") return await private_text(f, { staged, unstaged });
-	const draft = await private_text(f, { staged: "Before\n\nMiddle\n\nAfter\n", collaborative: kind !== "asset" });
-	const saved = await save(f, draft);
-	if (saved._nay) throw new Error(saved._nay.message);
-	return await saved_proposal({ f, target: saved._yay.target, staged, unstaged });
 }
 
 export async function saved_doc(f: Awaited<ReturnType<typeof fixture>>, nodeId: Id<"files_nodes">) {
@@ -496,7 +414,11 @@ export async function cross_workspace_copy(args: {
 		const item = items[0];
 		const view = await f.asUser.query(api.files_transfer.get, { membershipId: f.membershipId, runId });
 		if (view?.activity.status === "succeeded" && item?.outputTarget)
-			return { destination, pending: await proposal(destination, item.outputTarget) };
+			return {
+				destination,
+				pending: await proposal(destination, item.outputTarget),
+				media: items.slice(1).map((media) => media.outputTarget!),
+			};
 		if (view?.activity.status === "failed") throw new Error(view.activity.errorMessage ?? "Copy failed");
 		for (const item of items) {
 			if (item.workId && item.state === "copying") {

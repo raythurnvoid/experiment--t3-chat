@@ -71,7 +71,6 @@ import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_get_write_policy_management_state,
-	files_nodes_db_live_scope_reader,
 	files_nodes_db_set_write_policy,
 	files_nodes_db_require_writable,
 	files_nodes_db_require_write_policy_management,
@@ -2553,10 +2552,7 @@ export async function public_api_db_revalidate_file_write_principal(
 					userId: args.userId,
 					serviceAccountId: pluginRun.serviceAccountId,
 					permission: "content.write",
-					// A scope job may not have reached this node yet, so check the scope its parents give it.
-					...(labelledNode
-						? { fileNode: await (await files_nodes_db_live_scope_reader(ctx, args))(labelledNode) }
-						: {}),
+					...(labelledNode ? { fileNode: labelledNode } : {}),
 				}))
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
@@ -2872,7 +2868,6 @@ async function db_preflight_file_write_target(
 		writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 	const { lookups } = args;
 	const activeNode = await lookups.get(args.path);
-	const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
 	if (activeNode) {
 		if (
 			!(await has_workspace_content_permission(ctx, {
@@ -2880,8 +2875,7 @@ async function db_preflight_file_write_target(
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				permission: "content.write",
-				// A scope job may not have reached this file yet, so check the scope its parents give it.
-				fileNode: await withLiveScope(activeNode),
+				fileNode: activeNode,
 				serviceAccountId,
 			}))
 		) {
@@ -2906,8 +2900,7 @@ async function db_preflight_file_write_target(
 	}
 
 	const found = await lookups.find_existing_parent(args.path);
-	// A scope job may not have reached this folder yet, so check the scope its parents give it.
-	const ancestor = found.node && (await withLiveScope(found.node));
+	const ancestor = found.node;
 	if (
 		!(await has_workspace_content_permission(ctx, {
 			organizationId: args.organizationId,
@@ -3285,17 +3278,15 @@ export const publish_file_write = internalMutation({
 		const serviceAccountId =
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 		const activeNode = await lookups.get(stage.path);
-		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, stage);
 		const parent = await lookups.find_existing_parent(stage.path);
-		// A scope job may not have reached this file or folder yet, so check the scope its parents give it.
-		const parentNode = parent.node && (await withLiveScope(parent.node));
+		const parentNode = parent.node;
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
 				workspaceId: stage.workspaceId,
 				userId: stage.userId,
 				serviceAccountId,
-				fileNode: activeNode ? await withLiveScope(activeNode) : (parentNode ?? undefined),
+				fileNode: activeNode ?? parentNode ?? undefined,
 				permission: "content.write",
 			}))
 		) {
@@ -3706,16 +3697,14 @@ export const publish_file_fill = internalMutation({
 
 		// `public_api_db_revalidate_file_write_principal` above asks about the workspace, and a write can be staged
 		// for a while. This is the commit, so the node itself is asked again here: a grant taken away
-		// during staging has to stop the write, not arrive too late. A scope job may not have reached the
-		// file yet, so check the scope its parents give it.
-		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, stage);
+		// during staging has to stop the write, not arrive too late.
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
 				workspaceId: stage.workspaceId,
 				userId: stage.userId,
 				permission: "content.write",
-				fileNode: await withLiveScope(fileNode),
+				fileNode,
 				serviceAccountId,
 			}))
 		) {
@@ -3925,18 +3914,17 @@ export const publish_file_touch = internalMutation({
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 
 		const activeNode = await lookups.get(stage.path);
-		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, stage);
 		if (activeNode) {
 			// This lookup does not check access. A restricted node still has to
 			// stop the create below. So it can find a file the caller may not touch, and answering the
-			// touch would hand back its stable node id. A scope job may not have reached the file yet.
+			// touch would hand back its stable node id.
 			if (
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: stage.organizationId,
 					workspaceId: stage.workspaceId,
 					userId: stage.userId,
 					permission: "content.write",
-					fileNode: await withLiveScope(activeNode),
+					fileNode: activeNode,
 					serviceAccountId,
 				}))
 			) {
@@ -4026,8 +4014,7 @@ export const publish_file_touch = internalMutation({
 			return staleRefusal;
 		}
 		const found = await lookups.find_existing_parent(stage.path);
-		// A scope job may not have reached this folder yet, so check the scope its parents give it.
-		const ancestor = found.node && (await withLiveScope(found.node));
+		const ancestor = found.node;
 
 		// Check access first. A hidden restricted folder must not reveal its read-only state.
 		if (
@@ -4182,7 +4169,6 @@ export const can_write_file_node = internalQuery({
 			return "permission_denied";
 		}
 		const writeContext = revalidated._yay.writeContext;
-		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
@@ -4190,8 +4176,7 @@ export const can_write_file_node = internalQuery({
 				userId: args.userId,
 				serviceAccountId:
 					writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined,
-				// A scope job may not have reached this file yet, so check the scope its parents give it.
-				fileNode: await withLiveScope(fileNode),
+				fileNode,
 				permission: "content.write",
 			}))
 		) {
@@ -4392,7 +4377,6 @@ export const create_file_upload_targets = internalMutation({
 		}> = [];
 		// One set of lookups for the whole call: during a Move, each folder on the way is read once.
 		const lookups = await files_db_create_path_lookups(ctx, args);
-		const withLiveScope = await files_nodes_db_live_scope_reader(ctx, args);
 		for (const rawItem of args.items) {
 			// Existing literal targets win, including hidden files. Only missing paths are cased.
 			let existingNode = await lookups.get(rawItem.path);
@@ -4426,8 +4410,7 @@ export const create_file_upload_targets = internalMutation({
 				return Result({ _nay: { message: "Permission denied", data: { path: rawItem.path } } });
 			}
 			const found = await lookups.find_existing_parent(item.path);
-			// A scope job may not have reached this folder yet, so check the scope its parents give it.
-			const parentNode = found.node && (await withLiveScope(found.node));
+			const parentNode = found.node;
 			if (
 				parentNode &&
 				!(await access_control_db_can_act_on_file_node(ctx, {
