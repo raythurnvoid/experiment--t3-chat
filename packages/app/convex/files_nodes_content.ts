@@ -1823,6 +1823,7 @@ export const prepare_transfer_file_media = internalMutation({
 		if (prepared._nay || !prepared._yay) return prepared;
 		const { run, item } = prepared._yay;
 		if (!item.capture || item.capture.sourceVersion.textKind !== "rich_text") return Result({ _yay: null });
+		if (run.sourceScope.workspaceId === run.destinationScope.workspaceId) return Result({ _yay: null });
 		if (
 			!Number.isSafeInteger(args.expectedCount) ||
 			args.expectedCount < 0 ||
@@ -1931,6 +1932,7 @@ export const validate_transfer_file_media = internalMutation({
 		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
 		if (prepared._nay || !prepared._yay) return prepared;
 		const { run, item } = prepared._yay;
+		if (run.sourceScope.workspaceId === run.destinationScope.workspaceId) return Result({ _yay: null });
 		const set = item.capture?.mediaDependencySetId
 			? await ctx.db.get("files_media_dependency_sets", item.capture.mediaDependencySetId)
 			: null;
@@ -2296,7 +2298,10 @@ export const seal_transfer_file_capture = internalMutation({
 		const version = await db_get_transfer_copy_source_version({ ctx, sourceEntry, capture: item.capture });
 		if (version._nay) return version;
 
-		if (item.capture.sourceVersion.textKind === "rich_text") {
+		if (
+			item.capture.sourceVersion.textKind === "rich_text" &&
+			run.sourceScope.workspaceId !== run.destinationScope.workspaceId
+		) {
 			const set = item.capture.mediaDependencySetId
 				? await ctx.db.get("files_media_dependency_sets", item.capture.mediaDependencySetId)
 				: null;
@@ -2557,7 +2562,7 @@ export const finalize_transfer_file_copy = internalMutation({
 		const mediaSet = item.capture.mediaDependencySetId
 			? await ctx.db.get("files_media_dependency_sets", item.capture.mediaDependencySetId)
 			: null;
-		if (textKind === "rich_text") {
+		if (textKind === "rich_text" && run.sourceScope.workspaceId !== run.destinationScope.workspaceId) {
 			const proof = mediaSet?.captureProof;
 			if (
 				!mediaSet?.sealed ||
@@ -2658,6 +2663,7 @@ export const finalize_transfer_file_copy = internalMutation({
 				}
 
 				if (
+					run.sourceScope.workspaceId !== run.destinationScope.workspaceId &&
 					mediaSet?.captureProof?.textDigest !== undefined &&
 					(await crypto_sha256_hex(capturedText)) !== mediaSet.captureProof.textDigest
 				)
@@ -3204,6 +3210,8 @@ export const copy_transfer_file = internalAction({
 		};
 
 		const { contentType, textKind: rootKind, collaborationEnabled } = capture.sourceVersion;
+		const importsMedia =
+			rootKind === "rich_text" && copyData.sourceScope.workspaceId !== copyData.destinationScope.workspaceId;
 		try {
 			let text: string | undefined;
 			let snapshotUpdate: ArrayBuffer | undefined;
@@ -3278,26 +3286,29 @@ export const copy_transfer_file = internalAction({
 								state.tr.removeMark(0, state.doc.content.size, editor._yay.schema.marks[files_COMMENT_MARK_TYPE]),
 							),
 						);
-						const missing = files_transfer_rewrite_media_refs({ mut_editor: editor._yay, referenceMap: new Map() });
-						const refs = missing._nay?.data.unresolvedRefs ?? [];
-						const sourceTextDigest = await crypto_sha256_hex(
-							files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay }),
-						);
-						const referenceMap = new Map<string, string>();
-						for (let offset = 0; offset < Math.max(1, refs.length); offset += files_media_dependencies_PAGE_SIZE) {
-							const mappings = (await ctx.runMutation(internal.files_nodes_content.prepare_transfer_file_media, {
-								...claim,
-								expectedCount: refs.length,
-								offset,
-								sourceTextDigest,
-								refs: refs.slice(offset, offset + files_media_dependencies_PAGE_SIZE),
-							})) as prepare_transfer_file_media_Result;
-							if (mappings._nay) return await fail(mappings._nay.message);
-							if (mappings._yay === null) return null;
-							for (const mapping of mappings._yay) referenceMap.set(mapping.sourceSrc, mapping.dependency.src);
+						// Keep same-workspace links. No media bytes are imported here.
+						if (importsMedia) {
+							const missing = files_transfer_rewrite_media_refs({ mut_editor: editor._yay, referenceMap: new Map() });
+							const refs = missing._nay?.data.unresolvedRefs ?? [];
+							const sourceTextDigest = await crypto_sha256_hex(
+								files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay }),
+							);
+							const referenceMap = new Map<string, string>();
+							for (let offset = 0; offset < Math.max(1, refs.length); offset += files_media_dependencies_PAGE_SIZE) {
+								const mappings = (await ctx.runMutation(internal.files_nodes_content.prepare_transfer_file_media, {
+									...claim,
+									expectedCount: refs.length,
+									offset,
+									sourceTextDigest,
+									refs: refs.slice(offset, offset + files_media_dependencies_PAGE_SIZE),
+								})) as prepare_transfer_file_media_Result;
+								if (mappings._nay) return await fail(mappings._nay.message);
+								if (mappings._yay === null) return null;
+								for (const mapping of mappings._yay) referenceMap.set(mapping.sourceSrc, mapping.dependency.src);
+							}
+							const rewritten = files_transfer_rewrite_media_refs({ mut_editor: editor._yay, referenceMap });
+							if (rewritten._nay) return await fail("The captured document's media references changed. Try again.");
 						}
-						const rewritten = files_transfer_rewrite_media_refs({ mut_editor: editor._yay, referenceMap });
-						if (rewritten._nay) return await fail("The captured document's media references changed. Try again.");
 						copiedText = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
 					} finally {
 						editor._yay.destroy();
@@ -3468,8 +3479,8 @@ export const copy_transfer_file = internalAction({
 
 			// Another copy can advance the media clock after the last validation page. Retry the
 			// proof and publication together, keeping the captured content and media mappings.
-			for (let proofAttempt = 0; proofAttempt < (rootKind === "rich_text" ? 3 : 1); proofAttempt++) {
-				if (rootKind === "rich_text") {
+			for (let proofAttempt = 0; proofAttempt < (importsMedia ? 3 : 1); proofAttempt++) {
+				if (importsMedia) {
 					let validated = false;
 					let offset = 0;
 					while (true) {
@@ -3500,7 +3511,7 @@ export const copy_transfer_file = internalAction({
 				})) as finalize_transfer_file_copy_Result;
 				if (finalized._nay) {
 					if (
-						rootKind === "rich_text" &&
+						importsMedia &&
 						finalized._nay.message === "Media access changed during validation. Try again."
 					)
 						continue;

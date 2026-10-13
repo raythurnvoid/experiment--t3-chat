@@ -162,24 +162,28 @@ the same producer with private proposals. `files_pending_updates.ts` and
   write policy, Stop, Activity deadline, attempt, and work id still control publication.
 - New saved output gets new node, content, Yjs, asset, and version docs. Rebuild frontmatter and search docs.
   Remove comment marks. Do not copy comment threads, history, pending proposals, grants, or runs.
-- Same-workspace media links keep their original IDs. Cross-workspace copies rewrite real image
-  and video embeds to destination IDs. Each linked media file must be explicitly selected with
-  the document, either directly or inside a selected folder. Never copy an unselected asset.
-  Plain links and text inside code are not embeds. Missing or unreadable media refuses the document.
+- Same-workspace Copy keeps exact image/video links. It does not resolve them or import their bytes.
+  Missing, hidden, or unready media never blocks this Copy. Copying a media file itself still needs
+  read access. Readers check current media access; a copied link grants none.
+  Cross-workspace copies rewrite real image and video embeds to destination IDs. Each linked media
+  file must be explicitly selected with the document, either directly or inside a selected folder.
+  Never copy an unselected asset. Plain links and text inside code are not embeds.
+  Missing or unreadable media still refuses cross-workspace Copy.
   Reserve all private output IDs first, copy media before documents, and pin the mapping for retries.
   A completed image/video item keeps its exact output asset ID, without owning the asset. The first
   document mapping must still match that ID. Saving unchanged media is allowed; replacing it is not.
   A copied document saves like any other document. A missing or changed image stays as a link
   and never blocks Save. Large Copy review saves selected media before its dependent documents.
   See the pending spec.
-- Media mappings live in `files_media_dependency_sets` and indexed `files_media_dependencies` docs.
+- Cross-workspace media mappings live in `files_media_dependency_sets` and indexed
+  `files_media_dependencies` docs.
   A sealed set belongs to a transfer capture or cleanup. Publication retires the capture set in
   the same transaction; the proposal keeps no set. Cleanup deletes mapping docs in pages and never
   owns their assets. Capture proofs pin the exact text, set generation, attempt, and organization,
   workspace, and owner-proposal validation versions. A changed version invalidates the proof.
   Copy retries validation and final publication together, with at most three attempts. A change
   that can break a checked embed can still advance the version after the last validation page. A
-  document with no embeds skips the version check.
+  document with no embeds skips the version check. Same-workspace Copy needs no media set or proof.
   Each retry keeps the captured bytes and mappings. Lost access still refuses publication.
   Final publication still checks direct access. Before you remove or narrow a validation writer,
   check all four pinned readers: Copy, pending Save, folder Move check, and the Move cohort.

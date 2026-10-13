@@ -87,22 +87,23 @@ export async function files_transfer_media_db_get_ready_media(args: {
 }
 
 /**
- * Call immediately after prepare_copy_item in the same transaction. It owns the run's
- * current chat, work claim, and both membership-lifetime checks. This helper only reads.
+ * Call only for cross-workspace Copy, immediately after prepare_copy_item in the same
+ * transaction. It owns the run's current chat, work claim, and both membership-lifetime
+ * checks. This helper only reads.
  */
 export async function files_transfer_media_db_map_refs(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		prepared: Pick<
 			NonNullable<Awaited<ReturnType<typeof files_transfer_db_prepare_copy_item>>["_yay"]>,
-			"run" | "item" | "sourceMembership" | "destinationMembership"
+			"run" | "item" | "destinationMembership"
 		>;
 		refs: string[];
 	},
 ) {
 	if (args.refs.length > files_media_dependencies_PAGE_SIZE)
 		return Result({ _nay: { message: "Invalid media selection page" } });
-	const { run, sourceMembership, destinationMembership } = args.prepared;
+	const { run, destinationMembership } = args.prepared;
 	const sourceReader = await files_visible_db_create_reader(ctx, {
 		...run.sourceScope,
 		userId: run.userId,
@@ -130,15 +131,6 @@ export async function files_transfer_media_db_map_refs(
 		// Never consult selected names or explain a missing selection before source access succeeds.
 		if (!source || source.node.kind !== "file")
 			return Result({ _nay: { message: "A linked media file is not available" } });
-
-		if (run.sourceScope.workspaceId === run.destinationScope.workspaceId) {
-			const ready = await files_transfer_media_db_get_ready_media({ ctx, entry: source, membership: sourceMembership });
-			if (!ready) return Result({ _nay: { message: "A linked media file is not available" } });
-			// A same-workspace copy keeps the original ref.
-			referencePairs.push([src, src]);
-			mediaDependencies.push({ src, target: original, ...ready });
-			continue;
-		}
 
 		const aliases = [original];
 		if (target!.kind !== original.kind || target!.id !== original.id) aliases.push(target!);

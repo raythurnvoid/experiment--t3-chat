@@ -32,8 +32,11 @@ Structural state uses:
 - `pendingArchive` for delete intent (bash `rm`): accepting archives the node; a folder archives its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Setting Delete keeps the content branches for Undo. Accept removes the whole proposal without saving its draft text. Discard restores the content branches as a Modified row.
 - `createIntent` for a private file or folder. Missing agent write and copy targets stay private until Save. Removing an owned private create discards that private identity and its approved pending work.
 
-Copy maps image/video links through a sealed, paged set owned by the Copy item. The set only
-rewrites the copied text, and it retires when the Copy finishes. The proposal keeps no media set.
+Same-workspace Copy keeps exact image/video links. It does not read linked media or import its
+bytes. Missing, hidden, or unready media never blocks this Copy. Readers still check current access.
+Cross-workspace Copy maps image/video links through a sealed, paged set owned by the Copy item.
+The set only rewrites the copied text, and it retires when the Copy finishes. The proposal keeps no
+media set. Cross-workspace media still needs read access and explicit selection.
 A copied document saves like any other document. A missing or changed image stays as a link and
 never blocks Save, like Notion and Google Docs. We chose this because blocking a whole Save for one
 image surprised users, and readers already check access on every view.
