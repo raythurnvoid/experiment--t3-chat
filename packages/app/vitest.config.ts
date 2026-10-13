@@ -61,11 +61,12 @@ export default defineConfig({
 			},
 		},
 		{
-			// Use the root worker limit after CLI flags are applied. Otherwise, `extends: true` keeps
-			// the config value in each project, and Vitest ignores `--maxWorkers`.
-			name: "root-worker-limit",
+			// Use the root values after CLI flags are applied. Otherwise, `extends: true` keeps the
+			// config values in each project, and Vitest ignores `--maxWorkers` and `--hookTimeout`.
+			name: "root-test-options",
 			configureVitest({ project, vitest }) {
 				project.config.maxWorkers = vitest.config.maxWorkers;
+				project.config.hookTimeout = vitest.config.hookTimeout;
 			},
 		},
 	],
