@@ -734,7 +734,10 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   (`files_nodes_db_create_node_recursively_at_path`, and the batch doors before their first write),
   drafts (`files_pending_nodes_db_create`, private create by path, draft moves), Move, Rename and Copy
   (`files_transfer` start and plan, and the Move header step for every node below a moved folder),
-  and Restore. Keep both and Copy names cut the base name to fit. Refusals say `Names can have at
+  and Restore. Copy, Move Keep both, and Restore Keep both cut the base name to fit. They use the
+  first dot to keep compound file extensions. If that extension and the current counter leave no
+  base character, they use the last dot instead. Restore still uses the allowed length from its path
+  check. This keeps the final extension without refusing a name that fits. Refusals say `Names can have at
   most 255 characters.` or `Paths can have at most 1,024 characters.`. Lookups never check, and a
   node stored before the limits keeps its longer name until a write changes it.
 - When a node's path changes (Move, Rename, agent Move), pass `oldPathLength` too. A path

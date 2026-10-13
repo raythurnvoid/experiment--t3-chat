@@ -1092,11 +1092,13 @@ async function db_find_free_name(args: {
 }) {
 	const { ctx, node, parentId } = args;
 
-	const dot = node.kind === "file" ? node.name.indexOf(".", 1) : -1;
-	const base = dot < 0 ? node.name : node.name.slice(0, dot);
-	const extension = dot < 0 ? "" : node.name.slice(dot);
 	for (let counter = 2; counter <= MAX_NAME_ATTEMPTS; counter++) {
-		const suffix = `-${counter}${extension}`;
+		let dot = node.kind === "file" ? node.name.indexOf(".", 1) : -1;
+		const counterSuffix = `-${counter}`;
+		// Keep compound extensions unless the counter leaves no base character.
+		if (dot >= 0 && args.maxLength - counterSuffix.length - (node.name.length - dot) < 1) dot = node.name.lastIndexOf(".");
+		const base = dot < 0 ? node.name : node.name.slice(0, dot);
+		const suffix = `${counterSuffix}${dot < 0 ? "" : node.name.slice(dot)}`;
 		// Cut the base, so a long name still gets a free name inside the limit. Keep at least one character.
 		if (args.maxLength - suffix.length < 1) return null;
 		const name = `${base.slice(0, args.maxLength - suffix.length)}${suffix}`;

@@ -1598,16 +1598,29 @@ describe("resolve_conflicts", () => {
 	test.each([
 		// The rename rules turn ".env" into "untitled.env" first, so the copy name has no leading dot
 		// left to keep. The extension is still read from the right place.
-		{ label: "dotfile", sourceName: ".env", plannedPath: "/target/untitled-copy-1.env" },
+		{ label: "dotfile", sourceName: ".env", plannedPath: "/target/untitled-copy-1.env", legacy: true },
 		{ label: "extensionless", sourceName: "notes", plannedPath: "/target/notes-copy-1" },
-		// No name rule caps the length, so this case only checks that a long multi-byte name still
-		// becomes a legal Keep-both name: the accents are dropped, the name is not cut.
+		{ label: "compound extension", sourceName: "backup.tar.gz", plannedPath: "/target/backup-copy-1.tar.gz" },
+		{
+			label: "early-dot",
+			sourceName: `x.${"n".repeat(250)}.md`,
+			plannedPath: `/target/x.${"n".repeat(243)}-copy-1.md`,
+		},
+		{
+			label: "early-dot at counter 10",
+			sourceName: `x.${"n".repeat(243)}.md`,
+			plannedPath: `/target/x.${"n".repeat(242)}-copy-10.md`,
+			takenNames: Array.from({ length: 9 }, (_entry, index) => `x-copy-${index + 1}.${"n".repeat(243)}.md`),
+		},
+		// Accents are removed before Copy adds its counter.
 		{
 			label: "long multi-byte",
 			sourceName: `${"é".repeat(200)}.md`,
 			plannedPath: `/target/${"e".repeat(200)}-copy-1.md`,
+			legacy: true,
 		},
-	])("builds a legal Keep-both name for a $label source", async ({ sourceName, plannedPath }) => {
+	])("builds a legal Keep-both name for a $label source", async (nameCase) => {
+		const { label, sourceName, plannedPath } = nameCase;
 		const fixture = await create_folder_fixture(["/source"]);
 		const { t, db, asUser, folders } = fixture;
 		const fileIds: Id<"files_nodes">[] = [];
@@ -1615,16 +1628,38 @@ describe("resolve_conflicts", () => {
 			const file = await asUser.mutation(api.files_nodes.create_upload_node, {
 				membershipId: db.membershipId,
 				parentId: folders.get(path)!,
-				filename: "placeholder.md",
+				filename: sourceName,
 				contentType: "text/markdown",
 				size: 0,
 			});
 			if (file._nay) throw new Error(file._nay.message);
-			// The upload door has its own name rules, so write the fixture spelling directly.
-			await t.run((ctx) =>
-				ctx.db.patch("files_nodes", file._yay.nodeId, { name: sourceName, path: `${path}/${sourceName}` }),
-			);
+			const uploaded = (await t.run((ctx) => ctx.db.get("files_nodes", file._yay.nodeId)))!;
+			// Only legacy spellings need a direct fixture write.
+			if (nameCase.legacy) {
+				await t.run((ctx) =>
+					ctx.db.patch("files_nodes", file._yay.nodeId, { name: sourceName, path: `${path}/${sourceName}` }),
+				);
+			} else {
+				expect(uploaded, `Upload keeps the ${label} name`).toMatchObject({
+					name: sourceName,
+					path: `${path}/${sourceName}`,
+				});
+			}
 			fileIds.push(file._yay.nodeId);
+		}
+		for (const filename of nameCase.takenNames ?? []) {
+			expect(
+				(
+					await asUser.mutation(api.files_nodes.create_upload_node, {
+						membershipId: db.membershipId,
+						parentId: folders.get("/target")!,
+						filename,
+						contentType: "text/markdown",
+						size: 0,
+						onConflict: "fail",
+					})
+				)._nay,
+			).toBeUndefined();
 		}
 		const runId = await start_copy(fixture, [fileIds[0]!]);
 		const waiting = await finish_discovery(fixture, runId);
@@ -1640,10 +1675,14 @@ describe("resolve_conflicts", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		expect((await finish_discovery(fixture, runId)).activity.status).toBe("running");
-		expect(await t.run((ctx) => ctx.db.get("files_transfer_items", waiting.conflicts[0]!.itemId))).toMatchObject({
+		const resumed = await finish_discovery(fixture, runId);
+		expect(
+			await t.run((ctx) => ctx.db.get("files_transfer_items", waiting.conflicts[0]!.itemId)),
+			`Copy plans a valid ${label} Keep-both name`,
+		).toMatchObject({
 			plannedPath,
 		});
+		expect(resumed.activity.status).toBe("running");
 	});
 
 	test("refuses a copy when every counter up to the attempt limit is taken", async () => {
