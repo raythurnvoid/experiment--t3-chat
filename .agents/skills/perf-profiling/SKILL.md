@@ -15,7 +15,7 @@ Use the relevant section before measuring latency. To drive the live app in the 
 - `console.time` / `console.timeLog` / `console.timeEnd` use Convex's non-deterministic runtime clock and can measure phases without exposing time to deterministic function code.
 - When Convex builds a fresh context, module evaluation is included in user execution time. A heavy static import graph can dominate a small handler. Compare a lean probe with one suspect import before changing handler logic.
 - Convex must discover a function's dependencies at bundle time. Do not use runtime-resolved dynamic dependencies in the default V8 runtime. A literal `import()` may still be bundled, so do not assume it defers module evaluation. Split heavy code into separate function modules when import cost is the problem. Docs: https://docs.convex.dev/functions/bundling
-- Many current query and mutation modules export `experimental_reuseContext = true`. This can let an eligible successful call reuse a context from the same module when its saved reads are still valid, so warm samples may skip module evaluation. Reuse is not guaranteed and does not apply to actions or HTTP actions. Never keep mutable module-level state in these modules. Treat the flag as current repo behavior to verify against the bundled Convex source, not as a default optimization; prefer splitting heavy modules before adding it elsewhere.
+- Many current query and mutation modules export `experimental_reuseContext = true`. This can let an eligible successful call reuse a context from the same module when its module-load reads are still valid, so warm samples may skip module evaluation. Handler reads and writes still run on every call. Reuse is not guaranteed and does not apply to actions or HTTP actions. Never keep mutable module-level state in these modules. Treat the flag as current repo behavior to verify against the bundled Convex source, not as a default optimization; prefer splitting heavy modules before adding it elsewhere.
 
 ## Procedure
 
@@ -24,9 +24,11 @@ Use the relevant section before measuring latency. To drive the live app in the 
 3. Phase-time the handler with `console.time("phase")` / `console.timeEnd("phase")` around each await. Output appears in `convex logs` log lines.
 4. Dashboard per-function p50/p90/p95/p99 charts exist for trends; no in-function breakdown.
 
-Choose the native workload and speed assertion before measuring. Keep every sample. A fix-off check must add a real heavy value import while keeping the handler, caller, key, builder, and reuse setting unchanged. Verify that the import runs, the assertion fails, and restoring the small module makes it pass. Check the real API route and saved data too; a missing function hidden by an error catch is not a speed fix. Deploy the final source without controls and repeat the same check.
+Choose the native workload, warm-up count and speed assertion before measuring. Keep every sample. For an import fix, add a real heavy value import while keeping the handler, caller, key, builder and reuse setting unchanged. For a reuse fix, turn only the flag off. Verify the changed source on the exact uncached mutation child, make the assertion fail, then restore the fixed source bytes and make it pass. Check the real API route and saved data too; a missing function hidden by an error catch is not a speed fix. Deploy the final source without controls and repeat the same check.
 
 API key usage writes live in `convex/public_api_credential_usage.ts`. This small module keeps file editor imports out of timestamp calls.
+
+The principal limiter in `convex/rate_limiter.ts` reuses its loaded module too. Each call still charges the live token docs through the component. Use sequential calls to test eligible reuse; a burst can need more fresh contexts. Keep those fresh calls in the sample and report burst delays separately.
 
 ## Traps
 
@@ -36,6 +38,7 @@ API key usage writes live in `convex/public_api_credential_usage.ts`. This small
 - Dev deployments are noisy; take ≥5-7 samples per variant, interleave variants round-robin, compare medians.
 - Exclude `cachedResult: true` records from execution-cost totals. A cache hit can keep the original execution timestamp and user execution time while reporting zero total time. Use its current `requestId` only to trace the call, not to time new work.
 - A module-init marker on an uncached mutation shows a fresh module load. Reused mutations do not replay that marker. Its absence alone does not prove reuse; query cache hits can replay old logs.
+- A module imported by both an HTTP root and a mutation can log the same marker in both. Require the marker on the exact uncached mutation child when proving its loaded source.
 - `userExecutionTime` is runtime time, not CPU time. Handler timers include waits that runtime time may exclude. Do not subtract separate medians to claim an exact startup time.
 - `--identity` creates an acting user. Automatic CLI dispatch can hide internal functions from that identity even when native metadata lists them. Use it for public auth checks. Run internal timing controls without it.
 - For HTTP checks, send a unique 16-hex `convex-request-id` and join that exact ID to the root and its children. Do not assume the response has a request-ID header. Match log labels with exact delimiters, so label `1` cannot match `10`.

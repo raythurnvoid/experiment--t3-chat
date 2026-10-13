@@ -6,13 +6,15 @@ import { getFunctionName } from "convex/server";
 import type { Id } from "./_generated/dataModel";
 import {
 	test_convex,
-	test_db_hold_move_slot,
+	test_db_hold_move_source,
 	test_drain_billing_usage_event_outbox,
 	test_fill_saved_file_with_max_chunks,
 	test_finish_transfer_run,
+	test_folder_chain_path,
 	test_LIMITS_AT_75_PERCENT,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_seed_folder_chain,
 	test_spy_handler,
 } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
@@ -4610,13 +4612,7 @@ describe("files upload-urls", () => {
 				treePath: "/dir/",
 				pathDepth: 1,
 			});
-			await ctx.db.insert("files_move_source_reservations", {
-				cohortId: await test_db_hold_move_slot(ctx, db),
-				source: { kind: "saved", id: dirId },
-				mode: "subtree",
-				userId: null,
-				generation: 1,
-			});
+			await test_db_hold_move_source(ctx, db, { kind: "saved", id: dirId });
 		});
 		const response = await t.fetch("/api/v1/files/upload-urls", {
 			method: "POST",
@@ -4661,13 +4657,7 @@ describe("files upload-urls", () => {
 					treePath: "/moving/",
 					pathDepth: 1,
 				});
-				await ctx.db.insert("files_move_source_reservations", {
-					cohortId: await test_db_hold_move_slot(ctx, db),
-					source: { kind: "saved", id: movingId },
-					mode: "subtree",
-					userId: null,
-					generation: 1,
-				});
+				await test_db_hold_move_source(ctx, db, { kind: "saved", id: movingId });
 			});
 			const post = (paths: string[]) =>
 				t.fetch("/api/v1/files/upload-urls", {
@@ -4679,7 +4669,6 @@ describe("files upload-urls", () => {
 				});
 			return { t, db, post };
 		}
-		const chain = (head: string, folders: number) => `/${[head, ...Array<string>(folders - 1).fill("a")].join("/")}`;
 
 		// During a Move each path is found by name from the root, so the call must read each folder once.
 		test("20 files fit into an existing folder about 500 levels deep", async () => {
@@ -4687,33 +4676,15 @@ describe("files upload-urls", () => {
 			// The deepest chain of one-letter folders that still leaves room for a file name.
 			const depth = Math.floor((files_PATH_MAX_LENGTH - "/19.bin".length) / 2);
 			expect(depth, "deeper than one call may name").toBeGreaterThan(files_REQUEST_FOLDER_PREFIXES_MAX);
-			// Raw inserts in pages, so seeding the chain stays under the limits too.
-			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
-			let deepPath = "";
-			for (let start = 1; start <= depth; start += 200) {
-				({ parentId, deepPath } = await t.run(async (ctx) => {
-					let id = parentId;
-					let path = deepPath;
-					for (let pathDepth = start; pathDepth < start + 200 && pathDepth <= depth; pathDepth++) {
-						path = `${path}/a`;
-						id = await ctx.db.insert("files_nodes", {
-							...test_mocks.files.base(),
-							organizationId: db.organizationId,
-							workspaceId: db.workspaceId,
-							createdBy: db.userId,
-							updatedBy: db.userId,
-							parentId: id,
-							name: "a",
-							sortName: files_sort_text_key("a"),
-							kind: "folder",
-							path,
-							treePath: `${path}/`,
-							pathDepth,
-						});
-					}
-					return { parentId: id, deepPath: path };
-				}));
-			}
+			const { path: deepPath } = await test_seed_folder_chain(t, {
+				scope: db,
+				createdBy: db.userId,
+				parentId: files_ROOT_ID,
+				parentPath: "",
+				startDepth: 1,
+				depth,
+				restrictedScopeNodeId: null,
+			});
 
 			const response = await post(Array.from({ length: 20 }, (_, i) => `${deepPath}/${i}.bin`));
 			expect(response.status, "20 files in the deep folder").toBe(200);
@@ -4722,7 +4693,10 @@ describe("files upload-urls", () => {
 
 		test("20 files in two new chains that use every folder slot fit", async () => {
 			const { post } = await seed_upload_during_move("clerk-upload-urls-folder-slots");
-			const chains = [chain("p", files_NEW_FOLDER_DEPTH_MAX), chain("q", files_NEW_FOLDER_DEPTH_MAX)];
+			const chains = [
+				test_folder_chain_path("p", files_NEW_FOLDER_DEPTH_MAX),
+				test_folder_chain_path("q", files_NEW_FOLDER_DEPTH_MAX),
+			];
 			expect(chains.length * files_NEW_FOLDER_DEPTH_MAX).toBe(files_REQUEST_FOLDER_PREFIXES_MAX);
 			const response = await post(Array.from({ length: 20 }, (_, i) => `${chains[i % 2]}/${i}.bin`));
 			expect(response.status, "a batch at the folder limits").toBe(200);
@@ -4778,9 +4752,9 @@ describe("files upload-urls", () => {
 			// One folder more than a call may name. Each path stays under the new-folder cap, so only the
 			// per-call folder cap can refuse this.
 			const tooMany = await post([
-				`${chain("p", files_NEW_FOLDER_DEPTH_MAX)}/0.bin`,
-				`${chain("q", files_REQUEST_FOLDER_PREFIXES_MAX - files_NEW_FOLDER_DEPTH_MAX)}/1.bin`,
-				`${chain("r", 1)}/2.bin`,
+				`${test_folder_chain_path("p", files_NEW_FOLDER_DEPTH_MAX)}/0.bin`,
+				`${test_folder_chain_path("q", files_REQUEST_FOLDER_PREFIXES_MAX - files_NEW_FOLDER_DEPTH_MAX)}/1.bin`,
+				`${test_folder_chain_path("r", 1)}/2.bin`,
 			]);
 			expect(tooMany.status).toBe(400);
 			expect(await tooMany.json(), "too many folders in one batch").toEqual({
@@ -4789,7 +4763,7 @@ describe("files upload-urls", () => {
 				path: "/r/2.bin",
 			});
 
-			const tooDeepPath = `${chain("d", files_NEW_FOLDER_DEPTH_MAX + 1)}/f.bin`;
+			const tooDeepPath = `${test_folder_chain_path("d", files_NEW_FOLDER_DEPTH_MAX + 1)}/f.bin`;
 			const tooDeep = await post([tooDeepPath]);
 			expect(tooDeep.status, "one path with one new folder too many").toBe(400);
 			expect(await tooDeep.json()).toEqual({
@@ -8174,33 +8148,15 @@ describe("files read-only locks", () => {
 		const newFolders = 8;
 		// The deepest chain of one-letter folders that still leaves room for the new folders and a file name.
 		const depth = Math.floor((files_PATH_MAX_LENGTH - "/w.md".length) / 2) - newFolders;
-		// Raw inserts in pages, so seeding the chain stays under the limits too.
-		let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
-		let deepPath = "";
-		for (let start = 1; start <= depth; start += 200) {
-			({ parentId, deepPath } = await t.run(async (ctx) => {
-				let id = parentId;
-				let path = deepPath;
-				for (let pathDepth = start; pathDepth < start + 200 && pathDepth <= depth; pathDepth++) {
-					path = `${path}/a`;
-					id = await ctx.db.insert("files_nodes", {
-						...test_mocks.files.base(),
-						organizationId: writer.db.organizationId,
-						workspaceId: writer.db.workspaceId,
-						createdBy: writer.db.userId,
-						updatedBy: writer.db.userId,
-						parentId: id,
-						name: "a",
-						sortName: files_sort_text_key("a"),
-						kind: "folder",
-						path,
-						treePath: `${path}/`,
-						pathDepth,
-					});
-				}
-				return { parentId: id, deepPath: path };
-			}));
-		}
+		const { path: deepPath } = await test_seed_folder_chain(t, {
+			scope: writer.db,
+			createdBy: writer.db.userId,
+			parentId: files_ROOT_ID,
+			parentPath: "",
+			startDepth: 1,
+			depth,
+			restrictedScopeNodeId: null,
+		});
 		// Another folder is in a Move, so every path is found by name from the root.
 		await t.run(async (ctx) => {
 			const movingId = await ctx.db.insert("files_nodes", {
@@ -8217,13 +8173,7 @@ describe("files read-only locks", () => {
 				treePath: "/moving/",
 				pathDepth: 1,
 			});
-			await ctx.db.insert("files_move_source_reservations", {
-				cohortId: await test_db_hold_move_slot(ctx, writer.db),
-				source: { kind: "saved", id: movingId },
-				mode: "subtree",
-				userId: null,
-				generation: 1,
-			});
+			await test_db_hold_move_source(ctx, writer.db, { kind: "saved", id: movingId });
 		});
 		const below = (head: string) => `${deepPath}/${Array<string>(newFolders).fill(head).join("/")}`;
 
@@ -8288,13 +8238,7 @@ describe("files read-only locks", () => {
 				treePath: "/moving/",
 				pathDepth: 1,
 			});
-			await ctx.db.insert("files_move_source_reservations", {
-				cohortId: await test_db_hold_move_slot(ctx, writer.db),
-				source: { kind: "saved", id: movingId },
-				mode: "subtree",
-				userId: null,
-				generation: 1,
-			});
+			await test_db_hold_move_source(ctx, writer.db, { kind: "saved", id: movingId });
 		});
 		const prepare = (folders: number, name: string) =>
 			t.mutation(internal.public_api.prepare_file_write, {

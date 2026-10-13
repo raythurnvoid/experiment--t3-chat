@@ -15,12 +15,13 @@ import { quotas } from "../shared/quotas.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import {
 	test_convex,
-	test_db_hold_move_slot,
+	test_db_hold_move_source,
 	test_fill_saved_file_with_max_chunks,
 	test_LIMITS_AT_75_PERCENT,
 	test_mocks,
 	test_rename_node,
 	test_mocks_fill_db_with,
+	test_seed_folder_chain,
 } from "./setup.test.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
@@ -1267,13 +1268,7 @@ describe("service upload targets", () => {
 			if (created._nay) {
 				throw new Error(created._nay.message);
 			}
-			await ctx.db.insert("files_move_source_reservations", {
-				cohortId: await test_db_hold_move_slot(ctx, fixture),
-				source: { kind: "saved", id: created._yay },
-				mode: "subtree",
-				userId: null,
-				generation: 1,
-			});
+			await test_db_hold_move_source(ctx, fixture, { kind: "saved", id: created._yay });
 		});
 		const response = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
 		expect(response.status, "a service upload into a moved folder").toBe(409);
@@ -1338,13 +1333,7 @@ describe("service upload targets", () => {
 					throw new Error(created._nay.message);
 				}
 				if (path === "/moving") {
-					await ctx.db.insert("files_move_source_reservations", {
-						cohortId: await test_db_hold_move_slot(ctx, fixture),
-						source: { kind: "saved", id: created._yay },
-						mode: "subtree",
-						userId: null,
-						generation: 1,
-					});
+					await test_db_hold_move_source(ctx, fixture, { kind: "saved", id: created._yay });
 				}
 			}
 		});
@@ -1400,45 +1389,21 @@ describe("service upload targets", () => {
 				}
 				ids.push(created._yay);
 			}
-			await ctx.db.insert("files_move_source_reservations", {
-				cohortId: await test_db_hold_move_slot(ctx, fixture),
-				source: { kind: "saved", id: ids[1]! },
-				mode: "subtree",
-				userId: null,
-				generation: 1,
-			});
+			await test_db_hold_move_source(ctx, fixture, { kind: "saved", id: ids[1]! });
 			return ids[0]!;
 		});
 		// The deepest chain of one-letter folders that still leaves room for 32 new folders and the file name.
 		const depth =
 			Math.floor((files_PATH_MAX_LENGTH - "/meetings".length - "/x.mp4".length) / 2) - files_NEW_FOLDER_DEPTH_MAX;
-		// Raw inserts in pages, so seeding the chain stays under the limits too.
-		let parentId = meetingsId;
-		let deepPath = "/meetings";
-		for (let start = 2; start <= depth + 1; start += 200) {
-			({ parentId, deepPath } = await t.run(async (ctx) => {
-				let id = parentId;
-				let path = deepPath;
-				for (let pathDepth = start; pathDepth < start + 200 && pathDepth <= depth + 1; pathDepth++) {
-					path = `${path}/a`;
-					id = await ctx.db.insert("files_nodes", {
-						...test_mocks.files.base(),
-						organizationId: fixture.organizationId,
-						workspaceId: fixture.workspaceId,
-						createdBy: fixture.userId,
-						updatedBy: fixture.userId,
-						parentId: id,
-						name: "a",
-						sortName: files_sort_text_key("a"),
-						kind: "folder",
-						path,
-						treePath: `${path}/`,
-						pathDepth,
-					});
-				}
-				return { parentId: id, deepPath: path };
-			}));
-		}
+		const { path: deepPath } = await test_seed_folder_chain(t, {
+			scope: fixture,
+			createdBy: fixture.userId,
+			parentId: meetingsId,
+			parentPath: "/meetings",
+			startDepth: 2,
+			depth: depth + 1,
+			restrictedScopeNodeId: null,
+		});
 
 		const fits = await call({
 			t,
