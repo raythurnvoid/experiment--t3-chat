@@ -139,6 +139,9 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   and prepared media links. A changed proposal needs a new review. An unselected affected proposal
   is reported, never added to the selection. Connected cycles form one publication group.
   Independent groups run in dependency order. No group must fit in one Convex transaction.
+  In non-final walks, two selected ordinary private items share a hard parent link. The parent's
+  own source walk checks the remaining ancestors and errors for their group. Copy walks keep all
+  their ancestor links. Final walks always check the full final parent chain for folder cycles.
   Planning waits for running saved-path repairs. An unrelated Copy awaiting a conflict does not
   block it. Exact unselected proposal IDs stay in the existing review hint after a later failure.
 - Every Accept group uses `files_move_cohorts.ts`. The worker reserves inputs and names, stages

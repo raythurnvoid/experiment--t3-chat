@@ -437,9 +437,21 @@ async function db_walk(ctx: MutationCtx, run: Run, original: Plan) {
 					proposal ? { runId: run._id, pendingUpdateId: proposal._id } : undefined,
 				);
 		}
-		const parent = await db_parent(ctx, run, plan, target, final);
-		if (parent === null) await db_error(ctx, item, "A reviewed parent changed. Review it again.");
-		plan = { ...plan, producerWalkParent: parent, producerWalkStep: plan.producerWalkStep + 1 };
+		if (
+			!final &&
+			target.kind === "private" &&
+			selected &&
+			selected._id !== item._id &&
+			item.mode === "ordinary" &&
+			selected.mode === "ordinary"
+		) {
+			// The hard-linked parent's source walk checks the remaining ancestors for both items.
+			plan = { ...plan, producerWalkParent: null };
+		} else {
+			const parent = await db_parent(ctx, run, plan, target, final);
+			if (parent === null) await db_error(ctx, item, "A reviewed parent changed. Review it again.");
+			plan = { ...plan, producerWalkParent: parent, producerWalkStep: plan.producerWalkStep + 1 };
+		}
 	}
 	const done = !plan.producerWalkParent || plan.producerWalkParent.kind === "root";
 	return await db_save(ctx, plan, {

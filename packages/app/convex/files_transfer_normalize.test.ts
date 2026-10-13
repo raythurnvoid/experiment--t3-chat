@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { FunctionReturnType } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
@@ -25,11 +26,14 @@ async function fixture() {
 	let parentId: Id<"files_nodes"> | "root" = "root";
 	// Each public call adds at most 32 folders. The full stored chain can be deeper.
 	for (let depth = 0; depth < 511; depth += 32) {
-		const created = await asUser.mutation(api.files_nodes.create_folder_node, {
-			membershipId: scope.membershipId,
-			parentId,
-			path: Array.from({ length: Math.min(32, 511 - depth) }, () => "a").join("/"),
-		});
+		const created: FunctionReturnType<typeof api.files_nodes.create_folder_node> = await asUser.mutation(
+			api.files_nodes.create_folder_node,
+			{
+				membershipId: scope.membershipId,
+				parentId,
+				path: Array.from({ length: Math.min(32, 511 - depth) }, () => "a").join("/"),
+			},
+		);
 		if (created._nay) throw new Error(created._nay.message);
 		parentId = created._yay.nodeId;
 	}
@@ -149,7 +153,7 @@ async function read_continuation(f: Awaited<ReturnType<typeof fixture>>, runId: 
 		return { run, activity, next, items };
 	});
 	expect(state.run.step).toBe("normalize");
-	if (!state.next?.path || !state.activity) throw new Error("Expected the unfinished input and its Activity");
+	if (!state.next?.path || !state.activity?.progress) throw new Error("Expected the unfinished input and its Activity");
 	const remainingParent = state.run.selection!.normalizingParentPath!;
 	expect(state.next.order, "the continuation belongs to the first input after the cursor").toBe(
 		state.run.selection!.cursor + 1,
@@ -195,7 +199,7 @@ describe("Transfer source normalization", () => {
 		const { runId, activityId } = accepted._yay;
 		let partial = await read_continuation(f, runId);
 		expect(
-			partial.activity!.progress.discovered,
+			partial.activity!.progress!.discovered,
 			"the unfinished source leaves discovered at the completed input count",
 		).toBe(partial.run.selection!.cursor + 1);
 		expect(partial.items.map((item) => item.source.id)).toEqual(
@@ -207,8 +211,8 @@ describe("Transfer source normalization", () => {
 			if (run?.step !== "normalize") break;
 			const next = await read_continuation(f, runId);
 			if (next.run.selection!.cursor === partial.run.selection!.cursor)
-				expect(next.activity!.progress.discovered, "a resumed unfinished source leaves discovered unchanged").toBe(
-					partial.activity!.progress.discovered,
+				expect(next.activity!.progress!.discovered, "a resumed unfinished source leaves discovered unchanged").toBe(
+					partial.activity!.progress!.discovered,
 				);
 			expect(
 				[next.run.selection!.cursor, next.run.selection!.normalizingParentPath],
@@ -287,7 +291,7 @@ describe("Transfer source normalization", () => {
 		});
 		const partial = await read_continuation(f, runId);
 		expect(partial.items, "covered children and their duplicate create no root item").toEqual([]);
-		expect(partial.activity!.progress.discovered).toBe(0);
+		expect(partial.activity!.progress!.discovered).toBe(0);
 		const scheduled = await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
 		expect(await f.asUser.mutation(api.files_transfer.append_input, page)).toEqual({ _yay: null });
 		expect(
