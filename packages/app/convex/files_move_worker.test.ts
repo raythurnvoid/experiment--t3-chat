@@ -138,7 +138,7 @@ test.each([2, 3])("an empty folder at depth %i publishes in three transactions",
 		status: "succeeded",
 	});
 	expect(throughPublication, "small Move joins exact work before publication").toBeLessThanOrEqual(3);
-	expect(transactions, "small Move joins exact cleanup work too").toBeLessThanOrEqual(6);
+	expect(transactions, "small Move joins exact cleanup work too").toBeLessThanOrEqual(5);
 	expect(actions, "one action carries the committed Move steps").toBe(1);
 });
 

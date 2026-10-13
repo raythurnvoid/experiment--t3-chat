@@ -1090,20 +1090,7 @@ async function db_descendants(
 	cohort: Doc<"files_move_cohorts">,
 	membership: Doc<"organizations_workspaces_users">,
 ) {
-	// Add one selected tree at a time, then walk its physical children by exact parent ID.
-	if (cohort.planningCursor !== "trees") {
-		const page = await ctx.db
-			.query("files_move_cohort_nodes")
-			.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id))
-			.paginate({ cursor: cohort.planningCursor, numItems: 1 });
-		let added = 0;
-		for (const record of page.page) if (await db_add_subtree(ctx, cohort, record)) added++;
-		await ctx.db.patch("files_move_cohorts", cohort._id, {
-			planningCursor: page.isDone ? "trees" : page.continueCursor,
-		});
-		// In this phase the work count holds only open child ranges. With none, no tree walk is left.
-		return Result({ _yay: { done: page.isDone && cohort.pendingWorkCount + added === 0, paged: true } });
-	}
+	// Item, child and replacement producers queue their physical child ranges.
 	let range = await ctx.db
 		.query("files_move_work_ranges")
 		.withIndex("by_cohort_phase_status_order", (q) =>
