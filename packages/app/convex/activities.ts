@@ -543,6 +543,7 @@ export const recover_expired = internalMutation({
 
 /**
  * Keep producer receipts until the producer and its viewer state can be deleted together.
+ * Expiry means old enough to try; the producer still checks whether deletion is safe.
  */
 export const cleanup_history = internalMutation({
 	args: {
@@ -568,6 +569,7 @@ export const cleanup_history = internalMutation({
 				reviewCleanupProgress
 			) break;
 
+			// A blocked Activity uses a slot too. A full blocked batch leaves later history for the next run.
 			const activities = await ctx.db
 				.query("activities")
 				.withIndex("by_status_expiresAt", (q) => q.eq("status", status).gte("expiresAt", 0).lte("expiresAt", now))
@@ -629,7 +631,7 @@ export const cleanup_history = internalMutation({
 				deletedCount += deletion.deletedCount;
 				pendingCleanup ||= !deletion.done;
 				processedCount += 1;
-				// Review graph cleanup may have used this transaction's one paginated query.
+				// Continue a Review's child cleanup in a new transaction before later histories.
 				if (activity.source.kind === "files_pending_update_run" && !deletion.done && deletion.deletedCount > 0) {
 					reviewCleanupProgress = true;
 					break;
@@ -638,8 +640,8 @@ export const cleanup_history = internalMutation({
 		}
 
 		const done = processedCount < batchSize && deletedCount < 50 && !pendingCleanup;
-		// A pass that deleted nothing waits for other work, like a Move repair. End the chain then: the
-		// daily cron starts the next one, so a long wait does not keep a chain running.
+		// A pass that deletes nothing waits for other work, such as a Retry copying its item list.
+		// Keep expiry unchanged. The daily cron retries; once the block clears, cleanup can continue.
 		if (!done && deletedCount > 0 && !args._test_disableReschedule) {
 			await ctx.scheduler.runAfter(0, internal.activities.cleanup_history, {
 				batchSize: args.batchSize,

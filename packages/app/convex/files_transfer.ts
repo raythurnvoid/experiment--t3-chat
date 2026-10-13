@@ -4326,6 +4326,7 @@ export async function files_transfer_db_delete_run_batch(
 	const run = await ctx.db.get("files_transfer_runs", runId);
 	if (!run) return { done: true, deletedCount: 0 };
 	const activity = await db_require_activity(ctx, run._id);
+	// Retry copies this run's item list first. Keep the old docs until that step ends.
 	const copyingRetry = await ctx.db
 		.query("files_transfer_runs")
 		.withIndex("by_retryOf", (q) => q.eq("retryOf", runId).eq("step", "retry"))

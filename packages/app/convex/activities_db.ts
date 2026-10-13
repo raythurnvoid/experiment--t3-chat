@@ -151,6 +151,7 @@ export async function activities_db_finish(
 		errorMessage: args.errorMessage,
 		errorCode: args.errorCode,
 		finishedAt: args.now,
+		// Expiry allows cleanup attempts; the producer still checks whether deletion is safe.
 		// Scheduled history has no time limit. Other jobs keep their normal retention.
 		expiresAt:
 			activity.source.kind === "plugin_run" && activity.source.event === "schedule.interval.elapsed"

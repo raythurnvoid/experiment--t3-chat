@@ -192,10 +192,25 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
 - `activities.cleanup_history` owns retention: seven days after transfer, review, Bash job, protection job, archive job, or move or scope job finish and thirty days
   after ordinary plugin finish. Scheduled plugin history has no automatic expiry. A move or scope op is already deleted when its walk ends, so cleanup deletes only its Activity. A Bash job row can hold a 700 KiB result, so a pass reads at most eight job rows and reschedules for the rest; the job row is deleted with its Activity, while the foreground Bash call row beside it stays until thread purge. It stops a pass after a bounded child cleanup page. Each producer deletes
   its own receipts. Transfer and review producers also release their proposal holds first. Dismissal docs drain first. The Activity and its producer are then deleted together.
+- Expiry means history is old enough for a cleanup attempt. It does not bypass the producer's safety
+  checks. Cleanup reads at most 50 due Activities across its status ranges. A blocked Activity uses
+  a batch slot too. Ready history in the same batch can still be removed.
+- A producer that returns `done: false` with zero deletes is waiting for other work. Cleanup keeps
+  its expiry unchanged. A pass with no deletes stops the immediate chain; the daily cron tries
+  again. Once the block clears, cleanup can delete that history and continue. A pass that deletes
+  docs makes progress and schedules another pass while work remains.
+- A Retry can briefly keep an old finished transfer alive while it copies the old item list.
+  The block ends when that copying step ends; it does not wait for the whole Retry to finish.
+  Ordinary unfinished Transfer Moves normally stay active until repair ends, so they have not
+  entered expired-history cleanup yet.
+- A whole batch of blocked history can delay ready history beyond that batch. High volume alone
+  does not prove a lasting backlog. Moving expiry into the future would change batch selection,
+  not deletion safety, and would also need a continuation after a pass that deletes nothing. Keep the
+  current daily policy unless a real sustained backlog justifies a new cleanup design.
 - Deleting history does not delete saved files or pending proposals. Asset deletion jobs retain
   exact R2 keys and late-upload deadlines independently of Activity history.
-- A history pass stops after a Review graph cleanup deletes a page. Convex allows only one
-  paginated query in that transaction. The next pass continues the same Review before later jobs.
+- A history pass stops after a Review producer deletes a child page. Its graph cleanup uses bounded
+  index ranges with `take`. The next transaction continues child cleanup before later history.
 - Transfer and review history cleanup wait for active cohort repair before releasing holds.
   Completed cohort docs stay after their parent is gone only while delayed storage resources or
   parked workers still need them. Their own indexed cleanup drains child docs, then the cohort.
