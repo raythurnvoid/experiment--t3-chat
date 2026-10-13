@@ -23,10 +23,10 @@ afterEach(() => {
 async function fixture(t = test_convex({ transactionLimits: true }), organizationName = "test-organization") {
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName }));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-	const folder = async (path: string) => {
+	const folder = async (path: string, parentId: Id<"files_nodes"> | "root" = "root") => {
 		const created = await asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
-			parentId: "root",
+			parentId,
 			path,
 		});
 		if (created._nay) throw new Error(created._nay.message);
@@ -34,6 +34,9 @@ async function fixture(t = test_convex({ transactionLimits: true }), organizatio
 	};
 	const sourceId = await folder("/source");
 	const targetId = await folder("/target");
+	// Initial work and the first action each stop at a real child page.
+	const childId = await folder("child", sourceId);
+	const grandchildId = await folder("grandchild", childId);
 	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
@@ -58,7 +61,7 @@ async function fixture(t = test_convex({ transactionLimits: true }), organizatio
 		await t.mutation(internal.files_transfer.advance, { runId });
 	const cohortId = (await slot())?.cohortId;
 	if (!cohortId) throw new Error("The Move did not start a group");
-	return { t, db, asUser, cohortId, activityId, sourceId, targetId };
+	return { t, db, asUser, cohortId, activityId, sourceId, targetId, childId, grandchildId };
 }
 
 async function preparing_fixture() {
@@ -234,6 +237,7 @@ describe("Move cohort recovery", () => {
 	test("recovers a committed step after its action loses the reply", async () => {
 		const f = await fixture();
 		const before = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+		expect(before).toMatchObject({ phase: "staging", publishedAt: null });
 		const owned = (await f.t.run((ctx) => ctx.db.system.get(before.runJob!.id)))!;
 		await f.t.run(async (ctx) => {
 			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
@@ -316,6 +320,12 @@ describe("Move cohort recovery", () => {
 			parentId: f.targetId,
 		});
 		expect(source.moveCohortId).toBeUndefined();
+		const child = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.childId)))!;
+		expect(child).toMatchObject({ parentId: f.sourceId, path: "/target/source/child" });
+		expect(child.moveCohortId).toBeUndefined();
+		const grandchild = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.grandchildId)))!;
+		expect(grandchild).toMatchObject({ parentId: f.childId, path: "/target/source/child/grandchild" });
+		expect(grandchild.moveCohortId).toBeUndefined();
 		expect(
 			await f.asUser.query(api.files_nodes.get_authorized_by_path, {
 				membershipId: f.db.membershipId,
@@ -431,6 +441,10 @@ describe("Move cohort recovery", () => {
 		const fixtures: Awaited<ReturnType<typeof fixture>>[] = [];
 		for (let index = 0; index < 65; index++) fixtures.push(await fixture(t, `recovery-${index}`));
 		const before = await t.run((ctx) => Promise.all(fixtures.map((f) => ctx.db.get("files_move_cohorts", f.cohortId))));
+		expect(
+			before.map((cohort) => ({ phase: cohort!.phase, publishedAt: cohort!.publishedAt })),
+			"all lost groups still await publication",
+		).toEqual(fixtures.map(() => ({ phase: "staging", publishedAt: null })));
 		await t.run(async (ctx) => {
 			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
 				if (job.name.endsWith("files_move_run:run") && job.state.kind === "pending")

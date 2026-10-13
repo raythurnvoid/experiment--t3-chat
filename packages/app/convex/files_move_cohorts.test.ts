@@ -278,6 +278,7 @@ describe("Move cohort publication", () => {
 		const f = await native_rotation(3);
 		for (let pass = 0; pass < 3; pass++) {
 			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+			if (cohort.workPhase !== "items") break;
 			await f.t.mutation(internal.files_move_cohorts.advance, {
 				cohortId: cohort._id,
 				step: cohort.step,
@@ -295,9 +296,21 @@ describe("Move cohort publication", () => {
 			ranges.map((range) => range.key).sort(),
 			"each review item producer queues its selected saved subtree",
 		).toEqual(f.nodes.map((id) => `saved-children:${id}`).sort());
+		expect(
+			ranges.map(({ status, processedCount, cursor }) => ({ status, processedCount, cursor })),
+			"all selected subtrees are queued before any descendant work",
+		).toEqual(
+			f.nodes.map(() => ({
+				status: "queued",
+				processedCount: 0,
+				cursor: JSON.stringify({ source: "before", cursor: null }),
+			})),
+		);
 		expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId))).toMatchObject({
 			workPhase: "descendants",
+			stagedItemCount: 3,
 			pendingWorkCount: 3,
+			publishedAt: null,
 		});
 		await finish_cohort(f);
 		expect((await f.readNames()).map((node) => node?._id)).toEqual([f.nodes[2], f.nodes[0], f.nodes[1]]);

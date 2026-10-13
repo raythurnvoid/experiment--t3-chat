@@ -3,7 +3,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_transfer_db_delete_run_batch, files_transfer_db_record_cohort_publication } from "./files_transfer.ts";
 import { test_create_saved_placement_fixture as fixture } from "../server/files-saved-placement.test-fixtures.ts";
 
@@ -63,48 +63,101 @@ async function release(f: Fixture) {
 }
 
 test("publication records the chosen identity once after Stop and access loss", async () => {
-	const f = await fixture();
-	const { run, activity } = await origin(f);
-	await f.publish();
-	await f.t.run(async (ctx) => {
-		await ctx.db.patch("activities", activity._id, {
-			status: "stopping",
-			errorCode: "canceled",
-			stopRequestedAt: Date.now(),
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const folder = async (path: string) => {
+		const created = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: "root",
+			path,
 		});
-		await ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false });
+		if (created._nay) throw new Error(created._nay.message);
+		return created._yay.nodeId;
+	};
+	const nodeId = await folder("/source");
+	const parentId = await folder("/target");
+	const childId = await folder("/source/child");
+	const started = await asUser.mutation(api.files_transfer.accept_input, {
+		membershipId: db.membershipId,
+		requestId: crypto.randomUUID(),
+		kind: "move",
+		sourceIds: [nodeId],
+		expectedSourceCount: 1,
+		targetParentId: parentId,
 	});
-	await f.t.run((ctx) => files_transfer_db_record_cohort_publication(ctx, { cohortId: f.cohortId }));
-	await f.t.run((ctx) => files_transfer_db_record_cohort_publication(ctx, { cohortId: f.cohortId }));
-	expect(
-		await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.itemId)),
-		"accepted publication keeps its exact completion receipt",
-	).toMatchObject({
+	if (started._nay) throw new Error(started._nay.message);
+	const { runId, activityId } = started._yay;
+	const readCohort = () =>
+		t.run((ctx) =>
+			ctx.db
+				.query("files_move_cohorts")
+				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+				.first(),
+		);
+	let cohort = await readCohort();
+	for (let pass = 0; !cohort || cohort.publishedAt === null; pass++) {
+		if (pass === 1_000) throw new Error("The saved Move did not publish");
+		if (cohort)
+			await t.action(internal.files_move_run.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
+		else await t.mutation(internal.files_transfer.advance, { runId });
+		cohort = await readCohort();
+	}
+	if (cohort.origin.kind !== "transfer") throw new Error("Expected the public Transfer origin");
+	const cohortId = cohort._id;
+	const itemId = cohort.origin.itemId;
+	expect(cohort, "the real publication leaves physical repair unfinished").toMatchObject({
+		phase: "published",
+		workPhase: "finish_content",
+		visibleView: "after",
+	});
+	const receipt = await t.run((ctx) => ctx.db.get("files_transfer_items", itemId));
+	expect(receipt, "accepted publication keeps its exact completion receipt").toMatchObject({
 		state: "completed",
-		outputTarget: { kind: "saved", id: f.nodeId },
-		outputPath: "/target/new.txt",
+		outputTarget: { kind: "saved", id: nodeId },
+		outputPath: "/target/source",
 		outcome: "moved",
 	});
-	expect(await f.t.run((ctx) => ctx.db.get("activities", activity._id))).toMatchObject({
+	expect(await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId })).toEqual({
+		_yay: null,
+	});
+	await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", db.membershipId, { active: false }));
+	await t.run((ctx) => files_transfer_db_record_cohort_publication(ctx, { cohortId }));
+	await t.run((ctx) => files_transfer_db_record_cohort_publication(ctx, { cohortId }));
+	expect(
+		await t.run((ctx) => ctx.db.get("files_transfer_items", itemId)),
+		"publication replay after Stop and access loss keeps the full receipt",
+	).toEqual(receipt);
+	expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
 		status: "stopping",
 		progress: { completed: 1 },
 	});
-	await f.t.mutation(internal.files_transfer.advance, { runId: run._id });
+	await t.mutation(internal.files_transfer.advance, { runId });
 	expect(
-		(await f.t.run((ctx) => ctx.db.get("activities", activity._id)))?.status,
+		(await t.run((ctx) => ctx.db.get("activities", activityId)))?.status,
 		"Stop waits for physical repair after publication",
 	).toBe("stopping");
 	expect(
-		await f.t.run((ctx) => files_transfer_db_delete_run_batch(ctx, { runId: run._id, batchSize: 8 })),
+		await t.run((ctx) => files_transfer_db_delete_run_batch(ctx, { runId, batchSize: 8 })),
 		"run deletion waits for the same accepted cohort",
 	).toEqual({ done: false, deletedCount: 0 });
-	await release(f);
-	await f.t.mutation(internal.files_transfer.settle_cohort, { cohortId: f.cohortId });
-	await f.t.mutation(internal.files_transfer.advance, { runId: run._id });
-	expect(await f.t.run((ctx) => ctx.db.get("activities", activity._id))).toMatchObject({
+	await test_finish_transfer_run(asUser, runId);
+	expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
 		status: "canceled",
 		progress: { completed: 1, canceled: 0 },
 	});
+	expect(await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId))).toMatchObject({ phase: "complete" });
+	const source = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
+	const child = (await t.run((ctx) => ctx.db.get("files_nodes", childId)))!;
+	expect(source).toMatchObject({ parentId, path: "/target/source" });
+	expect(child).toMatchObject({ parentId: nodeId, path: "/target/source/child" });
+	expect(source.moveCohortId).toBeUndefined();
+	expect(child.moveCohortId).toBeUndefined();
 });
 
 test("Stop before publication leaves the pending item until cohort abort finishes", async () => {

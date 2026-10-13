@@ -35,6 +35,7 @@ import {
 	create_pending_proposal,
 	expect_retired_uploads,
 } from "./files_nodes_content.setup.test.ts";
+import { fixture as create_scope_copy_fixture } from "./files_transfer_scopes_content.setup.test.ts";
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -201,7 +202,7 @@ describe("private text publication", () => {
 });
 
 describe("copy_transfer_file", () => {
-	test("publishes both copies once when another worker publishes after validation", async () => {
+	test("publishes both same-workspace copies once without media validation", async () => {
 		vi.useFakeTimers();
 		const fixture = await create_file_fixture("rich_text", "First file\n");
 		const { t, db, asUser, nodeId } = fixture;
@@ -246,22 +247,132 @@ describe("copy_transfer_file", () => {
 		const sources = await t.run(async (ctx) =>
 			Promise.all([nodeId, secondId].map((id) => ctx.db.get("files_nodes", id))),
 		);
-		let releaseValidation!: () => void;
-		const bothValidated = new Promise<void>((resolve) => {
-			releaseValidation = resolve;
+		let releaseCapture!: () => void;
+		const bothCaptured = new Promise<void>((resolve) => {
+			releaseCapture = resolve;
 		});
+		let captureCalls = 0;
 		let validationCalls = 0;
 		let publicationCalls = 0;
-		// Hold the first two finished pages outside their transactions. Both proofs then pin the
-		// same clocks. No embeds, so publication skips the clock check.
+		// Both real captures finish before either worker publishes. Same-workspace Copy needs no media proof.
 		test_spy_handler(copy_transfer_file, async (handler, ctx, args) => {
 			const runMutation = ctx.runMutation.bind(ctx);
 			vi.spyOn(ctx, "runMutation").mockImplementation(async (...mutationArgs) => {
 				const reference = mutationArgs[0];
 				const result = await runMutation(reference, mutationArgs[1], mutationArgs[2]);
+				if (getFunctionName(reference) === "files_nodes_content:seal_transfer_file_capture") {
+					expect(result).toEqual({ _yay: null });
+					captureCalls += 1;
+					if (captureCalls === 2) releaseCapture();
+					if (captureCalls <= 2) await bothCaptured;
+				}
+				if (getFunctionName(reference) === "files_nodes_content:validate_transfer_file_media") validationCalls += 1;
+				if (getFunctionName(reference) === "files_nodes_content:finalize_transfer_file_copy") publicationCalls += 1;
+				return result;
+			});
+			return await handler(ctx, args);
+		});
+		await Promise.all(
+			items.map((item) =>
+				t.action(internal.files_nodes_content.copy_transfer_file, {
+					itemId: item._id,
+					attempt: item.attempt,
+				}),
+			),
+		);
+		const outputIds: Id<"files_nodes">[] = [];
+		for (const [index, item] of items.entries()) {
+			const completed = await t.run((ctx) => ctx.db.get("files_transfer_items", item._id));
+			expect(completed).toMatchObject({ state: "completed", errorMessage: null });
+			const saved = await t.run((ctx) => ctx.db.get("files_nodes", saved_copy_id(completed)));
+			outputIds.push(saved!._id);
+			expect(saved?.path).toBe(index === 0 ? "/copies/restore.md" : "/copies/second.md");
+			expect(objects.get(r2_create_asset_key({ ...db, assetId: saved!.assetId! }))).toBe(
+				index === 0 ? "First file\n" : "Second file\n",
+			);
+		}
+		expect(new Set(outputIds).size).toBe(2);
+		expect(captureCalls).toBe(2);
+		expect(validationCalls).toBe(0);
+		expect(publicationCalls).toBe(2);
+		expect(
+			await t.run(async (ctx) => Promise.all([nodeId, secondId].map((id) => ctx.db.get("files_nodes", id)))),
+		).toEqual(sources);
+	});
+
+	test("publishes both cross-workspace copies once after both media proofs finish", async () => {
+		vi.useFakeTimers();
+		const { t, current, personal, threadId } = await create_scope_copy_fixture();
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: personal.membershipId,
+			path: "/first.md",
+			textContent: "First file\n",
+		});
+		const secondId = await test_create_saved_text_file(t, {
+			membershipId: personal.membershipId,
+			path: "/second.md",
+			textContent: "Second file\n",
+		});
+		const started = await t.mutation(internal.files_transfer.start_for_agent, {
+			membershipId: current.membershipId,
+			threadId,
+			sourceWorkspace: "personal",
+			destinationWorkspace: "current",
+			requestId: "parallel-cross-workspace-copy",
+			kind: "copy",
+			expectedSourceCount: 2,
+			sources: [
+				{ kind: "saved", id: nodeId },
+				{ kind: "saved", id: secondId },
+			],
+			targetParent: { kind: "root" },
+			targetPath: "/",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "replace", folder: "error" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(
+			await t.mutation(internal.files_transfer.seal_for_agent, {
+				membershipId: current.membershipId,
+				threadId,
+				runId: started._yay.runId,
+			}),
+		).toEqual({ _yay: null });
+		let items: Doc<"files_transfer_items">[] = [];
+		for (let step = 0; step < 20; step++) {
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+			items = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
+					.collect(),
+			);
+			if (items.length === 2 && items.every((item) => item.workId)) break;
+		}
+		expect(items.map((item) => item.state)).toEqual(["copying", "copying"]);
+		const sources = await t.run(async (ctx) =>
+			Promise.all([nodeId, secondId].map((id) => ctx.db.get("files_nodes", id))),
+		);
+		let releaseValidation!: () => void;
+		const bothValidated = new Promise<void>((resolve) => {
+			releaseValidation = resolve;
+		});
+		const validatedItems = new Set<Id<"files_transfer_items">>();
+		let validationCalls = 0;
+		let publicationCalls = 0;
+		// Both real proofs finish before publication. The first draft changes the other proof's clock.
+		test_spy_handler(copy_transfer_file, async (handler, ctx, args) => {
+			const { itemId } = args as { itemId: Id<"files_transfer_items"> };
+			const runMutation = ctx.runMutation.bind(ctx);
+			vi.spyOn(ctx, "runMutation").mockImplementation(async (...mutationArgs) => {
+				const reference = mutationArgs[0];
+				const result = await runMutation(reference, mutationArgs[1], mutationArgs[2]);
 				if (getFunctionName(reference) === "files_nodes_content:validate_transfer_file_media") {
+					expect(result).toEqual({ _yay: { offset: 0, isDone: true } });
 					validationCalls += 1;
-					if (validationCalls === 2) releaseValidation();
+					validatedItems.add(itemId);
+					if (validatedItems.size === 2) releaseValidation();
 					if (validationCalls <= 2) await bothValidated;
 				}
 				if (getFunctionName(reference) === "files_nodes_content:finalize_transfer_file_copy") publicationCalls += 1;
@@ -277,16 +388,27 @@ describe("copy_transfer_file", () => {
 				}),
 			),
 		);
-		for (const [index, item] of items.entries()) {
-			const completed = await t.run((ctx) => ctx.db.get("files_transfer_items", item._id));
-			expect(completed).toMatchObject({ state: "completed", errorMessage: null });
-			const saved = await t.run((ctx) => ctx.db.get("files_nodes", saved_copy_id(completed)));
-			expect(objects.get(r2_create_asset_key({ ...db, assetId: saved!.assetId! }))).toBe(
-				index === 0 ? "First file\n" : "Second file\n",
-			);
-		}
 		expect(validationCalls).toBe(2);
 		expect(publicationCalls).toBe(2);
+		expect([...validatedItems].sort()).toEqual(items.map((item) => item._id).sort());
+		expect(new Set(items.map((item) => item.preparation!.privateNodeId)).size).toBe(2);
+		for (const [index, item] of items.entries()) {
+			expect(await t.run((ctx) => ctx.db.get("files_transfer_items", item._id))).toMatchObject({
+				state: "completed",
+				errorMessage: null,
+				outputTarget: { kind: "private", id: item.preparation!.privateNodeId },
+				outputPath: index === 0 ? "/first.md" : "/second.md",
+			});
+			const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				organizationId: current.organizationId,
+				workspaceId: current.workspaceId,
+				userId: current.userId,
+				path: index === 0 ? "/first.md" : "/second.md",
+				overlayUserId: current.userId,
+			});
+			expect(read?.target).toEqual({ kind: "private", id: item.preparation!.privateNodeId });
+			expect(read?.content).toBe(index === 0 ? "First file\n" : "Second file\n");
+		}
 		expect(
 			await t.run(async (ctx) => Promise.all([nodeId, secondId].map((id) => ctx.db.get("files_nodes", id)))),
 		).toEqual(sources);

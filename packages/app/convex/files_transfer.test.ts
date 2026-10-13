@@ -19,6 +19,7 @@ import {
 } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
 import {
 	r2Objects,
@@ -243,7 +244,7 @@ describe("Rename at a group boundary", () => {
 	});
 
 	test("lets queued Rename run after Stop finishes the bulk Move group", async () => {
-		const fixture = await create_folder_fixture(["/first", "/second", "/other"]);
+		const fixture = await create_folder_fixture(["/first", "/first/child", "/second", "/other"]);
 		const { t, db, asUser, folders } = fixture;
 		const moved = await start_transfer(asUser, {
 			membershipId: db.membershipId,
@@ -256,6 +257,18 @@ describe("Rename at a group boundary", () => {
 		await finish_discovery(fixture, moved._yay.runId);
 		await t.mutation(internal.files_transfer.advance, { runId: moved._yay.runId });
 		await t.mutation(internal.files_transfer.advance, { runId: moved._yay.runId });
+		await t.run(async (ctx) => {
+			const source = (await ctx.db.get("files_nodes", folders.get("/first")!))!;
+			expect(source.moveCohortId, "the first group stays held before Stop").toBeDefined();
+			expect(
+				await ctx.db.get("files_move_cohorts", source.moveCohortId!),
+				"Stop sees the group before publication",
+			).toMatchObject({
+				origin: { kind: "transfer", runId: moved._yay!.runId },
+				visibleView: "before",
+				publishedAt: null,
+			});
+		});
 		const rename = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			requestId: "rename-after-stop",
@@ -274,6 +287,7 @@ describe("Rename at a group boundary", () => {
 			await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: moved._yay.runId }),
 		).toMatchObject({ activity: { status: "canceled", progress: { completed: 0, canceled: 2 } } });
 		expect((await get_node(fixture, "/first"))?._id).toBe(folders.get("/first"));
+		expect((await get_node(fixture, "/first/child"))?._id).toBe(folders.get("/first/child"));
 		expect((await get_node(fixture, "/second"))?._id).toBe(folders.get("/second"));
 		await test_finish_transfer_run(asUser, rename._yay.runId);
 		expect((await get_node(fixture, "/renamed"))?._id).toBe(folders.get("/other"));
@@ -2641,6 +2655,7 @@ describe("move", () => {
 				"/source/child",
 				"/target/source",
 				"/target/source/keep",
+				...(childState === "held" ? ["/target/source/keep/child"] : []),
 				"/other",
 			]);
 			const { t, db, asUser, folders } = fixture;
@@ -2681,6 +2696,23 @@ describe("move", () => {
 						await t.mutation(internal.files_move_cohorts.advance, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, join: false });
 					else await t.mutation(internal.files_transfer.advance, { runId: other._yay.runId });
 				}
+				await t.run(async (ctx) => {
+					const keep = (await ctx.db.get("files_nodes", keepId))!;
+					expect(keep.moveCohortId, "the other Move holds the child").toBeDefined();
+					expect(
+						await ctx.db.get("files_move_cohorts", keep.moveCohortId!),
+						"the held child stays Before replacement",
+					).toMatchObject({
+						origin: { kind: "transfer", runId: other._yay!.runId },
+						visibleView: "before",
+						publishedAt: null,
+					});
+					expect(await files_saved_placement_db_get_node(ctx.db, keepId)).toMatchObject({
+						_id: keepId,
+						parentId: folders.get("/target/source"),
+						path: "/target/source/keep",
+					});
+				});
 			}
 			expect(
 				await asUser.mutation(api.files_transfer.resolve_conflicts, {

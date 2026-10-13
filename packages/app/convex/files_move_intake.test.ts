@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import { advance, append_input } from "./files_transfer.ts";
 import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
@@ -67,7 +67,8 @@ async function upload_repeated_source(fixture: Awaited<ReturnType<typeof create_
 
 function track_selection_query<T extends object>(
 	query: T,
-	pages: Array<{ limit: number; length: number }>,
+	pages: Array<{ step: Doc<"files_transfer_runs">["step"]; limit: number; length: number }>,
+	readStep: () => Promise<Doc<"files_transfer_runs">["step"]>,
 	indexed = false,
 ): T {
 	return new Proxy(query, {
@@ -76,11 +77,13 @@ function track_selection_query<T extends object>(
 			if (typeof method !== "function") return method;
 			if (key === "withIndex")
 				return (...args: unknown[]) =>
-					track_selection_query(Reflect.apply(method, target, args), pages, args[0] === "by_run_order");
+					track_selection_query(Reflect.apply(method, target, args), pages, readStep, args[0] === "by_run_order");
 			if (key === "take" && indexed)
 				return async (limit: number) => {
+					// A joined call can change phase before its next take.
+					const step = await readStep();
 					const page = (await Reflect.apply(method, target, [limit])) as readonly unknown[];
-					pages.push({ limit, length: page.length });
+					pages.push({ step, limit, length: page.length });
 					return page;
 				};
 			return method.bind(target);
@@ -119,7 +122,7 @@ describe("paged Move input scale", () => {
 		const { t, sourceId } = fixture;
 		const count = 100_000;
 		const phases = new Set<string>();
-		const pages: Array<{ limit: number; length: number }> = [];
+		const pages: Array<{ step: Doc<"files_transfer_runs">["step"]; limit: number; length: number }> = [];
 		let completeInputMeasured = false;
 		for (const registered of [append_input, advance])
 			test_spy_handler(registered, async (handler, ctx, args) => {
@@ -132,7 +135,11 @@ describe("paged Move input scale", () => {
 						if (key === "query")
 							return (...args: unknown[]) =>
 								args[0] === "files_transfer_selection_items"
-									? track_selection_query(Reflect.apply(method, target, args), pages)
+									? track_selection_query(
+											Reflect.apply(method, target, args),
+											pages,
+											async () => (await ctx.db.get("files_transfer_runs", call.runId))!.step,
+										)
 									: Reflect.apply(method, target, args);
 						return method.bind(target);
 					},
@@ -219,9 +226,12 @@ describe("paged Move input scale", () => {
 		});
 		expect(phases).toEqual(new Set(["uploading", "select", "normalize"]));
 		expect(pages.length, "joined calls still read exact selection batches").toBeGreaterThan(1);
+		expect(new Set(pages.map((page) => page.step))).toEqual(new Set(["select", "normalize"]));
 		for (const page of pages) {
-			expect(page.limit, "each selection query asks for eight input positions").toBe(8);
-			expect(page.length, "each selection query returns at most eight input positions").toBeLessThanOrEqual(8);
+			expect(page.limit, "Select asks for eight positions and Normalize asks for one").toBe(
+				page.step === "select" ? 8 : 1,
+			);
+			expect(page.length, "each query returns at most its requested input positions").toBeLessThanOrEqual(page.limit);
 		}
 	}, 600_000);
 });

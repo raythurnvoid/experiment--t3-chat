@@ -231,6 +231,8 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 	const sourceId = await folder("/source");
 	const targetId = await folder("/target");
 	const movingId = await folder("/moving");
+	// A real child keeps this group unpublished until a later step.
+	await folder("/moving/child");
 	const destinationId = await folder("/destination");
 	const expected: string[] = [];
 	for (const name of ["a", "b", "c"]) {
@@ -308,7 +310,10 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 			const cohort = await t.run((ctx) => ctx.db.get("files_move_cohorts", slot.cohortId!));
 			if (!cohort) throw new Error("Expected the public Move group");
 			expect(cohort.errorCode).toBeNull();
-			if (cohort.workPhase === "publish") break;
+			if (cohort.workPhase === "publish") {
+				expect(cohort.publishedAt, "metadata pages use a real unpublished Move group").toBeNull();
+				break;
+			}
 			await t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
 		} else {
 			const jobs = await t.run((ctx) =>

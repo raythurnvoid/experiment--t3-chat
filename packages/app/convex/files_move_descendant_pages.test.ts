@@ -3,6 +3,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { run_to_end as finish_archive } from "./files_archive_runs.setup.test.ts";
 import { advance } from "./files_move_cohorts.ts";
+import { accept_input } from "./files_transfer.ts";
 import { budget_recorder, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 import {
 	test_convex,
@@ -142,34 +143,44 @@ test.each([
 		const pageBytes: number[] = [];
 		const costs: { phase: string; cost: ReturnType<typeof transaction_cost> }[] = [];
 		const { peaks, record, check } = budget_recorder();
-		test_spy_handler(advance, async (handler, ctx, args) => {
-			const { cohortId } = args as { cohortId: Id<"files_move_cohorts"> };
-			const cohort = await ctx.db.get("files_move_cohorts", cohortId);
-			const before = await ctx.meta.getTransactionMetrics();
-			const transactionPages = { count: 0, children: [] as Id<"files_nodes">[][], bytes: [] as number[] };
-			const trackedDb = new Proxy(ctx.db, {
-				get(target, key) {
-					const member: unknown = Reflect.get(target, key);
-					if (typeof member !== "function") return member;
-					if (key === "query")
-						return (...queryArgs: unknown[]) =>
-							track_pages(Reflect.apply(member, target, queryArgs), String(queryArgs[0]), transactionPages, childIds);
-					return member.bind(target);
-				},
+		// Admission may read the first child page before it schedules the background worker.
+		for (const registered of [accept_input, advance])
+			test_spy_handler(registered, async (handler, ctx, args) => {
+				const { cohortId } = args as { cohortId?: Id<"files_move_cohorts"> };
+				const cohort = cohortId ? await ctx.db.get("files_move_cohorts", cohortId) : null;
+				const before = await ctx.meta.getTransactionMetrics();
+				const transactionPages = { count: 0, children: [] as Id<"files_nodes">[][], bytes: [] as number[] };
+				const trackedDb = new Proxy(ctx.db, {
+					get(target, key) {
+						const member: unknown = Reflect.get(target, key);
+						if (typeof member !== "function") return member;
+						if (key === "query")
+							return (...queryArgs: unknown[]) =>
+								track_pages(Reflect.apply(member, target, queryArgs), String(queryArgs[0]), transactionPages, childIds);
+						return member.bind(target);
+					},
+				});
+				const result = await handler({ ...ctx, db: trackedDb }, args);
+				const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
+				costs.push({ phase: cohort ? `cohort/${cohort.workPhase}` : "admission", cost });
+				pageCounts.push(transactionPages.count);
+				pageBytes.push(...transactionPages.bytes);
+				const currentCohortId = cohortId ?? (
+					await ctx.db
+						.query("files_move_workspace_slots")
+						.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+						.unique()
+				)?.cohortId;
+				for (const ids of transactionPages.children) {
+					pages.push(ids);
+					const docs = await Promise.all(ids.map((id) => ctx.db.get("files_nodes", id)));
+					held.push(docs.flatMap((doc) => (currentCohortId && doc?.moveCohortId === currentCohortId ? [doc._id] : [])));
+					sourceHeld.push(
+						Boolean(currentCohortId) && (await ctx.db.get("files_nodes", sourceId))?.moveCohortId === currentCohortId,
+					);
+				}
+				return result;
 			});
-			const result = await handler({ ...ctx, db: trackedDb }, args);
-			const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
-			costs.push({ phase: `cohort/${cohort?.workPhase}`, cost });
-			pageCounts.push(transactionPages.count);
-			pageBytes.push(...transactionPages.bytes);
-			for (const ids of transactionPages.children) {
-				pages.push(ids);
-				const docs = await Promise.all(ids.map((id) => ctx.db.get("files_nodes", id)));
-				held.push(docs.flatMap((doc) => (doc?.moveCohortId === cohortId ? [doc._id] : [])));
-				sourceHeld.push((await ctx.db.get("files_nodes", sourceId))?.moveCohortId === cohortId);
-			}
-			return result;
-		});
 		const started = await asUser.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: "descendant-pages",
