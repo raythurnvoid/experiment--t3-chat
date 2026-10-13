@@ -38,9 +38,9 @@ describe("saved Move input acceptance", () => {
 				.unique(),
 		);
 		expect(cohort, "acceptance begins the real parent work before its reply").toMatchObject({
-			phase: "staging",
-			workPhase: "items",
-			publishedAt: null,
+			phase: "published",
+			workPhase: "finish_content",
+			publishedAt: expect.any(Number),
 		});
 		if (!cohort?.runJob) throw new Error("Expected the owned cohort continuation");
 		expect(await t.run((ctx) => ctx.db.system.get(cohort.runJob!.id))).toMatchObject({
@@ -431,8 +431,8 @@ test.each([8, 100, 200])(
 				});
 			} else {
 				expect(
-					Object.values(costs.at(-1)!).some((metric) => metric.used * 16 >= metric.used + metric.remaining),
-					"the flushed 1/16 guard yields before cohort creation",
+					Object.values(costs.at(-1)!).some((metric) => metric.used * 4 >= metric.used + metric.remaining),
+					"the flushed join guard yields before cohort creation",
 				).toBe(true);
 				expect(["select", "normalize", "plan"]).toContain(run.step);
 				expect(await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual(

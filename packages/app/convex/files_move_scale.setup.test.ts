@@ -79,11 +79,12 @@ export function transaction_cost(metrics: Metrics) {
 		documentsWritten: metrics.documentsWritten.used,
 		bytesWritten: metrics.bytesWritten.used,
 		functionsScheduled: metrics.functionsScheduled.used,
+		scheduledFunctionArgsBytes: metrics.scheduledFunctionArgsBytes.used,
 	};
 }
 
 export function measure_move(
-	byteBudgetFraction = 1,
+	budgetFraction = 1,
 	owner?: { userId: Id<"users">; nodeId: Id<"files_nodes">; fieldPages: Set<string> },
 ) {
 	const limits = {
@@ -93,6 +94,7 @@ export function measure_move(
 		documentsWritten: 16_000,
 		bytesWritten: 16 * 1024 * 1024,
 		functionsScheduled: 1000,
+		scheduledFunctionArgsBytes: 16 * 1024 * 1024,
 	};
 	const peaks = new Map<string, { calls: number; cost: ReturnType<typeof transaction_cost> }>();
 	const record = async (phase: string, ctx: MutationCtx) => {
@@ -100,7 +102,7 @@ export function measure_move(
 		const peak = peaks.get(phase) ?? { calls: 0, cost: { ...cost } };
 		for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
 			peak.cost[key] = Math.max(peak.cost[key], cost[key]);
-			const fraction = key === "bytesRead" || key === "bytesWritten" ? byteBudgetFraction : 1;
+			const fraction = budgetFraction;
 			if (cost[key] >= limits[key] * fraction) console.info("Move scale over budget", JSON.stringify({ phase, cost }));
 			expect(cost[key], `${phase}: ${key} stays below ${fraction * 100}% of the Convex limit`)
 				.toBeLessThan(limits[key] * fraction);

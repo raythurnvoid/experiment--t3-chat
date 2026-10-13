@@ -28,6 +28,10 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Bash keeps its checked input and explicit readiness doors. Incomplete input cannot start work.
   After input closes, indexed selection docs remove
   duplicates and children covered by a selected ancestor, including an ancestor on a later page.
+  Normalize checks one input and at most 32 exact `by_run_path` prefixes per unit. An unfinished
+  walk keeps the completed input cursor and saves its next prefix in `normalizingParentPath`.
+  A resumed unit checks the current source path and access before continuing. Completion clears
+  the prefix and advances once. Copy uses the same input normalization.
   There is no total selection cap. Sources and destination parents use tagged saved/private
   IDs. The destination path, parent, optional target name, and missing Copy parents are fixed at
   acceptance. A repeated request ID returns its original run; changed intent or expired membership refuses.
@@ -63,7 +67,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Physical repair then drains before the next transfer item. A folder uses the same path.
   Existing Move, scope, Archive and Restore repairs must finish before a new Move starts.
   Complete human Move input can join the real parent body after derived writes flush and the budget
-  passes. It ends at a native page or cohort creation. Small exact cohort work also joins. Every
+  passes. A new cohort starts its ready exact work in that same transaction. Empty folders can
+  publish before acceptance returns. Joining checks all seven metrics after the overlay flush;
+  each must be below one quarter of its limit. Tests keep 25% free after the final flush. Every
   native page ends that transaction. Heavy content work keeps its own step. One action carries
   several committed transactions through `files_move_run.run`. Content and media helpers load only
   for their own steps. Between advances it checks five seconds or 128 advance calls

@@ -4,8 +4,6 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import { internalAction } from "./_generated/server.js";
 
-console.info("Move startup module", { module: "files_move_run" });
-
 const RUN_BUDGET_MS = 5_000;
 const RUN_MAX_ADVANCE_CALLS = 128;
 
@@ -93,10 +91,4 @@ export const run = internalAction({
 		}
 		return null;
 	},
-});
-
-export const profile_move_startup = internalAction({
-	args: { sample: v.number() },
-	returns: v.null(),
-	handler: async () => null,
 });

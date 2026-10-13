@@ -1,10 +1,10 @@
 import { Result } from "common/errors-as-values-utils.ts";
-import type { RegisteredMutation, WithoutSystemFields } from "convex/server";
-import { ConvexError, v } from "convex/values";
+import type { WithoutSystemFields } from "convex/server";
+import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalAction, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import {
@@ -62,13 +62,12 @@ import { files_share_rows_db_sync_node } from "../server/files-share-rows.ts";
 import {
 	files_move_content_db_create,
 	files_move_content_db_stage,
-	files_move_content_action_prepare,
 	files_move_content_db_finish,
 	files_move_content_db_abort,
 	files_move_content_db_publish_accounting,
 	files_move_content_db_release_claims,
 } from "./files_move_content.ts";
-import { files_move_media_action_prepare_refs, files_move_media_db_validate_next } from "./files_move_media.ts";
+import { files_move_media_db_validate_next } from "./files_move_media.ts";
 import {
 	files_move_owner_work_db_collect_node,
 	files_move_owner_work_db_collect_closure,
@@ -96,16 +95,12 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 // Reuse loaded modules. Keep each request's state inside its handler.
 export const experimental_reuseContext = true;
 
-console.info("Move startup module", { module: "files_move_cohorts" });
-
 const WAKE_PAGE_SIZE = 8;
 // Bound one native page. Long headers reach the byte bound first.
 const DESCENDANT_PAGE_SIZE = 32;
 const DESCENDANT_PAGE_BYTES = 128 * 1024;
 const METADATA_PAGE_SIZE = 64;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
-const RUN_BUDGET_MS = 5_000;
-const RUN_MAX_ADVANCE_CALLS = 128;
 const RECOVER_IDLE_MS = 2 * 60 * 1000;
 const CLEANUP_DEADLINE_MS = 5 * 60 * 1000;
 const REPAIR_RETRY_MS = 30 * 1000;
@@ -2682,11 +2677,6 @@ export const advance = internalMutation({
 	handler: db_advance,
 });
 
-type advance_Result =
-	typeof advance extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
 export const resume = internalMutation({
 	args: {
 		cohortId: v.id("files_move_cohorts"),
@@ -2746,93 +2736,6 @@ export const handoff = internalMutation({
 			await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id, handoff: true });
 		return null;
 	},
-});
-
-export const run = internalAction({
-	args: {
-		cohortId: v.id("files_move_cohorts"),
-		step: v.number(),
-		runGeneration: v.union(v.number(), v.null()),
-		mode: v.union(v.literal("step"), v.literal("chain")),
-	},
-	returns: v.union(v.null(), v.literal("complete")),
-	handler: async (ctx, args) => {
-		const startedAt = Date.now();
-		let step = args.step;
-		try {
-			for (let count = 0; count < RUN_MAX_ADVANCE_CALLS; count++) {
-				let pending: advance_Result = await ctx.runMutation(internal.files_move_cohorts.advance, {
-					cohortId: args.cohortId,
-					step,
-					runGeneration: args.runGeneration,
-					join: args.mode === "chain",
-				});
-				if (!pending) return null;
-				if (pending.kind === "complete") return "complete" as const;
-				if (pending.kind === "prepare" || pending.kind === "media") {
-					step = pending.step;
-					const result = await (
-						pending.kind === "prepare" ? files_move_content_action_prepare : files_move_media_action_prepare_refs
-					)(ctx, {
-						cohortId: args.cohortId,
-						contentId: pending.contentId,
-						fence: pending.fence,
-						attemptFence: pending.attemptFence,
-						runGeneration: args.runGeneration,
-					});
-					pending = await ctx.runMutation(internal.files_move_cohorts.resume, {
-						cohortId: args.cohortId,
-						step,
-						runGeneration: args.runGeneration,
-						error: result._nay ? { name: result._nay.name, message: result._nay.message } : null,
-					});
-					if (!pending) return null;
-				}
-				step = pending.step;
-				if (args.mode === "step" || Date.now() - startedAt >= RUN_BUDGET_MS) break;
-			}
-			await ctx.runMutation(internal.files_move_cohorts.handoff, {
-				cohortId: args.cohortId,
-				step,
-				runGeneration: args.runGeneration,
-			});
-		} catch (error) {
-			console.error("Move step failed", { cohortId: args.cohortId, step, error });
-			// Keep the real error, so a repair that keeps failing shows why.
-			const data = error instanceof ConvexError ? (error.data as { name?: unknown; message?: unknown }) : null;
-			const message =
-				typeof data?.message === "string" ? data.message : error instanceof Error ? error.message : String(error);
-			const name =
-				typeof data?.name === "string"
-					? data.name
-					: message.startsWith("[should_never_happen]")
-						? "should_never_happen"
-						: "move_step_failed";
-			await ctx.runMutation(internal.files_move_cohorts.resume, {
-				cohortId: args.cohortId,
-				step,
-				runGeneration: args.runGeneration,
-				error: {
-					name: "move_step_failed",
-					message: "This Move step failed. Review it again.",
-					cause: { name, message },
-				},
-			});
-		}
-		return null;
-	},
-});
-
-export const profile_move_startup = internalAction({
-	args: { sample: v.number() },
-	returns: v.null(),
-	handler: async () => null,
-});
-
-export const profile_move_db_startup = internalMutation({
-	args: { sample: v.number() },
-	returns: v.null(),
-	handler: async () => null,
 });
 
 export const recover = internalMutation({

@@ -5840,7 +5840,15 @@ const app_convex_schema = defineSchema({
 			v.literal("retry"),
 		),
 		// Input pages keep the total selection outside the run doc.
-		selection: v.optional(v.object({ expectedCount: v.number(), count: v.number(), cursor: v.number() })),
+		selection: v.optional(
+			v.object({
+				expectedCount: v.number(),
+				count: v.number(),
+				cursor: v.number(),
+				// Missing means no unfinished parent-path check.
+				normalizingParentPath: v.optional(v.string()),
+			}),
+		),
 		repairOpId: v.optional(v.id("files_subtree_ops")),
 		moveValidation: v.optional(
 			v.object({

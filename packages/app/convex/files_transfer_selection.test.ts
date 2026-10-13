@@ -467,7 +467,8 @@ describe("Transfer selection pages", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(await f.asUser.mutation(api.files_transfer.seal, args)).toEqual({ _yay: null });
-		for (let step = 0; step < 60; step++) {
+		// Select pages, then one Normalize unit per input.
+		for (let step = 0; step < 201 + 32; step++) {
 			await f.t.mutation(internal.files_transfer.advance, { runId: args.runId });
 			const run = await f.t.run((ctx) => ctx.db.get("files_transfer_runs", args.runId));
 			if (run?.step === "discover") break;
@@ -537,7 +538,8 @@ describe("Transfer selection pages", () => {
 				}),
 			).toEqual({ _yay: null });
 		expect(await f.asUser.mutation(api.files_transfer.seal, args)).toEqual({ _yay: null });
-		for (let step = 0; step < 280; step++) {
+		// Select, Normalize, Discover and Plan must all reach their real end.
+		for (let step = 0; step < sourceIds.length * 4; step++) {
 			await f.t.mutation(internal.files_transfer.advance, { runId: args.runId });
 			const run = await f.t.run((ctx) => ctx.db.get("files_transfer_runs", args.runId));
 			if (run?.step === "apply") break;

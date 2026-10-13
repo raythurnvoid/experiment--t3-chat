@@ -694,7 +694,7 @@ export async function files_move_content_db_stage(ctx: MutationCtx, args: Contex
 			staged._yay.paged ||
 			pages >= STEP_MAX_PAGES ||
 			// Root ends the transaction after a stage step, so the step may use most of each limit. The
-			// join budget of 1/16 would stop a big text after one page: its first page reads the whole text.
+			// smaller join budget would stop a big text early: its first page reads the whole text.
 			(await files_subtree_ops_db_is_near_limits(ctx))
 		)
 			return staged;

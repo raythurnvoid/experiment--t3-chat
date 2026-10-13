@@ -129,8 +129,9 @@ cause first (the error says which step and why). Then run `files_move_cohorts:re
 `{ cohortId }` to try the step at once. It is safe to run twice: the try is fenced by step. Never
 release the slot by hand; the repair must finish.
 
-After a deploy that changes the arguments of the Move workers (`files_move_cohorts:run`, `advance`
-or `resume`), calls queued by the old code fail with `ArgumentValidationError`. This is expected.
+After a deploy that changes the arguments of the Move workers (`files_move_run:run`,
+`files_move_cohorts:advance` or `files_move_cohorts:resume`), calls queued by the old code fail with
+`ArgumentValidationError`. This is expected.
 The `recover` cron starts each group again within about 7 minutes (2 minutes idle, then the next
 5-minute run), so users see a pause, not an error. Act only when a group stays idle longer.
 

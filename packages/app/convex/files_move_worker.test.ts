@@ -47,9 +47,9 @@ async function fixture(depth = 2, childCount = 0) {
 	});
 	if (started._nay) throw new Error(started._nay.message);
 	for (let pass = 0; pass < 10; pass++) {
-		await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 		const cohort = await t.run((ctx) => ctx.db.query("files_move_cohorts").first());
 		if (cohort) return { t, asUser, db, sourceId, childIds, targetId, cohort, ...started._yay };
+		await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 	}
 	throw new Error("Transfer did not start a Move group");
 }
@@ -65,27 +65,22 @@ test("new Move groups schedule the leaf action", async () => {
 	expect(await f.t.run((ctx) => ctx.db.get("activities", f.activityId))).toMatchObject({ status: "succeeded" });
 });
 
-test("a selected folder queues its child range in the item step", async () => {
-	const f = await fixture();
-	await f.t.mutation(internal.files_move_cohorts.advance, {
-		cohortId: f.cohort._id,
-		step: f.cohort.step,
-		runGeneration: f.cohort.runJob?.generation ?? null,
-		join: false,
-	});
+test("a selected folder starts its child range during acceptance", async () => {
+	const f = await fixture(2, 33);
 	const ranges = await f.t.run((ctx) =>
 		ctx.db
 			.query("files_move_work_ranges")
-			.withIndex("by_cohort_key", (q) => q.eq("cohortId", f.cohort._id))
-			.collect(),
+			.withIndex("by_cohort_key", (q) => q.eq("cohortId", f.cohort._id).eq("key", `saved-children:${f.sourceId}`))
+			.unique(),
 	);
-	// Initial joined work can finish this empty range before the action.
-	expect(ranges, "the item producer queues the selected saved subtree").toMatchObject([
-		{ key: `saved-children:${f.sourceId}`, range: { kind: "node", nodeId: f.sourceId }, status: "complete" },
-	]);
+	expect(ranges, "the item producer starts the selected saved subtree").toMatchObject({
+		key: `saved-children:${f.sourceId}`,
+		range: { kind: "node", nodeId: f.sourceId },
+		status: "running",
+	});
 	expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id))).toMatchObject({
-		workPhase: "headers",
-		pendingWorkCount: 0,
+		workPhase: "descendants",
+		pendingWorkCount: 33,
 	});
 	await test_finish_transfer_run(f.asUser, f.runId);
 });
@@ -123,7 +118,7 @@ test("publication commits before physical repair", async () => {
 	await test_finish_transfer_run(f.asUser, f.runId);
 });
 
-test.each([2, 3])("an empty folder at depth %i publishes in three transactions", async (depth) => {
+test.each([2, 3])("an empty folder at depth %i publishes before its repair action", async (depth) => {
 	const f = await fixture(depth);
 	let actions = 0;
 	let transactions = 0;
@@ -147,13 +142,13 @@ test.each([2, 3])("an empty folder at depth %i publishes in three transactions",
 	expect(await f.t.run((ctx) => ctx.db.get("activities", f.activityId))).toMatchObject({
 		status: "succeeded",
 	});
-	expect(throughPublication, "small Move joins exact work before publication").toBeLessThanOrEqual(3);
+	expect(throughPublication, "small Move publishes in the acceptance transaction").toBe(0);
 	expect(transactions, "small Move joins exact cleanup work too").toBeLessThanOrEqual(5);
 	expect(actions, "one action carries the committed Move steps").toBe(1);
 });
 
 test("an action yields its committed step when the time budget ends", async () => {
-	const f = await fixture();
+	const f = await fixture(2, 33);
 	const before = f.cohort;
 	const owner = (await f.t.run((ctx) => ctx.db.system.get(before.runJob!.id)))!;
 	let transactions = 0;
@@ -180,7 +175,7 @@ test("an action yields its committed step when the time budget ends", async () =
 });
 
 test("an action hands off after 128 committed advances", async () => {
-	const f = await fixture(2, 128);
+	const f = await fixture(2, 300);
 	const before = f.cohort;
 	await f.t.run(async (ctx) => {
 		for (const job of await ctx.db.system.query("_scheduled_functions").collect())
@@ -231,7 +226,7 @@ test("an action hands off after 128 committed advances", async () => {
 });
 
 test("a thrown transaction after progress aborts from the current step", async () => {
-	const f = await fixture();
+	const f = await fixture(2, 33);
 	let transactions = 0;
 	test_spy_handler(advance, async (handler, ctx, args) => {
 		transactions++;
@@ -259,7 +254,7 @@ test("a thrown transaction after progress aborts from the current step", async (
 });
 
 test("a thrown joined phase aborts from its last committed step", async () => {
-	const f = await fixture();
+	const f = await fixture(2, 1);
 	let reachedJoinedPhase = false;
 	let entry = f.cohort;
 	let sourceEntry = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId)))!;

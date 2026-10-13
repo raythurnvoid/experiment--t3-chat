@@ -509,7 +509,7 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 		range?.cursor ? (JSON.parse(range.cursor) as { phase: number; page: string | null }) : { phase: 0, page: null };
 	let range = await db_next_range(ctx, cohort._id, "collect");
 	let cursor = parse(range);
-	// Before any page, complete empty ranges. Stop after 8 joined sub-steps or near 1/16 of a limit.
+	// Before any page, complete empty ranges. Stop after 8 joined sub-steps or at the join budget.
 	for (let joined = 0; range && cursor.page === null; joined++) {
 		if (joined > 0 && (joined === 8 || !(await files_pending_overlay_db_can_join_step(ctx)))) {
 			await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
@@ -686,7 +686,7 @@ export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Arg
 	let paged = false;
 	let complete = false;
 	// Sub-phases of this owner that read no page join in one step. A page ends the step.
-	// Stop after 8 joined sub-phases or near 1/16 of a limit.
+	// Stop after 8 joined sub-phases or at the join budget.
 	for (let joined = 0; !paged && !complete; joined++) {
 		if (joined > 0 && (joined === 8 || !(await files_pending_overlay_db_can_join_step(ctx)))) break;
 		if (cursor.phase === "headers") {

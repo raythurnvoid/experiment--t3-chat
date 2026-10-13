@@ -115,8 +115,6 @@ import {
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
-console.info("Move startup module", { module: "files_transfer" });
-
 const MAX_SELECTED_NODES = 200;
 const DISCOVERY_PAGE_SIZE = 50;
 const MAX_NAME_ATTEMPTS = 100;
@@ -3016,12 +3014,13 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 	const items = await ctx.db
 		.query("files_transfer_selection_items")
 		.withIndex("by_run_order", (q) => q.eq("runId", run._id).gt("order", selection.cursor))
-		.take(8);
+		.take(run.step === "normalize" ? 1 : 8);
 	const activity = await db_require_activity(ctx, run._id);
 	const scope = { ...run, ...run.sourceScope };
 	const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 2048 });
 	let cursor = selection.cursor;
 	let added = 0;
+	let normalizingParentPath = selection.normalizingParentPath;
 	for (const item of items) {
 		const first = await ctx.db
 			.query("files_transfer_selection_items")
@@ -3031,6 +3030,7 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 			.first();
 		if (first!._id !== item._id) {
 			cursor = item.order;
+			normalizingParentPath = undefined;
 			continue;
 		}
 		const entry = await db_get_entry({ ctx, run: scope, target: item.source, reader });
@@ -3060,8 +3060,8 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 		} else {
 			// All pages have paths now, so a later selected ancestor also covers this child.
 			let covered = false;
-			let parentPath = entry.path.slice(0, entry.path.lastIndexOf("/"));
-			while (parentPath) {
+			let parentPath = normalizingParentPath ?? entry.path.slice(0, entry.path.lastIndexOf("/"));
+			for (let checked = 0; parentPath && checked < 32; checked++) {
 				const ancestor = await ctx.db
 					.query("files_transfer_selection_items")
 					.withIndex("by_run_path", (q) => q.eq("runId", run._id).eq("path", parentPath))
@@ -3072,6 +3072,12 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 				}
 				parentPath = parentPath.slice(0, parentPath.lastIndexOf("/"));
 			}
+			// Keep this input unfinished until every parent prefix has been checked.
+			if (!covered && parentPath) {
+				normalizingParentPath = parentPath;
+				break;
+			}
+			normalizingParentPath = undefined;
 			if (!covered) {
 				const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
 				const targetName = run.targetName ?? name;
@@ -3110,7 +3116,7 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 	}
 	const done = cursor + 1 === selection.count;
 	await ctx.db.patch("files_transfer_runs", run._id, {
-		selection: { ...selection, cursor: done && run.step === "select" ? -1 : cursor },
+		selection: { ...selection, cursor: done && run.step === "select" ? -1 : cursor, normalizingParentPath },
 		...(done
 			? {
 					step:
@@ -4244,13 +4250,6 @@ export const advance = internalMutation({
 	args: { runId: v.id("files_transfer_runs") },
 	returns: v.null(),
 	handler: db_advance,
-});
-
-// Temporary startup control. Remove it after the measured experiment.
-export const profile_move_db_startup = internalMutation({
-	args: { sample: v.number() },
-	returns: v.null(),
-	handler: async () => null,
 });
 
 /**

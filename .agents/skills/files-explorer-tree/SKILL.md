@@ -821,6 +821,11 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   budget. Each logical step checks access again. Selected folders queue their child ranges
   when selected. The final view switch ends its transaction, so physical repair starts after
   the new location can be read. A native page always ends its transaction.
+  A new cohort starts ready exact work in the accepting transaction, using the same engine and
+  checked budget. An empty folder can publish before that request returns. Normalize checks
+  one input and at most 32 parent prefixes per unit through the exact `by_run_path` index.
+  An unfinished walk saves its next prefix and keeps the input cursor fixed. Every resumed
+  unit checks the current source path and access again. Normalize adds no selection or depth refusal.
 - Before sending Move input, the browser saves its full selection in IndexedDB, in pages of 100.
   The key binds the user and membership. Accepted input replays after reload. Unstarted input
   asks for Resume. A new Cut or Copy has a new revision, so old receipts cannot clear it.

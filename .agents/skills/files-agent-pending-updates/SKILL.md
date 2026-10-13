@@ -137,6 +137,9 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 - Every Accept group uses `files_move_cohorts.ts`. The worker reserves inputs and names, stages
   saved headers, content, search chunks and every owner's pending overlay in small transactions.
   One transaction joins small exact work after flushing derived writes and checking its budget.
+  A new group starts that work in the accepting transaction. A ready empty folder can publish
+  before the request returns. Each checked metric must stay below one quarter of its Convex
+  limit before joining another unit. Tests include the final flush and keep 25% free.
   Any native page ends the transaction, even an empty page. Heavy text preparation keeps its own
   step. `files_move_run.run` carries the committed steps. It loads the content or media helper
   with a literal `import()` only when the step needs it. It calls that helper locally, with no new
