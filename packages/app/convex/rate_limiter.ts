@@ -5,6 +5,11 @@ import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
+// Reuse the loaded module between calls. Keep request state inside the handler.
+export const experimental_reuseContext = true;
+
+console.info("Limiter module loaded", { marker: "files-list-reuse-20261013-6a41", enabled: experimental_reuseContext });
+
 export const rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE = "Rate limit exceeded";
 
 const STRICT_WRITE = {
