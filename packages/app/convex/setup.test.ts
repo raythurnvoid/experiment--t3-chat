@@ -469,6 +469,71 @@ export async function test_db_hold_move_slot(
 	return cohortId;
 }
 
+export async function test_db_hold_move_source(
+	ctx: MutationCtx,
+	scope: Parameters<typeof test_db_hold_move_slot>[1],
+	source: { kind: "saved"; id: Id<"files_nodes"> },
+) {
+	const cohortId = await test_db_hold_move_slot(ctx, scope);
+	await ctx.db.insert("files_move_source_reservations", {
+		cohortId,
+		source,
+		mode: "subtree",
+		userId: null,
+		generation: 1,
+	});
+	return cohortId;
+}
+
+export function test_folder_chain_path(head: string, folders: number) {
+	return `/${[head, ...Array<string>(folders - 1).fill("a")].join("/")}`;
+}
+
+export async function test_seed_folder_chain(
+	t: TestConvexRoot<DataModel>,
+	args: {
+		scope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> };
+		createdBy: Id<"users">;
+		parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		parentPath: string;
+		startDepth: number;
+		depth: number;
+		restrictedScopeNodeId: Id<"files_nodes"> | null;
+	},
+) {
+	let id = args.parentId;
+	let path = args.parentPath;
+
+	// Seed at most 200 folders per transaction, so deep fixtures stay under the limits.
+	for (let start = args.startDepth; start <= args.depth; start += 200) {
+		({ id, path } = await t.run(async (ctx) => {
+			let parentId = id;
+			let parentPath = path;
+			for (let pathDepth = start; pathDepth < start + 200 && pathDepth <= args.depth; pathDepth++) {
+				parentPath = `${parentPath}/a`;
+				parentId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: args.scope.organizationId,
+					workspaceId: args.scope.workspaceId,
+					createdBy: args.createdBy,
+					updatedBy: args.createdBy,
+					parentId,
+					name: "a",
+					sortName: files_sort_text_key("a"),
+					kind: "folder",
+					path: parentPath,
+					treePath: `${parentPath}/`,
+					pathDepth,
+					restrictedScopeNodeId: args.restrictedScopeNodeId,
+				});
+			}
+			return { id: parentId, path: parentPath };
+		}));
+	}
+
+	return { id, path };
+}
+
 /**
  * Accept the exact proposal through the public Review job.
  */

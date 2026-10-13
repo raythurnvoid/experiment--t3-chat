@@ -13,10 +13,11 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
 	test_convex,
 	test_rename_node,
-	test_db_hold_move_slot,
+	test_db_hold_move_source,
 	test_mocks,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
+	test_seed_folder_chain,
 } from "./setup.test.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID, files_UPLOAD_PATH_TAKEN_MESSAGE } from "../server/files.ts";
 import { test_create_saved_placement_fixture } from "../server/files-saved-placement.test-fixtures.ts";
@@ -2776,45 +2777,18 @@ async function seed_upload_folder_limits(args: { depth: number; move: boolean })
 			})
 		)._nay,
 	).toBeUndefined();
-	// Raw inserts in pages, so seeding a deep chain stays under the limits too.
-	let deepId = lockedId;
-	let deepPath = "/l";
-	for (let start = 2; start <= args.depth; start += 200) {
-		({ deepId, deepPath } = await t.run(async (ctx) => {
-			let parentId = deepId;
-			let path = deepPath;
-			for (let pathDepth = start; pathDepth < start + 200 && pathDepth <= args.depth; pathDepth++) {
-				path = `${path}/a`;
-				parentId = await ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					createdBy: db.userId,
-					updatedBy: db.userId,
-					parentId,
-					name: "a",
-					sortName: files_sort_text_key("a"),
-					kind: "folder",
-					path,
-					treePath: `${path}/`,
-					pathDepth,
-					restrictedScopeNodeId: lockedId,
-				});
-			}
-			return { deepId: parentId, deepPath: path };
-		}));
-	}
+	const { id: deepId } = await test_seed_folder_chain(t, {
+		scope: db,
+		createdBy: db.userId,
+		parentId: lockedId,
+		parentPath: "/l",
+		startDepth: 2,
+		depth: args.depth,
+		restrictedScopeNodeId: lockedId,
+	});
 	if (args.move) {
 		const movingId = await folder("/moving");
-		await t.run(async (ctx) => {
-			await ctx.db.insert("files_move_source_reservations", {
-				cohortId: await test_db_hold_move_slot(ctx, db),
-				source: { kind: "saved", id: movingId },
-				mode: "subtree",
-				userId: null,
-				generation: 1,
-			});
-		});
+		await t.run((ctx) => test_db_hold_move_source(ctx, db, { kind: "saved", id: movingId }));
 	}
 	const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
 	return { t, asMember, membershipId: member.membershipId, lockedId, deepId };
