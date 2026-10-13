@@ -7681,6 +7681,163 @@ describe("plugins metadata file doors", () => {
 	});
 
 	test.each([
+		["both grants", "/a/b/new", 200],
+		["both grants", "/a/b/new/deeper", 200],
+		["no actor grant", "/a/b/new", 403],
+		["no service grant", "/a/b/new", 403],
+	] as const)("the folder ensure uses the deepest stored scope with %s at %s", async (access, path, expectedStatus) => {
+		const t = test_convex();
+		const fixture = await install_file_doors_plugin(t);
+		const ownerRun = await start_file_invoke_run({ t, fixture });
+		const member = await seed_file_member(t, fixture);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: ownerRun.apiToken,
+					body: { path: "/a/b" },
+				})
+			).status,
+		).toBe(200);
+		const outer = (await find_active_node({ t, fixture, path: "/a" }))!;
+		const parent = (await find_active_node({ t, fixture, path: "/a/b" }))!;
+		// The caller gets access to the nested scope, but cannot read the outer folder.
+		for (const nodeId of [outer._id, parent._id]) {
+			expect(
+				await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: fixture.membership.membershipId,
+					nodeId,
+				}),
+			).toEqual({ _yay: null });
+		}
+		if (access !== "no actor grant") {
+			expect(
+				await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: fixture.membership.membershipId,
+					nodeId: parent._id,
+					principal: { kind: "user", userId: member.userId },
+					level: "write",
+				}),
+			).toEqual({ _yay: null });
+		}
+		if (access !== "no service grant") {
+			await grant_file_account(fixture, parent._id);
+		}
+		expect(
+			await fixture.asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: fixture.membership.membershipId,
+				fileNodeId: outer._id,
+				metadataYaml: "",
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await fixture.asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: fixture.membership.membershipId,
+				fileNodeId: parent._id,
+				metadataYaml: "plugin-name: probe\nsource: member\nnote: keep",
+			}),
+		).toEqual({ _yay: null });
+		await t.run(async (ctx) =>
+			ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, ownerRun.runId))._id, {
+				status: "succeeded",
+			}),
+		);
+		const run = await start_file_invoke_run({ t, fixture, userId: member.userId, tokenSeed: "e" });
+		expect(
+			await member.asUser.query(api.files_nodes.get_file_node_for_membership, {
+				membershipId: member.membershipId,
+				fileNodeId: outer._id,
+			}),
+		).toBeNull();
+		if (access !== "no actor grant") {
+			expect(
+				await member.asUser.query(api.files_nodes.get_file_node_for_membership, {
+					membershipId: member.membershipId,
+					fileNodeId: parent._id,
+				}),
+			).toMatchObject({ _id: parent._id, canWrite: true });
+		}
+		const before = await t.run(async (ctx) => ({
+			outer: await ctx.db.get("files_nodes", outer._id),
+			parent: await ctx.db.get("files_nodes", parent._id),
+			grants: await ctx.db.query("access_control_permission_grants").collect(),
+			bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
+		}));
+		expect(before.parent).toMatchObject({ restrictedScopeNodeId: parent._id, isRestrictedScopeRoot: true });
+		expect(before.outer).toMatchObject({ restrictedScopeNodeId: outer._id, isRestrictedScopeRoot: true });
+
+		const ensured = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: { path },
+		});
+		expect(ensured.status, "ensure creates under the allowed deepest stored scope").toBe(expectedStatus);
+		const created = await find_active_node({ t, fixture, path });
+		if (expectedStatus === 200) {
+			const firstCreated = (await find_active_node({ t, fixture, path: "/a/b/new" }))!;
+			expect(firstCreated, "the child keeps the deepest folder's stored scope").toMatchObject({
+				parentId: parent._id,
+				name: "new",
+				path: "/a/b/new",
+				treePath: "/a/b/new/",
+				pathDepth: 3,
+				kind: "folder",
+				createdBy: member.userId,
+				restrictedScopeNodeId: parent._id,
+				isRestrictedScopeRoot: false,
+			});
+			if (path === "/a/b/new/deeper") {
+				expect(created).toMatchObject({
+					parentId: firstCreated._id,
+					name: "deeper",
+					path,
+					treePath: `${path}/`,
+					pathDepth: 4,
+					kind: "folder",
+					createdBy: member.userId,
+					restrictedScopeNodeId: parent._id,
+					isRestrictedScopeRoot: false,
+				});
+			}
+			expect(await ensured.json()).toEqual({ nodeId: created!._id, path, created: true });
+			for (const nodeId of new Set([firstCreated._id, created!._id])) {
+				expect(
+					await fixture.asOwner.query(api.files_metadata.get_entries, {
+						membershipId: fixture.membership.membershipId,
+						fileNodeId: nodeId,
+					}),
+				).toEqual([
+					{ key: "source", value: "plugin" },
+					{ key: "plugin-name", value: "probe" },
+				]);
+			}
+		} else {
+			expect(created).toBeNull();
+			expect(await ensured.json()).toEqual({ message: "Permission denied" });
+		}
+		expect(
+			await t.run(async (ctx) => ({
+				outer: await ctx.db.get("files_nodes", outer._id),
+				parent: await ctx.db.get("files_nodes", parent._id),
+				grants: await ctx.db.query("access_control_permission_grants").collect(),
+				bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
+			})),
+		).toEqual(before);
+		expect(
+			await fixture.asOwner.query(api.files_metadata.get_entries, {
+				membershipId: fixture.membership.membershipId,
+				fileNodeId: parent._id,
+			}),
+		).toEqual([
+			{ key: "plugin-name", value: "probe" },
+			{ key: "source", value: "member" },
+			{ key: "note", value: "keep" },
+		]);
+	});
+
+	test.each([
 		["source only", "source: plugin", true],
 		["wrong string", "plugin-name: other", true],
 		["different case", "plugin-name: Probe", true],
