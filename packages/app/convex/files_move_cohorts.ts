@@ -510,8 +510,14 @@ export async function files_move_cohorts_db_schedule(
 	ctx: MutationCtx,
 	args: { cohortId: Id<"files_move_cohorts">; delayMs?: number; handoff?: boolean },
 ) {
-	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
+	let cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (!cohort || cohort.phase === "complete") return;
+	// Start ready steps before scheduling the first job. Stop at a page or publication.
+	if (!cohort.runJob && cohort.step === 0 && (await files_pending_overlay_db_can_join_step(ctx))) {
+		await db_advance(ctx, { cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true });
+		cohort = (await ctx.db.get("files_move_cohorts", args.cohortId))!;
+		if (cohort.phase === "complete") return;
+	}
 	if (!args.handoff && cohort.runJob?.step === cohort.step) {
 		const job = await ctx.db.system.get(cohort.runJob.id);
 		if (job?.state.kind === "pending" || job?.state.kind === "inProgress") return;
@@ -2637,6 +2643,23 @@ async function db_advance_step(
 /**
  * Join small exact work. A native page or heavy content work ends this transaction.
  */
+async function db_advance(
+	ctx: MutationCtx,
+	args: { cohortId: Id<"files_move_cohorts">; step: number; runGeneration: number | null; join: boolean },
+) {
+	let step = args.step;
+	while (true) {
+		const result = await db_advance_step(ctx, { ...args, step });
+		if (result?.kind !== "next") return result;
+		step = result.step;
+		if (!args.join) {
+			await files_move_cohorts_db_schedule(ctx, { cohortId: args.cohortId, handoff: true });
+			return { kind: "next" as const, step };
+		}
+		if (result.yield || !(await files_pending_overlay_db_can_join_step(ctx))) return { kind: "next" as const, step };
+	}
+}
+
 export const advance = internalMutation({
 	args: {
 		cohortId: v.id("files_move_cohorts"),
@@ -2656,19 +2679,7 @@ export const advance = internalMutation({
 			kind: v.union(v.literal("prepare"), v.literal("media")),
 		}),
 	),
-	handler: async (ctx, args) => {
-		let step = args.step;
-		while (true) {
-			const result = await db_advance_step(ctx, { ...args, step });
-			if (result?.kind !== "next") return result;
-			step = result.step;
-			if (!args.join) {
-				await files_move_cohorts_db_schedule(ctx, { cohortId: args.cohortId, handoff: true });
-				return { kind: "next" as const, step };
-			}
-			if (result.yield || !(await files_pending_overlay_db_can_join_step(ctx))) return { kind: "next" as const, step };
-		}
-	},
+	handler: db_advance,
 });
 
 type advance_Result =

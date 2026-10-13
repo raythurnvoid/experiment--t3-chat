@@ -63,6 +63,7 @@ const zero: Cost = {
 	documentsWritten: 0,
 	bytesWritten: 0,
 	functionsScheduled: 0,
+	scheduledFunctionArgsBytes: 0,
 };
 
 /**
@@ -76,6 +77,7 @@ export function transaction_cost(before: Metrics, after: Metrics) {
 		documentsWritten: after.documentsWritten.used - before.documentsWritten.used,
 		bytesWritten: after.bytesWritten.used - before.bytesWritten.used,
 		functionsScheduled: after.functionsScheduled.used - before.functionsScheduled.used,
+		scheduledFunctionArgsBytes: after.scheduledFunctionArgsBytes.used - before.scheduledFunctionArgsBytes.used,
 	};
 }
 
@@ -90,6 +92,7 @@ export function expect_under_convex_limits(cost: ReturnType<typeof transaction_c
 	expect(cost.documentsWritten, "documentsWritten").toBeLessThan(16_000);
 	expect(cost.bytesWritten, "bytesWritten").toBeLessThan(16 * 1024 * 1024);
 	expect(cost.functionsScheduled, "functionsScheduled").toBeLessThan(1000);
+	expect(cost.scheduledFunctionArgsBytes, "scheduledFunctionArgsBytes").toBeLessThan(16 * 1024 * 1024);
 }
 
 /**
@@ -107,6 +110,7 @@ export function budget_recorder() {
 			documentsWritten: 16_000,
 			bytesWritten: 16 * 1024 * 1024,
 			functionsScheduled: 1000,
+			scheduledFunctionArgsBytes: 16 * 1024 * 1024,
 		}) as Array<[keyof Cost, number]>)
 			expect(measured[key], `${phase}: ${key}`).toBeLessThan(limit * 0.75);
 	};
