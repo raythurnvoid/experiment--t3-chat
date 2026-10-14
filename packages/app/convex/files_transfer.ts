@@ -4094,6 +4094,3 @@ export const recover_expired_attempts = internalMutation({
 		return null;
 	},
 });
-
-// Keep loaded clients working until the new Transfer queries reach them.
-export { get, get_move_acceptance, list_current, list_items } from "./files_transfer_queries.ts";

@@ -9562,11 +9562,3 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 }
 // #endregion tests
-
-// Keep old query names during the client rollout.
-export {
-	get_current_user_file_write_permission,
-	get_file_node_for_membership,
-	get_folder_readme,
-	has_drafts_in_folder,
-} from "./files_tree.ts";

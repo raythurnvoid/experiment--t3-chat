@@ -500,6 +500,3 @@ export const cleanup_history = internalMutation({
 		return { deletedCount, done };
 	},
 });
-
-// Keep loaded clients working until the new feed query reaches them.
-export { list_page } from "./activities_feed.ts";
