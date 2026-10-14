@@ -190,7 +190,18 @@ vp env exec pnpm --dir packages/app exec convex run --component migrations lib:g
 - `convex run <module:function> [jsonArgs]` accepts a JSON object for args.
 - Dry-run a risky named migration through the admin-ops direct Node path. A dry run executes one batch and rolls it back:
 
-  Check the installed component's logging before using `dryRun: true`. Version 0.3.5 logs complete before/after documents. Do not use that mode on tables containing credentials, secrets, configuration, or private content. For those tables, add a temporary internal preview mutation that calls only the selected migration with `oneBatchOnly: true`, `dryRun: false`, an explicit cursor, and a bounded batch size, then throws an error containing only counts and the next cursor. The outer failure rolls back the nested writes. Test that rollback, including cross-table inserts, before running it live. Use the normal named component runner for the real migration. Remove the preview with the one-time migration code.
+  Check the installed component's logging before using `dryRun: true`. Versions 0.3.5 and 0.3.6
+  log complete before/after docs. Do not use that mode on tables containing credentials, secrets,
+  configuration, or private content. Add a temporary internal preview mutation for those tables.
+  Call the selected **defined migration** directly, with `oneBatchOnly: true`, `dryRun: false`, an
+  explicit cursor and a bounded batch size. Do not call its named runner inside the preview:
+  version 0.3.6 does not forward `oneBatchOnly` there and can schedule more work.
+  Then throw with only batch counts and the next cursor. The outer failure rolls back the nested
+  writes. `processed` counts visited docs, including skips; it does not count changes. Keep audit
+  and preview cursors separate. Stop at the preview's own `isDone: true`, even after an empty final
+  batch. Test a real patch's rollback before checking the expected error, including cross-table
+  inserts when the migration makes them. Use the normal named component runner for the real
+  migration. Remove the preview with the one-time migration code after the complete audit.
 
 ```powershell
 Push-Location packages/app

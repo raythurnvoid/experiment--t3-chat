@@ -208,9 +208,22 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   `reviewFactsPending` (every kind except `place_fields` and `saved_scope`). The job insert adds 1,
   and `files_pending_overlay_db_delete_job` subtracts 1. While it is above 0, the plan producer
   waits and polls. Before commit 07816ba1, data deletion deleted jobs without subtracting, so some
-  counts stayed above 0 forever and every Save in that workspace polled for 30 minutes and failed.
-  The one-time migration `migrations:repair_review_fact_job_counts` sets each count to the real
-  number of counted jobs. Remove it, its runner, its audit query and its test after it has run.
+  counts could stay above 0 forever. A counter-only wait can expire. Move and subtree waits renew
+  the deadline, so do not promise a fixed timeout. The temporary `migrations:repair_review_fact_job_counts`
+  repairs allowed scopes.
+  Its guard excludes fixed protected tenant IDs and the case-insensitive `personal/sybill` pair
+  before reading jobs or patching. Missing tenants or wrong parent links stay unresolved.
+  `migrations:audit_review_fact_state_page` pages every state, including zero counts. For each
+  allowed state, `migrations:audit_review_fact_job_count` returns the stored count, counted jobs and
+  `scopeStatus`. An allowed `countedJobs: null` means more than 64 jobs of any kind; it is unresolved.
+  A missing state returns null and also leaves that audit pass unresolved. The rollback preview
+  `migrations:preview_review_fact_job_counts` accepts a cursor and checks one batch. Its expected
+  error contains only `processed`, `continueCursor` and `isDone`; `processed` means visited states.
+  Keep audit and preview cursors separate. Start each with null and stop at its own `isDone: true`.
+  Attempt logs can survive rollback. Do not use the package's full-doc `dryRun` logs for this repair.
+  Remove these tools, runner and tests only after the repair and a fresh complete audit pass. Every
+  allowed state must have equal numeric counts, including zeros. Report protected exclusions apart.
+  Skipped scopes, missing states and query errors block success. A multi-call pass is not one snapshot.
 - Every preparation step checks current membership, its lifetime, the parent run and access clocks
   in its own transaction. The final switch checks the same proof. Changed access or input aborts
   unpublished candidates and returns `needs_review`. Completed groups stay saved.
