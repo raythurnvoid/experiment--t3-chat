@@ -32,7 +32,7 @@ import {
 	files_nodes_db_create_node_recursively_at_path,
 	type files_nodes_get_visible_entry_by_path_Result,
 } from "./files_nodes.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import {
 	files_ingestion_db_prepare_file,
 	files_ingestion_db_finalize_file,

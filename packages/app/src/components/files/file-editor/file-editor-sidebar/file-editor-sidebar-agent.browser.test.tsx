@@ -64,7 +64,7 @@ vi.mock("convex/react", async (importOriginal) => {
 					if (messageStatusByThreadId[args.threadId!] === "denied") return null;
 					if (messageStatusByThreadId[args.threadId!] === "loading") return undefined;
 					return mocks.branchPage;
-				case "files_pending_updates:get_files_pending_updates_summary":
+				case "files_pending_list:get_files_pending_updates_summary":
 					return { count: 0, truncated: false };
 				default:
 					return undefined;

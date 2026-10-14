@@ -98,7 +98,7 @@ type AppNotificationsList_Props = {
 	notifications:
 		| app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_notifications>
 		| undefined;
-	activities: app_convex_FunctionReturnType<typeof app_convex_api.activities.list_page>["page"] | undefined;
+	activities: app_convex_FunctionReturnType<typeof app_convex_api.activities_feed.list_page>["page"] | undefined;
 	organizationList: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list> | undefined;
 	onArchiveNotification: (notificationId: app_convex_Id<"notifications">) => void;
 	onOpenWorkspace: (args: {
@@ -257,7 +257,7 @@ type AppNotificationsActivityItem_ClassNames =
 	| "AppNotificationsActivityItem-target-name";
 
 type AppNotificationsActivityItem_Props = {
-	activity: app_convex_FunctionReturnType<typeof app_convex_api.activities.list_page>["page"][number];
+	activity: app_convex_FunctionReturnType<typeof app_convex_api.activities_feed.list_page>["page"][number];
 	onOpenFile: (fileNodeId: app_convex_Id<"files_nodes">) => void;
 	onArchive: (activityId: app_convex_Id<"activities">) => void;
 };
@@ -548,12 +548,12 @@ export const AppNotifications = memo(function AppNotifications() {
 
 	const notifications = useQuery(app_convex_api.notifications.list_current_notifications);
 	const activeActivities = usePaginatedQuery(
-		app_convex_api.activities.list_page,
+		app_convex_api.activities_feed.list_page,
 		{ membershipId, section: "active" },
 		{ initialNumItems: 50 },
 	);
 	const activityHistory = usePaginatedQuery(
-		app_convex_api.activities.list_page,
+		app_convex_api.activities_feed.list_page,
 		{ membershipId, section: "history" },
 		{ initialNumItems: 50 },
 	);

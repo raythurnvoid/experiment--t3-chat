@@ -17,10 +17,11 @@ import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billi
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { files_nodes_db_create_private_node_by_path, files_nodes_db_plan_private_node_by_path } from "./files_nodes.ts";
-import { files_pending_nodes_db_discard, files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_discard } from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes_db.ts";
 import { files_pending_updates_db_commit_private_file } from "./files_pending_updates.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
 	files_pending_target_validator,

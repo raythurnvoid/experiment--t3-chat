@@ -8,7 +8,7 @@ import { format_datetime } from "@/lib/date.ts";
 import type { FunctionReturnType } from "convex/server";
 
 type FilePendingNotice_PendingView = NonNullable<
-	FunctionReturnType<typeof app_convex_api.files_pending_updates.get_file_pending_target>
+	FunctionReturnType<typeof app_convex_api.files_pending_target.get_file_pending_target>
 >;
 
 type FilePendingNotice_ClassNames = "FilePendingNotice";

@@ -79,9 +79,11 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_entries: "get_entries",
 			set_entries: "set_entries",
 		},
-		files_nodes: {
+		files_tree: {
 			get_file_node_for_membership: "get_file_node_for_membership",
 			get_current_user_file_write_permission: "get_current_user_file_write_permission",
+		},
+		files_nodes: {
 			get_node_write_policy_management_state: "get_node_write_policy_management_state",
 			set_node_write_policy: "set_node_write_policy",
 		},

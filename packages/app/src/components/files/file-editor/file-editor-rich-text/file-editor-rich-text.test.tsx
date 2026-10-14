@@ -61,7 +61,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		action: (...args: unknown[]) => convexActionMock(...args),
 	},
 	app_convex_api: {
-		files_nodes: { get_file_node_for_membership: "get_file_node_for_membership" },
+		files_tree: { get_file_node_for_membership: "get_file_node_for_membership" },
 		files_nodes_content: {
 			get_non_collaborative_file_content: "get_non_collaborative_file_content",
 			replace_file_content: "replace_file_content",

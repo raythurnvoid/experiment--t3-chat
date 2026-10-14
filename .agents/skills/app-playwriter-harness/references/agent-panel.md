@@ -562,7 +562,7 @@ return { created: 3 };
 
 Check these steps separately. A successful code result alone does not prove Save, Download, or Discard:
 
-1. Inspect the actual code tool input and result. The result keeps its normal code/result view and has three `metadata.files` targets. Require `metadata.fileResult.metadata.status === "succeeded"` and `reason === null`. Capture the targets from the persisted message. Resolve each with `files_pending_updates.get_file_pending_target` and match its path. Do not assume target order from the sidebar.
+1. Inspect the actual code tool input and result. The result keeps its normal code/result view and has three `metadata.files` targets. Require `metadata.fileResult.metadata.status === "succeeded"` and `reason === null`. Capture the targets from the persisted message. Resolve each with `files_pending_target.get_file_pending_target` and match its path. Do not assume target order from the sidebar.
 2. In Pending changes, check 5 bytes for `opaque`, 0 bytes for `empty`, and 22 bytes for `empty.zip`. All three must be stored files. Download the pending ZIP and compare all 22 bytes before marking that path verified.
 3. Save `nested/opaque`. Wait for its review job, then query its original private target again. It must resolve to a saved entry with no pending update. Only the required folders may be saved with it. Repeat for the empty file. Download both saved files and compare every byte, including the empty length.
 4. Discard the remaining ZIP. Its old target must become unavailable and its chat link must show that state after reload. Check keyboard Accept/Discard and focus after a row disappears. Check the row at narrow width and 200% zoom.
@@ -606,7 +606,7 @@ For the Save readback, keep the owned membership and original target in `state.b
 ```js
 await state.page.evaluate(async ({ membershipId, target }) => {
 	const { app_convex, app_convex_api } = await import("/src/lib/app-convex-client.ts");
-	const file = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_target, {
+	const file = await app_convex.query(app_convex_api.files_pending_target.get_file_pending_target, {
 		membershipId,
 		target,
 	});

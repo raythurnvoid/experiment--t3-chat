@@ -943,7 +943,7 @@ describe("get_folder_readme", () => {
 			return { expectedId, rootReadmeId };
 		});
 		const get = (folderId: Id<"files_nodes"> | typeof files_ROOT_ID) =>
-			f.asOwner.query(api.files_nodes.get_folder_readme, { membershipId: f.owner.membershipId, folderId });
+			f.asOwner.query(api.files_tree.get_folder_readme, { membershipId: f.owner.membershipId, folderId });
 
 		expect((await get(f.nodes.openId))?._id).toBe(ids.expectedId);
 		expect((await get(files_ROOT_ID))?._id).toBe(ids.rootReadmeId);
@@ -991,7 +991,7 @@ describe("get_folder_readme", () => {
 		}) => {
 			const { as, folderId, membershipId } = args;
 
-			return as.query(api.files_nodes.get_folder_readme, { membershipId, folderId });
+			return as.query(api.files_tree.get_folder_readme, { membershipId, folderId });
 		};
 
 		expect((await get({ as: f.asOwner, membershipId: f.owner.membershipId, folderId: f.nodes.boxId }))?._id).toBe(
@@ -1012,7 +1012,7 @@ describe("get_folder_readme", () => {
 			await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.missingNodeId }),
 		).toBeNull();
 		await expect(
-			t.query(api.files_nodes.get_folder_readme, { membershipId: f.admin.membershipId, folderId: f.nodes.boxId }),
+			t.query(api.files_tree.get_folder_readme, { membershipId: f.admin.membershipId, folderId: f.nodes.boxId }),
 		).rejects.toThrow("Unauthenticated");
 	});
 
@@ -1020,7 +1020,7 @@ describe("get_folder_readme", () => {
 		const f = await test_create_saved_placement_fixture({ normalPaths: ["/target/README.md"] });
 		const readmeId = f.normalNodes.get("/target/README.md")!;
 		const get = () =>
-			f.asUser.query(api.files_nodes.get_folder_readme, { membershipId: f.db.membershipId, folderId: f.parentId });
+			f.asUser.query(api.files_tree.get_folder_readme, { membershipId: f.db.membershipId, folderId: f.parentId });
 
 		await f.stageNode(readmeId);
 		expect((await get())?._id).toBe(readmeId);

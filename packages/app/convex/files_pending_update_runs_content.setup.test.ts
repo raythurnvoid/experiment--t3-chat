@@ -15,7 +15,7 @@ import { files_db_patch_pending_update, files_u8_to_array_buffer } from "../serv
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { files_media_build_private_src } from "../shared/files-media.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
 
 const r2Objects = new Map<string, string | ArrayBuffer>();

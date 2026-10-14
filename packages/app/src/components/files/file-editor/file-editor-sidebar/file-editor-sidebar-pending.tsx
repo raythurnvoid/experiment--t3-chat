@@ -75,7 +75,7 @@ type FileEditorSidebarPendingListRow = FunctionReturnType<
 >["page"][number];
 
 type FileEditorSidebarPendingView = NonNullable<
-	FunctionReturnType<typeof app_convex_api.files_pending_updates.get_file_pending_target>
+	FunctionReturnType<typeof app_convex_api.files_pending_target.get_file_pending_target>
 >;
 
 type FileEditorSidebarPendingOccupant = FunctionReturnType<
@@ -83,7 +83,7 @@ type FileEditorSidebarPendingOccupant = FunctionReturnType<
 >;
 
 type FileEditorSidebarPendingNode = NonNullable<
-	FunctionReturnType<typeof app_convex_api.files_nodes.get_file_node_for_membership>
+	FunctionReturnType<typeof app_convex_api.files_tree.get_file_node_for_membership>
 >;
 
 type FileEditorSidebarPendingRow = {
@@ -1492,7 +1492,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 					: "CanLoadMore";
 	const loadMoreSources = (numItems: number) =>
 		sourceMerge.blockingRank === null ? undefined : sourceStreams[sourceMerge.blockingRank]!.loadMore(numItems);
-	const selectedSummary = useQuery(app_convex_api.files_pending_updates.get_files_pending_updates_summary, {
+	const selectedSummary = useQuery(app_convex_api.files_pending_list.get_files_pending_updates_summary, {
 		membershipId,
 		listKey: selectedSource,
 	});
@@ -1546,7 +1546,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			};
 		}),
 	];
-	const summary = useQuery(app_convex_api.files_pending_updates.get_files_pending_updates_summary, {
+	const summary = useQuery(app_convex_api.files_pending_list.get_files_pending_updates_summary, {
 		membershipId,
 		listKey: activeSource,
 	});
@@ -1569,7 +1569,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 					(JSON.parse(targetsKey) as Array<[string, FileEditorSidebarPendingListRow["target"]]>).map(
 						([pendingUpdateId, target]) => [
 							pendingUpdateId,
-							{ query: app_convex_api.files_pending_updates.get_file_pending_target, args: { membershipId, target } },
+							{ query: app_convex_api.files_pending_target.get_file_pending_target, args: { membershipId, target } },
 						],
 					),
 				),
@@ -1637,7 +1637,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 				Object.fromEntries(
 					(nodeIdsKey ? nodeIdsKey.split(",") : []).map((fileNodeId) => [
 						fileNodeId,
-						{ query: app_convex_api.files_nodes.get_file_node_for_membership, args: { membershipId, fileNodeId } },
+						{ query: app_convex_api.files_tree.get_file_node_for_membership, args: { membershipId, fileNodeId } },
 					]),
 				),
 			[membershipId, nodeIdsKey],

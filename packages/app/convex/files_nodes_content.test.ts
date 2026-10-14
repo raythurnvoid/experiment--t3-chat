@@ -1034,7 +1034,7 @@ describe("copy_transfer_file", () => {
 			});
 			await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
 			expect((await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId)))?.capture?.artifact).not.toBeNull();
-			const run = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: copy.runId });
+			const run = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: copy.runId });
 			await asUser.mutation(api.files_transfer.resolve_conflicts, {
 				membershipId: db.membershipId,
 				runId: copy.runId,

@@ -6,7 +6,9 @@ description: Activity job status, progress, controls, visibility, plugin opt-in,
 # Ownership
 
 [activities_db.ts](../../../packages/app/convex/activities_db.ts) owns the shared state helpers.
-[activities.ts](../../../packages/app/convex/activities.ts) owns queries and producer dispatch.
+[activities_feed.ts](../../../packages/app/convex/activities_feed.ts) owns feed pages and their visibility checks.
+[activities.ts](../../../packages/app/convex/activities.ts) owns controls and producer dispatch.
+Feed reads do not load producer or editor handlers. Both dismiss mutations use the same feed helpers.
 The producer owns its files, credentials, attempts, conflicts, and result receipts. Update both
 in one mutation. Workpool delivers work; it does not decide whether a job succeeded.
 
@@ -76,7 +78,7 @@ their own expiry. These clocks serve different owners.
 
 # Visibility and controls
 
-`list_page` returns separate active and history pages, each capped at 50 scanned Activities.
+`activities_feed.list_page` returns separate active and history pages, each capped at 50 scanned Activities.
 Current membership is required. Hidden or dismissed entries can consume a page. Keep the raw
 continuation and follow `isDone`; an empty visible page does not prove the feed ended.
 

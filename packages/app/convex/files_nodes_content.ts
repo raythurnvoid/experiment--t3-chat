@@ -101,7 +101,7 @@ import { doc } from "convex-helpers/validators";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { access_control_db_authorize_node } from "./access_control.ts";
+import { access_control_db_authorize_file_write, access_control_db_authorize_node } from "./access_control.ts";
 import {
 	billing_db_check_credits,
 	billing_db_check_paid_plan,
@@ -144,7 +144,6 @@ import {
 	r2_put_object,
 } from "./r2_client.ts";
 import {
-	authorize_file_write,
 	cancel_file_content_materialization,
 	db_get_file_content_materialization_db_state,
 	db_get_file_snapshot_content,
@@ -192,11 +191,9 @@ import {
 } from "./files_media_dependencies.ts";
 import { files_pending_holds_db_release } from "./files_pending_holds.ts";
 import { files_transfer_rewrite_media_refs } from "../server/files-transfer-media.ts";
-import {
-	files_pending_nodes_db_resolve_read_target,
-} from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes_db.ts";
 import { files_private_storage_db_release, files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -748,7 +745,7 @@ export const get_create_file_node_write_preflight = internalQuery({
 
 		// Check access on the parent before reading deeper path data.
 		// Do not reveal a hidden child or its lock.
-		const authorized = await authorize_file_write(ctx, {
+		const authorized = await access_control_db_authorize_file_write(ctx, {
 			userAuth: { id: args.userId },
 			membership,
 			nodeId: args.parentId,
@@ -778,7 +775,7 @@ export const get_create_file_node_write_preflight = internalQuery({
 			if (!segment) {
 				break;
 			}
-			const segmentAuthorized = await authorize_file_write(ctx, {
+			const segmentAuthorized = await access_control_db_authorize_file_write(ctx, {
 				userAuth: { id: args.userId },
 				membership,
 				nodeId: segment._id,
@@ -907,7 +904,7 @@ export const create_file_node = internalMutation({
 				return await refuse({ message: "Permission denied" });
 			}
 
-			const authorized = await authorize_file_write(ctx, {
+			const authorized = await access_control_db_authorize_file_write(ctx, {
 				userAuth: { id: authorUserId },
 				membership: authorMembership,
 				nodeId: args.parentId,
@@ -948,7 +945,7 @@ export const create_file_node = internalMutation({
 				if (!segment) {
 					break;
 				}
-				const segmentAuthorized = await authorize_file_write(ctx, {
+				const segmentAuthorized = await access_control_db_authorize_file_write(ctx, {
 					userAuth: { id: authorUserId },
 					membership: authorMembership,
 					nodeId: segment._id,

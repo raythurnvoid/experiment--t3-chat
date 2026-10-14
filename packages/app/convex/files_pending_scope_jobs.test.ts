@@ -222,7 +222,7 @@ test("pending scope pages follow the latest saved path and archive state without
 			true,
 		);
 	});
-	expect((await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
+	expect((await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
 		"succeeded",
 	);
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/destination/project/note.md");

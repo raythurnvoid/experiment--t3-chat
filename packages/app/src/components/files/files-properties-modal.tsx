@@ -121,7 +121,7 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 
 	const { membershipId } = AppTenantProvider.useContext();
 
-	const node = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
+	const node = useQuery(app_convex_api.files_tree.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
 
 	// A converted upload keeps its stored blob asset, so its size is still the asset size. A file
 	// created in-app has no asset, and a folder never has one.
@@ -874,8 +874,8 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 	const [error, setError] = useState<string | null>(null);
 	const [isConfirmingOff, setIsConfirmingOff] = useState(false);
 
-	const node = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
-	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+	const node = useQuery(app_convex_api.files_tree.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
+	const canWrite = useQuery(app_convex_api.files_tree.get_current_user_file_write_permission, {
 		membershipId,
 		nodeId,
 	});
@@ -1135,11 +1135,11 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const entries = useQuery(app_convex_api.files_metadata.get_entries, { membershipId, fileNodeId: nodeId });
-	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+	const canWrite = useQuery(app_convex_api.files_tree.get_current_user_file_write_permission, {
 		membershipId,
 		nodeId,
 	});
-	const node = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
+	const node = useQuery(app_convex_api.files_tree.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
 
 	// YAML is only the edit format. The stored map is the source of truth, so the section always
 	// re-renders it from the entries instead of keeping the exact text somebody typed.
@@ -1775,7 +1775,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 	// skeleton. Then every section finds its answer already in the Convex cache and draws once,
 	// with the right values.
 	const node = useQuery(
-		app_convex_api.files_nodes.get_file_node_for_membership,
+		app_convex_api.files_tree.get_file_node_for_membership,
 		nodeId ? { membershipId, fileNodeId: nodeId } : "skip",
 	);
 	const managementState = useQuery(

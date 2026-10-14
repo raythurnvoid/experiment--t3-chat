@@ -22,6 +22,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { mutation } from "./functions.ts";
 import {
+	access_control_db_authorize_file_write,
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
@@ -35,7 +36,6 @@ import {
 } from "./activities_db.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
-	authorize_file_write,
 	authorize_leaving_restricted_scope,
 	files_nodes_db_archive_node,
 	files_nodes_db_rebuild_node,
@@ -354,7 +354,7 @@ async function db_check_restore_move(
 	if (!membership) return MEMBERSHIP_LOST;
 	if (node.restrictedScopeNodeId === node._id) return null;
 
-	const authorizedTarget = await authorize_file_write(ctx, {
+	const authorizedTarget = await access_control_db_authorize_file_write(ctx, {
 		userAuth: args.userAuth,
 		membership,
 		nodeId: files_ROOT_ID,
@@ -696,7 +696,7 @@ async function db_can_replace(
 		if (activeChild) return false;
 	}
 
-	const authorized = await authorize_file_write(ctx, {
+	const authorized = await access_control_db_authorize_file_write(ctx, {
 		userAuth: args.userAuth,
 		membership: args.membership,
 		nodeId: args.occupant._id,

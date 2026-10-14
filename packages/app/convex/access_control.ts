@@ -25,6 +25,7 @@ import {
 	type access_control_ResourceKind,
 	type access_control_RoleRef,
 } from "../shared/access-control.ts";
+import { files_ROOT_ID } from "../shared/files.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -1633,6 +1634,41 @@ export async function access_control_db_authorize_node(
 			organization: authorized._yay.organization,
 			defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
 		},
+	});
+}
+
+/**
+ * Check `content.write` on the node that decides a file write.
+ *
+ * For a change to an existing node that is the node itself. For a new node, or for one about to be
+ * dropped somewhere, it is the folder it lands in. At the root there is no node to ask about, so
+ * the workspace answers.
+ *
+ * Asking the node, and not the workspace, is what makes a grant useful: somebody whose only power
+ * in this workspace is a grant on one restricted folder can still work inside it, which a
+ * workspace-wide check would refuse at the door.
+ */
+export async function access_control_db_authorize_file_write(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		nodeId: Doc<"files_nodes">["parentId"];
+	},
+) {
+	if (args.nodeId === files_ROOT_ID) {
+		return await access_control_db_authorize_membership(ctx, {
+			userAuth: args.userAuth,
+			membership: args.membership,
+			permission: "content.write",
+		});
+	}
+
+	return await access_control_db_authorize_node(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		nodeId: args.nodeId,
+		permission: "content.write",
 	});
 }
 

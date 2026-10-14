@@ -25,7 +25,7 @@ export const FILE_EDITOR_SIDEBAR_TAB_ID_PENDING = "app_file_editor_sidebar_tabs_
 function useFilesPendingUpdatesCount(skip: boolean) {
 	const { membershipId } = AppTenantProvider.useContext();
 	const summary = useQuery(
-		app_convex_api.files_pending_updates.get_files_pending_updates_summary,
+		app_convex_api.files_pending_list.get_files_pending_updates_summary,
 		skip ? "skip" : { membershipId },
 	);
 	return summary ?? { count: 0, truncated: false };

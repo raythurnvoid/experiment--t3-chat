@@ -65,7 +65,7 @@ async function fixture() {
 }
 
 async function save_media(f: Awaited<ReturnType<typeof fixture>>) {
-	const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+	const view = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 		membershipId: f.scope.membershipId,
 		target: f.target,
 	});
@@ -83,7 +83,7 @@ async function save_media(f: Awaited<ReturnType<typeof fixture>>) {
 describe("get_media_by_reference", () => {
 	test("only the draft owner can read unsaved media, with its exact review version", async () => {
 		const f = await fixture();
-		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const view = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: f.scope.membershipId,
 			target: f.target,
 		});

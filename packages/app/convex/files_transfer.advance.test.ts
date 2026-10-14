@@ -714,7 +714,7 @@ describe("advance", () => {
 				fileNodeId: copiedRoot!._id,
 			}),
 		).toEqual([{ key: "owner", value: "Ray" }]);
-		expect(await asUser.query(api.files_transfer.list_current, { membershipId: db.membershipId })).toEqual([]);
+		expect(await asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId })).toEqual([]);
 	});
 
 	test("shows the first file failure and keeps completed folders", async () => {
@@ -771,7 +771,7 @@ describe("advance", () => {
 			});
 		}
 		await t.mutation(internal.files_transfer.advance, { runId });
-		expect(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: {
 				status: "partial",
 				progress: { total: 3, completed: 1, failed: 2 },
@@ -779,7 +779,7 @@ describe("advance", () => {
 			},
 		});
 		const activities = (
-			await asUser.query(api.activities.list_page, {
+			await asUser.query(api.activities_feed.list_page, {
 				membershipId: db.membershipId,
 				section: "history",
 				paginationOpts: { cursor: null, numItems: 50 },
@@ -847,14 +847,14 @@ describe("advance", () => {
 		const { t, db, asUser, folders } = fixture;
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		await t.mutation(internal.files_transfer.advance, { runId });
-		expect(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			step: "discover",
 			activity: { status: "running", progress: { discovered: 51, total: null, completed: 0 } },
 		});
 		expect(await get_node(fixture, "/target/source")).toBeNull();
 		await t.mutation(internal.files_transfer.advance, { runId });
 		expect(
-			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.progress,
+			(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.progress,
 		).toMatchObject({ discovered: 56, total: null });
 		expect(await finish_folder_copy(fixture, runId)).toMatchObject({
 			activity: { status: "succeeded", progress: { total: 56, completed: 56 } },
@@ -869,7 +869,7 @@ describe("advance", () => {
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		await t.mutation(internal.files_transfer.advance, { runId });
 		expect(
-			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.progress,
+			(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.progress,
 		).toMatchObject({ discovered: 51, total: null });
 
 		// Discovery pages the children by name, so the first page stopped after "folder-49". A name added
@@ -890,7 +890,7 @@ describe("advance", () => {
 
 		await t.mutation(internal.files_transfer.advance, { runId });
 		expect(
-			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.progress,
+			(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.progress,
 		).toMatchObject({ discovered: 57, total: null });
 		expect(await finish_folder_copy(fixture, runId)).toMatchObject({
 			activity: { status: "succeeded", progress: { total: 57, completed: 57 } },
@@ -922,7 +922,7 @@ describe("advance", () => {
 		// path. The run stops and asks the user instead of copying from where the child used to be.
 		await t.mutation(internal.files_transfer.advance, { runId });
 		await t.mutation(internal.files_transfer.advance, { runId });
-		const view = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
+		const view = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
 		expect(view).toMatchObject({
 			step: "discover",
 			activity: { status: "awaiting_input", progress: { discovered: 56, total: null, completed: 0, blocked: 1 } },
@@ -952,7 +952,7 @@ describe("advance", () => {
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
-		const view = await member.asUser.query(api.files_transfer.get, {
+		const view = await member.asUser.query(api.files_transfer_queries.get, {
 			membershipId: member.membershipId,
 			runId: started._yay.runId,
 		});
@@ -1053,7 +1053,7 @@ describe("advance", () => {
 		const { t, db, asUser, folders } = fixture;
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		const read_deadline = async () =>
-			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))!.activity;
+			(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))!.activity;
 
 		const copying = await read_deadline();
 		expect(copying.status).toBe("running");
@@ -1103,7 +1103,7 @@ describe("advance", () => {
 		const activityOwnedFields = ["status", "progress", "completed", "skipped", "failed", "canceled", "blocked"];
 		const statusesSeen = new Set<string>();
 		const read_both = async () => {
-			const view = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
+			const view = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
 			if (!view) throw new Error("Missing run");
 			const run = await t.run((ctx) => ctx.db.get("files_transfer_runs", runId));
 			const items = await t.run((ctx) =>

@@ -1,12 +1,15 @@
 // Producers own the work. Activities own its lifecycle. Both change in one transaction.
 
-import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { v } from "convex/values";
-import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internal } from "./_generated/api.js";
-import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import type { MutationCtx } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
+import {
+	activities_feed_LIST_MAX,
+	activities_feed_db_filter_visible,
+	activities_feed_db_list_visible_page,
+} from "./activities_feed.ts";
 import { activities_db_delete, activities_get_controls, activities_is_active } from "./activities_db.ts";
 import { ai_chat_files_db_delete_job_batch, ai_chat_files_db_request_job_stop } from "./ai_chat_files.ts";
 import { files_transfer_db_delete_run_batch, files_transfer_db_request_stop } from "./files_transfer.ts";
@@ -25,27 +28,17 @@ import { files_move_cohorts_db_retry_repair_now } from "./files_move_cohorts.ts"
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { plugins_runtime_db_delete_run_history, plugins_runtime_db_timeout_run } from "./plugins_runtime.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import {
-	access_control_db_authorize_membership,
-	access_control_db_filter_readable_file_nodes,
-} from "./access_control.ts";
-import app_convex_schema from "./schema.ts";
-import { convex_error, v_result } from "../server/convex-utils.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
+import { v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_MOVE_REPAIR_STUCK_CODE } from "../shared/files.ts";
-import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
-
-/**
- * Each page bounds both the scan and its access checks.
- */
-const ACTIVITIES_LIST_MAX = 50;
 
 /**
  * A Bash job row can hold a 700 KiB result, and a row's size is unknown until it is read. The
@@ -57,151 +50,6 @@ const ACTIVITIES_BASH_JOB_ROWS_MAX = 8;
  * A review or folder protection run waiting for a Move gets this much time again at each sweep.
  */
 const MOVE_WAIT_DEADLINE_MS = 30 * 60 * 1000;
-
-/**
- * Keep only the activities the user may see.
- *
- * Plugin activities follow file access. Those with no named file require workspace read.
- * Transfer activities contain no file paths and are visible only to their requester.
- *
- * Every read and dismiss uses the same checks, including pages consumed by hidden entries.
- */
-async function db_filter_visible_activities(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Doc<"activities">["organizationId"];
-		workspaceId: Doc<"activities">["workspaceId"];
-		userId: Id<"users">;
-		activities: readonly Doc<"activities">[];
-		/**
-		 * Whether the caller proved workspace-wide `content.read`.
-		 */
-		hasWorkspaceRead: boolean;
-	},
-) {
-	// Each node named on the page is looked up once, and the filter answers once per restricted scope.
-	const candidates = args.activities.filter(
-		(activity) => activity.feedVisible && (activity.visibility !== "requester" || activity.userId === args.userId),
-	);
-	const targetNodeIds = [...new Set(candidates.flatMap((activity) => activity.targets.map((target) => target.id)))];
-	if (targetNodeIds.length === 0) {
-		return candidates.filter((activity) => activity.visibility === "requester" || args.hasWorkspaceRead);
-	}
-
-	const targetNodes = (await Promise.all(targetNodeIds.map((nodeId) => files_saved_placement_db_get_node(ctx.db, nodeId)))).filter(
-		(fileNode) => fileNode !== null,
-	);
-	const targetNodeById = new Map(targetNodes.map((fileNode) => [fileNode._id, fileNode] as const));
-	const readableNodeIds = new Set(
-		(
-			await access_control_db_filter_readable_file_nodes(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.userId,
-				nodes: targetNodes,
-				hasWorkspaceRead: args.hasWorkspaceRead,
-			})
-		).map((fileNode) => fileNode._id),
-	);
-
-	return candidates.filter((activity) => {
-		// Transfer activities belong to their requester and contain no file names or paths.
-		if (activity.visibility === "requester") return true;
-
-		// Hidden plugin work can start without a file, but feed opt-in still requires one.
-		if (activity.targets.length === 0) {
-			return args.hasWorkspaceRead;
-		}
-
-		// One hidden or moved file is enough to drop the whole activity. The stored path, title, target
-		// message, and error belong to the old location, so current access cannot make them safe to show.
-		return activity.targets.every(
-			(target) => readableNodeIds.has(target.id) && targetNodeById.get(target.id)?.path === target.path,
-		);
-	});
-}
-
-async function db_list_visible_page(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: Id<"users">;
-		hasWorkspaceRead: boolean;
-		section: "active" | "history";
-		paginationOpts: { cursor: string | null; numItems: number };
-	},
-) {
-	const page = await ctx.db
-		.query("activities")
-		.withIndex("by_organization_workspace_feedVisible_finishedAt_updatedAt", (q) => {
-			const scope = q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("feedVisible", true);
-			return args.section === "active" ? scope.eq("finishedAt", undefined) : scope.gt("finishedAt", undefined);
-		})
-		.order("desc")
-		.paginate({ ...args.paginationOpts, numItems: Math.min(ACTIVITIES_LIST_MAX, args.paginationOpts.numItems) });
-	const visible = await db_filter_visible_activities(ctx, { ...args, activities: page.page });
-	const states = await Promise.all(
-		visible.map((activity) =>
-			ctx.db
-				.query("activities_user_states")
-				.withIndex("by_user_activity", (q) => q.eq("userId", args.userId).eq("activityId", activity._id))
-				.unique(),
-		),
-	);
-	return {
-		...page,
-		page: visible
-			.filter((_activity, index) => states[index] === null)
-			.map((activity) => ({
-				...activity,
-				controls: activities_get_controls(activity, args.userId),
-			})),
-	};
-}
-
-export const list_page = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		section: v.union(v.literal("active"), v.literal("history")),
-		paginationOpts: paginationOptsValidator,
-	},
-	returns: paginationResultValidator(
-		v.object({
-			...doc(app_convex_schema, "activities").fields,
-			controls: v.object({
-				canStop: v.boolean(),
-				canRetry: v.boolean(),
-				canDismiss: v.boolean(),
-			}),
-		}),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) return { page: [], isDone: true, continueCursor: "" };
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
-		return await db_list_visible_page(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			hasWorkspaceRead: !authorized._nay,
-			section: args.section,
-			paginationOpts: args.paginationOpts,
-		});
-	},
-});
 
 export const request_stop = mutation({
 	args: {
@@ -357,7 +205,7 @@ export const archive_activity = mutation({
 			membership,
 			permission: "content.read",
 		});
-		const [visible] = await db_filter_visible_activities(ctx, {
+		const [visible] = await activities_feed_db_filter_visible(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
@@ -402,13 +250,13 @@ export const archive_all_activities = mutation({
 			membership,
 			permission: "content.read",
 		});
-		const page = await db_list_visible_page(ctx, {
+		const page = await activities_feed_db_list_visible_page(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			hasWorkspaceRead: !authorized._nay,
 			section: "history",
-			paginationOpts: { cursor: args.cursor, numItems: ACTIVITIES_LIST_MAX },
+			paginationOpts: { cursor: args.cursor, numItems: activities_feed_LIST_MAX },
 		});
 		const now = Date.now();
 		await Promise.all(
@@ -652,3 +500,6 @@ export const cleanup_history = internalMutation({
 		return { deletedCount, done };
 	},
 });
+
+// Keep loaded clients working until the new feed query reaches them.
+export { list_page } from "./activities_feed.ts";

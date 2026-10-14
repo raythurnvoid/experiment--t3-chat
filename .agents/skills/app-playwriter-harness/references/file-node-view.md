@@ -522,7 +522,7 @@ The modal names only the row you selected. The rows it is waiting on are ids on 
 screen. To read them, find the run through the activity list and fetch it:
 
 ```js
-const acts = await call("query", "activities:list_page", {
+const acts = await call("query", "activities_feed:list_page", {
 	membershipId, section: "history", paginationOpts: { numItems: 6, cursor: null },
 });
 // Each activity's `source.id` is the run id. `files_pending_update_runs:get` returns null for the
@@ -550,7 +550,7 @@ other's proposal. Both of these refuse with
 `files_pending_list:list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`
 returns short rows: `{ target, pendingUpdateId, revision, threadIds, hasReadyContent }`. `listKey` is
 `"all"`, `"own"`, or a chat id. Load each row's view with
-`files_pending_updates:get_file_pending_target({ membershipId, target: row.target })`. The view holds
+`files_pending_target:get_file_pending_target({ membershipId, target: row.target })`. The view holds
 the document at `entry.pendingUpdate` and the saved or private node at `entry.node`:
 
 ```js

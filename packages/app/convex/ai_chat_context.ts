@@ -6,7 +6,8 @@ import { internalQuery } from "./_generated/server.js";
 import { v_result } from "../server/convex-utils.ts";
 import { ai_chat_skills_LIMITS } from "../server/ai-chat-skills.ts";
 import { files_pending_overlay_list, files_pending_overlay_list_over_budget } from "../server/files-pending-overlay.ts";
-import { files_visible_db_create_reader, files_visible_is_preparing } from "./files_visible.ts";
+import { files_visible_is_preparing } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
 import { ai_chat_workspaces_source_validator } from "./schema.ts";
 

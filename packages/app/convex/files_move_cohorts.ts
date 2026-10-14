@@ -37,7 +37,7 @@ import {
 } from "./activities_db.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
-import { files_pending_nodes_db_can_save_to_copied_parent } from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_can_save_to_copied_parent } from "./files_pending_nodes_db.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
 import {
 	files_media_validation_db_capture_versions,
@@ -1573,6 +1573,7 @@ async function db_sides(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
 	membership: Doc<"organizations_workspaces_users">,
+	limitFactor: 4 | 16,
 ) {
 	const cursor = cohort.stagingCursor
 		? (JSON.parse(cohort.stagingCursor) as { order: number; part: number; page: string | null })
@@ -1713,7 +1714,7 @@ async function db_sides(
 		joined = true;
 	}
 	// Part 3 reads no page either, so it joins part 2 when the budget allows.
-	if (!paginated && cursor.part === 3 && (!joined || (await files_pending_overlay_db_can_join_step(ctx)))) {
+	if (!paginated && cursor.part === 3 && (!joined || (await files_pending_overlay_db_can_join_step(ctx, limitFactor)))) {
 		let reparented = before?.parentId !== after.parentId;
 		if (record.role === "descendant" && item) {
 			const root = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
@@ -2334,6 +2335,7 @@ async function db_parent_running(ctx: MutationCtx, cohort: Doc<"files_move_cohor
 async function db_advance_step(
 	ctx: MutationCtx,
 	args: { cohortId: Id<"files_move_cohorts">; step: number; runGeneration: number | null },
+	limitFactor: 4 | 16,
 ) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (
@@ -2427,11 +2429,11 @@ async function db_advance_step(
 				await db_abort(ctx, cohort, access._nay);
 				return null;
 			}
-			const collected = await files_move_owner_work_db_collect_node(ctx, {
-				...call,
-				nodeRecordId: record._id,
-				cursor: cursor.page,
-			});
+			const collected = await files_move_owner_work_db_collect_node(
+				ctx,
+				{ ...call, nodeRecordId: record._id, cursor: cursor.page },
+				limitFactor,
+			);
 			if (collected._nay) {
 				await db_abort(ctx, cohort, collected._nay);
 				return null;
@@ -2452,7 +2454,7 @@ async function db_advance_step(
 		}
 		next = "owners_closure";
 	} else if (cohort.workPhase === "owners_closure") {
-		result = await files_move_owner_work_db_collect_closure(ctx, call);
+		result = await files_move_owner_work_db_collect_closure(ctx, call, limitFactor);
 		next = "content";
 	} else if (cohort.workPhase === "content") {
 		const item = await ctx.db
@@ -2547,10 +2549,10 @@ async function db_advance_step(
 		}
 		next = "sides";
 	} else if (cohort.workPhase === "sides") {
-		result = await db_sides(ctx, cohort, membership!);
+		result = await db_sides(ctx, cohort, membership!, limitFactor);
 		next = "owners_stage";
 	} else if (cohort.workPhase === "owners_stage") {
-		result = await files_move_owner_work_db_stage(ctx, call);
+		result = await files_move_owner_work_db_stage(ctx, call, limitFactor);
 		next = "validate";
 	} else if (cohort.workPhase === "validate") {
 		result = await db_validate(ctx, cohort, membership!);
@@ -2645,7 +2647,8 @@ async function db_advance(
 ) {
 	let step = args.step;
 	while (true) {
-		const result = await db_advance_step(ctx, { ...args, step });
+		// Nested joins use this transaction's budget too.
+		const result = await db_advance_step(ctx, { ...args, step }, limitFactor);
 		if (result?.kind !== "next") return result;
 		step = result.step;
 		if (!args.join) {

@@ -317,10 +317,10 @@ describe("paged review graph", () => {
 		const copyArgs = { membershipId: copier.membershipId, runId: copying._yay.runId };
 		expect(await asCopier.mutation(api.files_transfer.seal, copyArgs)).toEqual({ _yay: null });
 		for (let step = 0; step < 150; step++) {
-			if ((await asCopier.query(api.files_transfer.get, copyArgs))?.activity.status === "awaiting_input") break;
+			if ((await asCopier.query(api.files_transfer_queries.get, copyArgs))?.activity.status === "awaiting_input") break;
 			await f.t.mutation(internal.files_transfer.advance, { runId: copying._yay.runId });
 		}
-		expect(await asCopier.query(api.files_transfer.get, copyArgs)).toMatchObject({
+		expect(await asCopier.query(api.files_transfer_queries.get, copyArgs)).toMatchObject({
 			activity: { status: "awaiting_input", progress: { completed: 0, blocked: 1 } },
 		});
 		expect(
@@ -359,7 +359,7 @@ describe("paged review graph", () => {
 			"An unrelated paused Copy must not block private Save",
 		).toMatchObject({ activity: { status: "succeeded", progress: { completed: 1 } } });
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toBeNull();
-		expect(await asCopier.query(api.files_transfer.get, copyArgs)).toMatchObject({
+		expect(await asCopier.query(api.files_transfer_queries.get, copyArgs)).toMatchObject({
 			activity: { status: "awaiting_input", progress: { completed: 0, blocked: 1 } },
 		});
 	});

@@ -106,7 +106,7 @@ async function read_preview_source(args: {
 		const target = { kind: "private", id: entry.node._id } as const;
 
 		const assertCurrentDraft = (
-			current: FunctionReturnType<typeof app_convex_api.files_pending_updates.get_file_pending_target>,
+			current: FunctionReturnType<typeof app_convex_api.files_pending_target.get_file_pending_target>,
 		) => {
 			if (
 				!current ||
@@ -129,7 +129,7 @@ async function read_preview_source(args: {
 
 		// Check owner access even when the text comes from the local editor.
 		assertCurrentDraft(
-			await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_target, {
+			await app_convex.query(app_convex_api.files_pending_target.get_file_pending_target, {
 				membershipId,
 				target,
 			}),
@@ -151,7 +151,7 @@ async function read_preview_source(args: {
 		}
 
 		assertCurrentDraft(
-			await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_target, {
+			await app_convex.query(app_convex_api.files_pending_target.get_file_pending_target, {
 				membershipId,
 				target,
 			}),
@@ -184,7 +184,7 @@ async function read_preview_source(args: {
 
 	// Local editor text still needs a current read-access check before leaving Press.
 	assertCurrentNode(
-		await app_convex.query(app_convex_api.files_nodes.get_file_node_for_membership, {
+		await app_convex.query(app_convex_api.files_tree.get_file_node_for_membership, {
 			membershipId,
 			fileNodeId: node._id,
 		}),
@@ -254,7 +254,7 @@ async function read_preview_source(args: {
 	}
 
 	assertCurrentNode(
-		await app_convex.query(app_convex_api.files_nodes.get_file_node_for_membership, {
+		await app_convex.query(app_convex_api.files_tree.get_file_node_for_membership, {
 			membershipId,
 			fileNodeId: node._id,
 		}),

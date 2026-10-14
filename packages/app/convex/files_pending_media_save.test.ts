@@ -350,7 +350,7 @@ describe("Save near a draft move into a folder the member can no longer read", (
 
 		// The document has no move of its own, so its row keeps Accept on.
 		expect(
-			await v.asUser.query(api.files_pending_updates.get_file_pending_target, {
+			await v.asUser.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: v.membershipId,
 				target: pending.target,
 			}),

@@ -215,7 +215,7 @@ export async function get_proposal(args: {
 }) {
 	const { f, workspace, target } = args;
 
-	const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+	const view = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 		membershipId: f[workspace].membershipId,
 		target,
 	});

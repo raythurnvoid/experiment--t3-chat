@@ -7,8 +7,8 @@ import {
 	files_media_build_private_src,
 	files_media_parse_src,
 } from "../shared/files-media.ts";
-import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes_db.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_media_dependencies_PAGE_SIZE } from "./files_media_dependencies.ts";
 import { files_media_validation_is_media_version } from "./files_media_validation.ts";
 import {

@@ -465,7 +465,7 @@ test("public Move joins empty owner phases in one step", async () => {
 		_yay: null,
 	});
 	await test_finish_transfer_run(asUser, runId, undefined, { stepwise: true });
-	expect((await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
+	expect((await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
 		"succeeded",
 	);
 	expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toMatchObject({
@@ -578,7 +578,7 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 	}
 	await test_finish_transfer_run(f.asUser, f.runId);
 	expect(
-		(await f.asUser.query(api.files_transfer.get, { membershipId: f.db.membershipId, runId: f.runId }))?.activity
+		(await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.db.membershipId, runId: f.runId }))?.activity
 			.status,
 	).toBe("succeeded");
 	for (const [index, proposal] of f.proposals.entries()) {
@@ -625,7 +625,7 @@ test("public Stop restores a partly staged unselected pending scope page", async
 	);
 	await test_finish_transfer_run(f.asUser, f.runId);
 	expect(
-		(await f.asUser.query(api.files_transfer.get, { membershipId: f.db.membershipId, runId: f.runId }))?.activity
+		(await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.db.membershipId, runId: f.runId }))?.activity
 			.status,
 	).toBe("canceled");
 	expect(await pending_scope_docs(f, proposal), "abort restores original pending content and metadata IDs").toEqual(
@@ -1411,7 +1411,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 	}
 	await check_unrelated(true);
 	await test_finish_transfer_run(asUser, runId);
-	expect((await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
+	expect((await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
 		"succeeded",
 	);
 	await check_unrelated(true);

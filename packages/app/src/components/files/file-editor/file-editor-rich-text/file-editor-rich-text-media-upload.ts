@@ -356,7 +356,7 @@ async function resolve_upload_target(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	documentNodeId: app_convex_Id<"files_nodes">;
 }): Promise<UploadTarget | null> {
-	const documentNode = await app_convex.query(app_convex_api.files_nodes.get_file_node_for_membership, {
+	const documentNode = await app_convex.query(app_convex_api.files_tree.get_file_node_for_membership, {
 		membershipId: args.membershipId,
 		fileNodeId: args.documentNodeId,
 	});

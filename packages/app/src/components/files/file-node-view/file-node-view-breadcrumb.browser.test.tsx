@@ -54,17 +54,17 @@ vi.mock("convex/react", async (importOriginal) => {
 	const { getFunctionName } = await import("convex/server");
 	const answer = (reference: never) => {
 		switch (getFunctionName(reference)) {
-			case "files_nodes:get_file_node_for_membership":
+			case "files_tree:get_file_node_for_membership":
 				return FILE;
-			case "files_transfer:list_current":
+			case "files_transfer_queries:list_current":
 			case "plugins_ui:list_file_views":
 				return [];
 			case "files_visible:get_path":
 				return FILE.path;
 			case "files_pending_updates:get_file_pending_update":
-			case "files_pending_updates:get_file_pending_target":
-			case "files_nodes:get_folder_readme":
-			case "files_transfer:get":
+			case "files_pending_target:get_file_pending_target":
+			case "files_tree:get_folder_readme":
+			case "files_transfer_queries:get":
 			case "files_pending_update_runs:get":
 			case "r2:get_asset_by_file_node_id":
 			case "files_browser:current_browser_session":

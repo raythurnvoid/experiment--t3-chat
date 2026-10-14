@@ -284,7 +284,7 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 	// One query for the open folder only. The upload door (`create_upload_node`) checks the same
 	// write permission on the folder it saves into.
 	const canWriteFolder = useQuery(
-		app_convex_api.files_nodes.get_current_user_file_write_permission,
+		app_convex_api.files_tree.get_current_user_file_write_permission,
 		select === "folder" && !isSearch && folderId !== null ? { membershipId, nodeId: folderId } : "skip",
 	);
 

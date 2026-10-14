@@ -204,7 +204,7 @@ export async function finish_move(fixture: Fixture, run: Awaited<ReturnType<type
 		await t.finishInProgressScheduledFunctions();
 		if ((await t.run((ctx) => ctx.db.get("activities", run.activityId)))?.finishedAt !== undefined) {
 			expect(
-				await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: run.runId }),
+				await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: run.runId }),
 				`all ${total} selected roots complete`,
 			).toMatchObject({
 				activity: { status: "succeeded", progress: { total, completed: total, canceled: 0, failed: 0 } },

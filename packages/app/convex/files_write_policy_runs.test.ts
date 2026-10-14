@@ -343,7 +343,7 @@ describe("advance", () => {
 
 		// The member cannot see `hidden`. That is why it is not counted.
 		expect(
-			await f.asMember.query(api.files_nodes.get_file_node_for_membership, {
+			await f.asMember.query(api.files_tree.get_file_node_for_membership, {
 				membershipId: f.member.membershipId,
 				fileNodeId: String(hidden),
 			}),

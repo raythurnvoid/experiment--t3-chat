@@ -214,6 +214,13 @@ test("Review completion runs due overlay work before a deferred job without firi
 
 test("Move driver still drives Stop while a cohort owns the workspace", async () => {
 	const f = await fixture(1);
+	// A real child page leaves the Move unpublished for Stop.
+	const child = await f.asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: f.db.membershipId,
+		parentId: f.sourceId,
+		path: "child",
+	});
+	if (child._nay) throw new Error(child._nay.message);
 	const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: f.db.membershipId,
 		requestId: "stop-owned-cohort",
@@ -237,6 +244,7 @@ test("Move driver still drives Stop while a cohort owns the workspace", async ()
 		const cohort = await f.t.run(ctx => ctx.db.query("files_move_cohorts")
 			.withIndex("by_origin_run", q => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).first());
 		if (!cohort) return;
+		expect(cohort, "Stop starts before publication").toMatchObject({ publishedAt: null, visibleView: "before" });
 		stopSent = true;
 		expect(await f.asUser.mutation(api.files_transfer.stop, { membershipId: f.db.membershipId, runId })).toEqual({ _yay: null });
 	});
@@ -244,6 +252,9 @@ test("Move driver still drives Stop while a cohort owns the workspace", async ()
 	expect(stoppingAdvances, "Stop must still advance an owned Move cohort").toBeGreaterThan(0);
 	expect(await f.t.run(ctx => ctx.db.get("activities", activityId))).toMatchObject({ status: "canceled" });
 	expect((await f.t.run(ctx => ctx.db.get("files_nodes", f.sourceId)))?.path).toBe("/source");
+	const keptChild = await f.t.run(ctx => ctx.db.get("files_nodes", child._yay.nodeId));
+	expect(keptChild?.path).toBe("/source/child");
+	expect(keptChild?.moveCohortId).toBeUndefined();
 });
 
 test.each(["Transfer", "Review"] as const)("%s driver finishes its owned Move before a waiting scope repair", async kind => {

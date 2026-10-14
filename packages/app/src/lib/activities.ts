@@ -9,7 +9,7 @@ import {
 // Share the first active and history pages per membership, sliced per target file.
 // The bell can load older pages. File badges stay bounded to these recent pages.
 
-type activities_NodeSlice = app_convex_FunctionReturnType<typeof app_convex_api.activities.list_page>["page"];
+type activities_NodeSlice = app_convex_FunctionReturnType<typeof app_convex_api.activities_feed.list_page>["page"];
 
 type ActivitiesFeed = {
 	dispose: () => void;
@@ -80,7 +80,7 @@ function get_or_create_feed(membershipId: app_convex_Id<"organizations_workspace
 	}
 
 	const watchers = (["active", "history"] as const).map((section) =>
-		app_convex.watchQuery(app_convex_api.activities.list_page, {
+		app_convex.watchQuery(app_convex_api.activities_feed.list_page, {
 			membershipId,
 			section,
 			paginationOpts: { cursor: null, numItems: 50 },

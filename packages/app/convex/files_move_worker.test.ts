@@ -108,7 +108,7 @@ test("publication commits before physical repair", async () => {
 		},
 	);
 	expect(
-		await f.asUser.query(api.files_nodes.get_file_node_for_membership, {
+		await f.asUser.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: f.db.membershipId,
 			fileNodeId: String(f.sourceId),
 		}),

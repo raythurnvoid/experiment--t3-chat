@@ -266,7 +266,7 @@ describe("unarchive_nodes", () => {
 				(await f.t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))?.step,
 				"Restore blocks Move planning",
 			).toBe("select");
-			expect((await f.asOwner.query(api.files_transfer.get, {
+			expect((await f.asOwner.query(api.files_transfer_queries.get, {
 				membershipId: f.db.membershipId,
 				runId,
 			}))?.activity, "Move stays queued while Restore is running").toMatchObject({
@@ -280,7 +280,7 @@ describe("unarchive_nodes", () => {
 			expect(await read_activity(f, job.activityId), "Move does not advance Restore").toEqual(restoreActivity);
 			expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
 			await test_finish_transfer_run(f.asOwner, runId);
-			expect((await f.asOwner.query(api.files_transfer.get, {
+			expect((await f.asOwner.query(api.files_transfer_queries.get, {
 				membershipId: f.db.membershipId,
 				runId,
 			}))?.activity.status).toBe("succeeded");

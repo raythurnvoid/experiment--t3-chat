@@ -50,8 +50,8 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // codegen'd api object is a Proxy; plain-string function refs keep call assertions readable.
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
+		files_pending_list: { get_files_pending_updates_summary: "get_files_pending_updates_summary" },
 		files_pending_updates: {
-			get_files_pending_updates_summary: "get_files_pending_updates_summary",
 			get_chat_pending_updates_summary: "get_chat_pending_updates_summary",
 		},
 	},

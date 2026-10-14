@@ -8634,7 +8634,7 @@ describe("pending update read-only checks", () => {
 		});
 		const target = { kind: "private" as const, id: seeded.privateNodeId };
 		const readTarget = () =>
-			asUser.query(api.files_pending_updates.get_file_pending_target, {
+			asUser.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: seeded.membershipId,
 				target,
 			});

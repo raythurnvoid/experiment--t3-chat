@@ -69,7 +69,7 @@ describe("public Move scale", () => {
 		const peaks = measure_move();
 		const run = await start_move(fixture, sourceIds, target._id);
 		await finish_move(fixture, run, total);
-		const view = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: run.runId });
+		const view = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: run.runId });
 		expect(view?.movedNodeIds.length, "the selection is bigger than the view's moved roots").toBeLessThan(total);
 		await expect_moved_markers(fixture, sourceIds, (node) => `/target/${node.name}`);
 		console.info("Move scale selected files", JSON.stringify(Object.fromEntries(peaks)));

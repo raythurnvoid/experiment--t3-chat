@@ -40,7 +40,7 @@ describe("copy_transfer_file media", () => {
 			userId: f.destination.userId,
 			target: f.selectedMedia!.outputTarget!,
 		});
-		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const view = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: f.destination.membershipId,
 			target: item!.outputTarget!,
 		});
@@ -94,7 +94,7 @@ describe("copy_transfer_file media", () => {
 		expect(f.document.capture).toBeNull();
 		const target = f.selectedMedia!.outputTarget!;
 		expect(target.kind).toBe("private");
-		const before = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const before = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: f.destination.membershipId,
 			target,
 		});
@@ -155,7 +155,7 @@ describe("copy_transfer_file media", () => {
 				});
 			}
 		}
-		const changed = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const changed = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: f.destination.membershipId,
 			target,
 		});
@@ -176,7 +176,7 @@ describe("copy_transfer_file media", () => {
 		});
 		expect(uploads()).toBe(beforeUploads);
 		expect(
-			await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+			await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: f.destination.membershipId,
 				target,
 			}),
@@ -228,7 +228,7 @@ describe("copy_transfer_file media", () => {
 		const f = await fixture();
 		expect(f.document.capture).toBeNull();
 		const mediaTarget = f.selectedMedia!.outputTarget!;
-		const before = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const before = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: f.destination.membershipId,
 			target: mediaTarget,
 		});
@@ -251,7 +251,7 @@ describe("copy_transfer_file media", () => {
 		expect(item?.state).toBe("completed");
 		expect(item?.outputMediaAssetId).toBeUndefined();
 		const target = item!.outputTarget!;
-		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const view = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: f.destination.membershipId,
 			target,
 		});

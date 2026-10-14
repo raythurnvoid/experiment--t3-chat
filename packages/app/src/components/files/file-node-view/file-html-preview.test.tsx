@@ -54,15 +54,15 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		action: (...args: unknown[]) => actionMock(...args),
 	},
 	app_convex_api: {
+		files_tree: { get_file_node_for_membership: "get_file_node_for_membership" },
 		files_nodes: {
-			get_file_node_for_membership: "get_file_node_for_membership",
 			get_file_last_yjs_sequence: "get_file_last_yjs_sequence",
 		},
 		files_nodes_content: { get_non_collaborative_file_content: "get_non_collaborative_file_content" },
 		files_pending_updates: {
 			get_file_pending_update: "get_file_pending_update",
-			get_file_pending_target: "get_file_pending_target",
 		},
+		files_pending_target: { get_file_pending_target: "get_file_pending_target" },
 	},
 }));
 vi.mock("@/lib/files.ts", async () => ({

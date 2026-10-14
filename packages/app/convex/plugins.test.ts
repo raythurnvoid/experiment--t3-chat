@@ -7745,14 +7745,14 @@ describe("plugins metadata file doors", () => {
 		);
 		const run = await start_file_invoke_run({ t, fixture, userId: member.userId, tokenSeed: "e" });
 		expect(
-			await member.asUser.query(api.files_nodes.get_file_node_for_membership, {
+			await member.asUser.query(api.files_tree.get_file_node_for_membership, {
 				membershipId: member.membershipId,
 				fileNodeId: outer._id,
 			}),
 		).toBeNull();
 		if (access !== "no actor grant") {
 			expect(
-				await member.asUser.query(api.files_nodes.get_file_node_for_membership, {
+				await member.asUser.query(api.files_tree.get_file_node_for_membership, {
 					membershipId: member.membershipId,
 					fileNodeId: parent._id,
 				}),

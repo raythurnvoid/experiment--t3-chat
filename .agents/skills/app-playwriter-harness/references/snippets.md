@@ -821,7 +821,7 @@ await state.page.evaluate(async () => {
 ```
 
 `startId` is `"root"` or a folder id. For one node, skip the walk:
-`files_nodes.get_file_node_for_membership({ membershipId, fileNodeId })` returns the same row fields
+`files_tree.get_file_node_for_membership({ membershipId, fileNodeId })` returns the same row fields
 (`null` when the caller cannot read it), and `files_nodes.get_visible_target_by_path({ membershipId,
 path })` returns `{ target: { kind, id }, kind }` for the active saved node at a path, or for your
 own draft there. To list drafts, use the Pending tab door

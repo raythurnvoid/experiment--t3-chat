@@ -505,7 +505,7 @@ beforeEach(() => {
 				}
 				return chain.length === 0 ? null : { node: chain.at(-1), ancestors: chain.slice(0, -1) };
 			}
-			case "files_nodes:get_folder_readme": {
+			case "files_tree:get_folder_readme": {
 				const { folderId } = args as { folderId: string };
 				return (
 					(treeNodes ?? [node]).find(
@@ -517,7 +517,7 @@ beforeEach(() => {
 					) ?? null
 				);
 			}
-			case "files_nodes:get_file_node_for_membership":
+			case "files_tree:get_file_node_for_membership":
 				return nodeQueryStatus === "loading" ? undefined : nodeQueryStatus === "missing" ? null : node;
 			// Tests write owner views. The list returns only the stored fields of each row, and each row
 			// loads its view with `get_file_pending_target`.
@@ -544,7 +544,7 @@ beforeEach(() => {
 				return pendingUpdates.length > 0
 					? [{ listKey: "own", lastUpdatedAt: 1, keyCreationTime: 1, keyId: "own_key" }]
 					: [];
-			case "files_pending_updates:get_files_pending_updates_summary":
+			case "files_pending_list:get_files_pending_updates_summary":
 				return { count: pendingUpdates.length, truncated: false };
 			case "files_pending_updates:get_pending_move_occupant":
 				return null;
@@ -564,7 +564,7 @@ beforeEach(() => {
 					)?.entry.pendingUpdate ?? null
 				);
 			}
-			case "files_pending_updates:get_file_pending_target": {
+			case "files_pending_target:get_file_pending_target": {
 				// A Pending row's view, or else the open draft's view.
 				const target = (args as { target: { kind: string; id: string } }).target;
 				const view = (pendingUpdates as PendingViewFixture[]).find((view) => {
@@ -647,13 +647,13 @@ beforeEach(() => {
 			}
 			case "files_visible:list_private_folder_children":
 				return pendingChildren;
-			case "files_nodes:has_drafts_in_folder":
+			case "files_tree:has_drafts_in_folder":
 				return hasDrafts;
 			case "organizations:list":
 				return { workspaceIdsPermissionsDict: { workspace_1: workspacePermissions } };
-			case "files_transfer:list_current":
+			case "files_transfer_queries:list_current":
 				return [];
-			case "files_transfer:get":
+			case "files_transfer_queries:get":
 			case "files_pending_update_runs:get":
 				return null;
 			case "users:get_anagraphic":

@@ -242,7 +242,7 @@ Attach files offers Upload from computer and Attach from workspace. Attach from 
 `FilesNodePicker`; one pick attaches one file and closes the dialog. A file that
 `get_attachable_files` refuses (unreadable, or its upload has not finished) shows disabled with
 "This file cannot be attached"; send checks again. Each file chip reads its name by id with
-`files_nodes.get_file_node_for_membership`; it says "Loading…" until the answer arrives and
+`files_tree.get_file_node_for_membership`; it says "Loading…" until the answer arrives and
 "File unavailable" for a file that is unreadable or archived. Text, quote/edit context,
 attachments and a visible Send button share one input box. The editor scrolls when it grows.
 File Comments use this same composer and thread pane, with Back to comments.

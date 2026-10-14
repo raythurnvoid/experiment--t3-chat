@@ -121,7 +121,7 @@ describe("complete folder Copy", () => {
 		).toEqual({ _yay: null });
 		for (let step = 0; step < 3; step++)
 			await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
-		const view = await f.asUser.query(api.files_transfer.get, {
+		const view = await f.asUser.query(api.files_transfer_queries.get, {
 			membershipId: f.current.membershipId,
 			runId: started._yay.runId,
 		});
@@ -197,7 +197,7 @@ describe("complete folder Copy", () => {
 		for (let step = 0; step < 10; step++)
 			await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 
-		expect(await f.asUser.query(api.files_transfer.get, args)).toMatchObject({
+		expect(await f.asUser.query(api.files_transfer_queries.get, args)).toMatchObject({
 			activity: { status: "failed", errorMessage: "Permission denied", progress: { total: null } },
 			controls: { canRetry: false },
 		});
@@ -246,7 +246,7 @@ describe("complete folder Copy", () => {
 		for (let step = 0; step < 10; step++)
 			await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 
-		expect(await f.asUser.query(api.files_transfer.get, args)).toMatchObject({
+		expect(await f.asUser.query(api.files_transfer_queries.get, args)).toMatchObject({
 			activity: { progress: { total: null } },
 			controls: { canRetry: false },
 		});

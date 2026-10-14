@@ -12,9 +12,9 @@ import {
 	files_pending_nodes_db_create,
 	files_pending_nodes_db_discard,
 	files_pending_nodes_db_fence_discard,
-	files_pending_nodes_db_get_ancestry,
 	files_pending_nodes_db_publish,
 } from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_get_ancestry } from "./files_pending_nodes_db.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
 	test_save_file_pending_update,
@@ -869,7 +869,7 @@ describe("files_pending_nodes_db_publish", () => {
 				copiedPath: "/destination/source",
 			});
 			expect(
-				await asUser.query(api.files_pending_updates.get_file_pending_target, {
+				await asUser.query(api.files_pending_target.get_file_pending_target, {
 					membershipId: db.membershipId,
 					target: childProposal.target,
 				}),

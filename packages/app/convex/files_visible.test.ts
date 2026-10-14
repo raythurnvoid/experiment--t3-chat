@@ -3,7 +3,8 @@ import { api, internal } from "./_generated/api.js";
 import type { FunctionReturnType } from "convex/server";
 import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
-import { files_visible_db_create_reader, type files_visible_internal_list_Result } from "./files_visible.ts";
+import { type files_visible_internal_list_Result } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import type { files_PendingParent } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -605,7 +606,7 @@ describe("has_drafts_in_folder", () => {
 	test("says whether the caller's drafts add, move or remove items in a saved folder", async () => {
 		const f = await fixture();
 		const has_drafts = (folderId: Id<"files_nodes"> | "root", as = f.asUser, membershipId = f.db.membershipId) =>
-			as.query(api.files_nodes.has_drafts_in_folder, { membershipId, folderId });
+			as.query(api.files_tree.has_drafts_in_folder, { membershipId, folderId });
 		const archive_draft = async (target: { kind: "saved"; id: Id<"files_nodes"> }) => {
 			const archived = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
 				organizationId: f.db.organizationId,
@@ -741,7 +742,7 @@ describe("list_files_pending_updates", () => {
 				{ numItems: 20, cursor },
 			);
 			for (const row of page.page) {
-				const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+				const view = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 					membershipId: f.db.membershipId,
 					target: row.target,
 				});
@@ -753,7 +754,7 @@ describe("list_files_pending_updates", () => {
 	}
 
 	function summary(f: Awaited<ReturnType<typeof fixture>>, listKey?: string) {
-		return f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
+		return f.asUser.query(api.files_pending_list.get_files_pending_updates_summary, {
 			membershipId: f.db.membershipId,
 			...(listKey ? { listKey } : {}),
 		});
@@ -862,7 +863,7 @@ describe("list_files_pending_updates", () => {
 		// The list skips the folder, so the draft's view names it as a parent to save with it.
 		const [row] = (await list(f, chatB, { numItems: 5, cursor: null })).page;
 		expect(
-			await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+			await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: f.db.membershipId,
 				target: row!.target,
 			}),

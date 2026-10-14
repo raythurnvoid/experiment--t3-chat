@@ -39,7 +39,7 @@ const FilesPendingReviewItem = memo(function FilesPendingReviewItem(props: {
 	const needsReview = item.status === "needs_review" || item.status === "failed" || item.status === "canceled";
 	// Names come from current access, never from captured job history.
 	const current = useQuery(
-		app_convex_api.files_pending_updates.get_file_pending_target,
+		app_convex_api.files_pending_target.get_file_pending_target,
 		needsReview ? { membershipId, target: item.target } : "skip",
 	);
 	const label = current?.entry.path ?? `Change ${item.order + 1}`;

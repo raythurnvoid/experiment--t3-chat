@@ -381,7 +381,7 @@ describe("review jobs", () => {
 		});
 		expect(copy._nay).toBeUndefined();
 		if (copy._nay) return;
-		const active = await f.asUser.query(api.activities.list_page, {
+		const active = await f.asUser.query(api.activities_feed.list_page, {
 			membershipId: f.db.membershipId,
 			section: "active",
 			paginationOpts: { cursor: null, numItems: 50 },

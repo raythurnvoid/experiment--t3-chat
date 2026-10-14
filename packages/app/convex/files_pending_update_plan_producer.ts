@@ -14,9 +14,9 @@ import {
 	files_pending_update_plans_db_seal_graph,
 	files_pending_update_plans_db_seal_items,
 } from "./files_pending_update_plans.ts";
-import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes_db.ts";
 import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_pending_review_facts_db_pin_structure } from "../server/files-pending-review-facts.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import {

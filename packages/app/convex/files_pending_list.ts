@@ -1,14 +1,19 @@
-// Stored Pending list pages. Content and draft views stay in files_pending_updates.ts.
+// Stored Pending list pages and counts. Target views stay in files_pending_target.ts.
+// Content writers stay in files_pending_updates.ts.
 
 import { query, type QueryCtx } from "./_generated/server.js";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
+import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import app_convex_schema, { files_pending_target_validator, files_saved_stream_validator } from "./schema.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
-import { files_saved_placement_db_get_proposal } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_proposal,
+	files_saved_placement_db_get_view,
+} from "../server/files-saved-placement.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 
 // Reuse the loaded module between calls. Keep request state inside each query.
@@ -32,6 +37,34 @@ const PENDING_LIST_SPLIT_GUARD = 3000;
  */
 export function files_pending_list_normalize_key(ctx: QueryCtx, listKey: string) {
 	return listKey === "all" || listKey === "own" ? listKey : ctx.db.normalizeId("ai_chat_threads", listKey);
+}
+
+export async function files_pending_list_db_get_summary(args: {
+	ctx: QueryCtx;
+	membership: app_convex_Doc<"organizations_workspaces_users">;
+	listKey: app_convex_Doc<"files_pending_list_rows">["listKey"];
+}) {
+	const { ctx, membership, listKey } = args;
+	const view = await files_saved_placement_db_get_view(ctx.db, membership);
+	const tags = [undefined, ...(view.cohortId ? [{ cohortId: view.cohortId, view: view.view! }] : [])];
+	let count = 0;
+	for (const tag of tags) {
+		const rows = await ctx.db
+			.query("files_pending_list_rows")
+			.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", membership.userId)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view)
+					.eq("listKey", listKey),
+			)
+			.take(501 - count);
+		count += rows.length;
+		if (count > 500) break;
+	}
+	return { count: Math.min(count, 500), truncated: count > 500 };
 }
 
 /**
@@ -131,6 +164,24 @@ export const list_files_pending_updates = query({
 		}
 
 		return { ...result, page: rows };
+	},
+});
+
+export const get_files_pending_updates_summary = query({
+	// No `listKey` means `"all"`.
+	args: { membershipId: v.id("organizations_workspaces_users"), listKey: v.optional(v.string()) },
+	returns: v.object({ count: v.number(), truncated: v.boolean() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return { count: 0, truncated: false };
+		const listKey = files_pending_list_normalize_key(ctx, args.listKey ?? "all");
+		if (listKey === null) return { count: 0, truncated: false };
+		return await files_pending_list_db_get_summary({ ctx, membership, listKey });
 	},
 });
 

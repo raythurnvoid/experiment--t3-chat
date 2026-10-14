@@ -150,7 +150,8 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   One transaction joins small exact work after flushing derived writes and checking its budget.
   A new group starts that work in the accepting transaction. A ready empty folder can publish
   before the request returns. Only initial cohort work uses a one-quarter join budget and stops
-  at its first native page. Background calls and nested helpers keep the one-sixteenth budget.
+  at its first native page. Nested joins use the same budget as their outer call.
+  Background calls keep the one-sixteenth budget.
   Both check all seven metrics after flushing. Tests include the final flush and keep 25% free.
   Owner work probes exact empty ranges before paging. Private-child, list-row and list-key ranges
   with at most eight small docs can finish without a native page. A ninth doc sends the whole
@@ -461,7 +462,10 @@ Structural review follows a parallel path:
 Main modules:
 
 - `packages/app/convex/files_pending_updates.ts`
-- `packages/app/convex/files_pending_list.ts`: stored Pending change and source pages, without editor code.
+- `packages/app/convex/files_pending_list.ts`: stored Pending change/source pages and summary, without editor code.
+- `packages/app/convex/files_pending_target.ts`: saved and private target views, current access, recovery, and copy-source redaction.
+- `packages/app/convex/files_pending_nodes_db.ts`: private identity, ancestry, and copied-parent Save proofs.
+- `packages/app/convex/files_visible_db.ts`: the shared request-local draft reader.
 
 Public and internal functions, grouped by role:
 
@@ -471,7 +475,8 @@ Public and internal functions, grouped by role:
 - Structural: `upsert_file_pending_move_in_db`, `upsert_file_pending_archive_in_db`, `apply_file_pending_archive`, `discard_file_pending_structural`, `discard_file_pending_content`. Save applies reviewed moves through the durable review job.
 - Save: `save_file_pending_update` (action), `save_file_pending_update_in_db`, `save_file_pending_update_non_collaborative_in_db`
 - Reads: `get_file_pending_update`, `get_file_pending_update_internal`, `get_by_file_node`, `get_pending_path_overlay_data`, `get_file_pending_update_last_sequence_saved`
-- Stored lists: `files_pending_list.list_files_pending_updates`, `files_pending_list.list_files_pending_sources`. They keep the same membership, selected-view, index and native cursor checks. `get_files_pending_updates_summary` and source details stay in `files_pending_updates`.
+- Stored lists: `files_pending_list.list_files_pending_updates`, `files_pending_list.list_files_pending_sources`, and `files_pending_list.get_files_pending_updates_summary`. They keep the same membership, selected-view, index and native cursor checks. Source details stay in `files_pending_updates`.
+- Target view: `files_pending_target.get_file_pending_target`. It keeps the same saved/private access, copied-parent Save exception, archived recovery, blocked moves, and source redaction. Its actual read helpers and the stored list queries do not load content writers or editors.
 - Cleanup: `expire_file_pending_updates` (one scheduled job per user and workspace), `recover_file_pending_update_expiry_checks` (15-minute cron), `cleanup_expired_pending_state_rows` (15-minute cron)
 
 Important behavior:
@@ -701,7 +706,7 @@ Content-only saved proposals do not resolve an unused owner path.
 
 **Drift.** A Convex dashboard edit or `convex import` writes without the wrapper, so derived docs drift. After one, run `files_pending_overlay:check_user` for each affected user (organization, workspace, user, `cursor: null`; call again with the returned cursor until it is null). It returns the differences and `moveInProgress`. If that flag is true, wait for the workspace Move to finish, then start the audit again with `cursor: null`. An empty differences list with that flag is not a clean audit. Cohort staging uses its exact work proofs instead of this normal-doc audit. `files_pending_overlay:repair_user` with the same args recomputes the user's docs and deletes orphans; reserved targets stay parked until the Move ends. QA steps are in `../app-playwriter-harness/references/pending-path-overlay.md`.
 
-**Which reads use drafts.** The agent's bash and file tools read the user's drafts. The Pending tab, the draft folder view, and a draft opened by its link show drafts too. The draft folder view (`files_visible.list_private_folder_children`) reads the user's places, and the Pending tab list and counts read `files_pending_list_rows` and `files_pending_list_keys`. The other reads compute drafts from proposals. The UI lists (folder table, sidebar, search box, pickers) show saved files only and never list hides or places (see "Saved-only lists" in `../files-explorer-tree/SKILL.md`). The one exception is the folder table's draft hint (`files_nodes.has_drafts_in_folder`): it only asks whether the user has a place or hide in the folder, and shows an "Open Pending changes" button.
+**Which reads use drafts.** The agent's bash and file tools read the user's drafts. The Pending tab, the draft folder view, and a draft opened by its link show drafts too. The draft folder view (`files_visible.list_private_folder_children`) reads the user's places, and the Pending tab list and counts read `files_pending_list_rows` and `files_pending_list_keys`. The other reads compute drafts from proposals. The UI lists (folder table, sidebar, search box, pickers) show saved files only and never list hides or places (see "Saved-only lists" in `../files-explorer-tree/SKILL.md`). The one exception is the folder table's draft hint (`files_tree.has_drafts_in_folder`): it only asks whether the user has a place or hide in the folder, and shows an "Open Pending changes" button.
 
 **Limits.**
 

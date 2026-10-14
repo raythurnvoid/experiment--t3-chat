@@ -131,14 +131,14 @@ describe("list_page", () => {
 		const { asOwner, asMember, owner, member, activity } = await create_transfer_activity();
 		expect(
 			(
-				await asOwner.query(api.activities.list_page, {
+				await asOwner.query(api.activities_feed.list_page, {
 					membershipId: owner.membershipId,
 					section: "active",
 					paginationOpts: { cursor: null, numItems: 50 },
 				})
 			).page,
 		).toEqual([]);
-		const listed = await asMember.query(api.activities.list_page, {
+		const listed = await asMember.query(api.activities_feed.list_page, {
 			membershipId: member.membershipId,
 			section: "active",
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -167,14 +167,14 @@ describe("list_page", () => {
 		if (started._nay) throw new Error(started._nay.message);
 		const activity = await t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
 
-		const listed = await asOwner.query(api.activities.list_page, {
+		const listed = await asOwner.query(api.activities_feed.list_page, {
 			membershipId: owner.membershipId,
 			section: "active",
 			paginationOpts: { cursor: null, numItems: 50 },
 		});
 		expect(listed.page).toEqual([{ ...activity, controls: { canStop: true, canRetry: false, canDismiss: false } }]);
 		expect(activity).toMatchObject({ targets: [], feedVisible: true });
-		const memberPage = await asMember.query(api.activities.list_page, {
+		const memberPage = await asMember.query(api.activities_feed.list_page, {
 			membershipId: member.membershipId,
 			section: "active",
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -203,7 +203,7 @@ describe("list_page", () => {
 				});
 			}
 		});
-		const active = await asMember.query(api.activities.list_page, {
+		const active = await asMember.query(api.activities_feed.list_page, {
 			membershipId: member.membershipId,
 			section: "active",
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -211,14 +211,14 @@ describe("list_page", () => {
 		// The active section reads a different index range than history, so newer finished cards cannot
 		// push the running Paste off the page or take its Stop button away.
 		expect(active.page).toEqual([{ ...activity, controls: { canStop: true, canRetry: false, canDismiss: false } }]);
-		const history = await asMember.query(api.activities.list_page, {
+		const history = await asMember.query(api.activities_feed.list_page, {
 			membershipId: member.membershipId,
 			section: "history",
 			paginationOpts: { cursor: null, numItems: 50 },
 		});
 		expect(history.page).toHaveLength(50);
 		expect(history.isDone).toBe(false);
-		const next = await asMember.query(api.activities.list_page, {
+		const next = await asMember.query(api.activities_feed.list_page, {
 			membershipId: member.membershipId,
 			section: "history",
 			paginationOpts: { cursor: history.continueCursor, numItems: 50 },
@@ -247,7 +247,7 @@ describe("list_page", () => {
 				});
 			}
 		});
-		const page = await asOwner.query(api.activities.list_page, {
+		const page = await asOwner.query(api.activities_feed.list_page, {
 			membershipId: owner.membershipId,
 			section: "history",
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -462,7 +462,7 @@ describe("archive_activity", () => {
 			role: null,
 		});
 		expect(demoted._nay).toBeUndefined();
-		const active = await asMember.query(api.activities.list_page, {
+		const active = await asMember.query(api.activities_feed.list_page, {
 			membershipId: member.membershipId,
 			section: "active",
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -481,7 +481,7 @@ describe("archive_activity", () => {
 		expect(dismissed._nay).toBeUndefined();
 		expect(
 			(
-				await asMember.query(api.activities.list_page, {
+				await asMember.query(api.activities_feed.list_page, {
 					membershipId: member.membershipId,
 					section: "history",
 					paginationOpts: { cursor: null, numItems: 50 },

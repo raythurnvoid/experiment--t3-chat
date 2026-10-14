@@ -195,7 +195,7 @@ test.each([
 		).toEqual({ _yay: null });
 		await test_finish_transfer_run(asUser, started._yay.runId);
 		expect(
-			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: started._yay.runId }))
+			(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: started._yay.runId }))
 				?.activity.status,
 		).toBe("succeeded");
 		const source = await t.run((ctx) => ctx.db.get("files_nodes", sourceId));

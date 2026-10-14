@@ -406,10 +406,10 @@ handler should copy whichever fits:
 - `access_control_db_authorize_node(..., { nodeId })` when it is not — it loads and checks in one call.
   It loads the selected saved placement. History and snapshot URL reads use the published folder
   scope at the group switch, before physical header cleanup.
-- `authorize_file_write(ctx, { nodeId })` in `files_nodes.ts` for a **write target**, where `nodeId`
+- `access_control_db_authorize_file_write(ctx, { nodeId })` in `access_control.ts` for a **write target**, where `nodeId`
   is the node itself for a change to an existing node, or the parent folder for a new node or a move
   destination. `files_ROOT_ID` falls back to the workspace. An action cannot read the database, so
-  actions ask the same question through the `get_current_user_file_write_permission` query.
+  actions ask the same question through `files_tree.get_current_user_file_write_permission`.
 
 Rules that are easy to miss, all of which were real holes:
 
@@ -496,8 +496,8 @@ authority is the link token plus the live checks in "Public file links" below. B
 `get_share_link_view` and the signer `create_share_link_download_urls` go through it. Do not call it
 from a member-facing door, and do not add a member reader that skips the five.
 
-**Plugin activities answer to the files they name.** `db_filter_visible_activities` in `convex/activities.ts`
-is the one rule, used by `list_page`, `archive_activity` and `archive_all_activities`. One
+**Plugin activities answer to the files they name.** `activities_feed_db_filter_visible` in `convex/activities_feed.ts`
+is the one rule, used by `activities_feed.list_page`, `archive_activity` and `archive_all_activities`. One
 unreadable target hides the whole activity, because the title usually carries the file's name. A
 target whose current path differs from its stored activity path also hides the whole activity: the
 stored path, title, target message, and error belong to the old location and cannot be made safe by

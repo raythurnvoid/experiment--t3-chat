@@ -80,7 +80,7 @@ async function create_fixture() {
 	};
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 	const save = async () => {
-		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const view = await asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: db.membershipId,
 			target: file.target,
 		});

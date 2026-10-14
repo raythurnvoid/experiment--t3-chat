@@ -1828,7 +1828,7 @@ describe("enforcement", () => {
 				membershipId: viewerMembershipId,
 				nodeIds: [String(folder._yay!.nodeId)],
 			}),
-			asViewer.query(api.files_nodes.get_file_node_for_membership, {
+			asViewer.query(api.files_tree.get_file_node_for_membership, {
 				membershipId: viewerMembershipId,
 				fileNodeId: String(folder._yay!.nodeId),
 			}),
@@ -1894,7 +1894,7 @@ describe("enforcement", () => {
 		const asMember = access_control_test_identity(t, memberId);
 		const [tree, node] = await Promise.all([
 			access_control_test_read_tree_child_ids(asMember, { membershipId: memberMembershipId, parentId: files_ROOT_ID }),
-			asMember.query(api.files_nodes.get_file_node_for_membership, {
+			asMember.query(api.files_tree.get_file_node_for_membership, {
 				membershipId: memberMembershipId,
 				fileNodeId: String(folder._yay!.nodeId),
 			}),
@@ -2176,7 +2176,7 @@ describe("enforcement", () => {
 		// names, and reading the workspace is what gives the right to see those.
 		await access_control_test_demote_to_viewer(fixture);
 
-		const viewerListed = await fixture.asMember.query(api.activities.list_page, {
+		const viewerListed = await fixture.asMember.query(api.activities_feed.list_page, {
 			membershipId: fixture.memberMembershipId,
 			section: "history",
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -2189,7 +2189,7 @@ describe("enforcement", () => {
 		expect(dismissed._nay).toBeUndefined();
 		expect(
 			(
-				await fixture.asMember.query(api.activities.list_page, {
+				await fixture.asMember.query(api.activities_feed.list_page, {
 					membershipId: fixture.memberMembershipId,
 					section: "history",
 					paginationOpts: { cursor: null, numItems: 50 },
@@ -2198,7 +2198,7 @@ describe("enforcement", () => {
 		).toEqual([]);
 		expect(
 			(
-				await fixture.asOwner.query(api.activities.list_page, {
+				await fixture.asOwner.query(api.activities_feed.list_page, {
 					membershipId: fixture.ownerMembershipId,
 					section: "history",
 					paginationOpts: { cursor: null, numItems: 50 },
@@ -2226,7 +2226,7 @@ describe("enforcement", () => {
 
 		// This new card has not been dismissed, so the empty page must come from access checks.
 		await access_control_test_seed_activity({ t, fixture, fileNodeId: folder._yay!.nodeId });
-		const noReadListed = await fixture.asMember.query(api.activities.list_page, {
+		const noReadListed = await fixture.asMember.query(api.activities_feed.list_page, {
 			membershipId: fixture.memberMembershipId,
 			section: "history",
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -3136,7 +3136,7 @@ describe("enforcement", () => {
 
 		// The handler no longer compares organizations itself. The helper is now the only thing between
 		// an owner and another organization's data.
-		const node = await first.asOwner.query(api.files_nodes.get_file_node_for_membership, {
+		const node = await first.asOwner.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: first.ownerMembershipId,
 			fileNodeId: String(folder._yay!.nodeId),
 		});
@@ -6091,14 +6091,14 @@ describe("file sharing", () => {
 			await Promise.all([
 				access_control_test_read_tree_child_ids(fixture.asMember, { ...member, parentId: files_ROOT_ID }),
 				access_control_test_read_tree_child_ids(fixture.asMember, { ...member, parentId: folderId }),
-				fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+				fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
 					membershipId: fixture.memberMembershipId,
 					fileNodeId: String(folderId),
 				}),
 				// The child holds no grant of its own. It is hidden because the folder above it is restricted,
 				// which is what the cascade writes into `restrictedScopeNodeId`. `memberChild` being null checks
 				// this. `memberFolderChildren` is empty only because the list refuses the hidden folder.
-				fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+				fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
 					membershipId: fixture.memberMembershipId,
 					fileNodeId: String(childId),
 				}),
@@ -6149,11 +6149,11 @@ describe("file sharing", () => {
 			}),
 			// The gate every write action asks before it touches R2. A viewer with one grant may write
 			// inside that folder and nowhere else, so the same caller gets two different answers.
-			fixture.asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+			fixture.asMember.query(api.files_tree.get_current_user_file_write_permission, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: files_ROOT_ID,
 			}),
-			fixture.asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+			fixture.asMember.query(api.files_tree.get_current_user_file_write_permission, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: folderId,
 			}),
@@ -6199,7 +6199,7 @@ describe("file sharing", () => {
 		// The member keeps `content.write` in the workspace. Inside a restricted scope that counts for
 		// nothing, so the level in the grant is the only thing deciding.
 		const [node, renamed, created, folderWrite] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+			fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
 				membershipId: fixture.memberMembershipId,
 				fileNodeId: String(childId),
 			}),
@@ -6213,7 +6213,7 @@ describe("file sharing", () => {
 				parentId: folderId,
 				path: "nope",
 			}),
-			fixture.asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+			fixture.asMember.query(api.files_tree.get_current_user_file_write_permission, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: folderId,
 			}),
@@ -8064,7 +8064,7 @@ describe("file sharing", () => {
 				listKey: "all",
 				paginationOpts: { cursor: null, numItems: 20 },
 			}),
-			fixture.asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+			fixture.asMember.query(api.files_tree.get_current_user_file_write_permission, {
 				membershipId: fixture.memberMembershipId,
 				nodeId,
 			}),
@@ -8448,7 +8448,7 @@ describe("file sharing", () => {
 
 		const [movedNode, memberNode] = await Promise.all([
 			t.run(async (ctx) => await ctx.db.get("files_nodes", loose._yay!.nodeId)),
-			fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+			fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
 				membershipId: fixture.memberMembershipId,
 				fileNodeId: String(loose._yay!.nodeId),
 			}),
@@ -8862,7 +8862,7 @@ describe("file sharing", () => {
 		});
 		expect(movedIn._nay).toBeUndefined();
 
-		const hidden = await fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+		const hidden = await fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: fixture.memberMembershipId,
 			fileNodeId: String(loose._yay!.nodeId),
 		});
@@ -8877,7 +8877,7 @@ describe("file sharing", () => {
 		});
 		expect(movedOut._nay).toBeUndefined();
 
-		const visible = await fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+		const visible = await fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: fixture.memberMembershipId,
 			fileNodeId: String(loose._yay!.nodeId),
 		});
@@ -9364,7 +9364,7 @@ describe("file sharing", () => {
 			// The child still points at `closed`, which now points at `outer`. Reading the dead pointer as
 			// open would let every member with workspace read see the child until the job reaches it.
 			const readChild = (as: typeof fixture.asMember, membershipId: Id<"organizations_workspaces_users">) =>
-				as.query(api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId: String(childId) });
+				as.query(api.files_tree.get_file_node_for_membership, { membershipId, fileNodeId: String(childId) });
 			const filterChild = (userId: Id<"users">) =>
 				t.run(async (ctx) =>
 					(
@@ -9522,7 +9522,7 @@ describe("file sharing", () => {
 					if (child?.restrictedScopeNodeId !== null) return;
 					observedUnrepairedChild = true;
 					// The selected view must hide the child before its stored scope is repaired.
-					expect(await fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+					expect(await fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
 						membershipId: fixture.memberMembershipId,
 						fileNodeId: String(childId),
 					}), "A published Move hides unrepaired descendants").toBeNull();
@@ -9553,7 +9553,7 @@ describe("file sharing", () => {
 
 			if (!memberRunId) throw new Error("Expected the member's waiting Move");
 			await test_finish_transfer_run(fixture.asMember, memberRunId);
-			expect(await fixture.asMember.query(api.files_transfer.get, {
+			expect(await fixture.asMember.query(api.files_transfer_queries.get, {
 				membershipId: fixture.memberMembershipId,
 				runId: memberRunId,
 			}), "The waiting Move checks access after repair").toMatchObject({
@@ -9720,7 +9720,7 @@ describe("file sharing", () => {
 		expect(childNode?.parentId).toBe(files_ROOT_ID);
 		expect(childNode?.restrictedScopeNodeId).toBeNull();
 
-		const visible = await fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+		const visible = await fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: fixture.memberMembershipId,
 			fileNodeId: String(childId),
 		});
@@ -9922,14 +9922,14 @@ describe("file sharing", () => {
 
 		const [ownerListed, memberListed] = await Promise.all([
 			fixture.asOwner
-				.query(api.activities.list_page, {
+				.query(api.activities_feed.list_page, {
 					membershipId: fixture.ownerMembershipId,
 					section: "history",
 					paginationOpts: { cursor: null, numItems: 50 },
 				})
 				.then((result) => result.page),
 			fixture.asMember
-				.query(api.activities.list_page, {
+				.query(api.activities_feed.list_page, {
 					membershipId: fixture.memberMembershipId,
 					section: "history",
 					paginationOpts: { cursor: null, numItems: 50 },
@@ -9995,14 +9995,14 @@ describe("file sharing", () => {
 		});
 		const [ownerListed, memberListed] = await Promise.all([
 			fixture.asOwner
-				.query(api.activities.list_page, {
+				.query(api.activities_feed.list_page, {
 					membershipId: fixture.ownerMembershipId,
 					section: "history",
 					paginationOpts: { cursor: null, numItems: 50 },
 				})
 				.then((result) => result.page),
 			fixture.asMember
-				.query(api.activities.list_page, {
+				.query(api.activities_feed.list_page, {
 					membershipId: fixture.memberMembershipId,
 					section: "history",
 					paginationOpts: { cursor: null, numItems: 50 },
@@ -10051,7 +10051,7 @@ describe("file sharing", () => {
 		});
 
 		// The member sees only the open one, which is the rule the two mutations below have to match.
-		const listed = await fixture.asMember.query(api.activities.list_page, {
+		const listed = await fixture.asMember.query(api.activities_feed.list_page, {
 			membershipId: fixture.memberMembershipId,
 			section: "history",
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -10079,7 +10079,7 @@ describe("file sharing", () => {
 		]);
 
 		// Dismissal cannot remove either card from another viewer's feed.
-		const ownerListed = await fixture.asOwner.query(api.activities.list_page, {
+		const ownerListed = await fixture.asOwner.query(api.activities_feed.list_page, {
 			membershipId: fixture.ownerMembershipId,
 			section: "history",
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -10131,14 +10131,14 @@ describe("file sharing", () => {
 		// no workspace read, and an activity naming no file is about a workspace they cannot see either.
 		const [ownerListed, guestListed] = await Promise.all([
 			fixture.asOwner
-				.query(api.activities.list_page, {
+				.query(api.activities_feed.list_page, {
 					membershipId: fixture.ownerMembershipId,
 					section: "history",
 					paginationOpts: { cursor: null, numItems: 50 },
 				})
 				.then((result) => result.page),
 			fixture.asMember
-				.query(api.activities.list_page, {
+				.query(api.activities_feed.list_page, {
 					membershipId: fixture.memberMembershipId,
 					section: "history",
 					paginationOpts: { cursor: null, numItems: 50 },

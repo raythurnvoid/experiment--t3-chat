@@ -12,7 +12,7 @@ export const FileQuote = memo(function FileQuote(props: { quote: file_quotes_Quo
 	const { quote } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const file = useQuery(
-		app_convex_api.files_nodes.get_file_node_for_membership,
+		app_convex_api.files_tree.get_file_node_for_membership,
 		quote.fileNodeId === null ? "skip" : { membershipId, fileNodeId: quote.fileNodeId },
 	);
 	const available = file?.kind === "file" && file.archiveOperationId === null;

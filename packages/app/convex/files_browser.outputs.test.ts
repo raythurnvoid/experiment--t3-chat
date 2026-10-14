@@ -146,7 +146,7 @@ describe("browser file outputs", () => {
 
 		const asUser = authed(t, scope.userId);
 		const target = finalized._yay.target;
-		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const view = await asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: scope.membershipId,
 			target,
 		});
@@ -370,7 +370,7 @@ describe("browser file outputs", () => {
 		await t.run((ctx) => ctx.db.patch("ai_chat_threads", threadId, { organizationId: "other-tenant" }));
 		expect((await t.query(internal.files_nodes_content.get_file_read_source, readArgs))._nay).toBeDefined();
 		const asUser = authed(t, scope.userId);
-		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const view = await asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: scope.membershipId,
 			target,
 		});
@@ -555,7 +555,7 @@ describe("get_file_read_source", () => {
 					}),
 				).toEqual({ _nay: { message: "File unavailable" } });
 			// The source chat limits the agent, not the owner's regular Files view.
-			const visible = await asUser.query(api.files_pending_updates.get_file_pending_target, {
+			const visible = await asUser.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: selected.membershipId,
 				target: selected.target,
 			});
@@ -617,7 +617,7 @@ describe("get_file_read_source", () => {
 		expect((await t.query(internal.files_nodes_content.get_file_read_source, memberRead))._nay).toBeDefined();
 
 		const asOwner = authed(t, scope.userId);
-		const view = await asOwner.query(api.files_pending_updates.get_file_pending_target, {
+		const view = await asOwner.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: scope.membershipId,
 			target,
 		});
@@ -718,7 +718,7 @@ describe("get_file_read_source", () => {
 		if (finalized._nay) throw new Error(finalized._nay.message);
 
 		const target = finalized._yay.target;
-		const view = await authed(t, scope.userId).query(api.files_pending_updates.get_file_pending_target, {
+		const view = await authed(t, scope.userId).query(api.files_pending_target.get_file_pending_target, {
 			membershipId: scope.membershipId,
 			target,
 		});

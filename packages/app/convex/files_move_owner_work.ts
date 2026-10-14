@@ -249,6 +249,7 @@ async function db_owner_page<TableInfo extends GenericTableInfo>(
 export async function files_move_owner_work_db_collect_node(
 	ctx: MutationCtx,
 	args: Args & { nodeRecordId: Id<"files_move_cohort_nodes">; cursor: string | null },
+	limitFactor: 4 | 16 = 16,
 ) {
 	const checked = await db_get_cohort(ctx, args, "owners_collect");
 	if (checked._nay) return checked;
@@ -276,7 +277,7 @@ export async function files_move_owner_work_db_collect_node(
 	let paginated = false;
 	// Complete small ranges may join. A native page still ends this transaction.
 	for (let joined = 0; cursor.phase < 9; joined++) {
-		if (joined > 0 && !(await files_pending_overlay_db_can_join_step(ctx))) break;
+		if (joined > 0 && !(await files_pending_overlay_db_can_join_step(ctx, limitFactor))) break;
 		let isDone = true;
 		let continueCursor: string | null = null;
 		if (cursor.phase === 0) {
@@ -435,7 +436,7 @@ export async function files_move_owner_work_db_collect_node(
 	return Result({ _yay: { cursor: next, done: cursor.phase === 9, paged: paginated } });
 }
 
-export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx, args: Args) {
+export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx, args: Args, limitFactor: 4 | 16 = 16) {
 	const checked = await db_get_cohort(ctx, args, "owners_closure");
 	if (checked._nay) return checked;
 	const cohort = checked._yay;
@@ -524,7 +525,7 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 	let cursor = parse(range);
 	// Complete empty ranges while the next sub-step still fits the shared budget.
 	for (let joined = 0; range && cursor.page === null; joined++) {
-		if (joined > 0 && !(await files_pending_overlay_db_can_join_step(ctx))) {
+		if (joined > 0 && !(await files_pending_overlay_db_can_join_step(ctx, limitFactor))) {
 			await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
 			return Result({ _yay: { done: false, paged: false } });
 		}
@@ -694,7 +695,7 @@ async function db_stage_pending_scope(
 /**
  * Root seals selected content first. Owner scope is sealed here before fields and publication.
  */
-export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Args) {
+export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Args, limitFactor: 4 | 16 = 16) {
 	const checked = await db_get_cohort(ctx, args, "owners_stage");
 	if (checked._nay) return checked;
 	const range = await db_next_range(ctx, args.cohortId, "stage");
@@ -710,7 +711,7 @@ export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Arg
 	let complete = false;
 	// Small sub-phases join within the shared budget. A native page ends the step.
 	for (let joined = 0; !paged && !complete; joined++) {
-		if (joined > 0 && !(await files_pending_overlay_db_can_join_step(ctx))) break;
+		if (joined > 0 && !(await files_pending_overlay_db_can_join_step(ctx, limitFactor))) break;
 		if (cursor.phase === "headers") {
 			const staged = await files_pending_overlay_db_stage_owner(ctx, { ...args, ownerWorkId: range.ownerWorkId });
 			if (staged._nay) return staged;

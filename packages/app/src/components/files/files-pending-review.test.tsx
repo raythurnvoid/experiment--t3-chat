@@ -148,7 +148,7 @@ beforeEach(() => {
 						isDone: false,
 						continueCursor: "second",
 					};
-		if (name === "files_pending_updates:get_file_pending_target")
+		if (name === "files_pending_target:get_file_pending_target")
 			return targetReadable ? { entry: { kind: "private", path: "/draft.md", pendingUpdate: { target } } } : null;
 		return undefined;
 	});

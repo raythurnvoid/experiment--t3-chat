@@ -1,17 +1,22 @@
 import { vOnCompleteArgs, vWorkId, Workpool, type WorkId } from "@convex-dev/workpool";
 import { compareValues, v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
-import { access_control_db_authorize_membership } from "./access_control.ts";
+import {
+	files_transfer_queries_MAX_SELECTED_NODES,
+	files_transfer_queries_db_require_activity,
+	files_transfer_queries_db_get_current_activity,
+	files_transfer_queries_db_get_owned_run,
+	files_transfer_queries_db_get_entry,
+} from "./files_transfer_queries.ts";
+import { access_control_db_authorize_file_write, access_control_db_authorize_membership } from "./access_control.ts";
 import {
 	activities_db_delete,
 	activities_db_finish,
-	activities_db_require_by_source_id,
 	activities_db_start,
 	activities_get_controls,
 	activities_get_result_status,
@@ -37,7 +42,6 @@ import app_convex_schema, {
 	files_transfer_source_version_validator,
 } from "./schema.ts";
 import {
-	authorize_file_write,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_copied_from_policy_fields,
 	files_nodes_db_require_copiable_write_policy,
@@ -47,7 +51,7 @@ import {
 	files_nodes_db_require_user_writable,
 	files_nodes_db_require_user_writable_or_matching_policy,
 } from "../server/files-write-policy.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import {
 	files_move_cohorts_db_begin_transfer_item,
 	files_move_cohorts_db_request_stop,
@@ -59,11 +63,8 @@ import {
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
-import {
-	files_pending_nodes_db_create,
-	files_pending_nodes_db_discard,
-	files_pending_nodes_db_resolve_saved_parent,
-} from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_create, files_pending_nodes_db_discard } from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_resolve_saved_parent } from "./files_pending_nodes_db.ts";
 import {
 	files_pending_holds_db_acquire,
 	files_pending_holds_db_finish,
@@ -116,8 +117,6 @@ import {
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
-
-const MAX_SELECTED_NODES = 200;
 const DISCOVERY_PAGE_SIZE = 50;
 const MAX_NAME_ATTEMPTS = 100;
 const MAX_NAME_LOOKUPS_PER_BATCH = 200;
@@ -133,84 +132,13 @@ const files_transfer_workpool = new Workpool(components.files_transfer_workpool,
 	retryActionsByDefault: false,
 });
 
-async function db_require_activity(ctx: QueryCtx | MutationCtx, runId: Id<"files_transfer_runs">) {
-	const activity = await activities_db_require_by_source_id(ctx, runId);
-	if (!activity.progress || !activity.membershipId || activity.membershipLifetime === undefined) {
-		const errorMessage = "Transfer activity is missing progress or membership";
-		const errorData = { runId, activityId: activity._id };
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-	return {
-		...activity,
-		progress: activity.progress,
-		membershipId: activity.membershipId,
-		membershipLifetime: activity.membershipLifetime,
-	};
-}
-
-async function db_get_current_activity(
-	ctx: QueryCtx | MutationCtx,
-	args: { userId: Id<"users">; workspaceId: Id<"organizations_workspaces"> },
-	readyRenamesOnly = false,
-) {
-	// A Rename waiting for a conflict answer gives way until its pins are checked again.
-	// It also does not block new Copy or Move starts. Its Activity card still opens it.
-	const statuses = readyRenamesOnly
-		? ["running", "stopping", "queued"] as const
-		: ["queued", "running", "awaiting_input", "stopping"] as const;
-	for (const isRename of readyRenamesOnly ? [true] : [false, true]) {
-		for (const status of statuses) {
-			if (isRename && status === "awaiting_input") continue;
-			const query = ctx.db
-				.query("activities")
-				.withIndex("by_user_workspace_source_kind_isRename_status", (q) =>
-					q
-						.eq("userId", args.userId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("source.kind", "files_transfer_run")
-						.eq("source.isRename", isRename)
-						.eq("status", status),
-				);
-			const activity = isRename ? await query.first() : await query.unique();
-			if (activity) return activity;
-		}
-	}
-	return null;
-}
-
-async function db_get_owned_run(
-	ctx: QueryCtx | MutationCtx,
-	args: { membershipId: Id<"organizations_workspaces_users">; runId: Id<"files_transfer_runs"> },
-) {
-	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-	if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
-
-	const membership = await organizations_db_get_membership(ctx, {
-		userId: userAuth.id,
-		membershipId: args.membershipId,
-	});
-	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
-
-	const run = await ctx.db.get("files_transfer_runs", args.runId);
-	if (
-		!run ||
-		run.userId !== userAuth.id ||
-		run.organizationId !== membership.organizationId ||
-		run.workspaceId !== membership.workspaceId
-	) {
-		return Result({ _nay: { message: "Not found" } });
-	}
-	return Result({ _yay: { run, membership } });
-}
-
 /**
  * Recheck the chat and both captured memberships before any transfer work.
  */
 async function db_get_run_memberships(args: {
 	ctx: QueryCtx | MutationCtx;
 	run: Doc<"files_transfer_runs">;
-	activity: Awaited<ReturnType<typeof db_require_activity>>;
+	activity: Awaited<ReturnType<typeof files_transfer_queries_db_require_activity>>;
 }) {
 	const { ctx, run, activity } = args;
 
@@ -310,7 +238,7 @@ export async function files_transfer_db_get_job_copy(
 		run.origin.threadId !== invocation.threadId
 	)
 		return Result({ _nay: { name: "stale_job", message: "This Copy is no longer attached to the command." } });
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (
 		activity.membershipId !== invocation.membershipId ||
 		activity.membershipLifetime !== invocation.membershipLifetime ||
@@ -319,33 +247,6 @@ export async function files_transfer_db_get_job_copy(
 		return Result({ _nay: { name: "permission_denied", message: "This Copy is no longer available." } });
 	// A finished Copy still needs the original access checks before shell continuation.
 	return Result({ _yay: { run, activity } });
-}
-
-async function db_get_entry(args: {
-	ctx: QueryCtx | MutationCtx;
-	run: Pick<Doc<"files_transfer_runs">, "organizationId" | "workspaceId" | "userId" | "sourceView" | "rename">;
-	target: files_PendingTarget;
-	reader: Awaited<ReturnType<typeof files_visible_db_create_reader>>;
-}): Promise<files_VisibleEntry | null> {
-	const { ctx, run, target, reader } = args;
-
-	if (run.sourceView === "draft") return await reader.resolveTarget(target);
-	if (target.kind !== "saved") return null;
-	const node = await files_saved_placement_db_get_node(ctx.db, target.id);
-	if (
-		!node ||
-		node.organizationId !== run.organizationId ||
-		node.workspaceId !== run.workspaceId ||
-		(node.archiveOperationId !== null &&
-			(!run.rename ||
-				node.parentId !== run.rename.source.parentId ||
-				node.name !== run.rename.source.name ||
-				node.path !== run.rename.source.path ||
-				node.archiveOperationId !== run.rename.source.archiveOperationId)) ||
-		!(await reader.canRead(node))
-	)
-		return null;
-	return { kind: "saved", node, pendingUpdate: null, path: node.path };
 }
 
 export function files_transfer_source_versions_equal(
@@ -442,7 +343,7 @@ async function db_get_destination(
 			parent = saved._yay.parentId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: saved._yay.parentId };
 		}
 	}
-	const entry = parent.kind === "root" ? null : await db_get_entry({ ctx, run: scope, target: parent, reader });
+	const entry = parent.kind === "root" ? null : await files_transfer_queries_db_get_entry({ ctx, run: scope, target: parent, reader });
 	if (parent.kind !== "root" && (!entry || entry.node.kind !== "folder" || entry.path !== args.expectedPath))
 		return Result({ _nay: { message: "Destination changed" } });
 	const node =
@@ -452,7 +353,7 @@ async function db_get_destination(
 				? ((await reader.resolve(parent))?.accessNode ?? null)
 				: null;
 
-	const authorized = await authorize_file_write(ctx, {
+	const authorized = await access_control_db_authorize_file_write(ctx, {
 		userAuth: { id: args.run.userId },
 		membership: args.membership,
 		nodeId: node?._id ?? files_ROOT_ID,
@@ -479,7 +380,7 @@ async function db_pause_item(args: {
 
 	const run = await ctx.db.get("files_transfer_runs", item.runId);
 	if (!run) return;
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (!activities_is_active(activity.status) || activity.status === "stopping") return;
 	if (run.fixedDeadline) {
 		await db_stop_run({ ctx, run, errorMessage: kind === "source_changed" ? "Source changed" : "Destination changed" });
@@ -503,7 +404,7 @@ async function db_skip_item(ctx: MutationCtx, item: Doc<"files_transfer_items">)
 
 	const run = await ctx.db.get("files_transfer_runs", item.runId);
 	if (!run) return;
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 
 	await files_nodes_content_db_discard_transfer_file_attempt(ctx, { itemId: item._id, attempt: item.attempt });
 	await files_nodes_content_db_discard_transfer_file_capture(ctx, { itemId: item._id });
@@ -545,7 +446,7 @@ async function db_cancel_items(args: { ctx: MutationCtx; run: Doc<"files_transfe
 		return;
 	}
 
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	let canceled = 0;
 	let blocked = 0;
 
@@ -685,7 +586,7 @@ export async function files_transfer_db_promote(
 	args: { op: Extract<Doc<"files_subtree_ops">, { kind: "copy" }>; now: number },
 ) {
 	await ctx.db.patch("files_subtree_ops", args.op._id, { status: "running" });
-	const activity = await db_require_activity(ctx, args.op.transferRunId);
+	const activity = await files_transfer_queries_db_require_activity(ctx, args.op.transferRunId);
 	await ctx.db.patch("activities", activity._id, {
 		feedVisible: true,
 		deadlineAt: args.now + RUN_TIMEOUT_MS,
@@ -703,7 +604,7 @@ async function db_stop_run(args: {
 }) {
 	const { ctx, run, errorMessage, now = Date.now(), errorCode = errorMessage ? "failed" : "canceled" } = args;
 
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (!activities_is_active(activity.status)) return;
 	if (activity.status === "stopping") {
 		if (run.step !== "retry") await db_cancel_items({ ctx, run, now });
@@ -752,7 +653,7 @@ export async function files_transfer_db_request_stop(
 			.withIndex("by_transferRun", (q) => q.eq("transferRunId", run._id))
 			.first();
 		if (op?.status === "queued") {
-			const activity = await db_require_activity(ctx, run._id);
+			const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 			await ctx.db.patch("activities", activity._id, {
 				deadlineAt: args.now + files_subtree_ops_RECOVER_AFTER_MS,
 				updatedAt: args.now,
@@ -762,7 +663,7 @@ export async function files_transfer_db_request_stop(
 		}
 	}
 
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	await db_stop_run({
 		ctx,
 		run,
@@ -892,7 +793,7 @@ async function db_resolve_name(
 			occupant.node._id !== args.item.preparation?.privateNodeId;
 		if (occupied) {
 			// An unreadable occupant answers "Permission denied" so its path stays hidden.
-			const readable = await db_get_entry({
+			const readable = await files_transfer_queries_db_get_entry({
 				ctx,
 				run: scope,
 				target:
@@ -971,7 +872,7 @@ async function db_resolve_name(
 			if (source) return Result({ _nay: { message: "A copy cannot replace or merge into its sources" } });
 
 			const accessNode = occupant.kind === "saved" ? occupant.node : (await reader.resolve(target))?.accessNode;
-			const authorized = await authorize_file_write(ctx, {
+			const authorized = await access_control_db_authorize_file_write(ctx, {
 				userAuth: { id: args.run.userId },
 				membership: args.membership,
 				nodeId: accessNode?._id ?? files_ROOT_ID,
@@ -1053,7 +954,7 @@ export async function files_transfer_db_prepare_copy_item(
 
 	const run = await ctx.db.get("files_transfer_runs", item.runId);
 	if (!run) return Result({ _yay: null });
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (activity.status !== "running" || (run.step !== "apply" && run.step !== "reserve")) return Result({ _yay: null });
 	if (activity.deadlineAt <= Date.now()) {
 		await files_transfer_db_request_stop(ctx, { runId: run._id, reason: "timeout", now: Date.now() });
@@ -1083,7 +984,7 @@ export async function files_transfer_db_prepare_copy_item(
 	// A changed or unreadable source pauses only this item for a choice.
 	const sourceScope = { ...run, ...run.sourceScope };
 	const sourceReader = await files_visible_db_create_reader(ctx, sourceScope);
-	const sourceEntry = await db_get_entry({ ctx, run: sourceScope, target: item.source, reader: sourceReader });
+	const sourceEntry = await files_transfer_queries_db_get_entry({ ctx, run: sourceScope, target: item.source, reader: sourceReader });
 	if (!sourceEntry || sourceEntry.path !== item.sourcePath) {
 		await db_pause_item({ ctx, item, kind: "source_changed" });
 		return Result({ _yay: null });
@@ -1198,7 +1099,7 @@ export async function files_transfer_db_fence_private_target(
 		return;
 	const run = await ctx.db.get("files_transfer_runs", item.runId);
 	if (!run) return;
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (item.workId) await files_transfer_workpool.cancel(ctx, item.workId);
 	await files_nodes_content_db_discard_transfer_file_attempt(ctx, { itemId: item._id, attempt: item.attempt });
 	await files_nodes_content_db_discard_transfer_file_capture(ctx, { itemId: item._id });
@@ -1278,7 +1179,7 @@ export async function files_transfer_db_complete_copy_item(
 
 	const run = await ctx.db.get("files_transfer_runs", item.runId);
 	if (!run) return;
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	// Ready output and its hold must be adopted together.
 	const outputProposal =
 		run.publication === "proposal"
@@ -1351,7 +1252,7 @@ export async function files_transfer_db_fail_copy_item(
 
 	const run = await ctx.db.get("files_transfer_runs", item.runId);
 	if (!run) return;
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (activity.status !== "running") return;
 
 	await files_nodes_content_db_discard_transfer_file_attempt(ctx, args);
@@ -1372,243 +1273,6 @@ export async function files_transfer_db_fail_copy_item(
 		updatedAt: Date.now(),
 	});
 }
-
-const run_view_validator = v.object({
-	_id: v.id("files_transfer_runs"),
-	kind: doc(app_convex_schema, "files_transfer_runs").fields.kind,
-	publication: doc(app_convex_schema, "files_transfer_runs").fields.publication,
-	step: doc(app_convex_schema, "files_transfer_runs").fields.step,
-	revision: v.number(),
-	activity: doc(app_convex_schema, "activities"),
-	controls: v.object({ canStop: v.boolean(), canRetry: v.boolean(), canDismiss: v.boolean() }),
-	conflicts: v.array(
-		v.object({
-			itemId: v.id("files_transfer_items"),
-			sourceName: v.union(v.string(), v.null()),
-			sourcePath: v.union(v.string(), v.null()),
-			targetName: v.union(v.string(), v.null()),
-			kind: v.union(v.literal("name_conflict"), v.literal("source_changed"), v.literal("destination_changed")),
-		}),
-	),
-	movedNodeIds: v.array(v.id("files_nodes")),
-});
-
-async function db_get_run_view(args: {
-	ctx: QueryCtx;
-	run: Doc<"files_transfer_runs">;
-	membership: Doc<"organizations_workspaces_users">;
-}) {
-	const { ctx, run, membership } = args;
-
-	const activity = await db_require_activity(ctx, run._id);
-	const conflicts = await ctx.db
-		.query("files_transfer_items")
-		.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", "conflict"))
-		.take(MAX_SELECTED_NODES);
-
-	const sourceScope = { ...run, ...run.sourceScope };
-	const reader = await files_visible_db_create_reader(ctx, sourceScope);
-	const visibleConflicts = [];
-	for (const item of conflicts) {
-		// Hide names once the source is no longer readable; run history can outlive source access.
-		const readable =
-			(await db_get_entry({ ctx, run: sourceScope, target: item.source, reader }))?.path === item.sourcePath;
-		visibleConflicts.push({
-			itemId: item._id,
-			sourceName: readable ? item.sourceName : null,
-			sourcePath: readable ? item.sourcePath : null,
-			targetName: readable ? item.sourceName : null,
-			kind: item.conflictKind ?? ("source_changed" as const),
-		});
-	}
-
-	const movedItems =
-		run.kind === "move"
-			? await ctx.db
-					.query("files_transfer_items")
-					.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", "completed"))
-					.take(MAX_SELECTED_NODES)
-			: [];
-
-	return {
-		_id: run._id,
-		kind: run.kind,
-		publication: run.publication,
-		step: run.step,
-		revision: run.revision,
-		activity,
-		controls: activities_get_controls(activity, membership.userId),
-		conflicts: visibleConflicts,
-		movedNodeIds: movedItems.flatMap((item) => (item.outputTarget?.kind === "saved" ? [item.outputTarget.id] : [])),
-	};
-}
-
-export const get = query({
-	args: { membershipId: v.id("organizations_workspaces_users"), runId: v.id("files_transfer_runs") },
-	returns: v.union(run_view_validator, v.null()),
-	handler: async (ctx, args) => {
-		const owned = await db_get_owned_run(ctx, args);
-		if (owned._nay) {
-			if (owned._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
-			return null;
-		}
-		return await db_get_run_view({ ctx, run: owned._yay.run, membership: owned._yay.membership });
-	},
-});
-
-export const get_move_acceptance = query({
-	args: { membershipId: v.id("organizations_workspaces_users"), requestId: v.string() },
-	returns: v.union(
-		v.object({
-			runId: v.id("files_transfer_runs"),
-			step: doc(app_convex_schema, "files_transfer_runs").fields.step,
-			isFinished: v.boolean(),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) return null;
-		const run = await ctx.db
-			.query("files_transfer_runs")
-			.withIndex("by_user_workspace_request", (q) =>
-				q.eq("userId", userAuth.id).eq("workspaceId", membership.workspaceId).eq("requestId", args.requestId),
-			)
-			.unique();
-		if (!run || run.kind !== "move" || run.organizationId !== membership.organizationId) return null;
-		const activity = await db_require_activity(ctx, run._id);
-		const isFinished = activity.finishedAt !== undefined;
-		// A finished run can retire old browser input after a reinvite. Live input keeps its lifetime fence.
-		if (!isFinished) {
-			const lifetime = await organizations_membership_lifetimes_db_get(ctx, {
-				workspaceId: run.workspaceId,
-				userId: run.userId,
-			});
-			if (
-				!lifetime?.active ||
-				membership._id !== activity.membershipId ||
-				lifetime.membershipId !== activity.membershipId ||
-				lifetime.lifetime !== activity.membershipLifetime
-			)
-				return null;
-		}
-		return { runId: run._id, step: run.step, isFinished };
-	},
-});
-
-export const list_current = query({
-	args: { membershipId: v.id("organizations_workspaces_users") },
-	returns: v.array(run_view_validator),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) return [];
-
-		const activity = await db_get_current_activity(ctx, { userId: userAuth.id, workspaceId: membership.workspaceId });
-		if (!activity || activity.source.kind !== "files_transfer_run") return [];
-		const run = await ctx.db.get("files_transfer_runs", activity.source.id);
-		return run ? [await db_get_run_view({ ctx, run, membership })] : [];
-	},
-});
-
-const item_view_target_validator = v.object({
-	target: files_pending_target_validator,
-	path: v.string(),
-	name: v.string(),
-});
-const item_view_validator = v.object({
-	itemId: v.id("files_transfer_items"),
-	state: doc(app_convex_schema, "files_transfer_items").fields.state,
-	kind: doc(app_convex_schema, "files_transfer_items").fields.kind,
-	outcome: doc(app_convex_schema, "files_transfer_items").fields.outcome,
-	movedNodeId: v.union(v.id("files_nodes"), v.null()),
-	source: v.union(item_view_target_validator, v.null()),
-	output: v.union(item_view_target_validator, v.null()),
-	// Why this is separate from `conflict`: two sources in one paste can claim the same new name
-	// while nothing occupies it yet. Then the item is a name conflict with no destination doc, so
-	// `conflict` below is null. The caller still has to offer Keep both and Skip, so it reads the
-	// kind from here and uses `conflict` only for Replace and Merge, which need a doc to act on.
-	conflictKind: doc(app_convex_schema, "files_transfer_items").fields.conflictKind,
-	conflict: v.union(
-		v.object({
-			kind: doc(app_convex_schema, "files_transfer_items").fields.conflictKind,
-			target: files_pending_target_validator,
-			version: v.union(files_transfer_source_version_validator, v.null()),
-			path: v.string(),
-		}),
-		v.null(),
-	),
-	errorMessage: v.union(v.string(), v.null()),
-});
-
-export const list_items = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		runId: v.id("files_transfer_runs"),
-		state: v.optional(doc(app_convex_schema, "files_transfer_items").fields.state),
-		paginationOpts: paginationOptsValidator,
-	},
-	returns: v.union(paginationResultValidator(item_view_validator), v.null()),
-	handler: async (ctx, args) => {
-		const owned = await db_get_owned_run(ctx, args);
-		if (owned._nay) {
-			if (owned._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
-			return null;
-		}
-		const { run } = owned._yay;
-		const items = await (
-			args.state === undefined
-				? ctx.db.query("files_transfer_items").withIndex("by_run_order", (q) => q.eq("runId", run._id))
-				: ctx.db
-						.query("files_transfer_items")
-						.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", args.state!))
-		).paginate({ ...args.paginationOpts, numItems: Math.max(1, Math.min(50, args.paginationOpts.numItems)) });
-		const sourceScope = { ...run, ...run.sourceScope };
-		const sourceReader = await files_visible_db_create_reader(ctx, sourceScope);
-		const reader = await files_visible_db_create_reader(ctx, { ...run, ...run.destinationScope });
-		const page = [];
-		for (const item of items.page) {
-			const source = await db_get_entry({ ctx, run: sourceScope, target: item.source, reader: sourceReader });
-			const output = item.outputTarget ? await reader.resolveTarget(item.outputTarget) : null;
-			const conflict = item.conflictTarget ? await reader.resolveTarget(item.conflictTarget) : null;
-			page.push({
-				itemId: item._id,
-				state: item.state,
-				kind: item.kind,
-				outcome: item.outcome,
-				movedNodeId:
-					run.kind === "move" && item.state === "completed" && item.outputTarget?.kind === "saved"
-						? item.outputTarget.id
-						: null,
-				source:
-					source?.path === item.sourcePath ? { target: item.source, path: source.path, name: item.sourceName } : null,
-				output:
-					output && item.outputTarget ? { target: item.outputTarget, path: output.path, name: output.node.name } : null,
-				conflictKind: item.conflictKind,
-				conflict:
-					conflict && item.conflictTarget
-						? {
-								kind: item.conflictKind,
-								target: item.conflictTarget,
-								version: item.conflictVersion,
-								path: conflict.path,
-							}
-						: null,
-				errorMessage: source ? item.errorMessage : item.errorMessage ? "This item is no longer available" : null,
-			});
-		}
-		return { ...items, page };
-	},
-});
 
 async function db_insert_item(
 	ctx: MutationCtx,
@@ -1746,7 +1410,7 @@ async function db_start(
 	// A Rename or a Move to a new name (one source) may make an older long path shorter.
 	const moveSource =
 		args.kind === "move" && args.targetName !== null && !args.rename
-			? await db_get_entry({
+			? await files_transfer_queries_db_get_entry({
 					ctx,
 					run: { ...scope, ...sourceScope, sourceView },
 					target: args.sources[0]!,
@@ -1789,7 +1453,7 @@ async function db_start(
 			return Result({
 				_nay: { name: "request_changed", message: "This request ID was already used for another transfer" },
 			});
-		const activity = await db_require_activity(ctx, previous._id);
+		const activity = await files_transfer_queries_db_require_activity(ctx, previous._id);
 		return Result({ _yay: { runId: previous._id, activityId: activity._id } });
 	}
 
@@ -1798,7 +1462,7 @@ async function db_start(
 		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
 	}
 
-	const activeActivity = args.rename ? null : await db_get_current_activity(ctx, scope);
+	const activeActivity = args.rename ? null : await files_transfer_queries_db_get_current_activity(ctx, scope);
 	if (activeActivity && activeActivity.source.kind === "files_transfer_run")
 		return Result({
 			_nay: {
@@ -1924,7 +1588,7 @@ export async function files_transfer_db_start_rename(
 			return Result({
 				_nay: { name: "request_changed", message: "This request ID was already used for another transfer" },
 			});
-		const activity = await db_require_activity(ctx, previous._id);
+		const activity = await files_transfer_queries_db_require_activity(ctx, previous._id);
 		if (!(await db_get_run_memberships({ ctx, run: previous, activity })))
 			return Result({ _nay: { message: "Permission denied" } });
 		return Result({ _yay: { runId: previous._id, activityId: activity._id } });
@@ -2024,7 +1688,7 @@ export async function files_transfer_db_start_rename(
 		step: "apply",
 		selection: { expectedCount: 1, count: 1, cursor: 0 },
 	});
-	const activity = await db_require_activity(ctx, started._yay.runId);
+	const activity = await files_transfer_queries_db_require_activity(ctx, started._yay.runId);
 	await ctx.db.patch("activities", activity._id, { progress: { ...activity.progress, discovered: 1, total: 1 } });
 	await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: started._yay.runId });
 	return started;
@@ -2307,7 +1971,7 @@ async function db_append_sources(args: {
 		});
 		if (sources._nay) return sources;
 	}
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (!(await db_get_run_memberships({ ctx, run, activity })))
 		return Result({ _nay: { message: "Permission denied" } });
 	if (
@@ -2377,7 +2041,7 @@ async function db_seal(args: {
 
 	const checked = await db_check_copy_job({ ctx, run, job });
 	if (checked._nay) return checked;
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (!(await db_get_run_memberships({ ctx, run, activity })))
 		return Result({ _nay: { message: "Permission denied" } });
 	if (!run.selection) return Result({ _nay: { name: "invalid_selection", message: "This transfer has no selection" } });
@@ -2436,7 +2100,7 @@ async function db_accept_complete_move(args: { ctx: MutationCtx; run: Doc<"files
 		run.selection.count !== run.selection.expectedCount
 	)
 		return Result({ _yay: null });
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	// Exact accepted replays never restart a stopped or finished run.
 	if (!activities_is_active(activity.status) || activity.status === "stopping") return Result({ _yay: null });
 	return await db_seal(args);
@@ -2451,7 +2115,7 @@ export const append_input = mutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const owned = await db_get_owned_run(ctx, args);
+		const owned = await files_transfer_queries_db_get_owned_run(ctx, args);
 		if (owned._nay) return owned;
 		const appended = await db_append_sources({
 			ctx,
@@ -2470,7 +2134,7 @@ export const seal = mutation({
 	args: { membershipId: v.id("organizations_workspaces_users"), runId: v.id("files_transfer_runs") },
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const owned = await db_get_owned_run(ctx, args);
+		const owned = await files_transfer_queries_db_get_owned_run(ctx, args);
 		if (owned._nay) return owned;
 		return await db_seal({ ctx, run: owned._yay.run });
 	},
@@ -2542,7 +2206,7 @@ export const get_current_activity_for_agent = internalQuery({
 			thread.workspaceId !== membership.workspaceId
 		)
 			return null;
-		const activity = await db_get_current_activity(ctx, {
+		const activity = await files_transfer_queries_db_get_current_activity(ctx, {
 			userId: membership.userId,
 			workspaceId: membership.workspaceId,
 		});
@@ -2574,7 +2238,7 @@ export const get_for_agent = internalQuery({
 			publication: run.publication,
 			step: run.step,
 			selection: run.selection ? { expectedCount: run.selection.expectedCount, count: run.selection.count } : null,
-			activity: await db_require_activity(ctx, run._id),
+			activity: await files_transfer_queries_db_require_activity(ctx, run._id),
 		};
 	},
 });
@@ -2612,14 +2276,14 @@ export const resolve_conflicts = mutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const owned = await db_get_owned_run(ctx, args);
+		const owned = await files_transfer_queries_db_get_owned_run(ctx, args);
 		if (owned._nay) return owned;
 
 		const { run } = owned._yay;
 		// A person never merges a pasted folder into another folder. Only a Bash copy merges.
 		if (args.applyToRemaining.folder === "merge")
 			return Result({ _nay: { message: "A pasted folder cannot merge into another folder" } });
-		const activity = await db_require_activity(ctx, run._id);
+		const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 		// The revision pins the conflict set the user reviewed; a new conflict bumps it.
 		if (activity.status !== "awaiting_input" || run.revision !== args.revision)
 			return Result({ _nay: { message: "The conflicts changed. Review them again." } });
@@ -2632,7 +2296,7 @@ export const resolve_conflicts = mutation({
 
 		if (
 			args.choices.length === 0 ||
-			args.choices.length > MAX_SELECTED_NODES ||
+			args.choices.length > files_transfer_queries_MAX_SELECTED_NODES ||
 			new Set(args.choices.map((choice) => choice.itemId)).size !== args.choices.length
 		) {
 			return Result({ _nay: { message: "Choose how to handle each conflict" } });
@@ -2753,7 +2417,7 @@ export const stop = mutation({
 	args: { membershipId: v.id("organizations_workspaces_users"), runId: v.id("files_transfer_runs") },
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const owned = await db_get_owned_run(ctx, args);
+		const owned = await files_transfer_queries_db_get_owned_run(ctx, args);
 		if (owned._nay) {
 			// Missing and unowned runs get the same reply. Neither needs a write.
 			if (owned._nay.message === "Not found") return Result({ _yay: null });
@@ -2776,12 +2440,12 @@ export const retry_remaining = mutation({
 	},
 	returns: v_result({ _yay: v.object({ runId: v.id("files_transfer_runs"), activityId: v.id("activities") }) }),
 	handler: async (ctx, args) => {
-		const owned = await db_get_owned_run(ctx, args);
+		const owned = await files_transfer_queries_db_get_owned_run(ctx, args);
 		if (owned._nay) return owned;
 		const { run, membership } = owned._yay;
 		if (!args.requestId || args.requestId.length > 128) return Result({ _nay: { message: "Invalid request ID" } });
 
-		const activity = await db_require_activity(ctx, run._id);
+		const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 		const memberships = await db_get_run_memberships({ ctx, run, activity });
 		if (!memberships) return Result({ _nay: { message: "Permission denied" } });
 
@@ -2795,7 +2459,7 @@ export const retry_remaining = mutation({
 		if (previous) {
 			if (previous.requestHash !== requestHash)
 				return Result({ _nay: { message: "This request ID was already used for another transfer" } });
-			return Result({ _yay: { runId: previous._id, activityId: (await db_require_activity(ctx, previous._id))._id } });
+			return Result({ _yay: { runId: previous._id, activityId: (await files_transfer_queries_db_require_activity(ctx, previous._id))._id } });
 		}
 
 		const kindLabel = run.kind === "move" ? "Move" : "Copy";
@@ -2813,10 +2477,10 @@ export const retry_remaining = mutation({
 			.first();
 		if (successor)
 			return Result({
-				_yay: { runId: successor._id, activityId: (await db_require_activity(ctx, successor._id))._id },
+				_yay: { runId: successor._id, activityId: (await files_transfer_queries_db_require_activity(ctx, successor._id))._id },
 			});
 
-		if (!run.rename && await db_get_current_activity(ctx, run))
+		if (!run.rename && await files_transfer_queries_db_get_current_activity(ctx, run))
 			return Result({ _nay: { message: "A transfer is already running in this workspace" } });
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: run.userId });
 		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
@@ -2926,7 +2590,7 @@ async function db_copy_retry_manifest(ctx: MutationCtx, run: Doc<"files_transfer
 		.query("files_transfer_items")
 		.withIndex("by_run_order", (q) => q.eq("runId", previous._id).gt("order", run.retryCursor ?? -1))
 		.take(DISCOVERY_PAGE_SIZE);
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	const progress = { ...activity.progress };
 
 	for (const item of items) {
@@ -3020,7 +2684,7 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 		.query("files_transfer_selection_items")
 		.withIndex("by_run_order", (q) => q.eq("runId", run._id).gt("order", selection.cursor))
 		.take(run.step === "normalize" ? 1 : 8);
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	const scope = { ...run, ...run.sourceScope };
 	const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 2048 });
 	let cursor = selection.cursor;
@@ -3038,7 +2702,7 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 			normalizingParentPath = undefined;
 			continue;
 		}
-		const entry = await db_get_entry({ ctx, run: scope, target: item.source, reader });
+		const entry = await files_transfer_queries_db_get_entry({ ctx, run: scope, target: item.source, reader });
 		if (reader.exhausted && cursor !== selection.cursor) break;
 		if (!entry || (run.step === "normalize" && entry.path !== item.path)) {
 			await db_stop_run({
@@ -3148,7 +2812,7 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 }
 
 async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	const item = await ctx.db
 		.query("files_transfer_items")
 		.withIndex("by_run_discoveryDone_order", (q) => q.eq("runId", run._id).eq("discoveryDone", false))
@@ -3165,7 +2829,7 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 			return;
 		}
 
-		const source = await db_get_entry({ ctx, run: sourceScope, target: item.source, reader });
+		const source = await files_transfer_queries_db_get_entry({ ctx, run: sourceScope, target: item.source, reader });
 		if (!source || source.path !== item.sourcePath) {
 			await db_pause_item({ ctx, item, kind: "source_changed" });
 			return;
@@ -3274,7 +2938,7 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 		return;
 	}
 
-	const currentActivity = await db_require_activity(ctx, run._id);
+	const currentActivity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (currentActivity.status === "running" || currentActivity.status === "awaiting_input")
 		await ctx.db.patch("activities", currentActivity._id, {
 			progress: { ...currentActivity.progress, total: currentActivity.progress.discovered },
@@ -3318,7 +2982,7 @@ async function db_plan(args: {
 			continue;
 		}
 
-		const source = await db_get_entry({ ctx, run: sourceScope, target: item.source, reader });
+		const source = await files_transfer_queries_db_get_entry({ ctx, run: sourceScope, target: item.source, reader });
 		if (reader.exhausted && cursor !== run.planCursor) break;
 		if (!source || source.path !== item.sourcePath) {
 			await db_pause_item({ ctx, item, kind: "source_changed" });
@@ -3393,7 +3057,7 @@ async function db_plan(args: {
 				}
 			: {}),
 	});
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (activities_is_active(activity.status) && activity.status !== "stopping") {
 		await ctx.db.patch("activities", activity._id, {
 			status: done && conflict ? "awaiting_input" : "running",
@@ -3422,7 +3086,7 @@ async function db_commit_move(args: {
 			.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", "pending"))
 			.first();
 		if (!item) {
-			const activity = await db_require_activity(ctx, run._id);
+			const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 			await activities_db_finish(ctx, {
 				sourceId: run._id,
 				status: activities_get_result_status(activity.progress),
@@ -3433,7 +3097,7 @@ async function db_commit_move(args: {
 			return;
 		}
 
-		const source = await db_get_entry({ ctx, run: scope, target: item.source, reader });
+		const source = await files_transfer_queries_db_get_entry({ ctx, run: scope, target: item.source, reader });
 		if (!source || source.path !== item.sourcePath) {
 			await db_pause_item({ ctx, item, kind: "source_changed" });
 			return;
@@ -3479,7 +3143,7 @@ async function db_commit_move(args: {
 				outputPath: moved._yay.destPath,
 			});
 
-			const activity = await db_require_activity(ctx, run._id);
+			const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 			await ctx.db.patch("activities", activity._id, {
 				progress: { ...activity.progress, completed: activity.progress.completed + 1 },
 				updatedAt: Date.now(),
@@ -3497,7 +3161,7 @@ async function db_commit_move(args: {
 		.query("files_transfer_items")
 		.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", "pending"))
 		.first();
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (!item) {
 		await activities_db_finish(ctx, {
 			sourceId: run._id,
@@ -3620,7 +3284,7 @@ async function db_commit_move(args: {
 	}
 
 	if (!run.rename && source.parentId === targetParentId && resolved._yay.path === source.path) {
-		const authorized = await authorize_file_write(ctx, { userAuth: { id: run.userId }, membership, nodeId: source._id });
+		const authorized = await access_control_db_authorize_file_write(ctx, { userAuth: { id: run.userId }, membership, nodeId: source._id });
 		const writable = authorized._nay ? authorized : await files_nodes_db_require_user_writable(ctx, { node: source, userId: run.userId });
 		if (writable._nay) {
 			await db_stop_run({ ctx, run, errorMessage: writable._nay.message });
@@ -3699,7 +3363,7 @@ export async function files_transfer_db_record_cohort_publication(
 		outputPath: place.path,
 	});
 	await ctx.db.patch("files_transfer_runs", run._id, { moveValidation: undefined });
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	await ctx.db.patch("activities", activity._id, {
 		progress: { ...activity.progress, completed: activity.progress.completed + 1 },
 		updatedAt: Date.now(),
@@ -3724,7 +3388,7 @@ export const settle_cohort = internalMutation({
 			return null;
 		if (cohort.publishedAt !== null && item.state !== "completed")
 			throw should_never_happen("A published Move has no completion receipt", args);
-		const activity = await db_require_activity(ctx, run._id);
+		const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 		if (!activities_is_active(activity.status)) return null;
 		if (cohort.publishedAt === null && activity.status !== "stopping" && item.state === "pending") {
 			if (
@@ -3817,7 +3481,7 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 	while (true) {
 		const run = await ctx.db.get("files_transfer_runs", args.runId);
 		if (!run) return null;
-		const activity = await db_require_activity(ctx, run._id);
+		const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 		if (!activities_is_active(activity.status)) return null;
 		if (activity.status === "stopping") {
 			if (run.step === "retry") {
@@ -3865,7 +3529,7 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 			run.sourceScope.workspaceId,
 			run.destinationScope.workspaceId,
 		])) {
-			const nextRename = await db_get_current_activity(ctx, { userId: run.userId, workspaceId }, true);
+			const nextRename = await files_transfer_queries_db_get_current_activity(ctx, { userId: run.userId, workspaceId }, true);
 			if (nextRename && nextRename.source.id !== run._id) {
 				waitingForRename = true;
 				break;
@@ -4271,7 +3935,7 @@ async function db_finish_copy_attempt(args: {
 	const inFlight = item.workId ? run.inFlight - 1 : run.inFlight;
 	await ctx.db.patch("files_transfer_runs", run._id, { inFlight });
 
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (activity.status === "stopping") {
 		await db_cancel_items({ ctx, run: { ...run, inFlight }, now });
 		return;
@@ -4306,7 +3970,7 @@ export const handle_copy_complete = internalMutation({
 		await db_finish_copy_attempt({ ctx, item, run, now: Date.now() });
 
 		// A failed attempt retries after a short pause.
-		const activity = await db_require_activity(ctx, run._id);
+		const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 		if (activity.status === "running" || activity.status === "stopping")
 			await ctx.scheduler.runAfter(args.result.kind === "failed" ? 1000 : 0, internal.files_transfer.advance, {
 				runId: run._id,
@@ -4327,7 +3991,7 @@ export async function files_transfer_db_delete_run_batch(
 	const { runId } = args;
 	const run = await ctx.db.get("files_transfer_runs", runId);
 	if (!run) return { done: true, deletedCount: 0 };
-	const activity = await db_require_activity(ctx, run._id);
+	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	// Retry copies this run's item list first. Keep the old docs until that step ends.
 	const copyingRetry = await ctx.db
 		.query("files_transfer_runs")
@@ -4418,7 +4082,7 @@ export const recover_expired_attempts = internalMutation({
 				await files_nodes_content_db_discard_transfer_file_capture(ctx, { itemId: item._id });
 				continue;
 			}
-			const activity = await db_require_activity(ctx, run._id);
+			const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 			if (!activities_is_active(activity.status)) {
 				await files_nodes_content_db_discard_transfer_file_capture(ctx, { itemId: item._id });
 				continue;
@@ -4430,3 +4094,6 @@ export const recover_expired_attempts = internalMutation({
 		return null;
 	},
 });
+
+// Keep loaded clients working until the new Transfer queries reach them.
+export { get, get_move_acceptance, list_current, list_items } from "./files_transfer_queries.ts";

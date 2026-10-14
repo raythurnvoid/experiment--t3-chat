@@ -30,7 +30,7 @@ export const channels_composer_channel_PLUGIN_KEY = new PluginKey("channelsCompo
 // eslint-disable-next-line react-refresh/only-export-components
 function ChannelsFileMention(props: { fileNodeId: string }) {
 	const { membershipId } = AppTenantProvider.useContext();
-	const file = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, {
+	const file = useQuery(app_convex_api.files_tree.get_file_node_for_membership, {
 		membershipId,
 		fileNodeId: props.fileNodeId,
 	});

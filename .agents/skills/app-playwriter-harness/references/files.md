@@ -266,7 +266,7 @@ To find a saved file's id from its path, use `files_nodes.get_authorized_by_path
 `files_metadata.get_entries({ membershipId, fileNodeId })`, an array of `{ key, value }`.
 
 A private pending file (an agent-created file, the `pendingNodeId` in a tool card's `Open in Files`
-link) needs another door. Read `files_pending_updates.get_file_pending_target({ membershipId, target:
+link) needs another door. Read `files_pending_target.get_file_pending_target({ membershipId, target:
 { kind: "private", id } })` first, then call `create_private_pending_download_url` with `target`,
 `pendingUpdateId: entry.pendingUpdate._id`, `reviewedRevision: entry.pendingUpdate.revision`, and
 `creationGeneration: entry.node.creationGeneration`. All three are required; a missing one fails
@@ -310,7 +310,7 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   already run. Read the job state before you paste again. After a cut paste the clipboard is empty,
   so `Paste` stays disabled.
 - Sample Activities from page context while the job runs. Import
-  `/src/lib/app-convex-client.ts` and poll `activities.list_page` with `section: "active"`. Read
+  `/src/lib/app-convex-client.ts` and poll `activities_feed.list_page` with `section: "active"`. Read
   `source.kind`, `title`, `status`, `feedVisible`, and `controls.canStop`. A cut paste shows the
   single Transfer Activity with progress and Stop. Its cohort work has no second card. A restrict
   shows no card at all: its Activity has `feedVisible: false`, so the active list stays empty. Read it
@@ -319,7 +319,7 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   nodeIds }` from the same page context. The ids of archived roots stay the same. Archive only. Never delete catalog folders.
 - A copy that overlaps a running job waits. `convex data files_subtree_ops` shows it `queued` with
   `blockedByOpId` set. When the blocker ends, it becomes `running` and its card shows Stop.
-- For Move and Copy, use `files_transfer.get` and `list_items`. For repair, Archive, Restore and
+- For Move and Copy, use `files_transfer_queries.get` and `list_items`. For repair, Archive, Restore and
   Restrict work, read `files_subtree_ops`, `files_subtree_op_walks` (the step
   number), and `files_subtree_op_nodes` (the folder queue). All three are empty when no job runs. Read
   each step's result with `convex data _scheduled_functions --limit 60` and look for
@@ -664,7 +664,7 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
 - Check Activity with enough history to scroll. Each card must keep its full height, with readable
   status and clickable progress/Stop controls. Flex shrinking previously clipped cards to a few
   pixels; `.AppNotificationsActivityItem` now keeps its size while the list scrolls.
-- Read progress through `files_transfer.get({ membershipId, runId })` and enumerate all tree pages
+- Read progress through `files_transfer_queries.get({ membershipId, runId })` and enumerate all tree pages
   after completion. Assert ids and parent ids for moves; new ids, names, and saved content for
   copies. Clipboard readiness alone does not prove a successful paste.
 - For folder Cut permissions, use a [second member](second-user-fixtures.md). As owner, restrict a
@@ -947,7 +947,7 @@ scalar sample. Do not assume a Status field exists. No new fixture is needed for
 
 Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restricted_scope`, or anything about restricted scopes.
 
-- Build the fixture so the two cases differ: the folder must carry its **own** restriction (`restrictedScopeNodeId === its own _id`, which the restore loop deliberately skips) and the child must **inherit** it (`restrictedScopeNodeId === the folder's _id`). Only the inheriting child exercises the leaving check. Read both with `files_nodes.get_file_node_for_membership({ membershipId, fileNodeId })` — the sidebar shows neither.
+- Build the fixture so the two cases differ: the folder must carry its **own** restriction (`restrictedScopeNodeId === its own _id`, which the restore loop deliberately skips) and the child must **inherit** it (`restrictedScopeNodeId === the folder's _id`). Only the inheriting child exercises the leaving check. Read both with `files_tree.get_file_node_for_membership({ membershipId, fileNodeId })` — the sidebar shows neither.
 - Restrict through the row menu `Share` → `Restrict access` (toast `Access restricted`), then `Done`.
 - Archive from the row menu opens the confirm dialog first (`getByRole("dialog", { name: /^Archive / })`); confirm with its `Archive` button. Restore is still direct.
 - To make a restore behave as a **move**, archive the parent folder and then restore the child alone: its parent is still archived, so the restore relocates it to root. That is the only in-app route to the leaving check. Ground truth is the child's `path`, `parentId` and `restrictedScopeNodeId` from `get_file_node_for_membership`; a successful owner restore moves it to root and clears the scope pointer.
@@ -969,7 +969,7 @@ do not depend on signing in or out.
   `Selected writer`. Click `Read-only`, then `Save policy`. There is no `Inherit` radio and no
   `Open parent policy`. Unlock later with `Editable` + `Save policy`. A member without management
   rights gets disabled policy controls.
-  Read each fixture node with `files_nodes.get_file_node_for_membership({ membershipId, fileNodeId })`
+  Read each fixture node with `files_tree.get_file_node_for_membership({ membershipId, fileNodeId })`
   as each identity (tree rows carry the same fields) and assert `canWrite`, `writeBlockedReason`, and
   `writePolicyState`. Policy presence alone does not mean that the current writer is blocked.
 - Assert the exact accessible row descriptions for a lock on that node, and for an unlocked folder
@@ -1107,7 +1107,7 @@ Use this after changing the bulk import flow (`run_folder_import` in `files-side
 - Ask Bash to `cp` a file to a new path and to an occupied path. Verify the Pending tab shows the copy or replacement proposal and that committed files stay unchanged until acceptance.
 - For a mixed move plus content proposal, accept it and verify the move is applied before the updated content is saved.
 - In Agent mode, shell writes ARE supported. `cat > path <<'EOF' ... EOF`, `>`, `>>`, and app-to-app `cp` create reviewable pending content in both collaboration modes (changed 2026-09-06; before that a target with collaboration off saved immediately). App-to-app `mv` and `rm` stay pending structural proposals (`rm` archives on acceptance). Verified 2026-08-21; the older "writes are unsupported" note here was stale. Links are still not shell operations, and app-to-`/tmp` copy stays immediate thread scratch.
-- Whole-file `cp` (verified 2026-09-05, after the content type policy landed): a copy carries the source's content, content type, and document shape onto the destination, whatever the destination's name says, so `cp a.md b.txt` makes `b.txt` a Markdown file that opens in the rich text editor, and `cp a.md shapes.png` turns the image node into a Markdown file. A new text destination inherits the source's collaboration mode; an existing text destination keeps its own mode. Build the fixtures without typing: `files_nodes.create_folder_node` from page context (`{ membershipId, parentId: "root", path: "<folder>" }`), select the folder row, then `setInputFiles` on the sidebar input for `r2-upload-markdown-sample.md`, `qa-plain.txt`, and `shapes.png` (one call each, ~3 s apart; the text nodes get their `textKind` a few seconds later). Ask the agent for exact commands with the prompt prefix from "Indexed Frontmatter Metadata" below, and use workspace-relative paths (`cp qa-x/a.md qa-x/b.txt`): the shell's cwd is the workspace root, and a leading `/` answers `cannot stat`. Expected stdout: `pending copy created: /qa-x/a.md -> /qa-x/b.txt — replaces the existing file's content and type when accepted; review in Files` for an existing destination (`— review in Files` for a new one), in both collaboration modes (since 2026-09-06). Accept it in the Pending tab with `getByRole("button", { name: "Accept changes to /qa-x/b.txt" })`. Read with `files_nodes.get_file_node_for_membership({ membershipId, fileNodeId })`, the destination keeps its `_id` and `yjsSnapshotId` (the lineage is swapped in place), while `contentType` and `textKind` become the source's. Its `assetId` points at the copied content asset, which may be rebuilt when Markdown is normalized. Restore proves the other direction: `Open file snapshots` on the destination lists the replaced content as a version (`3m ago`, with the plain token in its preview), `Confirm` brings back `text/plain;charset=utf-8` and the Code editor with no reload (poll `[aria-label="Text editor actions"]` and `window.__qa.monaco().plainText.getValue()`). A rich text document that embeds the replaced image (`![x](bonobo-file://<nodeId>)` in an uploaded `.md`) shows `File is not an image or video anymore` in the node view after the accept.
+- Whole-file `cp` (verified 2026-09-05, after the content type policy landed): a copy carries the source's content, content type, and document shape onto the destination, whatever the destination's name says, so `cp a.md b.txt` makes `b.txt` a Markdown file that opens in the rich text editor, and `cp a.md shapes.png` turns the image node into a Markdown file. A new text destination inherits the source's collaboration mode; an existing text destination keeps its own mode. Build the fixtures without typing: `files_nodes.create_folder_node` from page context (`{ membershipId, parentId: "root", path: "<folder>" }`), select the folder row, then `setInputFiles` on the sidebar input for `r2-upload-markdown-sample.md`, `qa-plain.txt`, and `shapes.png` (one call each, ~3 s apart; the text nodes get their `textKind` a few seconds later). Ask the agent for exact commands with the prompt prefix from "Indexed Frontmatter Metadata" below, and use workspace-relative paths (`cp qa-x/a.md qa-x/b.txt`): the shell's cwd is the workspace root, and a leading `/` answers `cannot stat`. Expected stdout: `pending copy created: /qa-x/a.md -> /qa-x/b.txt — replaces the existing file's content and type when accepted; review in Files` for an existing destination (`— review in Files` for a new one), in both collaboration modes (since 2026-09-06). Accept it in the Pending tab with `getByRole("button", { name: "Accept changes to /qa-x/b.txt" })`. Read with `files_tree.get_file_node_for_membership({ membershipId, fileNodeId })`, the destination keeps its `_id` and `yjsSnapshotId` (the lineage is swapped in place), while `contentType` and `textKind` become the source's. Its `assetId` points at the copied content asset, which may be rebuilt when Markdown is normalized. Restore proves the other direction: `Open file snapshots` on the destination lists the replaced content as a version (`3m ago`, with the plain token in its preview), `Confirm` brings back `text/plain;charset=utf-8` and the Code editor with no reload (poll `[aria-label="Text editor actions"]` and `window.__qa.monaco().plainText.getValue()`). A rich text document that embeds the replaced image (`![x](bonobo-file://<nodeId>)` in an uploaded `.md`) shows `File is not an image or video anymore` in the node view after the accept.
 
 ### Indexed Frontmatter Metadata Through The Agent
 
@@ -1295,7 +1295,7 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 - The signed-url grant is per membership: `r2.create_signed_download_url` with the caller's own valid membership plus a file node from another workspace answers `_nay "Not found"`, and an invited member's browser renders the embed from the R2 origin with no extra step (verified 2026-08-09 with the `second-user-fixtures.md` flow).
 - `list_tree_children` pages one kind of child of one folder: `{ membershipId, parentId, kind, archived, restricted, paginationOpts: { numItems, cursor } }`, with `parentId` `"root"` or a folder id, `kind` `"folder"` or `"file"`, and `numItems` capped at 200. It returns `{ page, isDone, continueCursor }`. Follow each cursor until `isDone` before checking all children; a page can be empty. Only the owner gets rows with `restricted: true`; a member gets restricted children from `list_tree_children_shared`. To read many folders, use "Walk The Files Tree From Page Context" in `snippets.md`. A node has `kind`, not `type`; use `kind`, `lowercaseExtension`, or `contentType`.
 - **Tree rows are saved nodes only; drafts are not in them.** Read drafts from the Pending tab door `files_pending_list.list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`, whose rows carry `target: { kind, id }` (see `file-node-view.md`, "Reading the pending rows from the page"), or ask the agent for `ls`/`find`. `target.kind` tells you which read door to use: `"saved"` is a real `files_nodes` row, `"private"` is a `files_pending_nodes` row that only the proposal's owner can see. Passing a private id to `files_nodes_content.get_non_collaborative_file_content` fails the validator with `Found ID ... from table files_pending_nodes, which does not match ... v.id("files_nodes")`. Read a private one with `files_fetch_private_file_pending_text({ membershipId, target })` from `/src/lib/files.ts` instead. An agent `cp`/`touch`/`>` into a new path always produces a private item, so a listing right after an agent write mixes both kinds. Verified 2026-09-15.
-- `files_nodes.get_file_node_for_membership` takes **`fileNodeId`**, not `nodeId` (nearly every other files door takes `nodeId`). It returns the raw node doc plus `canWrite`, so it is the quickest way to read `assetId`, `collaborationEnabled`, `textKind` and `writePolicyState` for a node. Verified 2026-09-15.
+- `files_tree.get_file_node_for_membership` takes **`fileNodeId`**, not `nodeId` (nearly every other files door takes `nodeId`). It returns the raw node doc plus `canWrite`, so it is the quickest way to read `assetId`, `collaborationEnabled`, `textKind` and `writePolicyState` for a node. Verified 2026-09-15.
 - To decode a pending branch by hand in page context, the two helpers live in different modules: `files_yjs_doc_create_from_array_buffer_update` is in `/shared/files-yjs.ts` and `files_yjs_doc_get_text` is in `/shared/files-tiptap.ts`. Pair either with `files_fetch_file_pending_update_yjs_state({ membershipId, target, stateId })` from `/src/lib/files.ts` to read the base, staged or unstaged text of a saved-target proposal. Verified 2026-09-15.
 - A copy is **not** byte-identical to its source for a `rich_text` file. The copy runs the text through a headless Tiptap editor to drop comment marks, and that markdown round-trip removes a single trailing newline (`"a\nb\n"` becomes `"a\nb"`; a trailing blank line, `"a\n\nb\n\n"`, survives) and writes a fresh asset. A file written straight through `replace_file_content` keeps whatever bytes you passed, so a fixture built that way and then copied shows a one-byte diff that is the serializer, not the transfer. Compare content after the same round-trip, or assert without the trailing newline. Verified 2026-09-15.
 - **`create_text_node` and `create_folder_node` take `path` relative to `parentId`.** `create_text_node({ parentId: <the /u39 folder>, path: "/u39/target.md" })` silently makes `/u39/u39/target.md`. The failure shows up much later and looks like something else: the agent's Bash then answers `ls: No such file or directory` for the path you think you created, and a `>` write there creates a _new private draft_ (`Added` row, `target.kind: "private"`) instead of a content proposal on your file. Pass the leaf name (`path: "target.md"`) when `parentId` is a folder; pass the full path only with `parentId: "root"`. Verified 2026-09-15.
@@ -1354,7 +1354,7 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   inside?`; click `Save and apply`. The Properties dialog then shows
   `Updating the items inside in the background. Track it in Activity.` The job is an Activity titled
   `Apply protection to folder contents` with source kind `files_write_policy_run`. Poll it with
-  `activities.list_page` over both `active` and `history`. Pick the row by `startedAt` after your
+  `activities_feed.list_page` over both `active` and `history`. Pick the row by `startedAt` after your
   click, not only "newest": `app_convex.query` can answer from its cache, and an older finished run
   then ends the poll at once. About 1,250 items finish in 7–9 s on dev, in steps of 50.
   The Activity row text is `Updated N items, M already set, K not allowed.` After Stop, a timeout, or
@@ -1655,7 +1655,7 @@ copy fails with `The source file is still saving. Try again.` while its siblings
 That is the cheap way to stage a partial run and then press `Retry remaining files`.
 
 Read the result back from the server, not from the modal text alone:
-`files_transfer:list_items` with `{ membershipId, runId, paginationOpts }` gives each item's
+`files_transfer_queries:list_items` with `{ membershipId, runId, paginationOpts }` gives each item's
 `state`, `outcome`, resolved `source` and `output` paths, and `conflictKind`. List the destination
 folder with `files_tree:list_tree_children` (`parentId` set to the folder id, once with
 `kind: "folder"` and once with `kind: "file"`, `archived: false`, `restricted: false`).
@@ -1668,7 +1668,7 @@ counter must continue past the existing siblings, in source order.
 ### Reading A Reservation That Is Still "Preparing"
 
 A private node the transfer created but has not filled yet reports `readiness: "preparing"` on
-`files_pending_updates.get_file_pending_target({ membershipId, target })`. Inside a draft folder,
+`files_pending_target.get_file_pending_target({ membershipId, target })`. Inside a draft folder,
 `files_visible.list_private_folder_children({ membershipId, folderId, paginationOpts })` (the draft
 folder view) reports `preparing: true` on its row. Catching one is harder than it looks.
 
@@ -2006,7 +2006,7 @@ row and the node must be gone within seconds. Verified 2026-09-24.
 
 To check that a finished child wakes its waiting parent, discard both drafts in one run. The UI
 cannot do that, so call the review door from page context with `import("/src/lib/app-convex-client.ts")`.
-Read each proposal with `files_pending_updates.get_file_pending_target({ membershipId, target: {
+Read each proposal with `files_pending_target.get_file_pending_target({ membershipId, target: {
 kind: "private", id } })` (`entry.pendingUpdate._id` and `.revision`). Then call
 `files_pending_update_runs.start` with `kind: "discard"`, a new `requestId`, `expectedItemCount: 2`,
 and `items: [{ pendingUpdateId, reviewedRevision, selectedContentStateId: null }, ...]`, and then

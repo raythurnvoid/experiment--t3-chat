@@ -83,10 +83,10 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		activities: {
 			archive_activity: "activities.archive_activity",
 			archive_all_activities: "activities.archive_all_activities",
-			list_page: "activities.list_page",
 			request_stop: "activities.request_stop",
 			retry_move_repair: "activities.retry_move_repair",
 		},
+		activities_feed: { list_page: "activities_feed.list_page" },
 		notifications: {
 			archive_all_notifications: "notifications.archive_all_notifications",
 			archive_notification: "notifications.archive_notification",

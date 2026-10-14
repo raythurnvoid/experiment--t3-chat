@@ -106,7 +106,7 @@ describe("saved Move input acceptance", () => {
 			throw new Error("reply lost after commit");
 		};
 		await expect(loseReply()).rejects.toThrow("reply lost after commit");
-		const found = await asUser.query(api.files_transfer.get_move_acceptance, {
+		const found = await asUser.query(api.files_transfer_queries.get_move_acceptance, {
 			membershipId: db.membershipId,
 			requestId: args.requestId,
 		});
@@ -145,7 +145,7 @@ describe("saved Move input acceptance", () => {
 		});
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", sourceId)))?.moveCohortId).toBeUndefined();
 		expect(
-			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: found.runId }))?.activity,
+			(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: found.runId }))?.activity,
 		).toMatchObject({
 			status: "succeeded",
 			progress: { completed: 1, failed: 0, canceled: 0 },
@@ -233,7 +233,7 @@ describe("saved Move input acceptance", () => {
 		).rejects.toThrow("as `append_sources`, but there is no such export");
 		await expect(
 			asUser.query(
-				makeFunctionReference<"query", FunctionArgs<typeof api.files_transfer.get_move_acceptance>>(
+				makeFunctionReference<"query", FunctionArgs<typeof api.files_transfer_queries.get_move_acceptance>>(
 					"files_transfer:get_move_intake",
 				),
 				{ membershipId: db.membershipId, requestId: args.requestId },

@@ -256,7 +256,7 @@ describe("finalize_file", () => {
 		const completed = await t.mutation(internal.files_ingestion.finalize_file, args);
 		if (!completed._yay) throw new Error("Expected a completed file");
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: scope.userId });
-		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const view = await asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: scope.membershipId,
 			target: completed._yay.target,
 		});
@@ -538,7 +538,7 @@ describe("chat file output", () => {
 		).toBeDefined();
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: scope.userId });
 		expect(
-			await asUser.query(api.files_pending_updates.get_file_pending_target, {
+			await asUser.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: scope.membershipId,
 				target: completed._yay!.target,
 			}),

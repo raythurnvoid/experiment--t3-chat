@@ -139,7 +139,7 @@ describe("Transfer selection pages", () => {
 			});
 			if (scenario === "suffix searches") {
 				await f.t.mutation(internal.files_transfer.advance, { runId });
-				const waiting = await f.asUser.query(api.files_transfer.get, { membershipId: f.scope.membershipId, runId });
+				const waiting = await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.scope.membershipId, runId });
 				if (!waiting || waiting.activity.status !== "awaiting_input") throw new Error("Expected native name conflicts");
 				expect(
 					await f.asUser.mutation(api.files_transfer.resolve_conflicts, {
@@ -152,7 +152,7 @@ describe("Transfer selection pages", () => {
 				).toEqual({ _yay: null });
 			}
 			await f.t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
-			const view = await f.asUser.query(api.files_transfer.get, { membershipId: f.scope.membershipId, runId });
+			const view = await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.scope.membershipId, runId });
 			expect(view?.activity, "every source completes without a dropped tail").toMatchObject({
 				status: "succeeded",
 				progress: { completed: sourceIds.length, failed: 0, canceled: 0 },
@@ -308,7 +308,7 @@ describe("Transfer selection pages", () => {
 			let firstApplyCall: (typeof calls)[number] | undefined;
 			for (let step = 0; step < 30; step++) {
 				await f.t.mutation(internal.files_transfer.advance, { runId });
-				const view = await f.asUser.query(api.files_transfer.get, { membershipId: f.scope.membershipId, runId });
+				const view = await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.scope.membershipId, runId });
 				if (view?.activity.progress.completed === 1) {
 					firstApplyCall = calls.at(-1);
 					break;
@@ -328,7 +328,7 @@ describe("Transfer selection pages", () => {
 				);
 			await test_finish_transfer_run(f.asUser, runId);
 			expect(
-				(await f.asUser.query(api.files_transfer.get, { membershipId: f.scope.membershipId, runId }))?.activity,
+				(await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.scope.membershipId, runId }))?.activity,
 				"all eight exact source IDs finish as proposals",
 			).toMatchObject({ status: "succeeded", progress: { completed: sources.length, failed: 0, canceled: 0 } });
 			const items = await f.t.run((ctx) =>
@@ -589,7 +589,7 @@ describe("Transfer selection pages", () => {
 		let discovered = 9_900;
 		for (let step = 0; step < 10; step++) {
 			await f.t.mutation(internal.files_transfer.advance, { runId: args.runId });
-			const view = await f.asUser.query(api.files_transfer.get, args);
+			const view = await f.asUser.query(api.files_transfer_queries.get, args);
 			const added = view!.activity.progress.discovered - discovered;
 			if (added > 0) pageSizes.push(added);
 			discovered = view!.activity.progress.discovered;
@@ -603,7 +603,7 @@ describe("Transfer selection pages", () => {
 		}
 		// The first step adds the selected folder itself. Then its children come in pages of at most 50.
 		expect(pageSizes).toEqual([1, 50, 50, 20]);
-		const view = await f.asUser.query(api.files_transfer.get, args);
+		const view = await f.asUser.query(api.files_transfer_queries.get, args);
 		expect(view).toMatchObject({
 			step: "discover",
 			activity: {

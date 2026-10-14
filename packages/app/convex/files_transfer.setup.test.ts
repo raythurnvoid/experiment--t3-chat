@@ -158,7 +158,7 @@ export async function finish_discovery(
 	runId: Id<"files_transfer_runs">,
 ) {
 	for (let step = 0; step < 150; step += 1) {
-		const view = await fixture.asUser.query(api.files_transfer.get, { membershipId: fixture.db.membershipId, runId });
+		const view = await fixture.asUser.query(api.files_transfer_queries.get, { membershipId: fixture.db.membershipId, runId });
 		if (!view) throw new Error("Missing run");
 		if (view.step === "apply" || (view.activity.status !== "queued" && view.activity.status !== "running")) return view;
 		await fixture.t.mutation(internal.files_transfer.advance, { runId });
@@ -171,7 +171,7 @@ export async function finish_folder_copy(
 	runId: Id<"files_transfer_runs">,
 ) {
 	for (let step = 0; step < 300; step += 1) {
-		const view = await fixture.asUser.query(api.files_transfer.get, { membershipId: fixture.db.membershipId, runId });
+		const view = await fixture.asUser.query(api.files_transfer_queries.get, { membershipId: fixture.db.membershipId, runId });
 		if (!view) throw new Error("Missing run");
 		if (view.activity.status !== "queued" && view.activity.status !== "running" && view.activity.status !== "stopping")
 			return view;
@@ -185,7 +185,7 @@ export async function finish_move(
 	runId: Id<"files_transfer_runs">,
 ) {
 	await fixture.t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
-	return await fixture.asUser.query(api.files_transfer.get, { membershipId: fixture.db.membershipId, runId });
+	return await fixture.asUser.query(api.files_transfer_queries.get, { membershipId: fixture.db.membershipId, runId });
 }
 
 export async function finish_copy_worker(
@@ -207,7 +207,7 @@ export async function finish_copy_with_workers(
 	runId: Id<"files_transfer_runs">,
 ) {
 	for (let step = 0; step < 300; step += 1) {
-		const view = await fixture.asUser.query(api.files_transfer.get, { membershipId: fixture.db.membershipId, runId });
+		const view = await fixture.asUser.query(api.files_transfer_queries.get, { membershipId: fixture.db.membershipId, runId });
 		if (!view) throw new Error("Missing run");
 		if (view.activity.status !== "queued" && view.activity.status !== "running" && view.activity.status !== "stopping")
 			return view;

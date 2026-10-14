@@ -1242,7 +1242,7 @@ file lands at `/<folder>/<folder>/target-b.md`. Nothing fails, so a later bash `
 meant creates a new file (`pending copy created … — review in Files`, Pending row `Added`) instead of a
 replacement, and every readback on the id you hold answers for the nested file. Pass only the name
 (`path: "/target-b.md"`) and read the created node's `path` back with
-`files_nodes:get_file_node_for_membership({ membershipId, fileNodeId })` before you build on it.
+`files_tree:get_file_node_for_membership({ membershipId, fileNodeId })` before you build on it.
 
 `files_nodes.rename_node` reads `path` the same way, relative to the node's parent. On 2026-09-30 a
 rename of `/g4-media/shapes.png` with `path: "/g4-media/qa-hidden-shapes.png"` created the folder
@@ -2543,7 +2543,7 @@ Sequence the work instead. Either finish the live QA before spawning agents that
 wait for them to report and confirm `git status --short` is clean before the browser run. A job
 takes 5–10 seconds to reach its Stop, and one push inside that window is enough.
 
-## `files_nodes.get_file_node_for_membership` returns the node fields at the top level
+## `files_tree.get_file_node_for_membership` returns the node fields at the top level
 
 Its args are `{ membershipId, fileNodeId }`, not `{ membershipId, nodeId }`.
 
@@ -2599,7 +2599,7 @@ left. The next page is then empty with `isDone: true`. A check that fails on `is
 one full page reports a bug that is not there. Follow `continueCursor` until `isDone` (the loop
 above), then check the total. Hit 2026-10-10.
 
-## `activities.list_page` requires `section`
+## `activities_feed.list_page` requires `section`
 
 It is not optional. Calling it with only `{membershipId, paginationOpts}` throws
 `ArgumentValidationError: Object is missing the required field 'section'`. Pass
@@ -2662,7 +2662,7 @@ await page.keyboard.press("End");
 await page.keyboard.type(" appended text");
 ```
 
-## `files_transfer.list_current` hides the status one level down, and returns an array
+## `files_transfer_queries.list_current` hides the status one level down, and returns an array
 
 It returns a plain `v.array(run_view_validator)` — not an object with a `runs` field. And the run
 view has only `_id`, `kind`, `publication`, `step`, `revision`, `activity`, `controls`, `conflicts`
@@ -2670,7 +2670,7 @@ and `movedNodeIds`. The status, the progress counters and the **activity id you 
 `activities.request_stop`** all live inside `run.activity`:
 
 ```js
-const cur = await convex.query(api.files_transfer.list_current, { membershipId });
+const cur = await convex.query(api.files_transfer_queries.list_current, { membershipId });
 const run = (Array.isArray(cur) ? cur : [])[0];
 run?.activity?.status;        // "queued" | "running" | "succeeded" | ...
 run?.activity?.progress?.completed;
@@ -2711,8 +2711,8 @@ list is stuck. Wait for the workspace to settle first:
 
 ```js
 // Empty active list AND a pending count that stops moving.
-const a = await convex.query(api.activities.list_page, { membershipId, section: "active", paginationOpts: { numItems: 5, cursor: null } });
-const sum = await convex.query(api.files_pending_updates.get_files_pending_updates_summary, { membershipId });
+const a = await convex.query(api.activities_feed.list_page, { membershipId, section: "active", paginationOpts: { numItems: 5, cursor: null } });
+const sum = await convex.query(api.files_pending_list.get_files_pending_updates_summary, { membershipId });
 ```
 
 Poll until `a.page` is empty and `sum.count` repeats three times, then start the next run.
@@ -2764,7 +2764,7 @@ have started, which is easy to misread as the app saving things by itself.
 
 Split every write flow into its own call: one call starts and seals the run and prints the run id,
 a second call polls it, a third reads back. Then a navigation can only cost you a poll. When you do
-see unexplained state, read `activities.list_page({ section: "history" })` before believing it —
+see unexplained state, read `activities_feed.list_page({ section: "history" })` before believing it —
 the run you lost is in there with its own timestamps.
 
 ## A private subtree is one review unit, so `progress.completed` cannot be caught mid-way

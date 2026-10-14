@@ -3,7 +3,7 @@
 import { query, type QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { paginationOptsValidator, paginationResultValidator, type PaginationResult } from "convex/server";
-import { string_prefix_upper_bound } from "../server/server-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous, string_prefix_upper_bound } from "../server/server-utils.ts";
 import { v, type Infer } from "convex/values";
 import { files_ROOT_ID } from "../shared/files.ts";
 import {
@@ -33,18 +33,26 @@ import {
 } from "../server/files-saved-placement.ts";
 import { doc } from "convex-helpers/validators";
 import { convex_error } from "../server/convex-utils.ts";
-import { access_control_db_filter_readable_file_nodes, access_control_db_resolve_role_refs } from "./access_control.ts";
+import {
+	access_control_db_authorize_file_write,
+	access_control_db_authorize_membership,
+	access_control_db_filter_readable_file_nodes,
+	access_control_db_resolve_role_refs,
+} from "./access_control.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_share_rows_NODE_FIELDS, files_share_rows_principal_key } from "../server/files-share-rows.ts";
 import { files_pending_overlay_db_has_saved_scope_job } from "../server/files-pending-overlay.ts";
 import {
 	files_node_public_doc_fields,
+	files_tree_db_get_public_node_fields,
 	files_nodes_db_get_tree_reader,
 	files_tree_db_get_readable_node,
 	files_tree_db_get_rows,
 	files_tree_db_page_needs_split,
 	files_tree_db_page_split_required,
 } from "./files_tree_db.ts";
+import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 
 // Reuse the loaded module between calls. Keep request state inside each query.
 export const experimental_reuseContext = true;
@@ -93,6 +101,285 @@ export const get_workspace_move_view = query({
 		// Search hooks use this too. Tree pagers ignore it, so a search change does not restart them.
 		const searchGeneration = await files_saved_placement_db_get_search_generation(ctx.db, reader.membership);
 		return { cohortId, view, generation, searchGeneration };
+	},
+});
+
+/**
+ * Whether the caller may write a file here. `nodeId` is the node that decides, the same one
+ * `access_control_db_authorize_file_write` takes.
+ *
+ * An action cannot read the database, so every action that writes a file asks this first. Without
+ * it those actions would still be asking the workspace, and would refuse the one person a grant was
+ * meant for.
+ */
+export const get_current_user_file_write_permission = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return false;
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return false;
+		}
+
+		const authorized = await access_control_db_authorize_file_write(ctx, { userAuth, membership, nodeId: args.nodeId });
+		if (authorized._nay) {
+			return false;
+		}
+		if (args.nodeId === files_ROOT_ID) {
+			return true;
+		}
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		return node !== null && !(await files_nodes_db_require_user_writable(ctx, { node, userId: userAuth.id }))._nay;
+	},
+});
+
+export const get_file_node_for_membership = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		fileNodeId: v.string(),
+	},
+	returns: v.union(v.object(files_node_public_doc_fields), v.null()),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const fileNodeId = ctx.db.normalizeId("files_nodes", args.fileNodeId);
+		if (!fileNodeId) {
+			return null;
+		}
+
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, fileNodeId);
+		if (!fileNode) {
+			return null;
+		}
+
+		// The permission is checked against the node, not the workspace, so a file inside a restricted
+		// folder is refused here even for somebody the workspace lets read everything else.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+			fileNode,
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
+		// Return the lock source only when this member can read it.
+		// Keep hidden folder ids and paths private.
+		const canWriteContent = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+			fileNode,
+		});
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
+		return files_tree_db_get_public_node_fields(
+			fileNode,
+			canWriteContent._nay ? "permission" : writable._nay ? "read_only" : null,
+		);
+	},
+});
+
+/**
+ * The README of one folder: its active file child whose name, in lowercase, is `readme.md`.
+ *
+ * Names sort by raw bytes, so no single index range finds every letter case. Scan the 8 case
+ * variants of the prefix `rea` instead, in byte order. Then the first readable match is the same
+ * README that a byte-ordered listing shows first.
+ */
+export const get_folder_readme = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		folderId: doc(app_convex_schema, "files_nodes").fields.parentId,
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			...files_node_public_doc_fields,
+			// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			createdBy: v.id("users"),
+			updatedBy: v.id("users"),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
+			return null;
+		}
+		const { userAuth, membership, hasWorkspaceRead } = reader;
+
+		// Use the same folder gate as `list_tree_children`, so a hidden folder answers like a missing one.
+		if (
+			args.folderId !== files_ROOT_ID &&
+			!(await files_tree_db_get_readable_node(ctx, { reader, nodeId: args.folderId }))
+		) {
+			return null;
+		}
+
+		const prefixes = ["REA", "REa", "ReA", "Rea", "rEA", "rEa", "reA", "rea"];
+		const candidateLists = await Promise.all(
+			prefixes.map((prefix) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) => {
+						const range = q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("moveCohortId", undefined)
+							.eq("parentId", args.folderId)
+							.eq("archiveOperationId", null)
+							.eq("kind", "file")
+							.gte("name", prefix);
+						const upperBound = string_prefix_upper_bound(prefix);
+						return upperBound === null ? range : range.lt("name", upperBound);
+					})
+					.take(50),
+			),
+		);
+
+		// A Move takes its files out of the normal docs until it ends. Read the same ranges on the places
+		// of the view that readers see now, so a README that the Move holds stays visible.
+		const view = await files_saved_placement_db_get_view(ctx.db, membership);
+		const selected = view.cohortId && view.view ? { cohortId: view.cohortId, view: view.view } : null;
+		const placeLists = selected
+			? await Promise.all(
+					prefixes.map(async (prefix) => {
+						const places = await ctx.db
+							.query("files_saved_places")
+							.withIndex("by_view_parent_archive_kind_name", (q) => {
+								const range = q
+									.eq("cohortId", selected.cohortId)
+									.eq("view", selected.view)
+									.eq("parentId", args.folderId)
+									.eq("archiveOperationId", null)
+									.eq("kind", "file")
+									.gte("name", prefix);
+								const upperBound = string_prefix_upper_bound(prefix);
+								return upperBound === null ? range : range.lt("name", upperBound);
+							})
+							.take(50);
+						const nodes = await Promise.all(
+							places.map((place) => files_saved_placement_db_get_node(ctx.db, place.nodeId, selected)),
+						);
+						return nodes.filter((node) => node !== null);
+					}),
+				)
+			: [];
+
+		// Both sources give README names in plain ASCII, so a string sort keeps the byte order.
+		const candidates = [...candidateLists.flat(), ...placeLists.flat()]
+			.filter((fileNode) => fileNode.name.toLowerCase() === "readme.md")
+			.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+		const readmes = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodes: candidates,
+			hasWorkspaceRead,
+		});
+		if (readmes.length === 0) {
+			return null;
+		}
+
+		const [readme] = await files_tree_db_get_rows(ctx, { userAuth, membership, fileNodes: [readmes[0]] });
+		return readme;
+	},
+});
+
+/**
+ * Whether the caller has a draft that adds, moves or removes items in this saved folder. The folder
+ * table shows saved rows only, so it uses this to point to the Pending tab. A draft that only
+ * changes content makes no place and no hide, so it gives no hint.
+ */
+export const has_drafts_in_folder = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		folderId: doc(app_convex_schema, "files_nodes").fields.parentId,
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
+			return false;
+		}
+		const { userAuth, membership } = reader;
+
+		// Use the same folder gate as `list_tree_children`, so a hidden folder answers like a missing one.
+		if (
+			args.folderId !== files_ROOT_ID &&
+			!(await files_tree_db_get_readable_node(ctx, { reader, nodeId: args.folderId }))
+		) {
+			return false;
+		}
+
+		// A draft that adds or moves an item here has a visible place in this folder.
+		const view = await files_saved_placement_db_get_view(ctx.db, membership);
+		const selected = view.cohortId && view.view ? { cohortId: view.cohortId, view: view.view } : undefined;
+		const views = selected ? [undefined, selected] : [undefined];
+		const places = await Promise.all(
+			views.map((moveView) =>
+				ctx.db
+					.query("files_pending_places")
+					.withIndex("by_org_ws_user_visible_parent_name", (q) => {
+						const visible = q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("userId", userAuth.id)
+							.eq("moveView.cohortId", moveView?.cohortId)
+							.eq("moveView.view", moveView?.view)
+							.eq("isVisible", true);
+						return args.folderId === files_ROOT_ID
+							? visible.eq("parent.kind", "root")
+							: visible.eq("parent.kind", "saved").eq("parent.id", args.folderId);
+					})
+					.first(),
+			),
+		);
+		if (places.some((place) => place !== null)) {
+			return true;
+		}
+
+		// A draft that moves, renames or deletes a saved item here has a hide in this folder.
+		const hides = await Promise.all(
+			views.map((moveView) =>
+				ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_org_ws_user_parent_name", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("userId", userAuth.id)
+							.eq("moveView.cohortId", moveView?.cohortId)
+							.eq("moveView.view", moveView?.view)
+							.eq("parentId", args.folderId),
+					)
+					.first(),
+			),
+		);
+		return hides.some((hide) => hide !== null);
 	},
 });
 

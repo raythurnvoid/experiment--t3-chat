@@ -377,7 +377,7 @@ describe("same-workspace document Copy", () => {
 			conflictPolicy: { file: "replace", folder: "error" },
 		});
 		if (started._nay) throw new Error(started._nay.message);
-		const view = await f.asUser.query(api.files_transfer.get, {
+		const view = await f.asUser.query(api.files_transfer_queries.get, {
 			membershipId: f.current.membershipId,
 			runId: started._yay.runId,
 		});

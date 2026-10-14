@@ -344,7 +344,7 @@ describe("unarchive_nodes path limit", () => {
 		};
 		const move = await move_incoming(targetParentId);
 		expect((await f.t.run((ctx) => ctx.db.get("activities", move.activityId)))?.status).toBe("awaiting_input");
-		const page = await f.asOwner.query(api.files_transfer.list_items, {
+		const page = await f.asOwner.query(api.files_transfer_queries.list_items, {
 			membershipId: f.db.membershipId,
 			runId: move.runId,
 			state: "conflict",

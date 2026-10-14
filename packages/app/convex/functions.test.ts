@@ -159,4 +159,50 @@ describe("functions.ts", () => {
 		}
 		expect(wrong, "saved list entries do not load editor handlers").toEqual([]);
 	});
+
+	test("Move read queries do not load producer handlers", () => {
+		const forbidden = new Set([
+			"convex/activities.ts",
+			"convex/files_nodes.ts",
+			"convex/files_nodes_content.ts",
+			"convex/files_pending_updates.ts",
+			"convex/files_pending_nodes.ts",
+			"convex/files_visible.ts",
+			"convex/files_transfer.ts",
+			"convex/files_metadata.ts",
+			"convex/organizations.ts",
+			"convex/ai_chat_files.ts",
+			"convex/ai_chat_workspaces.ts",
+			"convex/files_pending_update_runs.ts",
+			"convex/files_archive_runs.ts",
+			"convex/files_subtree_ops.ts",
+			"convex/files_move_cohorts.ts",
+			"convex/files_write_policy_runs.ts",
+			"convex/plugins_runtime.ts",
+		]);
+		const queue = ["activities_feed.ts", "files_transfer_queries.ts", "files_pending_target.ts"].map((name) =>
+			path.join(convexRoot, name),
+		);
+		const reached = new Set(queue);
+		const wrong = [];
+		for (const importer of queue) {
+			for (const { from } of read_imports(importer)) {
+				if (
+					/^(?:@tiptap\/|@mastra\/rag(?:\/|$)|yjs(?:\/|$)|y-prosemirror(?:\/|$)|prosemirror-|novel(?:\/|$)|marked(?:\/|$)|linkedom(?:\/|$))/.test(
+						from,
+					)
+				) {
+					wrong.push(`${relative(importer)} -> ${from}`);
+				}
+				const file = resolve_import(importer, from);
+				if (!file || reached.has(file)) continue;
+				reached.add(file);
+				// Generated references do not load the modules their types name.
+				if (file.startsWith(path.join(convexRoot, "_generated"))) continue;
+				if (forbidden.has(relative(file))) wrong.push(`${relative(importer)} -> ${relative(file)}`);
+				queue.push(file);
+			}
+		}
+		expect(wrong, "Move read queries do not load producer handlers").toEqual([]);
+	});
 });

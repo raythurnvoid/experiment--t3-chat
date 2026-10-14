@@ -109,7 +109,7 @@ describe("pending source summaries", () => {
 				}),
 			).toEqual({ _yay: null });
 			for (let step = 0; step < 30; step++) {
-				const run = await f.asUser.query(api.files_transfer.get, {
+				const run = await f.asUser.query(api.files_transfer_queries.get, {
 					membershipId: f.current.membershipId,
 					runId: started._yay.runId,
 				});
@@ -117,7 +117,7 @@ describe("pending source summaries", () => {
 				await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 			}
 			expect(
-				await f.asUser.query(api.files_transfer.get, {
+				await f.asUser.query(api.files_transfer_queries.get, {
 					membershipId: f.current.membershipId,
 					runId: started._yay.runId,
 				}),
@@ -130,7 +130,7 @@ describe("pending source summaries", () => {
 			const row = before.page[0];
 			const view =
 				row &&
-				(await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+				(await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 					membershipId: f.home.membershipId,
 					target: row.target,
 				}));
@@ -164,7 +164,7 @@ describe("pending source summaries", () => {
 				).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 			}
 			const args = { membershipId: f.home.membershipId, target: proposal.target };
-			const detail = await f.asUser.query(api.files_pending_updates.get_file_pending_target, args);
+			const detail = await f.asUser.query(api.files_pending_target.get_file_pending_target, args);
 			const pending = await f.asUser.query(api.files_pending_updates.get_file_pending_update, args);
 			const page = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 				membershipId: f.home.membershipId,
@@ -237,7 +237,7 @@ describe("pending source summaries", () => {
 			}),
 		).toEqual({ _yay: null });
 		for (let step = 0; step < 30; step++) {
-			const run = await f.asUser.query(api.files_transfer.get, {
+			const run = await f.asUser.query(api.files_transfer_queries.get, {
 				membershipId: f.current.membershipId,
 				runId: started._yay.runId,
 			});
@@ -245,7 +245,7 @@ describe("pending source summaries", () => {
 			await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 		}
 		expect(
-			await f.asUser.query(api.files_transfer.get, { membershipId: f.current.membershipId, runId: started._yay.runId }),
+			await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.current.membershipId, runId: started._yay.runId }),
 		).toMatchObject({ activity: { status: "succeeded" } });
 		const page = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 			membershipId: f.current.membershipId,
@@ -255,13 +255,13 @@ describe("pending source summaries", () => {
 		const row = page.page[0];
 		if (!row) throw new Error("Expected destination Copy");
 		const args = { membershipId: f.current.membershipId, target: row.target };
-		expect((await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.copyDestination).toEqual({
+		expect((await f.asUser.query(api.files_pending_target.get_file_pending_target, args))?.copyDestination).toEqual({
 			personal: false,
 			replacement: false,
 			folderPath: "/shared-destination",
 		});
 		expect(
-			await f.asOwner.query(api.files_pending_updates.get_file_pending_target, {
+			await f.asOwner.query(api.files_pending_target.get_file_pending_target, {
 				...args,
 				membershipId: f.owner.membershipId,
 			}),
@@ -274,7 +274,7 @@ describe("pending source summaries", () => {
 			}),
 		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		expect(
-			(await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.copyDestination?.folderPath,
+			(await f.asUser.query(api.files_pending_target.get_file_pending_target, args))?.copyDestination?.folderPath,
 		).toBe("/new-destination");
 	});
 
@@ -415,7 +415,7 @@ describe("chat pending destination counts", () => {
 			{ workspace: "personal", organizationName: "personal", workspaceName: "home", count: 2, truncated: false },
 		]);
 		expect(
-			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
+			await f.asUser.query(api.files_pending_list.get_files_pending_updates_summary, {
 				membershipId: f.home.membershipId,
 			}),
 		).toEqual({ count: 3, truncated: false });

@@ -1018,7 +1018,7 @@ describe("saved file media validation clocks", () => {
 		).toEqual({ _yay: null });
 		// The admin cannot see the restricted child, so the job must neither change nor count it.
 		expect(
-			await asMember.query(api.files_nodes.get_file_node_for_membership, {
+			await asMember.query(api.files_tree.get_file_node_for_membership, {
 				membershipId: member.membershipId,
 				fileNodeId: String(child),
 			}),

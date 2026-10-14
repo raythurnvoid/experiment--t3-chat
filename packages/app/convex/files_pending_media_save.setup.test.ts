@@ -335,7 +335,7 @@ export async function copy_replacement(args: {
 				.withIndex("by_run_order", (q) => q.eq("runId", runId))
 				.first(),
 		);
-		const view = await f.asUser.query(api.files_transfer.get, { membershipId: f.membershipId, runId });
+		const view = await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.membershipId, runId });
 		if (view?.activity.status === "succeeded" && item?.outputTarget) return await proposal(f, item.outputTarget);
 		if (view?.activity.status === "failed") throw new Error(view.activity.errorMessage ?? "Copy failed");
 		if (item?.workId && item.state !== "completed") {
@@ -412,7 +412,7 @@ export async function cross_workspace_copy(args: {
 				.collect(),
 		);
 		const item = items[0];
-		const view = await f.asUser.query(api.files_transfer.get, { membershipId: f.membershipId, runId });
+		const view = await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.membershipId, runId });
 		if (view?.activity.status === "succeeded" && item?.outputTarget)
 			return {
 				destination,

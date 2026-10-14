@@ -350,7 +350,7 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 			expect(cohort).not.toBeNull();
 			expect(page.rowIds.length, "Dense metadata uses 64 rows when the byte bound allows it").toBe(64);
 		}
-		if ((await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt === undefined)
+		if ((await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt === undefined)
 			return false;
 		return await t.run(async (ctx) => !(await ctx.db
 			.query("files_metadata_catalog_compactors")
@@ -361,7 +361,7 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		"paged Move phase peaks, with the metadata catalog",
 		JSON.stringify({ args, phases: Object.fromEntries(peaks) }),
 	);
-	expect(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId })).toMatchObject({
+	expect(await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
 		activity: { status: "succeeded", progress: { completed: 3, failed: 0, canceled: 0 } },
 	});
 	expect(peaks.get("cohort/publish")?.calls, "every saved Move root reaches cohort publication").toBe(sources.length);

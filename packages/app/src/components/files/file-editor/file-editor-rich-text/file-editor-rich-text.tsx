@@ -332,7 +332,7 @@ const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextB
 	const { editor, editable, nodeId, commentCommit, onClickAi } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const file = useQuery(
-		app_convex_api.files_nodes.get_file_node_for_membership,
+		app_convex_api.files_tree.get_file_node_for_membership,
 		nodeId ? { membershipId, fileNodeId: nodeId } : "skip",
 	);
 	const quote = (target: "agent" | "comments") => {

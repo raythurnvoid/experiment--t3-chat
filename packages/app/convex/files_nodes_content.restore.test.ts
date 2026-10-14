@@ -1476,11 +1476,11 @@ describe("copy_transfer_file saved replacement", () => {
 			});
 			for (let step = 0; step < 12; step++) {
 				await t.mutation(internal.files_transfer.advance, { runId });
-				const run = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
+				const run = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
 				if (run?.activity.status === "awaiting_input") break;
 			}
-			const waiting = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
-			const page = await asUser.query(api.files_transfer.list_items, {
+			const waiting = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
+			const page = await asUser.query(api.files_transfer_queries.list_items, {
 				membershipId: db.membershipId,
 				runId,
 				paginationOpts: { cursor: null, numItems: 50 },

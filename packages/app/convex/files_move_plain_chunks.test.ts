@@ -96,7 +96,7 @@ async function start_move(
 		const run = await f.t.run((ctx) => ctx.db.get("files_transfer_runs", started._yay.runId));
 		const activity = await f.t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
 		if (replace && activity?.status === "awaiting_input") {
-			const page = await f.asUser.query(api.files_transfer.list_items, {
+			const page = await f.asUser.query(api.files_transfer_queries.list_items, {
 				membershipId: f.db.membershipId,
 				runId: started._yay.runId,
 				state: "conflict",
@@ -561,7 +561,7 @@ describe("Move unchanged plain chunks", () => {
 		}
 		const original = await chunks(f);
 		const read = (index: number) =>
-			readers[index]!.asUser.query(api.files_nodes.get_file_node_for_membership, {
+			readers[index]!.asUser.query(api.files_tree.get_file_node_for_membership, {
 				membershipId: readers[index]!.membershipId,
 				fileNodeId: f.nodeId,
 			});

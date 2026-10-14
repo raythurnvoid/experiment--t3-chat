@@ -6837,7 +6837,7 @@ describe("files read-only locks", () => {
 			});
 			expect(checkedPublishedScope, "the real worker reaches publication before physical repair").toBe(true);
 			expect(
-				await writer.owner.query(api.files_transfer.get, {
+				await writer.owner.query(api.files_transfer_queries.get, {
 					membershipId: writer.db.membershipId,
 					runId: started._yay.runId,
 				}),

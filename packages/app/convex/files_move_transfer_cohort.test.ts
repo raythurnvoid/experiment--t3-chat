@@ -253,7 +253,7 @@ test("another accepted Move waits for the workspace cohort before reading its so
 	expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))?.phase).toBe("staging");
 	await f.publish();
 	await f.t.run((ctx) => files_transfer_db_record_cohort_publication(ctx, { cohortId: f.cohortId }));
-	const receipt = await f.asUser.query(api.files_transfer.list_items, {
+	const receipt = await f.asUser.query(api.files_transfer_queries.list_items, {
 		membershipId: f.db.membershipId,
 		runId: original.run._id,
 		state: "completed",
@@ -322,7 +322,7 @@ test("a public saved Move enters and finishes the bounded cohort producer", asyn
 	expect(cohortId, "saved Move enters the bounded cohort producer").not.toBeNull();
 	await t.finishAllScheduledFunctions(vi.runAllTimers, 1_000);
 	expect(
-		await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }),
+		await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }),
 		"the native saved Move completes after cohort cleanup",
 	).toMatchObject({ activity: { status: "succeeded", progress: { completed: 1, canceled: 0, failed: 0 } } });
 	const moved = await t.run((ctx) => ctx.db.get("files_nodes", source._yay.nodeId));

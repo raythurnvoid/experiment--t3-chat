@@ -35,18 +35,17 @@ import {
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
 import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
+import { files_pending_nodes_db_fence_discard, files_pending_nodes_db_start_cleanup } from "./files_pending_nodes.ts";
 import {
-	files_pending_nodes_db_fence_discard,
 	files_pending_nodes_db_get_ancestry,
 	files_pending_nodes_db_resolve_saved_parent,
-	files_pending_nodes_db_start_cleanup,
-} from "./files_pending_nodes.ts";
+} from "./files_pending_nodes_db.ts";
 import {
 	files_pending_updates_db_retire_prepared_content,
 	files_pending_updates_db_discard_saved,
-	files_pending_updates_db_get_target_view,
 	type get_file_pending_update_state_page_internal_Result,
 } from "./files_pending_updates.ts";
+import { files_pending_target_db_get_view } from "./files_pending_target.ts";
 import {
 	files_pending_update_plans_db_get,
 	files_pending_update_plans_db_delete_run_batch,
@@ -60,7 +59,7 @@ import {
 import { files_pending_update_yjs_state_digest } from "../server/files.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -1028,7 +1027,7 @@ export const append_single_save_input = internalMutation({
 		const proposal = item ? await ctx.db.get("files_pending_updates", item.pendingUpdateId) : null;
 		// The private ancestry is bounded on create. Each step checks its current saved parent.
 		const view = proposal
-			? await files_pending_updates_db_get_target_view(ctx, {
+			? await files_pending_target_db_get_view(ctx, {
 					membership,
 					target: proposal.target,
 					reader: await files_visible_db_create_reader(ctx, { ...run, readLimit: 2048 }),

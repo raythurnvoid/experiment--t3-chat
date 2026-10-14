@@ -1403,7 +1403,7 @@ errorMessage "OPENAI_API_KEY secret is not configured"
 
 The plugin opts into the feed **before** it reads the secret, so the missing key costs nothing: the
 card is a real shared card with a real dismiss control. Read both viewers with
-`activities.list_page({membershipId, section: "active" | "history", paginationOpts})` — the two
+`activities_feed.list_page({membershipId, section: "active" | "history", paginationOpts})` — the two
 sections are disjoint index ranges (`finishedAt === undefined` vs `finishedAt > undefined`), so a
 finished card is only ever in `history`.
 

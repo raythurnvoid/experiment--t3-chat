@@ -64,7 +64,7 @@ await state.appPlaywriterHarness.page.locator(
 
 Poll `window.__filesProfile.active?.frame !== undefined` through short `page.evaluate` calls. When it
 finishes, call `state.qa.filesProfile.saveSample()`. Save an incomplete sample on failure too, then
-inspect state before any retry. Read the new route ID and `files_nodes.get_file_node_for_membership`
+inspect state before any retry. Read the new route ID and `files_tree.get_file_node_for_membership`
 through the app client. Require the new ID, folder kind, root parent, active state, exact path, and
 empty ready table. Save a later receipt with the raw case/start/startedAt and both final-state and
 restoration checks. Keep the new ID as a named catalog fixture, or archive only this run's new item
@@ -117,7 +117,7 @@ No-op rename sends no mutation, so report it as a client-only case.
 Rename now returns an accepted Move Activity. Record the reply, the published row/name/path,
 and the finished Activity as separate milestones. The published saved view is the UI milestone;
 do not wait for all background repair to report it. Check descendant paths and terminal run state
-later, through the separate `files_transfer.get` and `list_items` reads.
+later, through the separate `files_transfer_queries.get` and `list_items` reads.
 
 Use `a[aria-label="Home"]` for the root breadcrumb. It is not always inside the path-list class.
 At root, that breadcrumb is absent. Check `nodeId=root` first and skip the Home click there.
@@ -130,10 +130,14 @@ check `elementFromPoint` on the current box before every native click. An open A
 cover a Files row. Use its native resize handle and verify the row's hit target before continuing.
 Finished Transfer dialogs have two Close buttons. Scope the native footer control to
 `.FilesTransferRunModal .MyModalFooter`. Do not press Escape between Cut and Paste; it clears Cut.
+Closing a Transfer dialog can leave Notifications open. Close Notifications before Cut,
+then check the row's hit target. An open popover can cover its More actions button.
 
 Root loading must check the expected first-page row IDs in order, on the same `Folder contents`
 table, plus `aria-busy="false"` and `data-sort-state="ready"`. The URL can change while the previous
 folder table still says ready. Before timing Home, check the source folder's exact row IDs too.
+An unfiltered table has no `data-filter-state` attribute. Do not wait for it to say `ready`.
+The Root preview shows five rows. Use Show more before timing a source outside that preview.
 
 Search suggestions can cover result rows and Clear search. Close them with Escape before clicking.
 Active search uses `[data-search-row-id="<id>"]`; the normal tree is hidden. Clear search before
@@ -151,7 +155,7 @@ the exact already-loaded Monaco module URL and select the editor with `ariaLabel
 
 Copy/Paste keeps its clipboard in the page. Navigate inside the app after Copy. A short copy without
 a conflict can finish without a transfer dialog. Check the new row and then the completed run through
-`files_transfer.get` and `files_transfer.list_items`. A copied folder row can appear before its children
+`files_transfer_queries.get` and `files_transfer_queries.list_items`. A copied folder row can appear before its children
 finish. Completed move items can have `source: null`; use the output target and stored node path.
 
 The top More options menu has no root Paste item. To paste at root, focus the Files tree container

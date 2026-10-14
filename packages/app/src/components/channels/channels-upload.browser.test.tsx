@@ -34,7 +34,7 @@ vi.mock("convex/react", async (importOriginal) => ({
 			const folder = mocks.folders.find((row) => row.path === args.path);
 			return folder ? { nodeId: folder._id, name: folder.name, kind: "folder", assetId: null } : null;
 		}
-		if (name === getFunctionName(app_convex_api.files_nodes.get_current_user_file_write_permission)) {
+		if (name === getFunctionName(app_convex_api.files_tree.get_current_user_file_write_permission)) {
 			return args.nodeId === "root" ? mocks.rootWrite : args.nodeId === "folder";
 		}
 		return undefined;

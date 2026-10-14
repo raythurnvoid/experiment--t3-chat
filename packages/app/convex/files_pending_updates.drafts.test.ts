@@ -101,7 +101,7 @@ describe("pending Copy disclosure", () => {
 		if (proposed._nay) throw new Error(proposed._nay.message);
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: source.userId });
 		const args = { membershipId: source.membershipId, target: { kind: "saved" as const, id: destination.nodeId } };
-		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, args);
+		const view = await asUser.query(api.files_pending_target.get_file_pending_target, args);
 		expect(view?.entry.pendingUpdate?.content).toBeDefined();
 		expect(view?.entry.pendingUpdate?.pendingReplacement).toBeUndefined();
 		expect(view?.copyDestination).toEqual({ personal: false, replacement: true, folderPath: "/" });
@@ -164,7 +164,7 @@ describe.each(["saved", "private"] as const)("%s Copy action replies", (kind) =>
 							result: { kind: "success", returnValue: null },
 						});
 					}
-					const run = await asUser.query(api.files_transfer.get, { membershipId: source.membershipId, runId });
+					const run = await asUser.query(api.files_transfer_queries.get, { membershipId: source.membershipId, runId });
 					if (run?.activity.status === "succeeded") break;
 				}
 				const item = await t.run((ctx) =>
@@ -391,7 +391,7 @@ describe("copied-parent text Save", () => {
 			)._nay,
 		).toBeUndefined();
 		expect(
-			await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+			await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: f.membershipId,
 				target: child.target,
 			}),
@@ -474,7 +474,7 @@ describe("archived-parent draft recovery", () => {
 		const f = await fixture(nested);
 		const { asUser, membershipId, target, proposal, pendingUpdateId } = f;
 		const before = await read_pending_review_state_for_test(f.t);
-		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target });
+		const view = await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target });
 		expect(view).toMatchObject({
 			entry: { path: f.path, pendingUpdate: { _id: pendingUpdateId } },
 			readiness: "ready",
@@ -534,7 +534,7 @@ describe("archived-parent draft recovery", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(
-			await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+			await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
 		).toMatchObject({ canEdit: true, canAcceptWithParents: true });
 	});
 
@@ -574,7 +574,7 @@ describe("archived-parent draft recovery", () => {
 			membershipId: f.owner.membershipId,
 			nodeIds: [f.parentId],
 		});
-		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+		const view = await f.asUser.query(api.files_pending_target.get_file_pending_target, {
 			membershipId: f.membershipId,
 			target,
 		});
@@ -623,7 +623,7 @@ describe("archived-parent draft recovery", () => {
 	test("recovery reads keep the real expiry and cannot revive an expired draft", async () => {
 		const f = await fixture();
 		const args = { membershipId: f.membershipId, target: f.target };
-		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, args);
+		const view = await f.asUser.query(api.files_pending_target.get_file_pending_target, args);
 		if (!view?.recovery) throw new Error("Expected the recovery view");
 		const draft = await f.t.run((ctx) => ctx.db.get("files_pending_updates", f.pendingUpdateId));
 		// Without a heartbeat, the recovery view shows the draft's own expiry.
@@ -639,11 +639,11 @@ describe("archived-parent draft recovery", () => {
 			interval: presenceHeartbeatIntervalMs,
 		});
 		const expiry = Date.now() + files_DRAFT_IDLE_EXPIRY_MS;
-		expect((await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.recovery?.expiresAt).toBe(
+		expect((await f.asUser.query(api.files_pending_target.get_file_pending_target, args))?.recovery?.expiresAt).toBe(
 			expiry,
 		);
 		vi.setSystemTime(expiry - 1);
-		expect((await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.recovery?.expiresAt).toBe(
+		expect((await f.asUser.query(api.files_pending_target.get_file_pending_target, args))?.recovery?.expiresAt).toBe(
 			expiry,
 		);
 		vi.setSystemTime(expiry + 1);
@@ -652,7 +652,7 @@ describe("archived-parent draft recovery", () => {
 			workspaceId: f.workspaceId,
 			userId: f.userId,
 		});
-		expect(await f.asUser.query(api.files_pending_updates.get_file_pending_target, args)).toBeNull();
+		expect(await f.asUser.query(api.files_pending_target.get_file_pending_target, args)).toBeNull();
 		expect(await f.asUser.query(api.files_pending_updates.get_file_pending_update, args)).toBeNull();
 		expect(
 			await f.asUser.query(api.files_pending_updates.get_file_pending_update_state_page, {
@@ -668,7 +668,7 @@ describe("archived-parent draft recovery", () => {
 		const f = await fixture();
 		const { membershipId, target } = f;
 		expect(
-			await f.asOwner.query(api.files_pending_updates.get_file_pending_target, {
+			await f.asOwner.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: f.owner.membershipId,
 				target,
 			}),
@@ -699,7 +699,7 @@ describe("archived-parent draft recovery", () => {
 			)._nay,
 		).toBeUndefined();
 		expect(
-			await f.asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+			await f.asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
 		).toBeNull();
 		expect(
 			await f.asUser.query(api.files_pending_updates.get_file_pending_update_state_page, {
@@ -724,7 +724,7 @@ describe("archived-parent draft recovery", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(
-			await f.asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+			await f.asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
 		).toMatchObject({ recovery: { savedParentId: f.parentId }, canAccept: false });
 		expect(
 			(
@@ -735,7 +735,7 @@ describe("archived-parent draft recovery", () => {
 			)._nay,
 		).toBeUndefined();
 		expect(
-			await f.asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+			await f.asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
 		).toBeNull();
 	});
 });

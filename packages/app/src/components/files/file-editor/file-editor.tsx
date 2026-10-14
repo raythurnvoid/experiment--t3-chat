@@ -670,7 +670,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	// Keep editing off while the current user's effective write permission loads.
 	const { membershipId } = AppTenantProvider.useContext();
 	const savedCanWrite = useQuery(
-		app_convex_api.files_nodes.get_current_user_file_write_permission,
+		app_convex_api.files_tree.get_current_user_file_write_permission,
 		target.kind === "saved" ? { membershipId, nodeId: target.id } : "skip",
 	);
 	const canWrite = target.kind === "private" ? privateCanEdit : savedCanWrite;

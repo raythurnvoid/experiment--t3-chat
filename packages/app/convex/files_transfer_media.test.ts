@@ -146,8 +146,8 @@ describe("files_transfer_media_db_map_refs", () => {
 			}),
 		).toEqual({ _yay: null });
 		const args = { membershipId: f.current.membershipId, runId: f.document.runId };
-		const view = await f.asUser.query(api.files_transfer.get, args);
-		const items = await f.asUser.query(api.files_transfer.list_items, {
+		const view = await f.asUser.query(api.files_transfer_queries.get, args);
+		const items = await f.asUser.query(api.files_transfer_queries.list_items, {
 			...args,
 			paginationOpts: { cursor: null, numItems: 20 },
 		});

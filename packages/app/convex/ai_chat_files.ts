@@ -62,9 +62,9 @@ import {
 	files_browser_runner_usage_schema,
 } from "../server/files-browser.ts";
 import { files_nodes_db_plan_private_node_by_path } from "./files_nodes.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { r2_enqueue_object_deletion_job } from "./r2_client.ts";
-import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes_db.ts";
 import {
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_STOPPED,

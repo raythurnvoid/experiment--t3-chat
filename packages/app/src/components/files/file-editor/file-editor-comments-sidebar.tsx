@@ -26,7 +26,7 @@ export function FileEditorCommentsSidebar(props: {
 }) {
 	const { fileNodeId, threadIds, hideMarkedPosts, children } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
-	const file = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId });
+	const file = useQuery(app_convex_api.files_tree.get_file_node_for_membership, { membershipId, fileNodeId });
 	const ready = useQuery(app_convex_api.channels_messages.get_attachable_files, {
 		membershipId,
 		fileNodeIds: [fileNodeId],

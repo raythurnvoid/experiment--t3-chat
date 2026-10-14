@@ -18,8 +18,10 @@ Primary:
 - `../../../packages/app/convex/files_nodes.ts`
 - `../../../packages/app/convex/files_tree.ts`
 - `../../../packages/app/convex/files_tree_db.ts`
+- `../../../packages/app/convex/files_visible_db.ts`
 - `../../../packages/app/server/files-write-policy.ts`
 - `../../../packages/app/convex/files_transfer.ts`
+- `../../../packages/app/convex/files_transfer_queries.ts`
 - `../../../packages/app/convex/files_folder_sorts.ts`
 - `../../../packages/app/shared/files-sort.ts`
 - `../../../packages/app/src/hooks/files-search-hooks.ts`
@@ -41,9 +43,10 @@ Primary:
 The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tree` with Convex-backed data.
 
 - Tree engine: `@headless-tree/core` + `@headless-tree/react`
-- Backend data: saved list queries in `files_tree`, file reads and writes in `files_nodes`
+- Backend data: saved lists and file/folder headers in `files_tree`; writes and content operations in `files_nodes`.
 - Primary data source: `files_tree.list_tree_children`, one open folder at a time (see Server-Driven Data)
 - `files_tree.get_workspace_move_view` selects the current normal and cohort streams. Tree and table queries use `files_tree_db` for the same current access and public fields as file detail reads. These modules keep editor code out of list queries. The view, index ranges and native page rules stay the same.
+- `files_transfer_queries` owns the four public Transfer read queries. Move and Copy writers stay in `files_transfer`. `files_visible_db` owns the shared draft reader. Read queries load its actual body, without loading the Visible list or file writers.
 - Local state is UI-only (`expandedItems`, search/selection, busy/pending flags) plus derived indexes from query data
 - Prefer Convex mutation `optimisticUpdate` over ad-hoc local mirrored tree state
 - The client prepends `files_SYNTHETIC_ROOT_FOLDER` to the returned `files_nodes` docs.
@@ -298,7 +301,7 @@ Tree-item components:
   `list_tree_shared_roots`) follow this rule now. The search box and the global search palette read
   `files_nodes.search_saved`, and their key and value suggestions are saved-only too (see "Search"
   and "Global Search").
-- One exception: the folder table's draft hint (`files_nodes.has_drafts_in_folder`) asks whether
+- One exception: the folder table's draft hint (`files_tree.has_drafts_in_folder`) asks whether
   the user has a place or a hide in the folder. It lists no draft (see "Table UI").
 - Code that keeps a list saved-only says so in a short comment that points here, like
   `// Saved rows only: UI lists never show drafts.` in `list_tree_children_sorted`.
@@ -544,12 +547,12 @@ and `find` also keep raw name order.
   contents could not be loaded." with no filter) and Retry, which subscribes that query again.
 - The table first shows 5 rows. Show more shows the rest of the loaded rows; when every loaded row
   is shown and the folder is not done, it asks for 100 more. Show less goes back to 5. The table's
-  README comes from `files_nodes.get_folder_readme`, not from the loaded rows.
+  README comes from `files_tree.get_folder_readme`, not from the loaded rows.
 - Row actions look up the saved row in one merged list: the tree rows from `FilesTreeProvider.useFolders` plus the table rows' `treeRow`. So a row on a page the tree has not loaded still works.
 - Every table row is a saved row: row actions use the real saved document and its current
   permission data. Private folders (the draft folder view) use tagged children and owner review
   actions.
-- Draft hint: when `files_nodes.has_drafts_in_folder` is true, the table shows the static text
+- Draft hint: when `files_tree.has_drafts_in_folder` is true, the table shows the static text
   "Your drafts add, move or remove items in this folder. Review them in the Pending changes tab." and an
   "Open Pending changes" button. The button selects the Pending tab the same way as the pending
   strip's Review button. The query reads only the caller's own drafts: one `.first()` on their

@@ -233,7 +233,7 @@ describe("share rows during a Move", () => {
 		}
 
 		expect(
-			await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId: started._yay.runId }),
+			await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: started._yay.runId }),
 		).toMatchObject({ activity: { status: "succeeded", progress: { completed: 1 } } });
 		const rows = await t.run((ctx) =>
 			ctx.db

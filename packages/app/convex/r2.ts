@@ -73,7 +73,7 @@ import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_resolve_read_target,
 } from "../server/files-saved-placement.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";

@@ -8,7 +8,7 @@ import { organizations_membership_lifetimes_db_get } from "./organizations_membe
 import { access_control_db_authorize_node, access_control_db_authorize_membership } from "./access_control.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
-import { files_pending_nodes_db_get_ancestry } from "./files_pending_nodes.ts";
+import { files_pending_nodes_db_get_ancestry } from "./files_pending_nodes_db.ts";
 import {
 	files_pending_updates_action_prepare_content,
 	files_pending_updates_db_get_cohort_content,

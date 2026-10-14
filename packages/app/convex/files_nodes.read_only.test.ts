@@ -2392,7 +2392,7 @@ describe("selected file writers", () => {
 			)._nay,
 		).toBeUndefined();
 		expect(
-			await asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+			await asMember.query(api.files_tree.get_current_user_file_write_permission, {
 				membershipId: member.membershipId,
 				nodeId: deepId,
 			}),
@@ -2409,7 +2409,7 @@ describe("selected file writers", () => {
 			)._nay,
 		).toBeUndefined();
 		expect(
-			await asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+			await asMember.query(api.files_tree.get_current_user_file_write_permission, {
 				membershipId: member.membershipId,
 				nodeId: deepId,
 			}),
@@ -2445,13 +2445,13 @@ describe("selected file writers", () => {
 			)._nay,
 		).toBeUndefined();
 		expect(
-			await asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+			await asMember.query(api.files_tree.get_current_user_file_write_permission, {
 				membershipId: member.membershipId,
 				nodeId: deepId,
 			}),
 		).toBe(true);
 		expect(
-			await asUser.query(api.files_nodes.get_current_user_file_write_permission, {
+			await asUser.query(api.files_tree.get_current_user_file_write_permission, {
 				membershipId: db.membershipId,
 				nodeId: deepId,
 			}),
@@ -2797,7 +2797,7 @@ describe("selected file writers", () => {
 				)._nay;
 			});
 		const owner_can_write = async () =>
-			await fixture.asUser.query(api.files_nodes.get_current_user_file_write_permission, {
+			await fixture.asUser.query(api.files_tree.get_current_user_file_write_permission, {
 				membershipId: fixture.db.membershipId,
 				nodeId: fixture.deepId,
 			});
@@ -4790,7 +4790,7 @@ describe("files_nodes public read-only view", () => {
 		const t = test_convex();
 		const f = await seed_hidden_lock_root(t);
 
-		const memberView = await f.asMember.query(api.files_nodes.get_file_node_for_membership, {
+		const memberView = await f.asMember.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: f.memberMembershipId,
 			fileNodeId: f.fileId,
 		});
@@ -4798,7 +4798,7 @@ describe("files_nodes public read-only view", () => {
 		expect(memberView).not.toHaveProperty("writePolicyScopeNodeId");
 		expect(memberView).not.toHaveProperty("writePolicy");
 
-		const ownerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
+		const ownerView = await f.asOwner.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: f.db.membershipId,
 			fileNodeId: f.fileId,
 		});
@@ -4806,7 +4806,7 @@ describe("files_nodes public read-only view", () => {
 			writePolicyState: "none",
 		});
 
-		const outerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
+		const outerView = await f.asOwner.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: f.db.membershipId,
 			fileNodeId: f.outerId,
 		});
@@ -4850,7 +4850,7 @@ describe("files_nodes public read-only view", () => {
 			)._nay,
 		).toBeUndefined();
 
-		const view = await asUser.query(api.files_nodes.get_file_node_for_membership, {
+		const view = await asUser.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: db.membershipId,
 			fileNodeId: nodeId,
 		});
@@ -4881,7 +4881,7 @@ describe("files_nodes public read-only view", () => {
 			throw new Error(folder._nay.message);
 		}
 
-		const view = await asUser.query(api.files_nodes.get_file_node_for_membership, {
+		const view = await asUser.query(api.files_tree.get_file_node_for_membership, {
 			membershipId: db.membershipId,
 			fileNodeId: folder._yay.nodeId,
 		});

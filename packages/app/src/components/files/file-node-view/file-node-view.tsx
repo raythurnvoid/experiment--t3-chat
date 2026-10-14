@@ -204,7 +204,7 @@ import { plugins_list_file_view_matches } from "../../../../shared/plugins.ts";
 import { users_SYSTEM_AUTHOR } from "../../../../shared/users.ts";
 
 type FileNodeViewResolvedNode = NonNullable<
-	FunctionReturnType<typeof app_convex_api.files_nodes.get_file_node_for_membership>
+	FunctionReturnType<typeof app_convex_api.files_tree.get_file_node_for_membership>
 >;
 
 function get_breadcrumb_path(fileNodesList: files_VisibleTreeNode[] | undefined, nodeId: string | null | undefined) {
@@ -1699,7 +1699,7 @@ type FileNodeViewPrivate_ClassNames =
 	| "FileNodeViewPrivate-name";
 
 type FileNodeViewPrivateView = NonNullable<
-	FunctionReturnType<typeof app_convex_api.files_pending_updates.get_file_pending_target>
+	FunctionReturnType<typeof app_convex_api.files_pending_target.get_file_pending_target>
 > & { entry: Extract<files_VisibleEntry, { kind: "private" }> };
 
 const FileNodeViewPrivateActions = memo(function FileNodeViewPrivateActions(props: { view: FileNodeViewPrivateView }) {
@@ -2962,10 +2962,10 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			row.treeRow && !treeNodeIds.has(row.treeRow._id) ? [row.treeRow] : [],
 		),
 	];
-	const folderReadme = useQuery(app_convex_api.files_nodes.get_folder_readme, { membershipId, folderId: folderItemId });
-	const hasDrafts = useQuery(app_convex_api.files_nodes.has_drafts_in_folder, { membershipId, folderId: folderItemId });
+	const folderReadme = useQuery(app_convex_api.files_tree.get_folder_readme, { membershipId, folderId: folderItemId });
+	const hasDrafts = useQuery(app_convex_api.files_tree.has_drafts_in_folder, { membershipId, folderId: folderItemId });
 
-	const canWriteFolder = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+	const canWriteFolder = useQuery(app_convex_api.files_tree.get_current_user_file_write_permission, {
 		membershipId,
 		nodeId: folderItemId,
 	});
@@ -3563,7 +3563,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 
 	const convex = useConvex();
 	const canWrite = useQuery(
-		app_convex_api.files_nodes.get_current_user_file_write_permission,
+		app_convex_api.files_tree.get_current_user_file_write_permission,
 		folderItemId ? { membershipId, nodeId: folderItemId } : "skip",
 	);
 	const folderNode = fileNodesList?.find((node) => node._id === folderItemId);
@@ -3828,7 +3828,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		onMoveFileNodesToParent,
 	} = props;
 	const { membershipId } = AppTenantProvider.useContext();
-	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
+	const canWrite = useQuery(app_convex_api.files_tree.get_current_user_file_write_permission, {
 		membershipId,
 		nodeId: child._id,
 	});
@@ -5446,7 +5446,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
 
 	const queriedNode = useQuery(
-		app_convex_api.files_nodes.get_file_node_for_membership,
+		app_convex_api.files_tree.get_file_node_for_membership,
 		searchNodeId && !isRootNodeSelected
 			? {
 					membershipId,
@@ -5455,7 +5455,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			: "skip",
 	);
 	const selectedTargetView = useQuery(
-		app_convex_api.files_pending_updates.get_file_pending_target,
+		app_convex_api.files_pending_target.get_file_pending_target,
 		searchPrivateNodeId
 			? { membershipId, target: { kind: "private", id: searchPrivateNodeId } }
 			: searchNodeId && !isRootNodeSelected
@@ -5506,7 +5506,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		[fileNodesList],
 	);
 	const folderReadme = useQuery(
-		app_convex_api.files_nodes.get_folder_readme,
+		app_convex_api.files_tree.get_folder_readme,
 		targetFolderId ? { membershipId, folderId: targetFolderId } : "skip",
 	);
 

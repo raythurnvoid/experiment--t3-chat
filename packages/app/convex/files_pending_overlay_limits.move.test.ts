@@ -81,12 +81,12 @@ describe("paged Move transaction budgets", () => {
 			});
 		try {
 			await finish_scheduled(t, async () =>
-				(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !== undefined,
+				(await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !== undefined,
 			);
 		} finally {
 			t.run = run;
 		}
-		expect(await asOwner.query(api.files_transfer.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: { status: "succeeded", progress: { completed: 1, failed: 0, canceled: 0 } },
 		});
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", folders[0]!)))?.path).toBe("/target/source");

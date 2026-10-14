@@ -6,7 +6,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
-import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
 	test_rename_node,
@@ -117,7 +117,7 @@ describe("files_pending_overlay flush", () => {
 		const target_at = async (path: string) =>
 			(await f.asV.query(api.files_nodes.get_visible_target_by_path, { membershipId, path }))?.target ?? null;
 		const pending_view = (pendingTarget: files_PendingTarget) =>
-			f.asV.query(api.files_pending_updates.get_file_pending_target, { membershipId, target: pendingTarget });
+			f.asV.query(api.files_pending_target.get_file_pending_target, { membershipId, target: pendingTarget });
 		const v_path_read = (path: string) =>
 			f.t.run(async (ctx) => (await (await files_visible_db_create_reader(ctx, f.v)).resolvePath(path))?.path ?? null);
 		expect((await f.v_find()).paths).toEqual([
@@ -322,7 +322,7 @@ describe("files_pending_overlay flush", () => {
 		await f.restrict(team);
 		expect(await get_path()).toBe(null);
 		expect(
-			await f.asV.query(api.files_pending_updates.get_file_pending_target, { membershipId, target: target(notes) }),
+			await f.asV.query(api.files_pending_target.get_file_pending_target, { membershipId, target: target(notes) }),
 		).toMatchObject({ entry: { path: "/notes.md" }, canAccept: false, moveDestinationUnreadable: true });
 	});
 
@@ -394,7 +394,7 @@ describe("files_pending_overlay flush", () => {
 		await f.draft_move(target(notes), { kind: "private", id: folder.id as Id<"files_pending_nodes"> }, "notes.md", f.v);
 		await f.review("accept", [await f.proposal_of(folder, f.v)], "v");
 		const pending_view = () =>
-			f.asV.query(api.files_pending_updates.get_file_pending_target, {
+			f.asV.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: f.vMember.membershipId,
 				target: target(notes),
 			});
@@ -438,7 +438,7 @@ describe("files_pending_overlay flush", () => {
 		// The Pending row of notes.md names its saved place, not /team/notes.md as if that were the
 		// destination.
 		expect(
-			await f.asV.query(api.files_pending_updates.get_file_pending_target, {
+			await f.asV.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: f.vMember.membershipId,
 				target: target(notes),
 			}),

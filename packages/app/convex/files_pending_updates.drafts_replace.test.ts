@@ -317,7 +317,7 @@ describe("private pending text", () => {
 				).toMatchObject({ _yay: { outcome: "cancelled_added_file", fromPath: "/moved.txt" } });
 			}
 			expect(
-				await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+				await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
 			).toBeNull();
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 			expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toMatchObject([
@@ -413,14 +413,14 @@ describe("private pending text", () => {
 				_yay: null,
 			});
 			await test_finish_transfer_run(asUser, runId);
-			const finished = await asUser.query(api.files_transfer.get, { membershipId, runId });
+			const finished = await asUser.query(api.files_transfer_queries.get, { membershipId, runId });
 			expect(finished?.activity, finished?.activity.errorMessage ?? "Expected a completed move").toMatchObject({
 				status: "succeeded",
 				progress: { completed: 1, failed: 0 },
 			});
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(savedBefore);
 			expect(
-				await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target: sourceTarget }),
+				await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target: sourceTarget }),
 			).toMatchObject({ entry: { path: "/destination.txt" } });
 			const visible = await list_root_for_test(t, { membershipId });
 			expect(visible._yay?.items.map(({ target, path }) => ({ target, path }))).toEqual([

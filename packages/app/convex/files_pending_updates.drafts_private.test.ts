@@ -705,7 +705,7 @@ describe("private pending text", () => {
 		});
 		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
 		expect(
-			await asOther.query(api.files_pending_updates.get_file_pending_target, {
+			await asOther.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: other.membershipId,
 				target,
 			}),
@@ -730,7 +730,7 @@ describe("private pending text", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("organizations", draft.organizationId, { ownerUserId: other.userId });
 		});
-		expect(await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target })).toBeNull();
+		expect(await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target })).toBeNull();
 		expect(await list_root_for_test(t, { membershipId })).toMatchObject({ _yay: { items: [] } });
 		// The row's own view is null above, so the Pending tab shows it as restricted.
 		expect(
@@ -783,7 +783,7 @@ describe("private pending text", () => {
 		expect(moved._nay).toBeDefined();
 		expect(await read_pending_review_state_for_test(draft.t)).toEqual(before);
 		expect(
-			await draft.asUser.query(api.files_pending_updates.get_file_pending_target, {
+			await draft.asUser.query(api.files_pending_target.get_file_pending_target, {
 				membershipId: draft.membershipId,
 				target: draft.target,
 			}),
@@ -794,7 +794,7 @@ describe("private pending text", () => {
 		const draft = await create_private_text_for_test({ preparing: true });
 		const { t, asUser, membershipId, target, pendingUpdateId } = draft;
 		expect(
-			await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+			await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
 		).toMatchObject({
 			entry: { kind: "private", path: "/draft.txt", pendingUpdate: { _id: pendingUpdateId } },
 			readiness: "preparing",
@@ -856,7 +856,7 @@ describe("private pending text", () => {
 		// The old private target still resolves after Save. It now points at the saved file, which
 		// remembers the private node it came from, so old links keep working.
 		expect(
-			await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+			await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
 		).toMatchObject({
 			entry: { kind: "saved", node: { _id: node!._id, publishedFromPrivateNodeId: target.id }, pendingUpdate: null },
 		});
@@ -1041,7 +1041,7 @@ describe("private pending text", () => {
 		expect(saved._nay).toBeDefined();
 		expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 		expect(
-			await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+			await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
 		).toMatchObject({ entry: { path: "/renamed.txt" } });
 	});
 });

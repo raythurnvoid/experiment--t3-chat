@@ -107,7 +107,7 @@ export async function save_media(args: {
 	// Keep large real Save sequences within the public rate limit without running cleanup timers.
 	vi.setSystemTime(Date.now() + 1500);
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: userId });
-	const view = await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target });
+	const view = await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target });
 	if (!view?.entry.pendingUpdate) throw new Error("Expected media proposal");
 	const saved = await test_save_file_pending_update(asUser, {
 		membershipId,
@@ -134,7 +134,7 @@ export async function save_all_media(args: {
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: userId });
 	const items = [];
 	for (const target of targets) {
-		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target });
+		const view = await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target });
 		if (!view?.entry.pendingUpdate) throw new Error("Expected media proposal");
 		items.push({
 			pendingUpdateId: view.entry.pendingUpdate._id,
