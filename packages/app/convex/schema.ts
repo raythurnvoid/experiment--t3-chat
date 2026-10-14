@@ -4336,6 +4336,23 @@ const app_convex_schema = defineSchema({
 	}).index("by_org_ws", ["organizationId", "workspaceId"]),
 
 	/**
+	 * Phase A copies. Keep old metadata sources until the full audit passes.
+	 */
+	files_metadata_maps: defineTable({
+		organizationId: files_committed_index_fields.organizationId,
+		workspaceId: files_committed_index_fields.workspaceId,
+		owner: v.union(
+			v.object({ kind: v.literal("saved"), id: v.id("files_nodes") }),
+			v.object({ kind: v.literal("pending"), id: v.id("files_pending_updates") }),
+			v.object({ kind: v.literal("capture"), id: v.id("files_transfer_items") }),
+		),
+		entries: files_metadata_entries_validator,
+		revision: v.number(),
+	})
+		.index("by_owner", ["owner.kind", "owner.id"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
 	 * Indexed metadata docs for a file. Field docs support existence search for presence-only
 	 * metadata. Value docs support string, number, boolean, and maybe_date search. Arrays insert one
 	 * value doc for each primitive item. Date-like strings also insert a maybe_date companion whose

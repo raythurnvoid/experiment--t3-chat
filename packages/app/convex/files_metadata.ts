@@ -37,6 +37,7 @@ import { files_index_range_apply } from "../server/files-index-range.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_saved_content_db_get_tags } from "../server/files-saved-content.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import {
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_frontmatter_exceeds_index_caps,
@@ -1525,6 +1526,13 @@ export async function files_metadata_db_write_entries(
 		entries: files_metadata_Entry[];
 	},
 ) {
+	const node = "fileNode" in args ? args.fileNode : args.privateEntry.node;
+	await files_metadata_maps_db_write(ctx.db, {
+		organizationId: node.organizationId, workspaceId: node.workspaceId,
+		owner: "fileNode" in args ? { kind: "saved", id: args.fileNode._id }
+			: { kind: "pending", id: args.privateEntry.pendingUpdate._id },
+		entries: args.entries,
+	});
 	const existingDocs =
 		"fileNode" in args
 			? await db_query_metadata_docs(ctx, {
