@@ -578,9 +578,15 @@ Read editable text with Bash. Read or transform other bytes through `execute_cod
 - Keys are bare (`status`), never the search field name (`metadata.status`). The tool refuses a `metadata.`-prefixed key on both sides and names the bare key to use.
 - It never writes Markdown frontmatter. `meta get` prints `frontmatter.*` lines next to `metadata.*` lines, and the description says so, because otherwise the grammar refusal on `frontmatter.title` trains the model to retry with the bare `title` and write the other store.
 - Path handling matches `edit_file`: strip `/home/cloud-usr/w/{organizationName}/{workspaceName}` from a Bash path and keep the rest of the suffix.
-- It writes straight to the committed map through `files_metadata.update_entries_by_path`. There is no pending review, because pending updates only model content branches and move/copy/archive intents.
+- It writes the full map through `files_metadata.update_entries_by_path`. Saved items change at once.
+  Private items keep their map by proposal ID until Save. This write does not add a separate review.
 - Works on folders and any file kind, uploads and binaries included, because metadata is not part of the file's text. Folder metadata remains committed during a pending move; the agent uses its visible path.
 - Read the current map with Bash `meta get <path>`; find files or folders by key with Bash `meta search --where '{"exists":"metadata.<key>"}'`.
+- Full strings allow 32 KiB of valid UTF-8. The whole canonical YAML map allows 128 KiB and 128 keys.
+  Search input still allows 1,024 UTF-16 units. Search output `matchedValue` is a short index copy.
+  `meta get` reads full values. Follow every `Next page` command until none remains. Only the last
+  JSON page has `isDone: true`. Large JSON strings have
+  identified fragments with UTF-16 offsets. `--field metadata.<key>` reads a map field without file text.
 
 ## Channels command
 

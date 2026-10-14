@@ -296,6 +296,10 @@ Current purge coverage includes:
   `channels_db_drain_member_batch` before removing memberships. Messages, reactions and uploads remain in
   surviving workspaces. Account retention does not run this drain; restore keeps the membership pin.
 - `files_metadata_docs`
+- `files_metadata_maps`, including saved, pending, and capture owners. Physical owner deletes
+  remove their map through the mutation wrapper. Tenant purge also drains exact scope leftovers.
+  It deletes one map before reading the next and checks the existing transaction reserve. A later
+  worker pass continues the same scope. Large maps never need a second pagination call or a full batch read.
 - `files_plain_text_chunks`, `files_text_chunks`
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`

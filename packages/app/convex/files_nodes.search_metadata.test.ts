@@ -610,7 +610,7 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 	const scoped = await search({ op: "exists", fieldPath: "frontmatter.from" }, "/meta");
 	expect(scoped.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
-	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
+	const metadata = await asUser.query(internal.files_metadata.get_index_values_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -716,7 +716,7 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 	const pendingHit = await searchAs(db.userId, "pending@example.com");
 	expect(pendingHit.items).toMatchObject([{ path, match: { sourceKind: "pending" } }]);
 
-	const pendingMetadata = await asUser.query(internal.files_metadata.get_by_path, {
+	const pendingMetadata = await asUser.query(internal.files_metadata.get_index_values_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -822,7 +822,7 @@ test("a pure-move row keeps committed metadata visible", async () => {
 	]);
 
 	// The get path resolves the visible destination and reports committed metadata.
-	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
+	const metadata = await asUser.query(internal.files_metadata.get_index_values_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -853,7 +853,7 @@ test("a pure-move row keeps committed metadata visible", async () => {
 	});
 	if (pending._nay) throw new Error(pending._nay.message);
 
-	const pendingMetadata = await asUser.query(internal.files_metadata.get_by_path, {
+	const pendingMetadata = await asUser.query(internal.files_metadata.get_index_values_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -1195,7 +1195,7 @@ test("file metadata stays visible while a pending content edit hides committed f
 		{ path, target: { kind: "saved", id: nodeId } },
 	]);
 
-	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
+	const metadata = await asUser.query(internal.files_metadata.get_index_values_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -1436,7 +1436,7 @@ describe("folder metadata", () => {
 				fileNodeId: folderId,
 			}),
 		).toEqual(updated._yay.entries);
-		const read = await t.query(internal.files_metadata.get_by_path, {
+		const read = await t.query(internal.files_metadata.get_index_values_by_path, {
 			...scope,
 			path: "/folder-metadata",
 			overlayUserId: db.userId,
@@ -1457,7 +1457,7 @@ describe("folder metadata", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(
-			await t.query(internal.files_metadata.get_by_path, {
+			await t.query(internal.files_metadata.get_index_values_by_path, {
 				...scope,
 				path: "/folder-metadata",
 				overlayUserId: db.userId,
@@ -1733,7 +1733,7 @@ describe("folder metadata", () => {
 		).toBeUndefined();
 
 		const read = (path: string, userId: Id<"users">) =>
-			t.query(internal.files_metadata.get_by_path, {
+			t.query(internal.files_metadata.get_index_values_by_path, {
 				...scope,
 				userId,
 				path,

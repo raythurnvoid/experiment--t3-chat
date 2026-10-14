@@ -16,6 +16,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
 import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
+import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import {
 	files_db_load_pending_update_yjs_state_bytes,
@@ -1468,18 +1469,29 @@ export async function create_private_text_for_test(
 	const { target, pendingUpdateId, operationBatchId } = created._yay;
 	if (target.kind !== "private" || !pendingUpdateId || !operationBatchId)
 		throw new Error("Expected a new private text draft");
-	if (args.collaborative === false || args.metadata) {
+	if (args.collaborative === false) {
 		await t.run(async (ctx) => {
 			const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
 			if (proposal?.createIntent?.kind !== "text") throw new Error("Expected a text create intent");
 			await ctx.db.patch("files_pending_updates", pendingUpdateId, {
 				createIntent: {
 					...proposal.createIntent,
-					...(args.collaborative === false ? { collaborationEnabled: false } : {}),
-					...(args.metadata ? { metadata: args.metadata } : {}),
+					collaborationEnabled: false,
 				},
 			});
 		});
+	}
+	if (args.metadata) {
+		// Copy clones captured metadata before text preparation.
+		const metadata = args.metadata;
+		await t.run((ctx) =>
+			files_metadata_maps_db_write(ctx.db, {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				owner: { kind: "pending", id: pendingUpdateId },
+				entries: metadata,
+			}),
+		);
 	}
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: scope.userId, name: "Draft Owner" });
 	if (!args.preparing) {

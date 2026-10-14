@@ -3,6 +3,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
+import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
+import { files_metadata_stringify_entries_yaml } from "../shared/files-metadata.ts";
 import {
 	test_save_file_pending_update,
 	test_create_saved_text_file,
@@ -129,6 +131,7 @@ describe("copy_transfer_file scopes", () => {
 			const destinationWorkspace = sourceWorkspace === "current" ? "personal" : "current";
 			const sourceScope = f[sourceWorkspace];
 			const destinationScope = f[destinationWorkspace];
+			const entries = Array.from({ length: 4 }, (_, i) => ({ key: `key${i}`, value: "x".repeat(32 * 1024 - 16) }));
 			const sourceId = await test_create_saved_text_file(f.t, {
 				membershipId: sourceScope.membershipId,
 				path: "/source.txt",
@@ -144,7 +147,7 @@ describe("copy_transfer_file scopes", () => {
 				await f.asUser.mutation(api.files_metadata.set_entries, {
 					membershipId: sourceScope.membershipId,
 					fileNodeId: sourceId,
-					metadataYaml: "owner: source",
+					metadataYaml: files_metadata_stringify_entries_yaml(entries),
 				}),
 			).toEqual({ _yay: null });
 			expect(
@@ -173,6 +176,10 @@ describe("copy_transfer_file scopes", () => {
 			});
 			expect(data._yay).not.toHaveProperty("organizationId");
 			expect(data._yay).not.toHaveProperty("workspaceId");
+			const captureMap = await f.t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "capture", id: copy.item._id }));
+			expect(captureMap, "The Copy capture owns the full map in the activity scope").toMatchObject({
+				organizationId: copy.item.organizationId, workspaceId: copy.item.workspaceId, entries,
+			});
 			await f.t.action(internal.files_nodes_content.copy_transfer_file, {
 				itemId: copy.item._id,
 				attempt: copy.item.attempt,
@@ -192,10 +199,11 @@ describe("copy_transfer_file scopes", () => {
 					path: "/source.txt",
 					sourceWritePolicy: { mode: "read_only" },
 				},
-				createIntent: { metadata: [{ key: "owner", value: "source" }] },
 				threadIds: [f.threadId],
 			});
 			expect(proposal!.copiedFrom).not.toHaveProperty("sourceNewChildWritePolicy");
+			expect((await f.t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "pending", id: proposal!._id })))?.entries,
+				"Copy keeps the captured full map in the destination proposal").toEqual(entries);
 			expect(
 				(
 					await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {

@@ -1537,15 +1537,14 @@ export async function files_nodes_db_create_private_node_by_path(
 			value: {
 				createIntent:
 					kind === "folder"
-						? { kind: "folder", metadata: [] }
+						? { kind: "folder" }
 						: args.content?.kind === "stored"
-							? { ...args.content, metadata: [] }
+							? args.content
 							: {
 									kind: "text",
 									contentType: shape.contentType,
 									textKind: shape.rootKind,
 									collaborationEnabled: true,
-									metadata: [],
 								},
 				// Uploaded bytes already know their size. A text create keeps size 0 until its first batch.
 				...(kind === "file" && args.content?.kind === "stored" ? { size: args.content.size } : {}),

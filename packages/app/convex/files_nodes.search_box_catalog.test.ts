@@ -131,7 +131,7 @@ describe("search box doors", () => {
 				fileNodeId: seeded.tasksFolderId,
 			});
 		const byPath = () =>
-			t.query(internal.files_metadata.get_by_path, {
+			t.query(internal.files_metadata.get_index_values_by_path, {
 				organizationId: seeded.db.organizationId,
 				workspaceId: seeded.db.workspaceId,
 				userId: member.userId,

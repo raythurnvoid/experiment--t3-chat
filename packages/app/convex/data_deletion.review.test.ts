@@ -9,7 +9,11 @@ import {
 	test_mocks,
 	test_mocks_cancel_pending_home_file_seeds,
 	test_mocks_fill_db_with,
+	test_spy_handler,
 } from "./setup.test.ts";
+import { hard_delete_user_data } from "./data_deletion.ts";
+import { files_metadata_db_write_entries } from "./files_metadata.ts";
+import { files_metadata_stringify_entries_yaml, files_metadata_validate_entries } from "../shared/files-metadata.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
@@ -719,6 +723,7 @@ const review_workspace_tables = [
 	"channels_reaction_counts",
 	"channels_inbox",
 	"files_metadata_docs",
+	"files_metadata_maps",
 	"files_plain_text_chunks",
 	"files_text_chunks",
 	"files_yjs_snapshots",
@@ -762,6 +767,7 @@ async function review_seed_all_workspace_content(
 	for (let i = 0; i < 2; i += 1) {
 		const node = nodes[i]!;
 		if (!node.assetId) throw new Error("Expected the base fixture asset");
+		await files_metadata_db_write_entries(ctx, { fileNode: node, entries: [{ key: "kept", value: args.tag }] });
 		const pending = await ctx.db
 			.query("files_pending_updates")
 			.withIndex("by_user_target", (q) =>
@@ -1927,6 +1933,63 @@ async function review_capture_organization_structure(ctx: MutationCtx, organizat
 }
 
 describe("organization structure at batch size one", () => {
+	test("reset drains 101 maximum maps across resource-aware batches", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const user = await t.run((ctx) => data_deletion_test_bootstrap_user(ctx, {
+			clerkUserId: "metadata-cleanup", displayName: "Metadata cleanup",
+		}));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: user.userId });
+		const membership = await t.run((ctx) => ctx.db.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", user.defaultWorkspaceId).eq("userId", user.userId).eq("active", true))
+			.unique());
+		if (!membership) throw new Error("Expected the reset membership");
+		const entries = Array.from({ length: 4 }, (_, i) => ({ key: `key${i}`, value: "x".repeat(32 * 1024 - 16) }));
+		expect(files_metadata_validate_entries(entries)._yay).toBeDefined();
+		const metadataYaml = files_metadata_stringify_entries_yaml(entries);
+		expect(new TextEncoder().encode(metadataYaml).length).toBeGreaterThan(127 * 1024);
+		for (let index = 0; index < 101; index++) {
+			vi.setSystemTime(Date.now() + 5000);
+			const created = await asUser.mutation(api.files_nodes.create_folder_node, {
+				membershipId: membership._id, parentId: "root", path: `metadata-${index}`,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			expect(await asUser.mutation(api.files_metadata.set_entries, {
+				membershipId: membership._id, fileNodeId: created._yay.nodeId, metadataYaml,
+			})).toEqual({ _yay: null });
+		}
+		let lastBytesRead = 0;
+		let lastBytesWritten = 0;
+		test_spy_handler(hard_delete_user_data, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			const metrics = await ctx.meta.getTransactionMetrics();
+			lastBytesRead = metrics.bytesRead.used;
+			lastBytesWritten = metrics.bytesWritten.used;
+			return result;
+		});
+		const read_maps = () => t.run((ctx) => ctx.db.query("files_metadata_maps")
+			.withIndex("by_organization_workspace", (q) => q.eq("organizationId", user.defaultOrganizationId).eq("workspaceId", user.defaultWorkspaceId))
+			.collect());
+		expect(await read_maps()).toHaveLength(101);
+		let remaining = 101;
+		const batches = [];
+		while (remaining > 0) {
+			const currentPass = t.mutation(internal.data_deletion.hard_delete_user_data, { userId: user.userId });
+			await expect(currentPass, "Reset completes each full-map batch through the normal mutation wrappers").resolves.toHaveProperty("done", false);
+			const result = await currentPass;
+			const next = (await read_maps()).length;
+			expect(next, "Each pass deletes complete maps and keeps every other map for later").toBeLessThan(remaining);
+			expect(result.deletedCount).toBe(remaining - next);
+			expect(lastBytesRead, "The map batch leaves read room after the reset prelude").toBeLessThan(13 * 1024 * 1024);
+			expect(lastBytesWritten).toBeLessThan(16 * 1024 * 1024);
+			batches.push({ count: result.deletedCount, lastBytesRead, lastBytesWritten });
+			remaining = next;
+		}
+		expect(batches.length).toBeGreaterThan(1);
+		expect(batches.reduce((total, batch) => total + batch.count, 0)).toBe(101);
+		expect(await read_maps(), "Repeated passes drain every full map").toEqual([]);
+		console.info("Metadata reset batch bytes", batches);
+	});
+
 	for (const path of ["organization", "reset"] as const) {
 		test(`finishes ${path} structure with retained members`, async () => {
 			const t = test_convex({ transactionLimits: true });
@@ -2001,16 +2064,18 @@ describe("organization structure at batch size one", () => {
 			let done = false;
 			let passes = 0;
 			for (; passes < 1000 && !done; passes += 1) {
-				const result =
+				const currentPass =
 					path === "reset"
-						? await t.mutation(internal.data_deletion.hard_delete_user_data, {
+						? t.mutation(internal.data_deletion.hard_delete_user_data, {
 								userId: seeded.user.userId,
 								_test_batchSize: 1,
 							})
-						: await t.mutation(internal.data_deletion.process_organization_deletion_request, {
+						: t.mutation(internal.data_deletion.process_organization_deletion_request, {
 								requestId: seeded.requestId!,
 								_test_batchSize: 1,
 							});
+				await expect(currentPass, "Each reset pass can visit both workspaces through the normal mutation").resolves.toHaveProperty("done");
+				const result = await currentPass;
 				done = result.done;
 			}
 			expect(done).toBe(true);
@@ -3071,7 +3136,6 @@ describe("process_user_deletion_request private copy assets", () => {
 					assetId: stagedAssetId,
 					size: 15,
 					contentType: "application/octet-stream",
-					metadata: [],
 				},
 				copiedFrom: { target: { kind: "saved", id: source.nodeId }, path: "/source.md" },
 			});

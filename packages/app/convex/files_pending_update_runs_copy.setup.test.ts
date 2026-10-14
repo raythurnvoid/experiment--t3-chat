@@ -100,7 +100,7 @@ export async function copied_folders(args: {
 						ctx,
 						pendingUpdateId: created._yay.pendingUpdateId,
 						value: {
-							createIntent: { kind: "folder", metadata: [] },
+							createIntent: { kind: "folder" },
 							copiedFrom: { target: { kind: "saved", id: f.sourceId }, path: "/source", sourceWritePolicy: null },
 						},
 					});

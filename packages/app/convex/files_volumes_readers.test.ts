@@ -198,11 +198,11 @@ describe("internal_list volume reads", () => {
 	});
 });
 
-describe("get_by_path volume metadata", () => {
+describe("get_index_values_by_path volume metadata", () => {
 	test("reads committed fields only with the original live chat source", async () => {
 		const f = await fixture();
 		const args = { ...f.readArgs, path: "/note.md" };
-		expect(await f.t.query(internal.files_metadata.get_by_path, args)).toMatchObject({
+		expect(await f.t.query(internal.files_metadata.get_index_values_by_path, args)).toMatchObject({
 			target: { kind: "saved", id: f.nodeId },
 			sourceKind: "committed",
 			values: [
@@ -210,15 +210,15 @@ describe("get_by_path volume metadata", () => {
 				{ fieldPath: "metadata.volume-path", valueKind: "string", stringValue: "note.md" },
 			],
 		});
-		expect(await f.t.query(internal.files_metadata.get_by_path, { ...args, agentSource: undefined })).toBeNull();
+		expect(await f.t.query(internal.files_metadata.get_index_values_by_path, { ...args, agentSource: undefined })).toBeNull();
 		expect(
-			await f.t.query(internal.files_metadata.get_by_path, {
+			await f.t.query(internal.files_metadata.get_index_values_by_path, {
 				...args,
 				agentSource: { ...args.agentSource, membershipLifetime: args.agentSource.membershipLifetime + 1 },
 			}),
 		).toBeNull();
 		await f.t.run((ctx) => ctx.db.patch("ai_chat_threads", args.agentSource.threadId, { archived: true }));
-		expect(await f.t.query(internal.files_metadata.get_by_path, args)).toBeNull();
+		expect(await f.t.query(internal.files_metadata.get_index_values_by_path, args)).toBeNull();
 	});
 });
 

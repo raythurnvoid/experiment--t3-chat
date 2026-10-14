@@ -283,8 +283,13 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 			allowed: expect.objectContaining({ target, lineCount: 2, byteCount: text.length }),
 			refused: null,
 		},
-		metadata_get_by_path: {
-			read: () => f.t.query(internal.files_metadata.get_by_path, { ...scope, path }),
+		metadata_get_read_source_by_path: {
+			read: () => f.t.query(internal.files_metadata.get_read_source_by_path, { ...scope, path }),
+			allowed: expect.objectContaining({ target, metadata: [{ key: "topic", value: "notebook" }] }),
+			refused: null,
+		},
+		metadata_get_index_values_by_path: {
+			read: () => f.t.query(internal.files_metadata.get_index_values_by_path, { ...scope, path }),
 			allowed: expect.objectContaining({ target, fields: ["metadata.topic"] }),
 			refused: null,
 		},
@@ -318,7 +323,8 @@ const doors = [
 	"read_file_line_range",
 	"read_file_tail_lines",
 	"read_file_content_stats",
-	"metadata_get_by_path",
+	"metadata_get_read_source_by_path",
+	"metadata_get_index_values_by_path",
 	"meta_search",
 ] as const;
 

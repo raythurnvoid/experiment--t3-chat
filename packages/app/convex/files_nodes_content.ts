@@ -19,6 +19,7 @@ import {
 	files_transfer_assets_db_retire_states as db_retire_transfer_states,
 } from "./files_transfer_assets_db.ts";
 import { internalMutation, mutation } from "./functions.ts";
+import { files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type RegisteredAction, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import type { Editor } from "@tiptap/core";
@@ -1637,7 +1638,7 @@ export const get_transfer_file_copy_data = internalMutation({
 		if (capture === null) {
 			const metadata =
 				sourceEntry.kind === "private"
-					? sourceEntry.pendingUpdate.createIntent!.metadata
+					? (await files_metadata_maps_db_read(ctx.db, { kind: "pending", id: sourceEntry.pendingUpdate._id }))?.entries ?? []
 					: await files_metadata_db_read_entries(ctx, {
 							organizationId: run.sourceScope.organizationId,
 							workspaceId: run.sourceScope.workspaceId,
@@ -1712,10 +1713,15 @@ export const get_transfer_file_copy_data = internalMutation({
 				sourceAssetId: asset?._id ?? null,
 				sourceStateId,
 				sourceYjsSnapshot,
-				metadata,
 				artifact: null,
 			};
 
+			await files_metadata_maps_db_write(ctx.db, {
+				organizationId: item.organizationId,
+				workspaceId: item.workspaceId,
+				owner: { kind: "capture", id: item._id },
+				entries: metadata,
+			});
 			await ctx.db.patch("files_transfer_items", item._id, { capture });
 		} else if (capture.artifact === null && capture.sourceYjsSnapshot !== null) {
 			yjsSnapshotAsset = await ctx.db.get("files_r2_assets", capture.sourceYjsSnapshot.assetId);
@@ -2489,13 +2495,18 @@ export const finalize_transfer_file_copy = internalMutation({
 			const previous = existing?.kind === "private" ? existing.pendingUpdate : null;
 			const pendingUpdateId = item.preparation?.pendingUpdateId ?? previous!._id;
 			const proposalRevision = item.preparation?.proposalRevision ?? previous!.revision;
-			const metadata = previous?.createIntent?.metadata ?? item.capture.metadata;
+			const metadata =
+				(await files_metadata_maps_db_read(
+					ctx.db,
+					previous ? { kind: "pending", id: previous._id } : { kind: "capture", id: item._id },
+				))?.entries ?? [];
 			const target = { kind: "private" as const, id: privateNodeId };
 			const scope = {
 				organizationId: run.destinationScope.organizationId,
 				workspaceId: run.destinationScope.workspaceId,
 				userId: run.userId,
 			};
+			await files_metadata_maps_db_write(ctx.db, { ...scope, owner: { kind: "pending", id: pendingUpdateId }, entries: metadata });
 
 			if (textKind === null) {
 				if (previous?.content) await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId });
@@ -2509,7 +2520,6 @@ export const finalize_transfer_file_copy = internalMutation({
 							contentType,
 							assetId: contentAsset._id,
 							size: contentAsset.size,
-							metadata,
 						},
 						content: undefined,
 						preparation: undefined,
@@ -2611,7 +2621,6 @@ export const finalize_transfer_file_copy = internalMutation({
 								previous?.createIntent?.kind === "text"
 									? previous.createIntent.collaborationEnabled
 									: collaborationEnabled === true,
-							metadata,
 						},
 						content: {
 							base: { kind: "new" },
@@ -2890,7 +2899,7 @@ export const finalize_transfer_file_copy = internalMutation({
 			contentType,
 			assetId: args.contentAssetId,
 			expectsTextContent: textKind === null ? undefined : true,
-			metadata: item.capture.metadata,
+			metadata: (await files_metadata_maps_db_read(ctx.db, { kind: "capture", id: item._id }))?.entries ?? [],
 			expectedParentWritePolicy: runWrittenWritePolicy,
 			// A copy keeps the source file's own rule. Read here on the server; the destination
 			// default never replaces it. A retry that finds its already-made target keeps that

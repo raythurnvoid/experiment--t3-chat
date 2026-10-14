@@ -4,6 +4,7 @@ import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import { convex_error } from "./convex-utils.ts";
 import {
 	files_metadata_METADATA_FIELD_PREFIX,
+	files_metadata_scalar_preview,
 	files_metadata_validate_entries,
 	type files_metadata_Entry,
 } from "../shared/files-metadata.ts";
@@ -214,6 +215,62 @@ export async function metadata_migration_audit_capture(ctx: QueryCtx, item: Lega
 	await require_copy(ctx.db, item, { kind: "capture", id: item._id }, item.capture.metadata);
 }
 
+/** Keep existing sort keys. The new table display is a separate short preview. */
+export async function metadata_migration_preview_doc(ctx: MutationCtx, doc: Doc<"files_metadata_docs">) {
+	if (doc.sourceKind !== "committed" || doc.docKind !== "field" || doc.sortDisplayValue === undefined) return;
+	const preview = files_metadata_scalar_preview(doc.sortDisplayValue);
+	const values = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+			q
+				.eq("organizationId", doc.organizationId)
+				.eq("workspaceId", doc.workspaceId)
+				.eq("sourceKind", "committed")
+				.eq("fileNodeId", doc.fileNodeId)
+				.eq("moveView.cohortId", doc.moveView?.cohortId)
+				.eq("moveView.view", doc.moveView?.view)
+				.eq("fieldPath", doc.fieldPath),
+		)
+		.collect();
+	const plainCount = values.filter((value) => value.docKind === "value" && value.valueKind !== "maybe_date").length;
+	// New writes may already store a short display with its full-value flag.
+	const isPreview = doc.sortDisplayValueIsPreview === true || preview.isPreview || plainCount > 1;
+	if (doc.sortDisplayValue === preview.value && (doc.sortDisplayValueIsPreview ?? false) === isPreview) return;
+	await ctx.db.patch("files_metadata_docs", doc._id, {
+		sortDisplayValue: preview.value,
+		sortDisplayValueIsPreview: isPreview,
+	});
+}
+
+export function metadata_migration_strip_intent<T extends { createIntent?: LegacyIntent }>(header: T) {
+	if (header.createIntent?.metadata === undefined) return header;
+	const { metadata: _metadata, ...createIntent } = header.createIntent;
+	return { ...header, createIntent };
+}
+
+export async function metadata_migration_strip_pending(ctx: MutationCtx, proposal: LegacyProposal) {
+	const entries = proposal.createIntent?.metadata;
+	if (entries === undefined) return;
+	const owner: MapOwner =
+		proposal.target.kind === "private"
+			? { kind: "pending", id: proposal._id }
+			: { kind: "saved", id: proposal.target.id };
+	await require_copy(ctx.db, proposal, owner, entries);
+	const { _id, _creationTime: _time, ...next } = metadata_migration_strip_intent(proposal);
+	await ctx.db.replace("files_pending_updates", _id, next);
+}
+
+export async function metadata_migration_strip_capture(ctx: MutationCtx, item: LegacyCaptureItem) {
+	if (!item.capture || item.capture.metadata === undefined) return;
+	const run = await ctx.db.get("files_transfer_runs", item.runId);
+	if (!run || run.organizationId !== item.organizationId || run.workspaceId !== item.workspaceId)
+		fail("Capture metadata has no exact transfer run", item._id);
+	await require_copy(ctx.db, item, { kind: "capture", id: item._id }, item.capture.metadata);
+	const { metadata: _metadata, ...capture } = item.capture;
+	const { _id, _creationTime: _time, ...fields } = item;
+	await ctx.db.replace("files_transfer_items", _id, { ...fields, capture });
+}
+
 export async function metadata_migration_audit_review(ctx: QueryCtx, item: Doc<"files_pending_update_run_items">) {
 	const header = item.reviewHeader as (NonNullable<typeof item.reviewHeader> & { createIntent?: LegacyIntent }) | null;
 	if (!header || header.createIntent?.metadata === undefined) return;
@@ -243,6 +300,17 @@ export async function metadata_migration_audit_review(ctx: QueryCtx, item: Doc<"
 				: { kind: "saved", id: header.target.id };
 		await require_copy(ctx.db, run, owner, header.createIntent.metadata);
 	}
+}
+
+export async function metadata_migration_strip_review(ctx: MutationCtx, item: Doc<"files_pending_update_run_items">) {
+	await metadata_migration_audit_review(ctx, item);
+	const header = item.reviewHeader as (NonNullable<typeof item.reviewHeader> & { createIntent?: LegacyIntent }) | null;
+	if (!header || header.createIntent?.metadata === undefined) return;
+	const { _id, _creationTime: _time, ...fields } = item;
+	await ctx.db.replace("files_pending_update_run_items", _id, {
+		...fields,
+		reviewHeader: metadata_migration_strip_intent(header),
+	});
 }
 
 export async function metadata_migration_audit_cohort(ctx: QueryCtx, item: Doc<"files_move_cohort_items">) {
@@ -283,4 +351,17 @@ export async function metadata_migration_audit_cohort(ctx: QueryCtx, item: Doc<"
 		}
 		await require_copy(ctx.db, cohort, owner, header.createIntent.metadata);
 	}
+}
+
+export async function metadata_migration_strip_cohort(ctx: MutationCtx, item: Doc<"files_move_cohort_items">) {
+	await metadata_migration_audit_cohort(ctx, item);
+	const header = item.afterProposal as
+		| (NonNullable<typeof item.afterProposal> & { createIntent?: LegacyIntent })
+		| null;
+	if (!header || header.createIntent?.metadata === undefined) return;
+	const { _id, _creationTime: _time, ...fields } = item;
+	await ctx.db.replace("files_move_cohort_items", _id, {
+		...fields,
+		afterProposal: metadata_migration_strip_intent(header),
+	});
 }

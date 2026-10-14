@@ -56,10 +56,9 @@ export const files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS = 512;
 export const files_metadata_FIELD_PATH_MAX_LENGTH = 160;
 
 /**
- * Longest string value a search can ask for. The index keeps a longer frontmatter string cut to one
- * character more, so an equal or prefix search stays exact: no search value can equal a cut value,
- * and a cut value starts with the same text as the original. 1,024 characters is at most about
- * 4 KB, and matches the limit on metadata values and table filters.
+ * Longest string value a search can ask for, measured in JavaScript string units. Search copies
+ * keep one unit more, or two to keep an emoji whole. A search cannot equal a cut copy, and every
+ * supported prefix still matches. Full reads and metadata writes use separate limits.
  */
 export const files_metadata_SEARCH_VALUE_MAX_LENGTH = 1024;
 
@@ -232,7 +231,7 @@ function scalar_metadata_value(fieldPath: string, node: YamlNode | null): files_
 	}
 	const value = node.value;
 	if (typeof value === "string") {
-		return { fieldPath, valueKind: "string", value: index_string_value(value) };
+		return { fieldPath, valueKind: "string", value };
 	}
 	if (typeof value === "number" && Number.isFinite(value)) {
 		return { fieldPath, valueKind: "number", value };
@@ -252,6 +251,26 @@ function index_string_value(value: string) {
 	}
 	const last = value.charCodeAt(end - 1);
 	return value.slice(0, last >= 0xd800 && last <= 0xdbff ? end + 1 : end);
+}
+
+/**
+ * Keep a table preview short without changing its scalar type.
+ */
+export function files_metadata_scalar_preview(value: string | number | boolean) {
+	if (typeof value !== "string") {
+		return { value, isPreview: false };
+	}
+
+	let end = 0;
+	let count = 0;
+	for (const character of value) {
+		if (count === 256) {
+			return { value: value.slice(0, end), isPreview: true };
+		}
+		end += character.length;
+		count++;
+	}
+	return { value, isPreview: false };
 }
 
 function primitive_value_key(value: files_metadata_Value) {
@@ -277,6 +296,25 @@ function add_value_with_maybe_date(mut_values: Map<string, files_metadata_Value>
 		value: timestamp,
 	};
 	mut_values.set(primitive_value_key(dateValue), dateValue);
+}
+
+/**
+ * Build short search copies after full values have been read and deduplicated.
+ */
+export function files_metadata_search_values(metadata: {
+	fields: readonly string[];
+	values: readonly files_metadata_Value[];
+}): ExtractedMetadata {
+	const fields = metadata.fields.filter((fieldPath) => fieldPath.length <= files_metadata_FIELD_PATH_MAX_LENGTH);
+	const values = new Map<string, files_metadata_Value>();
+	for (const value of metadata.values) {
+		if (value.fieldPath.length > files_metadata_FIELD_PATH_MAX_LENGTH) {
+			continue;
+		}
+		const searchValue = value.valueKind === "string" ? { ...value, value: index_string_value(value.value) } : value;
+		values.set(primitive_value_key(searchValue), searchValue);
+	}
+	return { fields, values: [...values.values()] };
 }
 
 function collect_metadata_from_node(args: {
@@ -397,8 +435,8 @@ export function files_metadata_extract_frontmatter(markdown: string) {
 
 /**
  * The one pure extraction/preflight both save paths run BEFORE any canonical write. It returns
- * the extracted metadata plus both counts the caps gate on: the field count and the total
- * index-document count (one doc per field plus one per value, `maybe_date` companions included).
+ * full values for previews, short search copies, and the counts the index caps gate on. The
+ * index-document count includes one doc per field and value, including `maybe_date` companions.
  * Committed materialization settles a marker and pending creation/rebase returns a refusal when
  * either count is over. The insert helpers keep their late throws only as impossible backstops.
  *
@@ -411,9 +449,11 @@ export function files_metadata_preflight_frontmatter(markdown: string) {
 		return extracted;
 	}
 
-	const metadata = extracted._yay;
+	const fullMetadata = extracted._yay;
+	const metadata = files_metadata_search_values(fullMetadata);
 	return Result({
 		_yay: {
+			fullMetadata,
 			metadata,
 			fieldCount: metadata.fields.length,
 			indexDocumentCount: metadata.fields.length + metadata.values.length,
@@ -443,18 +483,20 @@ export function files_metadata_frontmatter_exceeds_index_caps(preflight: {
 const MAX_METADATA_KEYS = 128;
 
 /**
- * The key becomes part of `fieldPath`, which is an equality field in every `meta search`
- * index, and a string value becomes `stringValue`, which is an indexed field too. Keep both short
- * so one index entry stays small.
+ * The key becomes part of `fieldPath`, an equality field in every search index.
  */
 const MAX_METADATA_KEY_LENGTH = 128;
-const MAX_METADATA_STRING_VALUE_LENGTH = 1024;
+
+/**
+ * Full metadata text can hold up to 32 KiB of valid UTF-8. Search copies stay short.
+ */
+export const files_metadata_MAX_STRING_VALUE_BYTES = 32 * 1024;
 
 /**
  * Cap on the whole YAML document the modal sends, checked before anything parses it. The agent
  * writes entries instead of YAML, so its door measures the document those entries would make.
  */
-const MAX_METADATA_YAML_BYTES = 16 * 1024;
+export const files_metadata_MAX_YAML_BYTES = 128 * 1024;
 
 /**
  * Metadata keys are conventions, not rules, so this grammar is deliberately wide: `created-by` and
@@ -600,12 +642,17 @@ export function files_metadata_validate_entries(entries: files_metadata_Entry[])
 		seenKeys.add(entry.key);
 
 		const value = entry.value;
-		if (typeof value === "string" && value.length > MAX_METADATA_STRING_VALUE_LENGTH) {
-			return Result({
-				_nay: {
-					message: `Metadata key "${entry.key}" has a value longer than ${MAX_METADATA_STRING_VALUE_LENGTH} characters`,
-				},
-			});
+		if (typeof value === "string") {
+			if (!value.isWellFormed()) {
+				return Result({ _nay: { message: `Metadata key "${entry.key}" must have valid Unicode text` } });
+			}
+			if (files_get_utf8_byte_size(value) > files_metadata_MAX_STRING_VALUE_BYTES) {
+				return Result({
+					_nay: {
+						message: `Metadata key "${entry.key}" must have a text value of at most ${files_metadata_MAX_STRING_VALUE_BYTES / 1024} KiB in UTF-8`,
+					},
+				});
+			}
 		}
 
 		if (typeof value === "number" && !Number.isFinite(value)) {
@@ -616,9 +663,9 @@ export function files_metadata_validate_entries(entries: files_metadata_Entry[])
 	// The modal caps the YAML document it sends, so the agent must respect that same cap. Otherwise the
 	// agent could write a map that the modal renders but refuses to save, and the user would have to
 	// delete somebody else's keys to fix their own typo. Measure the document both doors would show.
-	if (files_get_utf8_byte_size(files_metadata_stringify_entries_yaml(entries)) > MAX_METADATA_YAML_BYTES) {
+	if (files_get_utf8_byte_size(files_metadata_stringify_entries_yaml(entries)) > files_metadata_MAX_YAML_BYTES) {
 		return Result({
-			_nay: { message: `Metadata must be at most ${MAX_METADATA_YAML_BYTES / 1024} KiB when written as YAML` },
+			_nay: { message: `Metadata must be at most ${files_metadata_MAX_YAML_BYTES / 1024} KiB when written as YAML` },
 		});
 	}
 
@@ -634,9 +681,9 @@ export function files_metadata_validate_entries(entries: files_metadata_Entry[])
  */
 export function files_metadata_parse_entries_yaml(metadataYaml: string) {
 	// Cap the bytes first. Every message below can quote a key, and this is what bounds it.
-	if (files_get_utf8_byte_size(metadataYaml) > MAX_METADATA_YAML_BYTES) {
+	if (files_get_utf8_byte_size(metadataYaml) > files_metadata_MAX_YAML_BYTES) {
 		return Result({
-			_nay: { message: `Metadata must be at most ${MAX_METADATA_YAML_BYTES / 1024} KiB when written as YAML` },
+			_nay: { message: `Metadata must be at most ${files_metadata_MAX_YAML_BYTES / 1024} KiB when written as YAML` },
 		});
 	}
 
@@ -733,9 +780,9 @@ function metadata_index_value(fieldPath: string, value: files_metadata_Entry["va
 }
 
 /**
- * Build the index docs for one file's metadata: one field doc per key for existence search, and one
- * value doc per key for value search. A date-like string also gets the maybe_date companion that
- * range search needs, exactly like frontmatter.
+ * Read full scalar values from one file's metadata. A date-like string also gets the maybe_date
+ * companion that range search needs, exactly like frontmatter. Search writers project these values
+ * through `files_metadata_search_values` before storing index docs.
  */
 export function files_metadata_extract_entries(entries: files_metadata_Entry[]) {
 	const fields: string[] = [];

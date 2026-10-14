@@ -738,20 +738,20 @@ export const files_table_filter_validator = v.union(
 );
 
 const files_pending_create_intent_validator = v.union(
-	v.object({ kind: v.literal("folder"), metadata: files_metadata_entries_validator }),
+	v.object({ kind: v.literal("folder"), metadata: v.optional(files_metadata_entries_validator) }),
 	v.object({
 		kind: v.literal("text"),
 		contentType: v.string(),
 		textKind: v.union(v.literal("plain_text"), v.literal("rich_text")),
 		collaborationEnabled: v.boolean(),
-		metadata: files_metadata_entries_validator,
+		metadata: v.optional(files_metadata_entries_validator),
 	}),
 	v.object({
 		kind: v.literal("stored"),
 		assetId: v.id("files_r2_assets"),
 		size: v.number(),
 		contentType: v.string(),
-		metadata: files_metadata_entries_validator,
+		metadata: v.optional(files_metadata_entries_validator),
 	}),
 );
 
@@ -818,9 +818,13 @@ const files_metadata_committed_sort_fields = {
 	 */
 	sortValue: v.optional(v.string()),
 	/**
-	 * The value the user typed, shown in table cells. Set together with `sortValue`.
+	 * A short copy of the first plain value, shown in table cells. Set together with `sortValue`.
 	 */
 	sortDisplayValue: v.optional(v.union(v.string(), v.number(), v.boolean())),
+	/**
+	 * Set on committed field docs with a display value. Other docs have no table preview.
+	 */
+	sortDisplayValueIsPreview: v.optional(v.boolean()),
 };
 
 /**
@@ -1076,7 +1080,7 @@ export const files_pending_update_header_validator = v.object({
 	/** Changes whenever the proposal's reviewed content or intent changes. */
 	revision: v.number(),
 	/**
-	 * Initial type and metadata. A text draft is ready only with its sealed `content` group.
+	 * Initial type. A text draft is ready only with its sealed `content` group.
 	 */
 	createIntent: v.optional(files_pending_create_intent_validator),
 	/** A reserved target is not ready until its worker seals `createIntent` and its content. */
@@ -4336,7 +4340,8 @@ const app_convex_schema = defineSchema({
 	}).index("by_org_ws", ["organizationId", "workspaceId"]),
 
 	/**
-	 * Phase A copies. Keep old metadata sources until the full audit passes.
+	 * Ordered full maps. Each owner keeps its own doc; empty maps have no doc.
+	 * Copy captures keep their map until the transfer item is deleted.
 	 */
 	files_metadata_maps: defineTable({
 		organizationId: files_committed_index_fields.organizationId,
@@ -4365,8 +4370,8 @@ const app_convex_schema = defineSchema({
 	 *   for every file kind, including binary uploads, and a content save never touches them.
 	 *
 	 * Pending docs are user-scoped. Query code filters out other users' pending docs
-	 * and hides stale committed docs for files the acting user is editing. Only frontmatter docs are
-	 * ever pending, because file metadata is written straight to committed.
+	 * and hides stale committed docs for files the acting user is editing. Private new files also
+	 * have pending custom metadata. Saved custom metadata is written straight to committed.
 	 */
 	files_metadata_docs: defineTable(
 		v.union(
@@ -4378,6 +4383,8 @@ const app_convex_schema = defineSchema({
 			v.object({ ...files_pending_index_fields, ...files_metadata_index_fields }),
 		),
 	)
+		// Push B only. Preview work visits every committed field, across all Move views and archives.
+		.index("by_sourceKind_docKind", ["sourceKind", "docKind"])
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
 		// Whole-file staging needs short cursors even when a metadata key is very long.
 		.index("by_organization_workspace_source_fileNode", [
@@ -5995,7 +6002,7 @@ const app_convex_schema = defineSchema({
 						sequence: v.number(),
 					}),
 				),
-				metadata: files_metadata_entries_validator,
+				metadata: v.optional(files_metadata_entries_validator),
 				artifact: v.union(
 					v.null(),
 					v.object({

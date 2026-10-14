@@ -372,7 +372,6 @@ const PRIVATE_ENTRY = {
 			contentType: "text/html;charset=utf-8",
 			textKind: "plain_text",
 			collaborationEnabled: true,
-			metadata: [],
 		},
 		content: {
 			base: { kind: "new" },
@@ -640,7 +639,11 @@ beforeEach(() => {
 			case "files_metadata:get_field_values": {
 				const { fields } = args as { fields: string[] };
 				return {
-					values: fields.map((field) => ({ field, value: field === "metadata.status" ? "Open" : null })),
+					values: fields.map((field) => ({
+						field,
+						value: field === "metadata.status" ? "Open" : null,
+						isPreview: false,
+					})),
 					afterField: fields.at(-1),
 					isDone: true,
 				};

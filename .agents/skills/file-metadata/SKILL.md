@@ -24,10 +24,18 @@ membership, permissions, or a lock bypass. Changing a label never detaches a rea
 The stored form is validated structured data, not a text blob. YAML is only the edit format the
 Properties modal shows and parses. Nothing stores YAML.
 
+The agreed limits and their measured reason are in
+[Full values, search copies, and previews](references/value-limits.md). Keep those three uses
+separate when changing the storage or read paths.
+
 # Data Shape
 
 One entry is `{ key: string; value: string | number | boolean }` (`files_metadata_Entry` in
 `packages/app/shared/files-metadata.ts`). No nesting, no arrays, no null.
+
+Full maps live in `files_metadata_maps`, with an exact `by_owner` index. The owner is a saved node,
+private proposal, or immutable Copy capture. Entries keep their order. Each map has a revision.
+An empty map has no document. Draft and copy headers never contain the full map.
 
 Entries are indexed in the same `files_metadata_docs` table that Markdown frontmatter uses. The
 `fieldPath` prefix is what tells the two sources apart:
@@ -43,11 +51,11 @@ range covers exactly that prefix and nothing else.
 
 Per key, `files_metadata_db_write_entries` writes one `field` doc (existence search) and one `value` doc (value
 search). A date-like string value also gets the `maybe_date` companion, exactly like frontmatter, so
-range search over dates works. Value docs carry `entryIndex`, the key's position in the map the user
-typed — reading the map back in index order would reorder the dialog's lines on every save.
+range search over dates works. Value docs carry `entryIndex`, the key's position in the full map.
+Properties reads the ordered full map, so saving does not reorder the dialog's lines.
 Frontmatter docs leave `entryIndex` unset.
 
-Frontmatter indexing has two size limits, in `shared/files-metadata.ts`. The Markdown always keeps
+Search copies have two size limits, in `shared/files-metadata.ts`. The Markdown always keeps
 the full text.
 
 - A field path over 160 characters (`files_metadata_FIELD_PATH_MAX_LENGTH`) gets no docs, and neither
@@ -56,16 +64,19 @@ the full text.
   the cut would split a surrogate pair). Search values have at most 1,024 characters
   (`files_metadata_SEARCH_VALUE_MAX_LENGTH`): the search box and `meta search` refuse longer ones,
   and `meta search` also refuses a field over 160. So no search value can equal a cut value, and a
-  prefix search reads the same start as the full value: both stay exact. Readers of the index docs
-  (`meta get`, sort and the folder table) show the cut value.
+  prefix search reads the same start as the full value. These lengths use UTF-16 units.
+  Full reads never use the short search value. See the measured limits reference for the scope
+  of this claim and the separate sort and Unicode questions.
 
 Committed `field` docs, of both sources, also carry the folder table's sort fields: `parentId`,
 `nodeKind`, `isRestrictedScopeRoot`, `name`, `sortName`, `sortValue`, and `sortDisplayValue` (built
-by `committed_field_sort_fields` in `files_metadata.ts`). Value docs and pending docs never carry
-them. `sortValue` is the value as text, through `files_sort_value_of` in `shared/files-sort.ts`: a
+by `files_metadata_committed_field_sort_fields` in `files_metadata.ts`). Value docs and pending docs never carry
+them. `sortValue` uses the short search value through `files_sort_value_of` in `shared/files-sort.ts`: a
 number as `String(value)`, a boolean as `true`/`false`, a list by its first item, `maybe_date`
 skipped. A key with no plain value (a frontmatter map parent) has no `sortValue`, so the file sorts
-with the missing rows. `sortDisplayValue` is the typed value the table shows. Every writer that
+with the missing rows. `sortDisplayValue` is a typed preview of at most 256 code points.
+`sortDisplayValueIsPreview` is true when the string is cut or the field has more plain values.
+Every writer that
 changes a node's name, parent, or restriction also patches these fields on its committed field docs.
 A restrict or unrestrict patches archived docs too, because a restore does not rewrite the flag. See the `files-explorer-tree` skill, "Folder Contents".
 
@@ -74,8 +85,10 @@ later date sort mode would reuse the `maybe_date` companion that search already 
 and sort keep one date parser.
 
 Saved files keep `metadata.*` docs as `sourceKind: "committed"`, even during a pending content edit.
-Private files and folders keep their map in `createIntent.metadata` and index it as `sourceKind: "pending"`.
+Private files and folders own a full map by proposal ID and index it as `sourceKind: "pending"`.
 Save publishes that map with the new saved node. Discard removes the private map with its proposal.
+Copy captures own a clone until the item is deleted. Artifact cleanup keeps the clone for retry.
+A copied destination owns a new clone. A replacement keeps the destination's metadata.
 
 The table has strict committed and pending variants. Committed docs use a real `fileNodeId`.
 Pending frontmatter and private metadata docs use a saved/private `target`, owner, proposal ID, and proposal revision.
@@ -100,10 +113,12 @@ frontmatter until preparation rebuilds it.
   checks the current saved parent permission and write policy. Preparing drafts refuse writes.
   A ready draft's metadata write advances its proposal revision and expiry, keeps its text and
   frontmatter indexes current, and replaces only its `metadata.*` docs. It creates no saved node.
-- **Caps** (all in `shared/files-metadata.ts`): 128 keys, 128 characters per key, 1024 characters per
-  string value, and 16 KiB for the YAML document. Both doors enforce the document cap — the agent
+- **Limits** (all in `shared/files-metadata.ts`): 128 keys, 128 UTF-16 units per key, 32 KiB of valid
+  UTF-8 per string, and 128 KiB for the YAML document. Both doors enforce the document limit — the agent
   writes entries, so its door measures the document those entries would make. Without that the agent
   could store a map the dialog renders but refuses to save.
+  The Properties door checks both the typed YAML and its canonical saved form. The map writer checks
+  trusted create and Copy writes too. Longer input is refused; it is never silently cut.
 - **Key grammar** is `/^[\p{L}\p{N}_-]+$/u`: letters (in any language), numbers, `_` and `-`. A colon
   is never part of a key, so a key never needs quotes and `a:b:c` splits at the first colon. The dot is
   left out, because `metadata.a.b` would read like the real nesting `frontmatter.a.b` means.
@@ -218,12 +233,26 @@ Agent calls carry `agentSource`. The mutation also checks the original chat crea
 membership lifetime, and allows only the current workspace or the caller's own personal/home.
 Leaving and rejoining the source team does not revive an old metadata write. Agent metadata reads
 and searches carry the same source check; normal Properties reads keep their own membership rules.
-Saved metadata changes immediately. Private metadata stays in the create proposal until Save.
+Saved metadata changes immediately. Private metadata stays owned by the create proposal until Save.
 
-`get_by_path` reads the same owner tree. It returns a tagged `target`, the current path, and current
-metadata/frontmatter fields. Preparing private drafts return null. Service accounts and read-only
-mounts use saved content only. Bash `meta get --format json` and `meta search --format json` return
-tagged targets too.
+`get_read_source_by_path` reads the same owner tree. It returns a full map, tagged target, path, and exact text
+source version. Preparing private drafts return null. Saved stale or preparing content uses saved
+text. Service accounts and read-only mounts use saved content only. `get_index_values_by_path`
+inspects derived index docs; full-value callers never fall back to those docs.
+
+`server/files-metadata-read.ts` serves Bash and the Node table action. It reads supported Markdown
+text for full frontmatter. Every page checks current access, target, path, selected view, and map
+revision. Reads that include frontmatter also pin the text and proposal versions. Metadata-only
+fields skip those text versions, so an unrelated content edit does not break their cursor.
+A changed source asks the caller to start again.
+No whole-folder or workspace read is needed.
+
+`meta get` accepts `--field` and `--cursor`. Each JSON or text page fits 64 KiB, including output
+escaping and continuation text. Follow every `Next page` command until none remains. Only the last
+JSON page has `isDone: true`. Large JSON strings use `valueIndex`, `fragment`, `offset`, and `totalLength`.
+Text shows the value number and range. Offsets use UTF-16 units. Emoji pairs stay whole.
+Serialized JSON carries decoded YAML escape values safely through Convex. This is output paging,
+not a value limit. Oversized stored assets are not read as editable text.
 
 `get_entries` is a public query and returns `[]` for a non-member or an unreadable node. It throws
 only when Convex auth has no usable identity.
@@ -234,10 +263,9 @@ The two doors above are the only doors a person or an agent can knock on. The fi
 write the map directly with `files_metadata_db_write_entries`, exported from `files_metadata.ts`.
 They write initial metadata once. Later content writes and repeated ensure calls leave it unchanged.
 
-That writer checks nothing on purpose. A create runs before anybody could have an opinion about
-that file, and mount files and plugin source mirrors are created read-only with a SYSTEM author, so
-`db_authorize_metadata_write` and `files_node_require_writable` would refuse the very writes that
-say where the file came from. Keep both doors as they are for user writes.
+That writer checks the map bounds. It skips user permission checks because it runs inside an
+already checked creation flow. Mount files and plugin source mirrors are created read-only with
+a SYSTEM author. The normal write doors would refuse the initial source stamps.
 
 `files_nodes_db_create_node_recursively_at_path` applies `metadata` to the leaf file or folder only.
 Its internal `createdNodesMetadata` argument supplies initial keys on every new node. Leaf keys take
@@ -261,8 +289,8 @@ commit sha, so that root is cut off before the value is stored.
 
 ## Copies and new text files
 
-- A new copy keeps ordinary source metadata in its captured create intent. Accept writes that map
-  with the saved node. A replacement keeps the destination's metadata and policy.
+- A new copy keeps source metadata in its capture owner map, then clones it to the private owner.
+  Accept clones that map to the saved owner. A replacement keeps the destination's metadata and policy.
 - Agent text writes and `mkdir` reserve private nodes. Their create intents start without source
   stamps. The owner can edit the private map through `update_entries_by_path`; Accept saves it.
 - App-created text files (`create_text_node`, `create_home_file`) also start without source stamps.
@@ -305,13 +333,13 @@ The map holds member-defined labels and details recorded by creation flows.
   the selected workspace; a path or a model-supplied ID cannot add another workspace.
 - **Agent search**: `meta search --where '{"exists":"metadata.<key>"}'` and `meta get <path>`, both in
   `packages/app/server/bash-meta-command.ts`. `meta get` prints frontmatter and metadata fields
-  together; its `source:` line describes the frontmatter lines only, because `metadata.*` is always
-  the committed map.
+  together; its `source:` line identifies saved or pending text. A private item also owns a pending
+  metadata map. Search JSON names its short matched copy `matchedValue`. Use `meta get` for full values.
 
 Folder metadata participates in sidebar and global search. Rename, move, archive, and restore update
 its indexed scope with the folder's own path, including nested and archived descendants. Folder
 pending moves keep the committed map and the existing per-user search overlay. True deletion removes
-both field and value docs. File copy does not copy metadata; folder copy is unsupported.
+both field and value docs, plus the owned full map. File and folder copies clone metadata.
 
 # Folder Table Fields
 
@@ -354,6 +382,13 @@ The stored field doc's `sortDisplayValue` is the cell value. It preserves `false
 A list displays its first plain primitive in extraction order. Date companion docs do not change
 that value. Empty lists, map parents, and absent keys return an explicit `null` cell value. Every
 read doc must be a committed doc of the same tenant and node; a mismatch throws.
+
+Cell results include `isPreview`. A preview button opens a full-value dialog through
+`files_metadata_node.get_full_field_values`. The action checks the membership and saved target on
+every page. It loads full saved values, including every plain array value and marked date companions.
+The dialog joins all pages before display. Closing, changing the target, or a read failure clears
+partial values. Mouse and Enter open it without following the row link; Escape returns focus.
+Ordinary table rows never load full map bodies.
 
 `list_node_fields` reads at most 50 distinct candidates, including invalid keys and an end probe.
 Only search-valid qualified keys are returned. `list_node_fields` and `get_field_values` use

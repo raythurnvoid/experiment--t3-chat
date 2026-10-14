@@ -52,6 +52,17 @@ import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx"
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyInput, MyInputArea, MyInputControl } from "@/components/my-input.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
+import {
+	MyModal,
+	MyModalCloseTrigger,
+	MyModalDescription,
+	MyModalFooter,
+	MyModalHeader,
+	MyModalHeading,
+	MyModalPopover,
+	MyModalScrollableArea,
+} from "@/components/my-modal.tsx";
+import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-popover.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import {
@@ -165,6 +176,7 @@ import {
 import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
+import { z } from "zod";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
 import {
@@ -2746,6 +2758,7 @@ function get_folder_target_key(target: files_PendingTarget) {
 type FileNodeViewFolderColumnValues = {
 	state: "loading" | "ready" | "failed" | "refused";
 	values: Record<string, string | number | boolean | null>;
+	previews: Record<string, boolean>;
 };
 
 function useFolderColumnValues(args: {
@@ -2794,6 +2807,7 @@ function useFolderColumnValues(args: {
 			let chain = source.chain;
 			let state: FileNodeViewFolderColumnValues["state"] = "loading";
 			let values: FileNodeViewFolderColumnValues["values"] = {};
+			let previews: FileNodeViewFolderColumnValues["previews"] = {};
 			for (const [index, afterField] of chain.cursors.entries()) {
 				const response: FunctionReturnType<typeof app_convex_api.files_metadata.get_field_values> | Error | undefined =
 					responses[`${source.key}:${index}`];
@@ -2801,10 +2815,14 @@ function useFolderColumnValues(args: {
 				if (response instanceof Error || response === null) {
 					state = response === null ? "refused" : "failed";
 					values = {};
+					previews = {};
 					chain = { ...chain, cursors: chain.cursors.slice(0, index + 1) };
 					break;
 				}
-				for (const value of response.values) values[value.field] = value.value;
+				for (const value of response.values) {
+					values[value.field] = value.value;
+					previews[value.field] = value.isPreview;
+				}
 				if (response.isDone) {
 					state = "ready";
 					chain = { ...chain, cursors: chain.cursors.slice(0, index + 1) };
@@ -2818,6 +2836,7 @@ function useFolderColumnValues(args: {
 				) {
 					state = "failed";
 					values = {};
+					previews = {};
 					break;
 				}
 				if (response.afterField !== chain.cursors[index + 1]) {
@@ -2825,7 +2844,7 @@ function useFolderColumnValues(args: {
 					break;
 				}
 			}
-			results[source.key] = { state, values };
+			results[source.key] = { state, values, previews };
 			chains[source.key] = chain;
 		}
 		return { results, chains };
@@ -3704,6 +3723,199 @@ const FileNodeViewFolderBody = memo(function FileNodeViewFolderBody(props: FileN
 // #endregion folder body
 
 // #region folder explorer row
+const full_value_page_schema = z.object({
+	values: z.array(
+		z.object({ valueIndex: z.number().int().nonnegative(), field: z.string() }).and(
+			z.union([
+				z.object({ valueKind: z.literal("string"), value: z.string() }),
+				z.object({ valueKind: z.literal("number"), value: z.number() }),
+				z.object({ valueKind: z.literal("boolean"), value: z.boolean() }),
+				z.object({ valueKind: z.literal("maybe_date"), value: z.iso.datetime() }),
+				z.object({
+					valueKind: z.literal("string"),
+					fragment: z.string(),
+					offset: z.number().int().nonnegative(),
+					totalLength: z.number().int().nonnegative(),
+				}),
+			]),
+		),
+	),
+	isDone: z.boolean(),
+});
+
+type FileNodeViewFolderFullValue = Extract<
+	z.infer<typeof full_value_page_schema>["values"][number],
+	{ value: unknown }
+>;
+
+type FileNodeViewFolderFullValueModal_ClassNames =
+	| "FileNodeViewFolderFullValueModal"
+	| "FileNodeViewFolderFullValueModal-value"
+	| "FileNodeViewFolderFullValueModal-label"
+	| "FileNodeViewFolderFullValueModal-error";
+
+const FileNodeViewFolderFullValueModal = memo(function FileNodeViewFolderFullValueModal(props: {
+	target: Extract<files_PendingTarget, { kind: "saved" }>;
+	field: string;
+	name: string;
+	returnFocusRef: RefObject<HTMLButtonElement | null>;
+	onClose: () => void;
+}) {
+	const { target, field, name, returnFocusRef, onClose } = props;
+	const targetId = target.id;
+	const { membershipId } = AppTenantProvider.useContext();
+	const [values, setValues] = useState<FileNodeViewFolderFullValue[] | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const closeRef = useRef<HTMLButtonElement | null>(null);
+	const handleClose = useFn(() => {
+		onClose();
+		queueMicrotask(() => returnFocusRef.current?.focus());
+	});
+
+	useEffect(() => {
+		let cancelled = false;
+		setValues(null);
+		setError(null);
+		const load = async () => {
+			const complete = new Map<number, FileNodeViewFolderFullValue>();
+			const fragments = new Map<number, { text: string; totalLength: number }>();
+			let cursor: string | null = null;
+			do {
+				const result: FunctionReturnType<typeof app_convex_api.files_metadata_node.get_full_field_values> =
+					await app_convex.action(app_convex_api.files_metadata_node.get_full_field_values, {
+						membershipId,
+						target: { kind: "saved", id: targetId },
+						field,
+						cursor,
+					});
+				if (cancelled) return;
+				if (result._nay) {
+					setError(result._nay.message);
+					return;
+				}
+				const page = full_value_page_schema.parse(JSON.parse(result._yay.json));
+				if (page.isDone !== result._yay.isDone || page.isDone !== (result._yay.cursor === null))
+					throw new Error("Incomplete metadata page");
+				for (const value of page.values) {
+					if (value.field !== field) throw new Error("Unexpected metadata field");
+					if ("fragment" in value) {
+						const previous = fragments.get(value.valueIndex) ?? { text: "", totalLength: value.totalLength };
+						if (value.offset !== previous.text.length || value.totalLength !== previous.totalLength)
+							throw new Error("Incomplete metadata value");
+						const text = previous.text + value.fragment;
+						if (text.length > value.totalLength) throw new Error("Unexpected metadata value length");
+						if (text.length === value.totalLength) {
+							complete.set(value.valueIndex, { valueIndex: value.valueIndex, field, valueKind: "string", value: text });
+							fragments.delete(value.valueIndex);
+						} else fragments.set(value.valueIndex, { text, totalLength: value.totalLength });
+					} else complete.set(value.valueIndex, value);
+				}
+				cursor = result._yay.cursor;
+			} while (cursor !== null);
+			if (fragments.size > 0) throw new Error("Incomplete metadata value");
+			setValues([...complete.values()].sort((a, b) => a.valueIndex - b.valueIndex));
+		};
+		void load().catch((failure: unknown) => {
+			if (cancelled) return;
+			console.error("[FileNodeViewFolderFullValueModal] Failed to load full values", { failure, targetId, field });
+			setError("Could not load full values. Close this dialog and try again.");
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [field, membershipId, targetId]);
+
+	return (
+		<MyModal open setOpen={(open) => !open && handleClose()}>
+			<MyModalPopover
+				className={"FileNodeViewFolderFullValueModal" satisfies FileNodeViewFolderFullValueModal_ClassNames}
+				initialFocus={closeRef}
+			>
+				<MyModalHeader>
+					<MyModalHeading>Full values</MyModalHeading>
+					<MyModalDescription>
+						{field} on {name}
+					</MyModalDescription>
+				</MyModalHeader>
+				<MyModalScrollableArea aria-busy={(values === null && error === null) || undefined}>
+					{error ? (
+						<p
+							className={"FileNodeViewFolderFullValueModal-error" satisfies FileNodeViewFolderFullValueModal_ClassNames}
+							role="alert"
+						>
+							{error}
+						</p>
+					) : values === null ? (
+						<p role="status">Loading full values…</p>
+					) : values.length === 0 ? (
+						<p>No values are stored for this field.</p>
+					) : (
+						values.map((value, index) => (
+							<div key={value.valueIndex}>
+								<p
+									className={
+										"FileNodeViewFolderFullValueModal-label" satisfies FileNodeViewFolderFullValueModal_ClassNames
+									}
+								>
+									{value.valueKind === "maybe_date" ? "Derived date" : `Value ${index + 1}`}
+								</p>
+								<TextMonospaceBlock
+									className={
+										"FileNodeViewFolderFullValueModal-value" satisfies FileNodeViewFolderFullValueModal_ClassNames
+									}
+									aria-label={`${field}, ${value.valueKind === "maybe_date" ? "derived date" : `value ${index + 1}`}`}
+									text={JSON.stringify(value.value, null, 2)}
+								/>
+							</div>
+						))
+					)}
+				</MyModalScrollableArea>
+				<MyModalFooter>
+					<MyButton ref={closeRef} variant="outline" onClick={handleClose}>
+						Close
+					</MyButton>
+				</MyModalFooter>
+				<MyModalCloseTrigger />
+			</MyModalPopover>
+		</MyModal>
+	);
+});
+
+const FileNodeViewFolderExplorerFullValue = memo(function FileNodeViewFolderExplorerFullValue(props: {
+	row: FileNodeViewFolderRow;
+	field: string;
+}) {
+	const { row, field } = props;
+	const [open, setOpen] = useState(false);
+	const buttonRef = useRef<HTMLButtonElement | null>(null);
+	const handleClose = useFn(() => setOpen(false));
+	// Folder table rows are saved-only, even while their owner has a draft.
+	if (row.target.kind !== "saved") return null;
+	return (
+		<>
+			<MyButton
+				ref={buttonRef}
+				className={"FileNodeViewFolderExplorer-full-value" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+				variant="ghost"
+				aria-label={`Show full ${field} values for ${row.name}`}
+				aria-haspopup="dialog"
+				onClick={() => setOpen(true)}
+			>
+				Full value
+			</MyButton>
+			{open && (
+				<FileNodeViewFolderFullValueModal
+					target={row.target}
+					field={field}
+					name={row.name}
+					returnFocusRef={buttonRef}
+					onClose={handleClose}
+				/>
+			)}
+		</>
+	);
+});
+
 const FileNodeViewFolderExplorerColumnCells = memo(function FileNodeViewFolderExplorerColumnCells(props: {
 	row: FileNodeViewFolderRow;
 	columns: string[];
@@ -3753,11 +3965,13 @@ const FileNodeViewFolderExplorerColumnCells = memo(function FileNodeViewFolderEx
 								: value === null
 									? "—"
 									: String(value);
+			const isPreview = state === "ready" && columnValues?.previews[field] === true;
 			return (
 				<MyGridTableCell
 					key={field}
 					data-column-field={field}
 					data-value-state={state}
+					data-value-preview={isPreview || undefined}
 					className={cn(
 						"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
 						"FileNodeViewFolderExplorer-cell-value" satisfies FileNodeViewFolderExplorerRow_ClassNames,
@@ -3766,7 +3980,9 @@ const FileNodeViewFolderExplorerColumnCells = memo(function FileNodeViewFolderEx
 					{/* A separate span lets a flex cell shorten long values with an ellipsis. */}
 					<span className={"FileNodeViewFolderExplorer-value" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
 						{label}
+						{isPreview && typeof value === "string" ? "…" : ""}
 					</span>
+					{isPreview && <FileNodeViewFolderExplorerFullValue row={row} field={field} />}
 				</MyGridTableCell>
 			);
 		});
@@ -3786,6 +4002,7 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 	| "FileNodeViewFolderExplorer-icon"
 	| "FileNodeViewFolderExplorer-read-only"
 	| "FileNodeViewFolderExplorer-value"
+	| "FileNodeViewFolderExplorer-full-value"
 	| "FileNodeViewFolderExplorer-more-action";
 
 type FileNodeViewFolderExplorerRow_Props = {

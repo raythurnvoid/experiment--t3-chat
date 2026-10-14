@@ -214,7 +214,7 @@ test.each([
 					await files_db_patch_pending_update({
 						ctx,
 						pendingUpdateId: created._yay.pendingUpdateId,
-						value: { createIntent: { kind: "folder", metadata: [] } },
+						value: { createIntent: { kind: "folder" } },
 					});
 					return (await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId))!;
 				});

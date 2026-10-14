@@ -71,6 +71,8 @@ Main table in `packages/app/convex/schema.ts`:
   - optional `copiedFrom`
   - optional `pendingArchive` (`fromPath` display metadata only; the node id is authoritative)
   - optional `createIntent` for private text, stored content, or folders
+    Full metadata is owned by proposal ID in `files_metadata_maps`. It stays out of create intents,
+    review headers, and cohort proposal headers. Save clones it to the allocated saved owner.
   - optional `threadIds` (contributor set: the chat threads that touched this doc, deduped; agent writes append their thread id, client-driven writes leave the field out of their patches so it survives, and it dies with the doc; unset for client-only docs and rows older than the field)
   - `size` (UTF-8 byte size of the current `unstaged` text, or `0` for a structural-only doc)
   - `updatedAt`

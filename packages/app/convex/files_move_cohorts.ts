@@ -6,6 +6,7 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
+import { files_metadata_maps_db_delete, files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import app_convex_schema from "./schema.ts";
 import {
 	files_nodes_db_get_content_version,
@@ -717,6 +718,12 @@ async function db_allocate_private(
 	};
 	const nodeId = await ctx.db.insert("files_nodes", fields);
 	const saved = (await ctx.db.get("files_nodes", nodeId))!;
+	await files_metadata_maps_db_write(ctx.db, {
+		organizationId: cohort.organizationId,
+		workspaceId: cohort.workspaceId,
+		owner: { kind: "saved", id: nodeId },
+		entries: (await files_metadata_maps_db_read(ctx.db, { kind: "pending", id: proposal._id }))?.entries ?? [],
+	});
 	const afterPlaceId = await ctx.db.insert("files_saved_places", {
 		cohortId: cohort._id,
 		view: "after",
@@ -2068,6 +2075,8 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 				else if (item.afterProposal) {
 					await files_db_advance_pending_review_version(ctx, proposal);
 					await ctx.db.replace("files_pending_updates", proposal._id, item.afterProposal);
+					if (item.target.kind === "private")
+						await files_metadata_maps_db_delete(ctx.db, { kind: "pending", id: proposal._id });
 					if (cohort.origin.kind === "review" && item.target.kind === "private") {
 						const runId = cohort.origin.runId;
 						const hold = await ctx.db

@@ -1,7 +1,5 @@
 import { defineCommand, type Command } from "just-bash/browser";
-import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_metadata_get_by_path_Result } from "../convex/files_metadata.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	files_metadata_FIELD_PATH_MAX_LENGTH,
@@ -25,6 +23,7 @@ import {
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { files_pending_overlay_list } from "./files-pending-overlay.ts";
+import { files_metadata_read_full_page } from "./files-metadata-read.ts";
 
 const SUPPORTED_METADATA_KINDS = new Set(["frontmatter", "metadata"]);
 
@@ -372,9 +371,27 @@ function parse_search_args(args: string[], options: { cwd: string }) {
 function parse_get_args(args: string[], options: { cwd: string }) {
 	let format: MetaCommandGetFormat = "text";
 	let pathValue: string | undefined;
+	let cursor: string | null = null;
+	let field: string | undefined;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
+		if (arg === "--cursor" || arg === "--field") {
+			const value = bash_read_option_value("meta get", args, index, arg);
+			if (value._nay) return value;
+			if (arg === "--cursor") cursor = value._yay.value;
+			else field = value._yay.value;
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--cursor=")) {
+			cursor = arg.slice("--cursor=".length);
+			continue;
+		}
+		if (arg.startsWith("--field=")) {
+			field = arg.slice("--field=".length);
+			continue;
+		}
 		if (arg === "--format") {
 			const value = bash_read_option_value("meta get", args, index, "--format");
 			if (value._nay) return value;
@@ -407,7 +424,7 @@ function parse_get_args(args: string[], options: { cwd: string }) {
 	}
 	// Keep an absolute shell path to choose the workspace or mount scope below.
 	const pathShell = bash_resolve_path(options.cwd, pathValue);
-	return Result({ _yay: { pathShell, format } });
+	return Result({ _yay: { pathShell, format, cursor, field } });
 }
 
 function build_search_continuation(args: {
@@ -458,21 +475,6 @@ function search_result_value(result: {
 	}
 }
 
-function get_value(value: NonNullable<files_metadata_get_by_path_Result>["values"][number]) {
-	switch (value.valueKind) {
-		case "string":
-			return value.stringValue;
-		case "number":
-			return value.numberValue;
-		case "boolean":
-			return value.booleanValue;
-		// Print the timestamp as an ISO string, like meta search does. A maybe_date doc always fills
-		// numberValue, so the non-null read is safe.
-		case "maybe_date":
-			return new Date(value.numberValue!).toISOString();
-	}
-}
-
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
 // type would otherwise flow through internal.* into the bash action and back into this command.
 export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
@@ -485,7 +487,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stderr:
 					"meta: expected subcommand search or get\n" +
 					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n" +
-					"Usage: meta get <path> [--format text|json]\n",
+					"Usage: meta get <path> [--format text|json] [--field <field>] [--cursor CURSOR]\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -495,7 +497,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (parsed._nay) {
 				return {
 					stdout: "",
-					stderr: `${parsed._nay.message}\nUsage: meta get <path> [--format text|json]\n`,
+					stderr: `${parsed._nay.message}\nUsage: meta get <path> [--format text|json] [--field <field>] [--cursor CURSOR]\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -531,58 +533,32 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				};
 			}
 
-			const result = (await ctx.runQuery(internal.files_metadata.get_by_path, {
-				agentSource: target.ctxData.agentSource,
-				organizationId: target.ctxData.organizationId,
-				workspaceId: target.ctxData.workspaceId,
-				userId: target.ctxData.userId,
-				path: target.dbFilesPath,
-				overlayUserId: target.fs.overlayUserId,
-			})) as files_metadata_get_by_path_Result;
+			const result = await files_metadata_read_full_page(ctx, {
+				caller: {
+					kind: "path",
+					args: {
+						agentSource: target.ctxData.agentSource,
+						organizationId: target.ctxData.organizationId,
+						workspaceId: target.ctxData.workspaceId,
+						userId: target.ctxData.userId,
+						path: target.dbFilesPath,
+						overlayUserId: target.fs.overlayUserId,
+					},
+				},
+				format: parsed._yay.format,
+				field: parsed._yay.field,
+				cursor: parsed._yay.cursor,
+				renderPath: target.renderShellPath,
+			});
 
-			if (!result) {
+			if (result._nay) {
 				return {
 					stdout: "",
-					stderr: `meta get: item not found: ${target.renderShellPath(target.dbFilesPath)}\n`,
+					stderr: `meta get: ${result._nay.message}: ${target.renderShellPath(target.dbFilesPath)}\n`,
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
-
-			if (parsed._yay.format === "json") {
-				return {
-					stdout: `${JSON.stringify(
-						{
-							path: target.renderShellPath(result.path),
-							target: result.target,
-							sourceKind: result.sourceKind,
-							fields: result.fields,
-							values: result.values.map((value) => ({
-								field: value.fieldPath,
-								valueKind: value.valueKind,
-								value: get_value(value),
-							})),
-						},
-						null,
-						2,
-					)}\n`,
-					stderr: "",
-					exitCode: 0,
-				};
-			}
-
-			const lines = [`source: ${result.sourceKind}`];
-			for (const field of result.fields) {
-				lines.push(field);
-			}
-
-			for (const value of result.values) {
-				// Mark the maybe_date line so the agent can distinguish it from the string line and know
-				// the field supports range filters.
-				const valueKindSuffix = value.valueKind === "maybe_date" ? " (maybe_date)" : "";
-				lines.push(`${value.fieldPath} = ${JSON.stringify(get_value(value))}${valueKindSuffix}`);
-			}
-
-			return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
+			return { stdout: result._yay.stdout, stderr: result._yay.stderr, exitCode: 0 };
 		}
 
 		const parsed = parse_search_args(args.slice(1), { cwd: commandCtx.cwd });

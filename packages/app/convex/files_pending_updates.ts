@@ -152,6 +152,7 @@ import {
 	r2_put_object,
 } from "./r2_client.ts";
 import { files_metadata_db_replace_pending } from "./files_metadata.ts";
+import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { files_pending_list_db_get_summary } from "./files_pending_list.ts";
 
@@ -753,7 +754,9 @@ export async function files_pending_update_db_replace_chunks(
 			path,
 			archiveOperationId: fileNode?.archiveOperationId ?? undefined,
 			unstagedText: rootKind === "rich_text" ? args.unstagedText : undefined,
-			createMetadata: pendingUpdate?.createIntent?.metadata,
+			createMetadata: pendingUpdate?.createIntent
+				? (await files_metadata_maps_db_read(ctx.db, { kind: "pending", id: pendingUpdate._id }))?.entries
+				: undefined,
 		});
 	}
 

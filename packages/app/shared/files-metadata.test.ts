@@ -3,9 +3,13 @@ import {
 	files_metadata_apply_set_and_remove,
 	files_metadata_extract_frontmatter,
 	files_metadata_extract_entries,
+	files_metadata_MAX_STRING_VALUE_BYTES,
+	files_metadata_MAX_YAML_BYTES,
 	files_metadata_parse_maybe_date,
 	files_metadata_parse_entries_yaml,
 	files_metadata_preflight_frontmatter,
+	files_metadata_scalar_preview,
+	files_metadata_search_values,
 	files_metadata_stringify_entries_yaml,
 	files_metadata_validate_entries,
 	files_metadata_validate_remove_keys,
@@ -61,6 +65,28 @@ describe("files_metadata_extract_frontmatter", () => {
 			{ fieldPath: "frontmatter.cc", valueKind: "string", value: "bob@example.com" },
 			{ fieldPath: "frontmatter.cc", valueKind: "string", value: "jane@example.com" },
 		]);
+	});
+
+	test("keeps full strings that share the same search prefix", () => {
+		const first = `${"x".repeat(1025)}first`;
+		const second = `${"x".repeat(1025)}second`;
+		const metadata = files_metadata_extract_frontmatter(
+			["---", "values:", `  - ${first}`, `  - ${first}`, `  - ${second}`, "---", ""].join("\n"),
+		);
+
+		expect(metadata._yay?.values).toEqual([
+			{ fieldPath: "frontmatter.values", valueKind: "string", value: first },
+			{ fieldPath: "frontmatter.values", valueKind: "string", value: second },
+		]);
+	});
+
+	test("keeps decoded frontmatter text without changing Unicode or control characters", () => {
+		const metadata = files_metadata_extract_frontmatter('---\nvalue: "\\uD800\\0😀"\n---\n');
+
+		expect(metadata._yay?.values).toEqual([
+			{ fieldPath: "frontmatter.value", valueKind: "string", value: "\ud800\0😀" },
+		]);
+		expect(JSON.parse(JSON.stringify(metadata._yay))).toEqual(metadata._yay);
 	});
 
 	test("normalizes non-breaking spaces in visual YAML indentation", () => {
@@ -132,6 +158,18 @@ describe("files_metadata_extract_frontmatter", () => {
 
 		const unreadable = `---\na: ${"{b: ".repeat(1000)}v${"}".repeat(1000)}\n---\n`;
 		expect(files_metadata_preflight_frontmatter(unreadable)._nay?.message).toBe("Failed to parse frontmatter");
+	});
+
+	test("counts search copies while keeping full preflight values", () => {
+		const prefix = "x".repeat(1025);
+		const preflight = files_metadata_preflight_frontmatter(`---\nvalues: [${prefix}first, ${prefix}second]\n---\n`);
+
+		expect(preflight._yay?.fullMetadata.values).toHaveLength(2);
+		expect(preflight._yay?.metadata.values).toEqual([
+			{ fieldPath: "frontmatter.values", valueKind: "string", value: prefix },
+		]);
+		expect(preflight._yay?.fieldCount).toBe(1);
+		expect(preflight._yay?.indexDocumentCount).toBe(2);
 	});
 
 	test("keeps explicit tagged values as presence-only metadata", () => {
@@ -214,6 +252,92 @@ describe("files_metadata_extract_frontmatter", () => {
 			{ fieldPath: "frontmatter.compact", valueKind: "number", value: 20260729 },
 			{ fieldPath: "frontmatter.block", valueKind: "string", value: "2026-07-29\n" },
 		]);
+	});
+});
+
+describe("files_metadata_search_values", () => {
+	test("dedupes short copies without changing full values or scalar types", () => {
+		const prefix = "x".repeat(1025);
+		const full = files_metadata_extract_frontmatter(
+			`---\nvalues: [${prefix}first, ${prefix}second, false, 0, 1970-01-01]\n---\n`,
+		)._yay!;
+
+		expect(files_metadata_search_values(full)).toEqual({
+			fields: ["frontmatter.values"],
+			values: [
+				{ fieldPath: "frontmatter.values", valueKind: "string", value: prefix },
+				{ fieldPath: "frontmatter.values", valueKind: "boolean", value: false },
+				{ fieldPath: "frontmatter.values", valueKind: "number", value: 0 },
+				{ fieldPath: "frontmatter.values", valueKind: "string", value: "1970-01-01" },
+				{ fieldPath: "frontmatter.values", valueKind: "maybe_date", value: 0 },
+			],
+		});
+		expect(full.values.slice(0, 2)).toEqual([
+			{ fieldPath: "frontmatter.values", valueKind: "string", value: `${prefix}first` },
+			{ fieldPath: "frontmatter.values", valueKind: "string", value: `${prefix}second` },
+		]);
+	});
+
+	test("keeps short strings and cuts long strings after the search limit", () => {
+		for (const length of [0, 1024, 1025, 1026, 32768]) {
+			const value = "x".repeat(length);
+			const metadata = files_metadata_extract_entries([{ key: "value", value }]);
+
+			expect(files_metadata_search_values(metadata).values).toEqual([
+				{ fieldPath: "metadata.value", valueKind: "string", value: value.slice(0, 1025) },
+			]);
+		}
+	});
+
+	test("keeps an emoji whole at the search boundary", () => {
+		for (let offset = 1018; offset <= 1027; offset++) {
+			const value = `${"a".repeat(offset)}😀😀😀😀😀😀😀😀`;
+			const metadata = files_metadata_extract_entries([{ key: "value", value }]);
+			const searchValue = files_metadata_search_values(metadata).values[0]!.value as string;
+
+			expect(searchValue.length).toBeGreaterThan(1024);
+			expect(searchValue.length).toBeLessThanOrEqual(1026);
+			expect(searchValue.isWellFormed()).toBe(true);
+			expect(value.startsWith(searchValue)).toBe(true);
+		}
+	});
+
+	test("keeps the supported field path limit", () => {
+		const fieldPath = "x".repeat(160);
+		expect(
+			files_metadata_search_values({
+				fields: [fieldPath, `${fieldPath}x`],
+				values: [
+					{ fieldPath, valueKind: "string", value: "kept" },
+					{ fieldPath: `${fieldPath}x`, valueKind: "string", value: "skipped" },
+				],
+			}),
+		).toEqual({ fields: [fieldPath], values: [{ fieldPath, valueKind: "string", value: "kept" }] });
+	});
+});
+
+describe("files_metadata_scalar_preview", () => {
+	test("keeps the full value when it has at most 256 code points", () => {
+		for (const value of ["", "a".repeat(255), "😀".repeat(256), 0, false, true, 12.5]) {
+			expect(files_metadata_scalar_preview(value)).toEqual({ value, isPreview: false });
+		}
+	});
+
+	test("marks longer values and keeps emoji pairs whole", () => {
+		for (let offset = 250; offset <= 260; offset++) {
+			const value = `${"a".repeat(offset)}😀😀😀😀😀😀😀😀`;
+			const preview = files_metadata_scalar_preview(value);
+
+			expect(preview.isPreview).toBe(true);
+			expect(Array.from(preview.value as string)).toHaveLength(256);
+			expect((preview.value as string).isWellFormed()).toBe(true);
+			expect(value.startsWith(preview.value as string)).toBe(true);
+		}
+	});
+
+	test("does not normalize text or remove control characters", () => {
+		const value = `${"e\u0301\0".repeat(86)}tail`;
+		expect(files_metadata_scalar_preview(value)).toEqual({ value: [...value].slice(0, 256).join(""), isPreview: true });
 	});
 });
 
@@ -413,10 +537,10 @@ describe("files_metadata_parse_entries_yaml", () => {
 	});
 
 	test("refuses a document over the byte cap before parsing it", () => {
-		const oversized = `key: ${"x".repeat(16 * 1024)}`;
+		const oversized = `key: ${"x".repeat(files_metadata_MAX_YAML_BYTES)}`;
 
 		expect(files_metadata_parse_entries_yaml(oversized)._nay?.message).toBe(
-			"Metadata must be at most 16 KiB when written as YAML",
+			"Metadata must be at most 128 KiB when written as YAML",
 		);
 	});
 });
@@ -436,10 +560,39 @@ describe("files_metadata_validate_entries", () => {
 		expect(message).not.toContain("kkk");
 	});
 
-	test("refuses an oversized string value and a non-finite number", () => {
-		expect(files_metadata_validate_entries([{ key: "a", value: "v".repeat(1025) }])._nay?.message).toBe(
-			'Metadata key "a" has a value longer than 1024 characters',
+	test("accepts 32 KiB of text and refuses a larger string", () => {
+		expect(
+			files_metadata_validate_entries([{ key: "a", value: "v".repeat(files_metadata_MAX_STRING_VALUE_BYTES) }])._nay,
+		).toBeUndefined();
+		expect(
+			files_metadata_validate_entries([{ key: "a", value: "v".repeat(files_metadata_MAX_STRING_VALUE_BYTES + 1) }])._nay
+				?.message,
+		).toBe('Metadata key "a" must have a text value of at most 32 KiB in UTF-8');
+	});
+
+	test("measures string bytes instead of JavaScript length", () => {
+		expect(files_metadata_validate_entries([{ key: "a", value: "😀".repeat(8192) }])._nay).toBeUndefined();
+		expect(files_metadata_validate_entries([{ key: "a", value: "😀".repeat(8193) }])._nay?.message).toBe(
+			'Metadata key "a" must have a text value of at most 32 KiB in UTF-8',
 		);
+		expect(files_metadata_validate_entries([{ key: "a", value: "中".repeat(10922) }])._nay).toBeUndefined();
+		expect(files_metadata_validate_entries([{ key: "a", value: "中".repeat(10923) }])._nay?.message).toBe(
+			'Metadata key "a" must have a text value of at most 32 KiB in UTF-8',
+		);
+	});
+
+	test("refuses lone surrogates before measuring string bytes", () => {
+		for (const value of ["\ud800", "\udc00", `\ud800${"x".repeat(32768)}`]) {
+			expect(files_metadata_validate_entries([{ key: "a", value }])._nay?.message).toBe(
+				'Metadata key "a" must have valid Unicode text',
+			);
+		}
+		expect(files_metadata_parse_entries_yaml('a: "\\uD800"')._nay?.message).toBe(
+			'Metadata key "a" must have valid Unicode text',
+		);
+	});
+
+	test("refuses a non-finite number", () => {
 		expect(files_metadata_validate_entries([{ key: "a", value: Number.POSITIVE_INFINITY }])._nay?.message).toBe(
 			'Metadata key "a" must have a finite number value',
 		);
@@ -464,13 +617,25 @@ describe("files_metadata_validate_entries", () => {
 	// The agent writes entries directly, so without this the agent could store a map that stays under
 	// the key and value caps but no longer fits the YAML document the modal is allowed to save.
 	test("refuses a map that would not fit the modal's YAML cap", () => {
-		const entries = Array.from({ length: 32 }, (_unused, index) => ({
+		const entries = Array.from({ length: 4 }, (_unused, index) => ({
 			key: `key-${index}`,
-			value: "x".repeat(1000),
+			value: "x".repeat(32768),
 		}));
 
 		expect(files_metadata_validate_entries(entries)._nay?.message).toBe(
-			"Metadata must be at most 16 KiB when written as YAML",
+			"Metadata must be at most 128 KiB when written as YAML",
+		);
+		expect(
+			files_metadata_validate_entries(entries.map((entry) => ({ ...entry, value: entry.value.slice(16) })))._nay,
+		).toBeUndefined();
+	});
+
+	test("counts escaping in the whole YAML map", () => {
+		const entries = Array.from({ length: 3 }, (_unused, index) => ({ key: `key-${index}`, value: "\0".repeat(32768) }));
+
+		expect(files_metadata_validate_entries(entries.slice(0, 1))._nay).toBeUndefined();
+		expect(files_metadata_validate_entries(entries)._nay?.message).toBe(
+			"Metadata must be at most 128 KiB when written as YAML",
 		);
 	});
 });

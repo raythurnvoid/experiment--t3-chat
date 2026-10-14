@@ -72,7 +72,8 @@ import {
 } from "./files_pending_holds.ts";
 import { files_db_patch_pending_update, files_db_get_pending_update } from "../server/files.ts";
 import type { upsert_file_pending_move_in_db_Result } from "./files_pending_updates.ts";
-import { files_metadata_db_read_entries } from "./files_metadata.ts";
+import { files_metadata_db_read_entries, files_metadata_db_replace_pending } from "./files_metadata.ts";
+import { files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import {
 	files_media_validation_db_capture_versions,
 	files_media_validation_db_versions_match,
@@ -3457,7 +3458,7 @@ async function db_prepare_parent_folders(ctx: MutationCtx, run: Doc<"files_trans
 		ctx,
 		pendingUpdateId: created._yay.pendingUpdateId,
 		value: {
-			createIntent: { kind: "folder", metadata: [] },
+			createIntent: { kind: "folder" },
 		},
 	});
 	const held = await files_pending_holds_db_acquire(ctx, {
@@ -3783,7 +3784,7 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 			if (item.kind === "folder") {
 				const metadata =
 					sourceEntry.kind === "private"
-						? sourceEntry.pendingUpdate.createIntent!.metadata
+						? (await files_metadata_maps_db_read(ctx.db, { kind: "pending", id: sourceEntry.pendingUpdate._id }))?.entries ?? []
 						: await files_metadata_db_read_entries(ctx, {
 								organizationId: run.sourceScope.organizationId,
 								workspaceId: run.sourceScope.workspaceId,
@@ -3793,13 +3794,27 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 					ctx,
 					pendingUpdateId: created._yay.pendingUpdateId,
 					value: {
-						createIntent: { kind: "folder", metadata },
+						createIntent: { kind: "folder" },
 						copiedFrom: {
 							target: item.source,
 							path: item.sourcePath,
 							...copiedPolicies,
 						},
 					},
+				});
+				await files_metadata_maps_db_write(ctx.db, {
+					...run.destinationScope,
+					owner: { kind: "pending", id: created._yay.pendingUpdateId },
+					entries: metadata,
+				});
+				await files_metadata_db_replace_pending(ctx, {
+					...run.destinationScope,
+					userId: run.userId,
+					target: { kind: "private", id: created._yay.privateNodeId },
+					pendingUpdateId: created._yay.pendingUpdateId,
+					proposalRevision: 1,
+					path,
+					createMetadata: metadata,
 				});
 			} else {
 				await ctx.db.patch("files_transfer_items", item._id, {
@@ -3842,7 +3857,7 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 			if (outputParent.kind === "private") return null;
 			const metadata =
 				sourceEntry.kind === "private"
-					? sourceEntry.pendingUpdate.createIntent!.metadata
+					? (await files_metadata_maps_db_read(ctx.db, { kind: "pending", id: sourceEntry.pendingUpdate._id }))?.entries ?? []
 					: await files_metadata_db_read_entries(ctx, {
 							organizationId: run.sourceScope.organizationId,
 							workspaceId: run.sourceScope.workspaceId,

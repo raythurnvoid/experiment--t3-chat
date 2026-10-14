@@ -773,7 +773,7 @@ describe("private pending downloads", () => {
 				)._nay,
 			).toBeUndefined();
 			await ctx.db.patch("files_pending_updates", pendingUpdateId, {
-				createIntent: { kind: "stored", assetId, size: 8, contentType: "image/png", metadata: [] },
+				createIntent: { kind: "stored", assetId, size: 8, contentType: "image/png" },
 			});
 			return assetId;
 		});

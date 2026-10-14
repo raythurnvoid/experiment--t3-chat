@@ -47,6 +47,7 @@ import type * as files_ingestion from "../files_ingestion.js";
 import type * as files_media_dependencies from "../files_media_dependencies.js";
 import type * as files_media_validation from "../files_media_validation.js";
 import type * as files_metadata from "../files_metadata.js";
+import type * as files_metadata_node from "../files_metadata_node.js";
 import type * as files_move_cohorts from "../files_move_cohorts.js";
 import type * as files_move_content from "../files_move_content.js";
 import type * as files_move_content_db from "../files_move_content_db.js";
@@ -204,6 +205,7 @@ declare const fullApi: ApiFromModules<{
   files_media_dependencies: typeof files_media_dependencies;
   files_media_validation: typeof files_media_validation;
   files_metadata: typeof files_metadata;
+  files_metadata_node: typeof files_metadata_node;
   files_move_cohorts: typeof files_move_cohorts;
   files_move_content: typeof files_move_content;
   files_move_content_db: typeof files_move_content_db;

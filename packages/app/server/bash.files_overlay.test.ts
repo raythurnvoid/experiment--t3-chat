@@ -485,7 +485,9 @@ describe("bash_run_command", () => {
 			expect(JSON.parse(read.stdout)).toMatchObject({
 				target: { kind: "private" },
 				sourceKind: "pending",
-				values: expect.arrayContaining([{ field: "metadata.source", valueKind: "string", value: "draft-copy" }]),
+				values: expect.arrayContaining([
+					expect.objectContaining({ field: "metadata.source", valueKind: "string", value: "draft-copy" }),
+				]),
 			});
 		}
 		// Search reads private fields from a copy that a scheduled job writes. Let that job finish.

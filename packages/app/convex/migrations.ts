@@ -16,6 +16,7 @@ import {
 	files_metadata_validate_entries,
 	files_metadata_validate_remove_keys,
 } from "../shared/files-metadata.ts";
+import { metadata_migration_audit_saved_rows } from "../server/files-metadata-migration-rows.ts";
 import {
 	metadata_migration_audit_saved,
 	metadata_migration_entries_from_docs,
@@ -26,6 +27,11 @@ import {
 	metadata_migration_backfill_saved,
 	metadata_migration_backfill_pending,
 	metadata_migration_backfill_capture,
+	metadata_migration_strip_pending,
+	metadata_migration_strip_capture,
+	metadata_migration_strip_review,
+	metadata_migration_strip_cohort,
+	metadata_migration_preview_doc,
 } from "../server/files-metadata-migration.ts";
 
 // The schema lets a migration read through an index with `customRange`.
@@ -223,11 +229,43 @@ export const backfill_metadata_captures = app_migrations.define({
 	batchSize: 1,
 	migrateOne: metadata_migration_backfill_capture,
 });
+export const project_metadata_previews = app_migrations.define({
+	table: "files_metadata_docs",
+	batchSize: 1,
+	customRange: (q) => q.withIndex("by_sourceKind_docKind", (q) => q.eq("sourceKind", "committed").eq("docKind", "field")),
+	migrateOne: metadata_migration_preview_doc,
+});
+export const strip_metadata_pending = app_migrations.define({
+	table: "files_pending_updates",
+	batchSize: 1,
+	migrateOne: metadata_migration_strip_pending,
+});
+export const strip_metadata_captures = app_migrations.define({
+	table: "files_transfer_items",
+	batchSize: 1,
+	migrateOne: metadata_migration_strip_capture,
+});
+export const strip_metadata_review_headers = app_migrations.define({
+	table: "files_pending_update_run_items",
+	batchSize: 1,
+	migrateOne: metadata_migration_strip_review,
+});
+export const strip_metadata_after_proposals = app_migrations.define({
+	table: "files_move_cohort_items",
+	batchSize: 1,
+	migrateOne: metadata_migration_strip_cohort,
+});
 
 export const run_metadata_backfill = app_migrations.runner([
 	internal.migrations.backfill_metadata_pending,
 	internal.migrations.backfill_metadata_captures,
 	internal.migrations.backfill_metadata_saved,
+]);
+export const run_metadata_strip = app_migrations.runner([
+	internal.migrations.strip_metadata_review_headers,
+	internal.migrations.strip_metadata_after_proposals,
+	internal.migrations.strip_metadata_captures,
+	internal.migrations.strip_metadata_pending,
 ]);
 
 // Each operator page visits one complete source doc. Follow every cursor to isDone.
@@ -314,6 +352,54 @@ export const audit_metadata_map_owners = internalQuery({
 		return { isDone: page.isDone, continueCursor: page.continueCursor, checked: page.page.length };
 	},
 });
+
+export const audit_metadata_stripped_headers = internalQuery({
+	args: {
+		table: v.union(
+			v.literal("files_pending_updates"),
+			v.literal("files_transfer_items"),
+			v.literal("files_pending_update_run_items"),
+			v.literal("files_move_cohort_items"),
+		),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v.object({ isDone: v.boolean(), continueCursor: v.string(), checked: v.number() }),
+	handler: async (ctx, args) => {
+		const page = await ctx.db.query(args.table).paginate({ cursor: args.cursor, numItems: 1 });
+		for (const value of page.page) {
+			const record = value as unknown as Record<string, unknown>;
+			const header = (
+				args.table === "files_pending_update_run_items"
+					? record.reviewHeader
+					: args.table === "files_move_cohort_items"
+						? record.afterProposal
+						: record
+			) as { createIntent?: { metadata?: unknown }; capture?: { metadata?: unknown } } | null;
+			if (header?.createIntent?.metadata !== undefined || header?.capture?.metadata !== undefined)
+				throw convex_error({ message: `Metadata header still has inline data: ${value._id}` });
+		}
+		return { isDone: page.isDone, continueCursor: page.continueCursor, checked: page.page.length };
+	},
+});
+
+export const audit_metadata_derived_rows = internalQuery({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: v.object({
+		isDone: v.boolean(),
+		continueCursor: v.string(),
+		checked: v.number(),
+		normal: v.number(),
+		selected: v.number(),
+		hidden: v.number(),
+	}),
+	handler: async (ctx, args) => {
+		const page = await ctx.db.query("files_nodes").paginate({ cursor: args.cursor, numItems: 1 });
+		const counts = { normal: 0, selected: 0, hidden: 0 };
+		for (const node of page.page) counts[await metadata_migration_audit_saved_rows(ctx, node)]++;
+		return { isDone: page.isDone, continueCursor: page.continueCursor, checked: page.page.length, ...counts };
+	},
+});
+
 function metadata_call_has_old_header(value: unknown): boolean {
 	if (!value || typeof value !== "object") return false;
 	const fields = value as Record<string, unknown>;
@@ -368,6 +454,8 @@ export const audit_metadata_pages = internalAction({
 			v.literal("audit_metadata_sources"),
 			v.literal("audit_metadata_map_owners"),
 			v.literal("audit_metadata_pending_calls"),
+			v.literal("audit_metadata_stripped_headers"),
+			v.literal("audit_metadata_derived_rows"),
 		),
 		table: v.optional(
 			v.union(
@@ -435,6 +523,11 @@ export const audit_metadata_pages = internalAction({
 			if (args.audit === "audit_metadata_sources") {
 				if (!args.table) throw convex_error({ message: "Choose a source table" });
 				page = await ctx.runQuery(internal.migrations.audit_metadata_sources, { table: args.table, cursor });
+			} else if (args.audit === "audit_metadata_stripped_headers") {
+				if (!args.table || args.table === "files_nodes") throw convex_error({ message: "Choose a header table" });
+				page = await ctx.runQuery(internal.migrations.audit_metadata_stripped_headers, { table: args.table, cursor });
+			} else if (args.audit === "audit_metadata_derived_rows") {
+				page = await ctx.runQuery(internal.migrations.audit_metadata_derived_rows, { cursor });
 			} else if (args.audit === "audit_metadata_map_owners") {
 				page = await ctx.runQuery(internal.migrations.audit_metadata_map_owners, { cursor });
 			} else {

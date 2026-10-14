@@ -248,13 +248,14 @@ export function files_move_reservations_db_enter_security(ctx: MutationCtx, args
  */
 export function files_move_reservations_db_note_source(
 	db: MutationCtx["db"],
-	args: { table: TableNames; id: string; old: Scope },
+	args: { table: TableNames; id: string; old: Scope & { owner?: Doc<"files_metadata_maps">["owner"] } },
 ) {
 	(db as GuardedDb)[STATE]?.knownScopes.set(`${args.table}:${args.id}`, args.old);
 }
 
 const SIDE_TABLES = new Set([
 	"files_metadata_docs",
+	"files_metadata_maps",
 	"files_text_chunks",
 	"files_plain_text_chunks",
 	"files_yjs_snapshots",
@@ -277,6 +278,12 @@ const SOURCE_TABLES = new Set([
 ]);
 
 function source_of(table: string, id: string | null, value: Fields): Source | null {
+	if (table === "files_metadata_maps") {
+		const owner = value.owner as Doc<"files_metadata_maps">["owner"];
+		if (owner.kind === "saved") return { kind: "saved", id: owner.id };
+		if (owner.kind === "pending") return { kind: "proposal", id: owner.id };
+		return null;
+	}
 	if (id && table === "files_nodes") return { kind: "saved", id: id as Id<"files_nodes"> };
 	if (id && table === "files_pending_nodes") return { kind: "private", id: id as Id<"files_pending_nodes"> };
 	if (id && table === "files_pending_updates") return { kind: "proposal", id: id as Id<"files_pending_updates"> };
@@ -689,10 +696,9 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 						// A metadata delete's guard reads only the owner fields, and the overlay notes them all.
 						const old = (
 							property === "delete" &&
-							table === "files_metadata_docs" &&
 							known &&
-							"fileNodeId" in known &&
-							"pendingUpdateId" in known
+							((table === "files_metadata_docs" && "fileNodeId" in known && "pendingUpdateId" in known) ||
+								(table === "files_metadata_maps" && "owner" in known))
 								? known
 								: await target.get(table, id)
 						) as Fields | null;

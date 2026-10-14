@@ -182,7 +182,7 @@ async function private_folder(f: Fixture, name: string, parent: files_PendingPar
 		const created = await files_pending_nodes_db_create(ctx, { ...f.db, parent, name, kind: "folder" });
 		if (created._nay) throw new Error(created._nay.message);
 		await ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
-			createIntent: { kind: "folder", metadata: [] },
+			createIntent: { kind: "folder" },
 		});
 		return created._yay;
 	});
@@ -501,15 +501,15 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 	for (const [index, proposal] of f.proposals.entries()) {
 		const before = await pending_scope_docs(f, proposal, "before");
 		const after = await pending_scope_docs(f, proposal, "after");
-		const metadata = await f.t.query(internal.files_metadata.get_by_path, {
+		const metadata = await f.t.query(internal.files_metadata.get_index_values_by_path, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			userId: proposal.userId,
 			overlayUserId: proposal.userId,
 			path: "/source.md",
 		});
-		expect(metadata?.sourceKind, "Bash metadata keeps an unselected pending branch during staging").toBe("pending");
-		expect(metadata?.fields.sort(), "Bash metadata keeps all pending fields during staging").toEqual(
+		expect(metadata?.sourceKind, "Indexed metadata keeps an unselected pending branch during staging").toBe("pending");
+		expect(metadata?.fields.sort(), "Indexed metadata keeps all pending fields during staging").toEqual(
 			originals[index]!.metadata.filter((doc) => doc.docKind === "field")
 				.map((doc) => doc.fieldPath)
 				.sort(),
@@ -551,15 +551,15 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 		mode: "step",
 	});
 	for (const proposal of f.proposals) {
-		const metadata = await f.t.query(internal.files_metadata.get_by_path, {
+		const metadata = await f.t.query(internal.files_metadata.get_index_values_by_path, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			userId: proposal.userId,
 			overlayUserId: proposal.userId,
 			path: "/target/source.md",
 		});
-		expect(metadata?.sourceKind, "Bash metadata keeps an unselected pending branch after publication").toBe("pending");
-		expect(metadata?.fields.sort(), "Bash metadata keeps all pending fields after publication").toEqual(
+		expect(metadata?.sourceKind, "Indexed metadata keeps an unselected pending branch after publication").toBe("pending");
+		expect(metadata?.fields.sort(), "Indexed metadata keeps all pending fields after publication").toEqual(
 			originals[0]!.metadata
 				.filter((doc) => doc.docKind === "field")
 				.map((doc) => doc.fieldPath)
@@ -1368,7 +1368,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 					),
 					"unrelated drafts need no source reservation",
 				).toBeNull();
-			const metadata = await t.query(internal.files_metadata.get_by_path, { ...scope, overlayUserId: db.userId, path });
+			const metadata = await t.query(internal.files_metadata.get_index_values_by_path, { ...scope, overlayUserId: db.userId, path });
 			expect(metadata?.sourceKind).toBe(proposal.target.kind === "private" ? "pending" : "committed");
 			expect(metadata?.fields.sort()).toEqual(
 				originalDocs[index]!.metadata.filter((row) => row.docKind === "field")
@@ -1381,7 +1381,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 			await asUser.query(api.files_visible.get_path, { membershipId: db.membershipId, target: affectedTarget }),
 			"the affected child follows the real folder switch",
 		).toBe(affectedPath);
-		const affectedMetadata = await t.query(internal.files_metadata.get_by_path, {
+		const affectedMetadata = await t.query(internal.files_metadata.get_index_values_by_path, {
 			...scope,
 			overlayUserId: db.userId,
 			path: affectedPath,

@@ -19,6 +19,7 @@ import {
 } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_metadata_Entry } from "../shared/files-metadata.ts";
+import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 
 async function fixture(options: Parameters<typeof test_convex>[0] = { transactionLimits: true }) {
 	const t = test_convex(options);
@@ -83,8 +84,9 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 			});
 			if (created._nay) throw new Error(created._nay.message);
 			await ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
-				createIntent: { kind: "folder", metadata: entries },
+				createIntent: { kind: "folder" },
 			});
+			await files_metadata_maps_db_write(ctx.db, { ...owner, owner: { kind: "pending", id: created._yay.pendingUpdateId }, entries });
 			await files_metadata_db_replace_pending(ctx, {
 				...owner,
 				target: { kind: "private", id: created._yay.privateNodeId },
@@ -492,7 +494,7 @@ describe("get_field_values", () => {
 					afterField: null,
 				})
 			)?.values,
-		).toEqual([{ field: "frontmatter.status", value: "committed" }]);
+		).toEqual([{ field: "frontmatter.status", value: "committed", isPreview: false }]);
 	});
 
 	test("returns null for a hidden target, grants access, then removes it on revocation", async () => {
@@ -521,7 +523,7 @@ describe("get_field_values", () => {
 		};
 		expect((await asOwner.mutation(api.files_sharing.set_node_share_grant, grant))._nay).toBeUndefined();
 		expect((await asViewer.query(api.files_metadata.get_field_values, args))?.values).toEqual([
-			{ field: "metadata.status", value: "secret" },
+			{ field: "metadata.status", value: "secret", isPreview: false },
 		]);
 		await asOwner.mutation(api.files_sharing.remove_node_share_grant, {
 			membershipId: grant.membershipId,
@@ -616,7 +618,7 @@ describe("get_field_values", () => {
 			if (result!.isDone) break;
 		}
 		expect(pages).toBeGreaterThan(0);
-		expect(values).toEqual(fields.map((field, i) => ({ field, value: i })));
+		expect(values).toEqual(fields.map((field, i) => ({ field, value: i, isPreview: false })));
 
 		expect((await catalog()).page).toEqual(fields);
 

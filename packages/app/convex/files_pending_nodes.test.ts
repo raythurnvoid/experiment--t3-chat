@@ -57,7 +57,7 @@ async function create_folder(
 	});
 	if (created._nay) throw new Error(created._nay.message);
 	await ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
-		createIntent: { kind: "folder", metadata: [] },
+		createIntent: { kind: "folder" },
 	});
 	const node = await ctx.db.get("files_pending_nodes", created._yay.privateNodeId);
 	const pendingUpdate = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId);
@@ -121,7 +121,7 @@ describe("files_pending_nodes_db_create", () => {
 		expect(created.pendingUpdate).toMatchObject({
 			target: { kind: "private", id: created.node._id },
 			revision: 1,
-			createIntent: { kind: "folder", metadata: [] },
+			createIntent: { kind: "folder" },
 		});
 		expect(await t.run(async (ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 		expect(await t.run(async (ctx) => ctx.db.query("files_private_storage_reservations").collect())).toMatchObject([

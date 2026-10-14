@@ -375,7 +375,6 @@ const PRIVATE_ENTRY = {
 			contentType: "text/html;charset=utf-8",
 			textKind: "plain_text",
 			collaborationEnabled: true,
-			metadata: [],
 		},
 		content: {
 			base: { kind: "new" },
@@ -643,7 +642,11 @@ beforeEach(() => {
 			case "files_metadata:get_field_values": {
 				const { fields } = args as { fields: string[] };
 				return {
-					values: fields.map((field) => ({ field, value: field === "metadata.status" ? "Open" : null })),
+					values: fields.map((field) => ({
+						field,
+						value: field === "metadata.status" ? "Open" : null,
+						isPreview: false,
+					})),
 					afterField: fields.at(-1),
 					isDone: true,
 				};
@@ -965,10 +968,9 @@ describe("FileEditorSidebarPending review focus", () => {
 									content: undefined,
 									createIntent:
 										kind === "folder"
-											? { kind: "folder", metadata: [] }
+											? { kind: "folder" }
 											: {
 													kind: "stored",
-													metadata: [],
 													contentType: "application/octet-stream",
 													size: 4,
 													assetId: "asset_private",
@@ -1016,7 +1018,7 @@ describe("FileEditorSidebarPending review focus", () => {
 										pendingUpdate: {
 											...PRIVATE_ENTRY.pendingUpdate,
 											content: undefined,
-											createIntent: { kind: "folder", metadata: [] },
+											createIntent: { kind: "folder" },
 										},
 									}
 								: PRIVATE_ENTRY,
@@ -1334,7 +1336,7 @@ describe("FileNodeView private targets", () => {
 				pendingUpdate: {
 					...PRIVATE_ENTRY.pendingUpdate,
 					content: undefined,
-					createIntent: { kind: "folder", metadata: [] },
+					createIntent: { kind: "folder" },
 				},
 			},
 		};
@@ -1372,7 +1374,7 @@ describe("FileNodeView private targets", () => {
 				pendingUpdate: {
 					...PRIVATE_ENTRY.pendingUpdate,
 					content: undefined,
-					createIntent: { kind: "folder", metadata: [] },
+					createIntent: { kind: "folder" },
 				},
 			},
 		};
@@ -1408,7 +1410,6 @@ describe("FileNodeView private targets", () => {
 						kind: "stored",
 						contentType: "image/png",
 						size: 18,
-						metadata: [],
 						assetId: "private_asset" as app_convex_Id<"files_r2_assets">,
 					},
 				},
@@ -1461,7 +1462,6 @@ describe("FileNodeView private targets", () => {
 						kind: "stored",
 						contentType: "image/png",
 						size: 18,
-						metadata: [],
 						assetId: "private_asset" as app_convex_Id<"files_r2_assets">,
 					},
 				},
@@ -1508,7 +1508,6 @@ describe("FileNodeView private targets", () => {
 						kind: "stored",
 						contentType: "application/pdf",
 						size: 18,
-						metadata: [],
 						assetId: "asset_pdf" as app_convex_Id<"files_r2_assets">,
 					},
 				},
@@ -1568,7 +1567,6 @@ describe("FileNodeView private targets", () => {
 						kind: "stored",
 						contentType: "application/octet-stream",
 						size: 18,
-						metadata: [],
 						assetId: "asset_binary" as app_convex_Id<"files_r2_assets">,
 					},
 				},
@@ -2479,10 +2477,10 @@ describe("FileNodeView folder columns", () => {
 		let response: unknown;
 		const ready = {
 			values: [
-				{ field: "metadata.empty", value: "" },
-				{ field: "metadata.flag", value: false },
-				{ field: "metadata.missing", value: null },
-				{ field: "metadata.number", value: 0 },
+				{ field: "metadata.empty", value: "", isPreview: false },
+				{ field: "metadata.flag", value: false, isPreview: false },
+				{ field: "metadata.missing", value: null, isPreview: false },
+				{ field: "metadata.number", value: 0, isPreview: false },
 			],
 			afterField: "metadata.number",
 			isDone: true,
@@ -2536,6 +2534,203 @@ describe("FileNodeView folder columns", () => {
 		expect(within(actions).queryByRole("button", { name: "Retry values" })).toBeNull();
 	});
 
+	async function renderFullValueCell() {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, _id: "a.md", name: "a.md", parentId: node._id, contentType: "text/markdown" }];
+		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
+			folder_1: ["name", "frontmatter.note"],
+		});
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) =>
+			getFunctionName(reference) === "files_metadata:get_field_values"
+				? {
+						values: [{ field: "frontmatter.note", value: "preview", isPreview: true }],
+						afterField: "frontmatter.note",
+						isDone: true,
+					}
+				: previousQuery(reference, args),
+		);
+		const view = renderFileView({ nodeId: node._id });
+		const table = await screen.findByRole("table", { name: "Folder contents" });
+		act(() => observers[0]!.emit());
+		const button = await within(table).findByRole("button", { name: "Show full frontmatter.note values for a.md" });
+		return { view, table, button };
+	}
+
+	test("loads full values on click, joins pages, and returns focus after Escape", async () => {
+		const prefix = "a".repeat(1_000);
+		let finish: ((value: unknown) => void) | undefined;
+		actionMock
+			.mockResolvedValueOnce({
+				_yay: {
+					json: JSON.stringify({
+						values: [
+							{
+								valueIndex: 0,
+								field: "frontmatter.note",
+								valueKind: "string",
+								fragment: prefix,
+								offset: 0,
+								totalLength: 1_008,
+							},
+						],
+						isDone: false,
+					}),
+					cursor: "next-values",
+					isDone: false,
+				},
+			})
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+			);
+		const { table, button } = await renderFullValueCell();
+		expect(actionMock).not.toHaveBeenCalled();
+		expect(
+			table
+				.querySelector('[data-column-field="frontmatter.note"][data-value-state]')
+				?.getAttribute("data-value-preview"),
+		).toBe("true");
+		act(() => button.focus());
+		fireEvent.click(button);
+		const dialog = await screen.findByRole("dialog", { name: "Full values" });
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		expect(within(dialog).getByRole("status").textContent).toBe("Loading full values…");
+		expect(within(dialog).queryByRole("textbox")).toBeNull();
+		expect(actionMock.mock.calls.map(([, args]) => args)).toEqual([
+			{ membershipId: "membership_1", target: { kind: "saved", id: "a.md" }, field: "frontmatter.note", cursor: null },
+			{
+				membershipId: "membership_1",
+				target: { kind: "saved", id: "a.md" },
+				field: "frontmatter.note",
+				cursor: "next-values",
+			},
+		]);
+		await act(async () =>
+			finish!({
+				_yay: {
+					json: JSON.stringify({
+						values: [
+							{
+								valueIndex: 0,
+								field: "frontmatter.note",
+								valueKind: "string",
+								fragment: "TAIL-one",
+								offset: 1_000,
+								totalLength: 1_008,
+							},
+							{ valueIndex: 1, field: "frontmatter.note", valueKind: "string", value: prefix + "TAIL-two" },
+							{ valueIndex: 2, field: "frontmatter.note", valueKind: "maybe_date", value: "2026-10-14T00:00:00.000Z" },
+						],
+						isDone: true,
+					}),
+					cursor: null,
+					isDone: true,
+				},
+			}),
+		);
+		const values = await within(dialog).findAllByRole("textbox");
+		expect(values.map((value) => value.textContent)).toEqual([
+			JSON.stringify(prefix + "TAIL-one"),
+			JSON.stringify(prefix + "TAIL-two"),
+			JSON.stringify("2026-10-14T00:00:00.000Z"),
+		]);
+		expect(within(dialog).getByText("Derived date")).toBeTruthy();
+		fireEvent.keyDown(dialog, { key: "Escape", code: "Escape" });
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Full values" })).toBeNull());
+		expect(document.activeElement).toBe(button);
+		expect(screen.getByRole("table", { name: "Folder contents" })).toBe(table);
+	});
+
+	test("drops an unfinished read on close and starts fresh when reopened", async () => {
+		let finish: ((value: unknown) => void) | undefined;
+		actionMock
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+			)
+			.mockResolvedValueOnce({
+				_yay: {
+					json: JSON.stringify({
+						values: [{ valueIndex: 0, field: "frontmatter.note", valueKind: "string", value: "fresh" }],
+						isDone: true,
+					}),
+					cursor: null,
+					isDone: true,
+				},
+			});
+		const { button } = await renderFullValueCell();
+		fireEvent.click(button);
+		const dialog = await screen.findByRole("dialog", { name: "Full values" });
+		fireEvent.click(
+			within(dialog.querySelector<HTMLElement>(".MyModalFooter")!).getByRole("button", { name: "Close" }),
+		);
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Full values" })).toBeNull());
+		await act(async () => finish!({ _yay: { json: "not read after close", cursor: "old-page", isDone: false } }));
+		expect(actionMock).toHaveBeenCalledTimes(1);
+		fireEvent.click(button);
+		const reopened = await screen.findByRole("dialog", { name: "Full values" });
+		expect((await within(reopened).findByRole("textbox")).textContent).toBe('"fresh"');
+		expect(actionMock).toHaveBeenCalledTimes(2);
+		expect(actionMock.mock.calls[1]![1].cursor).toBeNull();
+	});
+
+	test("shows a source-change refusal without showing partial fragments", async () => {
+		actionMock
+			.mockResolvedValueOnce({
+				_yay: {
+					json: JSON.stringify({
+						values: [
+							{
+								valueIndex: 0,
+								field: "frontmatter.note",
+								valueKind: "string",
+								fragment: "partial",
+								offset: 0,
+								totalLength: 20,
+							},
+						],
+						isDone: false,
+					}),
+					cursor: "next-values",
+					isDone: false,
+				},
+			})
+			.mockResolvedValueOnce({ _nay: { message: "File changed. Start a new read." } });
+		const { button } = await renderFullValueCell();
+		fireEvent.click(button);
+		const dialog = await screen.findByRole("dialog", { name: "Full values" });
+		expect((await within(dialog).findByRole("alert")).textContent).toBe("File changed. Start a new read.");
+		expect(within(dialog).queryByRole("textbox")).toBeNull();
+	});
+
+	test.each([
+		{ valueKind: "string", value: 123 },
+		{ valueKind: "maybe_date", value: 1_760_400_000_000 },
+		{ valueKind: "maybe_date", value: "2026-10-14" },
+	])("refuses invalid serialized $valueKind value $value", async ({ valueKind, value }) => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		actionMock.mockResolvedValueOnce({
+			_yay: {
+				json: JSON.stringify({
+					values: [{ valueIndex: 0, field: "frontmatter.note", valueKind, value }],
+					isDone: true,
+				}),
+				cursor: null,
+				isDone: true,
+			},
+		});
+		const { button } = await renderFullValueCell();
+		fireEvent.click(button);
+		const dialog = await screen.findByRole("dialog", { name: "Full values" });
+		expect((await within(dialog).findByRole("alert")).textContent).toBe(
+			"Could not load full values. Close this dialog and try again.",
+		);
+		expect(within(dialog).queryByRole("textbox")).toBeNull();
+	});
+
 	test("caps 120 rendered rows at 100 targets and 700 pages and updates visible and focused priority", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		// 120 rows is just past the 100-target cap. Each render of many rows is slow here, so keep it small.
@@ -2555,7 +2750,7 @@ describe("FileNodeView folder columns", () => {
 			if (getFunctionName(reference) !== "files_metadata:get_field_values") return previousQuery(reference, args);
 			const index = args.afterField === null ? 0 : fields.indexOf(args.afterField) + 1;
 			return {
-				values: [{ field: fields[index], value: index }],
+				values: [{ field: fields[index], value: index, isPreview: false }],
 				afterField: fields[index],
 				isDone: index === 6,
 			};

@@ -21,8 +21,12 @@ function placement_header(node: Doc<"files_nodes">) {
 }
 
 // Seeds before and after docs for reader tests. Native producer tests use real worker steps.
-export async function test_create_saved_placement_fixture(args?: { normalPaths?: string[]; signedIn?: boolean }) {
-	const t = test_convex();
+export async function test_create_saved_placement_fixture(args?: {
+	normalPaths?: string[];
+	signedIn?: boolean;
+	transactionLimits?: NonNullable<Parameters<typeof test_convex>[0]>["transactionLimits"];
+}) {
+	const t = test_convex({ transactionLimits: args?.transactionLimits });
 	const db = await t.run(async (ctx) =>
 		test_mocks_fill_db_with.membership(
 			ctx,

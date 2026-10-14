@@ -1,5 +1,5 @@
-import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery, type WithoutSystemFields } from "convex/server";
-import { compareValues, v } from "convex/values";
+import { paginationOptsValidator, paginationResultValidator, type WithoutSystemFields } from "convex/server";
+import { compareValues, v, type Infer } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -17,6 +17,7 @@ import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import { files_pending_update_db_update_index_revision } from "./files_pending_updates_db.ts";
+import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
@@ -35,9 +36,9 @@ import {
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_index_range_apply } from "../server/files-index-range.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
+import { files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import { files_saved_content_db_get_tags } from "../server/files-saved-content.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
-import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import {
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_frontmatter_exceeds_index_caps,
@@ -48,6 +49,8 @@ import {
 	files_metadata_parse_entries_yaml,
 	files_metadata_validate_remove_keys,
 	files_metadata_preflight_frontmatter,
+	files_metadata_search_values,
+	files_metadata_scalar_preview,
 	files_metadata_validate_entries,
 	type files_metadata_Entry,
 	type files_metadata_SearchPlan,
@@ -127,15 +130,24 @@ function value_doc_payload(value: files_metadata_Value) {
 export function files_metadata_committed_field_sort_fields(
 	fileNode: Doc<"files_nodes">,
 	fieldValues: files_metadata_Value[],
+	fullValues: files_metadata_Value[] = fieldValues,
 ) {
 	const sortValue = files_sort_value_of(fieldValues);
+	const plainValues = fullValues.filter((value) => value.valueKind !== "maybe_date");
+	const preview = plainValues[0] ? files_metadata_scalar_preview(plainValues[0].value) : null;
 	return {
 		parentId: fileNode.parentId,
 		nodeKind: fileNode.kind,
 		isRestrictedScopeRoot: fileNode.restrictedScopeNodeId === fileNode._id,
 		name: fileNode.name,
 		sortName: files_sort_text_key(fileNode.name),
-		...(sortValue ? { sortValue: sortValue.sortValue, sortDisplayValue: sortValue.displayValue } : {}),
+		...(sortValue && preview
+			? {
+					sortValue: sortValue.sortValue,
+					sortDisplayValue: preview.value,
+					sortDisplayValueIsPreview: preview.isPreview || plainValues.length > 1,
+				}
+			: {}),
 	};
 }
 
@@ -252,6 +264,7 @@ export async function files_metadata_db_insert_committed(
 				...files_metadata_committed_field_sort_fields(
 					fileNode,
 					metadata.values.filter((value) => value.fieldPath === fieldPath),
+					preflight._yay.fullMetadata.values.filter((value) => value.fieldPath === fieldPath),
 				),
 			}),
 		),
@@ -277,11 +290,13 @@ export function files_metadata_content_stage_docs(args: {
 		proposalId: Id<"files_pending_updates">;
 		proposal: WithoutSystemFields<Doc<"files_pending_updates">>;
 		text?: string;
+		metadata?: files_metadata_Entry[];
 	};
 }) {
 	const docs: WithoutSystemFields<Doc<"files_metadata_docs">>[] = [];
 	const build = (text: string | undefined, createMetadata: files_metadata_Entry[] = []) => {
-		const metadata = files_metadata_extract_entries(createMetadata);
+		const fullMetadata = files_metadata_extract_entries(createMetadata);
+		const metadata = files_metadata_search_values(fullMetadata);
 		const entryIndexByField = new Map(metadata.fields.map((field, index) => [field, index]));
 		const preflight = text === undefined ? null : files_metadata_preflight_frontmatter(text);
 		if (preflight?._yay) {
@@ -289,8 +304,10 @@ export function files_metadata_content_stage_docs(args: {
 				throw convex_error({ message: "Too many frontmatter fields" });
 			metadata.fields.push(...preflight._yay.metadata.fields);
 			metadata.values.push(...preflight._yay.metadata.values);
+			fullMetadata.fields.push(...preflight._yay.fullMetadata.fields);
+			fullMetadata.values.push(...preflight._yay.fullMetadata.values);
 		}
-		return { metadata, entryIndexByField };
+		return { metadata, fullMetadata, entryIndexByField };
 	};
 	const committed = build(args.node.textKind === "rich_text" ? args.text : undefined, args.metadata);
 	const savedScope = {
@@ -311,6 +328,7 @@ export function files_metadata_content_stage_docs(args: {
 			...files_metadata_committed_field_sort_fields(
 				args.node,
 				committed.metadata.values.filter((value) => value.fieldPath === fieldPath),
+				committed.fullMetadata.values.filter((value) => value.fieldPath === fieldPath),
 			),
 		});
 	for (const value of committed.metadata.values)
@@ -324,7 +342,7 @@ export function files_metadata_content_stage_docs(args: {
 		const proposal = args.pending.proposal;
 		const pending = build(
 			args.node.textKind === "rich_text" ? args.pending.text : undefined,
-			proposal.createIntent?.metadata ?? [],
+			args.pending.metadata ?? [],
 		);
 		const scope = {
 			organizationId: proposal.organizationId,
@@ -367,7 +385,7 @@ export async function files_metadata_db_replace_pending(
 ) {
 	await files_metadata_db_delete_pending(ctx, { pendingUpdateId: args.pendingUpdateId });
 
-	const metadata = files_metadata_extract_entries(args.createMetadata ?? []);
+	const metadata = files_metadata_search_values(files_metadata_extract_entries(args.createMetadata ?? []));
 	const entryIndexByField = new Map(metadata.fields.map((fieldPath, index) => [fieldPath, index]));
 	const preflight = args.unstagedText === undefined ? null : files_metadata_preflight_frontmatter(args.unstagedText);
 	// Malformed frontmatter must not hide a new file's separate metadata map.
@@ -1137,7 +1155,13 @@ export const get_field_values = query({
 	},
 	returns: v.union(
 		v.object({
-			values: v.array(v.object({ field: v.string(), value: v.union(v.string(), v.number(), v.boolean(), v.null()) })),
+			values: v.array(
+				v.object({
+					field: v.string(),
+					value: v.union(v.string(), v.number(), v.boolean(), v.null()),
+					isPreview: v.boolean(),
+				}),
+			),
 			afterField: v.union(v.string(), v.null()),
 			isDone: v.boolean(),
 		}),
@@ -1161,7 +1185,7 @@ export const get_field_values = query({
 		const fileNode = await files_metadata_db_get_table_node(ctx, { ...caller, target: args.target });
 		if (!fileNode) return null;
 		const budget = { readBytes: 0 };
-		const values: Array<{ field: string; value: string | number | boolean | null }> = [];
+		const values: Array<{ field: string; value: string | number | boolean | null; isPreview: boolean }> = [];
 		let afterField = args.afterField;
 		const start = afterField === null ? 0 : args.fields.indexOf(afterField) + 1;
 		for (const field of args.fields.slice(start)) {
@@ -1169,7 +1193,11 @@ export const get_field_values = query({
 			const metadataDoc = await files_metadata_db_get_table_field(ctx, { fileNode, field });
 			count_table_doc(budget, metadataDoc);
 			if (!(await fits_table_read_budget({ ctx, budget }))) break;
-			values.push({ field, value: metadataDoc?.sortDisplayValue ?? null });
+			values.push({
+				field,
+				value: metadataDoc?.sortDisplayValue ?? null,
+				isPreview: metadataDoc?.sortDisplayValueIsPreview ?? false,
+			});
 			afterField = field;
 		}
 		const isDone = afterField === args.fields.at(-1);
@@ -1181,6 +1209,159 @@ export const get_field_values = query({
 // #endregion folder table fields
 
 // #region get by path
+
+const read_path_args_validator = v.object({
+	agentSource: v.optional(ai_chat_workspaces_source_validator),
+	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+	userId: v.id("users"),
+	serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+	path: v.string(),
+	overlayUserId: v.optional(v.id("users")),
+});
+
+async function db_get_read_entry_by_path(ctx: QueryCtx, args: Infer<typeof read_path_args_validator>) {
+	const scope = files_db_resolve_scope(ctx, args.workspaceId);
+	const authorized = await files_db_authorize_file_read(ctx, args);
+	if (authorized._nay) return null;
+	let entry: files_VisibleEntry | null;
+	if (
+		args.serviceAccountId === undefined &&
+		!organizations_is_global_organization_id(args.organizationId) &&
+		scope.kind === "workspace"
+	) {
+		const reader = await files_visible_db_create_reader(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: scope.workspaceId,
+			userId: args.userId,
+		});
+		entry = await reader.resolvePath(args.path);
+		if (reader.exhausted) throw convex_error({ message: "Metadata path lookup exceeded its read limit." });
+	} else {
+		const node = await files_db_get_visible_node_by_path(ctx, args);
+		if (!node) return null;
+		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, { ...args, nodes: [node] });
+		entry = readable ? { kind: "saved", node, pendingUpdate: null, path: node.path } : null;
+	}
+	if (!entry) return null;
+	if (
+		entry.kind === "private" &&
+		(entry.pendingUpdate.preparation ||
+			!entry.pendingUpdate.createIntent ||
+			(entry.pendingUpdate.createIntent.kind === "text" && !entry.pendingUpdate.content))
+	)
+		return null;
+	return entry;
+}
+
+const full_read_source_validator = v.object({
+	path: v.string(),
+	target: files_pending_target_validator,
+	sourceKind: v.union(v.literal("committed"), v.literal("pending")),
+	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+	userId: v.id("users"),
+	metadata: files_metadata_entries_validator,
+	revision: v.string(),
+	textRead: v.union(
+		v.object({ includePending: v.boolean(), pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()) }),
+		v.null(),
+	),
+});
+
+export type files_metadata_FullReadSource = Infer<typeof full_read_source_validator>;
+
+async function db_get_full_read_source(
+	ctx: QueryCtx,
+	args: { entry: files_VisibleEntry; userId: Id<"users">; metadataOnly?: boolean },
+): Promise<files_metadata_FullReadSource> {
+	const { entry } = args;
+	let pending =
+		entry.pendingUpdate &&
+		(entry.kind === "private" ||
+			(!args.metadataOnly &&
+				!entry.pendingUpdate.preparation &&
+				files_pending_update_has_pending_chunks(entry.pendingUpdate) &&
+				!files_pending_update_content_is_stale(entry.pendingUpdate, entry.node)))
+			? entry.pendingUpdate
+			: null;
+	const selected = entry.kind === "private" ? entry : { ...entry, pendingUpdate: pending };
+	const target =
+		entry.kind === "saved"
+			? { kind: "saved" as const, id: entry.node._id }
+			: { kind: "private" as const, id: entry.node._id };
+	const map = await files_metadata_maps_db_read(
+		ctx.db,
+		entry.kind === "private" ? { kind: "pending", id: entry.pendingUpdate._id } : { kind: "saved", id: entry.node._id },
+	);
+	let version = args.metadataOnly ? null : await files_transfer_db_get_entry_version(ctx, selected);
+	// A repaired Yjs history cannot supply a branch built on its old generation.
+	if (
+		entry.kind === "saved" &&
+		pending?.content &&
+		version?.kind === "pending" &&
+		version.savedVersion?.kind === "yjs" &&
+		(pending.content.base.kind !== "yjs" ||
+			pending.content.base.lineageGeneration !== version.savedVersion.lineageGeneration)
+	) {
+		pending = null;
+		version = version.savedVersion;
+	}
+	const view = entry.kind === "saved" ? await files_saved_placement_db_get_node_view(ctx.db, entry.node._id) : null;
+	return {
+		path: entry.path,
+		target,
+		sourceKind: pending ? "pending" : "committed",
+		organizationId: entry.node.organizationId,
+		workspaceId: entry.node.workspaceId,
+		userId: args.userId,
+		metadata: map?.entries ?? [],
+		revision: JSON.stringify([
+			target,
+			entry.path,
+			view,
+			version,
+			pending && !args.metadataOnly ? [pending._id, pending.revision, pending.content?.unstagedStateId ?? null] : null,
+			map ? [map._id, map.revision] : null,
+		]),
+		textRead:
+			version?.textKind === "rich_text"
+				? { includePending: pending !== null, pendingUpdateId: pending?._id ?? null }
+				: null,
+	};
+}
+
+export const get_read_source_by_path = internalQuery({
+	args: v.object({ ...read_path_args_validator.fields, metadataOnly: v.optional(v.boolean()) }),
+	returns: v.union(full_read_source_validator, v.null()),
+	handler: async (ctx, args): Promise<files_metadata_FullReadSource | null> => {
+		const entry = await db_get_read_entry_by_path(ctx, args);
+		return entry
+			? await db_get_full_read_source(ctx, { entry, userId: args.userId, metadataOnly: args.metadataOnly })
+			: null;
+	},
+});
+
+export const get_field_read_source = internalQuery({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		target: files_pending_target_validator,
+		metadataOnly: v.optional(v.boolean()),
+	},
+	returns: v.union(full_read_source_validator, v.null()),
+	handler: async (ctx, args): Promise<files_metadata_FullReadSource | null> => {
+		const caller = await db_get_table_caller(ctx, args);
+		if (!caller) return null;
+		const node = await files_metadata_db_get_table_node(ctx, { ...caller, target: args.target });
+		return node
+			? await db_get_full_read_source(ctx, {
+					entry: { kind: "saved", node, pendingUpdate: null, path: node.path },
+					userId: caller.userAuth.id,
+					metadataOnly: args.metadataOnly,
+				})
+			: null;
+	},
+});
 
 function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 	switch (doc.valueKind) {
@@ -1221,18 +1402,9 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 	}
 }
 
-export const get_by_path = internalQuery({
-	args: {
-		agentSource: v.optional(ai_chat_workspaces_source_validator),
-		// External scopes read committed metadata without a pending overlay.
-		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
-		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		userId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
-		path: v.string(),
-		/** The owner whose pending paths the caller is reading. */
-		overlayUserId: v.optional(v.id("users")),
-	},
+// This read inspects the derived index. Full-value callers use the source above.
+export const get_index_values_by_path = internalQuery({
+	args: read_path_args_validator,
 	returns: v.union(
 		v.object({
 			path: v.string(),
@@ -1252,48 +1424,8 @@ export const get_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const scope = files_db_resolve_scope(ctx, args.workspaceId);
-		const authorized = await files_db_authorize_file_read(ctx, args);
-		if (authorized._nay) return null;
-		let entry: files_VisibleEntry | null;
-		if (
-			args.serviceAccountId === undefined &&
-			!organizations_is_global_organization_id(args.organizationId) &&
-			scope.kind === "workspace"
-		) {
-			const reader = await files_visible_db_create_reader(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: scope.workspaceId,
-				userId: args.userId,
-			});
-			entry = await reader.resolvePath(args.path);
-			if (reader.exhausted) throw convex_error({ message: "Metadata path lookup exceeded its read limit." });
-		} else {
-			const node = await files_db_get_visible_node_by_path(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				path: args.path,
-			});
-			if (!node) return null;
-
-			const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.userId,
-				serviceAccountId: args.serviceAccountId,
-				nodes: [node],
-			});
-			entry = readable ? { kind: "saved", node, pendingUpdate: null, path: node.path } : null;
-		}
-
+		const entry = await db_get_read_entry_by_path(ctx, args);
 		if (!entry) return null;
-		if (
-			entry.kind === "private" &&
-			(entry.pendingUpdate.preparation ||
-				!entry.pendingUpdate.createIntent ||
-				(entry.pendingUpdate.createIntent.kind === "text" && !entry.pendingUpdate.content))
-		)
-			return null;
 
 		const pendingUpdate =
 			entry.pendingUpdate &&
@@ -1372,10 +1504,8 @@ export const get_by_path = internalQuery({
 	},
 });
 
-export type files_metadata_get_by_path_Result =
-	typeof get_by_path extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
+// Keep the A4 action response during its ten-minute rollout window.
+export const get_by_path = get_index_values_by_path;
 
 // #endregion get by path
 
@@ -1438,12 +1568,7 @@ async function db_query_metadata_docs(
 }
 
 /**
- * Rebuild one file's metadata map from its index docs.
- *
- * Only value docs carry a value. A field doc exists so an existence search can find the key. A
- * `maybe_date` doc is a second copy of a date-like string that range search needs. Both would
- * repeat a key that a value doc already returned, so both are filtered out here. `entryIndex`
- * restores the order the keys were written in, because the index sorts them by key.
+ * Read the ordered full map of one exact saved owner. Search docs are derived short copies.
  */
 export async function files_metadata_db_read_entries(
 	ctx: QueryCtx,
@@ -1453,18 +1578,7 @@ export async function files_metadata_db_read_entries(
 		fileNodeId: Id<"files_nodes">;
 	},
 ) {
-	const selected = await files_saved_placement_db_get_node_view(ctx.db, args.fileNodeId);
-	const views = selected ? [undefined, selected] : [undefined];
-	// A file's metadata write limit bounds both ranges. No workspace or folder is read here.
-	const docs = (await Promise.all(views.map((moveView) => db_query_metadata_docs(ctx, { ...args, moveView })))).flat();
-
-	return docs
-		.filter((doc) => doc.docKind === "value" && doc.valueKind !== "maybe_date")
-		.sort((left, right) => (left.entryIndex ?? 0) - (right.entryIndex ?? 0))
-		.map((doc) => ({
-			key: doc.fieldPath.slice(files_metadata_METADATA_FIELD_PREFIX.length),
-			value: read_entry_value(doc),
-		}));
+	return (await files_metadata_maps_db_read(ctx.db, { kind: "saved", id: args.fileNodeId }))?.entries ?? [];
 }
 
 export async function files_metadata_db_read_entry(
@@ -1511,7 +1625,7 @@ export async function files_metadata_db_read_entry(
  * Search filters on those fields, so a doc without them would be invisible to a path-scoped or
  * archive-scoped search until the next rename.
  *
- * This writer checks nothing. The two user-facing doors below check the permission and the
+ * This writer checks the map limits. The two user-facing doors below check the permission and the
  * current file policy before they call it.
  *
  * The file-creation flows also call it directly, inside the same transaction that creates the node.
@@ -1528,9 +1642,12 @@ export async function files_metadata_db_write_entries(
 ) {
 	const node = "fileNode" in args ? args.fileNode : args.privateEntry.node;
 	await files_metadata_maps_db_write(ctx.db, {
-		organizationId: node.organizationId, workspaceId: node.workspaceId,
-		owner: "fileNode" in args ? { kind: "saved", id: args.fileNode._id }
-			: { kind: "pending", id: args.privateEntry.pendingUpdate._id },
+		organizationId: node.organizationId,
+		workspaceId: node.workspaceId,
+		owner:
+			"fileNode" in args
+				? { kind: "saved", id: args.fileNode._id }
+				: { kind: "pending", id: args.privateEntry.pendingUpdate._id },
 		entries: args.entries,
 	});
 	const existingDocs =
@@ -1553,7 +1670,8 @@ export async function files_metadata_db_write_entries(
 					.collect();
 	await Promise.all(existingDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
 
-	const extracted = files_metadata_extract_entries(args.entries);
+	const full = files_metadata_extract_entries(args.entries);
+	const extracted = files_metadata_search_values(full);
 	// `fields` is built in entry order, so a field's position in it is the entry's position in the
 	// map the user typed.
 	const entryIndexByField = new Map(extracted.fields.map((fieldPath, index) => [fieldPath, index]));
@@ -1591,6 +1709,7 @@ export async function files_metadata_db_write_entries(
 					? files_metadata_committed_field_sort_fields(
 							args.fileNode,
 							extracted.values.filter((value) => value.fieldPath === fieldPath),
+							full.values.filter((value) => value.fieldPath === fieldPath),
 						)
 					: {}),
 			}),
@@ -1827,7 +1946,7 @@ export const update_entries_by_path = internalMutation({
 
 		const currentEntries =
 			entry.kind === "private"
-				? entry.pendingUpdate.createIntent!.metadata
+				? ((await files_metadata_maps_db_read(ctx.db, { kind: "pending", id: entry.pendingUpdate._id }))?.entries ?? [])
 				: await files_metadata_db_read_entries(ctx, {
 						organizationId: entry.node.organizationId,
 						workspaceId: entry.node.workspaceId,
@@ -1852,11 +1971,10 @@ export const update_entries_by_path = internalMutation({
 		if (entry.kind === "private") {
 			const revision = entry.pendingUpdate.revision + 1;
 			const updatedAt = Date.now();
-			const createIntent = { ...entry.pendingUpdate.createIntent!, metadata: validated._yay.entries };
 			await files_db_patch_pending_update({
 				ctx,
 				pendingUpdateId: entry.pendingUpdate._id,
-				value: { createIntent, revision, updatedAt },
+				value: { revision, updatedAt },
 			});
 			const indexRevision = await files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: entry.pendingUpdate._id,
@@ -1865,7 +1983,7 @@ export const update_entries_by_path = internalMutation({
 			await files_metadata_db_write_entries(ctx, {
 				privateEntry: {
 					...entry,
-					pendingUpdate: { ...entry.pendingUpdate, createIntent, revision, updatedAt, indexRevision },
+					pendingUpdate: { ...entry.pendingUpdate, revision, updatedAt, indexRevision },
 				},
 				entries: validated._yay.entries,
 			});

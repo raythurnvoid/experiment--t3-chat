@@ -1085,6 +1085,7 @@
 	}
 
 	.FileNodeViewFolderExplorer-cell-value {
+		gap: 6px;
 		white-space: nowrap;
 		color: var(--color-fg-07);
 	}
@@ -1120,6 +1121,36 @@
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+
+	.FileNodeViewFolderExplorer-full-value {
+		flex: 0 0 auto;
+
+		/* Receive clicks above the row-wide file link. */
+		pointer-events: auto;
+	}
+
+	.FileNodeViewFolderFullValueModal {
+		width: min(46rem, calc(100vw - 2rem));
+		max-width: none;
+	}
+
+	.FileNodeViewFolderFullValueModal-value {
+		font-size: 16px;
+		line-height: 22px;
+		color: var(--color-fg-11);
+	}
+
+	.FileNodeViewFolderFullValueModal-label {
+		margin: 12px 0 6px;
+
+		font-size: 15px;
+		color: var(--color-fg-08);
+	}
+
+	.FileNodeViewFolderFullValueModal-error {
+		font-size: 15px;
+		color: var(--color-red-11);
 	}
 
 	.FileNodeViewFolderExplorerColumns-popover {

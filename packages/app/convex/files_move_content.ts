@@ -20,6 +20,7 @@ import { files_move_cohorts_db_advance } from "./files_move_cohorts.ts";
 import { files_pending_updates_action_prepare_content } from "./files_pending_updates.ts";
 import { files_compute_wc_counts, files_nodes_db_insert_committed_text_chunks } from "./files_nodes_create_db.ts";
 import { files_metadata_content_stage_docs } from "./files_metadata.ts";
+import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import { files_stored_uploads_cost_cents, files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
@@ -469,7 +470,10 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 		const afterProposal = db_after_proposal({ content, proposal, nextSequence, operationTime: cohort.operationTime });
 		const docs = files_metadata_content_stage_docs({
 			node: { ...node, textKind: shape.rootKind },
-			metadata: prepared.kind === "private" ? proposal.createIntent?.metadata : undefined,
+			metadata:
+				prepared.kind === "private"
+					? (await files_metadata_maps_db_read(ctx.db, { kind: "pending", id: proposal._id }))?.entries
+					: undefined,
 			yjsSequence: shape.collaborationEnabled ? nextSequence : undefined,
 			text: accepted?.text,
 			pending: afterProposal ? { proposalId: proposal._id, proposal: afterProposal, text: remainder?.text } : undefined,

@@ -20,6 +20,7 @@ import { channels_db_drain_member_batch, channels_db_purge_workspace_batch } fro
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { internalAction, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
+import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { presence } from "./presence.ts";
@@ -53,7 +54,7 @@ import {
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
 import { files_write_policy_runs_db_delete_run_batch } from "./files_write_policy_runs.ts";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
-import { files_subtree_ops_db_delete } from "./files_subtree_ops_db.ts";
+import { files_subtree_ops_db_delete, files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
 import { files_db_delete_pending_update, files_db_expire_pending_update_operation_batch } from "../server/files.ts";
 import { files_pending_overlay_db_delete_job } from "../server/files-pending-overlay.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
@@ -1234,6 +1235,23 @@ async function db_purge_organization_workspace_content_batch(
 
 	// File-derived content and snapshot docs are removed before jobs, assets,
 	// and file nodes, which are cleaned up at the end of this helper.
+	// Full maps are large. Delete each map before reading the next. Continue in a later pass.
+	let deletedMetadataMaps = 0;
+	for await (const map of ctx.db
+		.query("files_metadata_maps")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)) {
+		files_move_reservations_db_note_source(ctx.db, {
+			table: "files_metadata_maps",
+			id: map._id,
+			old: { organizationId: map.organizationId, workspaceId: map.workspaceId, owner: map.owner },
+		});
+		await ctx.db.delete("files_metadata_maps", map._id);
+		deletedMetadataMaps++;
+		if (deletedMetadataMaps >= batchSize || (await files_subtree_ops_db_is_near_limits(ctx))) break;
+	}
+	if (deletedMetadataMaps > 0) return { done: false, deletedCount: deletedMetadataMaps };
 	const metadataDocs = await ctx.db
 		.query("files_metadata_docs")
 		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>

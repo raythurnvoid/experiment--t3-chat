@@ -4,6 +4,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { users_SYSTEM_AUTHOR } from "../../../shared/users.ts";
+import {
+	files_metadata_MAX_STRING_VALUE_BYTES,
+	files_metadata_MAX_YAML_BYTES,
+	files_metadata_stringify_entries_yaml,
+} from "../../../shared/files-metadata.ts";
 
 const {
 	actionMock,
@@ -665,6 +670,46 @@ describe("FilesPropertiesModalMetadata", () => {
 
 		typeDraft("created-by: email\n");
 		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(false);
+	});
+
+	test("shows a full 32 KiB text value and both byte limits", () => {
+		const value = "a".repeat(files_metadata_MAX_STRING_VALUE_BYTES - 4) + "TAIL";
+		const entries = [{ key: "note", value }];
+		mockQueries({ entries, canWrite: true });
+		renderModal();
+		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toBe(
+			files_metadata_stringify_entries_yaml(entries),
+		);
+		const counter = document.querySelector("[data-metadata-yaml-bytes]")!;
+		expect(counter.textContent).toContain(files_metadata_MAX_YAML_BYTES.toLocaleString());
+		expect(counter.textContent).toContain(files_metadata_MAX_STRING_VALUE_BYTES.toLocaleString());
+		expect(counter.getAttribute("data-metadata-yaml-bytes")).toBe(String(files_metadata_MAX_STRING_VALUE_BYTES + 7));
+	});
+
+	test("counts UTF-8 bytes while typing and saves a full larger value", () => {
+		mockQueries({ entries: [], canWrite: true });
+		renderModal();
+		typeDraft("note: 😀\n");
+		expect(document.querySelector("[data-metadata-yaml-bytes]")?.getAttribute("data-metadata-yaml-bytes")).toBe("11");
+		const yaml = `note: ${"a".repeat(files_metadata_MAX_STRING_VALUE_BYTES - 4)}TAIL\n`;
+		typeDraft(yaml);
+		clickSave();
+		expect(mutationMock).toHaveBeenCalledWith("set_entries", {
+			membershipId: MEMBERSHIP_ID,
+			fileNodeId: NODE_ID,
+			metadataYaml: yaml,
+		});
+	});
+
+	test("refuses one extra text byte before calling the mutation", async () => {
+		mockQueries({ entries: [], canWrite: true });
+		renderModal();
+		typeDraft(`note: ${"a".repeat(files_metadata_MAX_STRING_VALUE_BYTES + 1)}\n`);
+		clickSave();
+		expect(mutationMock).not.toHaveBeenCalled();
+		expect((await screen.findByRole("alert")).textContent).toContain(
+			`${files_metadata_MAX_STRING_VALUE_BYTES / 1024} KiB`,
+		);
 	});
 
 	// The same rule on the cold path: the query has no answer yet on the first render, so the

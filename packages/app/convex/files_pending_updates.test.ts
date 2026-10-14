@@ -2666,7 +2666,7 @@ describe("overlay reads on a file with collaboration off", () => {
 			return found.page.map((row) => (row.kind === "problem" ? row.message : row.nodeId));
 		};
 		const title_by_path = async () => {
-			const found = await t.query(internal.files_metadata.get_by_path, {
+			const found = await t.query(internal.files_metadata.get_index_values_by_path, {
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,

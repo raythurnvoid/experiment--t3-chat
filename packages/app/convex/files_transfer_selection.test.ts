@@ -6,6 +6,7 @@ import { advance } from "./files_transfer.ts";
 import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_metadata_stringify_entries_yaml } from "../shared/files-metadata.ts";
+import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -359,7 +360,11 @@ describe("Transfer selection pages", () => {
 						parent: targetParent,
 						state: "active",
 					});
-					expect(pending?.createIntent?.metadata, "private Move keeps the full dense metadata map").toEqual(metadata);
+					if (!pending) throw new Error("Expected the private Move proposal");
+					expect(
+						(await f.t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "pending", id: pending._id })))?.entries,
+						"private Move keeps the full dense metadata map",
+					).toEqual(metadata);
 				} else {
 					expect(pending?.pendingMove, "saved Move stores the new private parent in its proposal").toMatchObject({
 						destParent: targetParent,

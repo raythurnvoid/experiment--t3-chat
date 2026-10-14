@@ -165,13 +165,13 @@ test("metadata reads merge normal and selected facts before and after the switch
 			).page.map((field) => field.fieldPath),
 		);
 	const byPath = () =>
-		f.t.query(internal.files_metadata.get_by_path, {
+		f.t.query(internal.files_metadata.get_index_values_by_path, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			userId: f.db.userId,
 			path: "/meta.txt",
 		});
-	expect((await byPath())?.values, "Bash metadata keeps selected before docs").toEqual([
+	expect((await byPath())?.values, "Indexed metadata keeps selected before docs").toEqual([
 		{ fieldPath: "metadata.status", valueKind: "string", stringValue: "old" },
 	]);
 	expect(await fields(), "selected metadata remains in the folder fields").toEqual([
@@ -190,7 +190,7 @@ test("metadata reads merge normal and selected facts before and after the switch
 		)?.fields,
 	).toEqual(["metadata.status"]);
 	await f.publish();
-	expect((await byPath())?.values, "Bash metadata selects after docs at publication").toEqual([
+	expect((await byPath())?.values, "Indexed metadata selects after docs at publication").toEqual([
 		{ fieldPath: "metadata.status", valueKind: "string", stringValue: "new" },
 	]);
 	await test_run_with_flush(f.t, async (ctx) => {
@@ -209,7 +209,7 @@ test("metadata reads merge normal and selected facts before and after the switch
 		if (!doc) throw new Error("Expected an after metadata doc");
 		await ctx.db.patch("files_metadata_docs", doc._id, { moveView: undefined });
 	});
-	expect((await byPath())?.fields, "Bash metadata merges a partly cleaned selected view").toEqual(["metadata.status"]);
+	expect((await byPath())?.fields, "Indexed metadata merges a partly cleaned selected view").toEqual(["metadata.status"]);
 	expect(await fields()).toEqual(["metadata.normal", "metadata.status"]);
 	expect(await values(), "after metadata wins at the shared switch").toEqual(["new"]);
 });

@@ -327,7 +327,7 @@ async function read_volume(
 			numItems: 10,
 			cursor: null,
 		}),
-		metadata: await f.t.query(internal.files_metadata.get_by_path, { ...args, path: f.path }),
+		metadata: await f.t.query(internal.files_metadata.get_index_values_by_path, { ...args, path: f.path }),
 		metadataSearch: await test_meta_search(f.t, {
 			...args,
 			plan: { op: "eq", fieldPath: "metadata.status", value: "published" },
@@ -651,7 +651,7 @@ describe("volume tenant API isolation", () => {
 			}),
 		).toMatchObject({ items: [] });
 		for (const path of [f.path, "/.mounts/sources/repo/notes.md"]) {
-			expect(await f.t.query(internal.files_metadata.get_by_path, { ...args, path })).toBeNull();
+			expect(await f.t.query(internal.files_metadata.get_index_values_by_path, { ...args, path })).toBeNull();
 		}
 	});
 });

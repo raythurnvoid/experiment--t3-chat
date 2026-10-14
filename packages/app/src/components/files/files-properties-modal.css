@@ -410,6 +410,14 @@
 		gap: 12px;
 	}
 
+	.FilesPropertiesModalMetadata-limits {
+		margin: 0;
+
+		font-size: 15px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+	}
+
 	.FilesPropertiesModalMetadata-status {
 		margin: 0 auto 0 0;
 

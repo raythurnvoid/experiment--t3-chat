@@ -5,6 +5,7 @@ import type { Id } from "./_generated/dataModel";
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
 import { test_convex, test_meta_search, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ancestor_fields } from "../shared/files.ts";
+import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -26,8 +27,11 @@ async function fixture(ready = true) {
 	await t.run(async (ctx) => {
 		const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
 		if (proposal?.createIntent?.kind !== "text") throw new Error("Expected text intent");
-		await ctx.db.patch("files_pending_updates", pendingUpdateId, {
-			createIntent: { ...proposal.createIntent, metadata: [{ key: "source", value: "captured" }] },
+		await files_metadata_maps_db_write(ctx.db, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			owner: { kind: "pending", id: pendingUpdateId },
+			entries: [{ key: "source", value: "captured" }],
 		});
 	});
 	if (ready) {

@@ -29,6 +29,7 @@ import {
 } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
+import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 
 beforeEach(mock_review_storage);
 
@@ -936,7 +937,9 @@ describe("review job content", () => {
 			}),
 		).toEqual({ _yay: { path: "/metadata", entries } });
 		const current = (await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id)))!;
-		expect(current.createIntent?.metadata).toEqual(entries);
+		expect(
+			(await f.t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "pending", id: current._id })))?.entries,
+		).toEqual(entries);
 		const result = await finish_review({ f, runId: await start_review({ f, proposals: [current] }) });
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
 		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").first());

@@ -35,10 +35,12 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_format_size } from "@/lib/files.ts";
 import { cn, sx } from "@/lib/utils.ts";
 import {
+	files_metadata_MAX_STRING_VALUE_BYTES,
+	files_metadata_MAX_YAML_BYTES,
 	files_metadata_parse_entries_yaml,
 	files_metadata_stringify_entries_yaml,
 } from "../../../shared/files-metadata.ts";
-import { files_node_has_editable_text_content } from "../../../shared/files.ts";
+import { files_get_utf8_byte_size, files_node_has_editable_text_content } from "../../../shared/files.ts";
 import { FilesWritePolicyWritersModal, type FilesWritePolicyWriter } from "./files-write-policy-writers-modal.tsx";
 import { users_SYSTEM_AUTHOR } from "../../../shared/users.ts";
 
@@ -1095,6 +1097,7 @@ type FilesPropertiesModalMetadata_ClassNames =
 	| "FilesPropertiesModalMetadata-editor"
 	| "FilesPropertiesModalMetadata-skeleton"
 	| "FilesPropertiesModalMetadata-placeholder"
+	| "FilesPropertiesModalMetadata-limits"
 	| "FilesPropertiesModalMetadata-actions"
 	| "FilesPropertiesModalMetadata-status"
 	| "FilesPropertiesModalMetadata-status-error";
@@ -1167,6 +1170,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 
 	const editable = canWrite === true;
 	const dirty = metadata.draftYaml !== metadata.serverYaml;
+	const draftBytes = files_get_utf8_byte_size(metadata.draftYaml);
 	const statusId = useId();
 	// Show the permission reason first when permission and the lock both block writing, so the
 	// section matches the order the server checks them in.
@@ -1430,6 +1434,14 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 				) : null}
 			</div>
 
+			<p
+				className={"FilesPropertiesModalMetadata-limits" satisfies FilesPropertiesModalMetadata_ClassNames}
+				data-metadata-yaml-bytes={draftBytes}
+			>
+				YAML: {draftBytes.toLocaleString()} of {files_metadata_MAX_YAML_BYTES.toLocaleString()} bytes. Text values: up
+				to {files_metadata_MAX_STRING_VALUE_BYTES.toLocaleString()} bytes each. Some letters use more than one byte.
+			</p>
+
 			<div className={"FilesPropertiesModalMetadata-actions" satisfies FilesPropertiesModalMetadata_ClassNames}>
 				{(metadata.feedback ?? blockedReason) ? (
 					<p
@@ -1641,6 +1653,12 @@ const FilesPropertiesModalMetadataHelp = memo(function FilesPropertiesModalMetad
 							<li>
 								Keys have no spaces.
 								{rule("keyDo", "keyDont")}
+							</li>
+							<li>
+								Text values can use up to {files_metadata_MAX_STRING_VALUE_BYTES.toLocaleString()} bytes each. Some
+								letters use more than one byte. The whole YAML map can use up to{" "}
+								{files_metadata_MAX_YAML_BYTES.toLocaleString()} bytes, including keys and quotes. Both the typed YAML
+								and its saved form must fit. Long values stay complete when saved.
 							</li>
 							<li>
 								Write dates as <code>YYYY-MM-DD</code> (year, month, day). Search can only compare dates written this

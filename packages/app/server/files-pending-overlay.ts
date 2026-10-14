@@ -50,6 +50,7 @@ import {
 	files_share_rows_NODE_FIELDS,
 } from "./files-share-rows.ts";
 import { files_visible_resolve_db_create } from "./files-visible-resolve.ts";
+import { files_metadata_maps_db_delete } from "./files-metadata-maps.ts";
 import {
 	files_metadata_catalog_add_write,
 	files_metadata_catalog_db_insert_deltas,
@@ -893,6 +894,17 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 					const table = args[0] as string;
 					const id = args[1] as string;
 					const value = (property === "delete" ? null : args[2]) as SourceFields | null;
+					if (property === "delete") {
+						const owner =
+							table === "files_nodes"
+								? { kind: "saved" as const, id: id as Id<"files_nodes"> }
+								: table === "files_pending_updates"
+									? { kind: "pending" as const, id: id as Id<"files_pending_updates"> }
+									: table === "files_transfer_items"
+										? { kind: "capture" as const, id: id as Id<"files_transfer_items"> }
+										: null;
+						if (owner) await files_metadata_maps_db_delete(raw, owner);
+					}
 					const knownScope = state.lastKnown.get(id);
 					if (knownScope?.organizationId && knownScope.workspaceId)
 						files_move_reservations_db_note_source(raw, {
