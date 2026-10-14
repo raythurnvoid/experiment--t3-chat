@@ -3035,10 +3035,7 @@ export const cleanup_expired_pending_state_rows = internalMutation({
 								.query("files_pending_update_text_inputs")
 								.withIndex("by_operationBatch", (q) => q.eq("operationBatchId", batch._id))
 								.take(inputLimit),
-							ctx.db
-								.query("files_pending_update_yjs_states")
-								.withIndex("by_owner_operationBatch", (q) => q.eq("owner.operationBatchId", batch._id))
-								.collect(),
+							db_get_operation_batch_states(ctx, { operationBatchId: batch._id }),
 						]);
 						remainingLargeValues -= textInputs.length;
 						for (const input of textInputs) {
@@ -5611,6 +5608,7 @@ const DRAIN_TABLES = ["files_text_chunks", "files_plain_text_chunks", "files_met
  * Delete a proposal's old chunk and metadata docs, one page per run, table by table. A doc is old
  * when its proposal is gone or its `proposalRevision` is not the current one. Readers already skip
  * old docs, so nobody sees them while they wait. The current docs stay.
+ * The drain needs no user doc, so deleting the user does not stop scheduled cleanup.
  */
 export const drain_pending_update_docs = internalMutation({
 	args: {

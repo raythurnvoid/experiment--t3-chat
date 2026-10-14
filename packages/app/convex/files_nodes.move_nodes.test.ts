@@ -14,6 +14,7 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
 	test_convex,
 	test_finish_pending_update_run,
+	test_save_file_pending_update,
 	test_rename_node,
 	test_move_nodes,
 	test_mocks,
@@ -32,6 +33,7 @@ import {
 import { delay } from "../shared/async-utils.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 import {
 	propose_move_for_test,
 	test_setup_r2_capture,
@@ -1303,6 +1305,90 @@ describe("move_nodes", () => {
 });
 
 describe("reviewed Move names and paths", () => {
+	test("Save names a long draft child, keeps the private tree, and succeeds after shortening a parent", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/a/b/c/d/leaf",
+			kind: "folder",
+		});
+		if (created._nay || !created._yay.pendingUpdateId) throw new Error("Expected a private folder tree");
+		const drafts = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+		expect(drafts).toHaveLength(5);
+		const parents = ["a", "b", "c", "d"].map((name) => drafts.find((node) => node.name === name)!);
+		// Each Rename checks its own path. Later parent renames can lengthen the leaf beyond the limit.
+		for (const parent of [...parents].reverse())
+			expect(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					target: { kind: "private", id: parent._id },
+					destParent: parent.parent,
+					destName: parent.name.repeat(files_NAME_MAX_LENGTH),
+				}),
+			).toMatchObject({ _yay: { appliedImmediately: true } });
+		const parentPath = "/" + parents.map((parent) => parent.name.repeat(files_NAME_MAX_LENGTH)).join("/");
+		const longPath = parentPath + "/leaf";
+		expect(parentPath.length).toBe(files_PATH_MAX_LENGTH);
+		expect(longPath.length).toBeGreaterThan(files_PATH_MAX_LENGTH);
+		const proposal = (await t.run((ctx) => ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!)))!;
+		const args = {
+			membershipId: db.membershipId,
+			target: proposal.target,
+			pendingUpdateId: proposal._id,
+			reviewedRevision: proposal.revision,
+		};
+		expect(
+			await test_save_file_pending_update(asUser, args),
+			"Save refuses the long leaf before publication",
+		).toMatchObject({
+			_nay: {
+				name: "path_too_long",
+				message: `…/leaf would have a path of ${longPath.length.toLocaleString("en-US")} characters. Paths can have at most ${files_PATH_MAX_LENGTH.toLocaleString("en-US")} characters. Shorten a folder name or move it higher.`,
+			},
+		});
+		expect(
+			await t.run((ctx) => ctx.db.query("files_nodes").collect()),
+			"the failed Save publishes no folder",
+		).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
+		expect(
+			(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).map((node) => ({
+				id: node._id,
+				state: node.state,
+			})),
+			"the failed Save keeps every private folder",
+		).toEqual(drafts.map((node) => ({ id: node._id, state: "active" })));
+
+		const root = parents[0]!;
+		expect(
+			await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				target: { kind: "private", id: root._id },
+				destParent: root.parent,
+				destName: "a",
+			}),
+		).toMatchObject({ _yay: { appliedImmediately: true } });
+		const saved = await test_save_file_pending_update(asUser, args);
+		if (saved._nay) throw new Error(saved._nay.message);
+		const savedTarget = saved._yay.target;
+		if (savedTarget.kind !== "saved") throw new Error("Expected Save to publish the folder");
+		const shorterPath =
+			"/a/" + parents.slice(1).map((parent) => parent.name.repeat(files_NAME_MAX_LENGTH)).join("/") + "/leaf";
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", savedTarget.id))).toMatchObject({ path: shorterPath });
+		expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toHaveLength(drafts.length);
+		expect(
+			(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).map((node) => node.state),
+		).toEqual(drafts.map(() => "published"));
+	});
+
 	test("moves 41 mixed files with final counter names and keeps their assets", async () => {
 		vi.useFakeTimers();
 		const t = test_convex();

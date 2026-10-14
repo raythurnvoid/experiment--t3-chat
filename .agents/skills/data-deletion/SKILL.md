@@ -166,6 +166,11 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - Retained-tombstone finalization removes auth pointers and anonymous tokens only when the caller passes `deleteUserAuth`.
 - `users.purge_deleted_user_tombstone` removes the one anonymous-token doc and billing snapshot in the same transaction as the anagraphic and user. It leaves queued tenant cleanup in place. The normal finalizer and missing-user drain share this auth/billing cleanup helper.
 - Removing a saved-target proposal leaves its saved node in place. Private cleanup fences the draft and drains its owned content before releasing its node slot. Stored create and replacement assets go through exact-key cleanup; existing upload jobs keep their generation and arrival guards.
+- Old proposal chunks and metadata may remain after the proposal is deleted. Its scheduled
+  `drain_pending_update_docs` job needs no user doc. It waits only while a Move holds that proposal,
+  retries every 60 seconds, and continues after the Move releases it. User cleanup finds children
+  through proposals that still exist. Workspace cleanup also removes children whose proposal is
+  gone through their workspace indexes.
 - Final user deletion schedules `purge_user_private_assets` for held asset reservations left by interrupted preparation. It pages the existing user/settlement/resource index with a cutoff from before finalization. It queues each exact R2 key and keeps the byte hold until deletion is confirmed. This also reaches browser captures that never attached to a proposal, without touching later uploads after account recovery.
 - Final account deletion removes the creator's active and archived private chats in every workspace, including surviving teams. The queued, missing-user, and auth-removing admin paths share this bounded cleanup. Keep the normal waiting period and recovery fence. Other creators' chats and saved team files stay. Data-only reset keeps its existing tenant-based rules; it does not use this creator-wide chat drain.
 

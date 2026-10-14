@@ -485,6 +485,10 @@ Important behavior:
 - Connected moves, folder cycles, content, and replacement occupants must appear in the explicit server review selection. Accepting one member never silently selects another member. Each connected Accept unit stages its changes in pages and publishes them with one group switch.
 - Folder Move replaces only an empty folder. Bash requires the explicit `mv -T -f` form. Active saved children, private children, and the owner's pending moves into that folder count as contents. The final Save checks again, so a late saved child keeps its folder. A file never replaces a folder, and a folder never replaces a file. Move never merges nonempty folders.
 - Move Accept uses `files_move_cohorts.ts`. It stages saved headers and changed indexed side docs in pages. Before the switch, readers keep the old IDs, names and content. After it, they read the final group while the worker finishes physical writes and releases holds. Both placements also carry the archive path allowance. A missing allowance means the normal path limit; moving an archived item keeps its allowance or absence. See "Create, Rename, Archive, Unarchive" in the [explorer spec](../files-explorer-tree/SKILL.md).
+- A private folder rename checks that folder's new path, not every child's path. Renaming parents
+  can therefore leave a child's draft path over 1,024 characters. Save checks each node's full path
+  before publication. It names the child and its path length in the refusal and keeps that tree
+  pending. Shorten a parent folder name or move it higher, then Save again.
 - A replacement pins the saved occupant ID and content version at proposal time. A later occupant or changed version requires a new review; Save never adopts either automatically. The occupant's own pending changes must be selected too, even when another chat contributed them. Accept archives that occupant and removes its whole proposal without saving its draft text or charging another Save.
 - Accepting Delete or replacement retires the consumed proposal's three content states. Background cleanup removes their pages before releasing the held bytes. Removing the proposal alone must not leave those states active.
 - If that proposal also owns an unused Copy asset, cleanup queues its exact R2 key and deletes its asset doc. Its byte hold stays until R2 deletion finishes. A normal Save keeps the asset adopted by its content step.
@@ -620,6 +624,11 @@ Only destination, occupant, and immediate-parent checks apply. The full contract
 # Cleanup And Expiry Model
 
 - Private cleanup hands captured assets to durable exact-key deletion jobs before removing their records. Physical storage reservations remain until deletion is confirmed.
+- Old proposal chunks and metadata drain through `drain_pending_update_docs` even after the user
+  doc is gone. The drain needs only the proposal ID. It waits only while a Move holds that proposal,
+  retries every 60 seconds from the first table, and continues after the Move releases the proposal.
+  User cleanup finds children through proposals that still exist. Workspace cleanup also reaches
+  children whose proposal is already gone through their workspace indexes.
 
 A draft is removed 4 hours after both its last edit and its owner's last visible app tab. A hidden
 tab does not count: the vendored presence hook stops its heartbeat while the page is hidden. The

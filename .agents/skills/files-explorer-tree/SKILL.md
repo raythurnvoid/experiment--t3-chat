@@ -744,6 +744,10 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   over 1,024 is then refused only when it gets longer, so an older long path can always get shorter.
   With `oldPathLength`, the refusal names the item and its length and says `Shorten a folder name or
   move it higher.`. Restore uses its archive allowance, described below.
+- A private folder rename checks only that folder's path. Its children's draft paths may then be
+  over 1,024 characters. Save checks each node before publication, names the long child and its
+  path length, and keeps that tree pending. Shorten a parent folder name or move it higher, then
+  Save again.
 - Restore checks paths before its first write. The check walk works out how much longer each item's
   path gets where it lands and refuses the whole restore when any path would pass its allowed length:
   `Can't restore. 3 items would have paths over 1,024 characters, like …/report.md (1,031). Shorten
