@@ -145,20 +145,30 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 	return { ...header, archivedPathLength: place.archivedPathLength, ...files_ancestor_fields(files_ancestor_ids(place)) };
 }
 
-async function db_get_membership(
+async function db_read_membership(
 	ctx: QueryCtx | MutationCtx,
-	args: Pick<
-		Doc<"files_move_cohorts">,
-		"organizationId" | "workspaceId" | "userId" | "membershipId" | "membershipLifetime"
-	>,
+	args: Pick<Doc<"files_move_cohorts">, "organizationId" | "workspaceId" | "userId" | "membershipId">,
 ) {
-	const [user, workspace, organization, lifetime, membership] = await Promise.all([
+	return await Promise.all([
 		ctx.db.get("users", args.userId),
 		ctx.db.get("organizations_workspaces", args.workspaceId),
 		ctx.db.get("organizations", args.organizationId),
 		organizations_membership_lifetimes_db_get(ctx, args),
 		organizations_db_get_membership(ctx, { userId: args.userId, membershipId: args.membershipId }),
 	]);
+}
+
+type MembershipReads = { docs?: Awaited<ReturnType<typeof db_read_membership>> };
+
+async function db_get_membership(
+	ctx: QueryCtx | MutationCtx,
+	args: Pick<
+		Doc<"files_move_cohorts">,
+		"organizationId" | "workspaceId" | "userId" | "membershipId" | "membershipLifetime"
+	>,
+	docs?: MembershipReads["docs"],
+) {
+	const [user, workspace, organization, lifetime, membership] = docs ?? (await db_read_membership(ctx, args));
 	if (
 		!user ||
 		user.deletedAt !== undefined ||
@@ -2336,6 +2346,7 @@ async function db_advance_step(
 	ctx: MutationCtx,
 	args: { cohortId: Id<"files_move_cohorts">; step: number; runGeneration: number | null },
 	limitFactor: 4 | 16,
+	membershipReads: MembershipReads,
 ) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (
@@ -2352,7 +2363,8 @@ async function db_advance_step(
 	let membership: Doc<"organizations_workspaces_users"> | null = null;
 	let organization: Doc<"organizations"> | null = null;
 	if (!repairing) {
-		const authorized = await db_get_membership(ctx, cohort);
+		membershipReads.docs ??= await db_read_membership(ctx, cohort);
+		const authorized = await db_get_membership(ctx, cohort, membershipReads.docs);
 		if (authorized._nay || !(await db_parent_running(ctx, cohort))) {
 			await db_abort(
 				ctx,
@@ -2646,9 +2658,11 @@ async function db_advance(
 	limitFactor: 4 | 16 = 16,
 ) {
 	let step = args.step;
+	// Move steps do not edit these actor docs. The next transaction reads them again.
+	const membershipReads: MembershipReads = {};
 	while (true) {
 		// Nested joins use this transaction's budget too.
-		const result = await db_advance_step(ctx, { ...args, step }, limitFactor);
+		const result = await db_advance_step(ctx, { ...args, step }, limitFactor, membershipReads);
 		if (result?.kind !== "next") return result;
 		step = result.step;
 		if (!args.join) {

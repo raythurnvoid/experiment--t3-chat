@@ -229,7 +229,10 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   unpublished candidates and returns `needs_review`. Completed groups stay saved.
   Move joins exact selection, normalization and planning work while the flushed transaction
   metrics allow it. Each joined step repeats the current checks. Copy keeps its existing step
-  boundaries. An empty indexed restricted-root range needs no native page. Every actual native
+  boundaries. One joined cohort call reads its five actor facts once, after admission. The
+  actor checks still run at every step. A new transaction reads those facts again. Node access,
+  policy, receipts, clocks, parent progress and Stop checks keep their current reads.
+  An empty indexed restricted-root range needs no native page. Every actual native
   page still ends the transaction. Selected item, child and replacement producers queue their
   saved subtree ranges directly. The publication step commits the after view and next repair
   step together, then returns. Physical repair starts in a fresh transaction and keeps the slot.
