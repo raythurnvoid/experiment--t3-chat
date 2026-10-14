@@ -2,6 +2,11 @@
 
 Use this file for reusable problems that affect app browser QA.
 
+An owned blank tab may change while QA waits. Check its URL before navigation.
+If it changed to an unrelated page without your action, leave it alone. The user or
+another task may now own it. Create a new owned tab and navigate it to the intended
+route. Do not navigate or close the unrelated page.
+
 In an owned scratch headless Edge tab, call `await page.bringToFront()` before clicks and screenshots.
 An inactive tab can still answer DOM reads while a click stalls at "performing click action" and a
 screenshot times out. Bringing the same tab forward fixed both on 2026-10-03. Do not use this on

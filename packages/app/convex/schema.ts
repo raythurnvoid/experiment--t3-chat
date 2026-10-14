@@ -738,20 +738,18 @@ export const files_table_filter_validator = v.union(
 );
 
 const files_pending_create_intent_validator = v.union(
-	v.object({ kind: v.literal("folder"), metadata: v.optional(files_metadata_entries_validator) }),
+	v.object({ kind: v.literal("folder") }),
 	v.object({
 		kind: v.literal("text"),
 		contentType: v.string(),
 		textKind: v.union(v.literal("plain_text"), v.literal("rich_text")),
 		collaborationEnabled: v.boolean(),
-		metadata: v.optional(files_metadata_entries_validator),
 	}),
 	v.object({
 		kind: v.literal("stored"),
 		assetId: v.id("files_r2_assets"),
 		size: v.number(),
 		contentType: v.string(),
-		metadata: v.optional(files_metadata_entries_validator),
 	}),
 );
 
@@ -4383,8 +4381,6 @@ const app_convex_schema = defineSchema({
 			v.object({ ...files_pending_index_fields, ...files_metadata_index_fields }),
 		),
 	)
-		// Push B only. Preview work visits every committed field, across all Move views and archives.
-		.index("by_sourceKind_docKind", ["sourceKind", "docKind"])
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
 		// Whole-file staging needs short cursors even when a metadata key is very long.
 		.index("by_organization_workspace_source_fileNode", [
@@ -6002,7 +5998,6 @@ const app_convex_schema = defineSchema({
 						sequence: v.number(),
 					}),
 				),
-				metadata: v.optional(files_metadata_entries_validator),
 				artifact: v.union(
 					v.null(),
 					v.object({

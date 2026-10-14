@@ -247,6 +247,10 @@ fields skip those text versions, so an unrelated content edit does not break the
 A changed source asks the caller to start again.
 No whole-folder or workspace read is needed.
 
+A next page may run in a later chat turn. Its cursor binds the same user, chat, membership,
+membership lifetime, file scope, and source version. Each call still checks its own current run.
+The new turn's run ID is not a file change.
+
 `meta get` accepts `--field` and `--cursor`. Each JSON or text page fits 64 KiB, including output
 escaping and continuation text. Follow every `Next page` command until none remains. Only the last
 JSON page has `isDone: true`. Large JSON strings use `valueIndex`, `fragment`, `offset`, and `totalLength`.

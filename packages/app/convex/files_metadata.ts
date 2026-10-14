@@ -1504,9 +1504,6 @@ export const get_index_values_by_path = internalQuery({
 	},
 });
 
-// Keep the A4 action response during its ten-minute rollout window.
-export const get_by_path = get_index_values_by_path;
-
 // #endregion get by path
 
 // #region file metadata

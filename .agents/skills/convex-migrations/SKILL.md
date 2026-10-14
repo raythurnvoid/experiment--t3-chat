@@ -65,7 +65,11 @@ Migration Progress:
 1. Verify the backfill, then switch reads and writes to the new representation.
 2. Make the old field optional and run a separate idempotent migration that strips it from stored docs.
 
-Check actions that started before the switch. Their later queries can read the new code and stored shape. Keep those reads valid, and reject stale final writes when old fields could choose the wrong mode or content. Retaining old keys alone is not enough if new writers leave their values stale. After the switch, wait for the old actions to finish before stripping fields they use; the normal [Convex action limit](https://docs.convex.dev/functions/actions#limits) is ten minutes. This wait does not replace the stale-write checks needed during that window.
+Check actions that started before the switch. Their later queries can read the new code and stored shape. Keep those reads valid. Reject stale final writes when old fields could choose the wrong mode or content. Keeping old keys is not enough if new writers leave their values stale.
+
+After the switch, wait for old actions to finish before stripping fields they use.
+The [official limits](https://docs.convex.dev/production/state/limits#execution-time-and-scheduling)
+allow 30 minutes for default Convex actions and 10 minutes for Node actions. Use the longer limit when both may carry old values. This wait does not replace stale-write checks during that window.
 
 Also check the queues that store old calls. Workpool has its own queues and delayed callbacks.
 The app's `_scheduled_functions` query does not cover component schedulers. Drain or stop calls

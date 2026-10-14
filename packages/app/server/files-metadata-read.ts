@@ -189,7 +189,18 @@ export async function files_metadata_read_full_page(
 	const source = await read_source();
 	if (!source) return Result({ _nay: { message: "Not found" } });
 	const path = args.renderPath?.(source.path) ?? source.path;
-	const binding = JSON.stringify([args.caller, source.userId, args.format, args.field ?? null, path, source.revision]);
+	// A new turn has a new run fence. Check it on reads, but bind pages to the same caller and chat.
+	const caller =
+		args.caller.kind === "path" && args.caller.args.agentSource
+			? {
+					...args.caller,
+					args: {
+						...args.caller.args,
+						agentSource: { ...args.caller.args.agentSource, run: undefined },
+					},
+				}
+			: args.caller;
+	const binding = JSON.stringify([caller, source.userId, args.format, args.field ?? null, path, source.revision]);
 	let position = { fieldIndex: 0, valueIndex: 0, valueOffset: 0 };
 	if (args.cursor !== null) {
 		const resolved = await bash_cursor_id_resolve(ctx, args.cursor);
