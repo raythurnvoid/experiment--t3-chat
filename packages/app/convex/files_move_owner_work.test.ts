@@ -1463,209 +1463,73 @@ test("collects and stages several native owner pages once, then keeps chosen IDs
 	expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))?.pendingWorkCount).toBe(0);
 });
 
-test("closes after-only private parent aliases and restores partial owner staging on abort", async () => {
-	test_spy_move_ranges();
-	const t = test_convex({ transactionLimits: true });
-	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-	const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
-	const parent = await t.mutation(internal.files_nodes.create_private_node_by_path, {
-		...scope,
-		path: "/private-parent",
-		kind: "folder",
-	});
-	if (parent._nay || parent._yay.target.kind !== "private" || !parent._yay.pendingUpdateId)
-		throw new Error("Expected the native private parent");
-	const parentTarget = parent._yay.target;
-	const children: Doc<"files_pending_nodes">["_id"][] = [];
-	for (let index = 0; index < 13; index++) {
-		const child = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+test.each([8, 9, 13])(
+	"private closure keeps %i children on Stop",
+	async (count) => {
+		test_spy_move_ranges();
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const parent = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 			...scope,
-			path: `/private-parent/child-${index}`,
+			path: "/private-parent",
 			kind: "folder",
 		});
-		if (child._nay || child._yay.target.kind !== "private") throw new Error("Expected a native private child");
-		children.push(child._yay.target.id);
-	}
-	const incoming = await asUser.mutation(api.files_nodes.create_folder_node, {
-		membershipId: db.membershipId,
-		parentId: "root",
-		path: "/incoming",
-	});
-	if (incoming._nay) throw new Error(incoming._nay.message);
-	const incomingTarget = { kind: "saved" as const, id: incoming._yay.nodeId };
-	expect(
-		(
-			await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+		if (parent._nay || parent._yay.target.kind !== "private" || !parent._yay.pendingUpdateId)
+			throw new Error("Expected the native private parent");
+		const parentTarget = parent._yay.target;
+		const children: Doc<"files_pending_nodes">["_id"][] = [];
+		for (let index = 0; index < count; index++) {
+			const child = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 				...scope,
-				target: incomingTarget,
-				destParent: parentTarget,
-				destName: "incoming",
-			})
-		)._nay,
-	).toBeUndefined();
-	for (let pass = 0; pass < 1000; pass++) {
-		const job = await t.run((ctx) =>
-			ctx.db
-				.query("files_pending_overlay_jobs")
-				.withIndex("by_org_ws", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-				.first(),
-		);
-		if (!job) break;
-		await t.mutation(internal.files_pending_overlay.run_job, {
-			kind: job.kind,
-			key: job.key,
-			nextAttemptAt: job.nextAttemptAt,
-		});
-		if (pass === 999) throw new Error("Native alias setup did not finish");
-	}
-	const originalPlaces = await t.run(async (ctx) =>
-		Promise.all(
-			children.map((id) =>
-				ctx.db
-					.query("files_pending_places")
-					.withIndex("by_target_user", (q) =>
-						q
-							.eq("target.kind", "private")
-							.eq("target.id", id)
-							.eq("userId", db.userId)
-							.eq("moveView.cohortId", undefined)
-							.eq("moveView.view", undefined),
-					)
-					.unique(),
-			),
-		),
-	);
-	const incomingProposal = await t.run((ctx) =>
-		ctx.db
-			.query("files_pending_updates")
-			.withIndex("by_user_target", (q) =>
-				q.eq("userId", db.userId).eq("target.kind", "saved").eq("target.id", incomingTarget.id),
-			)
-			.unique(),
-	);
-	const selected = (await t.run((ctx) => ctx.db.get("files_pending_updates", parent._yay.pendingUpdateId!)))!;
-	const started = await asUser.mutation(api.files_pending_update_runs.start, {
-		membershipId: db.membershipId,
-		requestId: crypto.randomUUID(),
-		kind: "accept",
-		expectedItemCount: 1,
-		items: [{ pendingUpdateId: selected._id, reviewedRevision: selected.revision, selectedContentStateId: null }],
-	});
-	if (started._nay) throw new Error(started._nay.message);
-	const runId = started._yay.runId;
-	expect(await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId })).toEqual({
-		_yay: null,
-	});
-	let cohort: Doc<"files_move_cohorts"> | null = null;
-	for (let pass = 0; pass < 2000; pass++) {
-		const slot = await t.run((ctx) =>
-			ctx.db
-				.query("files_move_workspace_slots")
-				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-				.unique(),
-		);
-		cohort = slot?.cohortId ? await t.run((ctx) => ctx.db.get("files_move_cohorts", slot.cohortId!)) : null;
-		if (cohort?.workPhase === "owners_stage") {
-			const staged = await t.run((ctx) =>
-				ctx.db
-					.query("files_move_owner_work")
-					.withIndex("by_cohort_owner_target", (q) =>
-						q
-							.eq("cohortId", cohort!._id)
-							.eq("userId", db.userId)
-							.eq("target.kind", "private")
-							.eq("target.id", children[0]!),
-					)
-					.unique(),
-			);
-			if (staged?.status === "staged") break;
-		}
-		if (cohort) {
-			expect(cohort.errorCode).toBeNull();
-			await t.action(internal.files_move_run.run, {
-				cohortId: cohort._id,
-				step: cohort.step,
-				runGeneration: cohort.runJob?.generation ?? null,
-				mode: "step",
+				path: `/private-parent/child-${index}`,
+				kind: "folder",
 			});
-		} else {
-			const run = (await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))!;
-			if (run.step === "planning") await t.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
-			else await t.mutation(internal.files_pending_update_runs.advance, { runId });
+			if (child._nay || child._yay.target.kind !== "private") throw new Error("Expected a native private child");
+			children.push(child._yay.target.id);
 		}
-		if (pass === 1999) throw new Error("Native Review did not start partial owner staging");
-	}
-	if (!cohort) throw new Error("Expected the native Review cohort");
-	const cohortId = cohort._id;
-	const receipt = await t.run((ctx) =>
-		ctx.db
-			.query("files_pending_node_publish_receipts")
-			.withIndex("by_privateNode", (q) =>
-				q.eq("privateNodeId", parentTarget.id).eq("moveView.cohortId", cohortId).eq("moveView.view", "after"),
-			)
-			.unique(),
-	);
-	expect(receipt, "native private Save creates the exact AFTER publication receipt").not.toBeNull();
-	expect(receipt!.savedNodeId, "allocation creates a fresh saved ID").not.toBe(incomingTarget.id);
-	const record = await t.run((ctx) =>
-		ctx.db
-			.query("files_move_cohort_nodes")
-			.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohortId).eq("nodeId", receipt!.savedNodeId))
-			.unique(),
-	);
-	expect(record?.role, "the AFTER receipt belongs to an allocated node").toBe("allocated");
-	expect(record?.beforePlaceId).toBeNull();
-	expect(cohort.publishedAt).toBeNull();
-	const work = await t.run((ctx) =>
-		ctx.db
-			.query("files_move_owner_work")
-			.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohortId))
-			.collect(),
-	);
-	expect(
-		work
-			.filter((row) => row.target.kind === "private" && row.target.id !== parentTarget.id)
-			.map((row) => row.target.id)
-			.sort(),
-		"an after-only receipt keeps all unselected private children",
-	).toEqual([...children].sort());
-	expect(
-		work.some((row) => row.target.kind === "saved" && row.target.id === incomingTarget.id),
-		"incoming moves follow the same private alias",
-	).toBe(true);
-	expect(
-		work.some((row) => row.target.kind === "private" && row.target.id === children[0] && row.status === "staged") &&
-			work.some((row) => row.target.kind === "private" && children.includes(row.target.id) && row.status === "planned"),
-		"Stop interrupts partial native owner staging",
-	).toBe(true);
-	expect(
-		await asUser.mutation(api.activities.request_stop, {
-			membershipId: db.membershipId,
-			activityId: started._yay.activityId,
-		}),
-	).toEqual({ _yay: null });
-	for (let pass = 0; pass < 2000; pass++) {
-		cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
-		if (cohort.phase === "complete") break;
-		await t.action(internal.files_move_run.run, {
-			cohortId,
-			step: cohort.step,
-			runGeneration: cohort.runJob?.generation ?? null,
-			mode: "step",
+		// The small range must still expand a newly found child folder.
+		const grandchild = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...scope,
+			path: "/private-parent/child-0/grandchild",
+			kind: "folder",
 		});
-		if (pass === 1999) throw new Error("Native alias abort did not finish");
-	}
-	await test_finish_pending_update_run(asUser, runId);
-	expect((await t.run((ctx) => ctx.db.get("activities", started._yay.activityId)))?.status).toBe("canceled");
-	expect(
-		(await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))?.pendingWorkCount,
-		"abort settles unfinished owner range counts",
-	).toBe(0);
-	for (const child of [parentTarget.id, ...children])
-		expect((await t.run((ctx) => ctx.db.get("files_pending_nodes", child)))?.state).toBe("active");
-	expect(
-		await t.run(async (ctx) =>
+		if (grandchild._nay || grandchild._yay.target.kind !== "private") throw new Error("Expected a native grandchild");
+		children.push(grandchild._yay.target.id);
+		const incoming = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: "root",
+			path: "/incoming",
+		});
+		if (incoming._nay) throw new Error(incoming._nay.message);
+		const incomingTarget = { kind: "saved" as const, id: incoming._yay.nodeId };
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					...scope,
+					target: incomingTarget,
+					destParent: parentTarget,
+					destName: "incoming",
+				})
+			)._nay,
+		).toBeUndefined();
+		for (let pass = 0; pass < 1000; pass++) {
+			const job = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_org_ws", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.first(),
+			);
+			if (!job) break;
+			await t.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+			if (pass === 999) throw new Error("Native alias setup did not finish");
+		}
+		const originalPlaces = await t.run(async (ctx) =>
 			Promise.all(
 				children.map((id) =>
 					ctx.db
@@ -1681,26 +1545,179 @@ test("closes after-only private parent aliases and restores partial owner stagin
 						.unique(),
 				),
 			),
-		),
-		"abort restores every original private place ID",
-	).toEqual(originalPlaces);
-	expect(
-		await t.run((ctx) => ctx.db.get("files_pending_updates", incomingProposal!._id)),
-		"Stop preserves the incoming pending Move identity",
-	).toEqual(incomingProposal);
-	expect(
-		await t.run((ctx) =>
+		);
+		const incomingProposal = await t.run((ctx) =>
 			ctx.db
-				.query("files_pending_places")
-				.withIndex("by_move_view", (q) => q.eq("moveView.cohortId", cohortId))
+				.query("files_pending_updates")
+				.withIndex("by_user_target", (q) =>
+					q.eq("userId", db.userId).eq("target.kind", "saved").eq("target.id", incomingTarget.id),
+				)
+				.unique(),
+		);
+		const selected = (await t.run((ctx) => ctx.db.get("files_pending_updates", parent._yay.pendingUpdateId!)))!;
+		const started = await asUser.mutation(api.files_pending_update_runs.start, {
+			membershipId: db.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "accept",
+			expectedItemCount: 1,
+			items: [{ pendingUpdateId: selected._id, reviewedRevision: selected.revision, selectedContentStateId: null }],
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		expect(await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId })).toEqual(
+			{
+				_yay: null,
+			},
+		);
+		let cohort: Doc<"files_move_cohorts"> | null = null;
+		for (let pass = 0; pass < 2000; pass++) {
+			const slot = await t.run((ctx) =>
+				ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.unique(),
+			);
+			cohort = slot?.cohortId ? await t.run((ctx) => ctx.db.get("files_move_cohorts", slot.cohortId!)) : null;
+			if (cohort?.workPhase === "owners_stage") {
+				const staged = await t.run((ctx) =>
+					ctx.db
+						.query("files_move_owner_work")
+						.withIndex("by_cohort_owner_target", (q) =>
+							q
+								.eq("cohortId", cohort!._id)
+								.eq("userId", db.userId)
+								.eq("target.kind", "private")
+								.eq("target.id", children[0]!),
+						)
+						.unique(),
+				);
+				if (staged?.status === "staged") break;
+			}
+			if (cohort) {
+				expect(cohort.errorCode).toBeNull();
+				await t.action(internal.files_move_run.run, {
+					cohortId: cohort._id,
+					step: cohort.step,
+					runGeneration: cohort.runJob?.generation ?? null,
+					mode: "step",
+				});
+			} else {
+				const run = (await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))!;
+				if (run.step === "planning")
+					await t.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
+				else await t.mutation(internal.files_pending_update_runs.advance, { runId });
+			}
+			if (pass === 1999) throw new Error("Native Review did not start partial owner staging");
+		}
+		if (!cohort) throw new Error("Expected the native Review cohort");
+		const cohortId = cohort._id;
+		const receipt = await t.run((ctx) =>
+			ctx.db
+				.query("files_pending_node_publish_receipts")
+				.withIndex("by_privateNode", (q) =>
+					q.eq("privateNodeId", parentTarget.id).eq("moveView.cohortId", cohortId).eq("moveView.view", "after"),
+				)
+				.unique(),
+		);
+		expect(receipt, "native private Save creates the exact AFTER publication receipt").not.toBeNull();
+		expect(receipt!.savedNodeId, "allocation creates a fresh saved ID").not.toBe(incomingTarget.id);
+		const record = await t.run((ctx) =>
+			ctx.db
+				.query("files_move_cohort_nodes")
+				.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohortId).eq("nodeId", receipt!.savedNodeId))
+				.unique(),
+		);
+		expect(record?.role, "the AFTER receipt belongs to an allocated node").toBe("allocated");
+		expect(record?.beforePlaceId).toBeNull();
+		expect(cohort.publishedAt).toBeNull();
+		const work = await t.run((ctx) =>
+			ctx.db
+				.query("files_move_owner_work")
+				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohortId))
 				.collect(),
-		),
-	).toEqual([]);
-	expect(
-		await t.run((ctx) => ctx.db.get("files_nodes", receipt!.savedNodeId)),
-		"abort deletes only the unexposed allocated saved node",
-	).toBeNull();
-}, 600_000);
+		);
+		expect(
+			work
+				.filter((row) => row.target.kind === "private" && row.target.id !== parentTarget.id)
+				.map((row) => row.target.id)
+				.sort(),
+			"an after-only receipt keeps all unselected private children",
+		).toEqual([...children].sort());
+		expect(
+			work.some((row) => row.target.kind === "saved" && row.target.id === incomingTarget.id),
+			"incoming moves follow the same private alias",
+		).toBe(true);
+		expect(
+			work.some((row) => row.target.kind === "private" && row.target.id === children[0] && row.status === "staged") &&
+				work.some(
+					(row) => row.target.kind === "private" && children.includes(row.target.id) && row.status === "planned",
+				),
+			"Stop interrupts partial native owner staging",
+		).toBe(true);
+		expect(
+			await asUser.mutation(api.activities.request_stop, {
+				membershipId: db.membershipId,
+				activityId: started._yay.activityId,
+			}),
+		).toEqual({ _yay: null });
+		for (let pass = 0; pass < 2000; pass++) {
+			cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
+			if (cohort.phase === "complete") break;
+			await t.action(internal.files_move_run.run, {
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
+			if (pass === 1999) throw new Error("Native alias abort did not finish");
+		}
+		await test_finish_pending_update_run(asUser, runId);
+		expect((await t.run((ctx) => ctx.db.get("activities", started._yay.activityId)))?.status).toBe("canceled");
+		expect(
+			(await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))?.pendingWorkCount,
+			"abort settles unfinished owner range counts",
+		).toBe(0);
+		for (const child of [parentTarget.id, ...children])
+			expect((await t.run((ctx) => ctx.db.get("files_pending_nodes", child)))?.state).toBe("active");
+		expect(
+			await t.run(async (ctx) =>
+				Promise.all(
+					children.map((id) =>
+						ctx.db
+							.query("files_pending_places")
+							.withIndex("by_target_user", (q) =>
+								q
+									.eq("target.kind", "private")
+									.eq("target.id", id)
+									.eq("userId", db.userId)
+									.eq("moveView.cohortId", undefined)
+									.eq("moveView.view", undefined),
+							)
+							.unique(),
+					),
+				),
+			),
+			"abort restores every original private place ID",
+		).toEqual(originalPlaces);
+		expect(
+			await t.run((ctx) => ctx.db.get("files_pending_updates", incomingProposal!._id)),
+			"Stop preserves the incoming pending Move identity",
+		).toEqual(incomingProposal);
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_places")
+					.withIndex("by_move_view", (q) => q.eq("moveView.cohortId", cohortId))
+					.collect(),
+			),
+		).toEqual([]);
+		expect(
+			await t.run((ctx) => ctx.db.get("files_nodes", receipt!.savedNodeId)),
+			"abort deletes only the unexposed allocated saved node",
+		).toBeNull();
+	},
+	600_000,
+);
 
 test("source marker staging does not flush native crowded owner copies", async () => {
 	const f = await fixture();

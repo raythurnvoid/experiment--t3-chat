@@ -70,8 +70,12 @@ the same producer with private proposals. `files_pending_updates.ts` and
   passes. A new cohort starts its ready exact work in that same transaction. Empty folders can
   publish before acceptance returns. Only initial cohort work uses the one-quarter budget and
   stops at its first native page. Background calls and nested helpers keep one sixteenth.
-  Both check all seven metrics after the overlay flush. Tests keep 25% free after the final flush. Every
-  native page ends that transaction. Heavy content work keeps its own step. One action carries
+  Both check all seven metrics after the overlay flush. Tests keep 25% free after the final flush.
+  Owner work probes exact empty ranges before paging. Only private-child, list-row and list-key
+  ranges with at most eight small docs can finish directly. The probe reads at most nine docs
+  before writes. Larger ranges and resumed pages stay native. Metadata, fields and other growing
+  docs keep native pages. Owner sub-steps use the shared budget, with no fixed eight-step stop.
+  Every native page ends that transaction. Heavy content work keeps its own step. One action carries
   several committed transactions through `files_move_run.run`. Content and media helpers load only
   for their own steps. Between advances it checks five seconds or 128 advance calls
   and hands off. A content action can take longer. Every selection size uses this worker.

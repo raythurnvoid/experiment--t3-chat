@@ -152,9 +152,14 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   before the request returns. Only initial cohort work uses a one-quarter join budget and stops
   at its first native page. Background calls and nested helpers keep the one-sixteenth budget.
   Both check all seven metrics after flushing. Tests include the final flush and keep 25% free.
-  Any native page ends the transaction, even an empty page. Heavy text preparation keeps its own
-  step. `files_move_run.run` carries the committed steps. It loads the content or media helper
-  with a literal `import()` only when the step needs it. It calls that helper locally, with no new
+  Owner work probes exact empty ranges before paging. Private-child, list-row and list-key ranges
+  with at most eight small docs can finish without a native page. A ninth doc sends the whole
+  range through native paging. Resumed pages also stay native. Other non-empty owner ranges keep
+  native paging, with byte limits for metadata and fields. These small steps join only while the
+  shared budget allows it. Any native page ends the transaction, even an empty page.
+  Heavy text preparation keeps its own step. `files_move_run.run` carries the committed steps.
+  It loads the content or media helper with a literal `import()` only when the step needs it.
+  It calls that helper locally, with no new
   remote action call. Between advances, it checks whether five seconds or 128 advance calls have
   passed, then hands off. A content helper can take longer. These bounds never refuse a selection.
   Before publication, all normal names still resolve to the old saved IDs and content. One small

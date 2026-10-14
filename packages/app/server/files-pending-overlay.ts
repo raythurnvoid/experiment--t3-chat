@@ -1773,17 +1773,24 @@ export async function files_pending_overlay_db_stage_owner_lists(
 	const proposal = work.pendingUpdateId
 		? await files_saved_placement_db_get_proposal(ctx.db, work.pendingUpdateId, { cohortId: cohort._id, view: "after" })
 		: null;
-	const paged = cursor.phase === "before" && !!work.pendingUpdateId;
+	let paged = false;
 	if (cursor.phase === "before" && work.pendingUpdateId) {
-		const page = await ctx.db
-			.query("files_pending_list_rows")
-			.withIndex("by_pendingUpdate", (q) =>
-				q
-					.eq("pendingUpdateId", work.pendingUpdateId!)
-					.eq("moveView.cohortId", undefined)
-					.eq("moveView.view", undefined),
-			)
-			.paginate({ cursor: cursor.page, numItems: 100 });
+		const query = () =>
+			ctx.db
+				.query("files_pending_list_rows")
+				.withIndex("by_pendingUpdate", (q) =>
+					q
+						.eq("pendingUpdateId", work.pendingUpdateId!)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined),
+				);
+		// List rows have only small fields. Probe the whole range before changing any row.
+		const small = cursor.page === null ? await query().take(9) : null;
+		const page =
+			small && small.length <= 8
+				? { page: small, isDone: true, continueCursor: null }
+				: await query().paginate({ cursor: cursor.page, numItems: 100 });
+		paged = !small || small.length > 8;
 		for (const row of page.page) {
 			await db_stage_list_key(ctx.db, { ...scope, cohortId: cohort._id, listKey: row.listKey });
 			await ctx.db.patch("files_pending_list_rows", row._id, { moveView: { cohortId: cohort._id, view: "before" } });
@@ -1844,16 +1851,21 @@ export async function files_pending_overlay_db_stage_owner_fields(
 	let paged = false;
 	if (cursor.phase === "before") {
 		if (work.beforePlaceId) {
-			paged = true;
-			const page = await ctx.db
-				.query("files_pending_place_fields")
-				.withIndex("by_place", (q) =>
-					q.eq("placeId", work.beforePlaceId!).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
-				)
-				.paginate({ cursor: cursor.page, numItems: 8, maximumBytesRead: 1024 * 1024 });
-			for (const field of page.page) await ctx.db.patch("files_pending_place_fields", field._id, { moveView: before });
-			cursor.page = page.isDone ? null : page.continueCursor;
-			if (page.isDone) cursor.phase = "normal";
+			const query = () =>
+				ctx.db
+					.query("files_pending_place_fields")
+					.withIndex("by_place", (q) =>
+						q.eq("placeId", work.beforePlaceId!).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+					);
+			const page =
+				cursor.page === null && !(await query().first())
+					? null
+					: await query().paginate({ cursor: cursor.page, numItems: 8, maximumBytesRead: 1024 * 1024 });
+			paged = page !== null;
+			for (const field of page?.page ?? [])
+				await ctx.db.patch("files_pending_place_fields", field._id, { moveView: before });
+			cursor.page = page && !page.isDone ? page.continueCursor : null;
+			if (!page || page.isDone) cursor.phase = "normal";
 		} else cursor.phase = "normal";
 	} else if (cursor.phase !== "done") {
 		const place = work.afterPlaceId ? await ctx.db.get("files_pending_places", work.afterPlaceId) : null;
@@ -1863,7 +1875,7 @@ export async function files_pending_overlay_db_stage_owner_fields(
 		if (!place || (place.target.kind === "private" && !proposal)) cursor.phase = "done";
 		else {
 			const tag = cursor.phase === "after" ? after : undefined;
-			const source =
+			const source = () =>
 				place.target.kind === "private"
 					? ctx.db
 							.query("files_metadata_docs")
@@ -1883,9 +1895,12 @@ export async function files_pending_overlay_db_stage_owner_fields(
 								.eq("moveView.view", tag?.view),
 						);
 			// Source docs stay in place. These identity-only indexes keep the stored cursor short.
-			const page = await source.paginate({ cursor: cursor.page, numItems: 8, maximumBytesRead: 1024 * 1024 });
-			paged = true;
-			for (const doc of page.page) {
+			const page =
+				cursor.page === null && !(await source().first())
+					? null
+					: await source().paginate({ cursor: cursor.page, numItems: 8, maximumBytesRead: 1024 * 1024 });
+			paged = page !== null;
+			for (const doc of page?.page ?? []) {
 				if (
 					doc.sourceKind === "pending" &&
 					doc.proposalRevision !== (proposal && files_pending_update_index_revision(proposal))
@@ -1911,8 +1926,8 @@ export async function files_pending_overlay_db_stage_owner_fields(
 					fieldsVersion: place.fieldsVersion,
 				});
 			}
-			cursor.page = page.isDone ? null : page.continueCursor;
-			if (page.isDone) cursor.phase = cursor.phase === "normal" ? "after" : "done";
+			cursor.page = page && !page.isDone ? page.continueCursor : null;
+			if (!page || page.isDone) cursor.phase = cursor.phase === "normal" ? "after" : "done";
 		}
 	}
 	const next = JSON.stringify(cursor);
