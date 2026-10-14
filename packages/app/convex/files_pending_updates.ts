@@ -11564,6 +11564,3 @@ export const accept_file_pending_replacement = action({
 });
 
 // #endregion whole-file replacement
-
-// Old query names stay until the new client is loaded.
-export { list_files_pending_updates, list_files_pending_sources } from "./files_pending_list.ts";

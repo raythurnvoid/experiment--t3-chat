@@ -134,7 +134,6 @@ export {
 	persist_file_pending_update_rebased_state,
 	get_file_pending_update,
 	get_file_pending_update_last_sequence_saved,
-	list_files_pending_updates,
 	save_file_pending_update,
 } from "./files_pending_updates.ts";
 

@@ -9879,14 +9879,3 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 }
 // #endregion tests
-
-// Old query names stay until the new client is loaded.
-export {
-	get_workspace_move_view,
-	list_tree_children,
-	list_tree_children_sorted,
-	list_tree_children_shared,
-	has_tree_children_shared,
-	get_tree_ancestors,
-	list_tree_shared_roots,
-} from "./files_tree.ts";
