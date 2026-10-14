@@ -10,7 +10,8 @@ import { files_media_validation_db_advance_version, files_media_validation_db_ca
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
-import { files_nodes_db_archive_nodes, files_nodes_db_get_content_version } from "./files_nodes.ts";
+import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
+import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 
 beforeEach(() => {

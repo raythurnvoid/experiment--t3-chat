@@ -9,7 +9,7 @@ import {
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
-import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { quotas } from "../shared/quotas.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";

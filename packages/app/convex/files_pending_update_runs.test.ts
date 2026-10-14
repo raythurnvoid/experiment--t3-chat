@@ -13,11 +13,9 @@ import {
 } from "./setup.test.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import {
-	files_pending_update_runs_db_delete_run_batch,
-	files_pending_update_runs_db_record_cohort_publication,
-} from "./files_pending_update_runs.ts";
-import { files_subtree_ops_db_insert } from "./files_subtree_ops.ts";
+import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
+import { files_pending_update_runs_db_record_cohort_publication } from "./files_pending_update_runs_db.ts";
+import { files_subtree_ops_db_insert } from "./files_subtree_ops_db.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {

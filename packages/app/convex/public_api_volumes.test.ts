@@ -11,7 +11,7 @@ import { files_get_utf8_byte_size, files_ROOT_ID } from "../server/files.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import type { api_schemas_Main } from "../shared/api-schemas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
 import { public_api_http_read_file } from "./public_api.ts";
 import { public_api_files_list_http_routes } from "./public_api_files_list_http.ts";

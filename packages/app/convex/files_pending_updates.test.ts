@@ -16,7 +16,7 @@ import {
 import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { files_nodes_db_get_content_version } from "./files_nodes.ts";
+import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_pending_updates_db_mark_content_for_rebase } from "./files_pending_updates.ts";
 import { billing_event } from "../server/billing.ts";
 import { r2_create_asset_key } from "./r2_client.ts";

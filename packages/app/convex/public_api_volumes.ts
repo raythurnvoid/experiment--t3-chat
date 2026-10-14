@@ -14,7 +14,7 @@ import {
 	billing_db_emit_plugin_volume_file_writes,
 	billing_pick_billed_user_id,
 } from "./billing_db.ts";
-import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
 import { plugins_volumes_db_retire_generation, plugins_volumes_db_schedule_volume_drain } from "./plugins_volumes.ts";
 import { public_api_db_revalidate_live_plugin_run } from "./public_api.ts";

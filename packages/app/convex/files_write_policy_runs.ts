@@ -24,7 +24,7 @@ import { files_media_validation_db_advance_version } from "./files_media_validat
 import {
 	files_nodes_db_authorize_write_policy_management,
 	files_nodes_db_require_write_policy_management,
-} from "./files_nodes.ts";
+} from "./files_write_policy_db.ts";
 import { type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {

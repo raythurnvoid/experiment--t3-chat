@@ -205,4 +205,44 @@ describe("functions.ts", () => {
 		}
 		expect(wrong, "Move read queries do not load producer handlers").toEqual([]);
 	});
+
+	test("Move producers do not load the heavy content owner", () => {
+		const forbidden = new Set([
+			"convex/files_move_content.ts",
+			"convex/files_move_media.ts",
+			"convex/files_nodes.ts",
+			"convex/files_nodes_content.ts",
+			"convex/files_pending_updates.ts",
+			"convex/files_pending_update_runs.ts",
+			"convex/files_archive_runs.ts",
+			"convex/files_subtree_ops.ts",
+			"convex/ai_chat_files.ts",
+			"convex/ai_chat_runs.ts",
+			"convex/plugins_runtime.ts",
+			"shared/files-yjs.ts",
+			"server/files-markdown-chunking-mastra.ts",
+		]);
+		const queue = ["files_transfer.ts", "files_move_cohorts.ts"].map((name) => path.join(convexRoot, name));
+		const reached = new Set(queue);
+		const wrong = [];
+		for (const importer of queue) {
+			for (const { from } of read_imports(importer)) {
+				if (
+					/^(?:@tiptap\/|@mastra\/rag(?:\/|$)|yjs(?:\/|$)|y-prosemirror(?:\/|$)|prosemirror-|novel(?:\/|$)|marked(?:\/|$)|linkedom(?:\/|$))/.test(
+						from,
+					)
+				) {
+					wrong.push(`${relative(importer)} -> ${from}`);
+				}
+				const file = resolve_import(importer, from);
+				if (!file || reached.has(file)) continue;
+				reached.add(file);
+				// Generated references do not load the modules their types name.
+				if (file.startsWith(path.join(convexRoot, "_generated"))) continue;
+				if (forbidden.has(relative(file))) wrong.push(`${relative(importer)} -> ${relative(file)}`);
+				queue.push(file);
+			}
+		}
+		expect(wrong, "Move producers do not load the heavy content owner").toEqual([]);
+	});
 });

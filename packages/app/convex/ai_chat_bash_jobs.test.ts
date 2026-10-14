@@ -6,7 +6,7 @@ import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_db_get_by_source_id, activities_db_start } from "./activities_db.ts";
 import { ai_chat_files_db_append_shell_transcript, ai_chat_files_db_delete_job_batch } from "./ai_chat_files.ts";
-import * as ai_chat_files from "./ai_chat_files.ts";
+import * as ai_chat_files from "./ai_chat_files_db.ts";
 import { bash_JOB_NUMBERS_MAX_COUNT } from "../server/bash-utils.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";

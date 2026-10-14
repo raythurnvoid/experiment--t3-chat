@@ -16,7 +16,7 @@ import {
 	ai_chat_outputs_db_prepare_reply,
 	ai_chat_outputs_db_release_run,
 } from "./ai_chat_outputs.ts";
-import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
+import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files_db.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -313,18 +313,6 @@ export async function ai_chat_runs_db_begin(
 		activeRun: { kind: args.kind, expiresAt: leaseExpiresAt, runId, generation: 1 },
 	});
 	return { runId, replyId, replyClientGeneratedId, generation: 1 };
-}
-
-/**
- * Whether a write of this run generation may still happen: the run runs, and Stop has not raised
- * its generation.
- */
-export async function ai_chat_runs_db_is_current(
-	ctx: QueryCtx | MutationCtx,
-	fence: { runId: Id<"ai_chat_runs">; generation: number },
-) {
-	const run = await ctx.db.get("ai_chat_runs", fence.runId);
-	return run?.status === "running" && run.generation === fence.generation;
 }
 
 /**

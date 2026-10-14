@@ -4,6 +4,15 @@
 // listing folder children and reading file content (`/docs/README.md`).
 
 import { action, internalAction, internalQuery, query, type QueryCtx, type MutationCtx } from "./_generated/server.js";
+import { files_content_materialization_workpool, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
+import {
+	files_nodes_db_resolve_parent_restricted_scope,
+	files_nodes_db_authorize_write_policy_management,
+	files_write_policy_db_has_write_context_permission as db_has_write_context_permission,
+	files_write_policy_db_get_visible_policy_writer as db_get_visible_policy_writer,
+	files_nodes_db_require_write_policy_management,
+} from "./files_write_policy_db.ts";
+import { files_path_depth, files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { internalMutation, mutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -13,7 +22,6 @@ import {
 	type RegisteredQuery,
 	type IndexRange,
 } from "convex/server";
-import { Workpool } from "@convex-dev/workpool";
 import {
 	path_extract_segments_from,
 	server_path_normalize,
@@ -52,33 +60,15 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
-import {
-	files_metadata_apply_set_and_remove,
-	files_metadata_SEARCH_VALUE_MAX_LENGTH,
-	type files_metadata_Entry,
-} from "../shared/files-metadata.ts";
+import { files_metadata_SEARCH_VALUE_MAX_LENGTH } from "../shared/files-metadata.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
-import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import app_convex_schema, {
-	ai_chat_workspaces_source_validator,
-	files_content_version_validator,
-	files_metadata_search_plan_validator,
-	files_pending_target_validator,
-	file_content_materialization_state_validator,
-	file_content_materialization_header_validator,
-	files_saved_stream_validator,
-} from "./schema.ts";
+import app_convex_schema, { ai_chat_workspaces_source_validator, files_metadata_search_plan_validator, files_pending_target_validator, file_content_materialization_state_validator, file_content_materialization_header_validator, files_saved_stream_validator } from "./schema.ts";
 import { files_search_db_create_reader } from "./files_search.ts";
-import {
-	files_saved_placement_db_get_node,
-	files_saved_placement_db_get_slot,
-	files_saved_placement_db_get_proposal,
-	files_saved_placement_db_get_sequence,
-} from "../server/files-saved-placement.ts";
+import { files_saved_placement_db_get_node, files_saved_placement_db_get_proposal, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import {
 	files_saved_content_collect,
@@ -103,7 +93,7 @@ import {
 	files_media_validation_db_can_back_media,
 } from "./files_media_validation.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
-import { components, internal } from "./_generated/api.js";
+import { internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, convex_invalid_cursor_error, v_result } from "../server/convex-utils.ts";
@@ -118,47 +108,13 @@ import {
 } from "./files_share_links_db.ts";
 import { files_updated_by_db_delete_for_node, files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
-import {
-	access_control_db_authorize_membership,
-	access_control_db_authorize_node,
-	access_control_db_authorize_file_write,
-	access_control_db_can_act_on_file_node,
-	access_control_db_filter_readable_file_nodes,
-	access_control_db_has_permission,
-} from "./access_control.ts";
-import type { access_control_Permission } from "../shared/access-control.ts";
+import { access_control_db_authorize_membership, access_control_db_authorize_node, access_control_db_authorize_file_write, access_control_db_can_act_on_file_node, access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import {
-	files_ANCESTOR_FIELD_COUNT,
-	files_content_type_index_fields,
-	files_derive_tree_path_for_file_node,
-	files_lowercase_extension,
-	files_default_text_shape_for_name,
-	files_get_normalized_node_path_segments,
-	files_normalize_markdown_name,
-	files_normalize_name,
-	files_normalize_special_node_path,
-	files_normalize_upload_file_name,
-	files_parse_content_type_prefix,
-	files_pending_update_content_is_stale,
-	files_pending_update_index_revision,
-	files_TEXT_SEARCH_MAX_RESULTS,
-	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
-	type files_VisibleEntry,
-	files_check_name_and_path_length,
-	files_PATH_MAX_LENGTH,
-	files_check_new_folder_count,
-	files_check_request_folder_prefixes,
-	files_NEW_FOLDER_DEPTH_MAX,
-} from "../shared/files.ts";
-import {
-	files_metadata_db_patch_file_scope,
-	files_metadata_db_query_saved_plan,
-	files_metadata_db_write_entries,
-} from "./files_metadata.ts";
+import { files_ANCESTOR_FIELD_COUNT, files_derive_tree_path_for_file_node, files_lowercase_extension, files_default_text_shape_for_name, files_get_normalized_node_path_segments, files_normalize_markdown_name, files_normalize_name, files_normalize_special_node_path, files_normalize_upload_file_name, files_parse_content_type_prefix, files_pending_update_content_is_stale, files_pending_update_index_revision, files_TEXT_SEARCH_MAX_RESULTS, type files_VisibleEntry, files_check_name_and_path_length, files_PATH_MAX_LENGTH, files_check_new_folder_count, files_check_request_folder_prefixes, files_NEW_FOLDER_DEPTH_MAX } from "../shared/files.ts";
+import { files_metadata_db_patch_file_scope, files_metadata_db_query_saved_plan } from "./files_metadata.ts";
 import {
 	files_search_query_field_path_is_valid,
 	files_search_query_FIELD_PATH_MAX_LENGTH,
@@ -185,15 +141,7 @@ import {
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
-import {
-	type files_nodes_WriteContext,
-	type files_write_policy_WriteTarget,
-	files_write_policy_db_is_within_scope,
-	files_write_policy_db_get_blocking_policy,
-	files_nodes_db_require_writable,
-	files_nodes_db_resolve_parent_new_child_policy,
-	files_nodes_db_require_user_writable,
-} from "../server/files-write-policy.ts";
+import { type files_nodes_WriteContext, files_write_policy_db_is_within_scope, files_write_policy_db_get_blocking_policy, files_nodes_db_require_writable, files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
 	files_nodes_db_get_tree_reader,
 	files_tree_db_get_readable_node,
@@ -204,16 +152,6 @@ import {
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
-
-const files_content_materialization_workpool = new Workpool(components.files_content_materialization_workpool, {
-	maxParallelism: 1,
-	retryActionsByDefault: true,
-	defaultRetryBehavior: {
-		initialBackoffMs: 60 * 1000,
-		base: 1.2,
-		maxAttempts: Number.POSITIVE_INFINITY,
-	} as const,
-});
 
 // The up-front Archive policy check can defer larger trees to its background worker.
 const MAX_SUBTREE_POLICY_NODE_COUNT = 2000;
@@ -228,56 +166,6 @@ const SEARCH_SAVED_MAX_ITEMS = 100;
 const SEARCH_SAVED_SPLIT_GUARD = 400;
 const SEARCH_SAVED_TEXT_MAX_LENGTH = 200;
 const SEARCH_SAVED_PATH_MAX_LENGTH = 1024;
-
-function files_path_depth(path: string) {
-	return path === "/" ? 0 : path_extract_segments_from(path).length;
-}
-
-/** -1 in any file_stats count means the content cannot be processed (non-markdown / binary). */
-const files_STATS_UNPROCESSABLE = -1;
-
-/**
- * Create or update the `file_stats` doc for a file node and, on first creation, link it back via
- * `files_nodes.statsId`. Subsequent updates patch only the stats doc — NOT the file node — so
- * re-materializing content does not invalidate the file-tree / path-resolution queries that read
- * the file node. Returns the stats doc id.
- */
-export async function db_upsert_file_stats(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		nodeId: Id<"files_nodes">;
-		lineCount: number;
-		wordCount: number;
-		charCount: number;
-	},
-) {
-	const existing = await ctx.db
-		.query("file_stats")
-		.withIndex("by_organization_workspace_fileNode", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-		)
-		.first();
-	if (existing) {
-		await ctx.db.patch("file_stats", existing._id, {
-			lineCount: args.lineCount,
-			wordCount: args.wordCount,
-			charCount: args.charCount,
-		});
-		return existing._id;
-	}
-	const statsId = await ctx.db.insert("file_stats", {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		fileNodeId: args.nodeId,
-		lineCount: args.lineCount,
-		wordCount: args.wordCount,
-		charCount: args.charCount,
-	});
-	await ctx.db.patch("files_nodes", args.nodeId, { statsId });
-	return statsId;
-}
 
 export async function enqueue_file_content_materialization(
 	ctx: MutationCtx,
@@ -321,28 +209,6 @@ export async function enqueue_file_content_materialization(
 		...existingJobs.map((job) => files_content_materialization_workpool.cancel(ctx, job.jobId)),
 		...existingJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
 	]);
-}
-
-export async function files_nodes_db_resume_file_content_materialization(
-	ctx: MutationCtx,
-	args: { jobId: Id<"files_content_materialization_jobs">; userId: Id<"users"> },
-) {
-	const job = await ctx.db.get("files_content_materialization_jobs", args.jobId);
-	if (!job) return;
-	const jobId = await files_content_materialization_workpool.enqueueAction(
-		ctx,
-		internal.files_nodes_content.materialize_file_content,
-		{
-			organizationId: job.organizationId,
-			workspaceId: job.workspaceId,
-			nodeId: job.fileNodeId,
-			userId: args.userId,
-			targetSequence: job.targetSequence,
-		},
-		{ runAfter: 0 },
-	);
-	// Keep the accepted job identity while replacing its completed workpool attempt.
-	await ctx.db.patch("files_content_materialization_jobs", job._id, { jobId });
 }
 
 /**
@@ -656,27 +522,6 @@ export const resolve_new_node_path = internalQuery({
 });
 
 /**
- * The restricted scope a new or moved child inherits from where it sits: the nearest restricted
- * folder at or above `parentId`, or `null` when that chain has none.
- *
- * The parent already carries the answer, because every node stores its nearest restricted ancestor.
- * So this is one read and never a walk up the tree.
- */
-export async function files_nodes_db_resolve_parent_restricted_scope(
-	ctx: MutationCtx,
-	args: {
-		parentId: Doc<"files_nodes">["parentId"];
-	},
-) {
-	if (args.parentId === files_ROOT_ID) {
-		return null;
-	}
-
-	const parent = await ctx.db.get("files_nodes", args.parentId);
-	return parent?.restrictedScopeNodeId ?? null;
-}
-
-/**
  * Set a node's own `restrictedScopeNodeId` when a restrict or unrestrict makes it its own restricted
  * root or stops it being one. Start a scope op with `files_subtree_ops_db_start_rebuild` after this
  * for the descendants.
@@ -936,261 +781,6 @@ export async function files_nodes_db_require_subtree_writable(
 		writeContext: args.writeContext,
 		nodes: subtreeFileNodes,
 	});
-}
-
-/**
- * Load the membership and node. Check `content.permissions.manage` on the node.
- *
- * Check the node so a grant on a restricted node can allow this action.
- * Policy management must work while content is blocked.
- */
-export async function files_nodes_db_authorize_write_policy_management(
-	ctx: MutationCtx,
-	args: {
-		userAuth: { id: Id<"users"> };
-		membershipId: Id<"organizations_workspaces_users">;
-		nodeId: Id<"files_nodes">;
-	},
-) {
-	const membership = await organizations_db_get_membership(ctx, {
-		userId: args.userAuth.id,
-		membershipId: args.membershipId,
-	});
-	if (!membership) {
-		return Result({ _nay: { message: "Unauthorized" } });
-	}
-
-	const authorized = await access_control_db_authorize_node(ctx, {
-		userAuth: args.userAuth,
-		membership,
-		nodeId: args.nodeId,
-		permission: "content.permissions.manage",
-	});
-	if (authorized._nay) {
-		return authorized;
-	}
-
-	return Result({ _yay: { membership, node: authorized._yay.fileNode } });
-}
-
-async function db_has_write_context_permission(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		writeContext: files_nodes_WriteContext;
-		node: Doc<"files_nodes"> | null;
-		permission: access_control_Permission;
-	},
-) {
-	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
-	const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
-	if (!organizationId || !workspaceId) {
-		return false;
-	}
-
-	const membership = await ctx.db
-		.query("organizations_workspaces_users")
-		.withIndex("by_active_user_organization_workspace", (q) =>
-			q
-				.eq("active", true)
-				.eq("userId", args.writeContext.actorUserId)
-				.eq("organizationId", organizationId)
-				.eq("workspaceId", workspaceId),
-		)
-		.first();
-	if (!membership || membership.pendingOrganizationRemoval) {
-		return false;
-	}
-
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth: { id: args.writeContext.actorUserId },
-		membership,
-		fileNode: args.node ?? undefined,
-		permission: args.permission,
-	});
-	if (authorized._nay) {
-		return false;
-	}
-
-	if (args.writeContext.writer.kind === "user") {
-		return true;
-	}
-
-	return await access_control_db_has_permission(ctx, {
-		organizationId,
-		workspaceId,
-		defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
-		organizationOwnerUserId: authorized._yay.organization.ownerUserId,
-		resource: args.node
-			? { kind: "file", id: String(args.node._id), restrictedScopeNodeId: args.node.restrictedScopeNodeId }
-			: { kind: "workspace", id: String(workspaceId) },
-		permission: args.permission,
-		serviceAccountId: args.writeContext.writer.serviceAccountId,
-	});
-}
-
-async function db_get_visible_policy_writer(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		writer: files_nodes_WriteContext["writer"];
-	},
-) {
-	const writer = args.writer;
-	if (writer.kind === "service_account") {
-		const account = await ctx.db.get("access_control_service_accounts", writer.serviceAccountId);
-		return account &&
-			account.organizationId === args.organizationId &&
-			account.workspaceId === args.workspaceId &&
-			account.revokedAt === null
-			? { ...writer, name: account.name }
-			: null;
-	}
-
-	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
-	const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
-	if (!organizationId || !workspaceId) {
-		return null;
-	}
-
-	const [user, membership] = await Promise.all([
-		ctx.db.get("users", writer.userId),
-		ctx.db
-			.query("organizations_workspaces_users")
-			.withIndex("by_active_user_organization_workspace", (q) =>
-				q
-					.eq("active", true)
-					.eq("userId", writer.userId)
-					.eq("organizationId", organizationId)
-					.eq("workspaceId", workspaceId),
-			)
-			.first(),
-	]);
-	if (!user || user.deletedAt != null || !membership || membership.pendingOrganizationRemoval) {
-		return null;
-	}
-
-	const anagraphic = user.anagraphic ? await ctx.db.get("users_anagraphics", user.anagraphic) : null;
-	return { ...writer, name: anagraphic?.displayName ?? "User" };
-}
-
-/**
- * Check that a copied protection rule still names only writers who can edit the destination.
- * Copies keep access grants separate, so every writer in the rule must be an active destination
- * member or account. Refuse clearly instead of silently clearing the rule.
- */
-export async function files_nodes_db_require_copiable_write_policy(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		writePolicy: Doc<"files_nodes">["writePolicy"];
-	},
-) {
-	if (args.writePolicy?.mode === "writer") {
-		const visibleWriters = await Promise.all(
-			args.writePolicy.writers.map((writer) =>
-				db_get_visible_policy_writer(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					writer,
-				}),
-			),
-		);
-		if (visibleWriters.includes(null)) {
-			return Result({
-				_nay: {
-					message:
-						"The copied protection names a writer who cannot edit this destination. Change the source rule or pick a writer with access first.",
-				},
-			});
-		}
-	}
-
-	return Result({ _yay: null });
-}
-
-/**
- * Merge freshly read source protection into a copy's `copiedFrom` record.
- * The first write wins: a retry reuses its target and never applies later source rules
- * over what the first attempt captured.
- */
-export function files_nodes_db_copied_from_policy_fields(args: {
-	prev?: Pick<
-		NonNullable<Doc<"files_pending_updates">["copiedFrom"]>,
-		"sourceWritePolicy" | "sourceNewChildWritePolicy"
-	> | null;
-	sourceWritePolicy?: Doc<"files_nodes">["writePolicy"];
-	sourceNewChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
-}) {
-	if (args.prev?.sourceWritePolicy !== undefined) {
-		return {
-			sourceWritePolicy: args.prev.sourceWritePolicy,
-			...(args.prev.sourceNewChildWritePolicy === undefined
-				? {}
-				: { sourceNewChildWritePolicy: args.prev.sourceNewChildWritePolicy }),
-		};
-	}
-
-	return {
-		...(args.sourceWritePolicy === undefined ? {} : { sourceWritePolicy: args.sourceWritePolicy }),
-		...(args.sourceNewChildWritePolicy === undefined
-			? {}
-			: { sourceNewChildWritePolicy: args.sourceNewChildWritePolicy }),
-	};
-}
-
-/**
- * Validate all management before a create or a larger operation starts writing.
- */
-export async function files_nodes_db_require_write_policy_management(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		writeContext: files_nodes_WriteContext;
-		target: files_write_policy_WriteTarget;
-		writePolicy: Doc<"files_nodes">["writePolicy"];
-	},
-) {
-	const node = args.target.kind === "node" ? args.target.node : args.target.parentNode;
-	if (
-		!(await files_write_policy_db_is_within_scope(ctx, args)) ||
-		!(await db_has_write_context_permission(ctx, {
-			...args,
-			node,
-			permission: "content.permissions.manage",
-		}))
-	) {
-		return Result({ _nay: { message: "Permission denied" } });
-	}
-
-	if (args.writePolicy?.mode === "writer") {
-		const writers = args.writePolicy.writers;
-		const writerIds = new Set(
-			writers.map((writer) => (writer.kind === "user" ? writer.userId : writer.serviceAccountId)),
-		);
-		// There is no max count. Every writer must be an active member or account (checked below),
-		// so the workspace size already limits the list.
-		if (writers.length === 0 || writerIds.size !== writers.length) {
-			return Result({ _nay: { message: files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } });
-		}
-
-		// Every listed writer must be an active member or account now. The management state hides a
-		// stored writer who left, so a manager who saves the rule again has to drop or replace them.
-		const visibleWriters = await Promise.all(
-			writers.map((writer) => db_get_visible_policy_writer(ctx, { ...args, writer })),
-		);
-		if (visibleWriters.includes(null)) {
-			return Result({ _nay: { message: "Writer is not available" } });
-		}
-	}
-
-	// Check only the target. A folder's rule limits rename and move-out of its direct children, restricted
-	// ones too, the same way write access on a Linux or macOS folder does. Children keep their own rules.
-	return Result({ _yay: null });
 }
 
 async function db_set_write_policy(
@@ -1570,492 +1160,6 @@ export async function authorize_leaving_restricted_scope(
 	}
 
 	return Result({ _yay: null });
-}
-
-function node_insert_fields(args: {
-	userId: Doc<"files_nodes">["createdBy"];
-	organizationId: Doc<"files_nodes">["organizationId"];
-	workspaceId: Doc<"files_nodes">["workspaceId"];
-	parentId: Doc<"files_nodes">["parentId"];
-	name: string;
-	path: string;
-	kind: Doc<"files_nodes">["kind"];
-	contentType?: Doc<"files_nodes">["contentType"];
-	assetId?: Id<"files_r2_assets">;
-	contentByteSize?: number;
-	archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
-	restrictedScopeNodeId: Doc<"files_nodes">["restrictedScopeNodeId"];
-	writePolicy?: Doc<"files_nodes">["writePolicy"];
-	newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
-	now: number;
-}) {
-	return {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		parentId: args.parentId,
-		kind: args.kind,
-		name: args.name,
-		sortName: files_sort_text_key(args.name),
-		path: args.path,
-		treePath: files_derive_tree_path_for_file_node(args.path, args.kind),
-		pathDepth: files_path_depth(args.path),
-		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
-		contentType: args.contentType ?? null,
-		...files_content_type_index_fields(args.contentType ?? null),
-		assetId: args.assetId ?? null,
-		contentByteSize: args.contentByteSize ?? null,
-		textKind: null,
-		collaborationEnabled: null,
-		yjsSnapshotId: null,
-		yjsLastSequenceId: null,
-		statsId: null,
-		contentTooLargeByteSize: null,
-		contentShapeMismatchAt: null,
-		contentYjsStateTooLargeByteSize: null,
-		contentFrontmatterTooLargeFieldCount: null,
-		contentFrontmatterTooLargeIndexDocumentCount: null,
-		restrictedScopeNodeId: args.restrictedScopeNodeId,
-		// A new node inherits its parent's scope, so it is never its own restricted root.
-		isRestrictedScopeRoot: false,
-		writePolicy: args.writePolicy ?? null,
-		newChildWritePolicy: args.newChildWritePolicy ?? null,
-		archiveOperationId: args.archiveOperationId ?? null,
-		createdBy: args.userId,
-		updatedBy: args.userId,
-		updatedAt: args.now,
-	};
-}
-
-async function db_insert_node(
-	ctx: MutationCtx,
-	args: {
-		userId: Doc<"files_nodes">["createdBy"];
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		parentId: Doc<"files_nodes">["parentId"];
-		name: Doc<"files_nodes">["name"];
-		path: Doc<"files_nodes">["path"];
-		kind: Doc<"files_nodes">["kind"];
-		contentType?: Doc<"files_nodes">["contentType"];
-		assetId?: Id<"files_r2_assets">;
-		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
-		/**
-		 * Set when the caller inserts the file's content docs right after this insert, in the same
-		 * mutation, via `files_nodes_db_insert_file_content_docs` (files_nodes_content.ts). Skips
-		 * the initial UNPROCESSABLE stats write so those callers do not double-write stats.
-		 */
-		expectsTextContent?: true;
-		/**
-		 * Omitted means copy the immediate parent's new-child default. An explicit value,
-		 * including null, is an override the caller already checked for management rights.
-		 * Copy operations pass the verified source settings through here instead.
-		 */
-		writePolicy?: Doc<"files_nodes">["writePolicy"];
-		/**
-		 * Omitted on a new folder means copy the parent default too. Files always store null.
-		 */
-		newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
-		/**
-		 * The raw parent doc, when the caller just read or inserted it. It saves the two parent reads.
-		 */
-		parent?: Doc<"files_nodes">;
-		now: number;
-	},
-) {
-	// A new node sits inside its parent, so it starts with the parent's restricted scope. Without
-	// this, a file created inside a restricted folder would be open to the whole workspace, which is
-	// the one thing the person who restricted that folder asked us not to do.
-	const restrictedScopeNodeId = args.parent
-		? args.parent.restrictedScopeNodeId
-		: await files_nodes_db_resolve_parent_restricted_scope(ctx, {
-				parentId: args.parentId,
-			});
-
-	// Copying the default is an ordinary creation step. It needs no policy-management right.
-	const parentDefault = args.parent
-		? args.parent.newChildWritePolicy
-		: await files_nodes_db_resolve_parent_new_child_policy(ctx, {
-				parentId: args.parentId,
-			});
-
-	// Upload assets are inserted with their declared size, and the R2 upload event corrects it later.
-	const asset = args.assetId ? await ctx.db.get("files_r2_assets", args.assetId) : null;
-
-	const nodeId = await ctx.db.insert(
-		"files_nodes",
-		node_insert_fields({
-			...args,
-			contentByteSize: asset?.size,
-			restrictedScopeNodeId,
-			writePolicy: args.writePolicy !== undefined ? args.writePolicy : parentDefault,
-			newChildWritePolicy:
-				args.kind === "folder"
-					? args.newChildWritePolicy !== undefined
-						? args.newChildWritePolicy
-						: parentDefault
-					: null,
-		}),
-	);
-	// No media validation advance: a new node has a new ID, so no checked proof names it. It starts in
-	// its parent's scope and is never a restricted root. Move reservations block creation inside a moving folder.
-	await files_updated_by_db_sync_node(ctx, { nodeId });
-
-	if (args.kind === "folder") {
-		return Result({ _yay: nodeId });
-	}
-
-	// Content callers insert the file's content docs (and real stats) right after this returns,
-	// still inside the same mutation. Keep the assetId invariant here: every file with text
-	// content links a content or version-snapshot asset.
-	if (args.expectsTextContent) {
-		if (!args.assetId) {
-			const errorMessage = "fileNode.assetId is not set";
-			const errorData = {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				nodeId,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-		return Result({ _yay: nodeId });
-	}
-
-	// A file with no processable text content (e.g. a raw upload) still gets a stats doc, flagged
-	// unprocessable with -1. A later materialization overwrites it with real counts if text appears.
-	await db_upsert_file_stats(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		nodeId,
-		lineCount: files_STATS_UNPROCESSABLE,
-		wordCount: files_STATS_UNPROCESSABLE,
-		charCount: files_STATS_UNPROCESSABLE,
-	});
-	return Result({ _yay: nodeId });
-}
-
-/**
- * Refuse a create while a Move holds its parent or its first missing name. Batch doors call this in
- * their validation pass, so the item is refused before earlier items are written.
- */
-export async function files_nodes_db_check_create_busy(
-	ctx: MutationCtx,
-	args: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId"> & {
-		parentNode: Doc<"files_nodes"> | null;
-		name: string;
-	},
-) {
-	const organizationId = ctx.db.normalizeId("organizations", args.organizationId);
-	const workspaceId = ctx.db.normalizeId("organizations_workspaces", args.workspaceId);
-	if (!organizationId || !workspaceId) return Result({ _yay: null });
-	const parentId = args.parentNode?._id ?? files_ROOT_ID;
-	return await files_move_reservations_db_check(ctx.db, {
-		parent: parentId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: parentId },
-		slot: { organizationId, workspaceId, parentId, name: args.name },
-	});
-}
-
-/**
- * Create a node from a path, creating each missing parent folder segment before
- * creating the final file/folder segment.
- *
- * Trust callers to pass a valid, normalized path for the requested leaf kind.
- */
-export async function files_nodes_db_create_node_recursively_at_path(
-	ctx: MutationCtx,
-	args: {
-		userId: Doc<"files_nodes">["createdBy"];
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		parentId: Doc<"files_nodes">["parentId"];
-		path: string;
-		kind: Doc<"files_nodes">["kind"];
-		contentType?: Doc<"files_nodes">["contentType"];
-		assetId?: Id<"files_r2_assets">;
-		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
-		/** Forwarded to `db_insert_node` for the leaf only; see the arg doc there. */
-		expectsTextContent?: true;
-		/**
-		 * Metadata for the leaf file or folder only. Import names must not spread to ancestors.
-		 */
-		metadata?: files_metadata_Entry[];
-		/**
-		 * Initial metadata on each new node. Reused nodes keep their existing maps.
-		 */
-		createdNodesMetadata?: files_metadata_Entry[];
-		now: number;
-		/**
-		 * Trusted delegated facts; ordinary callers use their explicit human author.
-		 */
-		writeContext?: files_nodes_WriteContext;
-		/**
-		 * Initial local policy on the leaf. It requires manage permission before any insert,
-		 * unless `trustPolicySource` marks it as verified source settings from a copy.
-		 */
-		writePolicy?: Doc<"files_nodes">["writePolicy"];
-		/**
-		 * Initial default on a new leaf folder. Same manage rule as `writePolicy`, unless
-		 * `trustPolicySource` marks it as verified source settings from a copy.
-		 */
-		newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
-		/**
-		 * Set only by server copy paths that read both settings from the source doc itself.
-		 * It skips the manage check but keeps the destination writer check. Never set this
-		 * from client input.
-		 */
-		trustPolicySource?: true;
-		/**
-		 * Set only when a replace copies `writePolicy` from the file it replaces. It keeps the manage
-		 * check but skips the writer check. Those writers were checked when the rule was set, and a
-		 * writer who left since then must not stop the others from replacing the file.
-		 */
-		keepsReplacedPolicy?: true;
-		/**
-		 * Set only when the caller just archived the file at this same path to replace it. The new file
-		 * keeps that name and path, so an old name over the length limit stays usable.
-		 */
-		replacesArchivedFile?: true;
-		/**
-		 * Set only by a copy run that produced `parentId` itself. The create may proceed while
-		 * the parent's current policy still equals this value, even when the value is a lock.
-		 * Never set this from client input.
-		 */
-		expectedParentWritePolicy?: Doc<"files_nodes">["writePolicy"];
-		/**
-		 * Folders by path that earlier creates of this request already found or made. Pass one new map
-		 * per request with the same writer on every call: a hit skips the folder's lookup and access
-		 * checks, so one request walks each folder once. This helper fills it.
-		 */
-		folders?: Map<string, Doc<"files_nodes">>;
-	},
-) {
-	let parentNode =
-		args.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.parentId);
-	// Only an active folder takes children. An archived parent is hidden, so a live child created
-	// there would be hidden too until a restore.
-	if (
-		args.parentId !== files_ROOT_ID &&
-		(!parentNode ||
-			parentNode.organizationId !== args.organizationId ||
-			parentNode.workspaceId !== args.workspaceId ||
-			parentNode.kind !== "folder" ||
-			parentNode.archiveOperationId !== null)
-	) {
-		return Result({ _nay: { message: "Not found" } });
-	}
-
-	const segments = path_extract_segments_from(args.path);
-	let parentPath = parentNode?.path ?? "/";
-	let firstMissing = 0;
-	const writeContext: files_nodes_WriteContext | null =
-		args.userId === users_SYSTEM_AUTHOR
-			? null
-			: (args.writeContext ?? {
-					writer: { kind: "user", userId: args.userId },
-					actorUserId: args.userId,
-					resourceScope: { kind: "workspace" },
-					policyReach: "ancestors",
-				});
-
-	// Resolve every existing segment before creating anything. A later refusal must leave no folders.
-	for (const [i, name] of segments.entries()) {
-		const known = i < segments.length - 1 ? args.folders?.get(path_join(parentPath, name)) : undefined;
-		if (known) {
-			parentNode = known;
-			parentPath = known.path;
-			continue;
-		}
-		const existing = await files_saved_placement_db_get_slot(ctx.db, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			parentId: parentNode?._id ?? files_ROOT_ID,
-			name,
-		});
-		firstMissing = i;
-		if (!existing) {
-			break;
-		}
-
-		if (
-			writeContext &&
-			!(await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: writeContext.actorUserId,
-				fileNode: existing,
-				permission: "content.write",
-			}))
-		) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		const isLeaf = i === segments.length - 1;
-		if (existing.kind !== "folder" || isLeaf) {
-			if (
-				writeContext &&
-				!(await db_has_write_context_permission(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					writeContext,
-					node: existing,
-					permission: "content.write",
-				}))
-			) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-			if (isLeaf && args.archiveOperationId != null) {
-				break;
-			}
-			return Result({
-				_nay: { message: isLeaf && args.kind === "file" ? "This file already exists." : "This folder already exists." },
-			});
-		}
-
-		parentNode = existing;
-		parentPath = existing.path;
-		args.folders?.set(existing.path, existing);
-	}
-
-	const missingNames = segments.slice(firstMissing);
-	const intendedPath = missingNames.reduce((path, name) => path_join(path, name), parentPath);
-	const newFolders = files_check_new_folder_count(missingNames.length - (args.kind === "file" ? 1 : 0));
-	if (newFolders._nay) return newFolders;
-	// Check only the names this create adds: an older folder on the way may keep a longer name.
-	if (!args.replacesArchivedFile) {
-		const tooLong = files_check_name_and_path_length({ names: missingNames, path: intendedPath });
-		if (tooLong._nay) return tooLong;
-	}
-	if (writeContext) {
-		const target = { kind: "create" as const, parentNode, path: intendedPath };
-		if (
-			!(await db_has_write_context_permission(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				writeContext,
-				node: parentNode,
-				permission: "content.write",
-			}))
-		) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		const writable = await files_nodes_db_require_writable(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			writeContext,
-			target,
-		});
-		// A copy run may create inside the parent it produced while that parent's current
-		// policy still equals the value the run wrote. Any other refusal stands.
-		if (
-			writable._nay &&
-			(writable._nay.name !== "read_only" ||
-				args.expectedParentWritePolicy == null ||
-				JSON.stringify(parentNode?.writePolicy ?? null) !== JSON.stringify(args.expectedParentWritePolicy))
-		) {
-			return writable;
-		}
-
-		if (args.writePolicy !== undefined || args.newChildWritePolicy !== undefined) {
-			if (args.trustPolicySource) {
-				for (const policy of [args.writePolicy, args.newChildWritePolicy]) {
-					if (policy === undefined) {
-						continue;
-					}
-					const copiable = await files_nodes_db_require_copiable_write_policy(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						writePolicy: policy,
-					});
-					if (copiable._nay) {
-						return copiable;
-					}
-				}
-			} else {
-				// Check every explicit override. A default-only create must not skip
-				// the writer check by falling back to writePolicy: null.
-				for (const policy of [args.writePolicy, args.newChildWritePolicy]) {
-					if (policy === undefined) {
-						continue;
-					}
-					const managed = await files_nodes_db_require_write_policy_management(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						writeContext,
-						target,
-						// A null rule checks only the manage permission.
-						writePolicy: args.keepsReplacedPolicy ? null : policy,
-					});
-					if (managed._nay) {
-						return managed;
-					}
-				}
-			}
-		}
-	}
-
-	if (missingNames[0] !== undefined) {
-		const busy = await files_nodes_db_check_create_busy(ctx, { ...args, parentNode, name: missingNames[0] });
-		if (busy._nay) return busy;
-	}
-
-	let currentParent = parentNode?._id ?? files_ROOT_ID;
-	let createdParent: Doc<"files_nodes"> | undefined;
-	let path = parentPath;
-	for (const [i, name] of missingNames.entries()) {
-		const isLeaf = i === missingNames.length - 1;
-		path = path_join(path, name);
-		const nodeIdResult = await db_insert_node(ctx, {
-			userId: args.userId,
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			parentId: currentParent,
-			name,
-			path,
-			kind: isLeaf ? args.kind : "folder",
-			contentType: isLeaf ? args.contentType : undefined,
-			assetId: isLeaf ? args.assetId : undefined,
-			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
-			expectsTextContent: isLeaf ? args.expectsTextContent : undefined,
-			writePolicy: isLeaf ? args.writePolicy : undefined,
-			newChildWritePolicy: isLeaf ? args.newChildWritePolicy : undefined,
-			parent: createdParent,
-			now: args.now,
-		});
-		if (nodeIdResult._nay) {
-			return nodeIdResult;
-		}
-		// One read here replaces the two parent reads of the next insert.
-		if (!isLeaf) {
-			createdParent = (await ctx.db.get("files_nodes", nodeIdResult._yay))!;
-			args.folders?.set(path, createdParent);
-		}
-
-		const metadata =
-			isLeaf && args.metadata
-				? files_metadata_apply_set_and_remove(args.createdNodesMetadata ?? [], { set: args.metadata, remove: [] })
-				: args.createdNodesMetadata;
-		if (metadata) {
-			const createdNode = await ctx.db.get("files_nodes", nodeIdResult._yay);
-			if (!createdNode) {
-				const errorMessage = "created node is missing right after insert";
-				const errorData = { nodeId: nodeIdResult._yay };
-				console.error(errorMessage, errorData);
-				throw should_never_happen(errorMessage, errorData);
-			}
-			await files_metadata_db_write_entries(ctx, { fileNode: createdNode, entries: metadata });
-		}
-
-		if (isLeaf) {
-			return Result({ _yay: nodeIdResult._yay });
-		}
-		currentParent = nodeIdResult._yay;
-	}
-
-	const errorMessage = "nodeId not resolved after node path creation";
-	const errorData = {};
-	console.error(errorMessage, errorData);
-	throw should_never_happen(errorMessage, errorData);
 }
 
 export const create_folder_node = mutation({
@@ -5364,64 +4468,6 @@ export type files_nodes_search_paths_Result =
 	typeof search_paths extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
-
-/**
- * Read the saved content version without loading snapshots or the update log. Content error
- * markers do not prevent a move or archive. Callers that read bytes check those markers.
- */
-export async function files_nodes_db_get_content_version(
-	ctx: QueryCtx | MutationCtx,
-	fileNode: Doc<"files_nodes">,
-): Promise<Infer<typeof files_content_version_validator> | null> {
-	if (fileNode.kind !== "file" || fileNode.assetId === null || fileNode.contentType === null) {
-		return null;
-	}
-
-	if (fileNode.collaborationEnabled !== true) {
-		return {
-			kind: "asset",
-			assetId: fileNode.assetId,
-			contentType: fileNode.contentType,
-			textKind: fileNode.textKind,
-			collaborationEnabled: fileNode.collaborationEnabled,
-		};
-	}
-
-	if (fileNode.textKind === null || fileNode.yjsLastSequenceId === null) {
-		const errorMessage = "fileNode.textKind or fileNode.yjsLastSequenceId is not set";
-		const errorData = {
-			nodeId: fileNode._id,
-			textKind: fileNode.textKind,
-			yjsLastSequenceId: fileNode.yjsLastSequenceId,
-		};
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	const sequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
-	if (
-		!sequenceDoc ||
-		sequenceDoc.organizationId !== fileNode.organizationId ||
-		sequenceDoc.workspaceId !== fileNode.workspaceId ||
-		sequenceDoc.fileNodeId !== fileNode._id
-	) {
-		const errorMessage =
-			"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
-		const errorData = { nodeId: fileNode._id, yjsLastSequenceId: fileNode.yjsLastSequenceId, sequenceDoc };
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	return {
-		kind: "yjs",
-		lastSequenceId: sequenceDoc._id,
-		lineageGeneration: sequenceDoc.lineageGeneration,
-		sequence: sequenceDoc.lastSequence,
-		contentType: fileNode.contentType,
-		textKind: fileNode.textKind,
-		collaborationEnabled: true,
-	};
-}
 
 export async function db_get_file_content_materialization_db_state(
 	ctx: QueryCtx,

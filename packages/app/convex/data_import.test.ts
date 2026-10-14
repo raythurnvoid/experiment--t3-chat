@@ -3,7 +3,7 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { test_convex, test_folder_chain_path, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import {

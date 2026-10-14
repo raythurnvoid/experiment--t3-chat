@@ -10,9 +10,9 @@ import app_convex_schema from "./schema.ts";
 import {
 	files_nodes_db_get_content_version,
 	files_nodes_db_resume_file_content_materialization,
-} from "./files_nodes.ts";
+} from "./files_nodes_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
-import { files_subtree_ops_db_recover } from "./files_subtree_ops.ts";
+import { files_subtree_ops_db_recover } from "./files_subtree_ops_db.ts";
 import { files_move_reservations_db_take_waiters } from "../server/files-move-reservations.ts";
 import {
 	files_pending_overlay_db_can_join_step,
@@ -61,13 +61,13 @@ import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_share_rows_db_sync_node } from "../server/files-share-rows.ts";
 import {
 	files_move_content_db_create,
-	files_move_content_db_stage,
 	files_move_content_db_finish,
 	files_move_content_db_abort,
 	files_move_content_db_publish_accounting,
 	files_move_content_db_release_claims,
-} from "./files_move_content.ts";
-import { files_move_media_db_validate_next } from "./files_move_media.ts";
+} from "./files_move_content_db.ts";
+import type { files_move_content_db_stage } from "./files_move_content.ts";
+import { files_move_media_db_validate_next } from "./files_move_media_db.ts";
 import {
 	files_move_owner_work_db_collect_node,
 	files_move_owner_work_db_collect_closure,
@@ -79,7 +79,7 @@ import { billing_db_check_credits, billing_db_debit_anonymous_snapshot } from ".
 import {
 	files_pending_update_runs_db_record_cohort_publication,
 	files_pending_update_runs_db_resume_parked,
-} from "./files_pending_update_runs.ts";
+} from "./files_pending_update_runs_db.ts";
 import { files_transfer_db_record_cohort_publication } from "./files_transfer.ts";
 import {
 	files_db_delete_pending_update,
@@ -89,7 +89,7 @@ import {
 import {
 	files_pending_update_db_delete_chunks,
 	files_pending_update_db_release_replacement_asset,
-} from "./files_pending_updates.ts";
+} from "./files_pending_updates_db.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Reuse loaded modules. Keep each request's state inside its handler.
@@ -519,7 +519,7 @@ export async function files_move_cohorts_db_schedule(
 	if (!cohort || cohort.phase === "complete") return;
 	// Start ready steps before scheduling the first job. Stop at a page or publication.
 	if (!args.handoff && !cohort.runJob && cohort.step === 0 && (await files_pending_overlay_db_can_join_step(ctx, 4))) {
-		await db_advance(ctx, { cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true }, 4);
+		await files_move_cohorts_db_advance(ctx, { cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true }, 4);
 		cohort = (await ctx.db.get("files_move_cohorts", args.cohortId))!;
 		if (cohort.phase === "complete") return;
 	}
@@ -2342,11 +2342,19 @@ async function db_parent_running(ctx: MutationCtx, cohort: Doc<"files_move_cohor
 	return run?.revision === cohort.fence && item?.state === "pending" && item.attempt === cohort.attemptFence;
 }
 
+type StageRequest = {
+	contentId: Id<"files_move_cohort_content">;
+	fence: number;
+	attemptFence: number;
+	preparationFence: number;
+};
+
 async function db_advance_step(
 	ctx: MutationCtx,
-	args: { cohortId: Id<"files_move_cohorts">; step: number; runGeneration: number | null },
+	args: { cohortId: Id<"files_move_cohorts">; step: number; runGeneration: number | null; stage?: StageRequest },
 	limitFactor: 4 | 16,
 	membershipReads: MembershipReads,
+	stageContent?: typeof files_move_content_db_stage,
 ) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (
@@ -2354,6 +2362,15 @@ async function db_advance_step(
 		cohort.phase === "complete" ||
 		cohort.step !== args.step ||
 		(cohort.runJob?.generation ?? null) !== args.runGeneration
+	)
+		return null;
+	if (
+		args.stage &&
+		(cohort.phase !== "staging" ||
+			cohort.visibleView !== "before" ||
+			cohort.workPhase !== "content" ||
+			cohort.fence !== args.stage.fence ||
+			cohort.attemptFence !== args.stage.attemptFence)
 	)
 		return null;
 	// A failed repair waits for its delayed try. Other wakes must not retry it early.
@@ -2473,6 +2490,7 @@ async function db_advance_step(
 			.query("files_move_cohort_items")
 			.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohort._id).eq("status", "planned"))
 			.first();
+		if (args.stage && item?.contentId !== args.stage.contentId) return null;
 		if (!item) result = Result({ _yay: { done: true } });
 		else {
 			const record = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
@@ -2494,6 +2512,15 @@ async function db_advance_step(
 					return null;
 				}
 				const content = (await ctx.db.get("files_move_cohort_content", created._yay))!;
+				// Bind the new transaction to the prepared content named by the lean step.
+				if (
+					args.stage &&
+					(content._id !== args.stage.contentId ||
+						content.preparationFence !== args.stage.preparationFence ||
+						!content.prepared ||
+						content.sealed)
+				)
+					return null;
 				if (!content.prepared)
 					return {
 						step: cohort.step,
@@ -2503,7 +2530,16 @@ async function db_advance_step(
 						kind: "prepare" as const,
 					};
 				if (!content.sealed) {
-					const staged = await files_move_content_db_stage(ctx, { ...call, contentId: content._id });
+					if (!stageContent)
+						return {
+							step: cohort.step,
+							contentId: content._id,
+							fence: cohort.fence,
+							attemptFence: cohort.attemptFence,
+							preparationFence: content.preparationFence,
+							kind: "stage" as const,
+						};
+					const staged = await stageContent(ctx, { ...call, contentId: content._id });
 					if (staged._nay) {
 						await db_abort(ctx, cohort, staged._nay);
 						return null;
@@ -2652,17 +2688,24 @@ async function db_advance_step(
 /**
  * Join small exact work. A native page or heavy content work ends this transaction.
  */
-async function db_advance(
+export async function files_move_cohorts_db_advance(
 	ctx: MutationCtx,
-	args: { cohortId: Id<"files_move_cohorts">; step: number; runGeneration: number | null; join: boolean },
+	args: {
+		cohortId: Id<"files_move_cohorts">;
+		step: number;
+		runGeneration: number | null;
+		join: boolean;
+		stage?: StageRequest;
+	},
 	limitFactor: 4 | 16 = 16,
+	stageContent?: typeof files_move_content_db_stage,
 ) {
 	let step = args.step;
 	// Move steps do not edit these actor docs. The next transaction reads them again.
 	const membershipReads: MembershipReads = {};
 	while (true) {
 		// Nested joins use this transaction's budget too.
-		const result = await db_advance_step(ctx, { ...args, step }, limitFactor, membershipReads);
+		const result = await db_advance_step(ctx, { ...args, step }, limitFactor, membershipReads, stageContent);
 		if (result?.kind !== "next") return result;
 		step = result.step;
 		if (!args.join) {
@@ -2691,8 +2734,16 @@ export const advance = internalMutation({
 			attemptFence: v.number(),
 			kind: v.union(v.literal("prepare"), v.literal("media")),
 		}),
+		v.object({
+			step: v.number(),
+			contentId: v.id("files_move_cohort_content"),
+			fence: v.number(),
+			attemptFence: v.number(),
+			preparationFence: v.number(),
+			kind: v.literal("stage"),
+		}),
 	),
-	handler: db_advance,
+	handler: files_move_cohorts_db_advance,
 });
 
 export const resume = internalMutation({

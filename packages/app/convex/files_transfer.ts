@@ -30,7 +30,7 @@ import {
 	ai_chat_files_db_link_bash_transfer,
 	ai_chat_files_db_link_copy_admission,
 	ai_chat_files_db_seal_copy_admission,
-} from "./ai_chat_files.ts";
+} from "./ai_chat_files_db.ts";
 import { ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
@@ -41,12 +41,12 @@ import app_convex_schema, {
 	files_pending_target_validator,
 	files_transfer_source_version_validator,
 } from "./schema.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import {
-	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_copied_from_policy_fields,
 	files_nodes_db_require_copiable_write_policy,
-	files_nodes_db_get_content_version,
-} from "./files_nodes.ts";
+} from "./files_write_policy_db.ts";
+import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import {
 	files_nodes_db_require_user_writable,
 	files_nodes_db_require_user_writable_or_matching_policy,
@@ -81,7 +81,7 @@ import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import {
 	files_nodes_content_db_discard_transfer_file_attempt,
 	files_nodes_content_db_discard_transfer_file_capture,
-} from "./files_nodes_content.ts";
+} from "./files_transfer_assets_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_subtree_ops_db_delete,
@@ -90,7 +90,7 @@ import {
 	files_subtree_ops_db_insert,
 	files_subtree_ops_db_recover,
 	files_subtree_ops_RECOVER_AFTER_MS,
-} from "./files_subtree_ops.ts";
+} from "./files_subtree_ops_db.ts";
 import {
 	path_extract_segments_from,
 	path_join,

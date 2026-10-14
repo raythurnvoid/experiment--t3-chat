@@ -9,7 +9,7 @@ import { test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler 
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
 import { drain_pending_update_docs } from "./files_pending_updates.ts";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
-import { files_subtree_ops_db_find_blocker } from "./files_subtree_ops.ts";
+import { files_subtree_ops_db_find_blocker } from "./files_subtree_ops_db.ts";
 import {
 	fixture,
 	add_member,

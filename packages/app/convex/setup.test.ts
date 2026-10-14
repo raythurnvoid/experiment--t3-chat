@@ -37,7 +37,7 @@ import { api, components, internal } from "./_generated/api.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
-import { files_subtree_ops_db_find_repair } from "./files_subtree_ops.ts";
+import { files_subtree_ops_db_find_repair } from "./files_subtree_ops_db.ts";
 import { activities_db_get_by_source_id, activities_db_require_by_source_id } from "./activities_db.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";

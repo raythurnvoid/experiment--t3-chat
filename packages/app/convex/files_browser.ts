@@ -27,11 +27,8 @@ import {
 	files_u8_to_array_buffer,
 	files_db_load_pending_update_yjs_state_bytes,
 } from "../server/files.ts";
-import {
-	files_UPLOAD_URL_TTL_MS,
-	files_nodes_db_create_node_recursively_at_path,
-	type files_nodes_get_visible_entry_by_path_Result,
-} from "./files_nodes.ts";
+import { files_UPLOAD_URL_TTL_MS, type files_nodes_get_visible_entry_by_path_Result } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import {
 	files_ingestion_db_prepare_file,

@@ -13,12 +13,9 @@ import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
-import {
-	files_nodes_db_require_write_policy_management,
-	files_nodes_db_set_write_policy,
-	files_nodes_db_archive_nodes,
-	files_nodes_db_create_node_recursively_at_path,
-} from "./files_nodes.ts";
+import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
+import { files_nodes_db_set_write_policy, files_nodes_db_archive_nodes } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import {
 	files_nodes_db_require_writable,
 	type files_nodes_WriteContext,

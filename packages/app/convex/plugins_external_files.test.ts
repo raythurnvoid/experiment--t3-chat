@@ -7,7 +7,7 @@ import type { Id } from "./_generated/dataModel";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
-import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 
 const SECRET = "external-files-test-secret";
 const ROOT = "/chitchat-fresh-test";

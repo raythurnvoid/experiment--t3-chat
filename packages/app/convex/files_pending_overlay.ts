@@ -17,7 +17,7 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
-import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops.ts";
+import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
 import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
 import {
 	files_pending_overlay_db_child_ancestors,

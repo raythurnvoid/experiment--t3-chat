@@ -8,7 +8,7 @@ import {
 	files_subtree_ops_db_find_blocker,
 	files_subtree_ops_db_insert,
 	files_subtree_ops_db_schedule_step,
-} from "./files_subtree_ops.ts";
+} from "./files_subtree_ops_db.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
 // Scheduled promotes never run on their own under fake timers. The tests read them from the schedule.

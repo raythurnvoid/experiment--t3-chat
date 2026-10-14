@@ -158,11 +158,18 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   range through native paging. Resumed pages also stay native. Other non-empty owner ranges keep
   native paging, with byte limits for metadata and fields. These small steps join only while the
   shared budget allows it. Any native page ends the transaction, even an empty page.
-  Heavy text preparation keeps its own step. `files_move_run.run` carries the committed steps.
-  It loads the content or media helper with a literal `import()` only when the step needs it.
-  It calls that helper locally, with no new
-  remote action call. Between advances, it checks whether five seconds or 128 advance calls have
-  passed, then hands off. A content helper can take longer. These bounds never refuse a selection.
+  Heavy text preparation keeps its own step. `files_move_run.run` loads the content or media
+  preparation helper with a literal `import()` only when needed. It calls the action helper
+  locally, without another remote action call.
+  Prepared content uses `files_move_content.advance_stage`, a wrapped internal mutation.
+  It passes the real stage helper into `files_move_cohorts_db_advance`. The same engine checks
+  the current step, run generation, actor access, parent run, pins, reservations, node access
+  and policy in the stage transaction. It also checks the content ID, cohort fence, attempt fence
+  and preparation fence. A stale or stopped request cannot stage content.
+  Ordinary saved Move adds no stage mutation call. The ordinary advance and heavy stage call share
+  the five-second and 128-call bounds. The worker checks them before another stage call and
+  between advances, then hands off. One helper or mutation can take longer.
+  These bounds never refuse a selection.
   Before publication, all normal names still resolve to the old saved IDs and content. One small
   transaction selects the complete after view. Physical cleanup then finishes in pages.
   This also serves one change. It never exposes a temporary folder or parking name.
@@ -230,8 +237,9 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   Move joins exact selection, normalization and planning work while the flushed transaction
   metrics allow it. Each joined step repeats the current checks. Copy keeps its existing step
   boundaries. One joined cohort call reads its five actor facts once, after admission. The
-  actor checks still run at every step. A new transaction reads those facts again. Node access,
-  policy, receipts, clocks, parent progress and Stop checks keep their current reads.
+  actor checks still run at every step. A new transaction, including `advance_stage`, reads
+  those facts again. Node access, policy, receipts, clocks, parent progress and Stop checks
+  keep their current reads.
   An empty indexed restricted-root range needs no native page. Every actual native
   page still ends the transaction. Selected item, child and replacement producers queue their
   saved subtree ranges directly. The publication step commits the after view and next repair

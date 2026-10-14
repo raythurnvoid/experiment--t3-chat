@@ -4,16 +4,15 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { test_run_with_flush } from "./setup.test.ts";
-import { files_nodes_db_get_content_version } from "./files_nodes.ts";
+import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { quotas_db_ensure } from "./quotas.ts";
+import { files_move_content_action_prepare, files_move_content_db_stage } from "./files_move_content.ts";
 import {
-	files_move_content_action_prepare,
 	files_move_content_db_abort,
 	files_move_content_db_create,
 	files_move_content_db_finish,
 	files_move_content_db_publish_accounting,
-	files_move_content_db_stage,
-} from "./files_move_content.ts";
+} from "./files_move_content_db.ts";
 import { test_create_saved_placement_fixture } from "../server/files-saved-placement.test-fixtures.ts";
 import {
 	files_saved_placement_db_get_node,
@@ -391,7 +390,7 @@ test("pages a long text from one chunking, also after a page loses the kept boun
 	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.prepareContext))).toEqual({ _yay: null });
 	const chunker = vi.spyOn(await import("../server/files-plain-text-chunking.ts"), "files_chunk_plain_text");
 	// One page per step, so a step can end inside the text phase. A step may otherwise run many pages.
-	vi.spyOn(await import("./files_subtree_ops.ts"), "files_subtree_ops_db_is_near_limits").mockResolvedValue(true);
+	vi.spyOn(await import("./files_subtree_ops_db.ts"), "files_subtree_ops_db_is_near_limits").mockResolvedValue(true);
 	let dropped = false;
 	for (let i = 0; i < 200; i++) {
 		const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId)))!;

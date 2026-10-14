@@ -57,6 +57,23 @@ export const run = internalAction({
 						error: result._nay ? { name: result._nay.name, message: result._nay.message } : null,
 					});
 					if (!pending) return null;
+				} else if (pending.kind === "stage") {
+					step = pending.step;
+					// The stage runs the same engine in another transaction.
+					if (count + 1 >= RUN_MAX_ADVANCE_CALLS || Date.now() - startedAt >= RUN_BUDGET_MS) break;
+					count++;
+					pending = await ctx.runMutation(internal.files_move_content.advance_stage, {
+						cohortId: args.cohortId,
+						step,
+						runGeneration: args.runGeneration,
+						join: args.mode === "chain",
+						contentId: pending.contentId,
+						fence: pending.fence,
+						attemptFence: pending.attemptFence,
+						preparationFence: pending.preparationFence,
+					});
+					if (!pending) return null;
+					if (pending.kind === "complete") return "complete" as const;
 				}
 				step = pending.step;
 				if (args.mode === "step" || Date.now() - startedAt >= RUN_BUDGET_MS) break;

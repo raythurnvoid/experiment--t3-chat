@@ -16,7 +16,7 @@ import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
-import { files_pending_update_db_update_index_revision } from "./files_pending_updates.ts";
+import { files_pending_update_db_update_index_revision } from "./files_pending_updates_db.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,

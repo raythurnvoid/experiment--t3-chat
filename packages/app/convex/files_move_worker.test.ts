@@ -3,6 +3,7 @@ import type { FunctionArgs } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { advance } from "./files_move_cohorts.ts";
+import { advance_stage } from "./files_move_content.ts";
 import { run } from "./files_move_run.ts";
 import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 
@@ -119,6 +120,11 @@ test("publication commits before physical repair", async () => {
 });
 
 test.each([2, 3])("an empty folder at depth %i publishes before its repair action", async (depth) => {
+	let stageCalls = 0;
+	test_spy_handler(advance_stage, async (handler, ctx, args) => {
+		stageCalls++;
+		return await handler(ctx, args);
+	});
 	const f = await fixture(depth);
 	let actions = 0;
 	let transactions = 0;
@@ -145,6 +151,7 @@ test.each([2, 3])("an empty folder at depth %i publishes before its repair actio
 	expect(throughPublication, "small Move publishes in the acceptance transaction").toBe(0);
 	expect(transactions, "small Move joins exact cleanup work too").toBeLessThanOrEqual(5);
 	expect(actions, "one action carries the committed Move steps").toBe(1);
+	expect(stageCalls, "ordinary saved Move adds no content-stage RPC").toBe(0);
 });
 
 test("an action yields its committed step when the time budget ends", async () => {

@@ -66,18 +66,12 @@ import { files_saved_placement_db_get_node } from "../server/files-saved-placeme
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
+import { files_nodes_db_archive_nodes, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
 import {
-	files_nodes_db_archive_nodes,
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
-	files_nodes_db_get_write_policy_management_state,
-	files_nodes_db_set_write_policy,
-	files_nodes_db_require_write_policy_management,
-	files_nodes_write_policy_management_state_validator,
-	type files_nodes_get_by_path_Result,
-	type files_nodes_read_file_content_from_chunks_Result,
-	type get_file_content_materialization_state_Result,
-} from "./files_nodes.ts";
+} from "./files_nodes_create_db.ts";
+import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_nodes_db_finalize_editable_text_node_creation } from "./files_nodes_create_db.ts";

@@ -20,14 +20,12 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
+import { files_nodes_db_archive_nodes, files_nodes_db_hard_delete_node, files_nodes_db_set_write_policy } from "./files_nodes.ts";
 import {
-	files_nodes_db_archive_nodes,
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
-	files_nodes_db_hard_delete_node,
-	files_nodes_db_require_write_policy_management,
-	files_nodes_db_set_write_policy,
-} from "./files_nodes.ts";
+} from "./files_nodes_create_db.ts";
+import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { ai_chat_files_db_get_bash_transfer, ai_chat_files_db_link_bash_transfer } from "./ai_chat_files.ts";
+import { ai_chat_files_db_get_bash_transfer, ai_chat_files_db_link_bash_transfer } from "./ai_chat_files_db.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";

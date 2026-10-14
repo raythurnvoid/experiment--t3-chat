@@ -4,7 +4,7 @@ import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { advance } from "./files_move_cohorts.ts";
-import { files_nodes_db_get_content_version } from "./files_nodes.ts";
+import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
 	test_create_saved_text_file,

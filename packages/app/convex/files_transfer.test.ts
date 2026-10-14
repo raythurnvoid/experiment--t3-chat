@@ -6,7 +6,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { accept_input, advance as advance_transfer, files_transfer_db_delete_run_batch } from "./files_transfer.ts";
-import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops.ts";
+import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops_db.ts";
 import {
 	test_save_file_pending_update,
 	test_rename_node,

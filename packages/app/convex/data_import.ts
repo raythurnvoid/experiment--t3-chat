@@ -24,7 +24,8 @@ import {
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { server_path_normalize } from "../server/server-utils.ts";
-import { files_nodes_db_archive_nodes, files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
+import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { r2, r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";

@@ -7,7 +7,8 @@ import { test_convex, test_mocks_fill_db_with, test_run_with_flush, test_spy_han
 import { advance } from "./files_move_cohorts.ts";
 import { run } from "./files_move_run.ts";
 import { files_move_content_action_prepare } from "./files_move_content.ts";
-import { files_move_media_action_prepare_refs, files_move_media_db_validate_next } from "./files_move_media.ts";
+import { files_move_media_action_prepare_refs } from "./files_move_media.ts";
+import { files_move_media_db_validate_next } from "./files_move_media_db.ts";
 import { files_media_build_private_src } from "../shared/files-media.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 import { files_saved_placement_db_resolve_read_target } from "../server/files-saved-placement.ts";
@@ -240,6 +241,17 @@ test.each(["prepare", "media"] as const)(
 					step: pending.step,
 					runGeneration: call.runGeneration,
 					error: null,
+				});
+			} else if (pending?.kind === "stage") {
+				await f.t.mutation(internal.files_move_content.advance_stage, {
+					cohortId: cohort._id,
+					step: pending.step,
+					runGeneration: cohort.runJob?.generation ?? null,
+					join: false,
+					contentId: pending.contentId,
+					fence: pending.fence,
+					attemptFence: pending.attemptFence,
+					preparationFence: pending.preparationFence,
 				});
 			}
 			cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohort._id)))!;

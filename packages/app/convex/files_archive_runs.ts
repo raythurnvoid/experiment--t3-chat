@@ -56,18 +56,14 @@ import {
 	files_subtree_ops_db_delete,
 	files_subtree_ops_db_enqueue_nodes,
 	files_subtree_ops_db_find_blocker,
-	files_subtree_ops_db_first_node,
 	files_subtree_ops_db_insert,
 	files_subtree_ops_db_insert_node,
 	files_subtree_ops_db_is_near_limits,
-	files_subtree_ops_db_next_children,
-	files_subtree_ops_db_pause_for_move,
 	files_subtree_ops_db_recover,
-	files_subtree_ops_db_reserve_sequences,
 	files_subtree_ops_db_run,
-	files_subtree_ops_db_save_page,
 	files_subtree_ops_db_schedule_step,
-} from "./files_subtree_ops.ts";
+} from "./files_subtree_ops_db.ts";
+import { files_subtree_ops_db_first_node, files_subtree_ops_db_next_children, files_subtree_ops_db_pause_for_move, files_subtree_ops_db_reserve_sequences, files_subtree_ops_db_save_page } from "./files_subtree_ops.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,

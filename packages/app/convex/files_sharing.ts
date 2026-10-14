@@ -29,7 +29,8 @@ import {
 	access_control_db_resolve_live_restricted_scope,
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
-import { files_nodes_db_set_restricted_scope, files_nodes_db_resolve_parent_restricted_scope } from "./files_nodes.ts";
+import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_policy_db.ts";
 import { files_share_links_db_check_live_file, files_share_links_db_resolve_live_scope } from "./files_share_links.ts";
 import {
 	files_share_links_create_cleanup_state,

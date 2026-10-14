@@ -14,6 +14,10 @@ import {
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
+import {
+	files_nodes_content_db_discard_transfer_file_attempt,
+	files_transfer_assets_db_retire_states as db_retire_transfer_states,
+} from "./files_transfer_assets_db.ts";
 import { internalMutation, mutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type RegisteredAction, type RegisteredMutation, type RegisteredQuery } from "convex/server";
@@ -120,16 +124,11 @@ import {
 	files_metadata_preflight_frontmatter,
 	type files_metadata_Entry,
 } from "../shared/files-metadata.ts";
+import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE, files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE, files_pending_update_db_replace_chunks, files_pending_updates_db_drop_content_for_node, files_pending_updates_db_mark_content_for_rebase, type files_pending_updates_stage_trusted_yjs_update_Result } from "./files_pending_updates.ts";
 import {
-	files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE,
-	files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE,
 	files_pending_update_db_delete_chunks,
-	files_pending_update_db_replace_chunks,
 	files_pending_update_db_release_replacement_asset,
-	files_pending_updates_db_drop_content_for_node,
-	files_pending_updates_db_mark_content_for_rebase,
-	type files_pending_updates_stage_trusted_yjs_update_Result,
-} from "./files_pending_updates.ts";
+} from "./files_pending_updates_db.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
 import {
@@ -143,29 +142,13 @@ import {
 	r2_fetch_object_range_from_bucket,
 	r2_put_object,
 } from "./r2_client.ts";
+import { cancel_file_content_materialization, db_get_file_content_materialization_db_state, db_get_file_snapshot_content, enqueue_file_content_materialization, files_READ_RANGE_MAX_LINES, files_line_range_from_text, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, type files_nodes_get_visible_entry_by_path_Result, files_tail_lines_from_text, yjs_reserve_and_increment_last_sequence, type files_nodes_read_committed_file_chunk_stats_Result, type files_nodes_read_committed_file_chunks_line_range_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_header_Result, type get_file_content_materialization_state_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
 import {
-	cancel_file_content_materialization,
-	db_get_file_content_materialization_db_state,
-	db_get_file_snapshot_content,
-	db_upsert_file_stats,
-	enqueue_file_content_materialization,
-	files_READ_RANGE_MAX_LINES,
-	files_line_range_from_text,
-	files_merge_contiguous_chunks,
-	files_nodes_db_get_content_version,
-	type files_nodes_get_user_file_write_access_Result,
-	type files_nodes_get_visible_entry_by_path_Result,
+	files_nodes_db_upsert_file_stats as db_upsert_file_stats,
 	files_nodes_db_create_node_recursively_at_path,
-	files_nodes_db_copied_from_policy_fields,
-	files_tail_lines_from_text,
-	yjs_reserve_and_increment_last_sequence,
-	type files_nodes_read_committed_file_chunk_stats_Result,
-	type files_nodes_read_committed_file_chunks_line_range_Result,
-	type files_nodes_read_file_content_from_chunks_Result,
-	type get_file_content_materialization_header_Result,
-	type get_file_content_materialization_state_Result,
-	type get_file_next_yjs_update_Result,
-} from "./files_nodes.ts";
+} from "./files_nodes_create_db.ts";
+import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
+import { files_nodes_db_copied_from_policy_fields } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
 	files_transfer_db_complete_copy_item,
@@ -2158,102 +2141,6 @@ type stage_transfer_file_copy_assets_Result =
 	typeof stage_transfer_file_copy_assets extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
-
-export async function files_nodes_content_db_discard_transfer_file_attempt(
-	ctx: MutationCtx,
-	args: {
-		itemId: Id<"files_transfer_items">;
-		attempt: number;
-		workId?: NonNullable<Doc<"files_transfer_items">["workId"]>;
-	},
-) {
-	const item = await ctx.db.get("files_transfer_items", args.itemId);
-	if (
-		!item ||
-		item.attempt !== args.attempt ||
-		(args.workId !== undefined && item.workId !== args.workId) ||
-		item.stagedAssetIds.length === 0
-	)
-		return;
-
-	for (const assetId of item.stagedAssetIds) {
-		const asset = await ctx.db.get("files_r2_assets", assetId);
-		if (!asset) continue;
-		await r2_enqueue_object_deletion_job(ctx, {
-			organizationId: asset.organizationId as Id<"organizations">,
-			workspaceId: asset.workspaceId as Id<"organizations_workspaces">,
-			r2Key: r2_create_asset_key({ organizationId: asset.organizationId, workspaceId: asset.workspaceId, assetId }),
-			reason: "failed_create",
-			putMayArriveUntil: asset.putMayArriveUntil,
-		});
-		await ctx.db.delete("files_r2_assets", assetId);
-	}
-
-	await ctx.db.patch("files_transfer_items", item._id, { stagedAssetIds: [] });
-}
-
-async function db_retire_transfer_states(ctx: MutationCtx, item: Doc<"files_transfer_items">) {
-	// Capture preparation can also own the new proposal's three states.
-	const states = await ctx.db
-		.query("files_pending_update_yjs_states")
-		.withIndex("by_owner_transferItem", (q) => q.eq("owner.itemId", item._id))
-		.take(4);
-	if (states.length === 0) return;
-	// Source captures and prepared destination states can belong to different workspaces.
-	const cleanupTasks = new Map<Id<"organizations_workspaces">, Id<"files_pending_update_state_cleanup_tasks">>();
-	for (const state of states) {
-		let cleanupTaskId = cleanupTasks.get(state.workspaceId);
-		if (!cleanupTaskId) {
-			cleanupTaskId = await ctx.db.insert("files_pending_update_state_cleanup_tasks", {
-				organizationId: state.organizationId,
-				workspaceId: state.workspaceId,
-				createdAt: Date.now(),
-			});
-			cleanupTasks.set(state.workspaceId, cleanupTaskId);
-		}
-		await ctx.db.patch("files_pending_update_yjs_states", state._id, { owner: { kind: "retired", cleanupTaskId } });
-	}
-	await ctx.scheduler.runAfter(0, internal.files_pending_updates.cleanup_expired_pending_state_rows, {});
-}
-
-export async function files_nodes_content_db_discard_transfer_file_capture(
-	ctx: MutationCtx,
-	args: { itemId: Id<"files_transfer_items"> },
-) {
-	const item = await ctx.db.get("files_transfer_items", args.itemId);
-	if (!item?.capture) return;
-	await db_retire_transfer_states(ctx, item);
-
-	const { capture } = item;
-	if (capture.mediaDependencySetId) {
-		const set = await ctx.db.get("files_media_dependency_sets", capture.mediaDependencySetId);
-		if (set)
-			await files_media_dependencies_db_retire(ctx, {
-				setId: set._id,
-				generation: set.generation,
-				owner: { kind: "capture", itemId: item._id },
-			});
-	}
-	const artifact = capture.artifact;
-	for (const assetId of artifact
-		? [artifact.contentAssetId, ...(artifact.yjsSnapshotAssetId ? [artifact.yjsSnapshotAssetId] : [])]
-		: []) {
-		const asset = await ctx.db.get("files_r2_assets", assetId);
-		if (!asset) continue;
-		// A sealed capture has an R2 key, but no saved file owns it yet.
-		await r2_enqueue_object_deletion_job(ctx, {
-			organizationId: asset.organizationId as Id<"organizations">,
-			workspaceId: asset.workspaceId as Id<"organizations_workspaces">,
-			r2Key: asset.r2Key!,
-			reason: "failed_create",
-			putMayArriveUntil: asset.putMayArriveUntil,
-		});
-		await ctx.db.delete("files_r2_assets", assetId);
-	}
-	await ctx.db.patch("files_transfer_items", item._id, {
-		capture: { ...capture, mediaDependencySetId: undefined, sourceStateId: null, artifact: null },
-	});
-}
 
 export const discard_transfer_file_attempt = internalMutation({
 	args: {

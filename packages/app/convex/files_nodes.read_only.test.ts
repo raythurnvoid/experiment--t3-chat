@@ -7,12 +7,8 @@ import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
-import {
-	files_nodes_db_set_write_policy,
-	files_nodes_db_get_write_policy_management_state,
-	files_nodes_db_create_node_recursively_at_path,
-	files_nodes_db_hard_delete_node,
-} from "./files_nodes.ts";
+import { files_nodes_db_set_write_policy, files_nodes_db_get_write_policy_management_state, files_nodes_db_hard_delete_node } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_nodes_create_yjs_snapshot_update_from_text } from "./files_nodes_content.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
