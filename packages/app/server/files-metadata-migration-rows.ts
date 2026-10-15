@@ -132,7 +132,7 @@ export async function metadata_migration_audit_saved_rows(ctx: QueryCtx, source:
 		if (
 			JSON.stringify(field.sortValue) !== JSON.stringify(files_sort_value_of(values)?.sortValue) ||
 			field.sortDisplayValue !== preview.value ||
-			field.sortDisplayValueIsPreview !== preview.isPreview ||
+			(field.sortDisplayValueIsPreview ?? false) !== preview.isPreview ||
 			field.parentId !== node.parentId ||
 			field.name !== node.name ||
 			field.nodeKind !== node.kind
