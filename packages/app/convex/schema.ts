@@ -4338,7 +4338,7 @@ const app_convex_schema = defineSchema({
 		key: v.string(),
 		value: v.string(),
 	})
-		.index("by_target_key", ["target.kind", "target.id", "userId", "moveView.cohortId", "moveView.view", "key"])
+		.index("by_target_user_key", ["target.kind", "target.id", "userId", "moveView.cohortId", "moveView.view", "key"])
 		.index("by_user", ["userId"])
 		.index("by_org_ws", ["organizationId", "workspaceId"])
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"]),

@@ -618,8 +618,12 @@ export async function bash_find_type_prepare(args: {
 	if (parsed._nay) return failure(parsed._nay.message);
 	const options = parsed._yay;
 	const shellPath = bash_resolve_path(args.cwd, options.path ?? args.cwd);
-	const path = bash_resolve_db_files_shell_path(shellPath, args.dbFilesRoots);
-	if (options.contentType === undefined || path.dbFilesPath === null || path.kind === "outside_db_files")
+	const pathResolution = bash_resolve_db_files_shell_path(shellPath, args.dbFilesRoots);
+	if (
+		options.contentType === undefined ||
+		pathResolution.dbFilesPath === null ||
+		pathResolution.kind === "outside_db_files"
+	)
 		return failure(
 			"find: --content-type needs one workspace, plugin, or mount folder. It is not supported on /tmp or a root spanning several mounts.",
 		);
@@ -634,20 +638,20 @@ export async function bash_find_type_prepare(args: {
 	return {
 		prepared: {
 			request: {
-				organizationId: path.ctxData.organizationId,
-				workspaceId: path.ctxData.workspaceId,
-				userId: path.ctxData.userId,
-				agentSource: path.ctxData.agentSource ?? args.dbFilesRoots.app.fs.ctxData.agentSource,
-				pluginReviewRoot: path.ctxData.pluginReviewRoot,
-				overlay: path.fs.overlayUserId !== undefined,
-				rootPath: path.dbFilesPath,
+				organizationId: pathResolution.ctxData.organizationId,
+				workspaceId: pathResolution.ctxData.workspaceId,
+				userId: pathResolution.ctxData.userId,
+				agentSource: pathResolution.ctxData.agentSource ?? args.dbFilesRoots.app.fs.ctxData.agentSource,
+				pluginReviewRoot: pathResolution.ctxData.pluginReviewRoot,
+				overlay: pathResolution.fs.overlayUserId !== undefined,
+				rootPath: pathResolution.dbFilesPath,
 				contentType: options.contentType,
 				directoriesOnly: options.type === "d",
 				limit: options.limit,
 			},
 			cursor,
 			shellPrefix: shellPath,
-			dbPrefix: path.dbFilesPath,
+			dbPrefix: pathResolution.dbFilesPath,
 		},
 	};
 }

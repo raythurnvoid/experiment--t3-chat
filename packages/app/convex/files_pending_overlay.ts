@@ -1353,10 +1353,11 @@ export const repair_user = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		cursor: v.null(),
+		cursor: v.union(v.string(), v.null()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		// During rollout, old scheduled pages restart through the counted job, never their old phase.
 		await files_pending_overlay_db_schedule_repair(ctx, args);
 		return null;
 	},

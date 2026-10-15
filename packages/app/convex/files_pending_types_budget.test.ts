@@ -27,10 +27,12 @@ test(
 			depth: 510,
 			restrictedScopeNodeId: null,
 		});
+		const parentId = chain.id;
+		if (parentId === "root") throw new Error("Expected a saved folder chain");
 		const leaf = await f.t.run(
 			async (ctx) =>
 				await insert_saved_node(ctx, f.u, {
-					parent: await ctx.db.get("files_nodes", chain.id),
+					parent: await ctx.db.get("files_nodes", parentId),
 					name: "b",
 					kind: "file",
 				}),

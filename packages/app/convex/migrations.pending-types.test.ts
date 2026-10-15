@@ -27,6 +27,40 @@ async function old_data() {
 	return { ...f, before };
 }
 
+test("draft search stays closed during the typed backfill", async () => {
+	const f = await fixture();
+	const request = {
+		...f.u,
+		rootPath: "/",
+		contentType: "text/",
+		directoriesOnly: false,
+		limit: 1,
+	};
+	const pending = await f.t.mutation(internal.files_type_queries.begin, { ...request, overlay: true });
+	expect(pending._nay?.message).toBe("Content-type search is being prepared. Try again later.");
+	expect(await f.t.run((ctx) => ctx.db.query("files_type_queries").collect())).toEqual([]);
+	const saved = await f.t.mutation(internal.files_type_queries.begin, { ...request, overlay: false });
+	expect(saved._nay).toBeUndefined();
+});
+
+test("old repair cursors share one counted job with the current phases", async () => {
+	const f = await old_data();
+	const cursor = JSON.stringify({ phase: 4, page: "old-native-cursor" });
+	await expect(
+		f.t.mutation(internal.files_pending_overlay.repair_user, { ...f.u, cursor }),
+		"a queued old repair must reach the counted handoff",
+	).resolves.toBeNull();
+	await f.t.mutation(internal.files_pending_overlay.repair_user, { ...f.u, cursor });
+	const jobs = await f.t.run((ctx) => ctx.db.query("files_pending_overlay_jobs").collect());
+	expect(jobs.filter((job) => job.kind === "repair_user")).toHaveLength(1);
+	expect(jobs.find((job) => job.kind === "repair_user")?.cursor).toBeNull();
+	await f.settle();
+	expect(await f.t.run((ctx) => ctx.db.query("files_pending_type_entries").collect())).toHaveLength(2);
+	expect(await f.t.run((ctx) => ctx.db.query("files_pending_overlay_jobs").collect())).toEqual([]);
+	expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual(f.before.proposals);
+	await f.expect_overlay_true();
+});
+
 test("the typed backfill restores actual pending entries and preserves all source data", async () => {
 	const f = await old_data();
 	const status = await f.t.action((ctx) =>

@@ -1106,7 +1106,7 @@ export async function files_pending_overlay_db_resolve_facts(
 	const by_key = (key: string) =>
 		ctx.db
 			.query("files_pending_overlay_resolve_work")
-			.withIndex("by_target_key", (q) =>
+			.withIndex("by_target_user_key", (q) =>
 				q
 					.eq("target.kind", args.target.kind)
 					.eq("target.id", args.target.id)
@@ -1145,7 +1145,7 @@ export async function files_pending_overlay_db_resolve_facts(
 	const clear = async () => {
 		const docs = await ctx.db
 			.query("files_pending_overlay_resolve_work")
-			.withIndex("by_target_key", (q) =>
+			.withIndex("by_target_user_key", (q) =>
 				q
 					.eq("target.kind", args.target.kind)
 					.eq("target.id", args.target.id)
