@@ -104,6 +104,7 @@ import { bash_rm_command_create } from "./bash-rm-command.ts";
 import { bash_search_command_create } from "./bash-search-command.ts";
 import { bash_sed_command_create } from "./bash-sed-command.ts";
 import { bash_stat_command_create } from "./bash-stat-command.ts";
+import { bash_file_command_create } from "./bash-file-command.ts";
 import { bash_tee_command_create } from "./bash-tee-command.ts";
 import { bash_textgrep_command_create } from "./bash-textgrep-command.ts";
 import { bash_tree_command_create } from "./bash-tree-command.ts";
@@ -126,7 +127,6 @@ import {
 	bash_parse_cp_mv_operands,
 	bash_resolve_db_files_shell_path,
 	bash_GLOB_METACHARACTER_REGEX,
-	bash_shell_arg_quote,
 	bash_disallowed_shell_code_error,
 	bash_TMP_MOUNT,
 	bash_SHELLS_MOUNT,
@@ -139,7 +139,6 @@ import {
 	bash_COMMAND_EXIT_TIMED_OUT,
 	bash_JOB_NUMBERS_MAX_COUNT,
 	bash_TERMINAL_LINE_ENDING_REGEX,
-	bash_SHELL_COMMENT_LINE_REGEX,
 	bash_WHITESPACE_RUN_REGEX,
 	bash_text_head,
 	bash_text_well_formed,
@@ -203,7 +202,6 @@ const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
 
 const COMMAND_NOT_FOUND_REGEX = /: command not found$/m;
 const REDIRECTS_STDERR_TO_STDOUT_REGEX = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/;
-const FILE_COMMAND_OPERAND_REGEX = /(?:^|[\s;&|])file\s+([^\s;&|]+)/u;
 
 // Deliberately tiny caps so /tmp eviction is exercised while testing the app.
 const BASH_TMP_SESSION_MAX_PATHS = 10;
@@ -1574,6 +1572,7 @@ function bash_shell_create(
 			bash_head_tail_wc_command_create({ ctx, dbFilesRoots, command: "tail" }),
 			bash_head_tail_wc_command_create({ ctx, dbFilesRoots, command: "wc" }),
 			bash_stat_command_create(ctx, dbFilesRoots),
+			bash_file_command_create(dbFilesRoots),
 			...stream_utility_command_create_all(dbFilesRoots),
 			bash_sed_command_create(ctx, dbFilesRoots),
 			// Guarded mutators.
@@ -2194,11 +2193,6 @@ async function run_command_and_diagnose(args: {
 	) {
 		result.stderr +=
 			"bash: run 'help' to list available commands; app files are db-backed — use search/grep for content and find/ls for paths.\n";
-		const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
-		if (filePathMatch?.[1] != null) {
-			const target = bash_shell_arg_quote(filePathMatch[1]);
-			result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
-		}
 	}
 
 	// Restore app-command guidance the shell swallowed. `find … 2>/dev/null | head` discards the

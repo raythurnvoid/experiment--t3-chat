@@ -15,6 +15,8 @@ The boundary and Copy lifecycle are in
 
 Each `files_pending_updates` doc belongs to one user and one saved or private target. It may contain a content proposal, a structural proposal, or both. Saved Files doors still accept a saved `nodeId` and build the tagged target at their boundary.
 
+Bash reads the caller's pending view. Its `file` command reads that view's stored content type without loading content. Public Files APIs, including the short grants used by `execute_code`, read saved files only. A pending create is missing there until Save; pending replacements, moves, and deletes do not change those API reads.
+
 Pending updates work for both document shapes: a Markdown file's `rich_text` (ProseMirror) Yjs document and every other editable text file's `plain_text` (`Y.Text`) document. The node's `textKind` decides the current shape. After a restore changes shape, `contentRebaseRootKind` keeps the old branches readable until preparation replaces them (see the `files-editable-text` skill). Both shapes use the same three branches and text merge.
 
 A content proposal stores one `content` object. Its `base` is `{ kind: "yjs", sequence, lineageGeneration }` for a collaborative file, `{ kind: "asset", assetId }` for a file with collaboration off, or `{ kind: "new" }` for private new content. The same object owns the three sealed state IDs:
@@ -204,6 +206,7 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   A new Save after a terminal refusal starts another attempt, with one point read and no history scan.
   A partial private Save leaves its remaining proposal on the new saved identity. The AFTER overlay
   uses that saved target. The old private identity stays only as a publish receipt alias.
+  Exact path reads treat that alias and the saved slot as one node, even before cleanup closes the private node.
 - A Discard item can carry `onlyIfEmpty: true`. It is for a hidden parent folder that Pending `Discard all` sends with the shown drafts. An unselected draft inside it does not block the run. Planning puts these folders after the other Discard roots, deepest first. `commit_unit` discards the unit's saved proposals first, then removes such a folder only when it has no active child draft and no draft move into it; otherwise it keeps the folder.
 - `files_pending_review_versions` is the owner's pending-change clock. The normal path seals each unit against the run's current clock. An outside edit enables `revalidateRemaining` for the rest of the run. Every later unit then checks its original IDs, revisions, content states, paths, and dependency scope in pages, even after an earlier unit's own commit advances the run clock.
 - `files_pending_review_fact_state.structureRevision` is the workspace's saved-tree clock for review

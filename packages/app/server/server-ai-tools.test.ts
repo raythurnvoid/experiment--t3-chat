@@ -637,13 +637,13 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("the Unix file command is intentionally unavailable"),
+				description: expect.stringContaining("App files report their stored content type, including your pending changes"),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					"If file fails or the user asks for it, do not stop after reporting that it is unavailable",
+					"Only /tmp files use native content detection",
 				),
 			}),
 		);
@@ -1964,6 +1964,8 @@ test("execute_code tool: describes app file API reads", () => {
 			description: expect.stringContaining("run file API fetches inside the snippet"),
 		}),
 	);
+	expect(tool.description).toContain("These APIs read saved files only");
+	expect(tool.description).toContain("Files from emitFile become readable here only after the user saves them");
 });
 
 describe("runner cancellation", () => {

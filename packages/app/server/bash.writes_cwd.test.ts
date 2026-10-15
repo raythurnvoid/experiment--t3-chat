@@ -1151,32 +1151,27 @@ describe("bash_run_command", () => {
 		expect(appAfterScratch.stderr).not.toContain("/s/a/b/");
 	});
 
-	test("keeps the Unix file command unavailable", async () => {
+	test("runs native file detection on scratch through the app command", async () => {
 		const { run } = await create_bash_runner();
 
 		const result = await run({ command: "printf hi > /tmp/a.txt && file /tmp/a.txt" });
 
-		expect(result.metadata.exitCode).not.toBe(0);
-		expect(result.stderr).toContain("file: command not found");
-		expect(result.stderr).toContain("run 'help'");
-		expect(result.stderr).toContain(
-			"the Unix file command is intentionally unavailable. Try: stat /tmp/a.txt && wc -c /tmp/a.txt && head -n 5 /tmp/a.txt",
-		);
+		expect(result.metadata.exitCode, result.stderr).toBe(0);
+		expect(result.stdout).toBe("/tmp/a.txt: ASCII text\n");
+		expect(result.stderr).toBe("");
 	});
 
-	test("ignores shell comment lines when hinting unavailable file commands", async () => {
+	test("does not add the old file hint to unrelated unknown commands", async () => {
 		const { run } = await create_bash_runner();
 
 		const result = await run({
-			command: "# Try file (intentionally unavailable)\nprintf hi > /tmp/a.txt\nfile /tmp/a.txt",
+			command: "# Try file /tmp/a.txt\nprintf hi > /tmp/a.txt\nfile /tmp/a.txt\nnot-a-command",
 		});
 
 		expect(result.metadata.exitCode).not.toBe(0);
-		expect(result.stderr).toContain("file: command not found");
-		expect(result.stderr).toContain(
-			"the Unix file command is intentionally unavailable. Try: stat /tmp/a.txt && wc -c /tmp/a.txt && head -n 5 /tmp/a.txt",
-		);
-		expect(result.stderr).not.toContain("stat '(intentionally'");
+		expect(result.stdout).toBe("/tmp/a.txt: ASCII text\n");
+		expect(result.stderr).toContain("not-a-command: command not found");
+		expect(result.stderr).not.toContain("intentionally unavailable");
 	});
 
 	test("prevents scratch symlinks from escaping into the app mount", async () => {

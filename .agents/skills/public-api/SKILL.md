@@ -63,7 +63,7 @@ All routes are POST. Responses are JSON except the successful `read-bytes` respo
 | Route                         | Scope              | Notes                                                                                                                                                                                      |
 | ----------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `/api/v1/files/list`          | `files:list`       | File items carry `status` (`pending` until the R2 object is confirmed, then `ready`; `null` for folders) and `size`. A missing, archived, or hidden folder is 404, a file is 400, and the cursor is sealed (see below) |
-| `/api/v1/files/read`          | `files:read`       | Serves every editable text class (Markdown and plain text); user API keys read committed content only, `public_api_grant` reads (and `read-many`) include the grant user's pending overlay |
+| `/api/v1/files/read`          | `files:read`       | Serves saved editable text (Markdown and plain text) for every principal, including short grants |
 | `/api/v1/files/read-many`     | `files:read`       | Up to 50 paths, per-item errors                                                                                                                                                            |
 | `/api/v1/files/read-bytes`    | `files:download`   | User API keys and short grants only; raw bytes, up to 1 MiB per request; revision pin and an atomic short-grant byte budget |
 | `/api/v1/files/write`         | `files:write`      | One editable text file; `overwrite: "replace" \| "fail"`, `skipIfUnchanged`; credit gate 402 + one `file_save` emit at publish                                                                   |
@@ -229,19 +229,21 @@ Semantics that must not drift:
 
 # Bounded file reads
 
-`read` and `read-many` return `{path,target,content}` for each file. `target` is `{kind:"saved",id}` or `{kind:"private",id}`. Short grants read the owner's current pending paths and text. User API keys, including service-bound keys, read saved paths and text. A private ID is never returned as `nodeId`.
+`read` and `read-many` return `{path,target,content}` for each saved file, with `target: {kind:"saved",id}`. Every principal reads saved paths and text, including short grants and service-bound keys. Pending creates are missing until Save. Pending replacements, moves, and deletes do not change the selected saved file. Pass `includePending: false` and omit `overlayUserId` in every public text and byte read; omitting `includePending` can still select pending content.
 
 `POST /api/v1/files/read-bytes` accepts `{path,offset,length,revision}`. The path must be a canonical root-based Files path. No aliases, traversal, empty segments, backslashes, or wildcards are accepted. Offset is a nonnegative safe integer. Length is 1–1 MiB. Send `revision:null` for the first range, then reuse the returned revision.
 
 Success returns raw bytes with `Content-Type: application/octet-stream`, `Cache-Control: no-store`, and `X-File-Content-Type`, `X-File-Revision`, `X-File-Size`, and `X-File-Offset`. These four bounded headers are exposed to browser callers. EOF and empty files return an empty 200 body. An offset past EOF returns 416; a changed authorized revision returns 409; missing or unreadable files return 404. Errors remain JSON. No storage keys or signed URLs leave this route.
 
-Stored files return exact stored bytes. Editable files return UTF-8 of current canonical Files text, within the existing text cap. The revision pins the live text head or pending proposal/state, not an older R2 snapshot. Authority, ACLs, and source revision are checked again after reading. The shared source resolver is in `files_nodes_content.ts`. Service-bound keys check both the sponsor's access and the account's saved-file grant. Short grants use only their owner's pending view and path prefix.
+Stored files return exact saved bytes. Editable files return UTF-8 of current saved Files text, within the existing text cap. The revision pins the saved text head or stored asset. Authority, ACLs, and source revision are checked again after reading. The shared source resolver is in `files_nodes_content.ts`. Service-bound keys check both the sponsor's access and the account's saved-file grant. Short grants keep the owner's current access and their path prefix, while selecting only saved files.
 
 `remainingReadBytes` is required on short grants. Ordinary `create_grant` sets 8 MiB only when `files:download` is present, and sets `agentSource` and `codeReadBudgetId` to `null`. The byte route atomically reserves the requested length before fetching, including concurrent calls. Failed or aborted reads are not refunded; retries spend bytes again. Long-lived keys keep the normal request rate limit and 1 MiB range cap without a per-run byte budget. Text routes keep their existing per-request limits.
 
 ## Code execution grants
 
 `public_api.create_code_grants({ source, principalKey, tokenHashes: { current, personal } })` returns a Result with `{ personalIsCurrent }`. The caller creates the two tokens; the mutation stores only hashes. It resolves both roots through `ai_chat_workspaces` from the captured original source. Both checks finish before writes. It then creates one `ai_chat_code_read_budgets` doc and the grants in the same transaction. The server uses `Date.now()` and a fixed ten-minute lifetime. Scopes are exactly list, read, and download for each whole root. No argument can select a third workspace or widen scopes.
+
+`execute_code` reads saved files through these grants. Its `emitFile` outputs become readable through the public API only after the user saves them. Bash continues to read pending changes.
 
 When current is personal/home, mint only the current grant. The caller uses the current token for both selectors. Otherwise each token names its own destination workspace, but both grants retain the same original `agentSource` and `codeReadBudgetId`. Their local `remainingReadBytes` is zero. The shared budget starts at 8 MiB and is looked up from the authenticated grant, never from a supplied budget ID.
 

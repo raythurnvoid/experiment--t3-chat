@@ -1,6 +1,13 @@
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
-import { test_apply_file_pending_move, test_mocks_fill_db_with, test_run_with_flush } from "../convex/setup.test.ts";
+import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
+import {
+	test_apply_file_pending_move,
+	test_convex,
+	test_finish_pending_update_run,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "../convex/setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import {
 	bash_COMMAND_EXIT_USAGE,
@@ -22,6 +29,7 @@ import {
 	runner_as_user,
 	pending_review_for_test,
 	accept_pending_move_group_for_test,
+	accept_pending_replacement_for_test,
 	drain_scheduled_continuations,
 } from "./bash.setup.test.ts";
 
@@ -356,6 +364,320 @@ describe("bash_run_command", () => {
 		});
 	});
 
+	describe("file", () => {
+		test("reports stored types without body, chunk, size, or R2 reads", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/empty.txt", content: "", contentType: "text/plain;charset=utf-8" }],
+			});
+			runner.runQuery.mockClear();
+			runner.runAction.mockClear();
+			vi.mocked(fetch).mockClear();
+
+			const result = await runner.run({ command: "file docs/readme.md source.pdf empty.txt docs" });
+
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe(
+				"docs/readme.md: text/markdown;charset=utf-8\nsource.pdf: application/pdf\nempty.txt: text/plain;charset=utf-8\ndocs: directory\n",
+			);
+			const queryNames = runner.runQuery.mock.calls.map(([ref]) => function_name_of(ref));
+			expect(runner.runAction, "file must not call content or size actions").not.toHaveBeenCalled();
+			expect(
+				queryNames.filter((name) => name?.includes("chunk") || name?.includes("read_shell_transcript")),
+				"file must not read chunks or transcripts",
+			).toEqual([]);
+			expect(queryNames, "file must not load asset sizes").not.toContain("r2:get_asset_by_id");
+			expect(fetch, "file must not fetch bodies from R2").not.toHaveBeenCalled();
+		});
+
+		test("supports brief and MIME output without guessing from extensions", async () => {
+			const runner = await create_bash_runner();
+			const result = await runner.run({
+				command: "file --mime-type docs/readme.md docs; file --brief --mime-type uploaded.md",
+			});
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe("docs/readme.md: text/markdown\ndocs: inode/directory\napplication/octet-stream\n");
+		});
+
+		test.each([null, "invalid"])("reports unknown for stored type %s", async (contentType) => {
+			const runner = await create_bash_runner();
+			const nodeId = await get_seeded_node_id(runner, "/uploaded.md");
+			await runner.t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { contentType }));
+			const result = await runner.run({ command: "file uploaded.md; file -b --mime-type uploaded.md" });
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe("uploaded.md: unknown\nunknown\n");
+		});
+
+		test("keeps valid siblings when paths are missing or pending-deleted", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run({ command: "rm docs/tutorial.md" })).metadata.exitCode).toBe(0);
+			const missing = await runner.run({ command: "file missing.md docs/readme.md" });
+			const hidden = await runner.run({ command: "file docs/tutorial.md docs/readme.md" });
+			for (const result of [missing, hidden]) {
+				expect(result.metadata.exitCode).toBe(1);
+				expect(result.stdout).toBe("docs/readme.md: text/markdown;charset=utf-8\n");
+			}
+			expect(hidden.stderr).toBe(missing.stderr.replace("missing.md", "docs/tutorial.md"));
+		});
+
+		test("keeps private create and moved metadata in the pending view", async () => {
+			const runner = await create_bash_runner();
+			const result = await runner.run({
+				command:
+					"printf hello > draft.txt && mv docs/readme.md reports/renamed.txt >/dev/null && file draft.txt reports/renamed.txt",
+			});
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe(
+				"draft.txt: text/plain;charset=utf-8\nreports/renamed.txt: text/markdown;charset=utf-8\n",
+			);
+			expect((await get_seeded_node(runner, "/docs/readme.md")).contentType).toBe("text/markdown;charset=utf-8");
+		});
+
+		test("follows whole-file replacement types through Discard and Save", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/notes.txt", content: "plain text\n", contentType: "text/plain;charset=utf-8" }],
+			});
+			const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const copied = await runner.run({ command: "cp notes.txt docs/readme.md >/dev/null && file -b docs/readme.md" });
+			expect(copied.metadata.exitCode, copied.stderr).toBe(0);
+			expect(copied.stdout).toBe("text/plain;charset=utf-8\n");
+			expect((await get_seeded_node(runner, "/docs/readme.md")).contentType).toBe("text/markdown;charset=utf-8");
+			const discarded = await runner_as_user(runner).mutation(
+				api.files_pending_updates.discard_file_pending_update,
+				await pending_review_for_test(runner, nodeId),
+			);
+			expect(discarded._nay).toBeUndefined();
+			expect((await runner.run({ command: "file -b docs/readme.md" })).stdout).toBe("text/markdown;charset=utf-8\n");
+			expect((await runner.run({ command: "cp notes.txt docs/readme.md" })).metadata.exitCode).toBe(0);
+			await accept_pending_replacement_for_test(runner, nodeId);
+			expect((await runner.run({ command: "file -b docs/readme.md" })).stdout).toBe("text/plain;charset=utf-8\n");
+		});
+
+		test("keeps each user's private MIME at the same path", async () => {
+			const t = test_convex();
+			const seeded = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "file-team", workspaceName: "home" }),
+			);
+			const owner = await create_bash_runner({
+				shared: { t, seeded },
+				extraFiles: [
+					{ path: "/plain.txt", content: "plain\n", contentType: "text/plain;charset=utf-8" },
+					{ path: "/data.json", content: "{}\n", contentType: "application/json" },
+				],
+			});
+			const member = await t.run(async (ctx) => {
+				const userId = await ctx.db.insert("users", { clerkUserId: "file-type-member" });
+				await test_mocks_fill_db_with.membership(ctx, { userId, organizationName: "personal", workspaceName: "home" });
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId,
+					active: true,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId,
+					role: "member",
+					now: Date.now(),
+				});
+				return { userId, membershipId };
+			});
+			const other = await create_bash_runner({ shared: { t, seeded: { ...seeded, ...member } } });
+			expect((await owner.run({ command: "cp plain.txt private.bin" })).metadata.exitCode).toBe(0);
+			expect((await other.run({ command: "cp data.json private.bin" })).metadata.exitCode).toBe(0);
+
+			expect(
+				(await owner.run({ command: "file -b private.bin" })).stdout,
+				"file must report only the owner's private MIME",
+			).toBe("text/plain;charset=utf-8\n");
+			expect(
+				(await other.run({ command: "file -b private.bin" })).stdout,
+				"file must report only the other member's private MIME",
+			).toBe("application/json\n");
+		});
+
+		test("reads stored MIME from a stale text proposal without preparing it", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/stale.txt", content: "saved\n", contentType: "text/plain;charset=utf-8", nonCollaborative: true },
+				],
+			});
+			expect((await runner.run({ command: "printf proposed > stale.txt" })).metadata.exitCode).toBe(0);
+			const [proposal] = await list_pending_updates(runner);
+			if (!proposal?.content || proposal.content.base.kind !== "asset") throw new Error("Expected a text proposal");
+			const nodeId = await get_seeded_node_id(runner, "/stale.txt");
+			const saved = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
+				membershipId: runner.seeded.membershipId,
+				nodeId,
+				text: "new saved text\n",
+			});
+			expect(saved._nay).toBeUndefined();
+			expect((await get_seeded_node(runner, "/stale.txt")).assetId).not.toBe(proposal.content.base.assetId);
+			runner.runAction.mockClear();
+
+			expect(
+				(await runner.run({ command: "file -b stale.txt" })).stdout,
+				"a stale text proposal must keep the stored MIME visible",
+			).toBe("text/plain;charset=utf-8\n");
+			expect(runner.runAction, "file must not prepare a stale proposal").not.toHaveBeenCalled();
+			expect(await list_pending_updates(runner), "file must leave the stale proposal unchanged").toEqual([proposal]);
+		});
+
+		test("keeps MIME after a partial private Save retains the proposal", async () => {
+			vi.useFakeTimers();
+			const runner = await create_bash_runner();
+			expect((await runner.run({ command: "printf initial > partial.txt" })).metadata.exitCode).toBe(0);
+			const draft = await get_private_entry(runner, "/partial.txt");
+			await upsert_pending_update_for_test(runner, {
+				target: { kind: "private", id: draft.node._id },
+				stagedText: "selected\n",
+				unstagedText: "remaining\n",
+			});
+			const prepared = await get_private_entry(runner, "/partial.txt");
+			const asUser = runner_as_user(runner);
+			const originalAction = asUser.action;
+			let checkedBeforeCleanup = false;
+			// Observe the selected view between real Save steps.
+			vi.spyOn(asUser, "action").mockImplementation(async (ref, actionArgs?) => {
+				const result = await originalAction(ref, actionArgs);
+				const slot = await runner.t.run((ctx) =>
+					ctx.db.query("files_move_workspace_slots")
+						.withIndex("by_workspace", (q) =>
+							q.eq("organizationId", runner.seeded.organizationId).eq("workspaceId", runner.seeded.workspaceId),
+						)
+						.unique(),
+				);
+				if (!checkedBeforeCleanup && slot?.cohortId && slot.visibleView === "after") {
+					const raw = await runner.t.run((ctx) => ctx.db.get("files_pending_updates", draft.pendingUpdate._id));
+					if (raw?.target.kind === "private") {
+						checkedBeforeCleanup = true;
+						expect(
+							await runner.t.query(internal.files_nodes.get_path_by_id, {
+								organizationId: runner.seeded.organizationId,
+								workspaceId: runner.seeded.workspaceId,
+								visibilityUserId: runner.seeded.userId,
+								nodeId: draft.node._id,
+							}),
+							"the private ID must keep its published path before cleanup",
+						).toBe("/partial.txt");
+						expect(
+							(await runner.run({ command: "file -b partial.txt" })).stdout,
+							"publication must expose the saved MIME before the private header is cleaned up",
+						).toBe("text/plain;charset=utf-8\n");
+					}
+				}
+				return result;
+			});
+			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+				membershipId: runner.seeded.membershipId,
+				target: { kind: "private", id: draft.node._id },
+				pendingUpdateId: draft.pendingUpdate._id,
+				reviewedRevision: prepared.pendingUpdate.revision,
+			});
+			if (saved._nay || !("kind" in saved._yay)) throw new Error("Expected a queued private Save");
+			await test_finish_pending_update_run(asUser, saved._yay.runId, { stepwise: true });
+			expect(checkedBeforeCleanup, "the check must reach the published private-to-saved window").toBe(true);
+			const nodeId = await get_seeded_node_id(runner, "/partial.txt");
+			const remainder = await runner.t.run((ctx) => ctx.db.get("files_pending_updates", draft.pendingUpdate._id));
+			expect(remainder?.target).toEqual({ kind: "saved", id: nodeId });
+			expect(remainder?.createIntent).toBeUndefined();
+
+			expect(
+				(await runner.run({ command: "file -b partial.txt" })).stdout,
+				"partial Save must keep the published file's MIME visible",
+			).toBe("text/plain;charset=utf-8\n");
+		});
+
+		test("stops reporting a private MIME after real expiry", async () => {
+			vi.useFakeTimers();
+			const runner = await create_bash_runner();
+			expect((await runner.run({ command: "printf expiring > expiring.txt" })).metadata.exitCode).toBe(0);
+			expect((await runner.run({ command: "file -b expiring.txt" })).stdout).toBe("text/plain;charset=utf-8\n");
+			vi.setSystemTime(Date.now() + 5 * 60 * 60 * 1000);
+			await runner.t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				userId: runner.seeded.userId,
+			});
+
+			const expired = await runner.run({ command: "file -b expiring.txt" });
+			expect(expired.stdout, "an expired private file must expose no MIME").toBe("");
+			expect(expired.stderr).toBe("file: cannot stat 'expiring.txt': No such file or directory\n");
+			expect(expired.metadata.exitCode).toBe(1);
+		});
+
+		test("reports tmp failure without dropping a valid sibling", async () => {
+			const runner = await create_bash_runner();
+			const result = await runner.run({ command: "file /tmp/missing docs/readme.md" });
+			expect(result.metadata.exitCode).toBe(1);
+			expect(result.stdout).toBe("docs/readme.md: text/markdown;charset=utf-8\n");
+			expect(result.stderr).toBe("file: cannot stat '/tmp/missing': No such file or directory\n");
+		});
+
+		test("refuses app globs without dropping a valid sibling", async () => {
+			const runner = await create_bash_runner();
+			const result = await runner.run({ command: "file 'docs/*.md' source.pdf" });
+			expect(result.metadata.exitCode).toBe(1);
+			expect(result.stdout).toBe("source.pdf: application/pdf\n");
+			expect(result.stderr).toContain("app file glob patterns are not supported");
+		});
+
+		test("keeps tmp detection, links, and mixed app operands", async () => {
+			const runner = await create_bash_runner();
+			const setup = await runner.run({
+				command: "printf café > /tmp/unicode; ln -s /tmp/missing /tmp/link; printf hi > /tmp/-",
+			});
+			expect(setup.metadata.exitCode, setup.stderr).toBe(0);
+			const result = await runner.run({
+				command: "file -b --mime-type /tmp/unicode docs/readme.md /tmp/link; cd /tmp && file -- -",
+			});
+			expect(result.metadata.exitCode).toBe(2);
+			expect(result.stdout).toBe("text/plain\ntext/markdown\ninode/symlink\n");
+			const literal = await runner.run({ command: "file ./-" });
+			expect(literal.metadata.exitCode, literal.stderr).toBe(0);
+			expect(literal.stdout).toBe("./-: ASCII text\n");
+		});
+
+		test("does not load lazy transcripts when classifying synthetic files", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run({ command: "echo ready" })).metadata.exitCode).toBe(0);
+			runner.runQuery.mockClear();
+			const result = await runner.run({ command: "file /shells /shells/default /shells/default/transcript" });
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe(
+				"/shells: directory\n/shells/default: directory\n/shells/default/transcript: unknown\n",
+			);
+			expect(
+				runner.runQuery.mock.calls.filter(([ref]) => function_name_of(ref) === "ai_chat_files:read_shell_transcript"),
+			).toHaveLength(0);
+		});
+
+		test("works through nested shells, xargs, help, and which", async () => {
+			const runner = await create_bash_runner();
+			const result = await runner.run({
+				command:
+					"bash -lc 'file -b source.pdf'; sh -c 'file -b docs'; printf 'uploaded.md\\n' | xargs file -b; which file",
+			});
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe("application/pdf\ndirectory\napplication/octet-stream\n/usr/bin/file\n");
+			const help = await runner.run({ command: "file --help" });
+			expect(help.metadata.exitCode).toBe(0);
+			expect(help.stdout).toContain("App files report stored content types");
+		});
+
+		test.each(["", "-", "-- --help", "-i source.pdf", "--mime source.pdf", "-bi source.pdf"])(
+			"rejects missing operands and unsupported input: %s",
+			async (args) => {
+				const runner = await create_bash_runner();
+				const result = await runner.run({ command: `file ${args}` });
+				expect(result.metadata.exitCode).toBe(args === "-- --help" ? 1 : 2);
+				expect(result.stdout).toBe("");
+			},
+		);
+	});
+
 	test("caps the number of app files a single reader command fetches", async () => {
 		const { run, runAction } = await create_bash_runner();
 
@@ -381,6 +703,7 @@ describe("bash_run_command", () => {
 		const headOverCap = await run({ command: `head ${overCapFiles}` });
 		const wcOverCap = await run({ command: `wc -l ${overCapFiles}` });
 		const statOverCap = await run({ command: `stat ${overCapFiles}` });
+		const fileOverCap = await run({ command: `file ${overCapFiles}` });
 		const atCap = await run({ command: `cat ${atCapFiles}` });
 
 		expect(headOverCap.metadata.exitCode).toBe(2);
@@ -389,6 +712,8 @@ describe("bash_run_command", () => {
 		expect(wcOverCap.stderr).toContain(`wc: db-backed file reads are limited to ${bash_READER_FILE_OPERAND_MAX}`);
 		expect(statOverCap.metadata.exitCode).toBe(2);
 		expect(statOverCap.stderr).toContain(`stat: db-backed file reads are limited to ${bash_READER_FILE_OPERAND_MAX}`);
+		expect(fileOverCap.metadata.exitCode).toBe(2);
+		expect(fileOverCap.stderr).toContain(`file: db-backed file reads are limited to ${bash_READER_FILE_OPERAND_MAX}`);
 		expect(atCap.stderr).not.toContain("db-backed file reads are limited");
 	});
 

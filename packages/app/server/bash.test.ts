@@ -603,7 +603,7 @@ describe("bash_run_command", () => {
 		expect(readCalls).toHaveLength(1);
 	});
 
-	test.each(["cat", "readFile", "getEntry"] as const)(
+	test.each(["cat", "file", "readFile", "getEntry"] as const)(
 		"%s refuses cached data after a file grant ends",
 		async (door) => {
 			const test_db_files_mount = "/home/cloud-usr/w/cache-team/home";
@@ -654,22 +654,29 @@ describe("bash_run_command", () => {
 			const revoke = async () => {
 				expect((await asOwner.mutation(api.files_sharing.remove_node_share_grant, share))._nay).toBeUndefined();
 			};
-			if (door === "cat") {
+			if (door === "cat" || door === "file") {
 				const query = runner.runQuery.getMockImplementation()!;
 				let revoked = false;
 				runner.runQuery.mockImplementation(async (ref, args) => {
 					const result = await query(ref, args);
-					if (!revoked && function_name_of(ref) === "files_nodes:read_file_content_from_chunks") {
+					if (
+						!revoked &&
+						(door === "cat"
+							? function_name_of(ref) === "files_nodes:read_file_content_from_chunks"
+							: function_name_of(ref) === "files_nodes:get_visible_entry_by_path" && args.path === "/docs/readme.md")
+					) {
 						revoked = true;
 						await revoke();
 					}
 					return result;
 				});
 				const result = await runner.run({
-					command: `cat ${test_db_files_mount}/docs/readme.md; cat ${test_db_files_mount}/docs/readme.md`,
+					command: `${door} ${test_db_files_mount}/docs/readme.md; ${door} ${test_db_files_mount}/docs/readme.md`,
 				});
 				expect(revoked).toBe(true);
-				expect(result.stdout).toBe(readme_seed_content);
+				expect(result.stdout).toBe(
+					door === "cat" ? readme_seed_content : `${test_db_files_mount}/docs/readme.md: text/markdown;charset=utf-8\n`,
+				);
 				expect(result.metadata.exitCode).toBe(1);
 			} else {
 				const fs = new bash_DbFilesFs({
