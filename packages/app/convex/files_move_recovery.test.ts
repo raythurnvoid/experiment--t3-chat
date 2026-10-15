@@ -20,7 +20,11 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-async function fixture(t = test_convex({ transactionLimits: true }), organizationName = "test-organization") {
+async function fixture(
+	options: { pauseBeforeInitialStep?: boolean; additionalChildren?: number } = {},
+	t = test_convex({ transactionLimits: true }),
+	organizationName = "test-organization",
+) {
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName }));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 	const folder = async (path: string, parentId: Id<"files_nodes"> | "root" = "root") => {
@@ -34,9 +38,28 @@ async function fixture(t = test_convex({ transactionLimits: true }), organizatio
 	};
 	const sourceId = await folder("/source");
 	const targetId = await folder("/target");
-	// Initial work and the first action each stop at a real child page.
 	const childId = await folder("child", sourceId);
 	const grandchildId = await folder("grandchild", childId);
+	const additionalChildren = new Map<string, Id<"files_nodes">>();
+	for (let index = 0; index < (options.additionalChildren ?? 0); index++) {
+		if (index % 10 === 0) vi.setSystemTime(Date.now() + 60_000);
+		const name = `child-${index}`;
+		additionalChildren.set(name, await folder(name, sourceId));
+	}
+	let yielded = false;
+	if (options.pauseBeforeInitialStep) {
+		const overlay = await import("../server/files-pending-overlay.ts");
+		const canJoin = overlay.files_pending_overlay_db_can_join_step;
+		const join = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step");
+		// Yield at cohort admission, then use the real step driver.
+		join.mockImplementation(async (ctx, limitFactor) => {
+			const allowed = await canJoin(ctx, limitFactor);
+			if (limitFactor !== 4) return allowed;
+			yielded = true;
+			join.mockRestore();
+			return false;
+		});
+	}
 	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
@@ -61,7 +84,8 @@ async function fixture(t = test_convex({ transactionLimits: true }), organizatio
 		await t.mutation(internal.files_transfer.advance, { runId });
 	const cohortId = (await slot())?.cohortId;
 	if (!cohortId) throw new Error("The Move did not start a group");
-	return { t, db, asUser, cohortId, activityId, sourceId, targetId, childId, grandchildId };
+	if (options.pauseBeforeInitialStep) expect(yielded, "the fixture yields before the initial Move step").toBe(true);
+	return { t, db, asUser, cohortId, activityId, sourceId, targetId, childId, grandchildId, additionalChildren };
 }
 
 async function preparing_fixture() {
@@ -235,7 +259,8 @@ describe("Move cohort recovery", () => {
 	});
 
 	test("recovers a committed step after its action loses the reply", async () => {
-		const f = await fixture();
+		// Real child work keeps the first chain transaction before publication.
+		const f = await fixture({ pauseBeforeInitialStep: true, additionalChildren: 32 });
 		const before = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 		expect(before).toMatchObject({ phase: "staging", publishedAt: null });
 		const owned = (await f.t.run((ctx) => ctx.db.system.get(before.runJob!.id)))!;
@@ -326,6 +351,11 @@ describe("Move cohort recovery", () => {
 		const grandchild = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.grandchildId)))!;
 		expect(grandchild).toMatchObject({ parentId: f.childId, path: "/target/source/child/grandchild" });
 		expect(grandchild.moveCohortId).toBeUndefined();
+		for (const [name, nodeId] of f.additionalChildren) {
+			const child = (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
+			expect(child).toMatchObject({ parentId: f.sourceId, name, path: `/target/source/${name}` });
+			expect(child.moveCohortId).toBeUndefined();
+		}
 		expect(
 			await f.asUser.query(api.files_nodes.get_authorized_by_path, {
 				membershipId: f.db.membershipId,
@@ -439,7 +469,8 @@ describe("Move cohort recovery", () => {
 	test("recovers every lost group across more than two pages", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const fixtures: Awaited<ReturnType<typeof fixture>>[] = [];
-		for (let index = 0; index < 65; index++) fixtures.push(await fixture(t, `recovery-${index}`));
+		for (let index = 0; index < 65; index++)
+			fixtures.push(await fixture({ pauseBeforeInitialStep: true }, t, `recovery-${index}`));
 		const before = await t.run((ctx) => Promise.all(fixtures.map((f) => ctx.db.get("files_move_cohorts", f.cohortId))));
 		expect(
 			before.map((cohort) => ({ phase: cohort!.phase, publishedAt: cohort!.publishedAt })),
@@ -495,23 +526,26 @@ describe("Move cohort recovery", () => {
 				if (job.state.kind === "pending" && job._id !== owned._id) await ctx.scheduler.cancel(job._id);
 		});
 		let release!: () => void;
+		let entered!: () => void;
 		const blocked = new Promise<void>((resolve) => {
 			release = resolve;
+		});
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
 		});
 		const pendingUpdates = await import("./files_pending_updates.ts");
 		const prepare = pendingUpdates.files_pending_updates_action_prepare_content;
 		let starts = 0;
 		vi.spyOn(pendingUpdates, "files_pending_updates_action_prepare_content").mockImplementation(async (ctx, args) => {
 			starts++;
+			entered();
 			await blocked;
 			return await prepare(ctx, args);
 		});
 		try {
-			// Let scheduled handoffs run, then pause after the preparation fence commits.
-			for (let pass = 0; pass < 100 && starts === 0; pass++) {
-				vi.advanceTimersByTime(0);
-				await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId));
-			}
+			// Wait for the real preparation call after its fence commits.
+			vi.advanceTimersByTime(0);
+			await started;
 			const before = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 			const activity = (await f.t.run((ctx) => ctx.db.get("activities", f.activityId)))!;
 			expect(

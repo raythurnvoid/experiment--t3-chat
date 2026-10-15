@@ -794,6 +794,21 @@ describe("catalog lifecycle", () => {
 		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: userId });
 	}
 
+	async function yield_move_admission() {
+		const overlay = await import("../server/files-pending-overlay.ts");
+		const canJoin = overlay.files_pending_overlay_db_can_join_step;
+		const admission = { yielded: false };
+		// Yield once during setup. Later steps use the real guard and worker.
+		const pause = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, limitFactor) => {
+			const allowed = await canJoin(ctx, limitFactor);
+			if (limitFactor !== 4) return allowed;
+			admission.yielded = true;
+			pause.mockRestore();
+			return false;
+		});
+		return admission;
+	}
+
 	async function set_status(t: T, db: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> }, nodeId: Id<"files_nodes">) {
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		await reset_tree_write_limit(t, db.userId);
@@ -888,12 +903,19 @@ describe("catalog lifecycle", () => {
 		const doorsAfter = [...doorsBefore, `parent:${dst}:metadata.status`].sort();
 
 		const seen = new Set<string>();
+		let checkedBefore = false;
+		const admission = await yield_move_admission();
 		await reset_tree_write_limit(t, db.userId);
 		const moved = await test_move_nodes(t, asOwner, {
 			membershipId: db.membershipId,
 			itemIds: [a],
 			targetParentId: dst,
 			onStep: async () => {
+				if (admission.yielded && !checkedBefore) {
+					const cohort = await t.run(async (ctx) => await ctx.db.query("files_move_cohorts").first());
+					expect(cohort, "catalog checks start before publication").toMatchObject({ publishedAt: null, visibleView: "before" });
+					checkedBefore = true;
+				}
 				const rows = await visible_rows(t, scope);
 				seen.add(JSON.stringify(rows));
 				expect([JSON.stringify(before), JSON.stringify(after)]).toContain(JSON.stringify(rows));
@@ -902,6 +924,8 @@ describe("catalog lifecycle", () => {
 			},
 		});
 		expect(moved._nay).toBeUndefined();
+		expect(admission.yielded, "setup yields the initial Move join").toBe(true);
+		expect(checkedBefore).toBe(true);
 		expect(await visible_rows(t, scope)).toEqual(after);
 		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doorsAfter);
 		// No tagged row is left behind.
@@ -928,6 +952,7 @@ describe("catalog lifecycle", () => {
 		// writes, so it sits on another file. It shows from publication on; cleanup then untags it.
 		let draftAdded = false;
 		let published = false;
+		const admission = await yield_move_admission();
 		await reset_tree_write_limit(t, db.userId);
 		const moved = await test_move_nodes(t, asOwner, {
 			membershipId: db.membershipId,
@@ -936,6 +961,9 @@ describe("catalog lifecycle", () => {
 			onStep: async () => {
 				const view = await asOwner.query(api.files_tree.get_workspace_move_view, { membershipId: db.membershipId });
 				if (view?.cohortId && view.view === "before" && !draftAdded) {
+					expect(admission.yielded, "setup yields the initial Move join").toBe(true);
+					const cohort = await t.run(async (ctx) => await ctx.db.get("files_move_cohorts", view.cohortId!));
+					expect(cohort, "the after-only key is staged before publication").toMatchObject({ publishedAt: null, visibleView: "before" });
 					await test_run_with_flush(t, async (ctx) => {
 						await ctx.db.insert("files_metadata_docs", {
 							...metadata_doc(scope, other, { fieldPath: "metadata.draft" }),
@@ -1034,6 +1062,7 @@ describe("catalog lifecycle", () => {
 		const before = await visible_rows(t, scope);
 
 		let stopped = false;
+		const admission = await yield_move_admission();
 		await reset_tree_write_limit(t, db.userId);
 		const moved = await test_move_nodes(t, asOwner, {
 			membershipId: db.membershipId,
@@ -1046,6 +1075,9 @@ describe("catalog lifecycle", () => {
 					(await ctx.db.query("files_metadata_catalog").collect()).filter((row) => row.moveView?.view === "after"),
 				);
 				if (tagged.length === 0) return;
+				expect(admission.yielded, "setup yields the initial Move join").toBe(true);
+				const cohort = await t.run(async (ctx) => await ctx.db.get("files_move_cohorts", tagged[0]!.moveView!.cohortId));
+				expect(cohort, "Stop runs after staging and before publication").toMatchObject({ publishedAt: null, visibleView: "before" });
 				const run = await t.run(async (ctx) => await ctx.db.query("files_transfer_runs").first());
 				expect(await asOwner.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId: run!._id })).toEqual({
 					_yay: null,

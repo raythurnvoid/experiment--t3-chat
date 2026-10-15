@@ -772,7 +772,8 @@ export function test_spy_handler(
 	wrap: (handler: (ctx: MutationCtx, args: unknown) => Promise<null>, ctx: MutationCtx, args: unknown) => Promise<null>,
 ) {
 	const target = registered as { _handler: (ctx: MutationCtx, args: unknown) => Promise<null> };
-	const handler = target._handler;
+	// Keep the previous implementation. The next wrapper replaces the same mutable spy.
+	const handler = vi.isMockFunction(target._handler) ? target._handler.getMockImplementation()! : target._handler;
 	vi.spyOn(target, "_handler").mockImplementation(async (ctx, args) => await wrap(handler, ctx, args));
 }
 

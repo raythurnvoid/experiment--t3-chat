@@ -155,15 +155,20 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   saved headers, content, search chunks and every owner's pending overlay in small transactions.
   One transaction joins small exact work after flushing derived writes and checking its budget.
   A new group starts that work in the accepting transaction. A ready empty folder can publish
-  before the request returns. Only initial cohort work uses a one-quarter join budget and stops
-  at its first native page. Nested joins use the same budget as their outer call.
+  before the request returns. Only initial cohort work uses a one-quarter join budget.
+  Nested joins use the same budget as their outer call.
   Background calls keep the one-sixteenth budget.
   Both check all seven metrics after flushing. Tests include the final flush and keep 25% free.
   Owner work probes exact empty ranges before paging. Private-child, list-row and list-key ranges
   with at most eight small docs can finish without a native page. A ninth doc sends the whole
   range through native paging. Resumed pages also stay native. Other non-empty owner ranges keep
   native paging, with byte limits for metadata and fields. These small steps join only while the
-  shared budget allows it. Any native page ends the transaction, even an empty page.
+  shared budget allows it. Ordinary native pages run through the lean `files_move_pages` queries.
+  Each child has one page journal and shares the parent's transaction, writes and seven budgets.
+  The parent keeps all writes and flushes. It checks the shared budget after each page unit.
+  A private `paged` result ends the local unit. `parentPage` ends the transaction only when the
+  page ran in the parent. Review-input pages and media validation still use that parent boundary.
+  No page call uses a stale snapshot. Null-cursor drains see earlier parent tags and deletes.
   Heavy text preparation keeps its own step. `files_move_run.run` loads the content or media
   preparation helper with a literal `import()` only when needed. It calls the action helper
   locally, without another remote action call.
@@ -247,8 +252,8 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   actor checks still run at every step. A new transaction, including `advance_stage`, reads
   those facts again. Node access, policy, receipts, clocks, parent progress and Stop checks
   keep their current reads.
-  An empty indexed restricted-root range needs no native page. Every actual native
-  page still ends the transaction. Selected item, child and replacement producers queue their
+  An empty indexed restricted-root range needs no native page. Ordinary child pages can share
+  a transaction while its budget allows. Selected item, child and replacement producers queue their
   saved subtree ranges directly. The publication step commits the after view and next repair
   step together, then returns. Physical repair starts in a fresh transaction and keeps the slot.
 - Private subtree Discard checks the selected descendants in pages, then fences the approved roots in one small transaction. The unchanged unit clock protects that checked set. Activity counts the full unit when the roots close; cleanup continues after Stop. Discard's other final transactions count their reads, writes, bytes, and query ranges and roll back as `review_too_large` before exceeding the supported budget.

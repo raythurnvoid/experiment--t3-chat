@@ -66,7 +66,7 @@ test("new Move groups schedule the leaf action", async () => {
 	expect(await f.t.run((ctx) => ctx.db.get("activities", f.activityId))).toMatchObject({ status: "succeeded" });
 });
 
-test("a selected folder starts its child range during acceptance", async () => {
+test("a selected folder reads its child range during acceptance", async () => {
 	const f = await fixture(2, 33);
 	const ranges = await f.t.run((ctx) =>
 		ctx.db
@@ -74,16 +74,26 @@ test("a selected folder starts its child range during acceptance", async () => {
 			.withIndex("by_cohort_key", (q) => q.eq("cohortId", f.cohort._id).eq("key", `saved-children:${f.sourceId}`))
 			.unique(),
 	);
-	expect(ranges, "the item producer starts the selected saved subtree").toMatchObject({
+	expect(ranges, "acceptance reads both pages of the selected saved subtree").toMatchObject({
 		key: `saved-children:${f.sourceId}`,
 		range: { kind: "node", nodeId: f.sourceId },
-		status: "running",
+		status: "complete",
 	});
-	expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohort._id))).toMatchObject({
-		workPhase: "descendants",
-		pendingWorkCount: 33,
-	});
+	const nodes = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_move_cohort_nodes")
+			.withIndex("by_cohort_order", (q) => q.eq("cohortId", f.cohort._id))
+			.collect(),
+	);
+	expect(nodes.map((node) => node.nodeId).sort(), "acceptance reserves every exact child once").toEqual(
+		[f.sourceId, ...f.childIds].sort(),
+	);
 	await test_finish_transfer_run(f.asUser, f.runId);
+	for (const childId of f.childIds) {
+		const child = (await f.t.run((ctx) => ctx.db.get("files_nodes", childId)))!;
+		expect(child.parentId).toBe(f.sourceId);
+		expect(child.path).toBe(`/target/source/${child.name}`);
+	}
 });
 
 test("publication commits before physical repair", async () => {
@@ -261,7 +271,8 @@ test("a thrown transaction after progress aborts from the current step", async (
 });
 
 test("a thrown joined phase aborts from its last committed step", async () => {
-	const f = await fixture(2, 1);
+	// Keep descendant work for the action, where the joined transaction fault is installed.
+	const f = await fixture(2, 33);
 	let reachedJoinedPhase = false;
 	let entry = f.cohort;
 	let sourceEntry = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId)))!;

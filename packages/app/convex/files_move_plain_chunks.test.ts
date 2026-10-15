@@ -43,7 +43,11 @@ async function fixture() {
 		await f.asUser.mutation(api.files_metadata.set_entries, {
 			membershipId: f.db.membershipId,
 			fileNodeId: nodeId,
-			metadataYaml: "marker: yes",
+			// Real metadata pages keep a pause before publication, even when child pages join.
+			metadataYaml: [
+				"marker: yes",
+				...Array.from({ length: 127 }, (_, index) => `property-${index}: value-${index}`),
+			].join("\n"),
 		}),
 	).toEqual({ _yay: null });
 	await test_finish_saved_scope_jobs(f.t);
@@ -92,7 +96,10 @@ async function start_move(
 				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", started._yay.runId))
 				.first(),
 		);
-		if (cohort) return { ...started._yay, cohortId: cohort._id };
+		if (cohort) {
+			expect(cohort.publishedAt, "metadata pages leave a pre-publication pause").toBeNull();
+			return { ...started._yay, cohortId: cohort._id };
+		}
 		const run = await f.t.run((ctx) => ctx.db.get("files_transfer_runs", started._yay.runId));
 		const activity = await f.t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
 		if (replace && activity?.status === "awaiting_input") {

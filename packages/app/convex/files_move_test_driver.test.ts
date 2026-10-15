@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
+import type { MutationCtx } from "./_generated/server.js";
 import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
 import {
 	test_convex,
@@ -96,6 +97,23 @@ async function review_first_draft(f: Awaited<ReturnType<typeof fixture>>) {
 	})).toEqual({ _yay: null });
 	return started._yay;
 }
+
+test("Handler spies keep two installed wrappers", async () => {
+	const calls: string[] = [];
+	const registered = {
+		_handler: async (_ctx: MutationCtx, _args: unknown) => {
+			calls.push("original");
+			return null;
+		},
+	};
+	for (const name of ["first", "second"]) test_spy_handler(registered, async (handler, ctx, args) => {
+		calls.push(name);
+		expect(calls.filter(call => call === name), "Each installed handler wrapper runs once").toHaveLength(1);
+		return await handler(ctx, args);
+	});
+	expect(await registered._handler({} as MutationCtx, {})).toBeNull();
+	expect(calls).toEqual(["second", "first", "original"]);
+});
 
 test("Move completion wakes every owner page before the next Review", async () => {
 	const f = await fixture(9);
@@ -214,13 +232,25 @@ test("Review completion runs due overlay work before a deferred job without firi
 
 test("Move driver still drives Stop while a cohort owns the workspace", async () => {
 	const f = await fixture(1);
-	// A real child page leaves the Move unpublished for Stop.
+	// Enough real children leave the initial budget unfinished for Stop.
 	const child = await f.asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: f.db.membershipId,
 		parentId: f.sourceId,
 		path: "child",
 	});
 	if (child._nay) throw new Error(child._nay.message);
+	const children = [{ id: child._yay.nodeId, path: "/source/child" }];
+	for (let index = 0; index < 64; index++) {
+		if (index % 10 === 0) vi.setSystemTime(Date.now() + 60_000);
+		const path = `child-${index.toString().padStart(2, "0")}`;
+		const created = await f.asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: f.db.membershipId,
+			parentId: f.sourceId,
+			path,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		children.push({ id: created._yay.nodeId, path: `/source/${path}` });
+	}
 	const started = await f.asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: f.db.membershipId,
 		requestId: "stop-owned-cohort",
@@ -255,6 +285,9 @@ test("Move driver still drives Stop while a cohort owns the workspace", async ()
 	const keptChild = await f.t.run(ctx => ctx.db.get("files_nodes", child._yay.nodeId));
 	expect(keptChild?.path).toBe("/source/child");
 	expect(keptChild?.moveCohortId).toBeUndefined();
+	const keptChildren = await f.t.run(ctx => Promise.all(children.map(child => ctx.db.get("files_nodes", child.id))));
+	expect(keptChildren.map(child => child?.path)).toEqual(children.map(child => child.path));
+	expect(keptChildren.every(child => child?.moveCohortId === undefined)).toBe(true);
 });
 
 test.each(["Transfer", "Review"] as const)("%s driver finishes its owned Move before a waiting scope repair", async kind => {

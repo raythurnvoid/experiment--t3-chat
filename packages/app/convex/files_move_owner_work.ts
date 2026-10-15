@@ -1,6 +1,7 @@
 import { Result } from "common/errors-as-values-utils.ts";
-import type { GenericTableInfo, OrderedQuery } from "convex/server";
-import type { Doc, Id } from "./_generated/dataModel.js";
+import type { GenericTableInfo, OrderedQuery, PaginationResult } from "convex/server";
+import { internal } from "./_generated/api.js";
+import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import {
 	files_pending_overlay_db_can_join_step,
@@ -227,19 +228,22 @@ async function db_add_parent(
 async function db_owner_page<TableInfo extends GenericTableInfo>(
 	query: () => OrderedQuery<TableInfo>,
 	cursor: string | null,
-	options: { maximumBytesRead?: number; smallDocs?: boolean } = {},
+	readPage: () => Promise<PaginationResult<TableInfo["document"]>>,
+	options: { smallDocs?: boolean } = {},
 ) {
 	if (cursor === null) {
 		if (options.smallDocs) {
 			// Only docs with small fields opt in. The extra doc proves the whole range fits.
 			const page = await query().take(PAGE_SIZE + 1);
 			if (page.length === 0) return null;
-			if (page.length <= PAGE_SIZE) return { page, isDone: true, continueCursor: null, paged: false };
+			if (page.length <= PAGE_SIZE) return { page, isDone: true, continueCursor: null, paged: false, parentPage: false };
 		} else if (!(await query().first())) return null;
 	}
+	// The child owns the page journal; its reads still use the parent's transaction budget.
 	return {
-		...(await query().paginate({ cursor, numItems: PAGE_SIZE, maximumBytesRead: options.maximumBytesRead })),
+		...(await readPage()),
 		paged: true,
+		parentPage: false,
 	};
 }
 
@@ -258,7 +262,7 @@ export async function files_move_owner_work_db_collect_node(
 	if (record?.cohortId !== cohort._id)
 		return Result({ _nay: { name: "stopped", message: "This saved input changed." } });
 	// Remaining anchors keep their placement. Changed sources still discover affected owners.
-	if (record.role === "anchor") return Result({ _yay: { cursor: null, done: true, paged: false } });
+	if (record.role === "anchor") return Result({ _yay: { cursor: null, done: true, paged: false, parentPage: false } });
 	const range = await db_add_range(ctx, cohort._id, {
 		key: `source-owners:${record._id}`,
 		kind: "source_owners",
@@ -266,7 +270,8 @@ export async function files_move_owner_work_db_collect_node(
 		phase: "collect",
 		nodeRecordId: record._id,
 	});
-	if (range.status === "complete") return Result({ _yay: { cursor: range.cursor, done: true, paged: false } });
+	if (range.status === "complete")
+		return Result({ _yay: { cursor: range.cursor, done: true, paged: false, parentPage: false } });
 	if (range.cursor !== args.cursor)
 		return Result({ _nay: { name: "stopped", message: "This owner page already changed." } });
 	const cursor = args.cursor
@@ -275,18 +280,20 @@ export async function files_move_owner_work_db_collect_node(
 	const before = record.beforePlaceId ? await ctx.db.get("files_saved_places", record.beforePlaceId) : null;
 	const after = record.afterPlaceId ? await ctx.db.get("files_saved_places", record.afterPlaceId) : null;
 	let paginated = false;
-	// Complete small ranges may join. A native page still ends this transaction.
+	// Complete small ranges may join. A native page still ends this unit.
 	for (let joined = 0; cursor.phase < 9; joined++) {
 		if (joined > 0 && !(await files_pending_overlay_db_can_join_step(ctx, limitFactor))) break;
 		let isDone = true;
 		let continueCursor: string | null = null;
 		if (cursor.phase === 0) {
-			const page = await db_owner_page(
+			const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_pending_updates"]>>> = await db_owner_page(
 				() =>
 					ctx.db
 						.query("files_pending_updates")
 						.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", record.nodeId)),
 				cursor.page,
+				(): Promise<PaginationResult<Doc<"files_pending_updates">>> =>
+					ctx.runQuery(internal.files_move_pages.owner_proposals, { nodeId: record.nodeId, cursor: cursor.page }),
 			);
 			for (const row of page?.page ?? []) {
 				const added = await db_add_owner(ctx, cohort, row.userId, row.target);
@@ -297,10 +304,12 @@ export async function files_move_owner_work_db_collect_node(
 				paginated = page.paged;
 			}
 		} else if (cursor.phase === 1) {
-			const page = await db_owner_page(
+			const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_pending_hides"]>>> = await db_owner_page(
 				() =>
 					ctx.db.query("files_pending_hides").withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", record.nodeId)),
 				cursor.page,
+				(): Promise<PaginationResult<Doc<"files_pending_hides">>> =>
+					ctx.runQuery(internal.files_move_pages.owner_hides, { nodeId: record.nodeId, cursor: cursor.page }),
 			);
 			for (const row of page?.page ?? []) {
 				const added = await db_add_owner(ctx, cohort, row.userId, { kind: "saved", id: record.nodeId });
@@ -311,12 +320,14 @@ export async function files_move_owner_work_db_collect_node(
 				paginated = page.paged;
 			}
 		} else if (cursor.phase === 2) {
-			const page = await db_owner_page(
+			const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_pending_places"]>>> = await db_owner_page(
 				() =>
 					ctx.db
 						.query("files_pending_places")
 						.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", record.nodeId)),
 				cursor.page,
+				(): Promise<PaginationResult<Doc<"files_pending_places">>> =>
+					ctx.runQuery(internal.files_move_pages.owner_places, { nodeId: record.nodeId, cursor: cursor.page }),
 			);
 			for (const row of page?.page ?? []) {
 				const added = await db_add_owner(ctx, cohort, row.userId, row.target);
@@ -329,7 +340,7 @@ export async function files_move_owner_work_db_collect_node(
 		} else if (cursor.phase === 3 || cursor.phase === 4) {
 			const place = cursor.phase === 3 ? before : after;
 			if (place) {
-				const page = await db_owner_page(
+				const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_pending_places"]>>> = await db_owner_page(
 					() =>
 						ctx.db.query("files_pending_places").withIndex("by_org_ws_parent_name", (q) =>
 							q
@@ -342,6 +353,14 @@ export async function files_move_owner_work_db_collect_node(
 								.eq("name", place.name),
 						),
 					cursor.page,
+					(): Promise<PaginationResult<Doc<"files_pending_places">>> =>
+						ctx.runQuery(internal.files_move_pages.owner_slot_places, {
+							organizationId: cohort.organizationId,
+							workspaceId: cohort.workspaceId,
+							parentId: place.parentId,
+							name: place.name,
+							cursor: cursor.page,
+						}),
 				);
 				for (const row of page?.page ?? []) {
 					const claimant = await db_add_owner(ctx, cohort, row.userId, row.target);
@@ -355,7 +374,7 @@ export async function files_move_owner_work_db_collect_node(
 				}
 			}
 		} else if (cursor.phase === 5 && (before ?? after)?.kind === "folder") {
-			const page = await db_owner_page(
+			const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_pending_nodes"]>>> = await db_owner_page(
 				() =>
 					ctx.db
 						.query("files_pending_nodes")
@@ -368,6 +387,13 @@ export async function files_move_owner_work_db_collect_node(
 								.eq("state", "active"),
 						),
 				cursor.page,
+				(): Promise<PaginationResult<Doc<"files_pending_nodes">>> =>
+					ctx.runQuery(internal.files_move_pages.private_children, {
+						organizationId: cohort.organizationId,
+						workspaceId: cohort.workspaceId,
+						parentId: record.nodeId,
+						cursor: cursor.page,
+					}),
 				// Private nodes have one capped name; the other fields are IDs, flags, and numbers.
 				{ smallDocs: true },
 			);
@@ -380,7 +406,7 @@ export async function files_move_owner_work_db_collect_node(
 				paginated = page.paged;
 			}
 		} else if (cursor.phase === 6 && (before ?? after)?.kind === "folder") {
-			const page = await db_owner_page(
+			const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_pending_updates"]>>> = await db_owner_page(
 				() =>
 					ctx.db
 						.query("files_pending_updates")
@@ -388,6 +414,8 @@ export async function files_move_owner_work_db_collect_node(
 							q.eq("pendingMove.destParent.kind", "saved").eq("pendingMove.destParent.id", record.nodeId),
 						),
 				cursor.page,
+				(): Promise<PaginationResult<Doc<"files_pending_updates">>> =>
+					ctx.runQuery(internal.files_move_pages.incoming_moves, { nodeId: record.nodeId, cursor: cursor.page }),
 			);
 			for (const row of page?.page ?? []) {
 				const added = await db_add_owner(ctx, cohort, row.userId, row.target);
@@ -398,7 +426,7 @@ export async function files_move_owner_work_db_collect_node(
 				paginated = page.paged;
 			}
 		} else if (cursor.phase === 7 || cursor.phase === 8) {
-			const page = await db_owner_page(
+			const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_pending_node_publish_receipts"]>>> = await db_owner_page(
 				() =>
 					ctx.db.query("files_pending_node_publish_receipts").withIndex("by_savedNode", (q) =>
 						q
@@ -407,6 +435,12 @@ export async function files_move_owner_work_db_collect_node(
 							.eq("moveView.view", cursor.phase === 7 ? undefined : "after"),
 					),
 				cursor.page,
+				(): Promise<PaginationResult<Doc<"files_pending_node_publish_receipts">>> =>
+					ctx.runQuery(internal.files_move_pages.publish_receipts, {
+						nodeId: record.nodeId,
+						cohortId: cursor.phase === 7 ? null : cohort._id,
+						cursor: cursor.page,
+					}),
 			);
 			for (const row of page?.page ?? []) {
 				const held = await db_reserve(ctx, cohort, { kind: "receipt", id: row._id }, "receipt", row.userId);
@@ -433,7 +467,7 @@ export async function files_move_owner_work_db_collect_node(
 	const next = JSON.stringify(cursor);
 	await ctx.db.patch("files_move_work_ranges", range._id, { cursor: next, status: "running" });
 	if (cursor.phase === 9) await db_complete_range(ctx, range);
-	return Result({ _yay: { cursor: next, done: cursor.phase === 9, paged: paginated } });
+	return Result({ _yay: { cursor: next, done: cursor.phase === 9, paged: paginated, parentPage: false } });
 }
 
 export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx, args: Args, limitFactor: 4 | 16 = 16) {
@@ -484,7 +518,7 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 			}
 		}
 		await ctx.db.patch("files_move_owner_work", work._id, { status: "planned" });
-		return Result({ _yay: { done: false, paged: false } });
+		return Result({ _yay: { done: false, paged: false, parentPage: false } });
 	}
 	// Each probe below uses the same range as its page.
 	const private_children = ({ userId, parent }: ParentRange) =>
@@ -527,7 +561,7 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 	for (let joined = 0; range && cursor.page === null; joined++) {
 		if (joined > 0 && !(await files_pending_overlay_db_can_join_step(ctx, limitFactor))) {
 			await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
-			return Result({ _yay: { done: false, paged: false } });
+			return Result({ _yay: { done: false, paged: false, parentPage: false } });
 		}
 		const r = range.range;
 		const first =
@@ -547,14 +581,26 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 		range = await db_next_range(ctx, cohort._id, "collect");
 		cursor = parse(range);
 	}
-	if (!range) return Result({ _yay: { done: true, paged: false } });
+	if (!range) return Result({ _yay: { done: true, paged: false, parentPage: false } });
 	let isDone: boolean;
 	let continueCursor: string | null;
 	let paged = true;
 	if (range.range.kind === "parent") {
 		if (cursor.phase === 0) {
 			const parent = range.range;
-			const page = await db_owner_page(() => private_children(parent), cursor.page, { smallDocs: true });
+			const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_pending_nodes"]>>> = await db_owner_page(
+				() => private_children(parent),
+				cursor.page,
+				(): Promise<PaginationResult<Doc<"files_pending_nodes">>> =>
+					ctx.runQuery(internal.files_move_pages.owner_private_children, {
+						organizationId: cohort.organizationId,
+						workspaceId: cohort.workspaceId,
+						userId: parent.userId,
+						parent: parent.parent,
+						cursor: cursor.page,
+					}),
+				{ smallDocs: true },
+			);
 			for (const row of page?.page ?? []) {
 				const added = await db_add_owner(ctx, cohort, row.userId, { kind: "private", id: row._id });
 				if (added._nay) return added;
@@ -563,7 +609,13 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 			continueCursor = page?.continueCursor ?? null;
 			paged = page?.paged ?? false;
 		} else {
-			const page = await moved_children(range.range).paginate({ cursor: cursor.page, numItems: PAGE_SIZE });
+			const page: PaginationResult<Doc<"files_pending_updates">> = await ctx.runQuery(internal.files_move_pages.owner_incoming_moves, {
+				organizationId: cohort.organizationId,
+				workspaceId: cohort.workspaceId,
+				userId: range.range.userId,
+				parent: range.range.parent,
+				cursor: cursor.page,
+			});
 			for (const row of page.page) {
 				const added = await db_add_owner(ctx, cohort, row.userId, row.target);
 				if (added._nay) return added;
@@ -574,7 +626,14 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 		if (isDone) cursor.phase++;
 		if (cursor.phase === 2) await db_complete_range(ctx, range);
 	} else if (range.range.kind === "prefix") {
-		const page = await prefix_places(range.range).paginate({ cursor: cursor.page, numItems: PAGE_SIZE });
+		const page: PaginationResult<Doc<"files_pending_places">> = await ctx.runQuery(internal.files_move_pages.owner_prefix_places, {
+			organizationId: cohort.organizationId,
+			workspaceId: cohort.workspaceId,
+			userId: range.range.userId,
+			prefix: range.range.prefix,
+			prefixEnd: path_tree_prefix_upper_bound(range.range.prefix),
+			cursor: cursor.page,
+		});
 		for (const row of page.page) {
 			const added = await db_add_owner(ctx, cohort, row.userId, row.target);
 			if (added._nay) return added;
@@ -584,7 +643,7 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 	} else throw should_never_happen("Unexpected owner closure range", { rangeId: range._id });
 	await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
 	// New owners must return through the queued-owner check before closure can finish.
-	return Result({ _yay: { done: false, paged } });
+	return Result({ _yay: { done: false, paged, parentPage: false } });
 }
 
 async function db_stage_pending_scope(
@@ -599,7 +658,7 @@ async function db_stage_pending_scope(
 	const work = await ctx.db.get("files_move_owner_work", args.ownerWorkId);
 	if (work?.cohortId !== cohort._id)
 		return Result({ _nay: { name: "stopped", message: "This pending scope changed." } });
-	if (!work.pendingUpdateId) return Result({ _yay: { cursor: null, done: true, paged: false } });
+	if (!work.pendingUpdateId) return Result({ _yay: { cursor: null, done: true, paged: false, parentPage: false } });
 	const proposal = await ctx.db.get("files_pending_updates", work.pendingUpdateId);
 	if (
 		!proposal ||
@@ -616,7 +675,7 @@ async function db_stage_pending_scope(
 		.withIndex("by_cohort_proposal", (q) => q.eq("cohortId", cohort._id).eq("pendingUpdateId", proposal._id))
 		.unique();
 	// The selected content producer already seals these families, including a partial remainder.
-	if (item?.contentId) return Result({ _yay: { cursor: null, done: true, paged: false } });
+	if (item?.contentId) return Result({ _yay: { cursor: null, done: true, paged: false, parentPage: false } });
 	const after = { cohortId: cohort._id, view: "after" as const };
 	const saved =
 		work.target.kind === "saved" ? await files_saved_placement_db_get_node(ctx.db, work.target.id, after) : null;
@@ -648,12 +707,11 @@ async function db_stage_pending_scope(
 						q.eq("pendingUpdateId", proposal._id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 					);
 	if (args.cursor === null && !(await query().first()))
-		return Result({ _yay: { cursor: null, done: true, paged: false } });
-	const page = await query().paginate({
-		cursor: args.phase === "pending_plain" ? args.cursor : null,
-		numItems: PAGE_SIZE,
-		maximumBytesRead: args.phase === "pending_metadata" ? 1024 * 1024 : undefined,
-	});
+		return Result({ _yay: { cursor: null, done: true, paged: false, parentPage: false } });
+	const page: PaginationResult<Doc<"files_plain_text_chunks"> | Doc<"files_metadata_docs">> =
+		args.phase === "pending_plain"
+			? await ctx.runQuery(internal.files_move_pages.pending_chunks, { pendingUpdateId: proposal._id, cursor: args.cursor })
+			: await ctx.runQuery(internal.files_move_pages.pending_metadata, { pendingUpdateId: proposal._id, cursor: null });
 	for (const row of page.page) {
 		if (row.sourceKind !== "pending" || row.userId !== work.userId)
 			return Result({ _nay: { name: "move_changed", message: "Pending content changed." } });
@@ -688,6 +746,7 @@ async function db_stage_pending_scope(
 			cursor: page.isDone || args.phase === "pending_metadata" ? null : page.continueCursor,
 			done: page.isDone,
 			paged: true,
+			parentPage: false,
 		},
 	});
 }
@@ -699,7 +758,7 @@ export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Arg
 	const checked = await db_get_cohort(ctx, args, "owners_stage");
 	if (checked._nay) return checked;
 	const range = await db_next_range(ctx, args.cohortId, "stage");
-	if (!range) return Result({ _yay: { done: true, paged: false } });
+	if (!range) return Result({ _yay: { done: true, paged: false, parentPage: false } });
 	if (!range.ownerWorkId) throw should_never_happen("Owner stage range has no owner", { rangeId: range._id });
 	const cursor = range.cursor
 		? (JSON.parse(range.cursor) as {
@@ -708,6 +767,7 @@ export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Arg
 			})
 		: { phase: "headers" as const, page: null };
 	let paged = false;
+	let parentPage = false;
 	let complete = false;
 	// Small sub-phases join within the shared budget. A native page ends the step.
 	for (let joined = 0; !paged && !complete; joined++) {
@@ -725,6 +785,7 @@ export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Arg
 			});
 			if (staged._nay) return staged;
 			paged = staged._yay.paged;
+			parentPage = staged._yay.parentPage;
 			cursor.page = staged._yay.cursor;
 			if (staged._yay.done) cursor.phase = cursor.phase === "pending_plain" ? "pending_metadata" : "lists";
 		} else {
@@ -735,6 +796,7 @@ export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Arg
 					: await files_pending_overlay_db_stage_owner_fields(ctx, pageArgs);
 			if (staged._nay) return staged;
 			paged = staged._yay.paged;
+			parentPage = staged._yay.parentPage;
 			cursor.page = staged._yay.cursor;
 			if (staged._yay.done) {
 				if (cursor.phase === "fields") {
@@ -749,7 +811,9 @@ export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Arg
 	}
 	await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
 	// With no native page, the same check as the next step can end the phase now.
-	return Result({ _yay: { done: complete && !paged && !(await db_next_range(ctx, args.cohortId, "stage")), paged } });
+	return Result({
+		_yay: { done: complete && !paged && !(await db_next_range(ctx, args.cohortId, "stage")), paged, parentPage },
+	});
 }
 
 async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort") {
@@ -762,14 +826,14 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 		range: { kind: "cohort" },
 		phase: mode,
 	});
-	if (range.status === "complete") return Result({ _yay: { done: true, paged: false } });
+	if (range.status === "complete") return Result({ _yay: { done: true, paged: false, parentPage: false } });
 	const cursor = range.cursor
 		? (JSON.parse(range.cursor) as { phase: number; view: "before" | "after"; page: string | null })
 		: { phase: 0, view: "before" as const, page: null };
 	const keep = mode === "finish" ? "after" : "before";
 	let done = false;
 	let paginated = false;
-	// Empty and small cleanup ranges share a step. Any native page ends the transaction.
+	// Empty and small cleanup ranges share a step. Any native page ends the unit.
 	while (cursor.phase < 8) {
 		if (cursor.phase < 5) {
 			// Remove old field joins before removing their places. Promotion keeps native IDs and time.
@@ -783,27 +847,39 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 				] as const
 			)[cursor.phase]!;
 			if (table === "files_pending_review_facts") {
-				const page = await db_owner_page(
+				const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_pending_review_facts"]>>> = await db_owner_page(
 					() =>
 						ctx.db
 							.query(table)
 							.withIndex("by_cohort_view", (q) => q.eq("cohortId", cohort._id).eq("view", cursor.view)),
 					null,
+					(): Promise<PaginationResult<Doc<"files_pending_review_facts">>> =>
+						ctx.runQuery(internal.files_move_pages.owner_review_facts, {
+							cohortId: cohort._id,
+							view: cursor.view,
+							cursor: null,
+						}),
 				);
 				for (const row of page?.page ?? []) {
 					if (cursor.view === keep) await ctx.db.patch(table, row._id, { cohortId: null, view: "normal" });
 					else await ctx.db.delete(table, row._id);
 				}
-				if (page && !page.isDone) return Result({ _yay: { done: false, paged: true } });
+				if (page && !page.isDone) return Result({ _yay: { done: false, paged: true, parentPage: false } });
 				paginated = page?.paged ?? false;
 			} else {
-				const page = await db_owner_page(
+				const page: Awaited<ReturnType<typeof db_owner_page<DataModel[typeof table]>>> = await db_owner_page(
 					() =>
 						ctx.db
 							.query(table)
 							.withIndex("by_move_view", (q) => q.eq("moveView.cohortId", cohort._id).eq("moveView.view", cursor.view)),
 					null,
-					{ maximumBytesRead: 1024 * 1024 },
+					(): Promise<PaginationResult<Doc<typeof table>>> =>
+						ctx.runQuery(internal.files_move_pages.owner_cleanup, {
+							cohortId: cohort._id,
+							family: table,
+							view: cursor.view,
+							cursor: null,
+						}),
 				);
 				for (const row of page?.page ?? []) {
 					if (cursor.view === keep) await ctx.db.patch(table, row._id, { moveView: undefined });
@@ -819,7 +895,7 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 					if (slot?.cohortId !== cohort._id) throw should_never_happen("Owner cleanup lost its workspace slot", args);
 					await files_saved_placement_db_bump_search_generation(ctx, cohort);
 				}
-				if (page && !page.isDone) return Result({ _yay: { done: false, paged: true } });
+				if (page && !page.isDone) return Result({ _yay: { done: false, paged: true, parentPage: false } });
 				paginated = page?.paged ?? false;
 			}
 			if (cursor.view === "before") cursor.view = "after";
@@ -828,9 +904,11 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 				cursor.view = "before";
 			}
 		} else if (cursor.phase === 5) {
-			const page = await db_owner_page(
+			const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_move_owner_list_keys"]>>> = await db_owner_page(
 				() => ctx.db.query("files_move_owner_list_keys").withIndex("by_cohort", (q) => q.eq("cohortId", cohort._id)),
 				null,
+				(): Promise<PaginationResult<Doc<"files_move_owner_list_keys">>> =>
+					ctx.runQuery(internal.files_move_pages.owner_list_keys, { cohortId: cohort._id, cursor: null }),
 				// These claims contain only IDs and the all/own/chat list key.
 				{ smallDocs: true },
 			);
@@ -854,9 +932,11 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 				break;
 			} else cursor.phase++;
 		} else {
-			const page = await db_owner_page(
+			const page: Awaited<ReturnType<typeof db_owner_page<DataModel["files_move_owner_work"]>>> = await db_owner_page(
 				() => ctx.db.query("files_move_owner_work").withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id)),
 				cursor.page,
+				(): Promise<PaginationResult<Doc<"files_move_owner_work">>> =>
+					ctx.runQuery(internal.files_move_pages.owner_work, { cohortId: cohort._id, cursor: cursor.page }),
 			);
 			for (const work of page?.page ?? [])
 				await ctx.db.patch("files_move_owner_work", work._id, { status: "materialized" });
@@ -872,7 +952,7 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 		if (paginated) break;
 	}
 	await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
-	return Result({ _yay: { done, paged: paginated } });
+	return Result({ _yay: { done, paged: paginated, parentPage: false } });
 }
 
 export async function files_move_owner_work_db_finish(ctx: MutationCtx, args: Args) {
