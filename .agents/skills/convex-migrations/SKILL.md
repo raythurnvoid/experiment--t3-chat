@@ -243,6 +243,8 @@ vp env exec pnpm --dir packages/app exec convex run "migrations:run_<migration_n
 
 - Preview the live docs first with `vp env exec pnpm --dir packages/app exec convex data` and/or a dedicated `convex run` helper before deleting or backfilling.
 - The component status reports `isDone` for the target migration; the named runner's first response is not completion proof.
+- Test batch sizes against the current migration function and its exact index range. Use consecutive heavy docs from supported writes. Tests with a different mix of doc kinds do not prove the current batch is safe. Measure reads and writes, with clear room below the platform limits.
+- Use only docs in that range for remaining-work counts. If its total is unknown, omit the remaining count and finish-time estimate. Report live docs per second separately from local read-byte savings. If the job finishes before the faster code is deployed, record that no live after-rate was measured. Do not rerun completed work to get one.
 - Schema compiles with tightened shape.
 - Updated write paths no longer write legacy field.
 - For a cross-table copy, source and destination counts match the intended mapping and a focused audit verifies every copied row plus foreign references. Do not use a dry-run summary as this proof.

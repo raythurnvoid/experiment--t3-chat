@@ -63,6 +63,7 @@ For a one-shot push in this repo, run `convex dev --once` with `--typecheck disa
 - One exception, for local QA of your own edits (a one-shot push or the watcher): every uncommitted change in `git status` must be yours. Check before each push, and stop the watcher as soon as another agent's change shows up.
 - Never push while another agent has uncommitted work in the same checkout.
 - Check the live migration phase before each push. A clean pushed commit can still predate a live migration from another task. Keep that phase's schema and writers in the source you push. If an index or migration export would disappear without a planned cutover, stop and agree on one source pin with the owner. Preserve its data and durable cursors.
+- During a read-only audit, normal coding, tests and app QA may continue when current writers use the new form. Reserve only the audit's test data. Coordinate backend pushes with the rollout owner. Compatible pushes must keep active audit functions, indexes and schema. Limit any pause in app writes to the exact check that needs it.
 - When a schema change adds a field that a return validator must accept or strip, the validator or strip fix must be live before any backfill writes that field. Otherwise every read that returns those docs fails with "Unexpected field".
 - Run a backfill of new fields only after the code that reads or strips them is live. A reader whose results depend on the backfilled data (for example a new index query) goes live only after the backfill has finished, or it shows empty results.
 
