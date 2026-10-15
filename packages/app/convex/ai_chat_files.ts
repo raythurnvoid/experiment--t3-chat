@@ -1,6 +1,8 @@
 import { vOnCompleteArgs, vWorkId, Workpool, type WorkId } from "@convex-dev/workpool";
 import {
 	ai_chat_files_db_get_invocation_membership,
+	ai_chat_files_db_get_door_membership as db_get_door_membership,
+	ai_chat_files_db_list_invocation_transfers,
 	ai_chat_files_db_get_job_row as db_get_job_row,
 	type ai_chat_files_BashJobRow as BashJobRow,
 	ai_chat_files_db_check_bash_job_worker as db_check_bash_job_worker,
@@ -70,6 +72,7 @@ import {
 import { files_nodes_db_plan_private_node_by_path } from "./files_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes_db.ts";
+import { files_type_queries_db_authorize, files_type_queries_request_validator } from "./files_type_queries.ts";
 import {
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_STOPPED,
@@ -81,6 +84,7 @@ import {
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { files_type_query_request_matches } from "../server/files-type-query.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -1483,6 +1487,14 @@ export const save_bash_job_copy_checkpoint = internalMutation({
 		)
 			return Result({ _nay: { name: "invalid_input", message: "Invalid Bash Copy checkpoint." } });
 		const previous = invocation.job.copy;
+		const find = invocation.job.find;
+		if (
+			find &&
+			(find.phase !== "delivering" ||
+				find.workId !== args.workId ||
+				args.checkpoint.commandNumber <= find.commandNumber)
+		)
+			return Result({ _nay: { name: "stale_job", message: "This Bash find result has not been delivered." } });
 		if (previous && previous.phase !== "delivering") {
 			// A lost reply sends the same input again. Compare only the fields the worker sent,
 			// because this door set the counters and the deadline itself.
@@ -1519,6 +1531,7 @@ export const save_bash_job_copy_checkpoint = internalMutation({
 		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
 			job: {
 				...invocation.job,
+				find: undefined,
 				copy: {
 					...args.checkpoint,
 					input: { ...args.input, ready: false, cursor: 0, startedAt: Date.now(), lastSourceHash: null },
@@ -2020,49 +2033,247 @@ export const requeue_bash_job_copy = internalMutation({
 	},
 });
 
-/**
- * The fence for the internal doors the Bash worker calls with a passed `userId`. The caller must
- * own the thread and be an active member of its workspace with `content.read`. Each door then
- * checks the doc it reads against that thread and workspace.
- */
-async function db_get_door_membership(
+async function db_bash_job_find_query(
 	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: Id<"users">;
-		threadId: Id<"ai_chat_threads">;
-	},
+	invocation: BashJobRow,
+	queryId: Id<"files_type_queries">,
 ) {
-	const membership = await ctx.db
-		.query("organizations_workspaces_users")
-		.withIndex("by_user_organization_workspace_active", (q) =>
-			q
-				.eq("userId", args.userId)
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("active", true),
-		)
-		.first();
-	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
-	const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+	const query = await ctx.db.get("files_type_queries", queryId);
+	const source = query?.agentSource;
 	if (
-		!thread ||
-		thread.deletingAt !== undefined ||
-		thread.copyingAt !== undefined ||
-		thread.createdBy !== args.userId ||
-		thread.organizationId !== membership.organizationId ||
-		thread.workspaceId !== membership.workspaceId
+		!query ||
+		query.userId !== invocation.userId ||
+		!source ||
+		source.userId !== invocation.userId ||
+		source.organizationId !== invocation.organizationId ||
+		source.workspaceId !== invocation.workspaceId ||
+		source.threadId !== invocation.threadId ||
+		source.membershipId !== invocation.membershipId ||
+		source.membershipLifetime !== invocation.membershipLifetime ||
+		source.run != null ||
+		!(await files_type_queries_db_authorize(ctx, query))
 	)
-		return Result({ _nay: { message: "Unauthorized" } });
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth: { id: args.userId },
-		membership,
-		permission: "content.read",
-	});
-	if (authorized._nay) return authorized;
-	return Result({ _yay: membership });
+		return null;
+	return query;
 }
+
+async function db_bash_job_find_deadline(ctx: QueryCtx | MutationCtx, invocation: BashJobRow) {
+	const find = invocation.job.find;
+	if (!find || find.phase !== "waiting") return null;
+	const query = await db_bash_job_find_query(ctx, invocation, find.queryId);
+	if (!query || query.state === "canceled") return null;
+	return Math.min(
+		query.expiresAt,
+		invocation._creationTime + BASH_JOB_LIFETIME_MS + (invocation.job.excludedCopyWaitMs ?? 0),
+	);
+}
+
+/** Only a plain command uses this checkpoint. Its expanded arguments are never run again. */
+export const stage_bash_job_find = internalMutation({
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		workId: vWorkId,
+		request: files_type_queries_request_validator,
+		checkpoint: app_convex_schema.tables.ai_chat_bash_invocations.validator.fields.job.fields.find.members[0],
+		resume: v.object({
+			script: v.string(),
+			commandNumber: v.number(),
+			launchedJobNumbers: v.array(v.number()),
+			shellState: bash_shell_state_validator,
+			cwd: v.string(),
+			cwdTarget: v.union(files_pending_target_validator, v.null()),
+		}),
+		output: v.object({ stdout: v.string(), stderr: v.string() }),
+		liveOutput: v.union(ai_chat_bash_job_live_output_validator, v.null()),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker_or_cancel(ctx, args);
+		if (checked._nay) return checked;
+		const invocation = checked._yay;
+		const query = await db_bash_job_find_query(ctx, invocation, args.checkpoint.queryId);
+		if (!query || query.state === "canceled" || query.expiresAt <= Date.now())
+			return Result({ _nay: { message: "File search unavailable" } });
+		if (!files_type_query_request_matches(query, args.request) || query.rootPath !== args.checkpoint.dbPrefix)
+			return Result({ _nay: { message: "The file search changed. Rerun find without --cursor." } });
+		if (
+			!Number.isSafeInteger(args.checkpoint.commandNumber) ||
+			args.checkpoint.commandNumber < 0 ||
+			args.resume.commandNumber !== args.checkpoint.commandNumber + 1 ||
+			invocation.transferDeadlineAt <= Date.now() ||
+			new TextEncoder().encode(args.resume.script).byteLength > BASH_JOB_SCRIPT_MAX_BYTES ||
+			new TextEncoder().encode(JSON.stringify(args.resume.shellState)).byteLength > BASH_JOB_SHELL_STATE_MAX_BYTES
+		)
+			return Result({ _nay: { name: "invalid_input", message: "Invalid Bash find checkpoint." } });
+		const previous = invocation.job.find;
+		if (previous?.phase === "waiting") {
+			if (
+				compareValues(previous, args.checkpoint) === 0 &&
+				invocation.job.resumeScript === args.resume.script &&
+				invocation.job.resumeCommandNumber === args.resume.commandNumber &&
+				compareValues(invocation.job.resumeLaunchedJobNumbers, args.resume.launchedJobNumbers) === 0 &&
+				compareValues(invocation.job.shellState, args.resume.shellState) === 0 &&
+				invocation.job.startCwd === args.resume.cwd &&
+				compareValues(invocation.job.startCwdTarget, args.resume.cwdTarget) === 0
+			)
+				return Result({ _yay: null });
+			return Result({
+				_nay: { name: "request_changed", message: "This Bash job already has another find checkpoint." },
+			});
+		}
+		if (previous && (previous.workId !== args.workId || args.checkpoint.commandNumber <= previous.commandNumber))
+			return Result({ _nay: { name: "stale_job", message: "This Bash find result belongs to another worker." } });
+		const copy = invocation.job.copy;
+		if (
+			copy &&
+			(copy.phase !== "delivering" ||
+				copy.workId !== args.workId ||
+				args.checkpoint.commandNumber <= copy.commandNumber)
+		)
+			return Result({ _nay: { name: "stale_job", message: "This Bash Copy result has not been delivered." } });
+		if (copy)
+			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_bash_job_copy_pages, {
+				invocationId: invocation._id,
+				commandNumber: copy.commandNumber,
+			});
+		const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
+		if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
+		await ai_chat_files_db_append_shell_transcript({
+			ctx,
+			shell,
+			text: `$ [${new Date().toISOString()}] job ${invocation.job.jobNumber} paused in shell ${shell.name}\n${args.output.stdout}\n${args.output.stderr}`,
+		});
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+			job: {
+				...invocation.job,
+				find: args.checkpoint,
+				copy: undefined,
+				resumeScript: args.resume.script,
+				resumeCommandNumber: args.resume.commandNumber,
+				resumeLaunchedJobNumbers: args.resume.launchedJobNumbers,
+				shellState: args.resume.shellState,
+				startCwd: args.resume.cwd,
+				startCwdTarget: args.resume.cwdTarget,
+				liveOutput: args.liveOutput ?? undefined,
+			},
+		});
+		return Result({ _yay: null });
+	},
+});
+
+async function db_requeue_bash_job_find(args: { ctx: MutationCtx; invocation: BashJobRow; now: number }) {
+	const { ctx, invocation, now } = args;
+	if (invocation.job.find?.phase !== "waiting" || invocation.job.workId === null) return false;
+	if ((await db_check_bash_job_worker(ctx, { invocationId: invocation._id, workId: invocation.job.workId }))._nay)
+		return false;
+	const deadlineAt = await db_bash_job_find_deadline(ctx, invocation);
+	if (deadlineAt === null || deadlineAt <= now) return false;
+	const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+	if (!activity) return false;
+	const workerGeneration = invocation.job.workerGeneration + 1;
+	const workId = await ai_chat_bash_jobs_workpool.enqueueAction(
+		ctx,
+		internal.bash.run_job,
+		{ invocationId: invocation._id, workerGeneration },
+		{
+			onComplete: internal.ai_chat_files.handle_bash_job_complete,
+			context: { invocationId: invocation._id },
+			runAfter: 2_000,
+		},
+	);
+	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+	const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
+		deadlineAt,
+		internal.ai_chat_files.timeout_bash_job,
+		{ invocationId: invocation._id, expectedDeadlineAt: deadlineAt },
+	);
+	await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+		deadlineAt,
+		job: { ...invocation.job, workId, workerGeneration, watchdogId },
+	});
+	await ctx.db.patch("activities", activity._id, { status: "queued", deadlineAt, updatedAt: now });
+	return true;
+}
+
+export const requeue_bash_job_find = internalMutation({
+	args: { invocationId: v.id("ai_chat_bash_invocations"), workId: vWorkId },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker_or_cancel(ctx, args);
+		if (checked._nay) return false;
+		const now = Date.now();
+		const queued = await db_requeue_bash_job_find({ ctx, invocation: checked._yay, now });
+		if (!queued) {
+			const deadlineAt = await db_bash_job_find_deadline(ctx, checked._yay);
+			await db_settle_bash_job({
+				ctx,
+				invocation: checked._yay,
+				status: deadlineAt !== null && deadlineAt <= now ? "timed_out" : "failed",
+				errorMessage: "File search continuation is no longer available.",
+				now,
+			});
+		}
+		return queued;
+	},
+});
+
+/** Claim one delivery. A different worker must never resume the later shell statements. */
+export const take_bash_job_find_result = internalMutation({
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		workId: vWorkId,
+		commandNumber: v.number(),
+		result: v.object({ stdout: v.string(), stderr: v.string(), exitCode: v.number() }),
+	},
+	returns: v.union(doc(app_convex_schema, "ai_chat_bash_invocations"), v.null()),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker_or_cancel(ctx, args);
+		if (checked._nay) return null;
+		const invocation = checked._yay;
+		const find = invocation.job.find;
+		if (!find || find.commandNumber !== args.commandNumber) return null;
+		const query = await db_bash_job_find_query(ctx, invocation, find.queryId);
+		const now = Date.now();
+		if (!query || query.state === "canceled") {
+			await db_settle_bash_job({ ctx, invocation, status: "canceled", errorMessage: null, now });
+			return null;
+		}
+		if (find.phase === "delivering") return find.workId === args.workId ? invocation : null;
+		const ageDeadlineAt = invocation._creationTime + BASH_JOB_LIFETIME_MS + (invocation.job.excludedCopyWaitMs ?? 0);
+		if (query.expiresAt <= now || ageDeadlineAt <= now) {
+			await db_settle_bash_job({ ctx, invocation, status: "timed_out", errorMessage: null, now });
+			return null;
+		}
+		const deadlineAt = Math.min(now + BASH_JOB_RUN_MS, ageDeadlineAt);
+		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+		const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
+			deadlineAt,
+			internal.ai_chat_files.timeout_bash_job,
+			{ invocationId: invocation._id, expectedDeadlineAt: deadlineAt },
+		);
+		const patch = {
+			deadlineAt,
+			transferDeadlineAt: deadlineAt - BASH_JOB_SETTLE_HEADROOM_MS,
+			job: {
+				...invocation.job,
+				watchdogId,
+				find: {
+					phase: "delivering" as const,
+					queryId: find.queryId,
+					step: find.step,
+					commandNumber: find.commandNumber,
+					lastArg: find.lastArg,
+					workId: args.workId,
+					result: args.result,
+				},
+			},
+		};
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, patch);
+		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+		if (activity) await ctx.db.patch("activities", activity._id, { deadlineAt, updatedAt: now });
+		return { ...invocation, ...patch };
+	},
+});
 
 /**
  * Resolve a job number for the `jobs`, `wait` and `kill` doors. The index carries the user and
@@ -2209,6 +2420,13 @@ async function db_stop_bash_job_transfers(args: {
 		.order("desc")
 		.take(5);
 	for (const transfer of transfers) await files_transfer_db_request_stop(ctx, { runId: transfer.runId, reason, now });
+	// A delivered page may leave a cursor for a later call. Only an unfinished command owns cancellation.
+	const find = invocation.job.find;
+	if (find?.phase === "waiting") {
+		const query = await ctx.db.get("files_type_queries", find.queryId);
+		if (query && query.state !== "done" && query.state !== "canceled")
+			await ctx.db.patch("files_type_queries", query._id, { state: "canceled", lease: null });
+	}
 }
 
 /**
@@ -2258,6 +2476,7 @@ async function db_settle_bash_job(args: {
 				resumeLaunchedJobNumbers: undefined,
 				liveOutput: undefined,
 				copy: undefined,
+				find: undefined,
 			},
 		});
 		// The worker stored no result, so the output it flushed so far is all the transcript gets.
@@ -2532,6 +2751,7 @@ export const finish_bash_job = internalMutation({
 				resumeLaunchedJobNumbers: undefined,
 				liveOutput: undefined,
 				copy: undefined,
+				find: undefined,
 			},
 		});
 		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
@@ -2657,17 +2877,22 @@ export const claim_bash_job = internalMutation({
 			return null;
 
 		const copy = invocation.job.copy;
-		if (copy?.phase === "delivering") {
+		const find = invocation.job.find;
+		if (copy?.phase === "delivering" || find?.phase === "delivering") {
 			await db_settle_bash_job({
 				ctx,
 				invocation,
 				status: "failed",
-				errorMessage: "Copy continuation cannot be replayed after a lost worker.",
+				errorMessage: `${find ? "File search" : "Copy"} continuation cannot be replayed after a lost worker.`,
 				now,
 			});
 			return null;
 		}
-		const deadlineAt = copy ? await db_bash_job_copy_deadline(ctx, invocation) : now + BASH_JOB_RUN_MS;
+		const deadlineAt = copy
+			? await db_bash_job_copy_deadline(ctx, invocation)
+			: find
+				? await db_bash_job_find_deadline(ctx, invocation)
+				: now + BASH_JOB_RUN_MS;
 		if (
 			deadlineAt === null ||
 			deadlineAt <= now ||
@@ -2675,7 +2900,13 @@ export const claim_bash_job = internalMutation({
 				copy?.phase !== "admitting" &&
 				now - invocation._creationTime - (invocation.job.excludedCopyWaitMs ?? 0) >= BASH_JOB_LIFETIME_MS)
 		) {
-			await db_settle_bash_job({ ctx, invocation, status: "timed_out", errorMessage: null, now });
+			await db_settle_bash_job({
+				ctx,
+				invocation,
+				status: find && deadlineAt === null ? "canceled" : "timed_out",
+				errorMessage: null,
+				now,
+			});
 			return null;
 		}
 		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
@@ -2761,6 +2992,7 @@ export const handle_bash_job_complete = internalMutation({
 		if (args.result.kind === "success" && !stopRequested) return null;
 		if (args.result.kind === "failed" && !stopRequested) {
 			if (await db_requeue_bash_job_copy({ ctx, invocation, now })) return null;
+			if (await db_requeue_bash_job_find({ ctx, invocation, now })) return null;
 			await db_settle_bash_job({ ctx, invocation, status: "failed", errorMessage: "Background command crashed", now });
 			return null;
 		}
@@ -2784,6 +3016,12 @@ export async function ai_chat_files_db_request_job_stop(
 
 	// A user Stop that reaches its deadline is still a stop, not a timeout.
 	if (args.reason === "timeout") {
+		if (
+			invocation.job.find?.phase === "waiting" &&
+			invocation.job.stopRequestedAt === null &&
+			(await db_requeue_bash_job_find({ ctx, invocation, now: args.now }))
+		)
+			return;
 		if (
 			(invocation.job.copy?.phase === "waiting" || invocation.job.copy?.phase === "admitting") &&
 			invocation.job.stopRequestedAt === null &&
@@ -2962,6 +3200,11 @@ export const pause_bash_job = internalMutation({
 			(invocation.job.copy.phase !== "delivering" || invocation.job.copy.workId !== args.workId)
 		)
 			return false;
+		if (
+			invocation.job.find &&
+			(invocation.job.find.phase !== "delivering" || invocation.job.find.workId !== args.workId)
+		)
+			return false;
 		const ageDeadlineAt = invocation._creationTime + BASH_JOB_LIFETIME_MS + (invocation.job.excludedCopyWaitMs ?? 0);
 		if (ageDeadlineAt <= now) {
 			await db_settle_bash_job({ ctx, invocation, status: "timed_out", errorMessage: null, now });
@@ -3004,6 +3247,7 @@ export const pause_bash_job = internalMutation({
 				liveOutput: args.liveOutput ?? undefined,
 				workId,
 				copy: undefined,
+				find: undefined,
 				workerGeneration: invocation.job.workerGeneration + 1,
 				watchdogId,
 			},
@@ -3048,6 +3292,10 @@ export const poll_bash_job = internalQuery({
 				runId: copy.runId,
 			});
 			if (checked._nay) return { status: invocation.status, stopRequested, authorized: false };
+		}
+		if (invocation.status === "running" && invocation.job.find) {
+			const query = await db_bash_job_find_query(ctx, invocation, invocation.job.find.queryId);
+			if (!query || query.state === "canceled") return { status: invocation.status, stopRequested, authorized: false };
 		}
 		return { status: invocation.status, stopRequested, authorized: true };
 	},
@@ -3256,6 +3504,18 @@ export const list_live_thread_jobs = query({
 	},
 });
 
+/** Live reasons come from the checkpoint, never the stored command output. */
+function job_phase(invocation: Doc<"ai_chat_bash_invocations">, status: Doc<"activities">["status"]) {
+	if (!activities_is_active(status)) return null;
+	const job = invocation.job;
+	if (job?.copy)
+		return { admitting: "preparing input", waiting: "waiting for transfer", delivering: "delivering result" }[
+			job.copy.phase
+		];
+	if (job?.find) return job.find.phase === "waiting" ? "preparing file search" : "delivering result";
+	return null;
+}
+
 /**
  * The door behind `jobs -o N`. `activityStatus` says whether the job is still live, because that is
  * the status the feed and `jobs -a` show. The finish message prints the matching exit code.
@@ -3274,6 +3534,7 @@ export const read_job_output = internalQuery({
 		v.null(),
 		v.object({
 			activityStatus: app_convex_schema.tables.activities.validator.fields.status,
+			phase: v.union(v.string(), v.null()),
 			result: v.union(ai_chat_bash_result_validator, v.null()),
 			liveOutput: v.union(ai_chat_bash_job_live_output_validator, v.null()),
 		}),
@@ -3294,6 +3555,7 @@ export const read_job_output = internalQuery({
 			throw should_never_happen("Job Activity points to a missing invocation", { activityId: activity._id });
 		return {
 			activityStatus: activity.status,
+			phase: job_phase(invocation, activity.status),
 			result: invocation_result(invocation).result,
 			liveOutput: invocation.job?.liveOutput ?? null,
 		};
@@ -3368,6 +3630,137 @@ export type ai_chat_files_read_job_exit_codes_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+const bash_call_status = v.object({
+	toolCallId: v.string(),
+	createdAt: v.number(),
+	kind: v.union(v.literal("foreground"), v.literal("background")),
+	jobNumber: v.union(v.number(), v.null()),
+	status: v.union(
+		app_convex_schema.tables.ai_chat_bash_invocations.validator.fields.status,
+		app_convex_schema.tables.activities.validator.fields.status,
+	),
+	phase: v.union(v.string(), v.null()),
+});
+
+async function db_get_call_status(ctx: QueryCtx, invocation: Doc<"ai_chat_bash_invocations">) {
+	if (!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))) return null;
+	const activity = invocation.job ? await activities_db_get_by_source_id(ctx, invocation._id) : null;
+	if (invocation.job && !activity) return null;
+	return {
+		toolCallId: invocation.toolCallId,
+		createdAt: invocation._creationTime,
+		kind: invocation.job ? ("background" as const) : ("foreground" as const),
+		jobNumber: invocation.job?.jobNumber ?? null,
+		// A job's invocation deadline can pass before its Activity settles.
+		status: activity?.status ?? invocation_result(invocation).status,
+		phase: activity ? job_phase(invocation, activity.status) : null,
+	};
+}
+
+export const list_bash_transfers_for_agent = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		select: v.union(v.object({ jobNumber: v.number() }), v.object({ toolCallId: v.string() })),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			call: bash_call_status,
+			page: v.array(
+				v.object({ commandNumber: v.number(), runId: v.id("files_transfer_runs"), activityId: v.id("activities") }),
+			),
+			isDone: v.boolean(),
+			continueCursor: v.string(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const membership = await db_get_door_membership(ctx, args);
+		if (membership._nay) return null;
+		let invocation: Doc<"ai_chat_bash_invocations"> | null;
+		if ("jobNumber" in args.select) {
+			const activity = await db_get_job_activity(ctx, { ...args, jobNumber: args.select.jobNumber });
+			if (!activity || activity.organizationId !== args.organizationId || activity.workspaceId !== args.workspaceId)
+				return null;
+			invocation = await ctx.db.get("ai_chat_bash_invocations", activity.source.id);
+		} else {
+			const toolCallId = args.select.toolCallId;
+			invocation = await ctx.db
+				.query("ai_chat_bash_invocations")
+				.withIndex("by_thread_toolCall", (q) => q.eq("threadId", args.threadId).eq("toolCallId", toolCallId))
+				.first();
+		}
+		if (
+			!invocation ||
+			invocation.userId !== args.userId ||
+			invocation.threadId !== args.threadId ||
+			invocation.organizationId !== args.organizationId ||
+			invocation.workspaceId !== args.workspaceId
+		)
+			return null;
+		const call = await db_get_call_status(ctx, invocation);
+		if (!call) return null;
+		const page = await ai_chat_files_db_list_invocation_transfers(ctx, {
+			invocationId: invocation._id,
+			paginationOpts: args.paginationOpts,
+		});
+		return { call, page: page.page, isDone: page.isDone, continueCursor: page.continueCursor };
+	},
+});
+
+export type ai_chat_files_list_bash_transfers_for_agent_Result =
+	typeof list_bash_transfers_for_agent extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const list_bash_calls_for_agent = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			page: v.array(v.union(bash_call_status, v.null())),
+			isDone: v.boolean(),
+			continueCursor: v.string(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const membership = await db_get_door_membership(ctx, args);
+		if (membership._nay) return null;
+		// Each invocation can carry 700 KiB of output. Page those docs before reading status.
+		const result = await ctx.db
+			.query("ai_chat_bash_invocations")
+			.withIndex("by_organization_workspace_thread", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("threadId", args.threadId),
+			)
+			.order("desc")
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.max(1, Math.min(8, args.paginationOpts.numItems)),
+				maximumBytesRead: 2 * 1024 * 1024,
+			});
+		const page = [];
+		for (const invocation of result.page) {
+			// Keep the slot when old invocation access is gone; it still consumes this page.
+			page.push(invocation.userId === args.userId ? await db_get_call_status(ctx, invocation) : null);
+		}
+		return { page, isDone: result.isDone, continueCursor: result.continueCursor };
+	},
+});
+
+export type ai_chat_files_list_bash_calls_for_agent_Result =
+	typeof list_bash_calls_for_agent extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 /**
  * Accepted jobs are observable while the Bash action is still awaiting its result.
  */
@@ -3406,14 +3799,14 @@ export const list_bash_invocation_transfers = query({
 			permission: "content.read",
 		});
 		if (authorized._nay) return null;
-		const result = await ctx.db
-			.query("ai_chat_bash_invocation_transfers")
-			.withIndex("by_invocation_commandNumber", (q) => q.eq("invocationId", invocation._id))
-			.paginate({ ...args.paginationOpts, numItems: Math.max(1, Math.min(50, args.paginationOpts.numItems)) });
+		const result = await ai_chat_files_db_list_invocation_transfers(ctx, {
+			invocationId: invocation._id,
+			paginationOpts: args.paginationOpts,
+		});
 		return {
 			invocationId: invocation._id,
 			status: invocation_result(invocation).status,
-			page: result.page.map(({ commandNumber, runId, activityId }) => ({ commandNumber, runId, activityId })),
+			page: result.page,
 			isDone: result.isDone,
 			continueCursor: result.continueCursor,
 		};

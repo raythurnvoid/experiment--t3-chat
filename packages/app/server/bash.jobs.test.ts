@@ -6,6 +6,7 @@ import { access_control_db_ensure_role_assignment } from "../convex/access_contr
 import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { bash_run_command, bash_run_job } from "./bash.ts";
 import { bash_COMMAND_EXIT_USAGE, bash_JOB_NUMBERS_MAX_COUNT } from "./bash-utils.ts";
+import { files_pending_review_facts_db_change_state } from "./files-pending-review-facts.ts";
 import {
 	test_db_files_mount,
 	function_name_of,
@@ -90,6 +91,66 @@ describe("bash_run_command", () => {
 			expect(stripped.stdout).toBe("");
 			// The row lost its result, so the message answers from the Activity's own outcome instead.
 			expect(stripped.stderr).toBe("bash: jobs: job 1 done and stored no output; read the shell transcript\n");
+		});
+
+		test("explicit call status uses the live Activity after the invocation deadline", async () => {
+			const runner = await create_bash_runner();
+			await runner.run({ command: "sleep 60 &", toolCallId: "launch-call" });
+			const row = await job_row(runner, 1);
+			await runner.t.run((ctx) => ctx.db.patch("ai_chat_bash_invocations", row._id, { deadlineAt: Date.now() - 1 }));
+			const transfers = await runner.run({ command: "jobs --transfers 1" });
+			expect(transfers.metadata.exitCode, transfers.stderr).toBe(0);
+			expect(transfers.stdout).toContain("background job 1, queued");
+			expect(transfers.stdout).not.toContain("interrupted");
+			const byCall = await runner.run({ command: `jobs --call '${row.toolCallId}'` });
+			expect(byCall.metadata.exitCode, byCall.stderr).toBe(0);
+			expect(byCall.stdout).toContain("background job 1, queued");
+			const calls = await runner.run({ command: "jobs --calls" });
+			expect(calls.metadata.exitCode, calls.stderr).toBe(0);
+			expect(calls.stdout).toContain("background job 1, queued");
+			expect(calls.stdout).toContain("Inspect: jobs --call");
+			expect((await runner.run({ command: "jobs --activity not-an-id" })).metadata.exitCode).toBe(1);
+			expect((await runner.run({ command: "jobs --call missing" })).metadata.exitCode).toBe(1);
+			expect((await runner.run({ command: "jobs --calls -a" })).metadata.exitCode).toBe(2);
+			expect((await runner.run({ command: "jobs --activity not-an-id --cursor token" })).metadata.exitCode).toBe(2);
+		});
+
+		test("recovers an accepted foreground Move without changing its command output", async () => {
+			const runner = await create_bash_runner();
+			const moved = await runner.run({ command: "mv docs/readme.md docs/renamed.md", toolCallId: "move-call" });
+			expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+			expect(moved.stdout).toMatch(
+				/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+			);
+			expect(moved.stdout).not.toContain("Indexed search");
+			expect(moved.stderr).not.toContain("Indexed search");
+			const calls = await runner.run({ command: "jobs --calls" });
+			expect(calls.stdout).toContain('Call "move-call": foreground, finished');
+			const receipts = await runner.run({ command: "jobs --call move-call" });
+			expect(receipts.metadata.exitCode, receipts.stderr).toBe(0);
+			expect(receipts.stdout).toContain("result: pending changes for review");
+			expect(receipts.stdout).toContain("Indexed search:");
+			expect(receipts.stdout).not.toContain("docs/renamed.md");
+			const receipt = await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").first());
+			if (!receipt) throw new Error("Expected transfer receipt");
+			const secondChat = await create_bash_runner({ shared: runner });
+			const status = await secondChat.run({ command: `jobs --activity ${receipt.activityId}` });
+			expect(status.metadata.exitCode, status.stderr).toBe(0);
+			expect(status.stdout).toContain("move succeeded");
+			await runner.t.run((ctx) => files_pending_review_facts_db_change_state(ctx.db, runner.seeded, { jobs: 1 }));
+			const updating = await secondChat.run({ command: `jobs --activity ${receipt.activityId}` });
+			expect(updating.stdout).toContain("move succeeded");
+			expect(updating.stdout).toContain("Indexed search: updating (workspace;");
+			expect(updating.stdout).not.toContain("pendingJobCount");
+			await runner.t.run((ctx) => files_pending_review_facts_db_change_state(ctx.db, runner.seeded, { jobs: -1 }));
+			expect((await secondChat.run({ command: "jobs --call move-call" })).metadata.exitCode).toBe(1);
+			const unrelated = await runner.run({ command: "printf clean" });
+			expect(unrelated.stdout).toBe("clean");
+			expect(unrelated.stderr).toBe("");
+			await runner.t.run((ctx) => ctx.db.delete("activities", receipt.activityId));
+			const expired = await runner.run({ command: "jobs --call move-call" });
+			expect(expired.metadata.exitCode, expired.stderr).toBe(0);
+			expect(expired.stdout).toContain("Command 0:\nTransfer: unavailable");
 		});
 
 		test("jobs -o spends no read budget on a job that is still live", async () => {

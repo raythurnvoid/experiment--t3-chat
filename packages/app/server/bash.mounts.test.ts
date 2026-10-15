@@ -14,6 +14,7 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { bash_run_job } from "./bash.ts";
+import { bash_cursor_id_create } from "./bash-utils.ts";
 import {
 	test_db_files_mount,
 	function_name_of,
@@ -1390,6 +1391,90 @@ describe("bash_run_command", () => {
 				expect(result.output).toContain("worker.js");
 				expect(result.output).not.toContain("Otherreviewprivate");
 				expect(result.output).not.toContain("other.js");
+			}
+		});
+
+		test("pages MIME matches inside one review and refuses its cursor in another source", async () => {
+			const { runner, run } = await create_review_runner();
+			const first = await run("find /.plugins/review --content-type text/plain --limit 1");
+			expect(first.exitCode, first.output).toBe(0);
+			expect(first.output).toContain("/.plugins/review/dist/worker.js\n");
+			expect(first.output).not.toContain("other.js");
+			const next = first.output.match(/Next page: (.+)/u)?.[1];
+			expect(next).toBeTruthy();
+			const second = await run(next!);
+			expect(second.exitCode, second.output).toBe(0);
+			expect(second.output).toContain("/.plugins/review/script.sh\n");
+			expect(second.output).not.toContain("Next page:");
+			const otherReview = await runner.t.action(internal.bash.run_plugin_review, {
+				reviewRoot: otherRoot,
+				userId: runner.seeded.userId,
+				command: next!,
+				cwd: "/.plugins/review",
+				scratch: { fileNodes: [], fileNodesContent: [] },
+			});
+			expect(otherReview.exitCode).toBe(1);
+			expect(otherReview.output).toContain("The file search changed");
+			expect(otherReview.output).not.toContain("worker.js");
+			const chat = await runner.run({ command: next! });
+			expect(chat.metadata.exitCode).not.toBe(0);
+			expect(chat.stdout).toBe("");
+			for (const rootPath of ["/", otherRoot]) {
+				const outside = await runner.t.mutation(internal.files_type_queries.begin, {
+					organizationId: "GLOBAL",
+					workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+					userId: runner.seeded.userId,
+					pluginReviewRoot: reviewRoot,
+					overlay: false,
+					rootPath,
+					contentType: "text/plain",
+					directoriesOnly: false,
+					limit: 1,
+				});
+				expect(outside._nay?.message).toBe("File search unavailable");
+			}
+		});
+
+		test("stops MIME pages and replay as soon as review cleanup starts", async () => {
+			const { runner, run } = await create_review_runner();
+			for (let index = 0; index < 40; index++) {
+				const created = await runner.t.action(internal.files_nodes_content.create_file_node_internal, {
+					workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+					path: `${reviewRoot}/later/${index}.js`,
+					rawText: "export const ready = true;\n",
+				});
+				expect(created._nay).toBeUndefined();
+			}
+			const command = "find /.plugins/review --content-type text/plain --limit 1";
+			const first = await run(command);
+			expect(first.exitCode, first.output).toBe(0);
+			expect(first.output).toContain("/.plugins/review/dist/worker.js\n");
+			const next = first.output.match(/Next page: (.+)/u)?.[1];
+			expect(next).toBeTruthy();
+			const query = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_type_queries")
+					.withIndex("by_user", (q) => q.eq("userId", runner.seeded.userId))
+					.first(),
+			);
+			expect(query?.pluginReviewRoot).toBe(reviewRoot);
+			const replayCursor = await bash_cursor_id_create(runner.ctx, JSON.stringify({ queryId: query!._id, step: 0 }));
+			const replay = `${command} --cursor ${replayCursor}`;
+			expect((await run(replay)).exitCode).toBe(0);
+			const root = await runner.t.query(internal.files_nodes.get_by_path, {
+				organizationId: "GLOBAL",
+				workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+				visibilityUserId: runner.seeded.userId,
+				path: reviewRoot,
+			});
+			await runner.t.mutation(internal.plugins.delete_review_source_tree, { reviewRoot });
+			const cleaning = await runner.t.run((ctx) => ctx.db.get("files_nodes", root!._id));
+			expect(cleaning, "cleanup has not removed the root yet").not.toBeNull();
+			for (const remaining of [next!, replay, command]) {
+				const result = await run(remaining);
+				expect(result.exitCode, result.output).toBe(1);
+				expect(result.output).toContain("File search unavailable");
+				expect(result.output).not.toContain("worker.js");
 			}
 		});
 

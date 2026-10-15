@@ -4,7 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import {
 	files_pending_overlay_db_can_join_step,
-	files_pending_overlay_db_create_reader,
+	files_pending_overlay_db_resolve_facts,
 	files_pending_overlay_db_stage_owner,
 	files_pending_overlay_db_stage_owner_fields,
 	files_pending_overlay_db_stage_owner_lists,
@@ -462,13 +462,16 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 						.eq("moveView.view", undefined),
 				)
 				.unique();
-			const reader = files_pending_overlay_db_create_reader(ctx.db, {
+			const facts = await files_pending_overlay_db_resolve_facts(ctx, {
 				organizationId: cohort.organizationId,
 				workspaceId: cohort.workspaceId,
 				userId: work.userId,
 				fixedView: { cohortId: cohort._id, view: "before" },
+				target: work.target,
+				allowPagination: true,
 			});
-			const own = await reader.resolve(work.target);
+			if (!facts) return Result({ _yay: { done: false, paged: true } });
+			const own = facts.own;
 			for (const prefix of new Set([
 				place?.ownerTreePath,
 				place?.childTreePath,
@@ -484,7 +487,7 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 			}
 		}
 		await ctx.db.patch("files_move_owner_work", work._id, { status: "planned" });
-		return Result({ _yay: { done: false, paged: false } });
+		return Result({ _yay: { done: false, paged: node?.kind === "folder" } });
 	}
 	// Each probe below uses the same range as its page.
 	const private_children = ({ userId, parent }: ParentRange) =>
@@ -519,6 +522,30 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 					.gt("ownerTreePath", prefix)
 					.lt("ownerTreePath", path_tree_prefix_upper_bound(prefix)),
 			);
+	const typed_children = ({ userId, parent }: ParentRange) =>
+		ctx.db.query("files_pending_type_entries").withIndex("by_org_ws_user_parent_name", (q) =>
+			q
+				.eq("organizationId", cohort.organizationId)
+				.eq("workspaceId", cohort.workspaceId)
+				.eq("userId", userId)
+				.eq("moveView.cohortId", undefined)
+				.eq("moveView.view", undefined)
+				.eq("parent.kind", parent.kind)
+				.eq("parent.id", parent.kind === "root" ? undefined : parent.id),
+		);
+	const prefix_types = ({ userId, prefix }: PrefixRange) =>
+		ctx.db
+			.query("files_pending_type_entries")
+			.withIndex("by_org_ws_user_ownerTreePath", (q) =>
+				q
+					.eq("organizationId", cohort.organizationId)
+					.eq("workspaceId", cohort.workspaceId)
+					.eq("userId", userId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined)
+					.gt("ownerTreePath", prefix)
+					.lt("ownerTreePath", path_tree_prefix_upper_bound(prefix)),
+			);
 	const parse = (range: Range | null) =>
 		range?.cursor ? (JSON.parse(range.cursor) as { phase: number; page: string | null }) : { phase: 0, page: null };
 	let range = await db_next_range(ctx, cohort._id, "collect");
@@ -532,16 +559,18 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 		const r = range.range;
 		const first =
 			r.kind === "parent"
-				? await (cursor.phase === 0 ? private_children(r) : moved_children(r)).first()
+				? await (
+						cursor.phase === 0 ? private_children(r) : cursor.phase === 1 ? moved_children(r) : typed_children(r)
+					).first()
 				: r.kind === "prefix"
-					? await prefix_places(r).first()
+					? await (cursor.phase === 0 ? prefix_places(r) : prefix_types(r)).first()
 					: range;
 		if (first) break;
-		if (r.kind === "parent" && cursor.phase === 0) {
-			cursor.phase = 1;
+		if ((r.kind === "parent" && cursor.phase < 2) || (r.kind === "prefix" && cursor.phase === 0)) {
+			cursor.phase++;
 			continue;
 		}
-		if (r.kind === "parent") cursor.phase = 2;
+		cursor.phase++;
 		await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
 		await db_complete_range(ctx, range);
 		range = await db_next_range(ctx, cohort._id, "collect");
@@ -563,7 +592,10 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 			continueCursor = page?.continueCursor ?? null;
 			paged = page?.paged ?? false;
 		} else {
-			const page = await moved_children(range.range).paginate({ cursor: cursor.page, numItems: PAGE_SIZE });
+			const page = await (cursor.phase === 1 ? moved_children(range.range) : typed_children(range.range)).paginate({
+				cursor: cursor.page,
+				numItems: PAGE_SIZE,
+			});
 			for (const row of page.page) {
 				const added = await db_add_owner(ctx, cohort, row.userId, row.target);
 				if (added._nay) return added;
@@ -572,15 +604,19 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 		}
 		cursor.page = isDone ? null : continueCursor;
 		if (isDone) cursor.phase++;
-		if (cursor.phase === 2) await db_complete_range(ctx, range);
+		if (cursor.phase === 3) await db_complete_range(ctx, range);
 	} else if (range.range.kind === "prefix") {
-		const page = await prefix_places(range.range).paginate({ cursor: cursor.page, numItems: PAGE_SIZE });
+		const page = await (cursor.phase === 0 ? prefix_places(range.range) : prefix_types(range.range)).paginate({
+			cursor: cursor.page,
+			numItems: PAGE_SIZE,
+		});
 		for (const row of page.page) {
 			const added = await db_add_owner(ctx, cohort, row.userId, row.target);
 			if (added._nay) return added;
 		}
-		cursor.page = page.continueCursor;
-		if (page.isDone) await db_complete_range(ctx, range);
+		cursor.page = page.isDone ? null : page.continueCursor;
+		if (page.isDone) cursor.phase++;
+		if (cursor.phase === 2) await db_complete_range(ctx, range);
 	} else throw should_never_happen("Unexpected owner closure range", { rangeId: range._id });
 	await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
 	// New owners must return through the queued-owner check before closure can finish.
@@ -620,17 +656,10 @@ async function db_stage_pending_scope(
 	const after = { cohortId: cohort._id, view: "after" as const };
 	const saved =
 		work.target.kind === "saved" ? await files_saved_placement_db_get_node(ctx.db, work.target.id, after) : null;
-	const resolved =
-		work.target.kind === "private"
-			? await files_pending_overlay_db_create_reader(ctx.db, {
-					organizationId: cohort.organizationId,
-					workspaceId: cohort.workspaceId,
-					userId: work.userId,
-					fixedView: after,
-				}).resolve(work.target)
-			: null;
+	// Header staging already finished the resumable path work for this private target.
+	const place = work.afterPlaceId ? await ctx.db.get("files_pending_places", work.afterPlaceId) : null;
 	// Hidden targets keep captured scope; owner readers still decide visibility.
-	const path = saved?.path ?? resolved?.entry.path;
+	const path = saved?.path ?? (place && !place.isPathless ? place.ownerTreePath.replace(/\/$/, "") : undefined);
 	const archiveOperationId = saved?.archiveOperationId ?? undefined;
 	const entered = await files_move_reservations_db_enter(ctx, { ...args, mode: "stage" });
 	if (entered._nay) return entered;
@@ -715,6 +744,8 @@ export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Arg
 		if (cursor.phase === "headers") {
 			const staged = await files_pending_overlay_db_stage_owner(ctx, { ...args, ownerWorkId: range.ownerWorkId });
 			if (staged._nay) return staged;
+			paged = true;
+			if ("unfinished" in staged._yay) break;
 			cursor.phase = "pending_plain";
 		} else if (cursor.phase === "pending_plain" || cursor.phase === "pending_metadata") {
 			const staged = await db_stage_pending_scope(ctx, checked._yay, {
@@ -770,18 +801,24 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 	let done = false;
 	let paginated = false;
 	// Empty and small cleanup ranges share a step. Any native page ends the transaction.
-	while (cursor.phase < 8) {
-		if (cursor.phase < 5) {
+	while (cursor.phase < 10) {
+		if (cursor.phase < 5 || cursor.phase >= 8) {
 			// Remove old field joins before removing their places. Promotion keeps native IDs and time.
-			const table = (
-				[
-					"files_pending_place_fields",
-					"files_pending_list_rows",
-					"files_pending_hides",
-					"files_pending_places",
-					"files_pending_review_facts",
-				] as const
-			)[cursor.phase]!;
+			// Keep existing phase numbers: saved cleanup cursors may resume after a deploy.
+			const table =
+				cursor.phase === 8
+					? "files_pending_type_entries"
+					: cursor.phase === 9
+						? "files_pending_overlay_resolve_work"
+						: (
+								[
+									"files_pending_place_fields",
+									"files_pending_list_rows",
+									"files_pending_hides",
+									"files_pending_places",
+									"files_pending_review_facts",
+								] as const
+							)[cursor.phase]!;
 			if (table === "files_pending_review_facts") {
 				const page = await db_owner_page(
 					() =>
@@ -806,10 +843,11 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 					{ maximumBytesRead: 1024 * 1024 },
 				);
 				for (const row of page?.page ?? []) {
-					if (cursor.view === keep) await ctx.db.patch(table, row._id, { moveView: undefined });
+					if (cursor.view === keep && table !== "files_pending_overlay_resolve_work")
+						await ctx.db.patch(table, row._id as Id<typeof table>, { moveView: undefined });
 					else await ctx.db.delete(table, row._id);
 				}
-				if (table === "files_pending_places" && page?.page.length) {
+				if ((table === "files_pending_places" || table === "files_pending_type_entries") && page?.page.length) {
 					const slot = await ctx.db
 						.query("files_move_workspace_slots")
 						.withIndex("by_workspace", (q) =>
@@ -862,14 +900,17 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 				await ctx.db.patch("files_move_owner_work", work._id, { status: "materialized" });
 			paginated = page?.paged ?? false;
 			cursor.page = page?.continueCursor ?? null;
-			// The last page's own isDone ends the phase, so no extra step finds the range complete.
+			// A native page ends this step; typed docs and resolver work still need cleanup.
 			if (!page || page.isDone) {
-				await db_complete_range(ctx, range);
-				done = true;
+				cursor.phase++;
+				cursor.page = null;
 			}
-			break;
 		}
 		if (paginated) break;
+	}
+	if (cursor.phase === 10) {
+		await db_complete_range(ctx, range);
+		done = true;
 	}
 	await ctx.db.patch("files_move_work_ranges", range._id, { cursor: JSON.stringify(cursor) });
 	return Result({ _yay: { done, paged: paginated } });

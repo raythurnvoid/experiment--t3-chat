@@ -13,6 +13,7 @@ import {
 } from "./_generated/server.js";
 import { files_pending_overlay_db_flush, files_pending_overlay_db_wrap } from "../server/files-pending-overlay.ts";
 import { files_move_reservations_db_wrap } from "../server/files-move-reservations.ts";
+import { files_access_version_db_wrap } from "../server/files-access-version.ts";
 
 /**
  * One customization for both builders. It captures writes to the pending overlay's source tables
@@ -21,7 +22,8 @@ import { files_move_reservations_db_wrap } from "../server/files-move-reservatio
 const customization = {
 	args: {},
 	input: async (ctx: MutationCtx) => {
-		const guarded = files_move_reservations_db_wrap(ctx);
+		const access = files_access_version_db_wrap(ctx);
+		const guarded = files_move_reservations_db_wrap({ ...ctx, db: access.db });
 		const wrapped = files_pending_overlay_db_wrap({ ...ctx, ...guarded });
 		return {
 			ctx: wrapped,
@@ -29,6 +31,7 @@ const customization = {
 			// `onSuccess` gets the raw ctx, so flush the wrapped one that holds the captured writes.
 			onSuccess: async () => {
 				await files_pending_overlay_db_flush({ ...ctx, ...wrapped });
+				await access.flush();
 			},
 		};
 	},

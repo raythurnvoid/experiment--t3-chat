@@ -81,7 +81,8 @@ import { r2, r2_fetch_object_range_from_bucket, r2_PUT_MAY_ARRIVE_MARGIN_MS } fr
 import { crypto_sha256_hex } from "./crypto-utils.ts";
 import { bash_cat_command_create } from "./bash-cat-command.ts";
 import { bash_cp_command_create } from "./bash-cp-command.ts";
-import { bash_find_command_create } from "./bash-find-command.ts";
+import { bash_find_command_create, bash_find_type_prepare, bash_find_type_render } from "./bash-find-command.ts";
+import { files_type_query_page, files_type_query_start } from "./files-type-query.ts";
 import { bash_grep_command_create } from "./bash-grep-command.ts";
 import { bash_ls_command_create } from "./bash-ls-command.ts";
 import { bash_meta_command_create } from "./bash-meta-command.ts";
@@ -1713,6 +1714,7 @@ export async function bash_run_plugin_review_command(
 			workspaceName: "PLUGINS",
 			userId: args.userId,
 			threadId: null,
+			pluginReviewRoot: args.reviewRoot,
 		},
 		currentWorkspacePath,
 		dbFilesPathPrefix: args.reviewRoot,
@@ -2059,6 +2061,7 @@ export async function bash_run_command(
 		let response = bash_response({
 			bashFs,
 			command: args.command,
+			toolCallId: args.toolCallId,
 			result,
 			nextCwd,
 			observedPaths,
@@ -2251,6 +2254,7 @@ async function run_command_and_diagnose(args: {
 function bash_response(args: {
 	bashFs: Awaited<ReturnType<typeof bash_fs_create>>;
 	command: string;
+	toolCallId?: string;
 	result: { stdout: string; stderr: string; exitCode: number };
 	nextCwd: string;
 	observedPaths: { workspace: "current" | "personal"; path: string }[];
@@ -2282,6 +2286,7 @@ function bash_response(args: {
 		stderr: stderr.value,
 		metadata: {
 			command,
+			...(args.toolCallId === undefined ? {} : { toolCallId: args.toolCallId }),
 			cwd: bashFs.cwd,
 			nextCwd,
 			exitCode: result.exitCode,
@@ -2437,6 +2442,28 @@ export async function bash_run_job(
 	if (!claimed) return null;
 	let row: Doc<"ai_chat_bash_invocations"> & { job: NonNullable<Doc<"ai_chat_bash_invocations">["job"]> } = claimed.row;
 	const { organizationName, workspaceName, shells } = claimed;
+	if (row.job.find?.phase === "waiting") {
+		const checkpoint = row.job.find;
+		const fence = { invocationId: row._id, workId: row.job.workId!, commandNumber: checkpoint.commandNumber };
+		const query = await ctx.runQuery(internal.files_type_queries.get, { queryId: checkpoint.queryId });
+		const page = query ? await files_type_query_page(ctx, {
+			organizationId: query.organizationId, workspaceId: query.workspaceId, userId: query.userId,
+			agentSource: query.agentSource, overlay: query.overlay, rootPath: query.rootPath,
+			contentType: query.contentType, directoriesOnly: query.directoriesOnly, limit: query.limit,
+		}, JSON.stringify({ queryId: checkpoint.queryId, step: checkpoint.step })) : null;
+		if (page?._yay && page._yay.state !== "page") {
+			await ctx.runMutation(internal.ai_chat_files.requeue_bash_job_find, { invocationId: row._id, workId: fence.workId });
+			return null;
+		}
+		const result = page && query ? await bash_find_type_render({
+			ctx, result: page, shellPrefix: checkpoint.shellPrefix, dbPrefix: checkpoint.dbPrefix,
+			contentType: query.contentType, directoriesOnly: query.directoriesOnly, limit: query.limit,
+		}) : { stdout: "", stderr: "find: file search is no longer available. Rerun find without --cursor.\n", exitCode: 1 };
+		const take = () => ctx.runMutation(internal.ai_chat_files.take_bash_job_find_result, { ...fence, result });
+		const delivered = await take().catch(take);
+		if (!delivered?.job) return null;
+		row = { ...delivered, job: delivered.job };
+	}
 	if (row.job.copy?.phase === "admitting") {
 		const fence = { invocationId: row._id, workId: row.job.workId!, commandNumber: row.job.copy.commandNumber };
 		const result = await bash_job_admit_copy(ctx, row);
@@ -2613,6 +2640,7 @@ export async function bash_run_job(
 	// A continuation starts from the numbers the earlier runs launched.
 	const launchedJobNumbers = [...(job.resumeLaunchedJobNumbers ?? [])];
 	let stageCopy: ((output: { stdout: string; stderr: string }) => Promise<void>) | undefined;
+	let stageFind: ((output: { stdout: string; stderr: string }) => Promise<void>) | undefined;
 	try {
 		// The same mount visibility as the launching call: without these queries `/.mounts` and
 		// `/.plugins` would be empty inside a job.
@@ -2702,6 +2730,32 @@ export async function bash_run_job(
 			onOutput,
 			onStatementBoundary,
 			onPlainCommand: async ({ continuation }, roots) => {
+				if (continuation.command === "find") {
+					const preparation = await bash_find_type_prepare({ ctx, dbFilesRoots: roots, argv: continuation.args, cwd: continuation.cwd });
+					if (!preparation || !("prepared" in preparation)) return "run";
+					const input = preparation.prepared;
+					const started = await files_type_query_start(ctx, input.request, input.cursor);
+					if (started._nay) return "run";
+					const findCommandNumber = commandNumber++;
+					stageFind = async (output) => {
+						const saveArgs = {
+							invocationId: row._id, workId,
+							request: input.request,
+							checkpoint: { phase: "waiting" as const, ...started._yay, commandNumber: findCommandNumber,
+								expandedArgs: continuation.args, lastArg: continuation.lastArg,
+								shellPrefix: input.shellPrefix, dbPrefix: input.dbPrefix },
+							resume: { script: continuation.scriptAfter, commandNumber,
+								launchedJobNumbers: launchedJobNumbers.slice(-bash_JOB_NUMBERS_MAX_COUNT),
+								shellState: continuation.snapshot, cwd: continuation.cwd,
+								cwdTarget: await bashFs.get_cwd_target(continuation.cwd) },
+							output, liveOutput: liveOutput.stdout || liveOutput.stderr ? { ...liveOutput } : null,
+						};
+						const save = () => ctx.runMutation(internal.ai_chat_files.stage_bash_job_find, saveArgs);
+						const saved = await save().catch(save);
+						if (saved._nay) throw new Error(saved._nay.message);
+					};
+					return "suspend";
+				}
 				if (continuation.command !== "cp" && continuation.command !== "mv") return "run";
 				const parsed = bash_parse_cp_mv_operands(continuation.command, continuation.args);
 				if (
@@ -2848,10 +2902,13 @@ export async function bash_run_job(
 						},
 						result: job.copy.result,
 					}
-				: undefined,
+				: job.find?.phase === "delivering"
+					? { continuation: { command: "find", args: [], cwd: job.startCwd, snapshot: job.shellState,
+							scriptAfter: script, lastArg: job.find.lastArg }, result: job.find.result }
+					: undefined,
 		);
 		if ("kind" in outcome && outcome.kind === "host_suspended") {
-			if (!stageCopy) throw should_never_happen("Copy suspension has no prepared input");
+			if (!stageCopy && !stageFind) throw should_never_happen("Command suspension has no prepared input");
 			// The next run starts with a fresh private `/tmp` copy, so a Copy suspension drops the
 			// job's `/tmp` writes like a pause does. Name them in the live head and the transcript.
 			const droppedTmpPaths = [...bashFs.tmp_dirty_roots()].sort();
@@ -2859,7 +2916,7 @@ export async function bash_run_job(
 				stdout: outcome.stdout,
 				stderr:
 					droppedTmpPaths.length > 0
-						? `${outcome.stderr}bash: /tmp writes are dropped when a job pauses for Copy: ${droppedTmpPaths.map((path) => `${bash_TMP_MOUNT}${path}`).join(", ")}\n`
+						? `${outcome.stderr}bash: /tmp writes are dropped when a job pauses for ${stageFind ? "find" : "Copy"}: ${droppedTmpPaths.map((path) => `${bash_TMP_MOUNT}${path}`).join(", ")}\n`
 						: outcome.stderr,
 			};
 			for (const stream of ["stdout", "stderr"] as const) {
@@ -2868,7 +2925,12 @@ export async function bash_run_job(
 				liveOutput[`${stream}Truncated`] =
 					Boolean(carried?.[`${stream}Truncated`]) || full.length > bash_JOB_OUTPUT_READ_MAX_CHARS;
 			}
-			await stageCopy(suspended);
+			if (stageFind) {
+				await stageFind(suspended);
+				await ctx.runMutation(internal.ai_chat_files.requeue_bash_job_find, { invocationId: row._id, workId });
+				return null;
+			}
+			await stageCopy!(suspended);
 			const saved = await ctx.runQuery(internal.ai_chat_files.read_bash_job_copy_invocation, {
 				invocationId: row._id,
 				workId,
@@ -2960,6 +3022,7 @@ export async function bash_run_job(
 		const response = bash_response({
 			bashFs,
 			command: job.script,
+			toolCallId: row.toolCallId,
 			result,
 			nextCwd,
 			observedPaths,

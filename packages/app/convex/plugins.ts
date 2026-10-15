@@ -42,6 +42,7 @@ import {
 } from "../shared/organizations.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { ai_chat_skills_LIMITS, ai_chat_skills_parse } from "../server/ai-chat-skills.ts";
 import { github_fetch_repo_head, github_fetch_with_retry, github_raw_url } from "../server/github.ts";
 import { path_tree_prefix_upper_bound, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
@@ -1572,6 +1573,13 @@ export const delete_review_source_tree = internalMutation({
 		if (!/^\/review-[a-f0-9]{32}$/u.test(args.reviewRoot)) {
 			throw should_never_happen("Invalid plugin review cleanup root");
 		}
+		const root = await files_db_get_visible_node_by_path(ctx, {
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+			path: args.reviewRoot,
+		});
+		// The drain deletes children first. Archive its root now so search cursors stop before that work.
+		if (root) await ctx.db.patch("files_nodes", root._id, { archiveOperationId: crypto.randomUUID() });
 		const deleted = await files_nodes_db_delete_subtree_batch(ctx, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
@@ -7267,6 +7275,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const reviewedHashes: Record<string, string> = {
 				"16": "10a8963906c78c0f8d7c02b238695841e4e16998f9222d82e9b1d9303eb99051",
 				"17": "47bd1102c7eca10fb5ecc6ec22738e9ea6a2d8c4b23172dab8434b7f1d3b6f4d",
+				"18": "47bd1102c7eca10fb5ecc6ec22738e9ea6a2d8c4b23172dab8434b7f1d3b6f4d",
 			};
 			expect(digest).toBe(reviewedHashes[plugins_REVIEW_POLICY_VERSION]);
 		});

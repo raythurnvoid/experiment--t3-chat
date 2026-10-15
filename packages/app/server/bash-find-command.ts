@@ -4,7 +4,9 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_list_subtree_Result, files_nodes_search_paths_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { files_visible_internal_list_Result } from "../convex/files_visible.ts";
+import type { files_type_queries_PageResult } from "../convex/files_type_queries.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_parse_content_type_prefix } from "../shared/files.ts";
 import {
 	bash_APP_MOUNT_PATH,
 	bash_clamp_listing_page_limit,
@@ -36,6 +38,7 @@ import {
 } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
 import { files_pending_overlay_list, files_pending_overlay_search_name } from "./files-pending-overlay.ts";
+import { files_type_query_page } from "./files-type-query.ts";
 
 const EXTENSION_TOKEN_REGEX = /^[a-z0-9][a-z0-9_-]*$/iu;
 const SIMPLE_PATH_WORD_GLOB_REGEX = /^\*+([a-z0-9][a-z0-9_-]*)\*+$/iu;
@@ -163,6 +166,7 @@ function parse_args(args: string[]) {
 	let iname: string | undefined;
 	let pathQuery: string | undefined;
 	let extension: string | undefined;
+	let contentType: string | undefined;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
@@ -250,6 +254,21 @@ function parse_args(args: string[]) {
 			pathQuery = arg.slice("--path-query=".length);
 			continue;
 		}
+		if (arg === "--content-type" || arg.startsWith("--content-type=")) {
+			if (contentType !== undefined) return Result({ _nay: { message: "find: use --content-type only once" } });
+			if (arg === "--content-type") {
+				const value = bash_read_option_value("find", args, index, arg);
+				if (value._nay) return value;
+				contentType = value._yay.value;
+				index++;
+			} else contentType = arg.slice("--content-type=".length);
+			if (!files_parse_content_type_prefix(contentType))
+				return Result({
+					_nay: { message: "find: --content-type requires an exact MIME type like image/png or a family like image/" },
+				});
+			contentType = contentType.trim().toLowerCase();
+			continue;
+		}
 		if (arg === "--extension") {
 			const value = bash_read_option_value("find", args, index, arg);
 			if (value._nay) return value;
@@ -313,7 +332,7 @@ function parse_args(args: string[]) {
 		command: "find",
 		value: limitValue,
 		defaultLimit: bash_LISTING_DEFAULT_LIMIT,
-		maxLimit: bash_LISTING_MAX_LIMIT,
+		maxLimit: contentType === undefined ? bash_LISTING_MAX_LIMIT : 50,
 	});
 	if (limit._nay) {
 		return limit;
@@ -441,6 +460,23 @@ function parse_args(args: string[]) {
 		});
 	}
 
+	// Check after glob recovery too, so no normalized predicate is silently ignored.
+	if (
+		contentType !== undefined &&
+		(prefix !== undefined ||
+			maxDepth !== null ||
+			minDepth !== null ||
+			normalizedExtension !== undefined ||
+			normalizedPathQuery !== undefined ||
+			unsupportedDbFilesPredicate !== null)
+	)
+		return Result({
+			_nay: {
+				message:
+					"find: --content-type cannot be combined with name, path, extension, prefix, depth, or other predicates",
+			},
+		});
+
 	return Result({
 		_yay: {
 			path,
@@ -456,6 +492,7 @@ function parse_args(args: string[]) {
 			iname: normalizedInamePathQuery == null ? undefined : normalizedPathQuery,
 			pathQuery: pathQuery == null ? undefined : normalizedPathQuery,
 			extension: normalizedExtension,
+			contentType,
 		} as const,
 	});
 }
@@ -557,14 +594,117 @@ function build_continuation(args: {
 	if (args.parsed.extension != null) {
 		continuationParts.push("--extension", bash_shell_arg_quote(args.parsed.extension));
 	}
+	if (args.parsed.contentType !== undefined) {
+		continuationParts.push("--content-type", bash_shell_arg_quote(args.parsed.contentType));
+	}
 	continuationParts.push("--limit", String(args.parsed.limit), "--cursor", bash_shell_arg_quote(args.cursor));
 	return continuationParts.join(" ");
+}
+
+/** Shared by the command and the plain background-command checkpoint. */
+export async function bash_find_type_prepare(args: {
+	ctx: ActionCtx;
+	dbFilesRoots: bash_DbFilesRoots;
+	argv: string[];
+	cwd: string;
+}) {
+	if (!args.argv.some((arg) => arg === "--content-type" || arg.startsWith("--content-type="))) return null;
+	const parsed = parse_args(args.argv);
+	const failure = (message: string) => ({
+		result: { stdout: "", stderr: `${message}\n`, exitCode: bash_COMMAND_EXIT_USAGE },
+	});
+	if (parsed._nay) return failure(parsed._nay.message);
+	const options = parsed._yay;
+	const shellPath = bash_resolve_path(args.cwd, options.path ?? args.cwd);
+	const path = bash_resolve_db_files_shell_path(shellPath, args.dbFilesRoots);
+	if (options.contentType === undefined || path.dbFilesPath === null || path.kind === "outside_db_files")
+		return failure(
+			"find: --content-type needs one workspace, plugin, or mount folder. It is not supported on /tmp or a root spanning several mounts.",
+		);
+	if (options.path && bash_GLOB_METACHARACTER_REGEX.test(options.path))
+		return failure(bash_create_glob_syntax_unsupported_message("find", options.path));
+	let cursor: string | null = null;
+	if (options.cursor !== null) {
+		const stored = await bash_cursor_id_resolve(args.ctx, options.cursor);
+		if (stored._nay) return failure(stored._nay.message);
+		cursor = stored._yay;
+	}
+	return {
+		prepared: {
+			request: {
+				organizationId: path.ctxData.organizationId,
+				workspaceId: path.ctxData.workspaceId,
+				userId: path.ctxData.userId,
+				agentSource: path.ctxData.agentSource ?? args.dbFilesRoots.app.fs.ctxData.agentSource,
+				pluginReviewRoot: path.ctxData.pluginReviewRoot,
+				overlay: path.fs.overlayUserId !== undefined,
+				rootPath: path.dbFilesPath,
+				contentType: options.contentType,
+				directoriesOnly: options.type === "d",
+				limit: options.limit,
+			},
+			cursor,
+			shellPrefix: shellPath,
+			dbPrefix: path.dbFilesPath,
+		},
+	};
+}
+
+export async function bash_find_type_render(args: {
+	ctx: ActionCtx;
+	result: files_type_queries_PageResult;
+	shellPrefix: string;
+	dbPrefix: string;
+	contentType: string;
+	directoriesOnly: boolean;
+	limit: number;
+}) {
+	if (args.result._nay)
+		return { stdout: "", stderr: `find: ${args.result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+	const page = args.result._yay;
+	const next = async () => {
+		const cursor = await bash_cursor_id_create(args.ctx, JSON.stringify({ queryId: page.queryId, step: page.step }));
+		return `find ${bash_shell_arg_quote(args.shellPrefix)} --content-type ${bash_shell_arg_quote(args.contentType)}${args.directoriesOnly ? " -type d" : ""} --limit ${args.limit} --cursor ${bash_shell_arg_quote(cursor)}`;
+	};
+	if (page.state !== "page")
+		return {
+			stdout: "",
+			stderr: `find: file search is preparing. Check and continue with:\n${await next()}\n`,
+			exitCode: 3,
+		};
+	const lines = page.items.map(
+		(item) =>
+			args.shellPrefix.replace(/\/$/u, "") +
+			(args.dbPrefix === "/" ? item.path : item.path.slice(args.dbPrefix.length)),
+	);
+	if (!page.isDone)
+		lines.push(
+			...(lines.length === 0 ? ["No matches in this page; search continues."] : []),
+			"",
+			`Next page: ${await next()}`,
+		);
+	else if (lines.length === 0) lines.push("0 matches.");
+	return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
 }
 
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
 // type would otherwise flow through internal.* into the bash action and back into this command.
 export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
 	return defineCommand("find", async (args, commandCtx) => {
+		const typed = await bash_find_type_prepare({ ctx, dbFilesRoots, argv: args, cwd: commandCtx.cwd });
+		if (typed) {
+			if ("result" in typed) return typed.result;
+			const { request, cursor, shellPrefix, dbPrefix } = typed.prepared;
+			return await bash_find_type_render({
+				ctx,
+				result: await files_type_query_page(ctx, request, cursor),
+				shellPrefix,
+				dbPrefix,
+				contentType: request.contentType,
+				directoriesOnly: request.directoriesOnly,
+				limit: request.limit,
+			});
+		}
 		const parsed = parse_args(args);
 		// Parse failures return usage text before any app-file or built-in command routing.
 		if (parsed._nay) {

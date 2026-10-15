@@ -6,7 +6,10 @@ import type {
 	ai_chat_files_list_thread_jobs_Result,
 	ai_chat_files_read_job_exit_codes_Result,
 	ai_chat_files_read_job_output_Result,
+	ai_chat_files_list_bash_calls_for_agent_Result,
+	ai_chat_files_list_bash_transfers_for_agent_Result,
 } from "../convex/ai_chat_files.ts";
+import type { files_transfer_queries_get_activity_for_agent_Result } from "../convex/files_transfer_queries.ts";
 import { activities_is_active } from "../convex/activities_db.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import {
@@ -16,6 +19,9 @@ import {
 	bash_JOB_NUMBERS_MAX_COUNT,
 	bash_job_exit_code,
 	bash_text_head,
+	bash_cursor_id_create,
+	bash_cursor_id_resolve,
+	bash_shell_arg_quote,
 } from "./bash-utils.ts";
 
 /**
@@ -97,7 +103,11 @@ export const bash_JOB_OUTPUT_READ_MAX_CHARS = 32 * 1024;
 const WAIT_DEFAULT_MS = 30_000;
 const WAIT_POLL_MS = 2_000;
 
-const JOBS_USAGE = "Usage: jobs [-a] | jobs -o JOB\n";
+const JOBS_USAGE =
+	"Usage: jobs [-a] | jobs -o JOB | jobs --activity ACTIVITY_ID\n" +
+	"       jobs --transfers JOB [--cursor TOKEN] | jobs --call TOOL_CALL_ID [--cursor TOKEN] | jobs --calls [--cursor TOKEN]\n" +
+	"The --activity, --transfers, --call and --calls modes exit 0 when status was read, even while work is running.\n" +
+	"Use wait JOB to wait for a Bash job. Indexed search readiness is a separate current check.\n";
 const WAIT_USAGE = "Usage: wait [-t SECONDS] [JOB...]\n";
 const KILL_USAGE = "Usage: kill [-s SIGNAL | -SIGNAL] JOB...\n";
 const JOB_NUMBER_REGEX = /^%?(\d+)$/u;
@@ -164,6 +174,100 @@ function job_line(summary: ai_chat_files_list_thread_jobs_Result[number]) {
 	return `[${summary.jobNumber}] ${status} ${shell} ${summary.scriptPreview}${parent}\n`;
 }
 
+function activity_text(view: NonNullable<files_transfer_queries_get_activity_for_agent_Result>) {
+	const progress = view.progress;
+	return (
+		[
+			`Activity ${view.activityId}: ${view.kind} ${view.status}; result: ${view.resultKind === "ready_for_review" ? "pending changes for review" : "saved files"}.`,
+			`Phase: ${view.phase}.`,
+			...(progress
+				? [
+						`Items: ${progress.completed} completed, ${progress.skipped} skipped, ${progress.failed} failed, ${progress.blocked} blocked, ${progress.canceled} canceled; total: ${progress.total ?? "unknown"}.`,
+					]
+				: []),
+			`Indexed search: ${view.paths.state} (workspace; checked ${new Date(view.paths.checkedAt).toISOString()}).`,
+			...(view.nextAction ? [view.nextAction] : []),
+		].join("\n") + "\n"
+	);
+}
+
+function call_text(call: NonNullable<ai_chat_files_list_bash_transfers_for_agent_Result>["call"]) {
+	return `Call ${JSON.stringify(call.toolCallId)}: ${call.kind}${call.jobNumber === null ? "" : ` job ${call.jobNumber}`}, ${call.status}${call.phase ? `; ${call.phase}` : ""}; started ${new Date(call.createdAt).toISOString()}.\n`;
+}
+
+async function print_status(args: {
+	ctx: ActionCtx;
+	job: bash_JobContext;
+	mode:
+		| { kind: "activity"; activityId: string }
+		| { kind: "transfers"; jobNumber: number }
+		| { kind: "call"; toolCallId: string }
+		| { kind: "calls" };
+	cursor: string | null;
+}) {
+	const { ctx, job, mode } = args;
+	const unavailable = {
+		stdout: "",
+		stderr: "bash: jobs: status is unavailable\n",
+		exitCode: bash_COMMAND_EXIT_FAILURE,
+	};
+	if (mode.kind === "activity") {
+		const view = (await ctx.runQuery(internal.files_transfer_queries.get_activity_for_agent, {
+			...job_scope(job),
+			activityId: mode.activityId,
+		})) as files_transfer_queries_get_activity_for_agent_Result;
+		return view ? { stdout: activity_text(view), stderr: "", exitCode: 0 } : unavailable;
+	}
+	let cursor: string | null = null;
+	if (args.cursor !== null) {
+		const resolved = await bash_cursor_id_resolve(ctx, args.cursor);
+		if (resolved._nay) return { stdout: "", stderr: `${resolved._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+		cursor = resolved._yay;
+	}
+	let stdout = "";
+	let next: string[];
+	let page: { isDone: boolean; continueCursor: string };
+	if (mode.kind === "calls") {
+		const calls = (await ctx.runQuery(internal.ai_chat_files.list_bash_calls_for_agent, {
+			...job_scope(job),
+			paginationOpts: { cursor, numItems: 8 },
+		})) as ai_chat_files_list_bash_calls_for_agent_Result;
+		if (!calls) return unavailable;
+		stdout = "Calls in this chat, newest first. Restart without --cursor to see newer calls.\n";
+		for (const call of calls.page) {
+			stdout += call
+				? `${call_text(call)}  Inspect: jobs --call ${bash_shell_arg_quote(call.toolCallId)}\n`
+				: "Call: unavailable\n";
+		}
+		page = calls;
+		next = ["jobs", "--calls"];
+	} else {
+		const transfers = (await ctx.runQuery(internal.ai_chat_files.list_bash_transfers_for_agent, {
+			...job_scope(job),
+			select: mode.kind === "transfers" ? { jobNumber: mode.jobNumber } : { toolCallId: mode.toolCallId },
+			paginationOpts: { cursor, numItems: 20 },
+		})) as ai_chat_files_list_bash_transfers_for_agent_Result;
+		if (!transfers) return unavailable;
+		stdout = call_text(transfers.call) + "Accepted transfers at this check; a live call may accept more.\n";
+		// Transfer docs can be large. Read each status in its own bounded query.
+		for (const receipt of transfers.page) {
+			const view = (await ctx.runQuery(internal.files_transfer_queries.get_activity_for_agent, {
+				...job_scope(job),
+				activityId: receipt.activityId,
+			})) as files_transfer_queries_get_activity_for_agent_Result;
+			stdout += `Command ${receipt.commandNumber}:\n${view ? activity_text(view) : "Transfer: unavailable\n"}`;
+		}
+		page = transfers;
+		next =
+			mode.kind === "transfers" ? ["jobs", "--transfers", String(mode.jobNumber)] : ["jobs", "--call", mode.toolCallId];
+	}
+	if (!page.isDone) {
+		const nextCursor = await bash_cursor_id_create(ctx, page.continueCursor);
+		stdout += `Next page: ${[...next, "--cursor", nextCursor].map(bash_shell_arg_quote).join(" ")}\n`;
+	}
+	return { stdout, stderr: "", exitCode: 0 };
+}
+
 /**
  * `jobs -o N`: the stored stdout, then stderr, each with a `[truncated]` line when it is cut, then a
  * marker with the exit code `wait` reports for the same job. While the job runs it prints the head
@@ -182,7 +286,7 @@ async function print_job_output(args: { ctx: ActionCtx; job: bash_JobContext; jo
 		return { stdout: "", stderr: `bash: jobs: no such job ${jobNumber}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 	// `jobs` and `jobs -a` print the Activity status, so this marker must
 	// read it too. Otherwise a paused job would say running here while `jobs` calls it queued.
-	const liveMarker = `[job ${jobNumber} ${bash_job_status_word(output.activityStatus)}]\n`;
+	const liveMarker = `[job ${jobNumber} ${bash_job_status_word(output.activityStatus)}${output.phase ? `; ${output.phase}` : ""}]\n`;
 	// A live job that flushed nothing yet gets the marker alone: it names the job and says the job is
 	// not done. That line costs no read budget. Liveness is the Activity's, like the word above and
 	// like `jobs` and `wait`. The invocation row calls itself interrupted the moment its deadline
@@ -245,9 +349,33 @@ export function bash_jobs_command_create(ctx: ActionCtx, job: bash_JobContext): 
 	return defineCommand("jobs", async (args) => {
 		let all = false;
 		let outputOf: number | null = null;
+		let mode: Parameters<typeof print_status>[0]["mode"] | null = null;
+		let cursor: string | null = null;
 		for (let index = 0; index < args.length; index++) {
 			const arg = args[index]!;
 			if (arg === "--help") return { stdout: JOBS_USAGE, stderr: "", exitCode: 0 };
+			if (arg === "--cursor") {
+				if (cursor !== null || !args[index + 1] || args[index + 1]!.startsWith("-"))
+					return usage_error("jobs: --cursor needs one cursor", JOBS_USAGE);
+				cursor = args[++index]!;
+				continue;
+			}
+			if (arg === "--activity" || arg === "--transfers" || arg === "--call" || arg === "--calls") {
+				if (mode) return usage_error("jobs: choose one status mode", JOBS_USAGE);
+				if (arg === "--calls") mode = { kind: "calls" };
+				else {
+					const value = args[++index];
+					if (!value || value.startsWith("-")) return usage_error(`jobs: ${arg} needs a value`, JOBS_USAGE);
+					if (arg === "--transfers") {
+						const jobNumber = parse_job_number(value);
+						if (jobNumber === null || !Number.isSafeInteger(jobNumber) || jobNumber < 1)
+							return usage_error("jobs: --transfers needs a job number", JOBS_USAGE);
+						mode = { kind: "transfers", jobNumber };
+					} else
+						mode = arg === "--activity" ? { kind: "activity", activityId: value } : { kind: "call", toolCallId: value };
+				}
+				continue;
+			}
 			if (arg === "-a") {
 				all = true;
 				continue;
@@ -260,6 +388,9 @@ export function bash_jobs_command_create(ctx: ActionCtx, job: bash_JobContext): 
 			}
 			return usage_error(`jobs: unsupported argument ${arg}`, JOBS_USAGE);
 		}
+		if ((mode && (all || outputOf !== null)) || (cursor !== null && (!mode || mode.kind === "activity")))
+			return usage_error("jobs: incompatible options", JOBS_USAGE);
+		if (mode) return await print_status({ ctx, job, mode, cursor });
 		if (outputOf !== null) return await print_job_output({ ctx, job, jobNumber: outputOf });
 
 		const jobs = (await ctx.runQuery(internal.ai_chat_files.list_thread_jobs, {

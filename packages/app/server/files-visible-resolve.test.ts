@@ -4,7 +4,21 @@ import type { Id } from "../convex/_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
-import { files_visible_resolve_db_create } from "./files-visible-resolve.ts";
+import { files_visible_resolve_db_create, type files_visible_resolve_Store } from "./files-visible-resolve.ts";
+
+function saved_work() {
+	const docs = new Map<string, string>();
+	const store: files_visible_resolve_Store = {
+		get: async (key) => docs.get(key) ?? null,
+		set: async (key, value) => {
+			docs.set(key, value);
+		},
+		delete: async (key) => {
+			docs.delete(key);
+		},
+	};
+	return { store, docs };
+}
 
 async function fixture() {
 	const t = test_convex();
@@ -51,6 +65,119 @@ async function fixture() {
 }
 
 describe("files_visible_resolve_db_create", () => {
+	test("resumes a path deeper than 256 targets without returning a budget miss", async () => {
+		const f = await fixture();
+		const depth = 270;
+		const leaf = await f.t.run(async (ctx) => {
+			let parentId: Id<"files_nodes"> | "root" = "root";
+			for (let index = 0; index < depth; index++)
+				parentId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId,
+					name: "a",
+					sortName: "a",
+					kind: "folder",
+				});
+			return parentId as Id<"files_nodes">;
+		});
+		const { store, docs } = saved_work();
+		let slices = 0;
+		while (true) {
+			const result = await f.t.run(async (ctx) => {
+				const reader = files_visible_resolve_db_create(ctx.db, {
+					...f.db,
+					readLimit: 4,
+					resume: { store, fence: "same-view" },
+				});
+				return await reader.resume({ kind: "target", target: { kind: "saved", id: leaf } }, { stepLimit: 32 });
+			});
+			slices++;
+			if (result.status === "unfinished") {
+				expect(slices).toBeLessThan(3000);
+				continue;
+			}
+			expect(result.status).toBe("resolved");
+			if (result.status === "resolved") expect(result.value?.entry.path).toBe("/a".repeat(depth));
+			break;
+		}
+		expect(slices).toBeGreaterThan(1);
+		expect(docs.has("record:resolved:saved:" + leaf)).toBe(true);
+	});
+
+	test("rejects saved resolver work after its fence changes", async () => {
+		const f = await fixture();
+		const target = await f.create_saved("a");
+		const { store } = saved_work();
+		const first = await f.t.run(async (ctx) =>
+			files_visible_resolve_db_create(ctx.db, {
+				...f.db,
+				resume: { store, fence: "before" },
+			}).resume({ kind: "target", target }, { stepLimit: 1 }),
+		);
+		expect(first.status).toBe("unfinished");
+		const next = await f.t.run(async (ctx) =>
+			files_visible_resolve_db_create(ctx.db, {
+				...f.db,
+				resume: { store, fence: "after" },
+			}).resume({ kind: "target", target }),
+		);
+		expect(next).toEqual({ status: "invalidated" });
+	});
+
+	test("saved-only path resolution ignores private moves and claims", async () => {
+		const f = await fixture();
+		const folder = await f.create_saved("a");
+		await f.draft_move(folder, { kind: "root" }, "b");
+		const { store } = saved_work();
+		for (const [path, expected] of [["/a", "resolved"], ["/b", "hidden"]] as const) {
+			let slices = 0;
+			while (true) {
+				const result = await f.t.run(async (ctx) => files_visible_resolve_db_create(ctx.db, {
+					...f.db, pending: false, resume: { store, fence: "saved-only" },
+				}).resume({ kind: "path", path }, { stepLimit: 8 }));
+				if (result.status === "unfinished") {
+					expect(++slices).toBeLessThan(100);
+					continue;
+				}
+				expect(result.status).toBe(expected);
+				if (result.status === "resolved") expect(result.value?.entry.pendingUpdate).toBeNull();
+				break;
+			}
+		}
+	});
+
+	test("resumes exact paths and reports the nearest applied move", async () => {
+		const f = await fixture();
+		const folder = await f.create_saved("a");
+		await f.create_saved("a/child");
+		await f.draft_move(folder, { kind: "root" }, "b");
+		const { store } = saved_work();
+		let slices = 0;
+		while (true) {
+			const result = await f.t.run(async (ctx) =>
+				files_visible_resolve_db_create(ctx.db, {
+					...f.db,
+					resume: { store, fence: "same-view" },
+				}).resume({ kind: "path", path: "/b/child" }, { stepLimit: 8 }),
+			);
+			if (result.status === "unfinished") {
+				expect(++slices).toBeLessThan(100);
+				continue;
+			}
+			expect(result.status).toBe("resolved");
+			if (result.status === "resolved") {
+				expect(result.value?.entry.path).toBe("/b/child");
+				expect(result.value?.moveApplied).toBe(false);
+				expect(result.value?.appliedMoveTarget).toEqual(folder);
+			}
+			break;
+		}
+	});
+
 	test("includeHidden returns hidden targets with their path, and no path stays null", async () => {
 		const f = await fixture();
 

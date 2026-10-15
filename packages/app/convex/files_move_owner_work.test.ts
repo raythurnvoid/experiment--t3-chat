@@ -465,9 +465,9 @@ test("public Move joins empty owner phases in one step", async () => {
 		_yay: null,
 	});
 	await test_finish_transfer_run(asUser, runId, undefined, { stepwise: true });
-	expect((await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
-		"succeeded",
-	);
+	expect(
+		(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status,
+	).toBe("succeeded");
 	expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toMatchObject({
 		_id: sourceId,
 		parentId: target._yay.nodeId,
@@ -558,7 +558,9 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 			overlayUserId: proposal.userId,
 			path: "/target/source.md",
 		});
-		expect(metadata?.sourceKind, "Indexed metadata keeps an unselected pending branch after publication").toBe("pending");
+		expect(metadata?.sourceKind, "Indexed metadata keeps an unselected pending branch after publication").toBe(
+			"pending",
+		);
 		expect(metadata?.fields.sort(), "Indexed metadata keeps all pending fields after publication").toEqual(
 			originals[0]!.metadata
 				.filter((doc) => doc.docKind === "field")
@@ -578,8 +580,8 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 	}
 	await test_finish_transfer_run(f.asUser, f.runId);
 	expect(
-		(await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.db.membershipId, runId: f.runId }))?.activity
-			.status,
+		(await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.db.membershipId, runId: f.runId }))
+			?.activity.status,
 	).toBe("succeeded");
 	for (const [index, proposal] of f.proposals.entries()) {
 		const final = await pending_scope_docs(f, proposal);
@@ -625,8 +627,8 @@ test("public Stop restores a partly staged unselected pending scope page", async
 	);
 	await test_finish_transfer_run(f.asUser, f.runId);
 	expect(
-		(await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.db.membershipId, runId: f.runId }))?.activity
-			.status,
+		(await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.db.membershipId, runId: f.runId }))
+			?.activity.status,
 	).toBe("canceled");
 	expect(await pending_scope_docs(f, proposal), "abort restores original pending content and metadata IDs").toEqual(
 		original,
@@ -1368,7 +1370,11 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 					),
 					"unrelated drafts need no source reservation",
 				).toBeNull();
-			const metadata = await t.query(internal.files_metadata.get_index_values_by_path, { ...scope, overlayUserId: db.userId, path });
+			const metadata = await t.query(internal.files_metadata.get_index_values_by_path, {
+				...scope,
+				overlayUserId: db.userId,
+				path,
+			});
 			expect(metadata?.sourceKind).toBe(proposal.target.kind === "private" ? "pending" : "committed");
 			expect(metadata?.fields.sort()).toEqual(
 				originalDocs[index]!.metadata.filter((row) => row.docKind === "field")
@@ -1411,9 +1417,9 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 	}
 	await check_unrelated(true);
 	await test_finish_transfer_run(asUser, runId);
-	expect((await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
-		"succeeded",
-	);
+	expect(
+		(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status,
+	).toBe("succeeded");
 	await check_unrelated(true);
 }, 600_000);
 
@@ -1442,7 +1448,7 @@ test("collects and stages several native owner pages once, then keeps chosen IDs
 			.collect(),
 	);
 	expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))?.pendingWorkCount).toBe(0);
-	expect(await cleanup(f, "finish"), "the final native owner page is reported").toEqual({ done: true, paged: true });
+	expect(await cleanup(f, "finish"), "all owner cleanup phases finish").toMatchObject({ done: true });
 	for (const work of staged) {
 		if (work.afterPlaceId)
 			expect(
@@ -1461,6 +1467,120 @@ test("collects and stages several native owner pages once, then keeps chosen IDs
 		"unselected proposal headers are preserved",
 	).toEqual(originals);
 	expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))?.pendingWorkCount).toBe(0);
+});
+
+test.each([5, 6, 7])("resumes saved owner cleanup phase %i before the new typed cleanup", async (startPhase) => {
+	const f = await fixture();
+	if (startPhase === 7) await add_owners(f, 1);
+	await collect(f);
+	await stage(f);
+	const mode = startPhase === 6 ? "abort" : "finish";
+	const seeded = await f.t.run(async (ctx) => {
+		const cohort = (await ctx.db.get("files_move_cohorts", f.cohortId))!;
+		const ranges = await ctx.db
+			.query("files_move_work_ranges")
+			.withIndex("by_cohort_order", (q) => q.eq("cohortId", f.cohortId))
+			.collect();
+		const pendingRange = startPhase === 6 ? ranges.find((range) => range.phase === "collect")! : null;
+		if (pendingRange) await ctx.db.patch("files_move_work_ranges", pendingRange._id, { status: "queued" });
+		let page: string | null = null;
+		if (startPhase === 7) {
+			const first = await ctx.db
+				.query("files_move_owner_work")
+				.withIndex("by_cohort_order", (q) => q.eq("cohortId", f.cohortId))
+				.paginate({ cursor: null, numItems: 1 });
+			expect(first.isDone).toBe(false);
+			await ctx.db.patch("files_move_owner_work", first.page[0]!._id, { status: "materialized" });
+			page = first.continueCursor;
+		}
+		const rangeId = await ctx.db.insert("files_move_work_ranges", {
+			cohortId: f.cohortId,
+			key: `owner-${mode}`,
+			kind: "finish",
+			range: { kind: "cohort" },
+			phase: mode,
+			nodeRecordId: null,
+			ownerWorkId: null,
+			order: ranges.length,
+			status: "queued",
+			cursor: JSON.stringify({ phase: startPhase, view: "before", page }),
+			generation: 1,
+			attemptFence: f.attemptFence,
+			workId: null,
+			nextAttemptAt: Date.now(),
+			processedCount: 0,
+		});
+		await ctx.db.patch("files_move_cohorts", f.cohortId, {
+			phase: mode === "finish" ? "finishing" : "aborting",
+			workPhase: mode === "finish" ? "finish_owners" : "abort_owners",
+			visibleView: mode === "finish" ? "after" : "before",
+			pendingWorkCount: cohort.pendingWorkCount + 1 + (pendingRange ? 1 : 0),
+		});
+		const types = await ctx.db.query("files_pending_type_entries").collect();
+		expect(types.some((entry) => entry.moveView?.cohortId === f.cohortId)).toBe(true);
+		const workIds = [];
+		for (const view of ["before", "after"] as const)
+			workIds.push(
+				await ctx.db.insert("files_pending_overlay_resolve_work", {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					userId: f.db.userId,
+					target: { kind: "saved", id: f.nodeId },
+					moveView: { cohortId: f.cohortId, view },
+					key: "state",
+					value: "{}",
+				}),
+			);
+		return { rangeId, pendingRangeId: pendingRange?._id, types, workIds };
+	});
+	const first = await mutation(f, (ctx) =>
+		mode === "finish"
+			? files_move_owner_work_db_finish(ctx, step_args(f))
+			: files_move_owner_work_db_abort(ctx, step_args(f)),
+	);
+	expect(first._nay).toBeUndefined();
+	expect(first._yay?.done, "saved phases run before appended typed cleanup").toBe(false);
+	if (startPhase === 5) {
+		expect(
+			await f.t.run((ctx) =>
+				ctx.db
+					.query("files_move_owner_list_keys")
+					.withIndex("by_cohort", (q) => q.eq("cohortId", f.cohortId))
+					.collect(),
+			),
+			"phase 5 still clears list-key claims",
+		).toEqual([]);
+	} else if (startPhase === 6) {
+		expect(
+			(await f.t.run((ctx) => ctx.db.get("files_move_work_ranges", seeded.pendingRangeId!)))?.status,
+			"phase 6 still retires unfinished collect work",
+		).toBe("complete");
+	} else {
+		const work = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_move_owner_work")
+				.withIndex("by_cohort_order", (q) => q.eq("cohortId", f.cohortId))
+				.collect(),
+		);
+		expect(
+			work.every((entry) => entry.status === "materialized"),
+			"phase 7 keeps its native owner cursor",
+		).toBe(true);
+	}
+	await cleanup(f, mode);
+	const keep = mode === "finish" ? "after" : "before";
+	for (const entry of seeded.types) {
+		if (entry.moveView?.cohortId !== f.cohortId) continue;
+		const current = await f.t.run((ctx) => ctx.db.get("files_pending_type_entries", entry._id));
+		if (entry.moveView.view === keep) {
+			expect(current?.target).toEqual(entry.target);
+			expect(current?.moveView).toBeUndefined();
+		}
+		else expect(current).toBeNull();
+	}
+	for (const id of seeded.workIds)
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_overlay_resolve_work", id))).toBeNull();
+	expect((await f.t.run((ctx) => ctx.db.get("files_move_work_ranges", seeded.rangeId)))?.status).toBe("complete");
 });
 
 test.each([8, 9, 13])(

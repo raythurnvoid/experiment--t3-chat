@@ -21,7 +21,7 @@ export const plugins_RUNTIME_VERSION = "1";
  * Keep one value through a multi-step rollout, or invalidate every verdict produced by the interim
  * steps before any of them can authorize a publish.
  */
-export const plugins_REVIEW_POLICY_VERSION = "17";
+export const plugins_REVIEW_POLICY_VERSION = "18";
 
 const MANIFEST_SCHEMA_VERSION = 1;
 const EVENT_TYPES = ["files.upload.completed", "users.account.deleted", "schedule.interval.elapsed"] as const;

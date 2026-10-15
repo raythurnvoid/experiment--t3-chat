@@ -222,6 +222,8 @@ export const ai_chat_bash_result_validator = v.object({
 	stderr: v.string(),
 	metadata: v.object({
 		command: v.string(),
+		/** The originating call's read-only recovery handle. */
+		toolCallId: v.optional(v.string()),
 		cwd: v.string(),
 		nextCwd: v.string(),
 		exitCode: v.number(),
@@ -461,6 +463,23 @@ export const files_pending_parent_validator = v.union(
 	...files_pending_target_validator.members,
 	v.object({ kind: v.literal("root") }),
 );
+
+const files_type_query_key_validator = v.object({
+	path: v.string(),
+	createdAt: v.number(),
+	target: files_pending_target_validator,
+});
+
+export const files_type_query_item_validator = v.object({
+	target: files_pending_target_validator,
+	path: v.string(),
+	contentType: v.union(v.string(), v.null()),
+});
+
+const files_type_query_candidate_validator = v.object({
+	key: files_type_query_key_validator,
+	kind: v.union(v.literal("file"), v.literal("folder")),
+});
 
 export const files_move_view_validator = v.union(v.literal("before"), v.literal("after"));
 
@@ -1845,6 +1864,29 @@ const app_convex_schema = defineSchema({
 						}),
 					),
 				),
+				find: v.optional(
+					v.union(
+						v.object({
+							phase: v.literal("waiting"),
+							queryId: v.id("files_type_queries"),
+							step: v.number(),
+							commandNumber: v.number(),
+							expandedArgs: v.array(v.string()),
+							lastArg: v.string(),
+							shellPrefix: v.string(),
+							dbPrefix: v.string(),
+						}),
+						v.object({
+							phase: v.literal("delivering"),
+							queryId: v.id("files_type_queries"),
+							step: v.number(),
+							commandNumber: v.number(),
+							lastArg: v.string(),
+							workId: vWorkId,
+							result: v.object({ stdout: v.string(), stderr: v.string(), exitCode: v.number() }),
+						}),
+					),
+				),
 				watchdogId: v.union(v.id("_scheduled_functions"), v.null()),
 				stopRequestedAt: v.union(v.number(), v.null()),
 				/**
@@ -3010,6 +3052,88 @@ const app_convex_schema = defineSchema({
 		structurePinnedUntil: v.optional(v.number()),
 	}).index("by_workspace", ["organizationId", "workspaceId"]),
 
+	/**
+	 * One live indexed MIME search. Only requested searches own this state.
+	 * Source docs stay shared; stream and resolver work live in separate docs.
+	 */
+	files_type_queries: defineTable({
+		organizationId: files_committed_index_fields.organizationId,
+		workspaceId: files_committed_index_fields.workspaceId,
+		userId: v.id("users"),
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
+		// Present only for the exact temporary tree pinned by the plugin review host.
+		pluginReviewRoot: v.optional(v.string()),
+		overlay: v.boolean(),
+		rootPath: v.string(),
+		contentType: v.string(),
+		directoriesOnly: v.boolean(),
+		limit: v.number(),
+		expiresAt: v.number(),
+		state: v.union(v.literal("preparing"), v.literal("running"), v.literal("done"), v.literal("canceled")),
+		root: v.union(files_pending_parent_validator, v.null()),
+		pin: v.union(v.string(), v.null()),
+		resolverGeneration: v.number(),
+		step: v.number(),
+		lease: v.union(v.object({ token: v.string(), until: v.number() }), v.null()),
+	})
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	files_type_query_streams: defineTable({
+		queryId: v.id("files_type_queries"),
+		kind: v.union(v.literal("saved"), v.literal("content"), v.literal("move")),
+		moveTargetId: v.union(v.id("files_nodes"), v.null()),
+		savedPrefix: v.string(),
+		ownerPrefix: v.string(),
+		lastKey: v.union(files_type_query_key_validator, v.null()),
+		done: v.boolean(),
+		lowerPath: v.string(),
+		lowerCreatedAt: v.number(),
+		lowerTargetKind: v.string(),
+		lowerTargetId: v.string(),
+		// One native page per selected source, followed by their common safe frontier.
+		readSource: v.number(),
+		readPhase: v.number(),
+		readCursor: v.union(v.string(), v.null()),
+		batches: v.array(
+			v.object({
+				items: v.array(files_type_query_candidate_validator),
+				frontier: v.union(files_type_query_key_validator, v.null()),
+				done: v.boolean(),
+			}),
+		),
+		buffer: v.array(files_type_query_candidate_validator),
+		windowEnd: v.union(files_type_query_key_validator, v.null()),
+		windowDone: v.boolean(),
+	})
+		.index("by_query_done_lower", [
+			"queryId",
+			"done",
+			"lowerPath",
+			"lowerCreatedAt",
+			"lowerTargetKind",
+			"lowerTargetId",
+		])
+		.index("by_query_kind_moveTarget", ["queryId", "kind", "moveTargetId"])
+		.index("by_query", ["queryId"]),
+
+	/** Keep retries on the same page, even when the response was lost. */
+	files_type_query_steps: defineTable({
+		queryId: v.id("files_type_queries"),
+		step: v.number(),
+		items: v.array(files_type_query_item_validator),
+		sealed: v.boolean(),
+		isDone: v.boolean(),
+	}).index("by_query_step", ["queryId", "step"]),
+
+	/** One bounded resolver frame or memo per key. The number of keys has no page cap. */
+	files_type_query_work: defineTable({
+		queryId: v.id("files_type_queries"),
+		key: v.string(),
+		value: v.string(),
+	}).index("by_query_key", ["queryId", "key"]),
+
 	files_pending_holds: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -3946,6 +4070,110 @@ const app_convex_schema = defineSchema({
 		}),
 
 	/**
+	 * Explicit pending file types and applied move references. Hidden and pathless docs keep
+	 * the dependency that path jobs must revisit. Move-only docs never copy saved MIME.
+	 */
+	files_pending_type_entries: defineTable({
+		moveView: v.optional(files_move_view_tag_validator),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		pendingUpdateId: v.id("files_pending_updates"),
+		target: files_pending_target_validator,
+		parent: files_pending_parent_validator,
+		name: v.string(),
+		kind: v.union(v.literal("file"), v.literal("folder")),
+		sourceKind: v.union(v.literal("content"), v.literal("move")),
+		ownerTreePath: v.string(),
+		isPathless: v.boolean(),
+		isVisible: v.boolean(),
+		nodeCreationTime: v.number(),
+		contentTypeEssence: v.union(v.string(), v.null()),
+		contentTypeFamily: v.union(v.string(), v.null()),
+	})
+		.index("by_org_ws_user_visible_source_type_tree", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"moveView.cohortId",
+			"moveView.view",
+			"isVisible",
+			"sourceKind",
+			"contentTypeEssence",
+			"ownerTreePath",
+			"nodeCreationTime",
+			"target.kind",
+			"target.id",
+		])
+		.index("by_org_ws_user_visible_source_family_tree", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"moveView.cohortId",
+			"moveView.view",
+			"isVisible",
+			"sourceKind",
+			"contentTypeFamily",
+			"ownerTreePath",
+			"nodeCreationTime",
+			"target.kind",
+			"target.id",
+		])
+		.index("by_org_ws_user_visible_source_tree", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"moveView.cohortId",
+			"moveView.view",
+			"isVisible",
+			"sourceKind",
+			"ownerTreePath",
+			"nodeCreationTime",
+			"target.kind",
+			"target.id",
+		])
+		.index("by_org_ws_user_ownerTreePath", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"moveView.cohortId",
+			"moveView.view",
+			"ownerTreePath",
+		])
+		.index("by_org_ws_user_isPathless", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"moveView.cohortId",
+			"moveView.view",
+			"isPathless",
+		])
+		.index("by_org_ws_parent_name", [
+			"organizationId",
+			"workspaceId",
+			"moveView.cohortId",
+			"moveView.view",
+			"parent.kind",
+			"parent.id",
+			"name",
+		])
+		.index("by_org_ws_user_parent_name", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"moveView.cohortId",
+			"moveView.view",
+			"parent.kind",
+			"parent.id",
+			"name",
+		])
+		.index("by_target_user", ["target.kind", "target.id", "userId", "moveView.cohortId", "moveView.view"])
+		.index("by_pendingUpdate", ["pendingUpdateId", "moveView.cohortId", "moveView.view"])
+		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
+		.index("by_user", ["userId", "moveView.cohortId", "moveView.view"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
 	 * Metadata of places, so agent metadata search shows drafts at their new path. One doc per
 	 * metadata doc the owner sees for a place. The other fields copy the place; a read drops a doc
 	 * whose copy no longer matches its place.
@@ -4092,6 +4320,21 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_user", ["userId", "moveView.cohortId", "moveView.view"]),
 
+	/** Bounded resolver records for one real pending target or staged Move owner. */
+	files_pending_overlay_resolve_work: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		target: files_pending_target_validator,
+		moveView: v.optional(files_move_view_tag_validator),
+		key: v.string(),
+		value: v.string(),
+	})
+		.index("by_target_key", ["target.kind", "target.id", "userId", "moveView.cohortId", "moveView.view", "key"])
+		.index("by_user", ["userId"])
+		.index("by_org_ws", ["organizationId", "workspaceId"])
+		.index("by_move_view", ["moveView.cohortId", "moveView.view"]),
+
 	/**
 	 * Durable task docs of the overlay jobs: one doc per (kind, key). A second schedule patches the
 	 * doc and starts its cursor again, never a second chain. A recover cron restarts late docs.
@@ -4128,6 +4371,11 @@ const app_convex_schema = defineSchema({
 				 * One old path of the changed folder. The job walks the owner's places under it.
 				 */
 				prefix: v.string(),
+			}),
+			v.object({
+				...files_pending_overlay_job_fields,
+				kind: v.literal("repair_user"),
+				userId: v.id("users"),
 			}),
 			v.object({
 				...files_pending_overlay_job_fields,
@@ -5893,7 +6141,12 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_user_workspace_request", ["userId", "workspaceId", "requestId"])
 		.index("by_user_source_workspace_kind_inFlight", ["userId", "sourceScope.workspaceId", "kind", "inFlight"])
-		.index("by_user_destination_workspace_kind_inFlight", ["userId", "destinationScope.workspaceId", "kind", "inFlight"])
+		.index("by_user_destination_workspace_kind_inFlight", [
+			"userId",
+			"destinationScope.workspaceId",
+			"kind",
+			"inFlight",
+		])
 		.index("by_targetParent", ["targetParent.kind", "targetParent.id"])
 		.index("by_preparedParent", ["preparedParent.kind", "preparedParent.id"])
 		.index("by_retryOf", ["retryOf", "step"])
@@ -8190,7 +8443,13 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_source_id", ["source.id"])
 		.index("by_user_workspace_source_kind_status", ["userId", "workspaceId", "source.kind", "status"])
-		.index("by_user_workspace_source_kind_isRename_status", ["userId", "workspaceId", "source.kind", "source.isRename", "status"])
+		.index("by_user_workspace_source_kind_isRename_status", [
+			"userId",
+			"workspaceId",
+			"source.kind",
+			"source.isRename",
+			"status",
+		])
 		.index("by_status_deadlineAt", ["status", "deadlineAt"])
 		.index("by_status_expiresAt", ["status", "expiresAt"])
 		.index("by_organization_workspace_source_event_status_updatedAt", [
@@ -8520,6 +8779,15 @@ const app_convex_schema = defineSchema({
 		revision: v.number(),
 		oldestRevision: v.number(),
 	}).index("by_key", ["key"]),
+
+	/**
+	 * Permission pins for saved Files resolver work. Null workspace covers organization roles.
+	 */
+	files_access_versions: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.null()),
+		revision: v.number(),
+	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	/**
 	 * Ordered feed of access-control events. Remote plugin hosts replay it by `revision` to refresh

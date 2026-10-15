@@ -28,6 +28,7 @@ import {
 	files_ancestor_ids,
 	files_ROOT_ID,
 	files_guess_content_type_from_name,
+	files_content_type_index_fields,
 	files_u8_to_array_buffer,
 	files_yjs_root_kind_of_content_type,
 } from "../shared/files.ts";
@@ -278,6 +279,7 @@ export async function seed_organization_node(args: {
 		...files_ancestor_fields(parent ? [...files_ancestor_ids(parent), parent._id] : []),
 		lowercaseExtension: dotIndex <= 0 || dotIndex === name.length - 1 ? null : name.slice(dotIndex + 1).toLowerCase(),
 		contentType: seedContentType,
+		...files_content_type_index_fields(seedContentType),
 		textKind: spec.withoutYjsState ? null : seedRootKind,
 		collaborationEnabled: spec.withoutYjsState ? null : !spec.nonCollaborative,
 		updatedAt,

@@ -52,6 +52,13 @@ A Bash background job is the one producer that moves an Activity backwards. A jo
 from `running` back to `queued` while it waits for its next run, and `startedAt` keeps the first
 start. Read a paused job as still alive, not as one that never started.
 
+A plain background MIME `find` uses this same Bash Activity while its search prepares.
+Its phase is available through an explicit job status read. Stored stdout/stderr contains
+only actual command output. Stop cancels the search, not shared pending-path jobs.
+Move/Copy status reads report Activity completion and current indexed-search readiness
+as separate facts. A finished transfer can have later path work; a ready search does not
+mean proposed changes were saved.
+
 `activities_db_finish` accepts only active work. A late callback cannot change a finished result
 or extend its retention. Transfer, review, and protection producers use `activities_get_result_status` for
 natural completion, with counts from their item receipts:

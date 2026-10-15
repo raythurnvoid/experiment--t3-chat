@@ -89,6 +89,7 @@ import type * as files_transfer_media from "../files_transfer_media.js";
 import type * as files_transfer_queries from "../files_transfer_queries.js";
 import type * as files_tree from "../files_tree.js";
 import type * as files_tree_db from "../files_tree_db.js";
+import type * as files_type_queries from "../files_type_queries.js";
 import type * as files_updated_by from "../files_updated_by.js";
 import type * as files_visible from "../files_visible.js";
 import type * as files_visible_db from "../files_visible_db.js";
@@ -247,6 +248,7 @@ declare const fullApi: ApiFromModules<{
   files_transfer_queries: typeof files_transfer_queries;
   files_tree: typeof files_tree;
   files_tree_db: typeof files_tree_db;
+  files_type_queries: typeof files_type_queries;
   files_updated_by: typeof files_updated_by;
   files_visible: typeof files_visible;
   files_visible_db: typeof files_visible_db;

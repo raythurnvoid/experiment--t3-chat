@@ -71,6 +71,20 @@ and `organizations_membership_lifetimes`. See [external plugin identity](../auth
 
 ## Paged media validation
 
+Long Files reads also use `files_access_versions`. The mutation wrapper captures permission changes
+through `server/files-access-version.ts`. Organization clocks cover owner changes, custom role
+permissions, and role assignments. Workspace clocks cover human read grants, membership lifetimes,
+active membership, and saved scope pointers. Each mutation bumps a changed scope once. Profile,
+content, metadata, unchanged patches, and independent service-account grants do not bump it.
+The clocks have no per-user file copies and do not depend on an external service lease.
+
+A resumed Files resolver pins both clock identity and revision. It also pins the saved view, saved
+structure, and the owner's pending revision. The caller checks live user, membership, chat, source,
+and installation authority on each step and before returning a page. A changed pin invalidates old
+permission answers. The canonical permission check still owns the rule for dead restricted scopes;
+the resolver does not add another permission model. Workspace and organization purge remove these
+clocks, and the wrapper never recreates them after the tenant is gone.
+
 `files_media_validation.ts` keeps small organization and workspace version docs. Copy and Save
 pin both doc identity and revision, plus the owner's pending version. These are validation tokens,
 not permission caches. Final publication still checks current access.

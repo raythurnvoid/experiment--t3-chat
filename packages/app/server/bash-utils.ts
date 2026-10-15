@@ -460,6 +460,10 @@ type DbFilesContext = {
 	 * Original chat scope and membership used by live file checks.
 	 */
 	agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
+	/**
+	 * Exact temporary source tree supplied only by the plugin review host.
+	 */
+	pluginReviewRoot?: string;
 };
 
 export type bash_DbFilesFsOptions = {

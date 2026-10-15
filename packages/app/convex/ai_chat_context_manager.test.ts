@@ -234,45 +234,57 @@ describe("/api/chat history compaction", () => {
 });
 
 describe("/api/chat tool output clearing", () => {
-	test("keeps the newest 3 tool outputs once the measured input passes 100k tokens", async () => {
-		const fx = await setup();
-		// Five steps each read a different missing image, then one step answers. The provider says
-		// every step read 150k tokens.
-		provider.model = new MockLanguageModelV3({
-			doStream: async () => {
-				const index = provider.model!.doStreamCalls.length - 1;
-				return step_stream({
-					step:
-						index < 5
-							? {
-									toolCallId: `read-${index}`,
-									toolName: "view_image",
-									input: { workspace: "current", path: `/missing-${index}.png` },
-								}
-							: { text: "Done" },
-					inputTokens: 150_000,
-				});
-			},
-		});
-		await send(fx, { messageId: "read-images", text: "Read the images.", parentId: null });
-
-		const calls = provider.model.doStreamCalls;
-		expect(calls).toHaveLength(6);
-		const results = tool_results(calls[5]!);
-		for (const id of ["read-0", "read-1"]) {
-			expect(results.get(id)).toEqual({
-				type: "text",
-				value: "[Older tool output cleared to save context. Run the tool again if you need it.]",
+	test.each(["view_image", "bash"] as const)(
+		"keeps the newest 3 %s outputs and gives safe recovery guidance",
+		async (toolName) => {
+			const fx = await setup();
+			// Five steps each read a different missing image, then one step answers. The provider says
+			// every step read 150k tokens.
+			provider.model = new MockLanguageModelV3({
+				doStream: async () => {
+					const index = provider.model!.doStreamCalls.length - 1;
+					return step_stream({
+						step:
+							index < 5
+								? {
+										toolCallId: `read-${index}`,
+										toolName,
+										input:
+											toolName === "bash"
+												? { command: `printf ready-${index}` }
+												: { workspace: "current", path: `/missing-${index}.png` },
+									}
+								: { text: "Done" },
+						inputTokens: 150_000,
+					});
+				},
 			});
-		}
-		for (const id of ["read-2", "read-3", "read-4"]) {
-			expect(JSON.stringify(results.get(id))).not.toContain("cleared to save context");
-		}
+			await send(fx, { messageId: "read-images", text: "Read the images.", parentId: null });
 
-		// The saved reply keeps every output.
-		const steps = await fx.t.run((ctx) => ctx.db.query("ai_chat_run_steps").collect());
-		expect(JSON.stringify(steps)).not.toContain("cleared to save context");
-	});
+			const calls = provider.model.doStreamCalls;
+			expect(calls).toHaveLength(6);
+			const results = tool_results(calls[5]!);
+			for (const id of ["read-0", "read-1"]) {
+				if (toolName === "bash") {
+					expect(results.get(id)).toEqual({
+						type: "text",
+						value: `[Older Bash output cleared to save context. Inspect accepted work with jobs --call '${id}', or jobs --calls if the call is unavailable. Do not rerun a write to check whether it happened.]`,
+					});
+				} else
+					expect(results.get(id)).toEqual({
+						type: "text",
+						value: "[Older tool output cleared to save context. Run the tool again if you need it.]",
+					});
+			}
+			for (const id of ["read-2", "read-3", "read-4"]) {
+				expect(JSON.stringify(results.get(id))).not.toContain("cleared to save context");
+			}
+
+			// The saved reply keeps every output.
+			const steps = await fx.t.run((ctx) => ctx.db.query("ai_chat_run_steps").collect());
+			expect(JSON.stringify(steps)).not.toContain("cleared to save context");
+		},
+	);
 
 	test("keeps every output of the last step, even past the newest 3", async () => {
 		const fx = await setup();

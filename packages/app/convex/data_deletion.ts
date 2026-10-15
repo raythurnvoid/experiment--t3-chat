@@ -57,6 +57,7 @@ import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts"
 import { files_subtree_ops_db_delete, files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
 import { files_db_delete_pending_update, files_db_expire_pending_update_operation_batch } from "../server/files.ts";
 import { files_pending_overlay_db_delete_job } from "../server/files-pending-overlay.ts";
+import { files_type_query_db_delete_batch } from "../server/files-type-query.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { users_db_delete_auth_billing_and_activity_docs } from "./users.ts";
@@ -391,6 +392,20 @@ async function db_drain_pending_overlay_docs_batch(
 		| { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> }
 	) & { batchSize: number },
 ) {
+	const search =
+		"userId" in args
+			? await ctx.db
+					.query("files_type_queries")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.first()
+			: await ctx.db
+					.query("files_type_queries")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.first();
+	if (search) return await files_type_query_db_delete_batch(ctx.db, search._id, args.batchSize);
+
 	// A job whose task doc is gone does nothing, so its scheduled run needs no cancel.
 	const jobs =
 		"userId" in args
@@ -408,6 +423,39 @@ async function db_drain_pending_overlay_docs_batch(
 		// Lower the review job count too: the plan producer waits while it is above 0.
 		for (const job of jobs) await files_pending_overlay_db_delete_job(ctx, job);
 		return jobs.length;
+	}
+
+	const resolveWork =
+		"userId" in args
+			? await ctx.db
+					.query("files_pending_overlay_resolve_work")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.take(args.batchSize)
+			: await ctx.db
+					.query("files_pending_overlay_resolve_work")
+					.withIndex("by_org_ws", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.take(args.batchSize);
+	if (resolveWork.length) {
+		for (const row of resolveWork) await ctx.db.delete("files_pending_overlay_resolve_work", row._id);
+		return resolveWork.length;
+	}
+	const types =
+		"userId" in args
+			? await ctx.db
+					.query("files_pending_type_entries")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.take(args.batchSize)
+			: await ctx.db
+					.query("files_pending_type_entries")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.take(args.batchSize);
+	if (types.length) {
+		for (const row of types) await ctx.db.delete("files_pending_type_entries", row._id);
+		return types.length;
 	}
 
 	// Place fields point at their place, so they go first.
@@ -1595,11 +1643,19 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.unique();
 	if (contentVersion) await ctx.db.delete("files_content_versions", contentVersion._id);
+	const accessVersion = await ctx.db
+		.query("files_access_versions")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.unique();
+	if (accessVersion) await ctx.db.delete("files_access_versions", accessVersion._id);
 	const reviewFactState = await files_pending_review_facts_db_get_state(ctx.db, { organizationId, workspaceId });
 	if (reviewFactState) await ctx.db.delete("files_pending_review_fact_state", reviewFactState._id);
 	return {
 		done: true,
-		deletedCount: (mediaVersion ? 1 : 0) + (contentVersion ? 1 : 0) + (reviewFactState ? 1 : 0),
+		deletedCount:
+			(mediaVersion ? 1 : 0) + (contentVersion ? 1 : 0) + (accessVersion ? 1 : 0) + (reviewFactState ? 1 : 0),
 	};
 }
 
@@ -1892,6 +1948,13 @@ async function db_delete_organization_batch(
 			)
 			.unique();
 		if (mediaVersion) await ctx.db.delete("files_media_validation_versions", mediaVersion._id);
+		const accessVersion = await ctx.db
+			.query("files_access_versions")
+			.withIndex("by_organization_workspace", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", null),
+			)
+			.unique();
+		if (accessVersion) await ctx.db.delete("files_access_versions", accessVersion._id);
 		await ctx.db.delete("organizations", args.organizationId);
 		return { done: true, deletedCount: 1 };
 	}

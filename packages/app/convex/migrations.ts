@@ -7,6 +7,7 @@ import { internalQuery, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
+import { files_pending_overlay_db_mark_target } from "../server/files-pending-overlay.ts";
 import { convex_error } from "../server/convex-utils.ts";
 
 // The schema lets a migration read through an index with `customRange`.
@@ -16,6 +17,62 @@ const app_migrations = new Migrations(components.migrations, {
 });
 
 const REVIEW_FACT_JOBS_MAX = 64;
+
+// One-time derived index backfill. Keep the new command closed until the audit passes.
+export const backfill_pending_types = app_migrations.define({
+	table: "files_pending_updates",
+	batchSize: 1,
+	migrateOne: async (ctx, proposal) => {
+		files_pending_overlay_db_mark_target(ctx, {
+			organizationId: proposal.organizationId,
+			workspaceId: proposal.workspaceId,
+			userId: proposal.userId,
+			target: proposal.target,
+			pendingUpdateId: proposal._id,
+		});
+	},
+});
+
+export const run_backfill_pending_types = app_migrations.runner(internal.migrations.backfill_pending_types);
+
+export const preview_pending_types = internalMutation({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const result: MigrationResult = await ctx.runMutation(internal.migrations.backfill_pending_types, {
+			cursor: args.cursor,
+			batchSize: 1,
+			dryRun: false,
+			oneBatchOnly: true,
+		});
+		throw convex_error({
+			message: "Pending type preview rolled back.",
+			data: { processed: result.processed, continueCursor: result.continueCursor, isDone: result.isDone },
+		});
+	},
+});
+
+// The operator keeps an owner manifest outside the database and audits each owner with check_user.
+export const audit_pending_type_source_page = internalQuery({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: paginationResultValidator(
+		v.object({
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			userId: v.id("users"),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_organization_workspace_user_target")
+			.paginate({ cursor: args.cursor, numItems: 16, maximumBytesRead: 512 * 1024 });
+		return {
+			...page,
+			page: page.page.map(({ organizationId, workspaceId, userId }) => ({ organizationId, workspaceId, userId })),
+		};
+	},
+});
 
 async function db_scope_status(
 	db: QueryCtx["db"],

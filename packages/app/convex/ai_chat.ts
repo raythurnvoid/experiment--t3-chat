@@ -2503,7 +2503,9 @@ function clear_tool_outputs(messages: ModelMessage[], clearedIds: ReadonlySet<st
 						type: "text" as const,
 						value: path
 							? `[Older tool output cleared to save context. The full output is stored at ${path}. Read it with sed -n, grep or tail if you need it again.]`
-							: "[Older tool output cleared to save context. Run the tool again if you need it.]",
+							: part.toolName === "bash"
+								? `[Older Bash output cleared to save context. Inspect accepted work with jobs --call '${part.toolCallId.replaceAll("'", "'\\''")}', or jobs --calls if the call is unavailable. Do not rerun a write to check whether it happened.]`
+								: "[Older tool output cleared to save context. Run the tool again if you need it.]",
 					},
 				};
 			}),

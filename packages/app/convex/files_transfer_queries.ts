@@ -1,12 +1,14 @@
-// Public Transfer reads. Work and controls stay in files_transfer.ts.
+// Transfer reads. Work and controls stay in files_transfer.ts.
 
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { paginationOptsValidator, paginationResultValidator } from "convex/server";
+import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
-import { activities_db_require_by_source_id, activities_get_controls } from "./activities_db.ts";
+import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { activities_db_require_by_source_id, activities_get_controls, activities_is_active } from "./activities_db.ts";
+import { ai_chat_files_db_get_door_membership } from "./ai_chat_files_db.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import app_convex_schema, {
@@ -18,6 +20,7 @@ import { files_saved_placement_db_get_node } from "../server/files-saved-placeme
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import type { files_PendingTarget, files_VisibleEntry } from "../shared/files.ts";
+import { files_type_query_db_get_readiness } from "../server/files-type-query.ts";
 
 // Reuse the loaded module between calls. Keep request state inside each query.
 export const experimental_reuseContext = true;
@@ -208,6 +211,148 @@ export const get = query({
 		return await db_get_run_view({ ctx, run: owned._yay.run, membership: owned._yay.membership });
 	},
 });
+
+export const get_activity_for_agent = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		activityId: v.string(),
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			activityId: v.id("activities"),
+			kind: v.union(v.literal("copy"), v.literal("move"), v.literal("rename")),
+			status: doc(app_convex_schema, "activities").fields.status,
+			resultKind: v.union(v.literal("ready_for_review"), v.literal("saved")),
+			progress: doc(app_convex_schema, "activities").fields.progress,
+			phase: v.string(),
+			nextAction: v.union(v.string(), v.null()),
+			paths: v.object({
+				state: v.union(v.literal("ready"), v.literal("updating"), v.literal("unavailable")),
+				scope: v.literal("workspace"),
+				checkedAt: v.number(),
+			}),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const membership = await ai_chat_files_db_get_door_membership(ctx, args);
+		if (membership._nay) return null;
+		const activityId = ctx.db.normalizeId("activities", args.activityId);
+		const activity = activityId ? await ctx.db.get("activities", activityId) : null;
+		if (
+			!activity ||
+			activity.source.kind !== "files_transfer_run" ||
+			activity.userId !== args.userId ||
+			activity.organizationId !== args.organizationId ||
+			activity.workspaceId !== args.workspaceId
+		)
+			return null;
+		const run = await ctx.db.get("files_transfer_runs", activity.source.id);
+		if (!run) {
+			const errorMessage = "Transfer Activity points to a missing run";
+			const errorData = { activityId: activity._id, runId: activity.source.id };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		if (
+			run.userId !== args.userId ||
+			run.organizationId !== args.organizationId ||
+			run.workspaceId !== args.workspaceId
+		)
+			return null;
+		const checkedActivity = await files_transfer_queries_db_require_activity(ctx, run._id);
+		const destinationMembership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q
+					.eq("userId", args.userId)
+					.eq("organizationId", run.destinationScope.organizationId)
+					.eq("workspaceId", run.destinationScope.workspaceId)
+					.eq("active", true),
+			)
+			.first();
+		const destinationAccess = destinationMembership
+			? await access_control_db_authorize_membership(ctx, {
+					userAuth: { id: args.userId },
+					membership: destinationMembership,
+					permission: "content.read",
+				})
+			: null;
+		const paths = destinationAccess?._yay
+			? await files_type_query_db_get_readiness(ctx.db, run.destinationScope)
+			: { state: "unavailable" as const };
+		let phase: string = activities_is_active(activity.status)
+			? {
+					uploading: "preparing input",
+					select: "reading selection",
+					normalize: "checking selection",
+					discover: "reading source items",
+					plan: "planning",
+					reserve: "reserving names",
+					apply: "applying",
+					retry: "preparing retry",
+				}[run.step]
+			: "finished";
+		let nextAction: string | null = null;
+		if (activity.status === "awaiting_input") {
+			phase = "waiting for input";
+			nextAction = "Open Files to resolve this transfer.";
+		} else if (activity.errorCode === "waiting_for_move" && activities_is_active(activity.status)) {
+			phase = "waiting for another Move in this workspace";
+		}
+		if (run.kind === "move" && run.publication === "saved") {
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q
+						.eq("organizationId", run.destinationScope.organizationId)
+						.eq("workspaceId", run.destinationScope.workspaceId),
+				)
+				.unique();
+			const cohort = slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
+			// Another Move may now own the workspace slot. Its phase is not this run's phase.
+			if (cohort?.origin.kind === "transfer" && cohort.origin.runId === run._id && cohort.phase !== "complete") {
+				phase =
+					cohort.publishedAt !== null
+						? "current group saved; cleanup running"
+						: cohort.phase === "aborting"
+							? "cleaning up an unpublished group"
+							: "preparing saved move";
+			} else if (run.repairOpId && (await ctx.db.get("files_subtree_ops", run.repairOpId))) {
+				phase = "saved move cleanup running";
+			}
+		}
+		if (activity.errorCode === "move_repair_stuck" && activities_is_active(activity.status)) {
+			phase = "current group saved; cleanup needs help";
+			nextAction = "Open Files and choose Try again now.";
+		} else if (!activities_is_active(activity.status)) {
+			nextAction =
+				run.publication === "proposal" && checkedActivity.progress.completed > 0
+					? "Review the pending changes in Files to save them."
+					: activity.status === "succeeded"
+						? null
+						: "Open Files to inspect this transfer.";
+		}
+		return {
+			activityId: activity._id,
+			kind: run.rename ? ("rename" as const) : run.kind,
+			status: activity.status,
+			resultKind: run.publication === "proposal" ? ("ready_for_review" as const) : ("saved" as const),
+			progress: checkedActivity.progress,
+			phase,
+			nextAction,
+			paths: { ...paths, scope: "workspace" as const, checkedAt: Date.now() },
+		};
+	},
+});
+
+export type files_transfer_queries_get_activity_for_agent_Result =
+	typeof get_activity_for_agent extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const get_move_acceptance = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), requestId: v.string() },

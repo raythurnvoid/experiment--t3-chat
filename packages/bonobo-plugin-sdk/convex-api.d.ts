@@ -1320,8 +1320,8 @@ export type BonoboConvexApi = {
 			keyPrefix?: string | undefined;
 			keyStartExclusive?: string | undefined;
 			keyEndInclusive?: string | undefined;
-			collection: string;
 			limit: number;
+			collection: string;
 		}, {
 			docs: {
 				createdBy: import("convex/values").GenericId<"users">;
@@ -1369,8 +1369,8 @@ export type BonoboConvexApi = {
 			order?: "asc" | "desc" | undefined;
 			scopeId?: string | undefined;
 			since?: number | undefined;
-			collection: string;
 			limit: number;
+			collection: string;
 		}, {
 			docs: {
 				createdBy: import("convex/values").GenericId<"users">;
@@ -1390,8 +1390,8 @@ export type BonoboConvexApi = {
 		watch_changes: import("convex/server").FunctionReference<"query", "public", {
 			scopeId?: string | undefined;
 			updatedSince?: number | undefined;
-			collection: string;
 			limit: number;
+			collection: string;
 		}, {
 			docs: {
 				createdBy: import("convex/values").GenericId<"users">;

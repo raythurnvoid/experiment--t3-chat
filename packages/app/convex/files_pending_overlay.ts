@@ -26,6 +26,7 @@ import {
 	files_pending_overlay_db_delete_job,
 	files_pending_overlay_db_flush,
 	files_pending_overlay_db_mark_target,
+	files_pending_overlay_db_schedule_repair,
 	files_pending_overlay_db_set_own_job,
 	files_pending_overlay_db_sync_list_key,
 	files_pending_overlay_db_target_cohort,
@@ -71,8 +72,8 @@ const SAVED_SCOPE_PAGE_SIZE = 256;
 const SAVED_SCOPE_PAGE_BYTES = 2 * 1024 * 1024;
 
 /**
- * A job stops before the next doc when fewer ranges are left. A recompute with a deep reader can
- * read about 1,500 ranges (256 levels and a few reads each).
+ * Leave room for the next target and its derived writes. Deep resolution saves its remaining
+ * work for another step instead of treating a read stop as a missing path.
  */
 const JOB_MIN_RANGES_LEFT = 2048;
 
@@ -105,7 +106,16 @@ const CATALOG_RECOVERY_MS = 10 * 60 * 1000;
  */
 const WALK_PAGE_SIZE = 4;
 
-const WALK_PHASES = ["proposals", "hides", "places", "list_rows", "list_keys", "place_fields", "jobs"] as const;
+const WALK_PHASES = [
+	"proposals",
+	"hides",
+	"places",
+	"types",
+	"list_rows",
+	"list_keys",
+	"place_fields",
+	"jobs",
+] as const;
 
 /**
  * Docs per page of `check_share_rows`. Checking one doc reads about 3 docs.
@@ -127,6 +137,7 @@ const job_kind_validator = v.union(
 	v.literal("owner_path"),
 	v.literal("place_fields"),
 	v.literal("targets"),
+	v.literal("repair_user"),
 );
 
 type Scope = {
@@ -135,7 +146,10 @@ type Scope = {
 	userId: Id<"users">;
 };
 
-type PagedJob = Exclude<Doc<"files_pending_overlay_jobs">, { kind: "place_fields" | "targets" | "saved_scope" }>;
+type PagedJob = Exclude<
+	Doc<"files_pending_overlay_jobs">,
+	{ kind: "place_fields" | "targets" | "saved_scope" | "repair_user" }
+>;
 
 /**
  * Where a paged job goes on: the stream it walks, the Convex cursor of the next page, and the docs
@@ -170,12 +184,23 @@ function job_phases(job: PagedJob) {
 				"files_pending_places",
 				"files_plain_text_chunks",
 				"files_metadata_docs",
+				"files_pending_type_entries",
 			] as const;
 		case "parent":
-			return ["files_pending_places", "files_pending_updates", "files_pending_nodes"] as const;
+			return [
+				"files_pending_places",
+				"files_pending_updates",
+				"files_pending_nodes",
+				"files_pending_type_entries",
+			] as const;
 		// The places under the old path, then every pathless place of the user.
 		case "owner_path":
-			return ["files_pending_places", "files_pending_places"] as const;
+			return [
+				"files_pending_places",
+				"files_pending_places",
+				"files_pending_type_entries",
+				"files_pending_type_entries",
+			] as const;
 	}
 }
 
@@ -184,6 +209,11 @@ async function db_job_page(ctx: MutationCtx, job: PagedJob, cursor: JobCursor) {
 	const places = ctx.db.query("files_pending_places");
 	if (job.kind === "saved_node") {
 		const savedNodeId = job.savedNodeId;
+		if (cursor.phase === 6)
+			return await ctx.db
+				.query("files_pending_type_entries")
+				.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", savedNodeId))
+				.paginate(paginationOpts);
 		if (cursor.phase === 4)
 			return await ctx.db
 				.query("files_plain_text_chunks")
@@ -262,6 +292,19 @@ async function db_job_page(ctx: MutationCtx, job: PagedJob, cursor: JobCursor) {
 	}
 	if (job.kind === "parent") {
 		const parent = job.parent;
+		if (cursor.phase === 3)
+			return await ctx.db
+				.query("files_pending_type_entries")
+				.withIndex("by_org_ws_parent_name", (q) =>
+					q
+						.eq("organizationId", job.organizationId)
+						.eq("workspaceId", job.workspaceId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined)
+						.eq("parent.kind", parent.kind)
+						.eq("parent.id", parent.kind === "root" ? undefined : parent.id),
+				)
+				.paginate(paginationOpts);
 		if (cursor.phase === 1)
 			return await ctx.db
 				.query("files_pending_updates")
@@ -296,6 +339,33 @@ async function db_job_page(ctx: MutationCtx, job: PagedJob, cursor: JobCursor) {
 			.paginate(paginationOpts);
 	}
 	const scope = { organizationId: job.organizationId, workspaceId: job.workspaceId, userId: job.userId };
+	if (cursor.phase === 2)
+		return await ctx.db
+			.query("files_pending_type_entries")
+			.withIndex("by_org_ws_user_ownerTreePath", (q) =>
+				q
+					.eq("organizationId", scope.organizationId)
+					.eq("workspaceId", scope.workspaceId)
+					.eq("userId", scope.userId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined)
+					.gt("ownerTreePath", job.prefix)
+					.lt("ownerTreePath", path_tree_prefix_upper_bound(job.prefix)),
+			)
+			.paginate(paginationOpts);
+	if (cursor.phase === 3)
+		return await ctx.db
+			.query("files_pending_type_entries")
+			.withIndex("by_org_ws_user_isPathless", (q) =>
+				q
+					.eq("organizationId", scope.organizationId)
+					.eq("workspaceId", scope.workspaceId)
+					.eq("userId", scope.userId)
+					.eq("moveView.cohortId", undefined)
+					.eq("moveView.view", undefined)
+					.eq("isPathless", true),
+			)
+			.paginate(paginationOpts);
 	if (cursor.phase === 0)
 		return await places
 			.withIndex("by_org_ws_user_ownerTreePath", (q) =>
@@ -332,12 +402,13 @@ async function job_mark_doc(
 		| Doc<"files_pending_updates">
 		| Doc<"files_pending_hides">
 		| Doc<"files_pending_places">
+		| Doc<"files_pending_type_entries">
 		| Doc<"files_pending_nodes">
 		| Doc<"files_plain_text_chunks">
 		| Doc<"files_metadata_docs">,
 ) {
 	if (doc.organizationId !== job.organizationId || doc.workspaceId !== job.workspaceId) return;
-	if ("sourceKind" in doc) {
+	if ("plainTextChunk" in doc || "fieldPath" in doc) {
 		if (job.kind !== "saved_node") return;
 		const node = await ctx.db.get("files_nodes", job.savedNodeId);
 		if (!node) return;
@@ -648,12 +719,7 @@ export const run_job = internalMutation({
 		// conflict with this one while it runs; Convex then runs this one again on the new doc, and the
 		// check stops it, so only the new run goes on. Two schedules in the same millisecond look the
 		// same; then both runs go on, which is safe because all writes are diffed.
-		if (
-			!job ||
-			job.blockedByCohortId ||
-			job.nextAttemptAt > Date.now() ||
-			args.nextAttemptAt !== job.nextAttemptAt
-		)
+		if (!job || job.blockedByCohortId || job.nextAttemptAt > Date.now() || args.nextAttemptAt !== job.nextAttemptAt)
 			return null;
 		if (job.kind === "saved_scope") {
 			await db_run_saved_scope_job(ctx, job);
@@ -692,6 +758,29 @@ export const run_job = internalMutation({
 			}
 		}
 
+		if (job.kind === "repair_user") {
+			if (currentView?.cohortId) {
+				await park(currentView.cohortId);
+				return null;
+			}
+			const cursor = await db_repair_user_page(
+				ctx,
+				{
+					organizationId: job.organizationId,
+					workspaceId: job.workspaceId,
+					userId: job.userId,
+				},
+				job.cursor,
+			);
+			await files_pending_overlay_db_flush(ctx);
+			const rerun = own.rerun || (job.cursor ? (JSON.parse(job.cursor) as { rerun?: boolean }).rerun === true : false);
+			if (cursor || rerun)
+				await db_continue_job(ctx, job, {
+					cursor: cursor && rerun ? JSON.stringify({ ...JSON.parse(cursor), rerun: true }) : cursor,
+				});
+			else await files_pending_overlay_db_delete_job(ctx, job);
+			return null;
+		}
 		if (job.kind === "place_fields") {
 			let done = 0;
 			for (const placeId of job.placeIds) {
@@ -920,50 +1009,62 @@ async function db_walk_user_page(db: QueryCtx["db"], scope: Scope, cursor: strin
 		q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId);
 
 	const result =
-		phase === "proposals"
+		phase === "types"
 			? await db
-					.query("files_pending_updates")
-					.withIndex("by_organization_workspace_user_target", (q) => owner(q))
+					.query("files_pending_type_entries")
+					.withIndex("by_org_ws_user_ownerTreePath", (q) =>
+						q
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId)
+							.eq("userId", scope.userId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
+					)
 					.paginate(paginationOpts)
-			: phase === "hides"
+			: phase === "proposals"
 				? await db
-						.query("files_pending_hides")
-						.withIndex("by_org_ws_user_treePath", (q) =>
-							owner(q).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
-						)
+						.query("files_pending_updates")
+						.withIndex("by_organization_workspace_user_target", (q) => owner(q))
 						.paginate(paginationOpts)
-				: phase === "places"
+				: phase === "hides"
 					? await db
-							.query("files_pending_places")
-							.withIndex("by_org_ws_user_ownerTreePath", (q) =>
+							.query("files_pending_hides")
+							.withIndex("by_org_ws_user_treePath", (q) =>
 								owner(q).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 							)
 							.paginate(paginationOpts)
-					: phase === "list_rows"
+					: phase === "places"
 						? await db
-								.query("files_pending_list_rows")
-								.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
+								.query("files_pending_places")
+								.withIndex("by_org_ws_user_ownerTreePath", (q) =>
 									owner(q).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 								)
 								.paginate(paginationOpts)
-						: phase === "list_keys"
+						: phase === "list_rows"
 							? await db
-									.query("files_pending_list_keys")
-									.withIndex("by_org_ws_user_listKey", (q) =>
+									.query("files_pending_list_rows")
+									.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
 										owner(q).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 									)
 									.paginate(paginationOpts)
-							: phase === "place_fields"
+							: phase === "list_keys"
 								? await db
-										.query("files_pending_place_fields")
-										.withIndex("by_user", (q) =>
-											q.eq("userId", scope.userId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+										.query("files_pending_list_keys")
+										.withIndex("by_org_ws_user_listKey", (q) =>
+											owner(q).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 										)
 										.paginate(paginationOpts)
-								: await db
-										.query("files_pending_overlay_jobs")
-										.withIndex("by_user", (q) => q.eq("userId", scope.userId))
-										.paginate(paginationOpts);
+								: phase === "place_fields"
+									? await db
+											.query("files_pending_place_fields")
+											.withIndex("by_user", (q) =>
+												q.eq("userId", scope.userId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+											)
+											.paginate(paginationOpts)
+									: await db
+											.query("files_pending_overlay_jobs")
+											.withIndex("by_user", (q) => q.eq("userId", scope.userId))
+											.paginate(paginationOpts);
 
 	const next = result.isDone ? { phase: position.phase + 1, page: null } : { ...position, page: result.continueCursor };
 	return {
@@ -1015,6 +1116,21 @@ async function db_check_target(
 		)
 		.unique();
 	const desired = await files_pending_overlay_db_compute_target(db, reader, { ...scope, target, pendingUpdate });
+	const typeEntry = await db
+		.query("files_pending_type_entries")
+		.withIndex("by_target_user", (q) =>
+			q
+				.eq("target.kind", target.kind)
+				.eq("target.id", target.id)
+				.eq("userId", scope.userId)
+				.eq("moveView.cohortId", undefined)
+				.eq("moveView.view", undefined),
+		)
+		.unique();
+	if (stable_json(typeEntry) !== stable_json(desired.typeEntry))
+		differences.push(
+			`type entry of ${name}: stored ${stable_json(typeEntry)}, expected ${stable_json(desired.typeEntry)}`,
+		);
 
 	if (target.kind === "saved") {
 		const hide = await db
@@ -1119,6 +1235,9 @@ export const check_user = internalQuery({
 				const claimed = await db_saved_node_at(ctx.db, place);
 				if (claimed)
 					differences.push(...(await db_check_target(ctx.db, reader, scope, { kind: "saved", id: claimed._id })));
+			} else if (phase === "types") {
+				const entry = doc as Doc<"files_pending_type_entries">;
+				differences.push(...(await db_check_target(ctx.db, reader, scope, entry.target)));
 			} else if (phase === "list_rows") {
 				const row = doc as Doc<"files_pending_list_rows">;
 				const proposal = await ctx.db.get("files_pending_updates", row.pendingUpdateId);
@@ -1174,62 +1293,71 @@ export const check_user = internalQuery({
  * Recompute every derived doc of one user, one walk page per run, and delete orphan docs. Runs
  * itself again until the walk is done.
  */
+async function db_repair_user_page(ctx: MutationCtx, scope: Scope, position: string | null) {
+	const { phase, docs, cursor } = await db_walk_user_page(ctx.db, scope, position);
+
+	for (const doc of docs) {
+		if (phase === "proposals") {
+			const proposal = doc as Doc<"files_pending_updates">;
+			files_pending_overlay_db_mark_target(ctx, { ...scope, target: proposal.target, pendingUpdateId: proposal._id });
+		} else if (phase === "hides") {
+			const hide = doc as Doc<"files_pending_hides">;
+			files_pending_overlay_db_mark_target(ctx, { ...scope, target: { kind: "saved", id: hide.savedNodeId } });
+		} else if (phase === "places") {
+			const place = doc as Doc<"files_pending_places">;
+			files_pending_overlay_db_mark_target(ctx, {
+				...scope,
+				target: place.target,
+				pendingUpdateId: place.pendingUpdateId,
+			});
+			// Sync each place's fields once here; the fields phase below deletes only orphans.
+			await db_sync_place_fields(ctx, place._id);
+			const claimed = await db_saved_node_at(ctx.db, place);
+			if (claimed) files_pending_overlay_db_mark_target(ctx, { ...scope, target: { kind: "saved", id: claimed._id } });
+		} else if (phase === "types") {
+			const entry = doc as Doc<"files_pending_type_entries">;
+			files_pending_overlay_db_mark_target(ctx, {
+				...scope,
+				target: entry.target,
+				pendingUpdateId: entry.pendingUpdateId,
+			});
+		} else if (phase === "list_rows" || phase === "list_keys") {
+			const row = doc as Doc<"files_pending_list_rows"> | Doc<"files_pending_list_keys">;
+			if ("pendingUpdateId" in row) {
+				const proposal = await ctx.db.get("files_pending_updates", row.pendingUpdateId);
+				if (proposal?.userId === scope.userId)
+					files_pending_overlay_db_mark_target(ctx, {
+						...scope,
+						target: proposal.target,
+						pendingUpdateId: row.pendingUpdateId,
+					});
+				else await ctx.db.delete("files_pending_list_rows", row._id);
+			}
+			await files_pending_overlay_db_sync_list_key(ctx.db, { ...scope, listKey: row.listKey });
+		} else if (phase === "place_fields") {
+			const field = doc as Doc<"files_pending_place_fields">;
+			if (
+				field.organizationId === scope.organizationId &&
+				field.workspaceId === scope.workspaceId &&
+				!(await ctx.db.get("files_pending_places", field.placeId))
+			)
+				await ctx.db.delete("files_pending_place_fields", field._id);
+		}
+	}
+
+	return cursor;
+}
+
 export const repair_user = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		cursor: v.union(v.string(), v.null()),
+		cursor: v.null(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId, userId: args.userId };
-		const { phase, docs, cursor } = await db_walk_user_page(ctx.db, scope, args.cursor);
-
-		for (const doc of docs) {
-			if (phase === "proposals") {
-				const proposal = doc as Doc<"files_pending_updates">;
-				files_pending_overlay_db_mark_target(ctx, { ...scope, target: proposal.target, pendingUpdateId: proposal._id });
-			} else if (phase === "hides") {
-				const hide = doc as Doc<"files_pending_hides">;
-				files_pending_overlay_db_mark_target(ctx, { ...scope, target: { kind: "saved", id: hide.savedNodeId } });
-			} else if (phase === "places") {
-				const place = doc as Doc<"files_pending_places">;
-				files_pending_overlay_db_mark_target(ctx, {
-					...scope,
-					target: place.target,
-					pendingUpdateId: place.pendingUpdateId,
-				});
-				// Sync each place's fields once here; the fields phase below deletes only orphans.
-				await db_sync_place_fields(ctx, place._id);
-				const claimed = await db_saved_node_at(ctx.db, place);
-				if (claimed)
-					files_pending_overlay_db_mark_target(ctx, { ...scope, target: { kind: "saved", id: claimed._id } });
-			} else if (phase === "list_rows" || phase === "list_keys") {
-				const row = doc as Doc<"files_pending_list_rows"> | Doc<"files_pending_list_keys">;
-				if ("pendingUpdateId" in row) {
-					const proposal = await ctx.db.get("files_pending_updates", row.pendingUpdateId);
-					if (proposal?.userId === scope.userId)
-						files_pending_overlay_db_mark_target(ctx, {
-							...scope,
-							target: proposal.target,
-							pendingUpdateId: row.pendingUpdateId,
-						});
-					else await ctx.db.delete("files_pending_list_rows", row._id);
-				}
-				await files_pending_overlay_db_sync_list_key(ctx.db, { ...scope, listKey: row.listKey });
-			} else if (phase === "place_fields") {
-				const field = doc as Doc<"files_pending_place_fields">;
-				if (
-					field.organizationId === scope.organizationId &&
-					field.workspaceId === scope.workspaceId &&
-					!(await ctx.db.get("files_pending_places", field.placeId))
-				)
-					await ctx.db.delete("files_pending_place_fields", field._id);
-			}
-		}
-
-		if (cursor) await ctx.scheduler.runAfter(0, internal.files_pending_overlay.repair_user, { ...args, cursor });
+		await files_pending_overlay_db_schedule_repair(ctx, args);
 		return null;
 	},
 });

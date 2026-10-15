@@ -2,6 +2,7 @@
 
 import type { WorkId } from "@convex-dev/workpool";
 import type { Infer } from "convex/values";
+import type { PaginationOptions } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -14,6 +15,46 @@ import { r2_enqueue_object_deletion_job } from "./r2_client.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+
+/** Trusted tool reads still check the current chat owner and workspace read access. */
+export async function ai_chat_files_db_get_door_membership(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		threadId: Id<"ai_chat_threads">;
+	},
+) {
+	const membership = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_user_organization_workspace_active", (q) =>
+			q
+				.eq("userId", args.userId)
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("active", true),
+		)
+		.first();
+	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+	const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+	if (
+		!thread ||
+		thread.deletingAt !== undefined ||
+		thread.copyingAt !== undefined ||
+		thread.createdBy !== args.userId ||
+		thread.organizationId !== membership.organizationId ||
+		thread.workspaceId !== membership.workspaceId
+	)
+		return Result({ _nay: { message: "Unauthorized" } });
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth: { id: args.userId },
+		membership,
+		permission: "content.read",
+	});
+	if (authorized._nay) return authorized;
+	return Result({ _yay: membership });
+}
 
 export async function ai_chat_files_db_get_invocation_membership(
 	ctx: QueryCtx | MutationCtx,
@@ -267,6 +308,20 @@ export async function ai_chat_files_db_get_bash_transfer(
 			q.eq("invocationId", args.invocationId).eq("commandNumber", args.commandNumber),
 		)
 		.first();
+}
+
+export async function ai_chat_files_db_list_invocation_transfers(
+	ctx: QueryCtx,
+	args: { invocationId: Id<"ai_chat_bash_invocations">; paginationOpts: PaginationOptions },
+) {
+	const result = await ctx.db
+		.query("ai_chat_bash_invocation_transfers")
+		.withIndex("by_invocation_commandNumber", (q) => q.eq("invocationId", args.invocationId))
+		.paginate({ ...args.paginationOpts, numItems: Math.max(1, Math.min(50, args.paginationOpts.numItems)) });
+	return {
+		...result,
+		page: result.page.map(({ commandNumber, runId, activityId }) => ({ commandNumber, runId, activityId })),
+	};
 }
 
 /**

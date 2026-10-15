@@ -498,6 +498,89 @@ describe("volume reads", () => {
 		});
 		expect((await read_volume(f)).full?.content).toBe(volume_text);
 	});
+
+	test("a type search refuses an expired generation before cleanup removes its files", async () => {
+		const f = await create_volume_fixture();
+		const request = {
+			...f.scope,
+			userId: f.reader.userId,
+			agentSource: { ...f.agentSource, run: null },
+			overlay: false,
+			rootPath: f.path,
+			contentType: "text/markdown",
+			directoriesOnly: false,
+			limit: 10,
+		};
+		const started = await f.t.mutation(internal.files_type_queries.begin, request);
+		if (started._nay) throw new Error(started._nay.message);
+		const step = { ...request, ...started._yay, token: "volume-search", seal: false };
+		expect(await f.t.mutation(internal.files_type_queries.advance, step)).toMatchObject({ _yay: { state: "working" } });
+		const expiresAt = Date.now() + 60_000;
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("plugins_volume_generations", f.generationId, { status: "retired", expiresAt });
+			await ctx.db.patch("plugins_volumes", f.volumeId, { publishedGenerationId: null });
+		});
+		expect(await f.t.mutation(internal.files_type_queries.advance, { ...step, seal: true })).toMatchObject({
+			_yay: { state: "page", items: [{ path: f.path }], isDone: true },
+		});
+		vi.setSystemTime(expiresAt);
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId))).not.toBeNull();
+		expect(
+			await f.t.mutation(internal.files_type_queries.advance, { ...step, seal: true }),
+			"expired generation must invalidate a saved search page",
+		).toHaveProperty("_nay");
+	});
+
+	test("a type search refuses a plugin source after its deletion fence is written", async () => {
+		const f = await create_volume_fixture();
+		const installation = await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", f.installationId));
+		const request = {
+			organizationId: "GLOBAL" as const,
+			workspaceId: "PLUGINS" as const,
+			userId: f.reader.userId,
+			agentSource: { ...f.agentSource, run: null },
+			overlay: false,
+			rootPath: `/${installation!.pluginVersionId}`,
+			contentType: "text/markdown",
+			directoriesOnly: false,
+			limit: 10,
+		};
+		expect(await f.t.mutation(internal.files_type_queries.begin, request)).toHaveProperty("_yay");
+		await f.t.run((ctx) =>
+			ctx.db.insert("plugins_registry_deletion_fences", {
+				pluginName: installation!.pluginName,
+				createdAt: Date.now(),
+			}),
+		);
+		expect(await f.t.mutation(internal.files_type_queries.begin, request)).toHaveProperty("_nay");
+	});
+
+	test("a type search loses plugin source access when its installation is disabled", async () => {
+		const f = await create_volume_fixture();
+		const installation = await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", f.installationId));
+		const request = {
+			organizationId: "GLOBAL" as const,
+			workspaceId: "PLUGINS" as const,
+			userId: f.reader.userId,
+			agentSource: { ...f.agentSource, run: null },
+			overlay: false,
+			rootPath: `/${installation!.pluginVersionId}`,
+			contentType: "text/markdown",
+			directoriesOnly: false,
+			limit: 10,
+		};
+		const started = await f.t.mutation(internal.files_type_queries.begin, request);
+		if (started._nay) throw new Error(started._nay.message);
+		await f.t.run((ctx) => ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" }));
+		expect(
+			await f.t.mutation(internal.files_type_queries.advance, {
+				...request,
+				...started._yay,
+				token: "plugin-search",
+				seal: false,
+			}),
+		).toMatchObject({ _nay: { message: "File search unavailable" } });
+	});
 });
 
 describe("volume tenant API isolation", () => {

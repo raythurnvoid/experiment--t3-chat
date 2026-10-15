@@ -712,11 +712,13 @@ code lives in `files_db_insert_pending_update`,
 The pending overlay is a set of derived tables. They copy what each user's drafts change, so agent reads and draft views can page them with indexes. Code: `packages/app/server/files-pending-overlay.ts` (the flush) and `packages/app/convex/files_pending_overlay.ts` (jobs, `check_user`, `repair_user`).
 
 - `files_pending_hides`: one doc per user and saved node that the user's drafts hide (a draft delete, a move away, a private draft that claims the name). It copies the saved node's index fields.
-- `files_pending_places`: one doc per active private node and per saved node with `pendingMove`. It holds where the owner sees the draft (`parent`, `name`, `ownerTreePath`), `isVisible`, `isPathless` (a move cycle or a reader stop), and `accessNodeId`: the saved node whose access decides if the owner may see the draft. It also holds `destinationAccessNodeIds`: one saved node per draft move that `ownerTreePath` goes through, the nearest first (a move into a private folder uses that folder's nearest saved ancestor). Every read of a place checks access on all of them, because access can change after the place was written.
+- `files_pending_places`: one doc per active private node and per saved node with `pendingMove`. It holds where the owner sees the draft (`parent`, `name`, `ownerTreePath`), `isVisible`, `isPathless` (no resolved structural path), and `accessNodeId`: the saved node whose access decides if the owner may see the draft. It also holds `destinationAccessNodeIds`: one saved node per draft move that `ownerTreePath` goes through, the nearest first (a move into a private folder uses that folder's nearest saved ancestor). Every read of a place checks access on all of them, because access can change after the place was written.
   - When the owner can no longer read a move destination (for example the folder was restricted, or moved under a restricted folder), the path never names it. Path reads hide the node, like a node moved away: `files_visible.get_path`, agent `cat`, `resolve` and `stat`, and full-text `search` find nothing, at the destination or at the saved place. This spreads to everything whose path goes through that move: the saved children of a moved folder, drafts created inside it, and drafts moved into it. The reader (`files_visible_resolve_db_create`) keeps these blocked keys, and `isBlocked(target)` reports them. It is the same rule that drops a place in listings: both check the same destination access nodes. Agent listings (`ls`, `ls -t`, `find`, `tree`, `find -name`, `meta search`) leave the node out: the place is dropped and the hide stays. They also leave out the saved children of a moved folder. The saved path is free in the owner's draft view, so an agent write there makes a new draft. `files_nodes.get_visible_target_by_path` looks up saved rows first, so a path URL still opens the saved node at its saved place, like the Files tree. The Pending tab still lists the move: `get_file_pending_target` returns the saved row with its saved path, `moveDestinationUnreadable: true` (from the reader's blocked state, so also when the destination folder is itself blocked) and `canAccept: false`, so the row says "Moved to a folder you can't open" and Accept is off. A private draft inside such a folder has no view, so its row shows "Draft unavailable" with Discard only. Discard works; the server still refuses Accept on the destination's write check. Accept of other drafts still works when they only link to the hidden node or live inside its moved folder: media checks use the saved node at its saved place (`resolveTargetForSave`). A full listing (`requireComplete`, for example `cp -r` discovery) that meets such a draft stops with a message that names no folder and asks the user to discard that move. This covers the moved node's saved row in its saved parent (its own draft still hides it, and its place is dropped, so skipping it would give an incomplete copy) and any draft under a folder with such a move.
 - `files_pending_place_fields`: the metadata of places, for `meta search`.
+- `files_pending_type_entries`: one doc for each private file create, saved replacement, or saved move. Creates and replacements store their explicit MIME. A move-only doc stores no MIME; the reader joins the shared saved index. Stationary replacements still store their current owner path. `isVisible` means the structural view includes the entry; it does not grant access. Hidden and pathless entries keep parent and path dependencies so later writes can restore them. A move is a search source only when the resolver actually applies it.
 - `files_pending_list_rows` and `files_pending_list_keys`: the Pending tab list and its chat choices.
 - `files_pending_overlay_jobs`: one task doc per job, with one scheduled run. A 15-minute cron restarts late tasks.
+- `files_pending_overlay_resolve_work`: unfinished resolver frames for one target and owner view. The existing counted job owns this work until it resolves and clears its frames. It never stores a copy of an owner's saved files.
 
 **The flush rule.** Every mutation imports `mutation` or `internalMutation` from `convex/functions.ts`. That wrapper captures writes to the source tables (`files_nodes`, `files_pending_updates`, `files_pending_nodes`, `files_pending_node_publish_receipts`, `files_metadata_docs`, `access_control_permission_grants`) and flushes once at the end, in the same transaction. The same flush keeps the share rows (`files_share_rows`) true: only file grants, restricted scope roots and open nodes with service account rows change them (see "Share rows" in `../access-control/SKILL.md`). Every flush call also inserts the metadata catalog's deltas for the committed metadata writes since the last call, tagged Move docs included, and clears them (see "Catalog" in `../file-metadata/SKILL.md`). Derived writes are diffed, so an unchanged doc is not written. The flush, its jobs, data deletion and fenced cohort staging write derived tables. Cohort workers build both owner views before publication. Work that grows with the number of other users goes to jobs, so another user's derived docs can lag a few seconds. In tests, `t.run` is raw: seed drafts with `test_run_with_flush` from `convex/setup.test.ts`.
 
@@ -727,15 +729,19 @@ unused fields when a node moves to a shallower folder or root.
 
 **Derived docs are discovery, not facts.** The flush computes each derived doc from the source docs and the owner's reader. It reads derived docs only to learn what to recompute or delete. A read that uses a derived doc still checks what can change after the write, for example access on `accessNodeId` and `destinationAccessNodeIds`. Never decide a write from a derived doc alone.
 
+**Typed path maintenance.** The existing target, parent, old-path-prefix and pathless jobs also visit typed entries. Move owner collection follows their parent and path ranges, including stationary replacements. Staging builds both typed views; staging and cleanup change the search generation even when no ordinary place changes. Cleanup promotes the selected typed docs and deletes all resolver work for both Move views.
+
+**Unfinished resolution.** A read budget ends one worker step, not the target's result. The worker saves its resolver frames and keeps the overlay job counted. It resumes against the same source and selected-view pins; a changed pin clears old work in pages before restarting. It publishes structural docs only after resolution completes. The path-free Pending list stays immediate. A saved MIME change advances the shared source pin while leased, without creating work for each owner.
+
 **Sealed private parents.** Owner staging uses the After view after every saved header is sealed.
 For a private parent, its checked receipt must name that same cohort and After. The reader then
 uses the exact new saved folder header, including its path, Archive state and inherited scope.
 The planner has included and consumed ancestor Moves. This avoids walking the new saved parent
 chain again for an unselected private child. Normal receipts and Before readers still resolve
 the owner's drafts. A receipt grants no access; read-side and per-step permission checks remain.
-Content-only saved proposals do not resolve an unused owner path.
+Ordinary content-only saved proposals do not resolve an unused owner path. Whole-file replacements resolve it for typed discovery.
 
-**Drift.** A Convex dashboard edit or `convex import` writes without the wrapper, so derived docs drift. After one, run `files_pending_overlay:check_user` for each affected user (organization, workspace, user, `cursor: null`; call again with the returned cursor until it is null). It returns the differences and `moveInProgress`. If that flag is true, wait for the workspace Move to finish, then start the audit again with `cursor: null`. An empty differences list with that flag is not a clean audit. Cohort staging uses its exact work proofs instead of this normal-doc audit. `files_pending_overlay:repair_user` with the same args recomputes the user's docs and deletes orphans; reserved targets stay parked until the Move ends. QA steps are in `../app-playwriter-harness/references/pending-path-overlay.md`.
+**Drift.** A Convex dashboard edit or `convex import` writes without the wrapper, so derived docs drift. After one, run `files_pending_overlay:check_user` for each affected user (organization, workspace, user, `cursor: null`; call again with the returned cursor until it is null). It returns the differences and `moveInProgress`. If that flag is true, wait for the workspace Move to finish, then start the audit again with `cursor: null`. An empty differences list with that flag is not a clean audit. Cohort staging uses its exact work proofs instead of this normal-doc audit. `files_pending_overlay:repair_user` with `cursor: null` starts one counted repair job. It advances the source pin, recomputes the user's actual proposals and derived docs in pages, and deletes orphans. It stays counted across all pages and follow-up target work; a workspace Move parks it until the Move ends. QA steps are in `../app-playwriter-harness/references/pending-path-overlay.md`.
 
 **Which reads use drafts.** The agent's bash and file tools read the user's drafts. The Pending tab, the draft folder view, and a draft opened by its link show drafts too. The draft folder view (`files_visible.list_private_folder_children`) reads the user's places, and the Pending tab list and counts read `files_pending_list_rows` and `files_pending_list_keys`. The other reads compute drafts from proposals. The UI lists (folder table, sidebar, search box, pickers) show saved files only and never list hides or places (see "Saved-only lists" in `../files-explorer-tree/SKILL.md`). The one exception is the folder table's draft hint (`files_tree.has_drafts_in_folder`): it only asks whether the user has a place or hide in the folder, and shows an "Open Pending changes" button.
 
@@ -763,6 +769,35 @@ Content-only saved proposals do not resolve an unused owner path.
 - Data deletion deletes derived docs in a last pass, after the drafts and files (see `../data-deletion/SKILL.md`).
 
 # Architectural Invariants
+
+## Indexed MIME discovery
+
+`find --content-type` merges shared saved MIME indexes with the caller's sparse
+`files_pending_type_entries`. Pending creates and replacements own their explicit MIME.
+A moved saved file or folder keeps a reference; it does not copy unchanged descendants
+or their MIME into a per-user catalog. Public API discovery stays saved-only.
+
+`files_type_queries` holds one requested search. Child stream docs keep native source
+positions and bounded page buffers. Normal and selected Move sources advance only to
+the common full path key, so a page never loses an unread suffix. The shared resolver
+stores unfinished frames separately. There is no total stream, folder or depth cap.
+
+The MIME and folder predicates are indexed. Current access and pending visibility are
+checked on those candidates. This is the approved narrow exception to the no-scan rule:
+a page may be short or empty and still unfinished. Keep its continuation. Total work
+can grow with matching candidates hidden by access or pending changes.
+
+Before the first result, preparation may join newer pending work. Once paging starts,
+relevant source or authority changes require a fresh search. Page receipts are replayable
+only under current authority and source pins. Query state expires after 24 hours and is
+removed in bounded batches, also during account/workspace deletion. It is not a file copy.
+
+Mounted sources keep their exact version for the search. Every slice and replay checks
+that version's lifetime. A retired volume generation remains readable until it expires.
+A GitHub commit switch requires a fresh search. Plugin source needs its current enabled
+installation and must not have a registry deletion fence.
+The isolated plugin reviewer instead supplies its exact temporary root. MIME pages and
+replay require that root to stay active; cleanup archives it before deleting children.
 
 - Pending updates are per-user docs keyed by organization, workspace, user, and tagged target.
 - A saved content-only doc normally exists while staged or unstaged differs from base. Private creates and structural proposals may persist when content branches match.

@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 async function fixture() {
-	const t = test_convex();
+	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 	const thread = await asUser.mutation(api.ai_chat.thread_create, {
@@ -289,5 +289,119 @@ describe("list_bash_invocation_transfers", () => {
 		);
 		expect(lateLink._nay?.name).toBe("invocation_interrupted");
 		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(2);
+	});
+});
+
+describe("Bash call discovery", () => {
+	test("continues through near-maximum stored results within a native byte page", async () => {
+		const f = await fixture();
+		for (let index = 0; index < 6; index++) {
+			vi.setSystemTime(Date.now() + 1);
+			const begun = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+				...f.beginArgs,
+				toolCallId: `large-call-${index}`,
+			});
+			if (begun._nay) throw new Error(begun._nay.message);
+			await f.t.mutation(internal.ai_chat_files.finish_bash_invocation, {
+				invocationId: begun._yay.invocationId,
+				commandHash: f.args.commandHash,
+				result: { ...result, output: "x".repeat(340_000), stdout: "x".repeat(340_000) },
+			});
+		}
+		const scope = {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			threadId: f.args.threadId,
+		};
+		const first = await f.t.query(internal.ai_chat_files.list_bash_calls_for_agent, {
+			...scope,
+			paginationOpts: { cursor: null, numItems: 8 },
+		});
+		expect(first!.page.length).toBeGreaterThan(0);
+		expect(first!.page.length).toBeLessThan(6);
+		expect(first!.isDone).toBe(false);
+		const second = await f.t.query(internal.ai_chat_files.list_bash_calls_for_agent, {
+			...scope,
+			paginationOpts: { cursor: first!.continueCursor, numItems: 8 },
+		});
+		expect([...first!.page, ...second!.page].map((call) => call?.toolCallId)).toEqual(
+			[5, 4, 3, 2, 1, 0].map((index) => `large-call-${index}`),
+		);
+		expect(second!.isDone).toBe(true);
+	});
+
+	test("pages all calls, keeps unavailable slots, and never returns stored output", async () => {
+		const f = await fixture();
+		const scope = {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			threadId: f.args.threadId,
+		};
+		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
+		if (first._nay) throw new Error(first._nay.message);
+		await f.t.mutation(internal.ai_chat_files.finish_bash_invocation, {
+			invocationId: first._yay.invocationId,
+			commandHash: f.args.commandHash,
+			result: { ...result, stdout: "private-output" },
+		});
+		vi.setSystemTime(Date.now() + 1);
+		const second = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			...f.beginArgs,
+			toolCallId: "newer-call",
+		});
+		if (second._nay) throw new Error(second._nay.message);
+		const firstPage = await f.t.query(internal.ai_chat_files.list_bash_calls_for_agent, {
+			...scope,
+			paginationOpts: { cursor: null, numItems: 1 },
+		});
+		expect(firstPage).toMatchObject({
+			page: [{ toolCallId: "newer-call", kind: "foreground", jobNumber: null, status: "running" }],
+			isDone: false,
+		});
+		// A call admitted after the first page belongs to a restarted listing, not its continuation.
+		vi.setSystemTime(Date.now() + 1);
+		await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, { ...f.beginArgs, toolCallId: "newest-call" });
+		const secondPage = await f.t.query(internal.ai_chat_files.list_bash_calls_for_agent, {
+			...scope,
+			paginationOpts: { cursor: firstPage!.continueCursor, numItems: 1 },
+		});
+		expect(secondPage).toMatchObject({ page: [{ toolCallId: "tool-call-1", status: "finished" }], isDone: true });
+		expect(JSON.stringify(secondPage)).not.toContain("private-output");
+		await f.t.run(async (ctx) => {
+			const membership = await ctx.db.get("organizations_workspaces_users", f.db.membershipId);
+			if (!membership) throw new Error("Expected membership");
+			await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: false }]);
+			await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: true }]);
+		});
+		const hidden = await f.t.query(internal.ai_chat_files.list_bash_calls_for_agent, {
+			...scope,
+			paginationOpts: { cursor: null, numItems: 2 },
+		});
+		expect(hidden).toMatchObject({ page: [null, null], isDone: false });
+		expect(JSON.stringify(hidden)).not.toContain("newest-call");
+		expect(
+			await f.t.query(internal.ai_chat_files.list_bash_transfers_for_agent, {
+				...scope,
+				select: { toolCallId: "tool-call-1" },
+				paginationOpts: { cursor: null, numItems: 1 },
+			}),
+		).toBeNull();
+	});
+
+	test("refuses another user's current chat before listing calls", async () => {
+		const f = await fixture();
+		await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
+		const otherUserId = await f.t.run((ctx) => ctx.db.insert("users", { clerkUserId: "other-discovery-user" }));
+		expect(
+			await f.t.query(internal.ai_chat_files.list_bash_calls_for_agent, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: otherUserId,
+				threadId: f.args.threadId,
+				paginationOpts: { cursor: null, numItems: 8 },
+			}),
+		).toBeNull();
 	});
 });

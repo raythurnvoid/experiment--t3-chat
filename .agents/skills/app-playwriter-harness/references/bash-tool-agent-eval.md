@@ -63,6 +63,25 @@ Use existing QA text, image, and empty-file fixtures from the catalog. Keep save
 
 Before accepting a change, require a failing control at the named stored-type or saved-only assertion, then restore the code and require the same check to pass. Do not deploy while another migration or task owns the live source. Record unavailable live checks as gaps; local tests do not replace them.
 
+## Indexed MIME search
+
+Use `find FOLDER --content-type image/png --limit 1` for an exact type and `image/`
+for a family. Reuse the catalog's image and text files. Confirm each stored type with
+`file --mime-type` first. Keep the same chat, model, commands, and fixtures across
+the old-code control and the deployed check. Read the actual Bash terminal output.
+
+Check a saved file, a private create, a replacement with another type, and a moved
+folder. Follow each printed continuation exactly. The combined saved and pending
+paths must stay alphabetical. A short or empty page can still have a continuation.
+An unfinished foreground search exits 3 and prints its own continuation.
+
+Run a plain `find ... &` while pending path work is active. Use explicit `jobs` and
+`jobs -o N` reads to check progress and output. The queued job must keep its stored
+output clean, resume without repeating earlier writes, and finish one requested page.
+An unrelated `printf` must contain only its requested text. Check receipt recovery
+with `jobs --call TOOL_CALL_ID` and paged `jobs --calls`; never repeat a write to
+recover its result. Discard only this run's proposals and verify the saved baseline.
+
 ## Resolve copied file links and node IDs
 
 Use a unique `qa-resolve-<runId>` folder with saved marker files, nested folders, a move destination, and a replacement target. Give three files a shared content token and create more than three tree entries for pagination. Verify each saved node ID, path, and marker before scoring. Uploads may normalize names; use actual saved names and test spaces/Unicode in the command suite too.

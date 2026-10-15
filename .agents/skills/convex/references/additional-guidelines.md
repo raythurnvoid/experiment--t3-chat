@@ -621,6 +621,8 @@ Keep both emoji and U+FFFF suffix cases in query regression tests. In `convex-te
 
 ## Scans: when a read may drop rows
 
+The root rules allow one narrow exception for `find --content-type`: indexed MIME/path candidates may fail current pending or access checks. Keep native cursors and all unfinished work, including empty pages. Never use this exception to scan saved files for an unindexed MIME or folder predicate. See the owning pending spec for its ordered merge and readiness contract.
+
 Follow "Reads must scale: no scans" in the root `AGENTS.md`. A user-facing read must be one or more index ranges where every row read is a row returned. The tools in the next section (`.filter()`, JS post-filters, `filterWith`, `maximumRowsRead`) are for ranges that a write-time limit already keeps small, or for background jobs. They are not a way to serve a filter or sort that has no index.
 
 Check a design against these questions before you build it:
