@@ -11,7 +11,7 @@ import { budget_recorder, transaction_cost } from "../convex/files_pending_overl
 import { test_convex, test_mocks_fill_db_with, test_progress_guard, test_spy_handler } from "../convex/setup.test.ts";
 import * as overlay from "./files-pending-overlay.ts";
 import * as catalog from "./files-metadata-catalog.ts";
-import { files_move_page_proof_ledger } from "./files-move-page-proof.ts";
+import { files_move_page_proof_enable, files_move_page_proof_ledger } from "./files-move-page-proof.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -270,6 +270,49 @@ describe("Move parent page proof hooks", () => {
 		expect(new Set(proof.map((row) => row.token))).toEqual(new Set([`local-page-proof:${cohort._id}:${cohort.step}`]));
 		expect(log.mock.calls.flat().join(" ")).not.toMatch(/private-test-(ip|agent|token)/);
 		record_metrics(proof.at(-1)!.counters);
+	});
+
+	test("the parent proof includes the real access-clock flush", async () => {
+		const f = await fixture();
+		const cohort = await current(f);
+		const before = await f.t.run((ctx) => ctx.db.query("files_access_versions")
+			.withIndex("by_organization_workspace", (q) => q.eq("organizationId", f.db.organizationId)
+				.eq("workspaceId", f.db.workspaceId)).unique());
+		const log = vi.spyOn(console, "info").mockImplementation(() => {});
+		const captured: { ctx: MutationCtx; metrics: TransactionMetrics }[] = [];
+		await run_wrapped(f.t, async (ctx) => {
+			await begin_qa(ctx, cohort);
+			files_move_page_proof_enable(ctx);
+			// A workspace grant changes the access clock without adding file overlay work.
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				resourceKind: "workspace",
+				resourceId: f.db.workspaceId,
+				principalKind: "user",
+				userId: f.db.userId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			captured.push({ ctx, metrics: await ctx.meta.getTransactionMetrics() });
+		});
+		const after = await f.t.run((ctx) => ctx.db.query("files_access_versions")
+			.withIndex("by_organization_workspace", (q) => q.eq("organizationId", f.db.organizationId)
+				.eq("workspaceId", f.db.workspaceId)).unique());
+		if (!after) throw new Error("Expected the stored workspace access clock");
+		expect(after.revision).toBe((before?.revision ?? 0) + 1);
+		if (before) expect(after._id).toBe(before._id);
+		expect(captured).toHaveLength(1);
+		const parent = captured[0]!;
+		expect(files_move_page_proof_ledger(parent.ctx), "The write-ID ledger includes the actual access-clock write")
+			.toContainEqual({ operation: before ? "patch" : "insert", id: after._id });
+		const final = records(log).filter((record) => record.event === "parent_final" && record.cohortId === cohort._id);
+		expect(final).toHaveLength(1);
+		expect(final[0]!.counters.documentsWritten.used, "Final proof counters include the access-clock write")
+			.toBe(parent.metrics.documentsWritten.used + 1);
+		expect(final[0]!.counters.bytesWritten.used).toBeGreaterThan(parent.metrics.bytesWritten.used);
+		record_metrics(final[0]!.counters);
 	});
 
 	test("the child sees the real new work range after the existing flush", async () => {
