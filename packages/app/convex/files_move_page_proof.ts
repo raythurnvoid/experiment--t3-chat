@@ -104,7 +104,7 @@ async function db_pending_job(ctx: MutationCtx, cohort: Doc<"files_move_cohorts"
 	const jobArgs: unknown = job?.args[0];
 	const serverNow = Date.now();
 	if (
-		!job || job.name !== "files_move_run:run" || job.state.kind !== "pending" ||
+		!job || job.name !== "files_move_run.js:run" || job.state.kind !== "pending" ||
 		job.args.length !== 1 || job.scheduledTime - serverNow < 30_000 ||
 		typeof jobArgs !== "object" || jobArgs === null ||
 		!("cohortId" in jobArgs) || jobArgs.cohortId !== cohort._id ||
