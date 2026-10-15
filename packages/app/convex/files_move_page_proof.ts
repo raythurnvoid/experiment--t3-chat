@@ -118,7 +118,7 @@ async function db_pending_job(ctx: MutationCtx, cohort: Doc<"files_move_cohorts"
 export const arm = internalMutation({
 	args: {
 		runId: v.id("files_transfer_runs"), cohortId: v.id("files_move_cohorts"),
-		step: v.number(), runGeneration: v.number(),
+		runGeneration: v.number(),
 	},
 	returns: v.object({
 		runId: v.id("files_transfer_runs"), cohortId: v.id("files_move_cohorts"),
@@ -126,7 +126,9 @@ export const arm = internalMutation({
 		serverNow: v.number(), scheduledTime: v.number(),
 	}),
 	handler: async (ctx, args) => {
-		const cohort = await db_check(ctx, args);
+		const current = await ctx.db.get("files_move_cohorts", args.cohortId);
+		if (!current) throw new Error("MOVE_PAGE_PROOF_SETUP_SCOPE_OR_TUPLE");
+		const cohort = await db_check(ctx, { ...args, step: current.step });
 		// Keep the proof window inside the normal two-minute recovery delay.
 		if (Date.now() - cohort.operationTime > 30_000)
 			throw new Error("MOVE_PAGE_PROOF_SETUP_COHORT_AGE");
