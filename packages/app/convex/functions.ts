@@ -11,8 +11,13 @@ import {
 	mutation as raw_mutation,
 	type MutationCtx,
 } from "./_generated/server.js";
-import { files_pending_overlay_db_flush, files_pending_overlay_db_wrap } from "../server/files-pending-overlay.ts";
+import {
+	files_pending_overlay_db_flush,
+	files_pending_overlay_db_page_proof_finish,
+	files_pending_overlay_db_wrap,
+} from "../server/files-pending-overlay.ts";
 import { files_move_reservations_db_wrap } from "../server/files-move-reservations.ts";
+import { files_move_page_proof_db_wrap } from "../server/files-move-page-proof.ts";
 
 /**
  * One customization for both builders. It captures writes to the pending overlay's source tables
@@ -21,14 +26,19 @@ import { files_move_reservations_db_wrap } from "../server/files-move-reservatio
 const customization = {
 	args: {},
 	input: async (ctx: MutationCtx) => {
-		const guarded = files_move_reservations_db_wrap(ctx);
-		const wrapped = files_pending_overlay_db_wrap({ ...ctx, ...guarded });
+		const observed = files_move_page_proof_db_wrap(ctx);
+		const guarded = files_move_reservations_db_wrap({ ...ctx, ...observed });
+		const wrapped = {
+			...observed,
+			...files_pending_overlay_db_wrap({ ...ctx, ...observed, ...guarded }),
+		};
 		return {
 			ctx: wrapped,
 			args: {},
 			// `onSuccess` gets the raw ctx, so flush the wrapped one that holds the captured writes.
 			onSuccess: async () => {
 				await files_pending_overlay_db_flush({ ...ctx, ...wrapped });
+				await files_pending_overlay_db_page_proof_finish({ ...ctx, ...wrapped });
 			},
 		};
 	},

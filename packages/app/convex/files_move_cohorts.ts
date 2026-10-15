@@ -17,6 +17,14 @@ import { files_subtree_ops_db_recover } from "./files_subtree_ops_db.ts";
 import { files_move_reservations_db_take_waiters } from "../server/files-move-reservations.ts";
 import {
 	files_pending_overlay_db_can_join_step,
+	files_pending_overlay_db_page_proof_begin,
+	files_pending_overlay_db_page_proof_before,
+	files_pending_overlay_db_page_proof_after,
+	files_pending_overlay_db_page_proof_body,
+	files_pending_overlay_db_page_proof_drain,
+	files_pending_overlay_db_page_proof_stale_drain,
+	files_pending_overlay_db_page_proof_queue_drain,
+	files_pending_overlay_db_page_proof_queue_work_range,
 	files_pending_overlay_db_set_cohort_staging,
 	files_pending_overlay_db_set_cohort_allocation,
 	files_pending_overlay_db_set_cohort_materialization,
@@ -1081,7 +1089,7 @@ async function db_add_subtree(
 		.withIndex("by_cohort_key", (q) => q.eq("cohortId", cohort._id).eq("key", key))
 		.unique();
 	if (existing) return false;
-	await ctx.db.insert("files_move_work_ranges", {
+	const proofRangeId = await ctx.db.insert("files_move_work_ranges", {
 		cohortId: cohort._id,
 		key,
 		nodeRecordId: record._id,
@@ -1098,6 +1106,7 @@ async function db_add_subtree(
 		nextAttemptAt: Date.now(),
 		processedCount: 0,
 	});
+	files_pending_overlay_db_page_proof_queue_work_range(ctx, cohort._id, key, proofRangeId);
 	const latest = (await ctx.db.get("files_move_cohorts", cohort._id))!;
 	await ctx.db.patch("files_move_cohorts", cohort._id, { pendingWorkCount: latest.pendingWorkCount + 1 });
 	return true;
@@ -1169,6 +1178,7 @@ async function db_descendants(
 				break;
 			}
 		}
+		const proof = await files_pending_overlay_db_page_proof_before(ctx, cohort, "descendants");
 		const page = await ctx.runQuery(internal.files_move_pages.descendants, {
 			organizationId: cohort.organizationId,
 			workspaceId: cohort.workspaceId,
@@ -1176,7 +1186,9 @@ async function db_descendants(
 			source: cursor.source,
 			parentId,
 			cursor: cursor.cursor,
+			...(proof ? { proof } : {}),
 		});
+		await files_pending_overlay_db_page_proof_after(ctx, page);
 		paged = true;
 		for (const entry of page.page) {
 			const nodeId = "nodeId" in entry ? entry.nodeId : entry._id;
@@ -1617,12 +1629,17 @@ async function db_sides(
 					cursor.part++;
 					continue;
 				}
-				const page = await ctx.runQuery(internal.files_move_pages.metadata, {
+				const proof = await files_pending_overlay_db_page_proof_before(ctx, cohort, "metadata");
+				const pageArgs = {
 					organizationId: cohort.organizationId,
 					workspaceId: cohort.workspaceId,
 					nodeId: record.nodeId,
 					cursor: null,
-				});
+				};
+				const page = await ctx.runQuery(internal.files_move_pages.metadata, { ...pageArgs, ...(proof ? { proof } : {}) });
+				await files_pending_overlay_db_page_proof_after(ctx, page);
+				// These two probes have identical full args. Neither carries a changing proof ordinal.
+				const drainBefore = proof ? await ctx.runQuery(internal.files_move_pages.metadata, pageArgs) : null;
 				for (const row of page.page) {
 					const { _id, _creationTime: _time, ...fields } = row;
 					await ctx.db.patch("files_metadata_docs", _id, { moveView: beforeTag });
@@ -1641,6 +1658,14 @@ async function db_sides(
 									sortName: after.sortName,
 								}
 							: {}),
+					});
+				}
+				if (drainBefore) {
+					files_pending_overlay_db_page_proof_queue_drain(ctx, async () => {
+						const drainAfter = await ctx.runQuery(internal.files_move_pages.metadata, pageArgs, {
+							useStaleSnapshot: files_pending_overlay_db_page_proof_stale_drain(ctx),
+						});
+						files_pending_overlay_db_page_proof_drain(ctx, "metadata", page, drainBefore, drainAfter);
 					});
 				}
 				// Tagged docs leave this range. A long field key makes its native cursor too large to store.
@@ -1764,15 +1789,29 @@ async function db_cleanup_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 		let later = false;
 		for (let next = index + 1; next < families.length && !later; next++) later = (await probe(next)) !== null;
 		const { table, view } = families[index]!;
-		const page: PaginationResult<Doc<typeof table>> = await ctx.runQuery(internal.files_move_pages.side_cleanup, {
+		const proof = await files_pending_overlay_db_page_proof_before(ctx, cohort, "side_cleanup");
+		const pageArgs = {
 			cohortId: cohort._id,
 			family: table,
 			view,
 			cursor: null,
+		};
+		const page: PaginationResult<Doc<typeof table>> = await ctx.runQuery(internal.files_move_pages.side_cleanup, {
+			...pageArgs, ...(proof ? { proof } : {}),
 		});
+		await files_pending_overlay_db_page_proof_after(ctx, page);
+		const drainBefore = proof ? await ctx.runQuery(internal.files_move_pages.side_cleanup, pageArgs) : null;
 		for (const row of page.page) {
 			if (view === chosen) await ctx.db.patch(table, row._id, { moveView: undefined });
 			else await ctx.db.delete(table, row._id);
+		}
+		if (drainBefore) {
+			files_pending_overlay_db_page_proof_queue_drain(ctx, async () => {
+				const drainAfter = await ctx.runQuery(internal.files_move_pages.side_cleanup, pageArgs, {
+					useStaleSnapshot: files_pending_overlay_db_page_proof_stale_drain(ctx),
+				});
+				files_pending_overlay_db_page_proof_drain(ctx, "side_cleanup", page, drainBefore, drainAfter);
+			});
 		}
 		// A done page tagged or deleted its whole range, so the cleanup ends when no later family has rows.
 		return { done: page.isDone && !later, paged: true, parentPage: false };
@@ -2387,6 +2426,7 @@ async function db_advance_step(
 			})
 		: await files_pending_overlay_db_set_cohort_staging(ctx, call);
 	if (entered._nay) return null;
+	await files_pending_overlay_db_page_proof_begin(ctx, cohort);
 	let result:
 		| { _yay: { done: boolean; paged?: boolean; parentPage?: boolean }; _nay?: undefined }
 		| { _nay: { name?: string; message: string }; _yay?: undefined } = Result({ _yay: { done: false } });
@@ -2651,6 +2691,7 @@ async function db_advance_step(
 		0,
 		false,
 	);
+	files_pending_overlay_db_page_proof_body(ctx);
 	// Commit the new view before doing physical repair.
 	return {
 		kind: "next" as const,
