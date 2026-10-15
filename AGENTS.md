@@ -315,7 +315,10 @@ A scan reads rows only to drop them. These are all scans:
 
 Rules:
 
+- Keep shared facts in shared rows. Do not copy a whole shared catalog for every user to simplify filtering, pagination, or access checks. Per-user rows should represent actual user state, such as pending changes, explicit grants, or read positions. A pending view combines shared saved data with that user's changes.
+- Before adding a derived index, state how its row count and update work grow with files, users, grants, and pending changes. Small references or counts can still multiply by files times users. Count the affected owners and descendants too; do not move an unbounded scan from reads into one write transaction.
 - Before you build a read, name the index range that serves it. Put it in the plan. If the read shows drafts (the agent's bash tools, the Pending tab, the draft views), private pending nodes and pending moves must come from an index too.
+- Do not fetch a page and drop rows to implement a filter, pending view, or access list. Fetching more pages until enough rows survive is the same scan, as is `.filter()` before pagination. The cases below are the only exceptions; a page-size limit alone does not make the candidate set small. Keep authorization checks; fix the query design rather than removing them.
 - If no index can serve the read, stop before you write code. Tell the user the root problem and offer real options: add an index, cut the feature to what an index can serve, or move it to a search engine.
 - Caps do not fix a scan. `maximumRowsRead`, `take(1001)`, read budgets, `truncated` flags, and "too broad" errors turn a slow read into wrong or missing results. Do not ship them as a stopgap.
 - A scan is fine only when a limit enforced on write bounds the range (for example a per-role share limit), when the range is one small owned record (one file's version history), or in a background job no user waits on. Write that bound in a comment next to the read.

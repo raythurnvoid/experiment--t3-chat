@@ -56,6 +56,8 @@ Move-only docs have no `content` object and use `size: 0`. Private creates and p
 
 # Data Model
 
+Saved file facts stay shared. Owner rows represent real pending changes and their effects; do not create a copy of every saved file for each user. For a new derived view, follow "Reads must scale: no scans" in the root `AGENTS.md`, including its storage and write-cost checks. A single pending folder change can affect many descendants, so count those effects explicitly.
+
 Main table in `packages/app/convex/schema.ts`:
 
 - `files_pending_updates`

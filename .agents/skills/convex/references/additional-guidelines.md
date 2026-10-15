@@ -601,9 +601,9 @@ Treat `.collect()` as a heavy read because it materializes the full result set i
 - Do not replace a single-doc index lookup with `collect().find(...)` when the schema can answer the question directly.
 - Prefer adding or using a more specific index, then finish with `first()`.
 - Avoid `unique()` on normal read paths because it throws when duplicate docs exist. Use it only when throwing on duplicates is the behavior you explicitly want.
-- Keep `collect` + JS filtering only for predicates Convex cannot express cleanly, especially missing optional-field logic.
-- Do not use `.take(N)` + JS `.find(...)` for "newest doc matching a predicate": queries stream lazily, so `.order("desc").filter(...).first()` reads only until the first match and has no silent N cap. Reserve `.take(N)` for genuinely bounded top-N reads.
-- When the function needs every doc of a naturally small set (for example a repository's secret names), use `.collect()` and say so; do not add an arbitrary `.take(100)` as a stand-in cap for "all of them".
+- A predicate missing from an index is a query-design gap. `collect` + JS filtering and `.filter(...).first()` can both walk the whole range. Use them only under a bounded-set or background-work exception from the root rules.
+- For "newest doc matching a predicate", put the predicate in the index range before `.order("desc").first()`. Neither `.take(N)` + JS `.find(...)` nor `.filter(...).first()` supplies that index.
+- Use `.collect()` only for a set allowed by the root rules, and name its bound or background-work purpose. Do not add an arbitrary `.take(100)` as a stand-in cap for "all of them".
 
 ## Performance: prefix scans via index ranges
 
@@ -615,27 +615,7 @@ Cover the full allowed alphabet in tests before adding or changing a shared pref
 
 For file-tree scans, use `path_tree_prefix_upper_bound` from `packages/app/server/server-utils.ts`. Both prefix helpers have only backend callers, so they belong in `server/`. The tree prefix must already end in `/`; the helper does not normalize paths. Query the materialized `files_nodes.treePath` key: files and root store their canonical path, and non-root folders store `path + "/"`. The helper replaces the final slash with `0`: `treePath >= "/docs/" && treePath < "/docs0"`. This includes the `/docs` folder and all Unicode descendants while excluding sibling prefixes such as `/docs-archive`. Root `/` has upper bound `0`. File-only text chunks store raw file paths, so their scoped search uses the same slash-ending prefix and bound.
 
-This only works on regular indexes. Search indexes (`withSearchIndex`) accept exactly one `.search()` plus `.eq()` on `filterFields` — equality only, no `gte`/`lt` — so a prefix constraint on a full-text query cannot ride the search index. Express the same range as a post-index `.filter()` instead (see the next section for what `.filter()` does to pagination):
-
-```ts
-const treePathUpperBound = path_tree_prefix_upper_bound(treePathPrefix);
-
-const results = await ctx.db
-	.query("files_nodes")
-	.withSearchIndex("search_path", (q) =>
-		q
-			.search("path", words)
-			.eq("organizationId", organizationId)
-			.eq("workspaceId", workspaceId)
-			.eq("archiveOperationId", undefined),
-	)
-	.filter((q) =>
-		q.and(
-			q.gte(q.field("treePath"), treePathPrefix),
-			q.lt(q.field("treePath"), treePathUpperBound),
-		),
-	);
-```
+This only works on regular indexes. Search indexes (`withSearchIndex`) accept exactly one `.search()` plus `.eq()` on `filterFields` — equality only, no `gte`/`lt` — so a prefix constraint on a full-text query cannot ride the search index. A post-index `.filter()` would scan the search matches. For a new user-facing read, redesign the indexed scope or narrow the feature; do not use that scan as a fallback.
 
 Keep both emoji and U+FFFF suffix cases in query regression tests. In `convex-test` 0.0.53, index ranges use UTF-8 `compareValues`, but `.filter()` comparisons use JavaScript's UTF-16 order. That can hide an emoji failure seen in Convex. U+FFFF suffix cases expose the old bound in both orders. Do not change production behavior to match the test mock.
 
@@ -646,6 +626,8 @@ Follow "Reads must scale: no scans" in the root `AGENTS.md`. A user-facing read 
 Check a design against these questions before you build it:
 
 - Which index serves each filter and each sort order? A sort needs an index whose fields after the equality prefix are the sort fields.
+- Does the design copy shared rows per user, or hide that growth in references and counts? Follow the root rules for shared facts, real user state, and the total storage and update cost.
+- Can pending hides or access checks remove most fetched candidates? A small page does not bound the total scan. Keep the access checks and fix the index design.
 - A table can hold 32 indexes, and an index 16 fields. A filter or sort the user can combine freely cannot get one index per combination. Cut the scope, or use a search engine.
 - Where do drafts come from? Saved rows from an index plus drafts read some other way give wrong order or missing rows. A file the user moved in a draft keeps its old saved path in the index. So the agent's metadata search (`files_pending_overlay_list` in `server/files-pending-overlay.ts`, metadata mode) reads a folder range only with one more saved stream per folder the user's drafts moved in, and merges it with the user's place stream.
 - Does the search index fit? `withSearchIndex` matches whole words and word starts, orders by relevance, and returns at most 1,024 results. It cannot serve "contains", a sort, or a range.
@@ -659,22 +641,24 @@ Some older reads still scan: `files_visible` time order and its subtree filters.
 - **`.filter()` before `.paginate()`**: `numItems` counts docs that _pass_ the filter. For regular queries, the scan continues past non-matching docs until the page fills, the range ends, or an enforced `maximumRowsRead` / `maximumBytesRead` budget runs out. At that budget, a page can be short or empty with `isDone: false` and `pageStatus: "SplitRequired"`. Those pagination budget options are not enforced for search queries in the installed Convex version, so do not use them to predict `withSearchIndex(...)` page behavior.
 - **JS post-filter after `.paginate()`**: paginate reads exactly `numItems` docs, then survivors are dropped, so pages thin — possibly to zero — while `isDone` stays false. Per-call reads stay flat and limited.
 
-Rules that follow:
+These mechanics explain existing filtered reads. They do not permit new scans. Rules:
 
 - **Never treat an empty page as "done".** An empty page can follow JS post-filtering or a budget split. Only `isDone` ends pagination; continue with `continueCursor` whenever it is false.
-- Both approaches scan the same docs overall — choose by who pays. Prefer `.filter()` when the consumer wants full pages (fewer round-trips); prefer the JS post-filter only when per-call read cost must stay flat.
-- Either way, `.filter()`/JS filtering is the fallback, not the default: express the predicate on an index (`withIndex` range, search-index `filterFields` equality) whenever the schema allows.
-- When the predicate needs other reads (for example, "does this folder have a child?"), `.filter()` cannot run it. Use `stream(ctx.db, schema).query(...).withIndex(...).filterWith(async (doc) => ...)` from `convex-helpers/server/stream`, then `.paginate({ ...opts, maximumRowsRead })`. It filters before paging, like `.filter()`. A reactive client must page it with `usePaginatedQuery` from `convex-helpers/react`, used as it is. The `convex/react` hook does not pin a stream page's end, so rows can be skipped or repeated when docs are added or removed. Leave out `maximumRowsRead` when the request has an `endCursor`. A pinned page that stops at the read limit returns the stop as its `continueCursor`, the hook splits the page there, and the rows between the stop and the old `endCursor` never load. No read uses this now. Prefer a derived table written at write time, so the read is a plain index range: `files_pending_list.list_files_pending_updates` used to filter with a stream, and now pages `files_pending_list_rows`, which the pending overlay flush writes.
+- Filtering before or after pagination scans the same candidates. Neither is a fallback for a missing index. Fetching more pages to refill a filtered page also scans.
+- Native short pages and `SplitRequired` pages remain valid. A page-size or read budget does not justify removing rows to implement a filter. Apply the root rules' bounded-set or background-work exceptions only where their bound or purpose is explicit.
+- If a predicate needs other reads, do not add a `filterWith` page walk. Design an index for the result and account for its write cost. `files_pending_list.list_files_pending_updates` now pages `files_pending_list_rows`, which the pending overlay flush writes for actual proposals.
 - New reads do not build pages by hand. Only `.paginate()` reads an index range for a page: no loop that walks an index, and no new `stream(...).filterWith(...)`. When several ordered streams must merge, each stream is its own query, and the merge runs outside the query (in the browser, or in the agent's action). For a `.paginate()` page that is too big for its per-row reads, use `files_tree_db_page_needs_split` and `files_tree_db_page_split_required` from `files_tree_db.ts`. `files_tree.list_tree_children_sorted` shows their use.
 - Older hand-built pages (`plugins_data.ts`, near its `endCursor` comments) must keep the hook's contract until they are replaced. With an `endCursor`, ignore `numItems`, return every row up to it, and return `continueCursor === endCursor` with `isDone: false`. A cap that stops the page first returns `pageStatus: "SplitRequired"` with a `splitCursor` strictly inside the page. A cursor that does not match the request throws a `ConvexError` with `InvalidCursor` in its message and the data fields `isConvexSystemError: true` and `paginationError: "InvalidCursor"`. Never throw it for a first page with no cursor and no `endCursor`: the hook would retry that page forever.
 
 ## Exact windows: subtract one user's hidden docs from a saved page
 
-An agent read shows saved docs minus the docs the user's drafts hide. Do not read one hide per doc. Read the saved page with `.paginate()`, then read only the hides whose index key lies between the page's first and last key, under the same equality prefix. Drop them with a `Set` of saved node ids.
+This describes existing pending-overlay code. Do not copy it as a scalable design for a new read. Bounding hide lookups to one saved page reduces per-page work, but many fully hidden saved pages still form a scan.
 
-- The hide table (`files_pending_hides`) mirrors each saved index the read uses, plus `userId`. Use the mirror of the index the page used.
+The existing read takes a saved page with `.paginate()`, reads the matching hide-key windows, and drops hidden saved node ids with a `Set`.
+
+- The hide table (`files_pending_hides`) mirrors each saved index the read uses, plus `userId`. The hide query uses the mirror of the saved page's index.
 - Convex bounds one field per range, so a key of several fields needs a split. `files_pending_overlay_window_ranges` in `server/files-pending-overlay.ts` builds the ranges: at most `2k - 1` for `k` key fields. For a `desc` page, the first key is the larger one.
-- Read each range with `.collect()`, and write the bound in a comment there: there is one hide per user and saved doc, a hide exists only while its saved doc is active, and the flush updates hide copies in the same transaction as the saved write. So a window holds at most one hide per page doc, plus ties on the last key field.
+- The current code reads these windows with `.collect()`. There is one hide per user and saved doc. A hide exists only while its saved doc is active, and the flush updates its copied fields with the saved write. Key ties and total candidate pages still need a bound; the window alone is not a proof of scalable reads.
 - Agent reads run once from an action and never rerun, so they need no split guard. A browser query with per-row reads still needs the split guard.
 
 ## Query cache and composition
