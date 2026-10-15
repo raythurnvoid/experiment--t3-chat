@@ -27,6 +27,8 @@
 		/* Paths */
 		"paths": {
 			"@/*": ["./src/*"],
+			// Component test helpers must use the same fork as app tests.
+			"convex-test": ["./vendor/convex-test/index.ts"],
 			"convex/_generated/*": ["./convex/_generated/*"]
 		}
 	},
