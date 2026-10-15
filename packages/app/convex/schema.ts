@@ -820,7 +820,8 @@ const files_metadata_committed_sort_fields = {
 	 */
 	sortDisplayValue: v.optional(v.union(v.string(), v.number(), v.boolean())),
 	/**
-	 * Set on committed field docs with a display value. Other docs have no table preview.
+	 * True when the display needs a full-value read. An absent flag means false.
+	 * Other docs have no table preview.
 	 */
 	sortDisplayValueIsPreview: v.optional(v.boolean()),
 };

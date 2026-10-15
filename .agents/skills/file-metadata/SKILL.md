@@ -76,6 +76,7 @@ number as `String(value)`, a boolean as `true`/`false`, a list by its first item
 skipped. A key with no plain value (a frontmatter map parent) has no `sortValue`, so the file sorts
 with the missing rows. `sortDisplayValue` is a typed preview of at most 256 code points.
 `sortDisplayValueIsPreview` is true when the string is cut or the field has more plain values.
+An absent flag means false, so a complete short value needs no stored flag.
 Every writer that
 changes a node's name, parent, or restriction also patches these fields on its committed field docs.
 A restrict or unrestrict patches archived docs too, because a restore does not rewrite the flag. See the `files-explorer-tree` skill, "Folder Contents".
