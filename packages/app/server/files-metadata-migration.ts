@@ -219,22 +219,25 @@ export async function metadata_migration_audit_capture(ctx: QueryCtx, item: Lega
 export async function metadata_migration_preview_doc(ctx: MutationCtx, doc: Doc<"files_metadata_docs">) {
 	if (doc.sourceKind !== "committed" || doc.docKind !== "field" || doc.sortDisplayValue === undefined) return;
 	const preview = files_metadata_scalar_preview(doc.sortDisplayValue);
-	const values = await ctx.db
-		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-			q
-				.eq("organizationId", doc.organizationId)
-				.eq("workspaceId", doc.workspaceId)
-				.eq("sourceKind", "committed")
-				.eq("fileNodeId", doc.fileNodeId)
-				.eq("moveView.cohortId", doc.moveView?.cohortId)
-				.eq("moveView.view", doc.moveView?.view)
-				.eq("fieldPath", doc.fieldPath),
-		)
-		.collect();
-	const plainCount = values.filter((value) => value.docKind === "value" && value.valueKind !== "maybe_date").length;
 	// New writes may already store a short display with its full-value flag.
-	const isPreview = doc.sortDisplayValueIsPreview === true || preview.isPreview || plainCount > 1;
+	let isPreview = doc.sortDisplayValueIsPreview === true || preview.isPreview;
+	if (!isPreview) {
+		const values = await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+				q
+					.eq("organizationId", doc.organizationId)
+					.eq("workspaceId", doc.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", doc.fileNodeId)
+					.eq("moveView.cohortId", doc.moveView?.cohortId)
+					.eq("moveView.view", doc.moveView?.view)
+					.eq("fieldPath", doc.fieldPath),
+			)
+			.filter((q) => q.and(q.eq(q.field("docKind"), "value"), q.neq(q.field("valueKind"), "maybe_date")))
+			.take(2);
+		isPreview = values.length > 1;
+	}
 	if (doc.sortDisplayValue === preview.value && (doc.sortDisplayValueIsPreview ?? false) === isPreview) return;
 	await ctx.db.patch("files_metadata_docs", doc._id, {
 		sortDisplayValue: preview.value,
