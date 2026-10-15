@@ -2773,9 +2773,7 @@ export async function files_pending_overlay_db_trace_move(
  * The next unit and final flush need their measured reserve.
  */
 export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx, limitFactor: 4 | 16 = 16) {
-	await files_pending_overlay_db_trace_move(ctx, "join_flush_before");
 	await files_pending_overlay_db_flush(ctx);
-	await files_pending_overlay_db_trace_move(ctx, "join_flush_after");
 	const metrics = await ctx.meta.getTransactionMetrics();
 	return Object.values(metrics).every((metric) => metric.used * limitFactor < metric.used + metric.remaining);
 }
