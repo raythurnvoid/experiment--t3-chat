@@ -23,6 +23,8 @@ export const backfill_pending_types = app_migrations.define({
 	table: "files_pending_updates",
 	batchSize: 1,
 	migrateOne: async (ctx, proposal) => {
+		// Excluded proposals still appear in the audit, so missing entries block the switch.
+		if ((await db_scope_status(ctx.db, proposal)) !== "allowed") return;
 		files_pending_overlay_db_mark_target(ctx, {
 			organizationId: proposal.organizationId,
 			workspaceId: proposal.workspaceId,

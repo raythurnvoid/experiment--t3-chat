@@ -86,6 +86,29 @@ test("the typed backfill restores actual pending entries and preserves all sourc
 	expect(audit.isDone).toBe(true);
 });
 
+test("the typed backfill keeps protected drafts unchanged and reports missing index entries", async () => {
+	const f = await old_data();
+	await f.t.run(async (ctx) => {
+		await ctx.db.patch("organizations", f.u.organizationId, { name: "personal" });
+		await ctx.db.patch("organizations_workspaces", f.u.workspaceId, { name: "sybill" });
+	});
+	const status = await f.t.action((ctx) =>
+		runToCompletion(ctx, components.migrations, internal.migrations.backfill_pending_types),
+	);
+	expect(status.isDone).toBe(true);
+	await f.settle();
+	expect(
+		await f.t.run((ctx) => ctx.db.query("files_pending_type_entries").collect()),
+		"protected proposals must not create typed entries",
+	).toEqual([]);
+	expect(await f.t.run((ctx) => ctx.db.query("files_pending_overlay_jobs").collect())).toEqual([]);
+	expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual(f.before.proposals);
+	const owners = await f.t.query(internal.migrations.audit_pending_type_source_page, { cursor: null });
+	expect(owners.page, "the complete audit still includes excluded source owners").toHaveLength(2);
+	const audit = await f.t.query(internal.files_pending_overlay.check_user, { ...f.u, cursor: null });
+	expect(audit.differences.filter((difference) => difference.startsWith("type entry of "))).toHaveLength(2);
+});
+
 test("the preview rolls back its cross-table work before returning its safe receipt", async () => {
 	const f = await old_data();
 	await expect(f.t.mutation(internal.migrations.preview_pending_types, { cursor: null })).rejects.toThrow(
