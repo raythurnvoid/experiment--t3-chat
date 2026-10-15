@@ -81,6 +81,7 @@ import {
 	files_move_reservations_db_note_source,
 	files_move_reservations_db_is_rename_allocation,
 } from "./files-move-reservations.ts";
+import { files_move_page_proof_enable, files_move_page_proof_ledger } from "./files-move-page-proof.ts";
 
 /**
  * Tables the flush recomputes from. A write to one of them marks derived docs dirty. A grant write
@@ -387,6 +388,38 @@ type FlushMarks = {
 	 * The job this mutation runs. A job never schedules its own doc again.
 	 */
 	ownJob: OwnJob | null;
+	/**
+	 * Temporary page receipts belong to one mutation, including its final flush.
+	 */
+	pageProof?: {
+		token: string;
+		runId: Id<"files_transfer_runs">;
+		cohortId: Id<"files_move_cohorts">;
+		entryStep: number;
+		nextOrdinal: number;
+		current?: PageProofCall;
+		units: { purpose: string; ordinal: number; step: number; rowIds: string[]; writeStart: number; writeEnd: number }[];
+		ownerFields: (WithoutSystemFields<Doc<"files_pending_place_fields">> & { _id: Id<"files_pending_place_fields"> })[];
+		workRangeProved: boolean;
+		newWorkRange?: { key: string; id: Id<"files_move_work_ranges"> };
+		drain?: () => Promise<void>;
+	};
+	rollbackProofCohortId?: Id<"files_move_cohorts">;
+	rollbackProofStaleDrain?: boolean;
+};
+
+type PageProofCall = {
+	token: string;
+	runId: Id<"files_transfer_runs">;
+	cohortId: Id<"files_move_cohorts">;
+	entryStep: number;
+	step: number;
+	phase: string;
+	ordinal: number;
+	purpose: "descendants" | "metadata" | "side_cleanup" | "owner_source_metadata";
+	rowIds: string[];
+	writeStart: number;
+	bodyDone: boolean;
 };
 
 const FLUSH_MARKS = Symbol("files_pending_overlay");
@@ -2182,22 +2215,19 @@ export async function files_pending_overlay_db_stage_owner_fields(
 								.eq("moveView.view", tag?.view),
 						);
 			// Source docs stay in place. These identity-only indexes keep the stored cursor short.
-			const page: PaginationResult<Doc<"files_metadata_docs">> | null =
-				cursor.page === null && !(await source().first())
-					? null
-					: await ctx.runQuery(internal.files_move_pages.owner_source_metadata, {
-							source:
-								place.target.kind === "private"
-									? { kind: "pending", pendingUpdateId: place.pendingUpdateId! }
-									: {
-											kind: "saved",
-											organizationId: place.organizationId,
-											workspaceId: place.workspaceId,
-											nodeId: place.target.id,
-										},
-							cohortId: tag?.cohortId ?? null,
-							cursor: cursor.page,
-						});
+			let page: PaginationResult<Doc<"files_metadata_docs">> | null = null;
+			if (cursor.page !== null || (await source().first())) {
+				const proof = await files_pending_overlay_db_page_proof_before(ctx, cohort, "owner_source_metadata");
+				page = await ctx.runQuery(internal.files_move_pages.owner_source_metadata, {
+					source: place.target.kind === "private"
+						? { kind: "pending", pendingUpdateId: place.pendingUpdateId! }
+						: { kind: "saved", organizationId: place.organizationId, workspaceId: place.workspaceId, nodeId: place.target.id },
+					cohortId: tag?.cohortId ?? null,
+					cursor: cursor.page,
+					...(proof ? { proof } : {}),
+				});
+				await files_pending_overlay_db_page_proof_after(ctx, page);
+			}
 			paged = page !== null;
 			for (const doc of page?.page ?? []) {
 				if (
@@ -2205,7 +2235,7 @@ export async function files_pending_overlay_db_stage_owner_fields(
 					doc.proposalRevision !== (proposal && files_pending_update_index_revision(proposal))
 				)
 					continue;
-				await ctx.db.insert("files_pending_place_fields", {
+				const fields = {
 					organizationId: place.organizationId,
 					workspaceId: place.workspaceId,
 					userId: place.userId,
@@ -2223,7 +2253,9 @@ export async function files_pending_overlay_db_stage_owner_fields(
 					isVisible: place.isVisible,
 					accessNodeId: place.accessNodeId,
 					fieldsVersion: place.fieldsVersion,
-				});
+				};
+				const id = await ctx.db.insert("files_pending_place_fields", fields);
+				(ctx as WrappedCtx)[FLUSH_MARKS]?.pageProof?.ownerFields.push({ _id: id, ...fields });
 			}
 			cursor.page = page && !page.isDone ? page.continueCursor : null;
 			if (!page || page.isDone) cursor.phase = cursor.phase === "normal" ? "after" : "done";
@@ -3067,6 +3099,218 @@ export function files_pending_overlay_list_over_budget(metrics: TransactionMetri
 	);
 }
 
+// Temporary native proof. Only the checked Move QA fixtures enter this state.
+export async function files_pending_overlay_db_page_proof_begin(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
+	if (!state || state.pageProof?.cohortId === cohort._id) return;
+	if (
+		cohort.organizationId !== "gs7pjc3hzy2m10e1hj3vk0kzad8cm7tb" ||
+		cohort.workspaceId !== "h57vccrf1r4j9q6ky0etf6v0gx8cm2kw" ||
+		cohort.userId !== "m577heygr826f2wgk6r30mk1vd8928q2" ||
+		cohort.membershipId !== "h97xwdwwy689rs2hj7cxnwbq0s8cma56" ||
+		cohort.origin.kind !== "transfer"
+	) return;
+	const item = await ctx.db.get("files_transfer_items", cohort.origin.itemId);
+	if (
+		!item || item.runId !== cohort.origin.runId || item.source.kind !== "saved" ||
+		(item.source.id !== "v97er5hkawd92x0g1xjgnb5yg18fq5hj" && item.source.id !== "v9742ak8qx2e3f45231f17mf1x8fmt6j")
+	) return;
+	if (state.pageProof) throw new Error("MOVE_PAGE_PROOF_SETUP_MULTIPLE_COHORTS");
+	const { requestId } = await ctx.meta.getRequestMetadata();
+	state.pageProof = {
+		token: `${requestId}:${cohort._id}:${cohort.step}`,
+		runId: cohort.origin.runId,
+		cohortId: cohort._id,
+		entryStep: cohort.step,
+		nextOrdinal: 0,
+		units: [],
+		ownerFields: [],
+		workRangeProved: false,
+	};
+}
+
+export function files_pending_overlay_db_page_proof_rollback(
+	ctx: MutationCtx,
+	cohortId: Id<"files_move_cohorts">,
+	staleDrain: boolean,
+) {
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
+	if (!state) throw new Error("MOVE_PAGE_PROOF_SETUP_WRAPPER");
+	state.rollbackProofCohortId = cohortId;
+	state.rollbackProofStaleDrain = staleDrain;
+	files_move_page_proof_enable(ctx);
+}
+
+/**
+ * Only the guarded throwing control can request a stale drain read.
+ */
+export function files_pending_overlay_db_page_proof_stale_drain(ctx: MutationCtx) {
+	return (ctx as WrappedCtx)[FLUSH_MARKS]?.rollbackProofStaleDrain === true;
+}
+
+function page_proof_counters(metrics: TransactionMetrics) {
+	return {
+		bytesRead: metrics.bytesRead,
+		bytesWritten: metrics.bytesWritten,
+		databaseQueries: metrics.databaseQueries,
+		documentsRead: metrics.documentsRead,
+		documentsWritten: metrics.documentsWritten,
+		functionsScheduled: metrics.functionsScheduled,
+		scheduledFunctionArgsBytes: metrics.scheduledFunctionArgsBytes,
+	};
+}
+
+export async function files_pending_overlay_db_page_proof_before(
+	ctx: MutationCtx,
+	cohort: Doc<"files_move_cohorts">,
+	purpose: PageProofCall["purpose"],
+) {
+	const proof = (ctx as WrappedCtx)[FLUSH_MARKS]?.pageProof;
+	if (!proof || proof.cohortId !== cohort._id) return;
+	const descriptor = {
+		token: proof.token, runId: proof.runId, cohortId: proof.cohortId, entryStep: proof.entryStep,
+		step: cohort.step, phase: cohort.workPhase, ordinal: proof.nextOrdinal++,
+	};
+	proof.current = { ...descriptor, purpose, rowIds: [], writeStart: 0, bodyDone: false };
+	if (descriptor.ordinal >= 2) return;
+	console.info("MOVE_PAGE_PROOF_20261015 " + JSON.stringify({
+		event: "parent_before", ...descriptor, purpose, seq: descriptor.ordinal * 4,
+		counters: page_proof_counters(await ctx.meta.getTransactionMetrics()),
+	}));
+	return descriptor;
+}
+
+export async function files_pending_overlay_db_page_proof_after(
+	ctx: MutationCtx,
+	page: { page: { _id: string }[]; isDone: boolean },
+) {
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
+	const call = state?.pageProof?.current;
+	if (!call) return;
+	call.rowIds = page.page.map((row) => row._id);
+	if (state.rollbackProofCohortId) call.writeStart = files_move_page_proof_ledger(ctx).length;
+	if (call.ordinal >= 2) return;
+	const { rowIds: _rowIds, writeStart: _writeStart, bodyDone: _bodyDone, ...descriptor } = call;
+	console.info("MOVE_PAGE_PROOF_20261015 " + JSON.stringify({
+		event: "parent_after", ...descriptor, seq: call.ordinal * 4 + 3,
+		counters: page_proof_counters(await ctx.meta.getTransactionMetrics()),
+	}));
+}
+
+export function files_pending_overlay_db_page_proof_body(ctx: MutationCtx) {
+	const call = (ctx as WrappedCtx)[FLUSH_MARKS]?.pageProof?.current;
+	if (call) call.bodyDone = true;
+}
+
+export function files_pending_overlay_db_page_proof_drain(
+	ctx: MutationCtx,
+	purpose: "metadata" | "side_cleanup",
+	page: { page: { _id: string }[]; isDone: boolean },
+	before: { page: { _id: string }[]; isDone: boolean },
+	after: { page: { _id: string }[]; isDone: boolean },
+) {
+	const proof = (ctx as WrappedCtx)[FLUSH_MARKS]?.pageProof;
+	if (!proof) throw new Error("MOVE_PAGE_PROOF_SETUP_DRAIN_PARENT");
+	const ids = page.page.map((row) => row._id);
+	if (JSON.stringify(before.page.map((row) => row._id)) !== JSON.stringify(ids) || before.isDone !== page.isDone)
+		throw new Error("MOVE_PAGE_PROOF_SETUP_DRAIN_BASELINE");
+	if (after.page.some((row) => ids.includes(row._id)) || (before.isDone && (after.page.length !== 0 || !after.isDone)))
+		throw new Error("The next drain page excludes rows tagged or deleted by the parent");
+	console.info("MOVE_PAGE_STATE_20261015 " + JSON.stringify({
+		event: "drain", token: proof.token, cohortId: proof.cohortId, purpose,
+		beforeIds: ids, afterIds: after.page.map((row) => row._id), beforeDone: before.isDone, afterDone: after.isDone,
+	}));
+}
+
+export function files_pending_overlay_db_page_proof_queue_drain(ctx: MutationCtx, read: () => Promise<void>) {
+	const proof = (ctx as WrappedCtx)[FLUSH_MARKS]?.pageProof;
+	if (!proof || proof.drain) throw new Error("MOVE_PAGE_PROOF_SETUP_DRAIN_QUEUE");
+	proof.drain = read;
+}
+
+export function files_pending_overlay_db_page_proof_queue_work_range(
+	ctx: MutationCtx,
+	cohortId: Id<"files_move_cohorts">,
+	key: string,
+	id: Id<"files_move_work_ranges">,
+) {
+	const proof = (ctx as WrappedCtx)[FLUSH_MARKS]?.pageProof;
+	if (!proof || proof.cohortId !== cohortId || proof.workRangeProved || proof.newWorkRange) return;
+	proof.newWorkRange = { key, id };
+}
+
+async function db_page_proof_reads(ctx: MutationCtx) {
+	const proof = (ctx as WrappedCtx)[FLUSH_MARKS]?.pageProof;
+	if (!proof) return;
+	if (proof.drain) {
+		const read = proof.drain;
+		proof.drain = undefined;
+		await read();
+	}
+	if (proof.newWorkRange) {
+		const { key, id } = proof.newWorkRange;
+		const visible = await ctx.runQuery(internal.files_move_pages.proof_work_range, { cohortId: proof.cohortId, key });
+		if (visible?._id !== id) throw new Error("The child sees the exact new parent work range");
+		proof.newWorkRange = undefined;
+		proof.workRangeProved = true;
+		console.info("MOVE_PAGE_STATE_20261015 " + JSON.stringify({
+			event: "new_work_range", token: proof.token, cohortId: proof.cohortId, rowIds: [id],
+		}));
+	}
+	if (!proof.ownerFields.length) return;
+	const expected = proof.ownerFields;
+	const actual = await ctx.runQuery(internal.files_move_pages.proof_owner_fields, { ids: expected.map((row) => row._id) });
+	for (let index = 0; index < expected.length; index++) {
+		const row = actual[index];
+		if (!row) throw new Error("The child sees every new AFTER owner field after flush");
+		const { _creationTime: _time, ...fields } = row;
+		const stored = Object.fromEntries(Object.entries(expected[index]!).filter(([, value]) => value !== undefined));
+		if (compareValues(fields, stored) !== 0) throw new Error("The child sees every new AFTER owner field after flush");
+	}
+	console.info("MOVE_PAGE_STATE_20261015 " + JSON.stringify({
+		event: "owner_fields_after_flush", token: proof.token, cohortId: proof.cohortId,
+		rowIds: expected.map((row) => row._id),
+	}));
+	proof.ownerFields = [];
+}
+
+async function db_page_proof_close(ctx: MutationCtx, metrics: TransactionMetrics) {
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
+	const proof = state?.pageProof;
+	const call = proof?.current;
+	if (!proof || !call?.bodyDone) return;
+	proof.current = undefined;
+	if (state.rollbackProofCohortId !== proof.cohortId || !call.rowIds.length) return;
+	const writes = files_move_page_proof_ledger(ctx);
+	if (!writes.slice(call.writeStart).some((entry) => ["insert", "patch", "replace", "delete"].includes(entry.operation)))
+		throw new Error("MOVE_PAGE_PROOF_SETUP_PAGE_WITHOUT_WRITES");
+	proof.units.push({
+		purpose: call.purpose, ordinal: call.ordinal, step: call.step, rowIds: call.rowIds,
+		writeStart: call.writeStart, writeEnd: writes.length,
+	});
+	if (proof.units.length !== 2) return;
+	console.info("MOVE_PAGE_PROOF_20261015 " + JSON.stringify({
+		event: "rollback", token: proof.token, runId: proof.runId, cohortId: proof.cohortId,
+		entryStep: proof.entryStep, seq: 8, counters: page_proof_counters(metrics), units: proof.units, writes,
+	}));
+	throw new Error("MOVE_PAGE_PROOF_ROLLBACK_AFTER_TWO_UNITS");
+}
+
+/**
+ * Keep one final receipt after the real wrapper flush.
+ */
+export async function files_pending_overlay_db_page_proof_finish(ctx: MutationCtx) {
+	const proof = (ctx as WrappedCtx)[FLUSH_MARKS]?.pageProof;
+	if (!proof) return;
+	await db_page_proof_reads(ctx);
+	const metrics = await ctx.meta.getTransactionMetrics();
+	console.info("MOVE_PAGE_PROOF_20261015 " + JSON.stringify({
+		event: "parent_final", token: proof.token, runId: proof.runId, cohortId: proof.cohortId,
+		entryStep: proof.entryStep, seq: 8, selectedPageCount: proof.nextOrdinal,
+		counters: page_proof_counters(metrics),
+	}));
+}
+
 /**
  * Whether a Move step may join one more small sub-step of the same unit. It flushes first, so the next
  * sub-step reads fresh derived docs and the metrics count the derived writes. Join only while each
@@ -3075,8 +3319,11 @@ export function files_pending_overlay_list_over_budget(metrics: TransactionMetri
  */
 export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx, limitFactor: 4 | 16 = 16) {
 	await files_pending_overlay_db_flush(ctx);
+	await db_page_proof_reads(ctx);
 	const metrics = await ctx.meta.getTransactionMetrics();
-	return Object.values(metrics).every((metric) => metric.used * limitFactor < metric.used + metric.remaining);
+	const join = Object.values(metrics).every((metric) => metric.used * limitFactor < metric.used + metric.remaining);
+	await db_page_proof_close(ctx, metrics);
+	return join;
 }
 
 const saved_source_schema = z.discriminatedUnion("kind", [

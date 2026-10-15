@@ -3,9 +3,9 @@
 // Null cursors drain docs that the parent tags or removes.
 
 import { paginationResultValidator } from "convex/server";
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { internalQuery } from "./_generated/server.js";
+import { internalQuery, type QueryCtx } from "./_generated/server.js";
 import app_convex_schema, { files_move_view_validator, files_pending_parent_validator } from "./schema.ts";
 
 // Reuse the loaded module between calls. Keep request state inside each query.
@@ -17,6 +17,53 @@ const DESCENDANT_PAGE_SIZE = 32;
 const DESCENDANT_PAGE_BYTES = 128 * 1024;
 const METADATA_PAGE_SIZE = 64;
 
+const proof_validator = v.object({
+	token: v.string(),
+	runId: v.union(v.id("files_transfer_runs"), v.id("files_pending_update_runs")),
+	cohortId: v.id("files_move_cohorts"),
+	entryStep: v.number(),
+	step: v.number(),
+	phase: v.string(),
+	ordinal: v.number(),
+});
+
+// Temporary proof logs. Only selected parent calls pass a proof.
+async function trace_page_proof(
+	ctx: QueryCtx,
+	proof: Infer<typeof proof_validator> | undefined,
+	purpose: "descendants" | "metadata" | "side_cleanup" | "owner_source_metadata",
+	cursor: string | null,
+	page?: { page: { _id: string }[]; isDone: boolean },
+) {
+	if (!proof) return;
+	const metrics = await ctx.meta.getTransactionMetrics();
+	console.info(
+		"MOVE_PAGE_PROOF_20261015 " +
+			JSON.stringify({
+				event: page ? "child_exit" : "child_entry",
+				...proof,
+				purpose,
+				seq: proof.ordinal * 4 + (page ? 2 : 1),
+				counters: {
+					bytesRead: metrics.bytesRead,
+					bytesWritten: metrics.bytesWritten,
+					databaseQueries: metrics.databaseQueries,
+					documentsRead: metrics.documentsRead,
+					documentsWritten: metrics.documentsWritten,
+					functionsScheduled: metrics.functionsScheduled,
+					scheduledFunctionArgsBytes: metrics.scheduledFunctionArgsBytes,
+				},
+				...(page
+					? {
+							rowIds: page.page.map((row) => row._id),
+							isDone: page.isDone,
+							cursorKind: cursor === null ? "null" : "continued",
+						}
+					: {}),
+			}),
+	);
+}
+
 export const descendants = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
@@ -25,12 +72,14 @@ export const descendants = internalQuery({
 		source: v.union(v.literal("before"), v.literal("normal")),
 		parentId: v.id("files_nodes"),
 		cursor: v.union(v.string(), v.null()),
+		proof: v.optional(proof_validator),
 	},
 	returns: paginationResultValidator(
 		v.union(doc(app_convex_schema, "files_saved_places"), doc(app_convex_schema, "files_nodes")),
 	),
 	handler: async (ctx, args) => {
-		return args.source === "before"
+		await trace_page_proof(ctx, args.proof, "descendants", args.cursor);
+		const page = args.source === "before"
 			? await ctx.db
 					.query("files_saved_places")
 					.withIndex("by_view_parent_name", (q) =>
@@ -55,6 +104,8 @@ export const descendants = internalQuery({
 						numItems: DESCENDANT_PAGE_SIZE,
 						maximumBytesRead: DESCENDANT_PAGE_BYTES,
 					});
+		await trace_page_proof(ctx, args.proof, "descendants", args.cursor, page);
+		return page;
 	},
 });
 
@@ -64,10 +115,12 @@ export const metadata = internalQuery({
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
 		cursor: v.null(),
+		proof: v.optional(proof_validator),
 	},
 	returns: paginationResultValidator(doc(app_convex_schema, "files_metadata_docs")),
 	handler: async (ctx, args) => {
-		return await ctx.db
+		await trace_page_proof(ctx, args.proof, "metadata", args.cursor);
+		const page = await ctx.db
 			.query("files_metadata_docs")
 			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 				q
@@ -79,6 +132,8 @@ export const metadata = internalQuery({
 					.eq("moveView.view", undefined),
 			)
 			.paginate({ cursor: args.cursor, numItems: METADATA_PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
+		await trace_page_proof(ctx, args.proof, "metadata", args.cursor, page);
+		return page;
 	},
 });
 
@@ -120,6 +175,7 @@ export const side_cleanup = internalQuery({
 		),
 		view: files_move_view_validator,
 		cursor: v.null(),
+		proof: v.optional(proof_validator),
 	},
 	returns: paginationResultValidator(
 		v.union(
@@ -133,7 +189,8 @@ export const side_cleanup = internalQuery({
 		),
 	),
 	handler: async (ctx, args) => {
-		return await ctx.db
+		await trace_page_proof(ctx, args.proof, "side_cleanup", args.cursor);
+		const page = await ctx.db
 			.query(args.family)
 			.withIndex("by_move_view", (q) => q.eq("moveView.cohortId", args.cohortId).eq("moveView.view", args.view))
 			.paginate({
@@ -146,6 +203,8 @@ export const side_cleanup = internalQuery({
 							: PAGE_SIZE,
 				maximumBytesRead: 1024 * 1024,
 			});
+		await trace_page_proof(ctx, args.proof, "side_cleanup", args.cursor, page);
+		return page;
 	},
 });
 
@@ -458,9 +517,11 @@ export const owner_source_metadata = internalQuery({
 		),
 		cohortId: v.union(v.id("files_move_cohorts"), v.null()),
 		cursor: v.union(v.string(), v.null()),
+		proof: v.optional(proof_validator),
 	},
 	returns: paginationResultValidator(doc(app_convex_schema, "files_metadata_docs")),
 	handler: async (ctx, args) => {
+		await trace_page_proof(ctx, args.proof, "owner_source_metadata", args.cursor);
 		const source = args.source;
 		const query =
 			source.kind === "pending"
@@ -483,7 +544,9 @@ export const owner_source_metadata = internalQuery({
 								.eq("moveView.cohortId", args.cohortId ?? undefined)
 								.eq("moveView.view", args.cohortId === null ? undefined : "after"),
 						);
-		return await query.paginate({ cursor: args.cursor, numItems: PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
+		const page = await query.paginate({ cursor: args.cursor, numItems: PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
+		await trace_page_proof(ctx, args.proof, "owner_source_metadata", args.cursor, page);
+		return page;
 	},
 });
 
@@ -549,5 +612,25 @@ export const owner_work = internalQuery({
 			.query("files_move_owner_work")
 			.withIndex("by_cohort_order", (q) => q.eq("cohortId", args.cohortId))
 			.paginate({ cursor: args.cursor, numItems: PAGE_SIZE });
+	},
+});
+
+// Temporary reads for parent writes made during the native page proof.
+export const proof_work_range = internalQuery({
+	args: { cohortId: v.id("files_move_cohorts"), key: v.string() },
+	returns: v.union(doc(app_convex_schema, "files_move_work_ranges"), v.null()),
+	handler: async (ctx, args) => {
+		return await ctx.db
+			.query("files_move_work_ranges")
+			.withIndex("by_cohort_key", (q) => q.eq("cohortId", args.cohortId).eq("key", args.key))
+			.unique();
+	},
+});
+
+export const proof_owner_fields = internalQuery({
+	args: { ids: v.array(v.id("files_pending_place_fields")) },
+	returns: v.array(v.union(doc(app_convex_schema, "files_pending_place_fields"), v.null())),
+	handler: async (ctx, args) => {
+		return await Promise.all(args.ids.map((id) => ctx.db.get("files_pending_place_fields", id)));
 	},
 });
