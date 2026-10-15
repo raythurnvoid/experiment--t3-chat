@@ -17,6 +17,7 @@ import { files_subtree_ops_db_recover } from "./files_subtree_ops_db.ts";
 import { files_move_reservations_db_take_waiters } from "../server/files-move-reservations.ts";
 import {
 	files_pending_overlay_db_can_join_step,
+	files_pending_overlay_db_trace_move,
 	files_pending_overlay_db_set_cohort_staging,
 	files_pending_overlay_db_set_cohort_allocation,
 	files_pending_overlay_db_set_cohort_materialization,
@@ -2365,6 +2366,11 @@ async function db_advance_step(
 	membershipReads: MembershipReads,
 	stageContent?: typeof files_move_content_db_stage,
 ) {
+	await files_pending_overlay_db_trace_move(ctx, "cohort_entry", {
+		cohortId: args.cohortId,
+		phase: "cohort",
+		step: args.step,
+	});
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (
 		!cohort ||
@@ -2422,6 +2428,8 @@ async function db_advance_step(
 			})
 		: await files_pending_overlay_db_set_cohort_staging(ctx, call);
 	if (entered._nay) return null;
+	const trace = { runId: cohort.origin.runId, cohortId: cohort._id, phase: cohort.workPhase, step: cohort.step };
+	await files_pending_overlay_db_trace_move(ctx, "cohort_guard_end", trace);
 	let result:
 		| { _yay: { done: boolean; paged?: boolean }; _nay?: undefined }
 		| { _nay: { name?: string; message: string }; _yay?: undefined } = Result({ _yay: { done: false } });
@@ -2530,7 +2538,8 @@ async function db_advance_step(
 						content.sealed)
 				)
 					return null;
-				if (!content.prepared)
+				if (!content.prepared) {
+					await files_pending_overlay_db_trace_move(ctx, "cohort_body_end", trace, { done: false });
 					return {
 						step: cohort.step,
 						contentId: content._id,
@@ -2538,8 +2547,10 @@ async function db_advance_step(
 						attemptFence: cohort.attemptFence,
 						kind: "prepare" as const,
 					};
+				}
 				if (!content.sealed) {
-					if (!stageContent)
+					if (!stageContent) {
+						await files_pending_overlay_db_trace_move(ctx, "cohort_body_end", trace, { done: false });
 						return {
 							step: cohort.step,
 							contentId: content._id,
@@ -2548,6 +2559,7 @@ async function db_advance_step(
 							preparationFence: content.preparationFence,
 							kind: "stage" as const,
 						};
+					}
 					const staged = await stageContent(ctx, { ...call, contentId: content._id });
 					if (staged._nay) {
 						await db_abort(ctx, cohort, staged._nay);
@@ -2555,6 +2567,10 @@ async function db_advance_step(
 					}
 					// Text chunking and metadata generation keep their own CPU budget.
 					await db_save_step(ctx, cohort, {}, 0, false);
+					await files_pending_overlay_db_trace_move(ctx, "cohort_body_end", trace, {
+						paged: staged._yay.paged,
+						done: false,
+					});
 					return { kind: "next" as const, step: cohort.step + 1, yield: true };
 				}
 			}
@@ -2589,7 +2605,8 @@ async function db_advance_step(
 			const mediaSet = content.preparedMediaSet
 				? await ctx.db.get("files_media_dependency_sets", content.preparedMediaSet.setId)
 				: null;
-			if (!mediaSet?.sealed)
+			if (!mediaSet?.sealed) {
+				await files_pending_overlay_db_trace_move(ctx, "cohort_body_end", trace, { done: false });
 				return {
 					step: cohort.step,
 					contentId: content._id,
@@ -2597,6 +2614,7 @@ async function db_advance_step(
 					attemptFence: cohort.attemptFence,
 					kind: "media" as const,
 				};
+			}
 			await ctx.db.patch("files_move_cohorts", cohort._id, { stagingCursor: content.nodeId });
 			const nextContent = await ctx.db
 				.query("files_move_cohort_content")
@@ -2658,12 +2676,16 @@ async function db_advance_step(
 		result = Result({ _yay: { done: await db_cleanup_nodes(ctx, cohort) } });
 		next = "release";
 	} else if (cohort.workPhase === "release") {
-		if (await db_release(ctx, cohort)) return { kind: "complete" as const };
+		if (await db_release(ctx, cohort)) {
+			await files_pending_overlay_db_trace_move(ctx, "cohort_body_end", trace, { done: true });
+			return { kind: "complete" as const };
+		}
 	} else throw should_never_happen("Unexpected Move step", { cohortId: cohort._id, workPhase: cohort.workPhase });
 	if (result._nay) {
 		if (repairing)
 			await db_retry_repair(ctx, cohort, { name: result._nay.name ?? "repair_failed", message: result._nay.message });
 		else await db_abort(ctx, cohort, result._nay);
+		await files_pending_overlay_db_trace_move(ctx, "cohort_body_end", trace);
 		return null;
 	}
 	await db_save_step(
@@ -2686,6 +2708,10 @@ async function db_advance_step(
 		0,
 		false,
 	);
+	await files_pending_overlay_db_trace_move(ctx, "cohort_body_end", trace, {
+		paged: result._yay.paged === true,
+		done: result._yay.done,
+	});
 	// Commit the new view before doing physical repair.
 	return {
 		kind: "next" as const,

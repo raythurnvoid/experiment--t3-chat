@@ -11,7 +11,11 @@ import {
 	mutation as raw_mutation,
 	type MutationCtx,
 } from "./_generated/server.js";
-import { files_pending_overlay_db_flush, files_pending_overlay_db_wrap } from "../server/files-pending-overlay.ts";
+import {
+	files_pending_overlay_db_flush,
+	files_pending_overlay_db_trace_move,
+	files_pending_overlay_db_wrap,
+} from "../server/files-pending-overlay.ts";
 import { files_move_reservations_db_wrap } from "../server/files-move-reservations.ts";
 
 /**
@@ -28,7 +32,9 @@ const customization = {
 			args: {},
 			// `onSuccess` gets the raw ctx, so flush the wrapped one that holds the captured writes.
 			onSuccess: async () => {
+				await files_pending_overlay_db_trace_move({ ...ctx, ...wrapped }, "wrapper_flush_before");
 				await files_pending_overlay_db_flush({ ...ctx, ...wrapped });
+				await files_pending_overlay_db_trace_move({ ...ctx, ...wrapped }, "wrapper_flush_after");
 			},
 		};
 	},

@@ -365,6 +365,15 @@ type FlushMarks = {
 	 * The job this mutation runs. A job never schedules its own doc again.
 	 */
 	ownJob: OwnJob | null;
+	/**
+	 * Temporary Move counters. This state belongs to one mutation, including its final flush.
+	 */
+	moveTrace?: {
+		runId?: Id<"files_transfer_runs"> | Id<"files_pending_update_runs">;
+		cohortId?: Id<"files_move_cohorts">;
+		phase: string;
+		step?: number | string;
+	};
 };
 
 const FLUSH_MARKS = Symbol("files_pending_overlay");
@@ -2721,13 +2730,52 @@ export function files_pending_overlay_list_over_budget(metrics: TransactionMetri
 }
 
 /**
+ * Temporary Move counters. Other mutations return before reading metrics.
+ */
+export async function files_pending_overlay_db_trace_move(
+	ctx: MutationCtx,
+	event: string,
+	trace?: NonNullable<FlushMarks["moveTrace"]>,
+	result?: { paged?: boolean; done?: boolean },
+) {
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
+	if (!state) return;
+	if (trace) state.moveTrace = trace;
+	if (!state.moveTrace) return;
+	const metrics = await ctx.meta.getTransactionMetrics();
+	console.info(
+		"MOVE_PHASE_20261015 " +
+			JSON.stringify({
+				event,
+				runId: state.moveTrace.runId ?? null,
+				cohortId: state.moveTrace.cohortId ?? null,
+				phase: state.moveTrace.phase,
+				step: state.moveTrace.step ?? null,
+				paged: result?.paged ?? null,
+				done: result?.done ?? null,
+				counters: {
+					bytesRead: metrics.bytesRead.used,
+					bytesWritten: metrics.bytesWritten.used,
+					databaseQueries: metrics.databaseQueries.used,
+					documentsRead: metrics.documentsRead.used,
+					documentsWritten: metrics.documentsWritten.used,
+					functionsScheduled: metrics.functionsScheduled.used,
+					scheduledFunctionArgsBytes: metrics.scheduledFunctionArgsBytes.used,
+				},
+			}),
+	);
+}
+
+/**
  * Whether a Move step may join one more small sub-step of the same unit. It flushes first, so the next
  * sub-step reads fresh derived docs and the metrics count the derived writes. Join only while each
  * used metric is below 1/16 of its limit. Initial cohort work uses 1/4 and stops at its first page.
  * The next unit and final flush need their measured reserve.
  */
 export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx, limitFactor: 4 | 16 = 16) {
+	await files_pending_overlay_db_trace_move(ctx, "join_flush_before");
 	await files_pending_overlay_db_flush(ctx);
+	await files_pending_overlay_db_trace_move(ctx, "join_flush_after");
 	const metrics = await ctx.meta.getTransactionMetrics();
 	return Object.values(metrics).every((metric) => metric.used * limitFactor < metric.used + metric.remaining);
 }

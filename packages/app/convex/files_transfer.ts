@@ -57,7 +57,11 @@ import {
 	files_move_cohorts_db_request_stop,
 	files_move_cohorts_db_schedule,
 } from "./files_move_cohorts.ts";
-import { files_pending_overlay_list, files_pending_overlay_db_can_join_step } from "../server/files-pending-overlay.ts";
+import {
+	files_pending_overlay_list,
+	files_pending_overlay_db_can_join_step,
+	files_pending_overlay_db_trace_move,
+} from "../server/files-pending-overlay.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_slot,
@@ -1345,6 +1349,8 @@ async function db_start(
 	},
 ) {
 	const { membership } = args;
+	if (args.kind === "move")
+		await files_pending_overlay_db_trace_move(ctx, "transfer_start_entry", { phase: "start", step: "entry" });
 	const sourceCount = args.expectedSourceCount ?? args.sources.length;
 	if (!args.requestId || args.requestId.length > 128) return Result({ _nay: { message: "Invalid request ID" } });
 	if (
@@ -1455,6 +1461,12 @@ async function db_start(
 				_nay: { name: "request_changed", message: "This request ID was already used for another transfer" },
 			});
 		const activity = await files_transfer_queries_db_require_activity(ctx, previous._id);
+		if (args.kind === "move")
+			await files_pending_overlay_db_trace_move(ctx, "transfer_start_exit", {
+				runId: previous._id,
+				phase: "start",
+				step: previous.step,
+			});
 		return Result({ _yay: { runId: previous._id, activityId: activity._id } });
 	}
 
@@ -1555,6 +1567,8 @@ async function db_start(
 			await db_hold_proposal({ ctx, run, target: args.targetParent, role: "destination_parent" });
 	}
 
+	if (args.kind === "move")
+		await files_pending_overlay_db_trace_move(ctx, "transfer_start_exit", { runId, phase: "start", step: "uploading" });
 	return Result({ _yay: { runId, activityId } });
 }
 
@@ -2039,6 +2053,12 @@ async function db_seal(args: {
 	job?: { invocationId: Id<"ai_chat_bash_invocations">; commandNumber: number; workId: WorkId };
 }) {
 	const { ctx, run, job } = args;
+	if (run.kind === "move")
+		await files_pending_overlay_db_trace_move(ctx, "transfer_seal_entry", {
+			runId: run._id,
+			phase: "seal",
+			step: run.step,
+		});
 
 	const checked = await db_check_copy_job({ ctx, run, job });
 	if (checked._nay) return checked;
@@ -2046,7 +2066,15 @@ async function db_seal(args: {
 	if (!(await db_get_run_memberships({ ctx, run, activity })))
 		return Result({ _nay: { message: "Permission denied" } });
 	if (!run.selection) return Result({ _nay: { name: "invalid_selection", message: "This transfer has no selection" } });
-	if (run.step !== "uploading") return Result({ _yay: null });
+	if (run.step !== "uploading") {
+		if (run.kind === "move")
+			await files_pending_overlay_db_trace_move(ctx, "transfer_seal_exit", {
+				runId: run._id,
+				phase: "seal",
+				step: run.step,
+			});
+		return Result({ _yay: null });
+	}
 	if (run.selection.count !== run.selection.expectedCount)
 		return Result({ _nay: { name: "incomplete_selection", message: "Send all sources before starting the transfer" } });
 	const now = Date.now();
@@ -2087,6 +2115,12 @@ async function db_seal(args: {
 			runId: run._id,
 			deadlineAt: run.fixedDeadline ? activity.deadlineAt : now + RUN_TIMEOUT_MS,
 			now,
+		});
+	if (run.kind === "move")
+		await files_pending_overlay_db_trace_move(ctx, "transfer_seal_exit", {
+			runId: run._id,
+			phase: "seal",
+			step: run.step,
 		});
 	return Result({ _yay: null });
 }
@@ -3482,6 +3516,8 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 	while (true) {
 		const run = await ctx.db.get("files_transfer_runs", args.runId);
 		if (!run) return null;
+		const trace = run.kind === "move" ? { runId: run._id, phase: "transfer", step: run.step } : undefined;
+		if (trace) await files_pending_overlay_db_trace_move(ctx, "transfer_guard_entry", trace);
 		const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 		if (!activities_is_active(activity.status)) return null;
 		if (activity.status === "stopping") {
@@ -3598,6 +3634,7 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 				return null;
 			}
 		}
+		if (trace) await files_pending_overlay_db_trace_move(ctx, "transfer_guard_end", trace);
 
 		if (activity.status === "queued") {
 			await ctx.db.patch("activities", activity._id, {
@@ -3608,28 +3645,38 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 		}
 		if (run.step === "retry") {
 			await db_copy_retry_manifest(ctx, run);
+			if (trace) await files_pending_overlay_db_trace_move(ctx, "transfer_body_end", trace);
 			return null;
 		}
 		if (run.step === "select" || run.step === "normalize") {
-			if (!(await db_select_sources(ctx, run))) return null;
+			const selected = await db_select_sources(ctx, run);
+			if (trace) await files_pending_overlay_db_trace_move(ctx, "transfer_body_end", trace);
+			if (!selected) return null;
 			if (run.kind === "move" && (await files_pending_overlay_db_can_join_step(ctx))) continue;
 			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 			return null;
 		}
 		if (run.step === "discover") {
 			await db_discover(ctx, run);
+			if (trace) await files_pending_overlay_db_trace_move(ctx, "transfer_body_end", trace);
 			return null;
 		}
 		if (run.step === "plan") {
-			if (!(await db_plan({ ctx, run, membership }))) return null;
+			const planned = await db_plan({ ctx, run, membership });
+			if (trace) await files_pending_overlay_db_trace_move(ctx, "transfer_body_end", trace);
+			if (!planned) return null;
 			if (run.kind === "move" && (await files_pending_overlay_db_can_join_step(ctx))) continue;
 			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 			return null;
 		}
-		if (!run.rename && !(await db_prepare_parent_folders(ctx, run))) return null;
+		if (!run.rename && !(await db_prepare_parent_folders(ctx, run))) {
+			if (trace) await files_pending_overlay_db_trace_move(ctx, "transfer_body_end", trace, { done: false });
+			return null;
+		}
 		// Start refuses cross-workspace Move, and Retry keeps the old scopes, so every Move is in one workspace.
 		if (run.kind === "move") {
 			await db_commit_move({ ctx, run, membership });
+			await files_pending_overlay_db_trace_move(ctx, "transfer_body_end", trace);
 			return null;
 		}
 		if (run.inFlight >= MAX_IN_FLIGHT) return null;
