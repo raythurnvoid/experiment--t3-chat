@@ -1,13 +1,41 @@
-import { describe, expect, test, vi } from "vitest";
+import { R2 } from "@convex-dev/r2";
+import { Workpool } from "@convex-dev/workpool";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
-import { test_convex, test_get_file_yjs_pointers, test_mocks_fill_db_with } from "./setup.test.ts";
-import { encodeStateAsUpdate } from "yjs";
-import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
-import { files_yjs_create_empty_state_update } from "../shared/files-yjs.ts";
-import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
+import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { files_sort_text_key } from "../shared/files-sort.ts";
+
+beforeEach(() => {
+	const objects = new Map<string, ArrayBuffer>();
+	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_public_grants" as never);
+	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key) => ({
+		key: key!,
+		url: `https://r2.test/object?key=${encodeURIComponent(key!)}`,
+	}));
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn<typeof fetch>(async (input, init) => {
+			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+			const key = url.searchParams.get("key")!;
+			if (init?.method === "PUT") {
+				objects.set(key, await new Response(init.body).arrayBuffer());
+				return new Response(null);
+			}
+			const body = objects.get(key);
+			return body ? new Response(body) : new Response(null, { status: 404 });
+		}),
+	);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+});
 
 async function seed_public_api_grant(args: {
 	t: ReturnType<typeof test_convex>;
@@ -30,238 +58,6 @@ async function seed_public_api_grant(args: {
 		pathPrefix: args.pathPrefix ?? null,
 		now: args.now ?? Date.now(),
 	});
-}
-
-async function seed_markdown_file(args: {
-	t: ReturnType<typeof test_convex>;
-	organizationId: Id<"organizations">;
-	workspaceId: Id<"organizations_workspaces">;
-	userId: Id<"users">;
-	path: string;
-	markdown: string;
-}) {
-	const nodeId = await args.t.run(async (ctx) => {
-		const now = Date.now();
-		const name = args.path.split("/").at(-1);
-		if (!name) {
-			throw new Error("Expected a file path");
-		}
-		const parentPath = args.path.slice(0, args.path.lastIndexOf("/")) || "/";
-		let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
-		if (parentPath !== "/") {
-			const existingParent = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
-						.eq("path", parentPath)
-						.eq("archiveOperationId", null),
-				)
-				.first();
-			if (existingParent) {
-				parentId = existingParent._id;
-			} else {
-				const parentName = parentPath.split("/").at(-1);
-				if (!parentName) {
-					throw new Error("Expected a parent folder path");
-				}
-				parentId = await ctx.db.insert("files_nodes", {
-					writePolicy: null,
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					path: parentPath,
-					treePath: `${parentPath}/`,
-					pathDepth: parentPath.split("/").filter(Boolean).length,
-					lowercaseExtension: null,
-					name: parentName,
-					sortName: files_sort_text_key(parentName),
-					kind: "folder",
-					parentId: files_ROOT_ID,
-					createdBy: args.userId,
-					updatedBy: args.userId,
-					updatedAt: now,
-					contentType: null,
-					assetId: null,
-					contentByteSize: null,
-					textKind: null,
-					collaborationEnabled: null,
-					yjsSnapshotId: null,
-					yjsLastSequenceId: null,
-					statsId: null,
-					contentTooLargeByteSize: null,
-					contentShapeMismatchAt: null,
-					contentYjsStateTooLargeByteSize: null,
-					contentFrontmatterTooLargeFieldCount: null,
-					contentFrontmatterTooLargeIndexDocumentCount: null,
-					restrictedScopeNodeId: null,
-					isRestrictedScopeRoot: false,
-					archiveOperationId: null,
-					newChildWritePolicy: null,
-				});
-			}
-		}
-
-		const markdownAssetId = await ctx.db.insert("files_r2_assets", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			kind: "content",
-			r2Bucket: "test-bucket",
-			size: 0,
-			createdBy: args.userId,
-			updatedAt: now,
-		});
-		const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			kind: "yjs_snapshot",
-			r2Bucket: "test-bucket",
-			size: 0,
-			createdBy: args.userId,
-			updatedAt: now,
-		});
-		const fileNodeId = await ctx.db.insert("files_nodes", {
-			writePolicy: null,
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			path: args.path,
-			treePath: args.path,
-			pathDepth: args.path.split("/").filter(Boolean).length,
-			lowercaseExtension: name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : null,
-			name,
-			sortName: files_sort_text_key(name),
-			kind: "file",
-			contentType: "text/markdown;charset=utf-8",
-			assetId: markdownAssetId,
-			contentByteSize: null,
-			textKind: "rich_text",
-			parentId,
-			createdBy: args.userId,
-			updatedBy: args.userId,
-			updatedAt: now,
-			collaborationEnabled: true,
-			yjsSnapshotId: null,
-			yjsLastSequenceId: null,
-			statsId: null,
-			contentTooLargeByteSize: null,
-			contentShapeMismatchAt: null,
-			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
-			restrictedScopeNodeId: null,
-			isRestrictedScopeRoot: false,
-			archiveOperationId: null,
-			newChildWritePolicy: null,
-		});
-		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			fileNodeId,
-			sequence: 0,
-			assetId: yjsSnapshotAssetId,
-			createdBy: args.userId,
-			updatedBy: args.userId,
-			updatedAt: now,
-		});
-		const yjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			fileNodeId,
-			lastSequence: 0,
-			unmaterializedUpdateCount: 0,
-			unmaterializedUpdateBytes: 0,
-			lineageGeneration: 0,
-		});
-		await ctx.db.patch("files_nodes", fileNodeId, {
-			yjsSnapshotId,
-			yjsLastSequenceId,
-		});
-		return fileNodeId;
-	});
-
-	// Run the agent upsert commit the way the action does: stage and seal one sealed output
-	// family under a server-side batch, then commit by ids with the one bounded text. The
-	// pending read reconstructs from the canonical unstaged state, so that state must hold the
-	// real markdown; base and staged stay on the empty committed state.
-	const baseYjsUpdate = files_u8_to_array_buffer(files_yjs_create_empty_state_update());
-	const unstagedYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: args.markdown });
-	if ("_nay" in unstagedYjsDoc) {
-		throw new Error("Failed to build the unstaged pending doc for the grant fixture");
-	}
-	const unstagedYjsUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(unstagedYjsDoc));
-	unstagedYjsDoc.destroy();
-	const batch = await args.t.mutation(
-		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
-		{
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			target: { kind: "saved", id: nodeId },
-		},
-	);
-	if (batch._nay) {
-		throw new Error(batch._nay.message);
-	}
-	const sealedByRole = new Map<
-		"base" | "staged" | "unstaged",
-		{ stateId: Id<"files_pending_update_yjs_states">; digest: string }
-	>();
-	for (const role of ["base", "staged", "unstaged"] as const) {
-		const roleYjsUpdate = role === "unstaged" ? unstagedYjsUpdate : baseYjsUpdate;
-		const staged = await args.t.mutation(internal.files_pending_updates.stage_file_pending_update_state_page_internal, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			operationBatchId: batch._yay.operationBatchId,
-			phase: "output",
-			role,
-			pageIndex: 0,
-			bytes: roleYjsUpdate,
-		});
-		if (staged._nay) {
-			throw new Error(staged._nay.message);
-		}
-		const sealed = await args.t.mutation(internal.files_pending_updates.seal_file_pending_update_state_internal, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			operationBatchId: batch._yay.operationBatchId,
-			phase: "output",
-			role,
-			expectedTotalBytes: roleYjsUpdate.byteLength,
-		});
-		if (sealed._nay) {
-			throw new Error(sealed._nay.message);
-		}
-		sealedByRole.set(role, { stateId: sealed._yay.stateId, digest: sealed._yay.digest });
-	}
-	const pending = await args.t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		userId: args.userId,
-		nodeId,
-		operationBatchId: batch._yay.operationBatchId,
-		expectedRevision: null,
-		base: {
-			kind: "yjs",
-			baseYjsSequence: 0,
-			baseLineageGeneration: 0,
-			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(args.t, nodeId)).yjsLastSequenceId,
-		},
-		baseStateId: sealedByRole.get("base")!.stateId,
-		stagedStateId: sealedByRole.get("staged")!.stateId,
-		unstagedStateId: sealedByRole.get("unstaged")!.stateId,
-		baseStateDigest: sealedByRole.get("base")!.digest,
-		stagedStateDigest: sealedByRole.get("staged")!.digest,
-		unstagedStateDigest: sealedByRole.get("unstaged")!.digest,
-		unstagedText: args.markdown,
-		unstagedBranchChanged: true,
-	});
-	if (pending._nay) {
-		throw new Error(pending._nay.message);
-	}
-
-	return nodeId;
 }
 
 function grant_headers(token: string) {
@@ -416,25 +212,19 @@ describe("public API grants", () => {
 		expect(expired.status).toBe(401);
 	});
 
-	test("lists and reads scoped files with pending content", async () => {
+	test("lists and reads scoped saved files", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const token = "1".repeat(64);
-		await seed_markdown_file({
-			t,
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/payments/payment-001.md",
-			markdown: "---\namount: 12.50\n---\nPayment one\n",
+			textContent: "---\namount: 12.50\n---\nPayment one\n",
 		});
-		await seed_markdown_file({
-			t,
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/payments/payment-002.md",
-			markdown: "---\namount: 7.25\n---\nPayment two\n",
+			textContent: "---\namount: 7.25\n---\nPayment two\n",
 		});
 		await seed_public_api_grant({
 			t,
@@ -497,21 +287,15 @@ describe("public API grants", () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const token = "2".repeat(64);
-		await seed_markdown_file({
-			t,
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/payments/payment-001.md",
-			markdown: "Payment one\n",
+			textContent: "Payment one\n",
 		});
-		await seed_markdown_file({
-			t,
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/payments-archive/payment-001.md",
-			markdown: "Archived payment\n",
+			textContent: "Archived payment\n",
 		});
 		await seed_public_api_grant({
 			t,

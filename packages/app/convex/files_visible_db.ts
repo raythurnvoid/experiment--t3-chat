@@ -120,7 +120,9 @@ export async function files_visible_db_create_reader(
 		for (const target of candidates.values()) {
 			const result = await core.resolve(target);
 			if (result?.entry.path !== path) continue;
-			if (current) return null;
+			// A published private alias and its saved slot name the same node until cleanup.
+			if (current && (current.entry.kind !== result.entry.kind || current.entry.node._id !== result.entry.node._id))
+				return null;
 			current = result;
 		}
 		return current;

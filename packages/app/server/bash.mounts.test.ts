@@ -515,6 +515,7 @@ describe("bash_run_command", () => {
 				[`wc -l ${VOLUME_PATH}`, "4"],
 				[`textgrep Mountneedle ${VOLUME_PATH}`, "Mountneedle"],
 				[`stat -c %s ${VOLUME_PATH}`, String(new TextEncoder().encode(VOLUME_TEXT).byteLength)],
+				[`file -b --mime-type ${VOLUME_PATH}`, "text/markdown\n"],
 				["cat /.mounts/research/repo/records/sample/item-1.json", '{"name":"Mountneedle"}\n'],
 			] as const) {
 				const result = await f.runner.run({ command });
@@ -608,6 +609,7 @@ describe("bash_run_command", () => {
 			`grep Mountneedle ${VOLUME_PATH}`,
 			`textgrep Mountneedle ${VOLUME_PATH}`,
 			`stat ${VOLUME_PATH}`,
+			`file ${VOLUME_PATH}`,
 			`meta get ${VOLUME_PATH}`,
 			"ls /.mounts/research/repo",
 			"tree /.mounts/research/repo",

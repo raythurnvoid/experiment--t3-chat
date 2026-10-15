@@ -173,6 +173,56 @@ async function fixture(personal = false) {
 }
 
 describe("two-root code grants", () => {
+	test.each(["current", "personal"] as const)("reads saved text despite the source user's draft in %s", async (workspace) => {
+		const f = await fixture();
+		const nodeId = await f.file({ workspace, textContent: "saved\n" });
+		await f.mint();
+		const before = await f.read(workspace);
+		expect(before.status).toBe(200);
+		const revision = before.headers.get("X-File-Revision");
+		const scope = { ...f.roots[workspace], userId: f.actor.userId };
+		const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			userId: scope.userId,
+			target: { kind: "saved", id: nodeId },
+		});
+		if (batch._nay) throw new Error(batch._nay.message);
+		const staged = await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			userId: scope.userId,
+			operationBatchId: batch._yay.operationBatchId,
+			role: "unstaged",
+			text: "private draft\n",
+		});
+		if (staged._nay) throw new Error(staged._nay.message);
+		const ready = await f.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			userId: scope.userId,
+			target: { kind: "saved", id: nodeId },
+			operationBatchId: batch._yay.operationBatchId,
+		});
+		if (ready._nay) throw new Error(ready._nay.message);
+		const single = await f.request({ workspace, route: "read", body: { path: "/data.txt" } });
+		expect(single.status).toBe(200);
+		expect(await single.json(), "code grants must read saved text").toMatchObject({
+			content: "saved\n",
+			target: { kind: "saved", id: nodeId },
+		});
+		const many = await f.request({ workspace, route: "read-many", body: { paths: ["/data.txt"] } });
+		expect(await many.json()).toMatchObject({ files: [{ content: "saved\n" }], errors: [] });
+		const bytes = await f.request({
+			workspace,
+			route: "read-bytes",
+			body: { path: "/data.txt", offset: 0, length: 100, revision },
+		});
+		expect(bytes.status, "private text must not change a code grant's saved revision").toBe(200);
+		expect(await bytes.text()).toBe("saved\n");
+		expect(bytes.headers.get("X-File-Revision")).toBe(revision);
+	});
+
 	test("mints only the trusted pair with one budget and reads each root through HTTP", async () => {
 		const f = await fixture();
 		const third = await f.t.run((ctx) =>
@@ -223,6 +273,40 @@ describe("two-root code grants", () => {
 			expect(
 				(await f.request({ workspace, route: "download-urls", body: { fileNodeIds: [nodeIds[workspace]] } })).status,
 			).toBe(403);
+		}
+	});
+
+	test("keeps hidden saved files indistinguishable from missing files", async () => {
+		const f = await fixture();
+		const nodeId = await f.file({ workspace: "current", textContent: "hidden content" });
+		expect(
+			(
+				await f.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.owner.membershipId,
+					nodeId,
+				})
+			)._nay,
+		).toBeUndefined();
+		await f.mint();
+		for (const route of ["read", "read-many", "read-bytes"]) {
+			const responses = [];
+			for (const path of ["/data.txt", "/missing.txt"]) {
+				const response = await f.request({
+					workspace: "current",
+					route,
+					body:
+						route === "read-many"
+							? { paths: [path] }
+							: route === "read-bytes"
+								? { path, offset: 0, length: 100, revision: null }
+								: { path },
+				});
+				const body = JSON.stringify(await response.json()).replaceAll(path, "/file.txt");
+				responses.push({ status: response.status, body });
+			}
+			expect(responses[0]).toEqual(responses[1]);
+			expect(responses[0]?.status).toBe(route === "read-many" ? 200 : 404);
+			expect(responses[0]?.body).not.toContain("hidden content");
 		}
 	});
 

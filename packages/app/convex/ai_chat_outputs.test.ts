@@ -346,6 +346,12 @@ describe("BashToolOutputFs", () => {
 		expect(long.output).toContain("\n18000\n");
 		expect(new TextEncoder().encode(long.output).byteLength).toBeLessThan(24 * 1024);
 
+		vi.mocked(fetch).mockClear();
+		const type = await run(`file /tool-output/${ref.outputId}.txt`);
+		expect(type.metadata.exitCode, type.stderr).toBe(0);
+		expect(type.stdout).toBe(`/tool-output/${ref.outputId}.txt: unknown\n`);
+		expect(fetch, "file must not load stored tool-output bytes").not.toHaveBeenCalled();
+
 		const listed = await run("ls -l /tool-output");
 		expect(listed.output).toContain(`${ref.storedBytes}`);
 		expect(listed.output).toContain(`${ref.outputId}.txt`);

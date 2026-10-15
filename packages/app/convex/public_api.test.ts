@@ -713,7 +713,7 @@ describe("public_api_http_read_bytes", () => {
 		expect(grant?.remainingReadBytes).toBe(8 * 1024 * 1024 - 6);
 	});
 
-	test("reads private text as UTF-8 and returns its tagged target through both text routes", async () => {
+	test("keeps private text unavailable through text and byte routes", async () => {
 		const { t, db, token, read } = await create_fixture();
 		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_private_text" as never);
 		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
@@ -739,21 +739,24 @@ describe("public_api_http_read_bytes", () => {
 		});
 		if (ready._nay) throw new Error(ready._nay.message);
 		const bytes = await read({ path: "/draft.txt", offset: 3, length: 2 });
-		expect(bytes.status).toBe(200);
-		expect(bytes.headers.get("X-File-Size")).toBe(String(new TextEncoder().encode(text).byteLength));
-		expect(new Uint8Array(await bytes.arrayBuffer())).toEqual(new TextEncoder().encode("é"));
+		expect(bytes.status, "byte grants must not read a private create").toBe(404);
 		const single = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(token),
 			body: JSON.stringify({ path: "/draft.txt" }),
 		});
-		expect(await single.json()).toEqual({ path: "/draft.txt", target, content: text });
+		expect(single.status, "text grants must not read a private create").toBe(404);
+		expect(await single.json()).toEqual({ message: "File not found or exceeds the read limit." });
 		const many = await t.fetch("/api/v1/files/read-many", {
 			method: "POST",
 			headers: auth_headers(token),
 			body: JSON.stringify({ paths: ["/draft.txt"] }),
 		});
-		expect(await many.json()).toMatchObject({ files: [{ path: "/draft.txt", target, content: text }], errors: [] });
+		expect(await many.json()).toEqual({
+			files: [],
+			errors: [{ path: "/draft.txt", message: "File not found or exceeds the read limit." }],
+			truncated: false,
+		});
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		const key = await asUser.mutation(api.public_api.api_credential_create, {
 			membershipId: db.membershipId,

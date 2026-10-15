@@ -5559,8 +5559,7 @@ export async function public_api_http_read_file(args: {
 		userId: public_api_visibility_user_id(principal),
 		serviceAccountId: principal.serviceAccountId ?? undefined,
 		path: requestedPath,
-		includePending: principal.kind === "public_api_grant",
-		overlayUserId: principal.kind === "public_api_grant" ? principal.userId : undefined,
+		includePending: false,
 		maxBytes: Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES),
 	});
 	if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
@@ -5682,8 +5681,7 @@ export async function public_api_http_read_many(args: {
 				userId: principal.userId,
 				serviceAccountId: principal.serviceAccountId ?? undefined,
 				path: filePath,
-				includePending: principal.kind === "public_api_grant",
-				overlayUserId: principal.kind === "public_api_grant" ? principal.userId : undefined,
+				includePending: false,
 				maxBytes,
 			}),
 		})),
@@ -5808,7 +5806,7 @@ export async function public_api_http_read_bytes(args: {
 			userId: principal.userId,
 			serviceAccountId: principal.serviceAccountId ?? undefined,
 			path: requestedPath,
-			includePending: principal.kind === "public_api_grant",
+			includePending: false,
 		};
 		const source: files_nodes_get_file_byte_read_source_Result = await ctx.runQuery(
 			internal.files_nodes_content.get_file_byte_read_source,
@@ -5840,7 +5838,6 @@ export async function public_api_http_read_bytes(args: {
 				const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 					...sourceArgs,
 					agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
-					overlayUserId: sourceArgs.includePending ? principal.userId : undefined,
 					maxBytes: files_MAX_TEXT_CONTENT_BYTES,
 				});
 				if (!content) {

@@ -29,7 +29,7 @@ The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-us
 - App-mount limitations are path-specific. Score as a false claim when the final answer describes a failed app-mount command as a global Bash limitation, or when it tells the user `/tmp` cannot use native-style scratch commands because app files are Convex-backed.
 - `/tmp` is durable per chat thread, reloads from Convex after warm runtime cache loss, is not shared with new chats, and is not app file storage. Score as a false claim when the final answer says same-chat `/tmp` must reset after every Bash call, says it is only warm-memory best-effort, says new chats share it, or treats it as user-visible app storage.
 - Do not accept answers that call `/tmp` ephemeral or temporary in a way that implies same-chat data loss. In a fresh-chat isolation scenario, `No such file` for a path created in another chat is expected evidence of per-chat isolation, not a global Bash failure.
-- The Unix `file` command is intentionally unavailable. Score as correct when the agent avoids `file` or, after `file` fails, runs supported recovery commands such as `stat`, `wc`, `head`, or `cat` on the same `/tmp` path. Score down if it only offers to recover later.
+- `file` reports stored content types for app paths and uses native detection only for `/tmp`. Score down if the agent claims it detected app bytes, infers type from a renamed extension, or reports the command unavailable. `--mime-type` prints the type without parameters; `-b` omits the path label.
 - `set -euo pipefail` is unsupported in this shell. Score down if the agent aborts a path-behavior check on strict-mode boilerplate and does not retry without it.
 - Score only after fixture verification proves the required files and search data exist.
 - Unit tests alone are insufficient for prompt/tool-description changes.
@@ -50,6 +50,18 @@ The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-us
 11. If accepted, run the smallest matrix that proves the change and update the ledger. Run the full matrix only for broad Bash behavior or prompt-surface changes.
 
 When a live run exposes weird behavior, add the smallest deterministic unit or prompt assertion test that protects the command behavior or durable guidance before continuing.
+
+## Exact file types and saved-only API reads
+
+Use existing QA text, image, and empty-file fixtures from the catalog. Keep saved paths, types, and text as the baseline. Use one owned chat and record the model, mode, deployment, commands, tool results, and final answers.
+
+1. Run `file` on the exact saved paths and a folder. Check bare, brief, and MIME forms, mixed valid/missing paths, and a path with spaces. A missing path must not hide valid sibling output.
+2. In `/tmp`, create extensionless Unicode text and a dangling symlink. Check native descriptions and MIME types. Run the same exact checks through `bash -c` and `xargs`. Check `file /shells/default/transcript` returns `unknown`; unit instrumentation separately proves it loads no body.
+3. Propose a replacement from an existing fixture with a different type. Compare `file` with the pending view. Use `execute_code` to call public `read`, `read-many`, and `read-bytes`: they must keep the original saved text or bytes, type, and revision. Repeat for a pending rename and delete. Restore only these test proposals through normal Discard.
+4. Create a small private output only when the catalog has no suitable draft. Bash must see it while public reads report missing. Save through Files, then require public read success and fresh stored-state readback. Keep reusable data in the catalog.
+5. Run the known-path and `/tmp` canaries. Check console errors and screen the composer/tool controls with the harness accessibility audit.
+
+Before accepting a change, require a failing control at the named stored-type or saved-only assertion, then restore the code and require the same check to pass. Do not deploy while another migration or task owns the live source. Record unavailable live checks as gaps; local tests do not replace them.
 
 ## Resolve copied file links and node IDs
 

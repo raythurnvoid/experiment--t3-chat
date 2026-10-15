@@ -10,7 +10,7 @@ const WHICH_COMBINED_FLAGS_REGEX = /^-[as]{2,}$/u;
  */
 // `wait` is not listed: the engine keeps a no-op `wait` where nothing is registered (the
 // plugin-review shell), and `which` must not claim it works there.
-const APP_SHELL_EXTRA_COMMANDS = ["search", "textgrep", "meta", "resolve", "jobs", "kill"] as const;
+const APP_SHELL_EXTRA_COMMANDS = ["search", "textgrep", "meta", "resolve", "file", "jobs", "kill"] as const;
 const APP_SHELL_COMMAND_NAMES = new Set<string>([...bash_ALLOWED_COMMANDS, ...APP_SHELL_EXTRA_COMMANDS]);
 
 /**
