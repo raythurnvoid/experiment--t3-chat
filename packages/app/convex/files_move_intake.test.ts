@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { advance, append_input } from "./files_transfer.ts";
-import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
+import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -119,7 +119,7 @@ describe("paged Move input scale", () => {
 
 	test("accepts 100000 input positions and keeps selection and normalization reads paged", async () => {
 		const fixture = await create_fixture();
-		const { t, sourceId } = fixture;
+		const { t, db, asUser, sourceId, targetId, childId } = fixture;
 		const count = 100_000;
 		const phases = new Set<string>();
 		const pages: Array<{ step: Doc<"files_transfer_runs">["step"]; limit: number; length: number }> = [];
@@ -215,14 +215,33 @@ describe("paged Move input scale", () => {
 				selection: { expectedCount: count, count, cursor: count - 1 },
 			});
 			expect(await ctx.db.get("activities", activityId)).toMatchObject({
-				progress: { discovered: 1, total: 1, completed: 0 },
+				progress: { discovered: 1, total: 1, completed: 1, failed: 0, canceled: 0 },
 			});
-			expect(
-				await ctx.db
-					.query("files_transfer_items")
-					.withIndex("by_run_order", (q) => q.eq("runId", runId))
-					.take(2),
-			).toMatchObject([{ source: { kind: "saved", id: sourceId }, discoveryDone: true }]);
+			const items = await ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.take(2);
+			expect(items).toMatchObject([
+				{
+					source: { kind: "saved", id: sourceId },
+					discoveryDone: true,
+					state: "completed",
+					outputTarget: { kind: "saved", id: sourceId },
+					outcome: "moved",
+					outputPath: "/target/source",
+				},
+			]);
+			// The last Normalize call can publish this small root before it returns.
+			const cohort = await ctx.db.query("files_move_cohorts")
+				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+				.unique();
+			expect(cohort, "Completed input progress belongs to the exact published Move").toMatchObject({
+				origin: { kind: "transfer", runId, itemId: items[0]!._id },
+				phase: "published",
+				visibleView: "after",
+				publishedAt: expect.any(Number),
+				errorCode: null,
+			});
 		});
 		expect(phases).toEqual(new Set(["uploading", "select", "normalize"]));
 		expect(pages.length, "joined calls still read exact selection batches").toBeGreaterThan(1);
@@ -233,5 +252,17 @@ describe("paged Move input scale", () => {
 			);
 			expect(page.length, "each query returns at most its requested input positions").toBeLessThanOrEqual(page.limit);
 		}
+		await test_finish_transfer_run(asUser, runId);
+		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
+			activity: { status: "succeeded", progress: { discovered: 1, total: 1, completed: 1, failed: 0, canceled: 0 } },
+		});
+		await t.run(async (ctx) => {
+			const moved = await ctx.db.get("files_nodes", sourceId);
+			expect(moved).toMatchObject({ _id: sourceId, parentId: targetId, path: "/target/source" });
+			expect(moved?.moveCohortId).toBeUndefined();
+			const child = await ctx.db.get("files_nodes", childId);
+			expect(child).toMatchObject({ _id: childId, parentId: sourceId, path: "/target/source/child" });
+			expect(child?.moveCohortId).toBeUndefined();
+		});
 	}, 600_000);
 });

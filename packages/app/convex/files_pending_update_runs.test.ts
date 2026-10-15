@@ -904,43 +904,46 @@ describe("review jobs", () => {
 		const { runId } = await start_review({ f, kind: "accept", proposals });
 		const stagePages: number[] = [];
 		const cleanupPages = { before: [] as number[], after: [] as number[] };
+		const stagedIds: Id<"files_metadata_docs">[] = [];
+		const cleanupIds = { before: [] as Id<"files_metadata_docs">[], after: [] as Id<"files_metadata_docs">[] };
 		const originals = new Set((await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect())).map((row) => row._id));
 		const copies = new Set<Id<"files_metadata_docs">>();
 		test_spy_handler(advance_cohort, async (handler, ctx, args) => {
-			const patch = vi.spyOn(ctx.db, "patch");
+			const query = vi.spyOn(ctx, "runQuery");
 			const insert = vi.spyOn(ctx.db, "insert");
-			const remove = vi.spyOn(ctx.db, "delete");
 			try {
 				const result = await handler(ctx, args);
 				let staged = 0;
 				let copied = 0;
-				let before = 0;
-				let after = 0;
 				for (const [index, call] of insert.mock.calls.entries()) {
 					const fields = call[1] as Partial<Doc<"files_metadata_docs">>;
 					if (call[0] !== "files_metadata_docs" || fields.sourceKind !== "committed" || fields.moveView?.view !== "after") continue;
 					copies.add(await insert.mock.results[index]!.value as Id<"files_metadata_docs">);
 					copied++;
 				}
-				// Vitest uses the old ID-only overload. The worker passes the table too.
-				for (const [table, id, fields] of patch.mock.calls as unknown as [string, Id<"files_metadata_docs">, Partial<Doc<"files_metadata_docs">>][]) {
-					if (table !== "files_metadata_docs") continue;
-					const view = fields.moveView;
-					if (originals.has(id as Id<"files_metadata_docs">) && view?.view === "before") staged++;
-					else if (copies.has(id as Id<"files_metadata_docs">) && "moveView" in fields && view === undefined) after++;
+				// Several native pages can share one parent. Keep their real boundaries and IDs.
+				for (const [index, [reference, queryArgs]] of query.mock.calls.entries()) {
+					const name = getFunctionName(reference);
+					const pageArgs = queryArgs as { family?: string; view: "before" | "after"; cohortId: Id<"files_move_cohorts"> };
+					if (name !== "files_move_pages:metadata" && !(name === "files_move_pages:side_cleanup" && pageArgs.family === "files_metadata_docs")) continue;
+					const page = await query.mock.results[index]!.value as { page: Doc<"files_metadata_docs">[] };
+					const ids = page.page.map((row) => row._id);
+					if (name === "files_move_pages:metadata") {
+						expect(ids.every((id) => originals.has(id)), "Staging reads the exact original metadata docs").toBe(true);
+						staged += ids.length;
+						stagePages.push(ids.length);
+						stagedIds.push(...ids);
+					} else {
+						expect(page.page.every((row) => row.moveView?.cohortId === pageArgs.cohortId && row.moveView.view === pageArgs.view), "Cleanup reads the exact tagged metadata view").toBe(true);
+						cleanupPages[pageArgs.view].push(ids.length);
+						cleanupIds[pageArgs.view].push(...ids);
+					}
 				}
-				for (const [table, id] of remove.mock.calls as unknown as [string, Id<"files_metadata_docs">][]) if (table === "files_metadata_docs" && originals.has(id as Id<"files_metadata_docs">)) before++;
-				if (staged) {
-					expect(copied).toBe(staged);
-					stagePages.push(staged);
-				}
-				if (before) cleanupPages.before.push(before);
-				if (after) cleanupPages.after.push(after);
+				if (staged) expect(copied).toBe(staged);
 				return result;
 			} finally {
-				patch.mockRestore();
+				query.mockRestore();
 				insert.mockRestore();
-				remove.mockRestore();
 			}
 		});
 		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
@@ -968,6 +971,13 @@ describe("review jobs", () => {
 			before: [64, 64, 52],
 			after: [64, 64, 52],
 		});
+		expect(stagedIds, "Reviewed Delete stages each original metadata doc once").toHaveLength(originals.size);
+		expect(new Set(stagedIds)).toEqual(originals);
+		expect(cleanupIds.before, "Reviewed Delete cleans each original metadata doc once").toHaveLength(originals.size);
+		expect(new Set(cleanupIds.before)).toEqual(originals);
+		expect(copies.size, "Reviewed Delete creates one copy per original metadata doc").toBe(originals.size);
+		expect(cleanupIds.after, "Reviewed Delete cleans each copied metadata doc once").toHaveLength(copies.size);
+		expect(new Set(cleanupIds.after)).toEqual(copies);
 
 		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
 		expect(units).toMatchObject([{ status: "completed", errorMessage: null }]);

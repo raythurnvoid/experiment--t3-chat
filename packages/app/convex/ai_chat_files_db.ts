@@ -16,7 +16,9 @@ import { convex_error } from "../server/convex-utils.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
-/** Trusted tool reads still check the current chat owner and workspace read access. */
+/**
+ * Trusted tool reads still check the current chat owner and workspace read access.
+ */
 export async function ai_chat_files_db_get_door_membership(
 	ctx: QueryCtx | MutationCtx,
 	args: {

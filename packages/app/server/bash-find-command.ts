@@ -601,7 +601,9 @@ function build_continuation(args: {
 	return continuationParts.join(" ");
 }
 
-/** Shared by the command and the plain background-command checkpoint. */
+/**
+ * Shared by the command and the plain background-command checkpoint.
+ */
 export async function bash_find_type_prepare(args: {
 	ctx: ActionCtx;
 	dbFilesRoots: bash_DbFilesRoots;

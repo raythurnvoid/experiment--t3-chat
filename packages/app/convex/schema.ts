@@ -222,7 +222,9 @@ export const ai_chat_bash_result_validator = v.object({
 	stderr: v.string(),
 	metadata: v.object({
 		command: v.string(),
-		/** The originating call's read-only recovery handle. */
+		/**
+		 * The originating call's read-only recovery handle.
+		 */
 		toolCallId: v.optional(v.string()),
 		cwd: v.string(),
 		nextCwd: v.string(),
@@ -3118,7 +3120,9 @@ const app_convex_schema = defineSchema({
 		.index("by_query_kind_moveTarget", ["queryId", "kind", "moveTargetId"])
 		.index("by_query", ["queryId"]),
 
-	/** Keep retries on the same page, even when the response was lost. */
+	/**
+	 * Keep retries on the same page, even when the response was lost.
+	 */
 	files_type_query_steps: defineTable({
 		queryId: v.id("files_type_queries"),
 		step: v.number(),
@@ -3127,7 +3131,9 @@ const app_convex_schema = defineSchema({
 		isDone: v.boolean(),
 	}).index("by_query_step", ["queryId", "step"]),
 
-	/** One bounded resolver frame or memo per key. The number of keys has no page cap. */
+	/**
+	 * One bounded resolver frame or memo per key. The number of keys has no page cap.
+	 */
 	files_type_query_work: defineTable({
 		queryId: v.id("files_type_queries"),
 		key: v.string(),
@@ -4320,7 +4326,9 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_user", ["userId", "moveView.cohortId", "moveView.view"]),
 
-	/** Bounded resolver records for one real pending target or staged Move owner. */
+	/**
+	 * Bounded resolver records for one real pending target or staged Move owner.
+	 */
 	files_pending_overlay_resolve_work: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),

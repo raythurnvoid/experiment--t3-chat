@@ -19,7 +19,7 @@ import {
 	test_run_with_flush,
 	test_spy_handler,
 } from "./setup.test.ts";
-import { advance as advance_move_cohort } from "./files_move_cohorts.ts";
+import { descendants as descendant_page } from "./files_move_pages.ts";
 import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import {
 	files_ROOT_ID,
@@ -815,17 +815,13 @@ describe("paged folder moves and scope jobs", () => {
 	const BIG_FOLDER_CHILDREN = 65;
 
 	/**
-	 * Count descendant transactions that leave more walking work for the next transaction.
+	 * Count real native pages, even when one transaction joins several pages.
 	 */
 	function count_paged_moves() {
 		const paged = { count: 0 };
-		test_spy_handler(advance_move_cohort, async (handler, ctx, args) => {
-			const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
-			const cohort = await ctx.db.get("files_move_cohorts", cohortId);
+		test_spy_handler(descendant_page, async (handler, ctx, args) => {
 			const result = await handler(ctx, args);
-			const after = await ctx.db.get("files_move_cohorts", cohortId);
-			if (cohort?.step === step && cohort.workPhase === "descendants" && after?.workPhase === "descendants" && after.step > step)
-				paged.count++;
+			paged.count++;
 			return result;
 		});
 		return paged;
@@ -861,7 +857,7 @@ describe("paged folder moves and scope jobs", () => {
 				true,
 			);
 		});
-		expect(pagedMoves.count, "the folder needs more than one Move page").toBeGreaterThan(0);
+		expect(pagedMoves.count, "the folder needs more than one Move page").toBeGreaterThan(1);
 	});
 
 	test("a public Move finishes every child path in a big folder", async () => {
@@ -927,7 +923,7 @@ describe("paged folder moves and scope jobs", () => {
 		expect(
 			metadata.filter((doc) => doc.sourceKind !== "committed" || doc.path !== pathById.get(doc.fileNodeId)),
 		).toEqual([]);
-		expect(pagedMoves.count, "the folder needs more than one Move page").toBeGreaterThan(0);
+		expect(pagedMoves.count, "the folder needs more than one Move page").toBeGreaterThan(1);
 	});
 
 	test("a public Move finishes a big group of archived items with one name", async () => {
@@ -970,7 +966,7 @@ describe("paged folder moves and scope jobs", () => {
 		).toEqual({ _yay: null });
 		expect(await moved()).toBe(BIG_FOLDER_CHILDREN);
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
-		expect(pagedMoves.count, "the group needs more than one Move page").toBeGreaterThan(0);
+		expect(pagedMoves.count, "the group needs more than one Move page").toBeGreaterThan(1);
 	});
 
 	test("a restrict of a big folder commits now and a job gives every child the new scope", async () => {

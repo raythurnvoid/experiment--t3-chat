@@ -957,9 +957,16 @@ describe("Move cohort and folder-wide jobs", () => {
 		const P = await w.folder("/P");
 		const x = await w.folder("/P/x");
 		const inner = await w.folder("/P/x/inner");
+		const children = [inner];
+		// Keep work beyond the initial transaction's budget, before publication.
+		for (let index = 0; index < 64; index++) children.push(await w.folder(`/P/x/child-${index}`));
 		const sub = await w.folder("/P/sub");
 		const Q = await w.folder("/Q");
-		await w.move(x, Q, async () => !!(await w.node(inner))?.moveCohortId);
+		const cohortId = await w.move(x, Q, async () => !!(await w.node(children[1]!))?.moveCohortId);
+		expect(
+			await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)),
+			"Restrict starts while the held Move is still unpublished",
+		).toMatchObject({ publishedAt: null, visibleView: "before" });
 		expect(
 			await w.asUser.mutation(api.files_sharing.restrict_node, { membershipId: w.db.membershipId, nodeId: P }),
 		).toEqual({
@@ -977,7 +984,7 @@ describe("Move cohort and folder-wide jobs", () => {
 		await w.t.mutation(internal.files_subtree_ops.advance, { opId: op._id, step: walk.step });
 		expect(await pendingSteps(), "a paused Restrict waits for the Move wake").toBe(before);
 		await w.finish();
-		for (const id of [x, inner, sub]) {
+		for (const id of [x, ...children, sub]) {
 			const node = await w.node(id);
 			expect(node?.path.startsWith("/P/"), `${node?.path} stays in the restricted folder`).toBe(true);
 			expect(node?.restrictedScopeNodeId, `${node?.path} gets the folder's scope`).toBe(P);
@@ -1331,10 +1338,14 @@ describe("Move cohort repair retries", () => {
 	test("an abort that keeps failing does not say the files moved", async () => {
 		const w = await transfer_workspace();
 		const a = await w.folder("/a");
-		await w.folder("/a/c1");
+		for (let index = 0; index < 65; index++) await w.folder(`/a/child-${index}`);
 		const target = await w.folder("/target");
 		const cohort = async () => (await w.t.run((ctx) => ctx.db.query("files_move_cohorts").first()))!;
 		const cohortId = await w.move(a, target, async () => true);
+		expect(await cohort(), "the real initial budget leaves an unpublished group").toMatchObject({
+			publishedAt: null,
+			visibleView: "before",
+		});
 		const runId = (await cohort()).origin.runId;
 		const error = { name: "move_step_failed", message: "This Move step failed. Review it again." };
 		// The first failure aborts the unpublished group. The next ones are repair failures.

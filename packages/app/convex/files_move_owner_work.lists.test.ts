@@ -9,6 +9,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
 
@@ -120,6 +121,17 @@ describe("files_move_owner_work", () => {
 		expect(original, "native producers create every chat key and the all key").toHaveLength(count);
 		expect(original.map((doc) => doc.key).sort()).toEqual(["all", ...threads].sort());
 
+		const overlay = await import("../server/files-pending-overlay.ts");
+		const canJoin = overlay.files_pending_overlay_db_can_join_step;
+		// Yield after cohort creation, then inspect real pages with the step driver.
+		const join = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, limitFactor) => {
+			const allowed = await canJoin(ctx, limitFactor);
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+				.unique();
+			return allowed && !slot?.cohortId;
+		});
 		const started = await asOwner.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: crypto.randomUUID(),
@@ -145,6 +157,7 @@ describe("files_move_owner_work", () => {
 						.unique(),
 				);
 				cohortId = slot?.cohortId ?? null;
+				if (cohortId) join.mockRestore();
 			}
 			return cohortId ? await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId!)) : null;
 		};

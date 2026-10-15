@@ -272,10 +272,10 @@ async function native_pending_scope(
 	}
 	const overlay = await import("../server/files-pending-overlay.ts");
 	const canJoin = overlay.files_pending_overlay_db_can_join_step;
-	// Model a resource yield before source holds. The expiry test uses this boundary, not its budget.
+	// Model the admission yield before source holds. Later calls use the real step driver.
 	const join = options.pauseBeforeInitialStep
-		? vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx) => {
-				const allowed = await canJoin(ctx);
+		? vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, limitFactor) => {
+				const allowed = await canJoin(ctx, limitFactor);
 				const slot = await ctx.db
 					.query("files_move_workspace_slots")
 					.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
@@ -480,7 +480,7 @@ test("public Move joins empty owner phases in one step", async () => {
 });
 
 test("public Move seals unselected pending scope before the switch and keeps each branch", async () => {
-	const f = await native_pending_scope();
+	const f = await native_pending_scope({ pauseBeforeInitialStep: true });
 	const originals = await Promise.all(f.proposals.map((proposal) => pending_scope_docs(f, proposal)));
 	expect(
 		originals.every((docs) => docs.plain.length > 8 && docs.metadata.length > 8),
@@ -602,7 +602,7 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 }, 120_000);
 
 test("public Stop restores a partly staged unselected pending scope page", async () => {
-	const f = await native_pending_scope();
+	const f = await native_pending_scope({ pauseBeforeInitialStep: true });
 	const proposal = f.proposals[0]!;
 	const original = await pending_scope_docs(f, proposal);
 	for (let pass = 0; pass < 1000; pass++) {
@@ -641,7 +641,7 @@ test("public Stop restores a partly staged unselected pending scope page", async
 }, 120_000);
 
 test("public Move tags an old pending chunk without copying it, and the drain waits for the Move", async () => {
-	const f = await native_pending_scope();
+	const f = await native_pending_scope({ pauseBeforeInitialStep: true });
 	const proposal = f.proposals[0]!;
 	const original = await pending_scope_docs(f, proposal);
 	// An edit of a big draft leaves its old chunks for a background drain. Make one by hand.
@@ -656,7 +656,12 @@ test("public Move tags an old pending chunk without copying it, and the drain wa
 	});
 	for (let pass = 0; pass < 1000; pass++) {
 		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
-		if ((await pending_scope_docs(f, proposal, "before")).plain.length > 0) break;
+		if (
+			(await pending_scope_docs(f, proposal)).plain.length === 0 &&
+			(await pending_scope_docs(f, proposal, "after")).plain.length === original.plain.length
+		)
+			break;
+		expect(cohort.publishedAt).toBeNull();
 		await f.t.action(internal.files_move_run.run, {
 			cohortId: f.cohortId,
 			step: cohort.step,
@@ -1036,7 +1041,7 @@ test("the drain removes old metadata docs of a draft while a Move holds another 
 }, 120_000);
 
 test("after a Stop, the drain removes many old docs of a proposal the Move held", async () => {
-	const f = await native_pending_scope();
+	const f = await native_pending_scope({ pauseBeforeInitialStep: true });
 	const proposal = f.proposals[0]!;
 	const original = await pending_scope_docs(f, proposal);
 	// More old plain chunks than one drain page, and old docs in the tables before and after it.
@@ -1268,6 +1273,19 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 	expect(originalDocs[1]!.metadata.length).toBeGreaterThan(8);
 	const originalPaths = await paths("/target");
 	expect(originalPaths).toHaveLength(18);
+	const overlay = await import("../server/files-pending-overlay.ts");
+	const canJoin = overlay.files_pending_overlay_db_can_join_step;
+	// Yield after cohort creation, then inspect each real step before publication.
+	const join = vi
+		.spyOn(overlay, "files_pending_overlay_db_can_join_step")
+		.mockImplementation(async (ctx, limitFactor) => {
+			const allowed = await canJoin(ctx, limitFactor);
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+				.unique();
+			return allowed && !slot?.cohortId;
+		});
 	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
@@ -1289,6 +1307,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
 				.unique(),
 		);
+		if (!cohort && slot?.cohortId) join.mockRestore();
 		cohort = slot?.cohortId ? await t.run((ctx) => ctx.db.get("files_move_cohorts", slot.cohortId!)) : null;
 		if (cohort?.workPhase === "publish") break;
 		if (cohort) {
@@ -1448,7 +1467,10 @@ test("collects and stages several native owner pages once, then keeps chosen IDs
 			.collect(),
 	);
 	expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))?.pendingWorkCount).toBe(0);
-	expect(await cleanup(f, "finish"), "all owner cleanup phases finish").toMatchObject({ done: true });
+	expect(await cleanup(f, "finish"), "all owner cleanup phases finish").toMatchObject({
+		done: true,
+		parentPage: false,
+	});
 	for (const work of staged) {
 		if (work.afterPlaceId)
 			expect(
@@ -1575,8 +1597,7 @@ test.each([5, 6, 7])("resumes saved owner cleanup phase %i before the new typed 
 		if (entry.moveView.view === keep) {
 			expect(current?.target).toEqual(entry.target);
 			expect(current?.moveView).toBeUndefined();
-		}
-		else expect(current).toBeNull();
+		} else expect(current).toBeNull();
 	}
 	for (const id of seeded.workIds)
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_overlay_resolve_work", id))).toBeNull();

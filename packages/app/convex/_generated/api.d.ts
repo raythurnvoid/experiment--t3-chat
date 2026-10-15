@@ -54,6 +54,7 @@ import type * as files_move_content_db from "../files_move_content_db.js";
 import type * as files_move_media from "../files_move_media.js";
 import type * as files_move_media_db from "../files_move_media_db.js";
 import type * as files_move_owner_work from "../files_move_owner_work.js";
+import type * as files_move_pages from "../files_move_pages.js";
 import type * as files_move_run from "../files_move_run.js";
 import type * as files_nodes from "../files_nodes.js";
 import type * as files_nodes_ai from "../files_nodes_ai.js";
@@ -213,6 +214,7 @@ declare const fullApi: ApiFromModules<{
   files_move_media: typeof files_move_media;
   files_move_media_db: typeof files_move_media_db;
   files_move_owner_work: typeof files_move_owner_work;
+  files_move_pages: typeof files_move_pages;
   files_move_run: typeof files_move_run;
   files_nodes: typeof files_nodes;
   files_nodes_ai: typeof files_nodes_ai;

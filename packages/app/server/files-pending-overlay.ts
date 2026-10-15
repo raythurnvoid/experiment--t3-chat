@@ -18,7 +18,7 @@
 import { compareValues, type Infer, type Value } from "convex/values";
 import { Result } from "common/errors-as-values-utils.ts";
 import { z } from "zod";
-import type { TransactionMetrics, WithoutSystemFields } from "convex/server";
+import type { PaginationResult, TransactionMetrics, WithoutSystemFields } from "convex/server";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "../convex/_generated/server.js";
@@ -1090,7 +1090,9 @@ export function files_pending_overlay_db_create_reader(
 	});
 }
 
-/** Save only unfinished target work. A source change clears old work before starting again. */
+/**
+ * Save only unfinished target work. A source change clears old work before starting again.
+ */
 export async function files_pending_overlay_db_resolve_facts(
 	ctx: MutationCtx,
 	args: Scope & {
@@ -1668,7 +1670,9 @@ async function db_mark_old_claims(flush: Flush, mark: TargetMark, defer: boolean
 		);
 }
 
-/** List summaries do not depend on the path resolver finishing. */
+/**
+ * List summaries do not depend on the path resolver finishing.
+ */
 async function db_sync_target_lists(
 	flush: Flush,
 	mark: TargetMark,
@@ -2058,10 +2062,13 @@ export async function files_pending_overlay_db_stage_owner_lists(
 				);
 		// List rows have only small fields. Probe the whole range before changing any row.
 		const small = cursor.page === null ? await query().take(9) : null;
-		const page =
+		const page: Omit<PaginationResult<Doc<"files_pending_list_rows">>, "continueCursor"> & { continueCursor: string | null } =
 			small && small.length <= 8
 				? { page: small, isDone: true, continueCursor: null }
-				: await query().paginate({ cursor: cursor.page, numItems: 100 });
+				: await ctx.runQuery(internal.files_move_pages.owner_list_rows, {
+						pendingUpdateId: work.pendingUpdateId,
+						cursor: cursor.page,
+					});
 		paged = !small || small.length > 8;
 		for (const row of page.page) {
 			await db_stage_list_key(ctx.db, { ...scope, cohortId: cohort._id, listKey: row.listKey });
@@ -2093,7 +2100,7 @@ export async function files_pending_overlay_db_stage_owner_lists(
 	}
 	const next = JSON.stringify(cursor);
 	await ctx.db.patch("files_move_owner_work", work._id, { dependencyCursor: next });
-	return Result({ _yay: { cursor: next, done: cursor.phase === "done", paged } });
+	return Result({ _yay: { cursor: next, done: cursor.phase === "done", paged, parentPage: false } });
 }
 
 /**
@@ -2109,7 +2116,12 @@ export async function files_pending_overlay_db_stage_owner_fields(
 		ownerWorkId: Id<"files_move_owner_work">;
 		cursor: string | null;
 	},
-) {
+): Promise<
+	Result<
+		| { _yay: { cursor: string; done: boolean; paged: boolean; parentPage: false } }
+		| { _nay: { name: "stopped"; message: string } }
+	>
+> {
 	const checked = await db_stage_owner(ctx, args);
 	if (checked._nay) return checked;
 	const { cohort, work } = checked._yay;
@@ -2129,10 +2141,13 @@ export async function files_pending_overlay_db_stage_owner_fields(
 					.withIndex("by_place", (q) =>
 						q.eq("placeId", work.beforePlaceId!).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 					);
-			const page =
+			const page: PaginationResult<Doc<"files_pending_place_fields">> | null =
 				cursor.page === null && !(await query().first())
 					? null
-					: await query().paginate({ cursor: cursor.page, numItems: 8, maximumBytesRead: 1024 * 1024 });
+					: await ctx.runQuery(internal.files_move_pages.owner_old_fields, {
+							placeId: work.beforePlaceId,
+							cursor: cursor.page,
+						});
 			paged = page !== null;
 			for (const field of page?.page ?? [])
 				await ctx.db.patch("files_pending_place_fields", field._id, { moveView: before });
@@ -2167,10 +2182,22 @@ export async function files_pending_overlay_db_stage_owner_fields(
 								.eq("moveView.view", tag?.view),
 						);
 			// Source docs stay in place. These identity-only indexes keep the stored cursor short.
-			const page =
+			const page: PaginationResult<Doc<"files_metadata_docs">> | null =
 				cursor.page === null && !(await source().first())
 					? null
-					: await source().paginate({ cursor: cursor.page, numItems: 8, maximumBytesRead: 1024 * 1024 });
+					: await ctx.runQuery(internal.files_move_pages.owner_source_metadata, {
+							source:
+								place.target.kind === "private"
+									? { kind: "pending", pendingUpdateId: place.pendingUpdateId! }
+									: {
+											kind: "saved",
+											organizationId: place.organizationId,
+											workspaceId: place.workspaceId,
+											nodeId: place.target.id,
+										},
+							cohortId: tag?.cohortId ?? null,
+							cursor: cursor.page,
+						});
 			paged = page !== null;
 			for (const doc of page?.page ?? []) {
 				if (
@@ -2204,7 +2231,7 @@ export async function files_pending_overlay_db_stage_owner_fields(
 	}
 	const next = JSON.stringify(cursor);
 	await ctx.db.patch("files_move_owner_work", work._id, { fieldCursor: next });
-	return Result({ _yay: { cursor: next, done: cursor.phase === "done", paged } });
+	return Result({ _yay: { cursor: next, done: cursor.phase === "done", paged, parentPage: false } });
 }
 
 // #endregion recompute
@@ -2292,7 +2319,9 @@ async function db_schedule_job(flush: Flush, scope: Omit<Scope, "userId">, input
 	});
 }
 
-/** A repair stays counted until every page and its follow-up work are recorded. */
+/**
+ * A repair stays counted until every page and its follow-up work are recorded.
+ */
 export async function files_pending_overlay_db_schedule_repair(ctx: MutationCtx, scope: Scope) {
 	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
 	if (!state) throw should_never_happen("Overlay repair outside the mutation wrapper", scope);
@@ -3041,7 +3070,7 @@ export function files_pending_overlay_list_over_budget(metrics: TransactionMetri
 /**
  * Whether a Move step may join one more small sub-step of the same unit. It flushes first, so the next
  * sub-step reads fresh derived docs and the metrics count the derived writes. Join only while each
- * used metric is below 1/16 of its limit. Initial cohort work uses 1/4 and stops at its first page.
+ * used metric is below 1/16 of its limit. Initial cohort work uses 1/4; parent pages still yield.
  * The next unit and final flush need their measured reserve.
  */
 export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx, limitFactor: 4 | 16 = 16) {

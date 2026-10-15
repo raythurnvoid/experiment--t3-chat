@@ -114,7 +114,7 @@ export function files_visible_resolve_machine_create<Operation>(args: {
 			if (effect.kind === "read") {
 				if (reads >= input.readLimit) break;
 				if (effect.paginated && paginated) break;
-				// A selected-view helper can read several rows. Check the caller's real budget too.
+				// A selected-view helper can read several docs. Check the caller's real budget too.
 				if (input.hasReadBudget && !(await input.hasReadBudget())) break;
 				if (effect.paginated) paginated = true;
 				result = await effect.run();

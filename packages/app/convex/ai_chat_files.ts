@@ -2068,7 +2068,9 @@ async function db_bash_job_find_deadline(ctx: QueryCtx | MutationCtx, invocation
 	);
 }
 
-/** Only a plain command uses this checkpoint. Its expanded arguments are never run again. */
+/**
+ * Only a plain command uses this checkpoint. Its expanded arguments are never run again.
+ */
 export const stage_bash_job_find = internalMutation({
 	args: {
 		invocationId: v.id("ai_chat_bash_invocations"),
@@ -2217,7 +2219,9 @@ export const requeue_bash_job_find = internalMutation({
 	},
 });
 
-/** Claim one delivery. A different worker must never resume the later shell statements. */
+/**
+ * Claim one delivery. A different worker must never resume the later shell statements.
+ */
 export const take_bash_job_find_result = internalMutation({
 	args: {
 		invocationId: v.id("ai_chat_bash_invocations"),
@@ -3504,7 +3508,9 @@ export const list_live_thread_jobs = query({
 	},
 });
 
-/** Live reasons come from the checkpoint, never the stored command output. */
+/**
+ * Live reasons come from the checkpoint, never the stored command output.
+ */
 function job_phase(invocation: Doc<"ai_chat_bash_invocations">, status: Doc<"activities">["status"]) {
 	if (!activities_is_active(status)) return null;
 	const job = invocation.job;

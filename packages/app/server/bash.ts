@@ -2446,19 +2446,50 @@ export async function bash_run_job(
 		const checkpoint = row.job.find;
 		const fence = { invocationId: row._id, workId: row.job.workId!, commandNumber: checkpoint.commandNumber };
 		const query = await ctx.runQuery(internal.files_type_queries.get, { queryId: checkpoint.queryId });
-		const page = query ? await files_type_query_page(ctx, {
-			organizationId: query.organizationId, workspaceId: query.workspaceId, userId: query.userId,
-			agentSource: query.agentSource, overlay: query.overlay, rootPath: query.rootPath,
-			contentType: query.contentType, directoriesOnly: query.directoriesOnly, limit: query.limit,
-		}, JSON.stringify({ queryId: checkpoint.queryId, step: checkpoint.step })) : null;
+
+		const page = query
+			? await files_type_query_page(
+					ctx,
+					{
+						organizationId: query.organizationId,
+						workspaceId: query.workspaceId,
+						userId: query.userId,
+						agentSource: query.agentSource,
+						overlay: query.overlay,
+						rootPath: query.rootPath,
+						contentType: query.contentType,
+						directoriesOnly: query.directoriesOnly,
+						limit: query.limit,
+					},
+					JSON.stringify({ queryId: checkpoint.queryId, step: checkpoint.step }),
+				)
+			: null;
+
 		if (page?._yay && page._yay.state !== "page") {
-			await ctx.runMutation(internal.ai_chat_files.requeue_bash_job_find, { invocationId: row._id, workId: fence.workId });
+			await ctx.runMutation(internal.ai_chat_files.requeue_bash_job_find, {
+				invocationId: row._id,
+				workId: fence.workId,
+			});
 			return null;
 		}
-		const result = page && query ? await bash_find_type_render({
-			ctx, result: page, shellPrefix: checkpoint.shellPrefix, dbPrefix: checkpoint.dbPrefix,
-			contentType: query.contentType, directoriesOnly: query.directoriesOnly, limit: query.limit,
-		}) : { stdout: "", stderr: "find: file search is no longer available. Rerun find without --cursor.\n", exitCode: 1 };
+
+		const result =
+			page && query
+				? await bash_find_type_render({
+						ctx,
+						result: page,
+						shellPrefix: checkpoint.shellPrefix,
+						dbPrefix: checkpoint.dbPrefix,
+						contentType: query.contentType,
+						directoriesOnly: query.directoriesOnly,
+						limit: query.limit,
+					})
+				: {
+						stdout: "",
+						stderr: "find: file search is no longer available. Rerun find without --cursor.\n",
+						exitCode: 1,
+					};
+
 		const take = () => ctx.runMutation(internal.ai_chat_files.take_bash_job_find_result, { ...fence, result });
 		const delivered = await take().catch(take);
 		if (!delivered?.job) return null;
@@ -2731,7 +2762,12 @@ export async function bash_run_job(
 			onStatementBoundary,
 			onPlainCommand: async ({ continuation }, roots) => {
 				if (continuation.command === "find") {
-					const preparation = await bash_find_type_prepare({ ctx, dbFilesRoots: roots, argv: continuation.args, cwd: continuation.cwd });
+					const preparation = await bash_find_type_prepare({
+						ctx,
+						dbFilesRoots: roots,
+						argv: continuation.args,
+						cwd: continuation.cwd,
+					});
 					if (!preparation || !("prepared" in preparation)) return "run";
 					const input = preparation.prepared;
 					const started = await files_type_query_start(ctx, input.request, input.cursor);
@@ -2739,16 +2775,28 @@ export async function bash_run_job(
 					const findCommandNumber = commandNumber++;
 					stageFind = async (output) => {
 						const saveArgs = {
-							invocationId: row._id, workId,
+							invocationId: row._id,
+							workId,
 							request: input.request,
-							checkpoint: { phase: "waiting" as const, ...started._yay, commandNumber: findCommandNumber,
-								expandedArgs: continuation.args, lastArg: continuation.lastArg,
-								shellPrefix: input.shellPrefix, dbPrefix: input.dbPrefix },
-							resume: { script: continuation.scriptAfter, commandNumber,
+							checkpoint: {
+								phase: "waiting" as const,
+								...started._yay,
+								commandNumber: findCommandNumber,
+								expandedArgs: continuation.args,
+								lastArg: continuation.lastArg,
+								shellPrefix: input.shellPrefix,
+								dbPrefix: input.dbPrefix,
+							},
+							resume: {
+								script: continuation.scriptAfter,
+								commandNumber,
 								launchedJobNumbers: launchedJobNumbers.slice(-bash_JOB_NUMBERS_MAX_COUNT),
-								shellState: continuation.snapshot, cwd: continuation.cwd,
-								cwdTarget: await bashFs.get_cwd_target(continuation.cwd) },
-							output, liveOutput: liveOutput.stdout || liveOutput.stderr ? { ...liveOutput } : null,
+								shellState: continuation.snapshot,
+								cwd: continuation.cwd,
+								cwdTarget: await bashFs.get_cwd_target(continuation.cwd),
+							},
+							output,
+							liveOutput: liveOutput.stdout || liveOutput.stderr ? { ...liveOutput } : null,
 						};
 						const save = () => ctx.runMutation(internal.ai_chat_files.stage_bash_job_find, saveArgs);
 						const saved = await save().catch(save);
@@ -2903,8 +2951,17 @@ export async function bash_run_job(
 						result: job.copy.result,
 					}
 				: job.find?.phase === "delivering"
-					? { continuation: { command: "find", args: [], cwd: job.startCwd, snapshot: job.shellState,
-							scriptAfter: script, lastArg: job.find.lastArg }, result: job.find.result }
+					? {
+							continuation: {
+								command: "find",
+								args: [],
+								cwd: job.startCwd,
+								snapshot: job.shellState,
+								scriptAfter: script,
+								lastArg: job.find.lastArg,
+							},
+							result: job.find.result,
+						}
 					: undefined,
 		);
 		if ("kind" in outcome && outcome.kind === "host_suspended") {

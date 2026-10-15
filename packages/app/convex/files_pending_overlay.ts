@@ -1290,8 +1290,8 @@ export const check_user = internalQuery({
 });
 
 /**
- * Recompute every derived doc of one user, one walk page per run, and delete orphan docs. Runs
- * itself again until the walk is done.
+ * Recompute one page of a user's derived docs and delete orphan docs.
+ * Return the cursor so the repair job can continue.
  */
 async function db_repair_user_page(ctx: MutationCtx, scope: Scope, position: string | null) {
 	const { phase, docs, cursor } = await db_walk_user_page(ctx.db, scope, position);
