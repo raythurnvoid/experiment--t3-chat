@@ -1,10 +1,18 @@
 // Fixtures shared by the files_pending_overlay_limits test files.
 import { R2 } from "@convex-dev/r2";
+import { getFunctionName } from "convex/server";
 import { expect, vi } from "vitest";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
+import { advance_stage } from "./files_move_content.ts";
+import { advance as advance_review } from "./files_pending_update_runs.ts";
+import {
+	accept_input as accept_transfer_input,
+	append_input as append_transfer_input,
+	advance as advance_transfer,
+} from "./files_transfer.ts";
 import {
 	test_convex,
 	test_mocks,
@@ -96,8 +104,8 @@ export function expect_under_convex_limits(cost: ReturnType<typeof transaction_c
 }
 
 /**
- * Peak cost per starting phase. A measured transaction includes the overlay flush, so also the metadata
- * catalog's deltas and marker.
+ * Peak transaction cost per phase. Joined phases repeat the whole transaction's cost; do not add them.
+ * Each measurement includes the overlay flush, so also the metadata catalog's deltas and marker.
  */
 export function budget_recorder() {
 	const peaks = new Map<string, { measured: Cost; calls: number }>();
@@ -136,65 +144,100 @@ export function measure_cohort(
 	record: ReturnType<typeof budget_recorder>["record"],
 	metadata: Metadata[] = [],
 ) {
-	const rows = new Map(metadata.map((row) => [row._id, { fileNodeId: row.fileNodeId!, view: "before" as "before" | "after" }]));
 	const fileIds = new Set(metadata.map((row) => row.fileNodeId));
+	let parents = 0;
 	const pages: {
 		cohortId: Id<"files_move_cohorts">;
+		parent: number;
 		phase: string;
 		view: "before" | "after";
 		rowIds: Id<"files_metadata_docs">[];
-		fileNodeIds: Id<"files_nodes">[];
+		fileNodeIds: (Id<"files_nodes"> | null)[];
 	}[] = [];
-	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
-		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
-		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
-		const phase = cohort?.step === step ? cohort.workPhase : "stale";
-		const patch = metadata.length ? vi.spyOn(ctx.db, "patch") : null;
-		const insert = metadata.length ? vi.spyOn(ctx.db, "insert") : null;
-		const remove = metadata.length ? vi.spyOn(ctx.db, "delete") : null;
-		const before = await ctx.meta.getTransactionMetrics();
-		try {
-			const result = await handler(ctx, args);
-			// The registered handler includes the mutation wrapper and its overlay flush.
-			const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
-			if (insert) for (const [index, call] of insert.mock.calls.entries()) {
-				const fields = call[1] as Partial<Doc<"files_metadata_docs">>;
-				if (
-					phase !== "sides" || call[0] !== "files_metadata_docs" || fields.sourceKind !== "committed" ||
-					!fileIds.has(fields.fileNodeId!) || fields.moveView?.view !== "after"
-				) continue;
-				const id = await insert.mock.results[index]!.value as Id<"files_metadata_docs">;
-				rows.set(id, { fileNodeId: fields.fileNodeId!, view: "after" });
+	// Transfer and Review can start the cohort inline, without calling registered cohort.advance.
+	for (const registered of [
+		advance_cohort,
+		accept_transfer_input,
+		append_transfer_input,
+		advance_transfer,
+		advance_review,
+		advance_stage,
+	]) {
+		test_spy_handler(registered, async (handler, ctx, args) => {
+			const parent = ++parents;
+			const get = vi.spyOn(ctx.db, "get");
+			const patch = vi.spyOn(ctx.db, "patch");
+			const query = vi.spyOn(ctx, "runQuery");
+			const before = await ctx.meta.getTransactionMetrics();
+			try {
+				const result = await handler(ctx, args);
+				// The registered handler includes the mutation wrapper and its overlay flush.
+				const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
+				const phases = new Set<string>();
+				const cohorts = new Map<Id<"files_move_cohorts">, string>();
+				let current: Id<"files_move_cohorts"> | undefined;
+				const events: (
+					| { order: number; kind: "get"; cohort: Doc<"files_move_cohorts"> }
+					| { order: number; kind: "patch"; cohortId: Id<"files_move_cohorts">; fields: Partial<Doc<"files_move_cohorts">> }
+					| { order: number; kind: "query"; index: number }
+				)[] = [];
+				// Vitest infers the older id-only overload. These calls use the table-first overload.
+				const gets = get.mock.calls as unknown as [string, Id<"files_move_cohorts">][];
+				for (const [index, [table]] of gets.entries()) {
+					if (table !== "files_move_cohorts") continue;
+					const cohort = await get.mock.results[index]!.value as Doc<"files_move_cohorts"> | null;
+					if (cohort) events.push({ order: get.mock.invocationCallOrder[index]!, kind: "get", cohort });
+				}
+				const patches = patch.mock.calls as unknown as [string, Id<"files_move_cohorts">, Partial<Doc<"files_move_cohorts">>][];
+				for (const [index, [table, id, fields]] of patches.entries()) {
+					if (table === "files_move_cohorts")
+						events.push({ order: patch.mock.invocationCallOrder[index]!, kind: "patch", cohortId: id, fields });
+				}
+				for (const [index, [reference]] of query.mock.calls.entries()) {
+					if (getFunctionName(reference).startsWith("files_move_pages:"))
+						events.push({ order: query.mock.invocationCallOrder[index]!, kind: "query", index });
+				}
+				for (const event of events.sort((a, b) => a.order - b.order)) {
+					if (event.kind === "get") {
+						current = event.cohort._id;
+						cohorts.set(current, event.cohort.workPhase);
+						continue;
+					}
+					if (event.kind === "patch") {
+						const phase = cohorts.get(event.cohortId);
+						if (phase) phases.add(phase);
+						current = event.cohortId;
+						if (event.fields.workPhase) cohorts.set(current, event.fields.workPhase);
+						continue;
+					}
+					const [reference, queryArgs] = query.mock.calls[event.index]!;
+					const name = getFunctionName(reference);
+					const pageArgs = queryArgs as { cohortId?: Id<"files_move_cohorts">; family?: string; view?: "before" | "after" };
+					const cohortId = pageArgs.cohortId ?? current;
+					expect(cohortId, "A real Move page has its parent cohort").toBeDefined();
+					const phase = cohorts.get(cohortId!);
+					expect(phase, "A real Move page has its current parent phase").toBeDefined();
+					phases.add(phase!);
+					if (name !== "files_move_pages:metadata" && !(name === "files_move_pages:side_cleanup" && pageArgs.family === "files_metadata_docs")) continue;
+					const page = await query.mock.results[event.index]!.value as { page: Doc<"files_metadata_docs">[] };
+					// Fixture files select pages, never shorten a real native page.
+					if (!page.page.some((row) => row.sourceKind === "committed" && fileIds.has(row.fileNodeId))) continue;
+					pages.push({
+						cohortId: cohortId!, parent, phase: phase!, view: name === "files_move_pages:metadata" ? "before" : pageArgs.view!,
+						rowIds: page.page.map((row) => row._id),
+						fileNodeIds: page.page.map((row) => row.sourceKind === "committed" ? row.fileNodeId : null),
+					});
+				}
+				if (registered === advance_cohort && phases.size === 0) phases.add("stale");
+				for (const visited of phases) record(`cohort/${visited}`, cost);
+				return result;
+			} finally {
+				get.mockRestore();
+				patch.mockRestore();
+				query.mockRestore();
 			}
-			const written = new Map<"before" | "after", Id<"files_metadata_docs">[]>();
-			// Vitest infers the older id-only overload. These calls use the table-first overload.
-			if (patch) for (const [table, id, fields] of patch.mock.calls as unknown as [string, Id<"files_metadata_docs">, Partial<Doc<"files_metadata_docs">>][]) {
-				const row = rows.get(id);
-				if (
-					!["sides", "finish_sides", "abort_sides"].includes(phase) ||
-					table !== "files_metadata_docs" || !row || !("moveView" in fields)
-				) continue;
-				if (phase === "sides" && fields.moveView?.view !== "before") continue;
-				written.set(row.view, [...(written.get(row.view) ?? []), id]);
-			}
-			if (remove) for (const [table, id] of remove.mock.calls as unknown as [string, Id<"files_metadata_docs">][]) {
-				const row = rows.get(id);
-				if ((phase === "finish_sides" || phase === "abort_sides") && table === "files_metadata_docs" && row)
-					written.set(row.view, [...(written.get(row.view) ?? []), id]);
-			}
-			for (const [view, rowIds] of written) pages.push({ cohortId, phase, view, rowIds, fileNodeIds: rowIds.map((id) => rows.get(id)!.fileNodeId) });
-			record(`cohort/${phase}`, cost);
-			const after = await ctx.db.get("files_move_cohorts", cohortId);
-			// Joined work can publish after starting in another phase. Count the real view switch too.
-			if (phase !== "publish" && cohort?.publishedAt === null && after?.publishedAt !== null)
-				record("cohort/publish", cost);
-			return result;
-		} finally {
-			patch?.mockRestore();
-			insert?.mockRestore();
-			remove?.mockRestore();
-		}
-	});
+		});
+	}
 	return pages;
 }
 

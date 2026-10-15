@@ -705,6 +705,14 @@ Import `mutation` and `internalMutation` from `convex/functions.ts`, never from 
 - `convex/functions.ts` and the flush module `server/files-pending-overlay.ts` are leaf modules. A leaf module imports only `convex/_generated`, `shared/`, `common/`, npm packages and other leaf modules (for example `server/files-visible-resolve.ts`). It never imports another `convex/*.ts` module or `server/files.ts`: every mutation module imports the wrapper, so one app import there pulls dozens of modules into each of them. Move a helper the flush needs to `shared/` first. The same test follows the wrapper's value imports and fails when they reach a `convex/` module.
 - A loop that asks "can I do more?" calls `files_subtree_ops_db_is_near_limits`, which flushes first, so the check counts the overlay's work too.
 
+Move's ordinary page units use `files_move_pages` through sequential `ctx.runQuery` calls.
+Each child owns one native pagination journal. It shares the mutation's transaction and budgets.
+Keep writes, dirty marks, access checks and the flush in the wrapped parent. Never use
+`useStaleSnapshot`: a later drain page must see docs tagged or removed by earlier units.
+The child module imports only validators, schema and generated server registration. It must not
+import the Move writer graph. Each unit returns to the parent's flushed budget check.
+Parent-native pages, heavy content and publication still end their transaction.
+
 # Migrations
 
 Load the [Convex migrations skill](../../convex-migrations/SKILL.md) before designing or running a migration. It owns the rollout phases, commands, operator checks, and component API details.

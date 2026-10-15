@@ -12,6 +12,7 @@ import {
 	test_rename_node,
 	test_move_nodes,
 	test_create_saved_text_file,
+	test_db_get_slot_cohort,
 	test_finish_transfer_run,
 	test_mocks,
 	test_mocks_fill_db_with,
@@ -246,6 +247,18 @@ describe("Rename at a group boundary", () => {
 	test("lets queued Rename run after Stop finishes the bulk Move group", async () => {
 		const fixture = await create_folder_fixture(["/first", "/first/child", "/second", "/other"]);
 		const { t, db, asUser, folders } = fixture;
+		const overlay = await import("../server/files-pending-overlay.ts");
+		const canJoin = overlay.files_pending_overlay_db_can_join_step;
+		const join = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step");
+		let yielded = false;
+		// Yield at cohort admission so Stop can inspect a real unfinished group.
+		join.mockImplementation(async (ctx, limitFactor) => {
+			const allowed = await canJoin(ctx, limitFactor);
+			if (limitFactor !== 4) return allowed;
+			yielded = true;
+			join.mockRestore();
+			return false;
+		});
 		const moved = await start_transfer(asUser, {
 			membershipId: db.membershipId,
 			requestId: "stopped-bulk-move",
@@ -257,6 +270,15 @@ describe("Rename at a group boundary", () => {
 		await finish_discovery(fixture, moved._yay.runId);
 		await t.mutation(internal.files_transfer.advance, { runId: moved._yay.runId });
 		await t.mutation(internal.files_transfer.advance, { runId: moved._yay.runId });
+		expect(yielded, "the fixture yields before the initial Move step").toBe(true);
+		const cohort = await t.run((ctx) => test_db_get_slot_cohort(ctx, db));
+		if (!cohort) throw new Error("Expected the first Move group");
+		await t.action(internal.files_move_run.run, {
+			cohortId: cohort._id,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
 		await t.run(async (ctx) => {
 			const source = (await ctx.db.get("files_nodes", folders.get("/first")!))!;
 			expect(source.moveCohortId, "the first group stays held before Stop").toBeDefined();
@@ -2681,6 +2703,18 @@ describe("move", () => {
 				// Another member's Move holds the child, so the child is out of the normal docs until it ends.
 				const member = await add_member(fixture);
 				const keepId = folders.get("/target/source/keep")!;
+				const overlay = await import("../server/files-pending-overlay.ts");
+				const canJoin = overlay.files_pending_overlay_db_can_join_step;
+				const join = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step");
+				let yielded = false;
+				// Yield once before the other Move reserves its source.
+				join.mockImplementation(async (ctx, limitFactor) => {
+					const allowed = await canJoin(ctx, limitFactor);
+					if (limitFactor !== 4) return allowed;
+					yielded = true;
+					join.mockRestore();
+					return false;
+				});
 				const other = await start_transfer(member.asUser, {
 					membershipId: member.membershipId,
 					requestId: "move-hold-child",
@@ -2691,11 +2725,17 @@ describe("move", () => {
 				if (other._nay) throw new Error(other._nay.message);
 				for (let step = 0; !(await t.run((ctx) => ctx.db.get("files_nodes", keepId)))?.moveCohortId; step++) {
 					if (step === 20) throw new Error("The other Move did not hold the child");
-					const cohort = await t.run((ctx) => ctx.db.query("files_move_cohorts").first());
+					const cohort = await t.run((ctx) => test_db_get_slot_cohort(ctx, db));
 					if (cohort)
-						await t.mutation(internal.files_move_cohorts.advance, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, join: false });
+						await t.action(internal.files_move_run.run, {
+							cohortId: cohort._id,
+							step: cohort.step,
+							runGeneration: cohort.runJob?.generation ?? null,
+							mode: "step",
+						});
 					else await t.mutation(internal.files_transfer.advance, { runId: other._yay.runId });
 				}
+				expect(yielded, "the fixture yields before the initial Move step").toBe(true);
 				await t.run(async (ctx) => {
 					const keep = (await ctx.db.get("files_nodes", keepId))!;
 					expect(keep.moveCohortId, "the other Move holds the child").toBeDefined();

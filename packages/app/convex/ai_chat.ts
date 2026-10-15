@@ -4633,11 +4633,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"If a command touches only /tmp or stdin, use normal scratch commands; if it touches the app mount, use the app-aware command forms below.",
 			);
 			expect(agentSurface).toContain(
-				"Native-style /tmp commands use Just Bash's own argument parsing and include safe text/file utilities such as du, diff, rg, jq, base64, sha256sum, nl, rev, and tac; the Unix file command is intentionally unavailable.",
+				"Native-style /tmp commands use Just Bash's own argument parsing and include safe text/file utilities such as du, diff, rg, jq, base64, sha256sum, nl, rev, and tac.",
 			);
+			expect(agentSurface).toContain("Use file [-b|--brief] [--mime-type] [--] FILE... for exact type checks.");
 			expect(agentSurface).toContain(
-				"If file fails or the user asks for it, do not stop after reporting that it is unavailable",
+				"App files report their stored content type, including your pending changes, without reading their bodies.",
 			);
+			expect(agentSurface).toContain("Only /tmp files use native content detection. file does not read stdin.");
+			expect(agentSurface).not.toContain("the Unix file command is intentionally unavailable");
 			expect(agentSurface).toContain("/tmp native commands are Just Bash browser commands, not host GNU coreutils.");
 			expect(agentSurface).toContain(
 				"if a /tmp option fails but the command is useful, retry once with simpler native syntax.",

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { PaginationResult } from "convex/server";
 import { api, internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
-import type { MutationCtx } from "./_generated/server.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
+import * as move_pages from "./files_move_pages.ts";
 import { run_job as run_overlay_job } from "./files_pending_overlay.ts";
+import { budget_recorder, measure_cohort, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { bash_DbFilesFs } from "../server/bash-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
@@ -13,19 +15,6 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
-
-type Metrics = Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>;
-
-function transaction_cost(before: Metrics, after: Metrics) {
-	return {
-		databaseQueries: after.databaseQueries.used - before.databaseQueries.used,
-		documentsRead: after.documentsRead.used - before.documentsRead.used,
-		bytesRead: after.bytesRead.used - before.bytesRead.used,
-		documentsWritten: after.documentsWritten.used - before.documentsWritten.used,
-		bytesWritten: after.bytesWritten.used - before.bytesWritten.used,
-		functionsScheduled: after.functionsScheduled.used - before.functionsScheduled.used,
-	};
-}
 
 test("saved Moves refresh more than 32 native private name claims in pages", async () => {
 	const t = test_convex({ transactionLimits: true });
@@ -46,8 +35,7 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 	const nodeId = await folder(sourceId, "shared");
 
 	// Drain due work only. Jumping to expiry would discard the drafts under test.
-	// A one-item Move with no owner work takes about 80 steps. Stop well before a long drain: the
-	// drain never yields to the event loop, so the test timeout fires only minutes after it is due.
+	// Keep this due-work drain bounded. It does not yield to the event loop, so a timeout fires late.
 	const settle = async () => {
 		let due: string[] = [];
 		for (let step = 0; step < 250; step++) {
@@ -74,38 +62,42 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 		);
 	const costs: Array<{
 		owners: number;
-		phase: string;
-		ownersAdded: number;
 		cost: ReturnType<typeof transaction_cost>;
 	}> = [];
+	const claimPages: Array<{ kind: "hide" | "slot"; rowIds: string[] }> = [];
+	const expectedClaimIds: { hide: string[]; slot: string[] } = { hide: [], slot: [] };
+	const expectedOwnerTargets: string[] = [];
 	const publications: number[] = [];
 	const overlayCosts: Array<ReturnType<typeof transaction_cost>> = [];
 	let ownerCount = 0;
 	let measuring = false;
+	const { peaks, record, check } = budget_recorder();
+	// Initial owner pages can run inside Transfer, before registered cohort.advance.
+	measure_cohort((phase, cost) => {
+		if (measuring) record(phase, cost);
+	});
+	test_spy_handler(move_pages.owner_hides, async (handler, ctx, args) => {
+		const result = await handler(ctx, args);
+		const page = result as unknown as PaginationResult<Doc<"files_pending_hides">>;
+		if (measuring) claimPages.push({ kind: "hide", rowIds: page.page.map((row) => row._id) });
+		return result;
+	});
+	test_spy_handler(move_pages.owner_slot_places, async (handler, ctx, args) => {
+		const result = await handler(ctx, args);
+		const page = result as unknown as PaginationResult<Doc<"files_pending_places">>;
+		if (measuring) claimPages.push({ kind: "slot", rowIds: page.page.map((row) => row._id) });
+		return result;
+	});
 	test_spy_handler(advance_cohort, async (handler, ctx, args) => {
 		const { cohortId, step } = args as { cohortId: Id<"files_move_cohorts">; step: number };
 		const cohort = await ctx.db.get("files_move_cohorts", cohortId);
-		const collecting = measuring && cohort?.step === step && cohort.workPhase === "owners_collect";
-		// This fixture has at most two owner targets for each of its 33 users.
-		const ownersBefore = collecting
-			? (await ctx.db
-				.query("files_move_owner_work")
-				.withIndex("by_cohort_owner_target", (q) => q.eq("cohortId", cohortId))
-				.collect()).length
-			: 0;
 		const before = await ctx.meta.getTransactionMetrics();
 		// The registered handler includes the mutation wrapper's full overlay flush.
 		const result = await handler(ctx, args);
 		const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
 		const afterCohort = await ctx.db.get("files_move_cohorts", cohortId);
 		if (measuring && cohort?.step === step) {
-			const ownersAdded = collecting
-				? (await ctx.db
-					.query("files_move_owner_work")
-					.withIndex("by_cohort_owner_target", (q) => q.eq("cohortId", cohortId))
-					.collect()).length - ownersBefore
-				: 0;
-			costs.push({ owners: ownerCount, phase: cohort.workPhase, ownersAdded, cost });
+			costs.push({ owners: ownerCount, cost });
 		}
 		if (
 			measuring &&
@@ -130,6 +122,14 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 				),
 				"the after view removes every claim on the name the saved item left",
 			).toBe(true);
+			const owners = await ctx.db
+				.query("files_move_owner_work")
+				.withIndex("by_cohort_owner_target", (q) => q.eq("cohortId", cohortId))
+				.collect();
+			expect(
+				owners.map((owner) => `${owner.userId}:${owner.target.kind}:${owner.target.id}`).sort(),
+				"Every claim owner is collected",
+			).toEqual([...expectedOwnerTargets].sort());
 			publications.push(ownerCount);
 		}
 		return result;
@@ -137,7 +137,9 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 	test_spy_handler(run_overlay_job, async (handler, ctx, args) => {
 		const before = await ctx.meta.getTransactionMetrics();
 		const result = await handler(ctx, args);
-		overlayCosts.push(transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+		const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
+		overlayCosts.push(cost);
+		if (measuring) record("overlay", cost);
 		return result;
 	});
 
@@ -228,6 +230,24 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 		expect(claimed, "real overlay jobs create a hide for every private name owner").toHaveLength(total);
 		expect(new Set(claimed.map((hide) => hide.userId)).size).toBe(total);
 		expect(claimed.every((hide) => hide.parentId === destinationId)).toBe(true);
+		const slots = await t.run((ctx) =>
+			ctx.db
+				.query("files_pending_places")
+				.withIndex("by_org_ws_parent_name", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)
+						.eq("moveView.cohortId", undefined).eq("moveView.view", undefined)
+						.eq("parent.kind", "saved").eq("parent.id", destinationId).eq("name", "shared"),
+				)
+				.collect(),
+		);
+		expect(slots, "Every private name claim has its real slot").toHaveLength(total);
+		expect(slots.every((slot) => slot.target.kind === "private")).toBe(true);
+		expectedClaimIds.hide.push(...claimed.map((hide) => hide._id));
+		expectedClaimIds.slot.push(...slots.map((slot) => slot._id));
+		expectedOwnerTargets.push(
+			...claimed.map((hide) => `${hide.userId}:saved:${hide.savedNodeId}`),
+			...slots.map((slot) => `${slot.userId}:${slot.target.kind}:${slot.target.id}`),
+		);
 		measuring = true;
 		await move(otherId);
 		measuring = false;
@@ -240,19 +260,18 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 	const movePeaks = [];
 	for (const owners of [33]) {
 		const steps = costs.filter((entry) => entry.owners === owners);
-		const collectionSteps = steps.filter((entry) => entry.phase === "owners_collect");
-		// Hide owners are known before each slot doc adds its one new private target.
-		for (const entry of collectionSteps)
-			expect(entry.ownersAdded, "A claim collection step adds at most eight owners").toBeLessThanOrEqual(8);
-		expect(
-			collectionSteps.filter((entry) => entry.ownersAdded > 0).length,
-			`${owners} claim owners need several hide pages`,
-		).toBeGreaterThanOrEqual(Math.ceil(owners / 8));
-		expect(collectionSteps.reduce((total, entry) => total + entry.ownersAdded, 0), "Every claim owner is collected")
-			.toBeGreaterThanOrEqual(owners);
+		for (const kind of ["hide", "slot"] as const) {
+			const pages = claimPages.filter((page) => page.kind === kind);
+			for (const page of pages)
+				expect(page.rowIds.length, "A claim collection page has at most eight docs").toBeLessThanOrEqual(8);
+			expect(pages.length, `${owners} claim owners need several ${kind} pages`).toBeGreaterThanOrEqual(Math.ceil(owners / 8));
+			expect(pages.map((page) => page.rowIds.length), `${kind} pages keep their real native size`).toEqual([8, 8, 8, 8, 1]);
+			expect(pages.flatMap((page) => page.rowIds).sort(), `Every ${kind} claim is read exactly once`)
+				.toEqual([...expectedClaimIds[kind]].sort());
+		}
 		for (const phase of ["owners_stage", "finish_owners"])
 			expect(
-				steps.filter((entry) => entry.phase === phase).length,
+				peaks.get(`cohort/${phase}`)?.calls,
 				`${owners} owners use several ${phase} steps`,
 			).toBeGreaterThan(1);
 		const peak = { ...steps[0]!.cost };
@@ -264,13 +283,18 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 		expect(peak.bytesRead, "Move byte read budget").toBeLessThan(16 * 1024 * 1024 * 0.75);
 		expect(peak.bytesWritten, "Move byte write budget").toBeLessThan(16 * 1024 * 1024 * 0.75);
 		expect(peak.functionsScheduled, "Move schedule budget").toBeLessThan(1000 * 0.75);
+		expect(peak.scheduledFunctionArgsBytes, "Move schedule argument budget").toBeLessThan(16 * 1024 * 1024 * 0.75);
 		movePeaks.push({ owners, steps: steps.length, peak });
 	}
+	check("Crowded Move parent budgets include every final overlay flush");
 	expect(overlayCosts.length, "the real pending overlay jobs ran").toBeGreaterThan(0);
 	const overlayPeak = { ...overlayCosts[0]! };
 	for (const cost of overlayCosts)
 		for (const key of Object.keys(cost) as Array<keyof typeof cost>) overlayPeak[key] = Math.max(overlayPeak[key], cost[key]);
-	console.info("crowded saved Move costs", JSON.stringify({ moves: movePeaks, overlayCalls: overlayCosts.length, overlayPeak }));
+	console.info("crowded saved Move costs", JSON.stringify({
+		moves: movePeaks, parentPhases: Object.fromEntries(peaks), claimPages,
+		overlayCalls: overlayCosts.length, overlayPeak,
+	}));
 	// This native 33-owner Move took 296 calls before small owner work could join.
 	expect(costs.length, "Small owner work stays within 120 Move advance calls").toBeLessThanOrEqual(120);
 }, 120_000);

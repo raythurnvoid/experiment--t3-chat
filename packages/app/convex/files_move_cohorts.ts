@@ -1,5 +1,5 @@
 import { Result } from "common/errors-as-values-utils.ts";
-import type { WithoutSystemFields } from "convex/server";
+import type { PaginationResult, WithoutSystemFields } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
@@ -98,10 +98,6 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 export const experimental_reuseContext = true;
 
 const WAKE_PAGE_SIZE = 8;
-// Bound one native page. Long headers reach the byte bound first.
-const DESCENDANT_PAGE_SIZE = 32;
-const DESCENDANT_PAGE_BYTES = 128 * 1024;
-const METADATA_PAGE_SIZE = 64;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const RECOVER_IDLE_MS = 2 * 60 * 1000;
 const CLEANUP_DEADLINE_MS = 5 * 60 * 1000;
@@ -519,7 +515,7 @@ export async function files_move_cohorts_db_schedule(
 ) {
 	let cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (!cohort || cohort.phase === "complete") return;
-	// Start ready steps before scheduling the first job. Stop at a page or publication.
+	// Start ready steps before scheduling the first job. Stop at a parent page or publication.
 	if (!args.handoff && !cohort.runJob && cohort.step === 0 && (await files_pending_overlay_db_can_join_step(ctx, 4))) {
 		await files_move_cohorts_db_advance(ctx, { cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true }, 4);
 		cohort = (await ctx.db.get("files_move_cohorts", args.cohortId))!;
@@ -778,6 +774,7 @@ async function db_items(
 	let proposal: Doc<"files_pending_updates"> | null = null;
 	let input: Doc<"files_pending_update_run_items"> | null = null;
 	let settlementOnly = false;
+	let parentPage = false;
 	if (cohort.origin.kind === "review") {
 		input = await ctx.db
 			.query("files_pending_update_run_items")
@@ -791,7 +788,8 @@ async function db_items(
 				await ctx.db.patch("files_move_cohorts", cohort._id, { planningCursor: page.cursor });
 				return page.item;
 			});
-		if (!input) return Result({ _yay: { done: true } });
+		parentPage = true;
+		if (!input) return Result({ _yay: { done: true, paged: true, parentPage } });
 		const { runId, planEpoch, unitId } = cohort.origin;
 		const runItemId = input._id;
 		const plan = await ctx.db
@@ -817,7 +815,7 @@ async function db_items(
 		// The graph marks a selected occupant that this group replaces. Only a saved node can be one.
 		settlementOnly = target.kind === "saved" && planned.settlementOnly;
 	} else {
-		if (order !== 0) return Result({ _yay: { done: true } });
+		if (order !== 0) return Result({ _yay: { done: true, paged: false, parentPage } });
 		const transfer = await ctx.db.get("files_transfer_items", cohort.origin.itemId);
 		if (!transfer) throw should_never_happen("Move origin item is missing", { cohortId: cohort._id });
 		target = transfer.source;
@@ -897,7 +895,7 @@ async function db_items(
 	if (proposal) await ctx.db.patch("files_pending_updates", proposal._id, { moveCohortId: cohort._id });
 	await ctx.db.patch("files_move_cohorts", cohort._id, { stagedItemCount: order + 1 });
 	// The unit's exact item count ends the phase, so no extra step reads an empty page.
-	return Result({ _yay: { done: order + 1 === cohort.itemCount } });
+	return Result({ _yay: { done: order + 1 === cohort.itemCount, paged: parentPage, parentPage } });
 }
 
 async function db_rename_parents(
@@ -1142,7 +1140,7 @@ async function db_descendants(
 	const parentId = range.range.nodeId;
 	let done = false;
 	let paged = false;
-	// Skip empty phases. A mutation may paginate only one range.
+	// Skip empty phases, then return to the shared budget check after one page.
 	while (!done) {
 		if (cursor.cursor === null) {
 			const first =
@@ -1172,32 +1170,14 @@ async function db_descendants(
 				break;
 			}
 		}
-		const page =
-			cursor.source === "before"
-				? await ctx.db
-						.query("files_saved_places")
-						.withIndex("by_view_parent_name", (q) =>
-							q.eq("cohortId", cohort._id).eq("view", "before").eq("parentId", parentId),
-						)
-						.paginate({
-							cursor: cursor.cursor,
-							numItems: DESCENDANT_PAGE_SIZE,
-							maximumBytesRead: DESCENDANT_PAGE_BYTES,
-						})
-				: await ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-							q
-								.eq("organizationId", cohort.organizationId)
-								.eq("workspaceId", cohort.workspaceId)
-								.eq("moveCohortId", undefined)
-								.eq("parentId", parentId),
-						)
-						.paginate({
-							cursor: cursor.cursor,
-							numItems: DESCENDANT_PAGE_SIZE,
-							maximumBytesRead: DESCENDANT_PAGE_BYTES,
-						});
+		const page = await ctx.runQuery(internal.files_move_pages.descendants, {
+			organizationId: cohort.organizationId,
+			workspaceId: cohort.workspaceId,
+			cohortId: cohort._id,
+			source: cursor.source,
+			parentId,
+			cursor: cursor.cursor,
+		});
 		paged = true;
 		for (const entry of page.page) {
 			const nodeId = "nodeId" in entry ? entry.nodeId : entry._id;
@@ -1228,7 +1208,7 @@ async function db_descendants(
 		const latest = (await ctx.db.get("files_move_cohorts", cohort._id))!;
 		await ctx.db.patch("files_move_cohorts", cohort._id, { pendingWorkCount: latest.pendingWorkCount - 1 });
 	}
-	return Result({ _yay: { done: false, paged } });
+	return Result({ _yay: { done: false, paged, parentPage: false } });
 }
 
 async function db_headers(
@@ -1638,18 +1618,12 @@ async function db_sides(
 					cursor.part++;
 					continue;
 				}
-				const page = await ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-						q
-							.eq("organizationId", cohort.organizationId)
-							.eq("workspaceId", cohort.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("fileNodeId", record.nodeId)
-							.eq("moveView.cohortId", undefined)
-							.eq("moveView.view", undefined),
-					)
-					.paginate({ cursor: null, numItems: METADATA_PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
+				const page = await ctx.runQuery(internal.files_move_pages.metadata, {
+					organizationId: cohort.organizationId,
+					workspaceId: cohort.workspaceId,
+					nodeId: record.nodeId,
+					cursor: null,
+				});
 				for (const row of page.page) {
 					const { _id, _creationTime: _time, ...fields } = row;
 					await ctx.db.patch("files_metadata_docs", _id, { moveView: beforeTag });
@@ -1693,18 +1667,12 @@ async function db_sides(
 						continue;
 					}
 				}
-				const page = await ctx.db
-					.query("files_plain_text_chunks")
-					.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
-						q
-							.eq("organizationId", cohort.organizationId)
-							.eq("workspaceId", cohort.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("fileNodeId", record.nodeId)
-							.eq("moveView.cohortId", undefined)
-							.eq("moveView.view", undefined),
-					)
-					.paginate({ cursor: cursor.page, numItems: 8 });
+				const page = await ctx.runQuery(internal.files_move_pages.plain_chunks, {
+					organizationId: cohort.organizationId,
+					workspaceId: cohort.workspaceId,
+					nodeId: record.nodeId,
+					cursor: cursor.page,
+				});
 				for (const row of page.page) {
 					const { _id, _creationTime: _time, ...fields } = row;
 					await ctx.db.patch("files_plain_text_chunks", _id, { moveView: beforeTag });
@@ -1767,7 +1735,7 @@ async function db_sides(
 		done = !next;
 	}
 	await ctx.db.patch("files_move_cohorts", cohort._id, { stagingCursor: JSON.stringify(cursor) });
-	return Result({ _yay: { done, paged: paginated } });
+	return Result({ _yay: { done, paged: paginated, parentPage: false } });
 }
 
 async function db_cleanup_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
@@ -1797,23 +1765,20 @@ async function db_cleanup_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 		let later = false;
 		for (let next = index + 1; next < families.length && !later; next++) later = (await probe(next)) !== null;
 		const { table, view } = families[index]!;
-		// Select the family first. A mutation may paginate only one range.
-		const page = await ctx.db
-			.query(table)
-			.withIndex("by_move_view", (q) => q.eq("moveView.cohortId", cohort._id).eq("moveView.view", view))
-			.paginate({
-				cursor: null,
-				numItems: table === "files_metadata_docs" ? METADATA_PAGE_SIZE : table === "files_yjs_updates" ? 1 : 8,
-				maximumBytesRead: 1024 * 1024,
-			});
+		const page: PaginationResult<Doc<typeof table>> = await ctx.runQuery(internal.files_move_pages.side_cleanup, {
+			cohortId: cohort._id,
+			family: table,
+			view,
+			cursor: null,
+		});
 		for (const row of page.page) {
 			if (view === chosen) await ctx.db.patch(table, row._id, { moveView: undefined });
 			else await ctx.db.delete(table, row._id);
 		}
 		// A done page tagged or deleted its whole range, so the cleanup ends when no later family has rows.
-		return { done: page.isDone && !later, paged: true };
+		return { done: page.isDone && !later, paged: true, parentPage: false };
 	}
-	return { done: true, paged: false };
+	return { done: true, paged: false, parentPage: false };
 }
 
 async function db_record_unselected_proposal(
@@ -1873,7 +1838,7 @@ async function db_validate(
 			paged = media._yay.paged;
 			if (!media._yay.done) {
 				await ctx.db.patch("files_move_cohorts", cohort._id, { validationCursor: media._yay.cursor });
-				return Result({ _yay: { done: false, paged } });
+				return Result({ _yay: { done: false, paged, parentPage: paged } });
 			}
 		}
 		await ctx.db.patch("files_move_cohort_items", item._id, { status: "validated", validatedEpoch: cohort.proofEpoch });
@@ -1882,7 +1847,7 @@ async function db_validate(
 			validationCursor: null,
 		});
 		// After a media page this step may not read more.
-		return Result({ _yay: { done: !paged && (await db_validate_done(ctx, cohort)), paged } });
+		return Result({ _yay: { done: !paged && (await db_validate_done(ctx, cohort)), paged, parentPage: paged } });
 	}
 	const record = await ctx.db
 		.query("files_move_cohort_nodes")
@@ -2431,12 +2396,11 @@ async function db_advance_step(
 	const trace = { runId: cohort.origin.runId, cohortId: cohort._id, phase: cohort.workPhase, step: cohort.step };
 	await files_pending_overlay_db_trace_move(ctx, "cohort_guard_end", trace);
 	let result:
-		| { _yay: { done: boolean; paged?: boolean }; _nay?: undefined }
+		| { _yay: { done: boolean; paged?: boolean; parentPage?: boolean }; _nay?: undefined }
 		| { _nay: { name?: string; message: string }; _yay?: undefined } = Result({ _yay: { done: false } });
 	let next: Doc<"files_move_cohorts">["workPhase"] | null = null;
 	if (cohort.workPhase === "items") {
 		result = await db_items(ctx, cohort, membership!);
-		if (result._yay) result._yay.paged = cohort.origin.kind === "review";
 		// Only a Transfer Rename has parent folders to create.
 		next =
 			cohort.origin.kind === "transfer" && (await ctx.db.get("files_transfer_runs", cohort.origin.runId))?.rename
@@ -2495,6 +2459,7 @@ async function db_advance_step(
 				_yay: {
 					done: collected._yay.done && record.order + 1 === cohort.affectedNodeCount,
 					paged: collected._yay.paged,
+					parentPage: collected._yay.parentPage,
 				},
 			});
 		}
@@ -2651,7 +2616,7 @@ async function db_advance_step(
 				{ ...call, contentId: content._id },
 			);
 			if (cleaned._nay) throw should_never_happen("Move content cleanup failed", cleaned._nay);
-			result = Result({ _yay: { done: false, paged: cleaned._yay.paged } });
+			result = Result({ _yay: { done: false, paged: cleaned._yay.paged, parentPage: cleaned._yay.paged } });
 			if (cleaned._yay.done) {
 				await ctx.db.patch("files_move_cohorts", cohort._id, { cleanupCursor: content.nodeId });
 				// A finished content cleanup read no page in this step, so it can check for the next content.
@@ -2659,7 +2624,7 @@ async function db_advance_step(
 					.query("files_move_cohort_content")
 					.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).gt("nodeId", content.nodeId))
 					.first();
-				result = Result({ _yay: { done: !nextContent, paged: cleaned._yay.paged } });
+				result = Result({ _yay: { done: !nextContent, paged: cleaned._yay.paged, parentPage: cleaned._yay.paged } });
 			}
 		}
 		next = cohort.publishedAt === null ? "abort_owners" : "finish_owners";
@@ -2716,12 +2681,12 @@ async function db_advance_step(
 	return {
 		kind: "next" as const,
 		step: cohort.step + 1,
-		yield: result._yay.paged === true || cohort.workPhase === "publish",
+		yield: result._yay.parentPage === true || cohort.workPhase === "publish",
 	};
 }
 
 /**
- * Join small exact work. A native page or heavy content work ends this transaction.
+ * Join small exact work and child pages. Parent pages and heavy content work end this transaction.
  */
 export async function files_move_cohorts_db_advance(
 	ctx: MutationCtx,

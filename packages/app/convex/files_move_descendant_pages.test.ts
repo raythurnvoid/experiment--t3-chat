@@ -3,6 +3,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { run_to_end as finish_archive } from "./files_archive_runs.setup.test.ts";
 import { advance } from "./files_move_cohorts.ts";
+import * as move_pages from "./files_move_pages.ts";
 import { accept_input } from "./files_transfer.ts";
 import { budget_recorder, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 import {
@@ -20,10 +21,12 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+type Pages = { count: number; children: Id<"files_nodes">[][]; bytes: number[] };
+
 function track_pages<T extends object>(
 	query: T,
 	table: string,
-	pages: { count: number; children: Id<"files_nodes">[][]; bytes: number[] },
+	pages: Pages,
 	childIds: Set<Id<"files_nodes">>,
 ): T {
 	return new Proxy(query, {
@@ -52,6 +55,19 @@ function track_pages<T extends object>(
 					? track_pages(result, table, pages, childIds)
 					: result;
 			};
+		},
+	});
+}
+
+function track_db<T extends object>(db: T, pages: Pages, childIds: Set<Id<"files_nodes">>): T {
+	return new Proxy(db, {
+		get(target, key) {
+			const member: unknown = Reflect.get(target, key);
+			if (typeof member !== "function") return member;
+			if (key === "query")
+				return (...args: unknown[]) =>
+					track_pages(Reflect.apply(member, target, args), String(args[0]), pages, childIds);
+			return member.bind(target);
 		},
 	});
 }
@@ -139,31 +155,43 @@ test.each([
 		const pages: Id<"files_nodes">[][] = [];
 		const held: Id<"files_nodes">[][] = [];
 		const sourceHeld: boolean[] = [];
-		const pageCounts: number[] = [];
+		const parentPageCounts: number[] = [];
+		const childPageCounts: number[] = [];
+		const childPagesPerParent: number[] = [];
 		const pageBytes: number[] = [];
 		const costs: { phase: string; cost: ReturnType<typeof transaction_cost> }[] = [];
 		const { peaks, record, check } = budget_recorder();
+		let currentPages: (Pages & { childCount: number }) | null = null;
+		// Keep the real registered queries and their native page results.
+		for (const registered of Object.values(move_pages)) {
+			if (typeof registered !== "function") continue;
+			test_spy_handler(registered, async (handler, ctx, args) => {
+				const queryPages: Pages = { count: 0, children: [], bytes: [] };
+				const result = await handler({ ...ctx, db: track_db(ctx.db, queryPages, childIds) }, args);
+				childPageCounts.push(queryPages.count);
+				if (currentPages) {
+					currentPages.childCount += queryPages.count;
+					currentPages.children.push(...queryPages.children);
+					currentPages.bytes.push(...queryPages.bytes);
+				}
+				return result;
+			});
+		}
 		// Admission may read the first child page before it schedules the background worker.
 		for (const registered of [accept_input, advance])
 			test_spy_handler(registered, async (handler, ctx, args) => {
 				const { cohortId } = args as { cohortId?: Id<"files_move_cohorts"> };
 				const cohort = cohortId ? await ctx.db.get("files_move_cohorts", cohortId) : null;
 				const before = await ctx.meta.getTransactionMetrics();
-				const transactionPages = { count: 0, children: [] as Id<"files_nodes">[][], bytes: [] as number[] };
-				const trackedDb = new Proxy(ctx.db, {
-					get(target, key) {
-						const member: unknown = Reflect.get(target, key);
-						if (typeof member !== "function") return member;
-						if (key === "query")
-							return (...queryArgs: unknown[]) =>
-								track_pages(Reflect.apply(member, target, queryArgs), String(queryArgs[0]), transactionPages, childIds);
-						return member.bind(target);
-					},
+				const transactionPages: Pages & { childCount: number } = { count: 0, childCount: 0, children: [], bytes: [] };
+				currentPages = transactionPages;
+				const result = await handler({ ...ctx, db: track_db(ctx.db, transactionPages, childIds) }, args).finally(() => {
+					currentPages = null;
 				});
-				const result = await handler({ ...ctx, db: trackedDb }, args);
 				const cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
 				costs.push({ phase: cohort ? `cohort/${cohort.workPhase}` : "admission", cost });
-				pageCounts.push(transactionPages.count);
+				parentPageCounts.push(transactionPages.count);
+				childPagesPerParent.push(transactionPages.childCount);
 				pageBytes.push(...transactionPages.bytes);
 				const currentCohortId = cohortId ?? (
 					await ctx.db
@@ -220,9 +248,11 @@ test.each([
 		expect(held, "each native page reserves every returned child before it yields").toEqual(pages);
 		expect(sourceHeld.every(Boolean), "the source stays held through child collection").toBe(true);
 		expect(
-			pageCounts.every((count) => count <= 1),
-			"each transaction reads at most one native page",
+			parentPageCounts.every((count) => count <= 1),
+			"each parent journal reads at most one native page",
 		).toBe(true);
+		expect(childPageCounts.length, "child queries read the real native pages").toBeGreaterThan(1);
+		expect(childPageCounts.every((count) => count === 1), "each child query reads one native page").toBe(true);
 		// Check outside the worker, so it cannot turn an assertion into a retry.
 		for (const entry of costs) record(entry.phase, entry.cost);
 		check("descendant page batches");
@@ -233,6 +263,8 @@ test.each([
 				draftOwners: drafts.length,
 				pages: pages.map((page) => page.length),
 				encodedPageBytes: pageBytes,
+				parentNativePages: parentPageCounts,
+				childNativePages: childPagesPerParent,
 				phases: Object.fromEntries(peaks),
 			}),
 		);

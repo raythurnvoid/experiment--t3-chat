@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
+import * as move_pages from "./files_move_pages.ts";
 import { accept_input, advance as advance_transfer } from "./files_transfer.ts";
 import { create_folder_fixture } from "./files_transfer.setup.test.ts";
-import { test_finish_transfer_run, test_spy_handler } from "./setup.test.ts";
+import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
+import { budget_recorder, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -44,6 +46,15 @@ describe("initial Move publication", () => {
 		const costs: Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>[] = [];
 		let cohortCalls = 0;
 		let parentCalls = 0;
+		// Count the real child page calls as well as the parent's native pages.
+		for (const registered of Object.values(move_pages)) {
+			if (typeof registered !== "function") continue;
+			test_spy_handler(registered, async (handler, ctx, args) => {
+				const result = await handler(ctx, args);
+				pages.count++;
+				return result;
+			});
+		}
 		test_spy_handler(advance_cohort, async (handler, ctx, args) => {
 			cohortCalls++;
 			return await handler(ctx, args);
@@ -172,13 +183,126 @@ describe("initial Move publication", () => {
 		});
 	});
 
-	test("hands one native child page to the current scheduled owner", async () => {
-		const paths = Array.from({ length: 33 }, (_, index) => `/source/child-${index.toString().padStart(2, "0")}`);
+	test("joins native child pages within the initial Move transaction", async () => {
+		const paths = ["/source", "/source/one", "/source/one/leaf"];
+		const { t, db, asUser, folders } = await create_folder_fixture(paths);
+		let accepting = false;
+		let pages = 0;
+		test_spy_handler(move_pages.descendants, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			if (accepting) pages++;
+			return result;
+		});
+		test_spy_handler(accept_input, async (handler, ctx, args) => {
+			accepting = true;
+			try {
+				return await handler(ctx, args);
+			} finally {
+				accepting = false;
+			}
+		});
+		const accepted = await asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: db.membershipId,
+			requestId: "joined-native-pages",
+			kind: "move",
+			expectedSourceCount: 1,
+			sourceIds: [folders.get("/source")!],
+			targetParentId: folders.get("/target")!,
+		});
+		if (accepted._nay) throw new Error(accepted._nay.message);
+		expect(pages, "Two native page units share one Move transaction").toBeGreaterThanOrEqual(2);
+		await test_finish_transfer_run(asUser, accepted._yay.runId);
+		for (const path of paths) {
+			const node = await t.run((ctx) => ctx.db.get("files_nodes", folders.get(path)!));
+			expect(node).toMatchObject({ _id: folders.get(path), path: `/target${path}` });
+			expect(node?.moveCohortId).toBeUndefined();
+		}
+	});
+
+	test("keeps joined public folder work below every reserved transaction limit", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const source = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: "root",
+			path: "/source",
+		});
+		if (source._nay) throw new Error(source._nay.message);
+		const sourceId = source._yay.nodeId;
+		const target = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: "root",
+			path: "/target",
+		});
+		if (target._nay) throw new Error(target._nay.message);
+		const targetId = target._yay.nodeId;
+		const childCount = 16;
+		const children: { id: typeof sourceId; name: string }[] = [];
+		for (let index = 0; index < childCount; index++) {
+			if (index % 10 === 0) vi.setSystemTime(Date.now() + 60_000);
+			const name = `child-${index.toString().padStart(2, "0")}`;
+			const child = await asUser.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: sourceId,
+				path: name,
+			});
+			if (child._nay) throw new Error(child._nay.message);
+			children.push({ id: child._yay.nodeId, name });
+		}
+		const costs: ReturnType<typeof transaction_cost>[] = [];
+		test_spy_handler(accept_input, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			// The registered handler has finished its final overlay flush.
+			costs.push(transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
+		const accepted = await asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: db.membershipId,
+			requestId: "public-folder-reserve",
+			kind: "move",
+			expectedSourceCount: 1,
+			sourceIds: [sourceId],
+			targetParentId: targetId,
+		});
+		if (accepted._nay) throw new Error(accepted._nay.message);
+		expect(costs).toHaveLength(1);
+		console.info("public folder Move reserve", JSON.stringify({ childCount, cost: costs[0] }));
+		// The reserve-off proof must fail "public folder Move reserve: databaseQueries".
+		const { record } = budget_recorder();
+		record("public folder Move reserve", costs[0]!);
+		await test_finish_transfer_run(asUser, accepted._yay.runId);
+		expect(await t.run((ctx) => ctx.db.get("activities", accepted._yay.activityId))).toMatchObject({
+			status: "succeeded",
+			progress: { completed: 1, failed: 0, canceled: 0 },
+		});
+		const moved = await t.run((ctx) => ctx.db.get("files_nodes", sourceId));
+		expect(moved).toMatchObject({ _id: sourceId, parentId: targetId, path: "/target/source" });
+		expect(moved?.moveCohortId).toBeUndefined();
+		for (const child of children) {
+			const movedChild = await t.run((ctx) => ctx.db.get("files_nodes", child.id));
+			expect(movedChild).toMatchObject({
+				_id: child.id,
+				parentId: sourceId,
+				path: `/target/source/${child.name}`,
+			});
+			expect(movedChild?.moveCohortId).toBeUndefined();
+		}
+	});
+
+	test("hands unfinished child pages to the current scheduled owner at its budget", async () => {
+		const paths = Array.from({ length: 65 }, (_, index) => `/source/child-${index.toString().padStart(2, "0")}`);
 		const { t, db, asUser, folders } = await create_folder_fixture(["/source", ...paths]);
 		const sourceId = folders.get("/source")!;
 		const targetId = folders.get("/target")!;
 		const pages = { count: 0 };
 		let cohortCalls = 0;
+		test_spy_handler(move_pages.descendants, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			pages.count++;
+			return result;
+		});
 		test_spy_handler(advance_cohort, async (handler, ctx, args) => {
 			cohortCalls++;
 			return await handler(ctx, args);
@@ -213,9 +337,9 @@ describe("initial Move publication", () => {
 		);
 		expect(
 			{ nativePages: pages.count, cohortCalls },
-			"the initial transaction consumes one native page then hands off",
+			"the initial budget leaves the next native page to its scheduled owner",
 		).toEqual({
-			nativePages: 1,
+			nativePages: 2,
 			cohortCalls: 0,
 		});
 		expect(cohort).toMatchObject({ publishedAt: null, visibleView: "before", workPhase: "descendants" });
@@ -230,10 +354,10 @@ describe("initial Move publication", () => {
 			Promise.all(paths.map((path) => ctx.db.get("files_nodes", folders.get(path)!))),
 		);
 		expect(
-			children.slice(0, 32).map((child) => child?.moveCohortId),
-			"every child returned by the native page is held",
-		).toEqual(Array.from({ length: 32 }, () => cohort._id));
-		expect(children[32]?.moveCohortId, "the cursor leaves the exact tail for its owner").toBeUndefined();
+			children.slice(0, 64).map((child) => child?.moveCohortId),
+			"every child returned by both native pages is held",
+		).toEqual(Array.from({ length: 64 }, () => cohort._id));
+		expect(children[64]?.moveCohortId, "the cursor leaves the exact tail for its owner").toBeUndefined();
 		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({ progress: { completed: 0 } });
 		await test_finish_transfer_run(asUser, runId);
 		for (const path of ["/source", ...paths]) {
@@ -247,8 +371,9 @@ describe("initial Move publication", () => {
 		});
 	});
 
-	test("a public role change after the initial page prevents publication", async () => {
-		const { t, db, asUser, folders } = await create_folder_fixture(["/source", "/source/child"]);
+	test("a public role change after the initial budget handoff prevents publication", async () => {
+		const paths = Array.from({ length: 33 }, (_, index) => `/source/child-${index.toString().padStart(2, "0")}`);
+		const { t, db, asUser, folders } = await create_folder_fixture(["/source", ...paths]);
 		const userId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "initial-move-member" }));
 		expect(
 			await asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
@@ -276,7 +401,7 @@ describe("initial Move publication", () => {
 			}),
 		).toBe(true);
 		const sourceId = folders.get("/source")!;
-		const childId = folders.get("/source/child")!;
+		const childId = folders.get(paths[0]!)!;
 		const accepted = await asMember.mutation(api.files_transfer.accept_input, {
 			membershipId: membership._id,
 			requestId: "initial-page-role-change",
@@ -293,7 +418,7 @@ describe("initial Move publication", () => {
 				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
 				.unique(),
 		);
-		expect(cohort, "the real child page yields before the next permission check").toMatchObject({
+		expect(cohort, "the initial budget yields before publication").toMatchObject({
 			publishedAt: null,
 			workPhase: "descendants",
 			visibleView: "before",
@@ -325,7 +450,7 @@ describe("initial Move publication", () => {
 			publishedAt: null,
 			visibleView: "before",
 		});
-		for (const path of ["/source", "/source/child"]) {
+		for (const path of ["/source", ...paths]) {
 			const node = await t.run((ctx) => ctx.db.get("files_nodes", folders.get(path)!));
 			expect(node).toMatchObject({ _id: folders.get(path), path });
 			expect(node?.moveCohortId).toBeUndefined();

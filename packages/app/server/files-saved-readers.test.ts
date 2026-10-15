@@ -231,7 +231,7 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 	const sourceId = await folder("/source");
 	const targetId = await folder("/target");
 	const movingId = await folder("/moving");
-	// A real child keeps this group unpublished until a later step.
+	// Walk a real child before checking the unpublished group.
 	await folder("/moving/child");
 	const destinationId = await folder("/destination");
 	const expected: string[] = [];
@@ -286,6 +286,17 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 	for (const op of ["exists", "eq"] as const)
 		for (const path of ["/target", "/target/source"])
 			expect(await matches(path, op), "normal metadata pages include all draft paths").toEqual(expected);
+	const overlay = await import("./files-pending-overlay.ts");
+	const canJoin = overlay.files_pending_overlay_db_can_join_step;
+	let admissionYielded = false;
+	// Yield once during setup. Later steps use the real guard and worker.
+	const pause = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, limitFactor) => {
+		const allowed = await canJoin(ctx, limitFactor);
+		if (limitFactor !== 4) return allowed;
+		admissionYielded = true;
+		pause.mockRestore();
+		return false;
+	});
 	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
@@ -309,9 +320,11 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 		if (slot?.cohortId) {
 			const cohort = await t.run((ctx) => ctx.db.get("files_move_cohorts", slot.cohortId!));
 			if (!cohort) throw new Error("Expected the public Move group");
+			expect(admissionYielded, "setup yields the initial Move join").toBe(true);
 			expect(cohort.errorCode).toBeNull();
 			if (cohort.workPhase === "publish") {
 				expect(cohort.publishedAt, "metadata pages use a real unpublished Move group").toBeNull();
+				expect(cohort.visibleView).toBe("before");
 				break;
 			}
 			await t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });

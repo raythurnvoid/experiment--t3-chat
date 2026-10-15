@@ -364,7 +364,12 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 	expect(await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
 		activity: { status: "succeeded", progress: { completed: 3, failed: 0, canceled: 0 } },
 	});
-	expect(peaks.get("cohort/publish")?.calls, "every saved Move root reaches cohort publication").toBe(sources.length);
+	// A small root can publish inside the Transfer call, whose whole cost is measured above.
+	const cohorts = await t.run((ctx) => ctx.db.query("files_move_cohorts")
+		.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).collect());
+	expect(cohorts, "every saved Move root reaches cohort publication").toHaveLength(sources.length);
+	for (const cohort of cohorts)
+		expect(cohort).toMatchObject({ phase: "complete", visibleView: "after", publishedAt: expect.any(Number), errorCode: null });
 	expect(peaks.get("catalog/compactor")?.calls, "the Move's catalog deltas reach the compactor").toBeGreaterThan(0);
 	expect(
 		peaks.get("catalog/compactor")?.measured.documentsWritten,
