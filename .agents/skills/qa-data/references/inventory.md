@@ -55,6 +55,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Need | Use |
 | --- | --- |
 | Markdown, collaboration on | `chitchat-qa/xfer-qa-0914:/u18/dest.md`, `chitchat-qa/copy-qa-0922:/README.md`, `personal/home:/documents/notes.md` |
+| Saved Bash text output | `chitchat-qa/xfer-qa-0914:/u18/file-type-private.md` (21 bytes, `File type private QA` plus a final newline). Despite its name, this file is saved and has no pending changes. Use it for stored-type and public read checks. |
 | Small Markdown from root-create checks | `chitchat-qa/home:/new-file.md`, `/new-file-1.md` through `/new-file-15.md`. Each has the initial Welcome text and collaboration on. Reuse them for editor and rename checks. |
 | File/folder module timing | In `chitchat-qa/home`, root paths `creation-perf-file_only-{folder_current,file_only}-01` through `-05`, and `creation-perf-{combined,combined_repeat}-{folder_current,folder_combined,file_combined}-01` through `-05`. The three file variants end in `.md`; all 15 have collaboration on. The 25 folders are empty. `/new-folder` is the real sidebar check. All 41 nodes passed exact id, path, parent, kind, and stored-type readback. Reuse these for read and editor checks. |
 | Final creation transaction timing | In `chitchat-qa/home`, root paths `final-create-perf-20261004-{file_current,file_split,folder_current,folder_split}-1` through `-7`. The file paths end in `.md` and have the initial Welcome text with collaboration on. The 14 folders are empty. All 28 passed exact id, path, parent, kind, and stored-type readback. `/new-file-15.md` is the sidebar check of the temporary action and its lean final transaction (both removed since). |
@@ -221,6 +222,7 @@ Only the original Chitchat installation was present.
 
 ## Change Log
 
+- 2026-10-15: added one 21-byte Markdown file through Bash and Files Save. It was hidden from public reads while private, then readable after Save. Existing `/u18/dest.md` passed pending replacement, rename and delete checks; all three proposals were discarded and its saved content stayed unchanged. No new tenant or user.
 - 2026-10-05: added reusable small Files action fixtures and 34 root creation fixtures. Native drag, Cut/Paste, rename, archive and text checks restored the baseline paths and content. All 92 recorded temporary copy/upload output nodes are archived, including three evening retry outputs. Bulk Copy had six partial failures in seven initial runs and failed in all three fresh retries. Sources are unchanged. No new tenant or user.
 - 2026-10-04: checked the real agent search in its existing chat. Added two first comments on the existing binary file and one exact 50 MiB upload-price fixture. The upload charged three cents once; settlement replay changed nothing. No new tenant or user.
 - 2026-10-04: added native private search, broadcast and inline-reply fixtures, and an existing-file attachment search root. Restored private membership and notification settings. No new tenant, user or upload.
