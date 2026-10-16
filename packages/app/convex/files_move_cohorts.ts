@@ -864,7 +864,13 @@ async function db_items(
 	const afterProposal =
 		!settlementOnly && !proposal?.pendingArchive && (proposal?.content || proposal?.pendingReplacement)
 			? (() => {
-					const { _id: _id, _creationTime: _time, moveCohortId: _marker, ...header } = proposal;
+					const {
+						_id: _id,
+						_creationTime: _time,
+						moveCohortId: _marker,
+						mediaDependencySetId: _mediaSetId,
+						...header
+					} = proposal;
 					return { ...header, pendingMove: undefined, pendingArchive: undefined, revision: proposal.revision + 1 };
 				})()
 			: null;
@@ -877,7 +883,6 @@ async function db_items(
 		reviewedRevision: proposal?.revision ?? null,
 		selectedContentStateId: input?.selectedContentStateId ?? null,
 		privateVersion: input?.reviewSource?.privateVersion ?? null,
-		mediaDependencySet: null,
 		nodeRecordId: reserved._yay,
 		afterProposal,
 		contentId: null,
@@ -2039,7 +2044,8 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 				if (!finish) await ctx.db.patch("files_pending_updates", proposal._id, { moveCohortId: undefined });
 				else if (item.afterProposal) {
 					await files_db_advance_pending_review_version(ctx, proposal);
-					await ctx.db.replace("files_pending_updates", proposal._id, item.afterProposal);
+					const { mediaDependencySetId: _mediaSetId, ...afterProposal } = item.afterProposal;
+					await ctx.db.replace("files_pending_updates", proposal._id, afterProposal);
 					if (item.target.kind === "private")
 						await files_metadata_maps_db_delete(ctx.db, { kind: "pending", id: proposal._id });
 					if (cohort.origin.kind === "review" && item.target.kind === "private") {

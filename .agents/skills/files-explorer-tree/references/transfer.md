@@ -188,7 +188,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
   See the pending spec.
 - Cross-workspace media mappings live in `files_media_dependency_sets` and indexed
   `files_media_dependencies` docs.
-  A sealed set belongs to a transfer capture or cleanup. Publication retires the capture set in
+  In Copy, a sealed set belongs to a transfer capture or cleanup. Publication retires the capture set in
   the same transaction; the proposal keeps no set. Cleanup deletes mapping docs in pages and never
   owns their assets. Capture proofs pin the exact text, set generation, attempt, and organization,
   workspace, and owner-proposal validation versions. A changed version invalidates the proof.

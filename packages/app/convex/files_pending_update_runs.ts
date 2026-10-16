@@ -447,6 +447,7 @@ async function db_capture_review(ctx: MutationCtx, proposal: Doc<"files_pending_
 		updatedAt: _updatedAt,
 		expiresAt: _expiresAt,
 		moveCohortId: _cohortId,
+		mediaDependencySetId: _mediaSetId,
 		// Index bookkeeping, not reviewed content.
 		indexRevision: _indexRevision,
 		...reviewHeader
@@ -795,7 +796,6 @@ export async function files_pending_update_runs_db_start(
 			...(await db_capture_review(ctx, checked._yay[order]!, args.kind)),
 			planKind: null,
 			privateVersion: null,
-			mediaDependencySet: null,
 			unitId: null,
 			prepared: null,
 			billedUserId: null,
@@ -937,7 +937,6 @@ async function db_append_items(
 			...(await db_capture_review(ctx, checked._yay[index]!, run.kind)),
 			planKind: null,
 			privateVersion: null,
-			mediaDependencySet: null,
 			unitId: null,
 			prepared: null,
 			billedUserId: null,

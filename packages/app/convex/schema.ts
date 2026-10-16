@@ -2486,7 +2486,8 @@ const app_convex_schema = defineSchema({
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
 		target: files_pending_target_validator,
 		privateVersion: files_move_private_version_validator,
-		mediaDependencySet: files_move_dependency_set_validator,
+		// Temporary: old stored proofs remain valid while new work omits them.
+		mediaDependencySet: v.optional(files_move_dependency_set_validator),
 		nodeRecordId: v.id("files_move_cohort_nodes"),
 		afterProposal: v.union(files_pending_update_header_validator, v.null()),
 		contentId: v.union(v.id("files_move_cohort_content"), v.null()),
@@ -3378,9 +3379,9 @@ const app_convex_schema = defineSchema({
 		onlyIfEmpty: v.optional(v.literal(true)),
 		planKind: v.union(v.literal("atomic"), v.null()),
 		privateVersion: v.union(v.object({ creationGeneration: v.number(), structuralRevision: v.number() }), v.null()),
-		mediaDependencySet: v.union(
-			v.object({ setId: v.id("files_media_dependency_sets"), generation: v.number() }),
-			v.null(),
+		// Temporary: old stored proofs remain valid while new work omits them.
+		mediaDependencySet: v.optional(
+			v.union(v.object({ setId: v.id("files_media_dependency_sets"), generation: v.number() }), v.null()),
 		),
 		target: files_pending_target_validator,
 		unitId: v.union(v.id("files_pending_update_run_units"), v.null()),
