@@ -605,7 +605,7 @@ export async function files_move_cohorts_db_begin_transfer_item(
 		itemId: Id<"files_transfer_items">;
 		fence: number;
 		attemptFence: number;
-		pins: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>> | undefined;
+		pins?: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>>;
 	},
 ) {
 	const run = await ctx.db.get("files_transfer_runs", args.runId);

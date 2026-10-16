@@ -179,7 +179,7 @@ describe("Transfer selection pages", () => {
 
 	test.each([
 		{ scenario: "private roots", count: 6, requiresJoin: true },
-		{ scenario: "private roots", count: 8, requiresJoin: false },
+		{ scenario: "private roots", count: 7, requiresJoin: false },
 		{ scenario: "new private parents", count: 8, requiresJoin: true },
 	] as const)(
 		"Move Apply keeps 25% free with $count $scenario",
@@ -320,7 +320,7 @@ describe("Transfer selection pages", () => {
 				}
 				if (step === 29) throw new Error("The parent did not reach its first proposal Apply");
 			}
-			// Six private roots leave room for Apply. With eight, Plan ends near the join threshold.
+			// Six private roots leave room for Apply. With seven, the first transaction ends just before Apply.
 			if (requiresJoin)
 				expect(
 					["select", "normalize", "plan"],

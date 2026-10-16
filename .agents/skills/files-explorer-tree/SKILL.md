@@ -832,7 +832,8 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   their repair still finishes. A later name conflict pauses the remaining roots.
   The dialog pages conflicts and completed receipts with `list_items`.
   The parent joins exact selection and planning work under the existing flushed transaction
-  budget. Each logical step checks access again. Selected folders queue their child ranges
+  budget. Access is checked once per transaction, and joined steps share that check. Stop and
+  the deadline are still read on every step. Selected folders queue their child ranges
   when selected. The final view switch ends its transaction, so physical repair starts after
   the new location can be read. A native page always ends its transaction.
   A new cohort starts ready exact work in the accepting transaction, using the same engine and

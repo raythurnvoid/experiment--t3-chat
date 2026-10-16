@@ -46,7 +46,8 @@ describe("saved Move input acceptance", () => {
 		const accepted = await asUser.mutation(api.files_transfer.accept_input, args);
 		if (accepted._nay) throw new Error(accepted._nay.message);
 		// Select, Normalize, Plan and Commit join this one transaction. Seal and these units share one
-		// access check and one repair wait. Start and the cohort read the other lifetimes.
+		// access check and one repair wait. The repair wait is one `files_subtree_ops_db_find_repair` call
+		// with one query per op kind, so it counts 4. Start and the cohort read the other lifetimes.
 		expect(guardReads, "Move acceptance runs each transfer guard once").toEqual({ repair: 4, lifetime: 6 });
 		const { runId, activityId } = accepted._yay;
 		const run = (await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))!;

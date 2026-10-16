@@ -3500,9 +3500,7 @@ async function db_advance(
 	sealedMemberships?: Awaited<ReturnType<typeof db_get_run_memberships>>,
 ) {
 	// Each joined unit reads the run and its Activity again and repeats the Stop and deadline checks.
-	// The access, wait and destination checks run once per transaction. The units that join below
-	// write only this run, its selection and items, and its Activity. Those writes cannot change these
-	// checks, so a second check in the same transaction would give the same answer.
+	// A set membership also means this transaction already passed the checks below.
 	let membership: Doc<"organizations_workspaces_users"> | null = null;
 	while (true) {
 		const run = await ctx.db.get("files_transfer_runs", args.runId);
@@ -3529,6 +3527,9 @@ async function db_advance(
 		if (activity.status === "awaiting_input") return null;
 		if (run.step === "uploading") return null;
 
+		// Run the access, wait and destination checks once per transaction. The joined units write only
+		// this run, its selection and items, and its Activity, so a second check gives the same answer.
+		// If a unit starts to write other docs, check again in each unit.
 		if (!membership) {
 			const memberships = sealedMemberships ?? (await db_get_run_memberships({ ctx, run, activity }));
 			if (!memberships) {

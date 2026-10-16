@@ -471,7 +471,8 @@ Rules that are easy to miss, all of which were real holes:
   may still revoke access. Stop or revoked access aborts unpublished work. A published group only
   finishes its already approved physical repair; it cannot add files or grant new access.
 - **A paged Move proves access again.** `files_transfer.advance` loads the exact active membership
-  lifetime in each step. It waits for running path/scope repairs, then checks nested restricted
+  lifetime once per transaction. Joined steps share that check. Stop and the deadline are still read
+  on every step. `advance` waits for running path/scope repairs, then checks nested restricted
   roots in pages of eight through `by_organization_workspace_isRestrictedScopeRoot_treePath`.
   The final root mutation checks the access-version pins and direct source/destination access.
   A changed clock restarts validation. A leave and re-invite cannot revive the old run.
