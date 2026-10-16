@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { start_transfer } from "./files_transfer.setup.test.ts";
 import {
 	files_media_dependencies_db_append,
 	files_media_dependencies_db_create,
@@ -15,26 +16,38 @@ afterEach(() => vi.useRealTimers());
 async function fixture(expectedCount = 201) {
 	const t = test_convex({ transactionLimits: true });
 	const scope = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-	const draft = await t.mutation(internal.files_nodes.create_private_node_by_path, {
-		organizationId: scope.organizationId,
-		workspaceId: scope.workspaceId,
-		userId: scope.userId,
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: scope.userId });
+	const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: scope.membershipId,
+		parentId: "root",
 		path: "/draft",
-		kind: "folder",
 	});
-	if (draft._nay || !draft._yay.pendingUpdateId) throw new Error("Expected a private proposal");
-	const upload = await t
-		.withIdentity({ issuer: "https://clerk.test", external_id: scope.userId })
-		.mutation(api.files_nodes.create_upload_node, {
-			membershipId: scope.membershipId,
-			parentId: "root",
-			filename: "photo.png",
-			contentType: "image/png",
-			size: 4,
-		});
+	if (folder._nay) throw new Error(folder._nay.message);
+	const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+		membershipId: scope.membershipId,
+		parentId: "root",
+		filename: "photo.png",
+		contentType: "image/png",
+		size: 4,
+	});
 	if (upload._nay) throw new Error(upload._nay.message);
 	const node = (await t.run((ctx) => ctx.db.get("files_nodes", upload._yay.nodeId)))!;
-	const owner = { kind: "proposal" as const, pendingUpdateId: draft._yay.pendingUpdateId };
+	const copy = await start_transfer(asUser, {
+		membershipId: scope.membershipId,
+		requestId: "media-owners",
+		kind: "copy",
+		sourceIds: [node._id, folder._yay.nodeId],
+		targetParentId: "root",
+	});
+	if (copy._nay) throw new Error(copy._nay.message);
+	const items = await t.run((ctx) =>
+		ctx.db
+			.query("files_transfer_items")
+			.withIndex("by_run_order", (q) => q.eq("runId", copy._yay.runId))
+			.collect(),
+	);
+	const owner = { kind: "capture" as const, itemId: items[0]!._id };
+	const otherOwner = { kind: "capture" as const, itemId: items[1]!._id };
 	const created = await t.run((ctx) => files_media_dependencies_db_create(ctx, { ...scope, owner, expectedCount }));
 	if (created._nay) throw new Error(created._nay.message);
 	const setId = created._yay;
@@ -52,7 +65,7 @@ async function fixture(expectedCount = 201) {
 	};
 	// These test opaque mapping storage. Media readiness is checked by the owning producer.
 	const mappings = Array.from({ length: expectedCount }, (_, index) => ({ sourceSrc: `source:${index}`, dependency }));
-	return { t, scope, setId, owner, mappings, node };
+	return { t, scope, setId, owner, otherOwner, mappings, node };
 }
 
 describe("media dependency sets", () => {
@@ -162,20 +175,12 @@ describe("media dependency sets", () => {
 
 	test("does not retire a newer generation or another owner's set", async () => {
 		const f = await fixture(0);
-		const other = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
-			organizationId: f.scope.organizationId,
-			workspaceId: f.scope.workspaceId,
-			userId: f.scope.userId,
-			path: "/other",
-			kind: "folder",
-		});
-		if (other._nay || !other._yay.pendingUpdateId) throw new Error("Expected another private proposal");
 		await f.t.run((ctx) => files_media_dependencies_db_retire(ctx, { setId: f.setId, generation: 1, owner: f.owner }));
 		await f.t.run((ctx) =>
 			files_media_dependencies_db_retire(ctx, {
 				setId: f.setId,
 				generation: 0,
-				owner: { kind: "proposal", pendingUpdateId: other._yay!.pendingUpdateId! },
+				owner: f.otherOwner,
 			}),
 		);
 		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", f.setId))).toMatchObject({

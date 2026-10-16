@@ -1172,7 +1172,6 @@ export const files_pending_update_header_validator = v.object({
 			sourceNewChildWritePolicy: v.optional(files_nodes_write_policy_validator),
 		}),
 	),
-	mediaDependencySetId: v.optional(v.id("files_media_dependency_sets")),
 	/**
 	 * Whole-file replacement proposal (`cp` onto an app path). Accepting replaces the whole
 	 * content state of the destination node with the staged asset: its bytes, its content
@@ -1242,7 +1241,6 @@ export const files_pending_review_header_validator = v.object({
 	pendingMove: files_pending_update_header_validator.fields.pendingMove,
 	pendingArchive: files_pending_update_header_validator.fields.pendingArchive,
 	copiedFrom: files_pending_update_header_validator.fields.copiedFrom,
-	mediaDependencySetId: files_pending_update_header_validator.fields.mediaDependencySetId,
 	pendingReplacement: files_pending_update_header_validator.fields.pendingReplacement,
 	size: files_pending_update_header_validator.fields.size,
 });
@@ -2486,8 +2484,6 @@ const app_convex_schema = defineSchema({
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
 		target: files_pending_target_validator,
 		privateVersion: files_move_private_version_validator,
-		// Temporary: old stored proofs remain valid while new work omits them.
-		mediaDependencySet: v.optional(files_move_dependency_set_validator),
 		nodeRecordId: v.id("files_move_cohort_nodes"),
 		afterProposal: v.union(files_pending_update_header_validator, v.null()),
 		contentId: v.union(v.id("files_move_cohort_content"), v.null()),
@@ -2941,7 +2937,6 @@ const app_convex_schema = defineSchema({
 		userId: v.id("users"),
 		owner: v.union(
 			v.object({ kind: v.literal("capture"), itemId: v.id("files_transfer_items") }),
-			v.object({ kind: v.literal("proposal"), pendingUpdateId: v.id("files_pending_updates") }),
 			v.object({ kind: v.literal("cohort_content"), contentId: v.id("files_move_cohort_content") }),
 			v.object({ kind: v.literal("cleanup") }),
 		),
@@ -2961,7 +2956,6 @@ const app_convex_schema = defineSchema({
 		),
 	})
 		.index("by_owner_kind", ["owner.kind"])
-		.index("by_owner_pendingUpdate", ["owner.pendingUpdateId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_user", ["userId"]),
 
@@ -3379,10 +3373,6 @@ const app_convex_schema = defineSchema({
 		onlyIfEmpty: v.optional(v.literal(true)),
 		planKind: v.union(v.literal("atomic"), v.null()),
 		privateVersion: v.union(v.object({ creationGeneration: v.number(), structuralRevision: v.number() }), v.null()),
-		// Temporary: old stored proofs remain valid while new work omits them.
-		mediaDependencySet: v.optional(
-			v.union(v.object({ setId: v.id("files_media_dependency_sets"), generation: v.number() }), v.null()),
-		),
 		target: files_pending_target_validator,
 		unitId: v.union(v.id("files_pending_update_run_units"), v.null()),
 		billedUserId: v.union(v.id("users"), v.null()),
@@ -3816,20 +3806,6 @@ const app_convex_schema = defineSchema({
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		role: v.union(v.literal("staged"), v.literal("unstaged")),
 		text: v.string(),
-		mediaValidation: v.optional(
-			v.object({
-				setId: v.id("files_media_dependency_sets"),
-				setGeneration: v.number(),
-				pendingUpdateId: v.id("files_pending_updates"),
-				reviewedRevision: v.number(),
-				textDigest: v.string(),
-				reviewSelectionDigest: v.string(),
-				reviewRunId: v.union(v.id("files_pending_update_runs"), v.null()),
-				...files_media_validation_versions_validator.fields,
-				totalCount: v.number(),
-				validatedCount: v.number(),
-			}),
-		),
 		expiresAt: v.optional(v.number()),
 	})
 		.index("by_operationBatch", ["operationBatchId"])
@@ -6256,7 +6232,6 @@ const app_convex_schema = defineSchema({
 				sourceVersion: files_transfer_source_version_validator,
 				sourceAssetId: v.union(v.id("files_r2_assets"), v.null()),
 				mediaDependencySetId: v.optional(v.id("files_media_dependency_sets")),
-				mediaSourceSet: v.optional(v.object({ setId: v.id("files_media_dependency_sets"), generation: v.number() })),
 				sourceStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
 				sourceYjsSnapshot: v.union(
 					v.null(),

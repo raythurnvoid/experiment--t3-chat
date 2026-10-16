@@ -164,7 +164,6 @@ describe("saved placement foundation", () => {
 				selectedContentStateId: null,
 				target: f.proposal.target,
 				privateVersion: null,
-				mediaDependencySet: null,
 				nodeRecordId: f.recordId,
 				afterProposal: { ...afterProposal, revision: afterProposal.revision + 1 },
 				contentId: null,
@@ -238,7 +237,7 @@ describe("saved placement foundation", () => {
 			const itemId = await ctx.db.insert("files_move_cohort_items", {
 				cohortId: f.cohortId, order: 0, origin: { kind: "transfer", itemId: f.itemId },
 				pendingUpdateId: _id, reviewedRevision: header.revision, selectedContentStateId: null,
-				target, privateVersion: null, mediaDependencySet: null, nodeRecordId: f.recordId,
+				target, privateVersion: null, nodeRecordId: f.recordId,
 				afterProposal: { ...header, target: { kind: "saved", id: f.nodeId }, revision: header.revision + 1 },
 				contentId: null, replacementItemId: null, status: "staged", validatedEpoch: null, billingState: "none",
 			});
@@ -268,7 +267,7 @@ describe("saved placement foundation", () => {
 			const itemId = await ctx.db.insert("files_move_cohort_items", {
 				cohortId: f.cohortId, order: 0, origin: { kind: "transfer", itemId: f.itemId },
 				pendingUpdateId: f.proposal._id, reviewedRevision: f.proposal.revision, selectedContentStateId: null,
-				target: f.proposal.target, privateVersion: null, mediaDependencySet: null, nodeRecordId: f.recordId,
+				target: f.proposal.target, privateVersion: null, nodeRecordId: f.recordId,
 				afterProposal: null, contentId: null, replacementItemId: null, status: "staged", validatedEpoch: null,
 				billingState: "none",
 			});

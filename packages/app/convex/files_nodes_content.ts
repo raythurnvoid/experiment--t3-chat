@@ -1848,9 +1848,8 @@ export const prepare_transfer_file_media = internalMutation({
 					...pins,
 				},
 			});
-			const { mediaSourceSet: _mediaSourceSet, ...capture } = item.capture;
 			await ctx.db.patch("files_transfer_items", item._id, {
-				capture: { ...capture, mediaDependencySetId: created._yay },
+				capture: { ...item.capture, mediaDependencySetId: created._yay },
 			});
 			set = (await ctx.db.get("files_media_dependency_sets", created._yay))!;
 		}
@@ -2260,10 +2259,9 @@ export const seal_transfer_file_capture = internalMutation({
 				updatedAt: now,
 			});
 		}
-		const { mediaSourceSet: _mediaSourceSet, ...capture } = item.capture;
 		await ctx.db.patch("files_transfer_items", item._id, {
 			capture: {
-				...capture,
+				...item.capture,
 				sourceStateId: null,
 				artifact: {
 					contentAssetId: args.contentAssetId,

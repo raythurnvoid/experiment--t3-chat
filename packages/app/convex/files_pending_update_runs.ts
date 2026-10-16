@@ -447,7 +447,6 @@ async function db_capture_review(ctx: MutationCtx, proposal: Doc<"files_pending_
 		updatedAt: _updatedAt,
 		expiresAt: _expiresAt,
 		moveCohortId: _cohortId,
-		mediaDependencySetId: _mediaSetId,
 		// Index bookkeeping, not reviewed content.
 		indexRevision: _indexRevision,
 		...reviewHeader

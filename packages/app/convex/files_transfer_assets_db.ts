@@ -71,7 +71,7 @@ export async function files_nodes_content_db_discard_transfer_file_capture(
 	if (!item?.capture) return;
 	await files_transfer_assets_db_retire_states(ctx, item);
 
-	const { mediaSourceSet: _mediaSourceSet, ...capture } = item.capture;
+	const { capture } = item;
 	if (capture.mediaDependencySetId) {
 		const set = await ctx.db.get("files_media_dependency_sets", capture.mediaDependencySetId);
 		if (set)

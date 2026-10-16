@@ -1205,12 +1205,6 @@ export async function files_transfer_db_complete_copy_item(
 					return { outputWritePolicy: node.writePolicy };
 				})();
 
-	const capture = item.capture
-		? (() => {
-				const { mediaSourceSet: _mediaSourceSet, ...capture } = item.capture;
-				return { ...capture, artifact: null };
-			})()
-		: null;
 	await ctx.db.patch("files_transfer_items", item._id, {
 		state: "completed",
 		conflictKind: null,
@@ -1227,7 +1221,7 @@ export async function files_transfer_db_complete_copy_item(
 		outputPath: args.path,
 		stagedAssetIds: [],
 		// The saved file now owns these assets. Run cleanup must leave them alone.
-		capture,
+		capture: item.capture ? { ...item.capture, artifact: null } : null,
 		...(item.workId === null ? { attemptExpiresAt: null } : {}),
 		...outputPolicy,
 	});

@@ -16,6 +16,7 @@ import {
 } from "./files_pending_nodes.ts";
 import { files_pending_nodes_db_get_ancestry } from "./files_pending_nodes_db.ts";
 import { quotas_db_ensure } from "./quotas.ts";
+import { start_transfer } from "./files_transfer.setup.test.ts";
 import {
 	test_save_file_pending_update,
 	test_finish_pending_update_run,
@@ -388,13 +389,28 @@ describe("cleanup_published_nodes", () => {
 				target,
 			});
 			if (!proposal) throw new Error("Expected the image proposal");
-			const draft = await t.mutation(internal.files_nodes.create_private_node_by_path, {
-				...scope,
+			const draft = await asUser.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: "root",
 				path: "/draft",
-				kind: "folder",
 			});
-			if (draft._nay || !draft._yay.pendingUpdateId) throw new Error("Expected the set owner");
-			const owner = { kind: "proposal" as const, pendingUpdateId: draft._yay.pendingUpdateId };
+			if (draft._nay) throw new Error(draft._nay.message);
+			const copy = await start_transfer(asUser, {
+				membershipId: db.membershipId,
+				requestId: "media-alias-owner",
+				kind: "copy",
+				sourceIds: [draft._yay.nodeId],
+				targetParentId: "root",
+			});
+			if (copy._nay) throw new Error(copy._nay.message);
+			const item = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", copy._yay.runId))
+					.first(),
+			);
+			if (!item) throw new Error("Expected the set owner");
+			const owner = { kind: "capture" as const, itemId: item._id };
 			const set = await t.run((ctx) => files_media_dependencies_db_create(ctx, { ...scope, owner, expectedCount: 1 }));
 			if (set._nay) throw new Error(set._nay.message);
 			const pin = { setId: set._yay, generation: 0 };

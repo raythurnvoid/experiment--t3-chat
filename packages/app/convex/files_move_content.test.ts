@@ -134,7 +134,6 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 				args?.selected === "unstaged" ? proposal.content.unstagedStateId : proposal.content.stagedStateId,
 			target: proposal.target,
 			privateVersion: null,
-			mediaDependencySet: null,
 			nodeRecordId: f.recordId,
 			afterProposal: null,
 			contentId: null,

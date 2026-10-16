@@ -552,13 +552,7 @@ function db_after_proposal(args: {
 	const family = content.partialFamily;
 	const unchanged = prepared.kind === "saved_asset" && prepared.unchanged;
 	if (!family && !unchanged) return null;
-	const {
-		_id: _id,
-		_creationTime: _time,
-		moveCohortId: _cohortId,
-		mediaDependencySetId: _mediaSetId,
-		...header
-	} = proposal;
+	const { _id: _id, _creationTime: _time, moveCohortId: _cohortId, ...header } = proposal;
 	return {
 		...header,
 		target: { kind: "saved" as const, id: content.nodeId },
