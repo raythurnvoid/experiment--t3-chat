@@ -36,7 +36,7 @@ const files_nodes_write_policy_validator = v.union(
 	}),
 );
 
-export const files_list_namespace_validator = v.union(
+const files_list_namespace_validator = v.union(
 	v.object({
 		kind: v.literal("workspace"),
 		organizationId: v.id("organizations"),
@@ -59,13 +59,9 @@ export const files_list_namespace_validator = v.union(
 	}),
 );
 
-export const files_list_set_family_validator = v.union(
-	v.literal("policy_entries"),
-	v.literal("source_policies"),
-	v.literal("entry_epochs"),
-);
+const files_list_set_family_validator = v.union(v.literal("policy_entries"), v.literal("audience_policies"));
 
-export const files_list_set_owner_validator = v.union(
+const files_list_set_owner_validator = v.union(
 	v.object({ kind: v.literal("page"), pageId: v.id("files_list_set_pages") }),
 	v.object({
 		kind: v.literal("hold"),
@@ -4767,7 +4763,7 @@ const app_convex_schema = defineSchema({
 			"name",
 		]),
 
-	// Immutable membership pages. Holds and page edges retain shared older versions.
+	// Immutable membership pages. Holds and page edges keep shared older versions alive.
 	files_list_set_pages: defineTable({
 		namespace: files_list_namespace_validator,
 		family: files_list_set_family_validator,
@@ -4776,16 +4772,22 @@ const app_convex_schema = defineSchema({
 		children: v.array(v.id("files_list_set_pages")),
 	}),
 
+	// One doc per reference from a page or a hold to a page. `by_target` lets cleanup check whether a page still
+	// has a reference.
 	files_list_set_edges: defineTable({
 		namespace: files_list_namespace_validator,
 		family: files_list_set_family_validator,
 		owner: files_list_set_owner_validator,
 		target: v.id("files_list_set_pages"),
 	})
+		// Index the whole namespace and owner values. Their union branches have different fields, so dotted
+		// fields would need one index field for every branch field.
 		.index("by_namespace_family_owner", ["namespace", "family", "owner"])
 		.index("by_target", ["target"]),
 
-	files_list_set_gc: defineTable({
+	// One doc per page that may have lost its last reference. The cleanup step deletes the page only when no
+	// edge points to it.
+	files_list_set_cleanup_tasks: defineTable({
 		namespace: files_list_namespace_validator,
 		family: files_list_set_family_validator,
 		target: v.id("files_list_set_pages"),
