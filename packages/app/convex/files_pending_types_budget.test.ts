@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
 import { fixture, insert_saved_node } from "./files_pending_overlay.setup.test.ts";
 import { run_job } from "./files_pending_overlay.ts";
-import { upsert_file_pending_archive_in_db } from "./files_pending_updates.ts";
+import { upsert_file_pending_archive_in_db, upsert_file_pending_move_in_db } from "./files_pending_updates.ts";
 import { test_db_hold_move_slot, test_seed_folder_chain, test_spy_handler } from "./setup.test.ts";
 import { files_type_query_db_get_readiness } from "../server/files-type-query.ts";
 
@@ -13,10 +13,13 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-test(
-	"a deep draft delete yields and restores typed-search readiness during another Move",
+test.each([
+	{ kind: "archive", depth: 510 },
+	{ kind: "move", depth: 300 },
+] as const)(
+	"a deep draft $kind keeps its needed work within limits during another Move",
 	{ timeout: 120_000 },
-	async () => {
+	async ({ kind, depth }) => {
 		const f = await fixture(true);
 		const chain = await test_seed_folder_chain(f.t, {
 			scope: f.u,
@@ -24,7 +27,7 @@ test(
 			parentId: "root",
 			parentPath: "",
 			startDepth: 1,
-			depth: 510,
+			depth,
 			restrictedScopeNodeId: null,
 		});
 		const parentId = chain.id;
@@ -37,23 +40,39 @@ test(
 					kind: "file",
 				}),
 		);
-		expect(leaf.path.length).toBe(1022);
+		expect(leaf.path.length).toBe(2 * depth + 2);
 		// An unrelated Move adds selected-view lookups but does not reserve this tree.
 		await f.t.run((ctx) => test_db_hold_move_slot(ctx, f.db));
 		const costs: TransactionMetrics[] = [];
-		for (const mutation of [upsert_file_pending_archive_in_db, run_job])
+		for (const mutation of [upsert_file_pending_archive_in_db, upsert_file_pending_move_in_db, run_job])
 			test_spy_handler(mutation, async (handler, ctx, args) => {
 				const result = await handler(ctx, args);
 				costs.push(await ctx.meta.getTransactionMetrics());
 				return result;
 			});
 
-		const proposed = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
-			...f.u,
-			target: { kind: "saved", id: leaf._id },
-		});
+		const proposed =
+			kind === "archive"
+				? await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+						...f.u,
+						target: { kind: "saved", id: leaf._id },
+					})
+				: await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+						...f.u,
+						target: { kind: "saved", id: leaf._id },
+						destParent: { kind: "root" },
+						destName: "renamed.md",
+					});
 		expect(proposed._nay, "deep draft write stays within transaction limits").toBeUndefined();
-		expect(await f.t.run((ctx) => files_type_query_db_get_readiness(ctx.db, f.u))).toEqual({ state: "updating" });
+		expect(await f.t.run((ctx) => files_type_query_db_get_readiness(ctx.db, f.u))).toEqual({
+			state: kind === "archive" ? "ready" : "updating",
+		});
+		if (kind === "archive")
+			await f.t.run(async (ctx) => {
+				expect((await ctx.db.query("files_pending_hides").unique())?.savedNodeId).toBe(leaf._id);
+				expect(await ctx.db.query("files_pending_overlay_resolve_work").collect()).toEqual([]);
+				expect(await ctx.db.query("files_pending_overlay_jobs").collect()).toEqual([]);
+			});
 		await f.settle();
 		const final = await f.t.run(async (ctx) => ({
 			readiness: await files_type_query_db_get_readiness(ctx.db, f.u),
@@ -63,12 +82,16 @@ test(
 				.unique(),
 			work: await ctx.db.query("files_pending_overlay_resolve_work").collect(),
 			jobs: await ctx.db.query("files_pending_overlay_jobs").collect(),
+			types: await ctx.db.query("files_pending_type_entries").collect(),
 		}));
 		expect(final.readiness).toEqual({ state: "ready" });
 		expect(final.hide?.savedNodeId).toBe(leaf._id);
 		expect(final.work).toEqual([]);
 		expect(final.jobs).toEqual([]);
-		expect(costs.length).toBeGreaterThan(1);
+		if (kind === "move") {
+			expect(costs.length).toBeGreaterThan(1);
+			expect(final.types).toMatchObject([{ ownerTreePath: "/renamed.md", isVisible: true, sourceKind: "move" }]);
+		} else expect(costs).toHaveLength(1);
 		for (const metrics of costs) {
 			expect(Object.keys(metrics)).toHaveLength(7);
 			for (const [name, metric] of Object.entries(metrics))

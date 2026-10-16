@@ -28,7 +28,7 @@ export type files_visible_resolve_Parent = Omit<files_visible_resolve_Resolved, 
 
 export type files_visible_resolve_Operation =
 	| { kind: "target"; target: files_PendingTarget }
-	| { kind: "facts"; target: files_PendingTarget }
+	| { kind: "facts"; target: files_PendingTarget; claimOnly?: boolean }
 	| { kind: "parent"; parent: files_PendingParent }
 	| { kind: "claim"; node: Doc<"files_nodes"> }
 	| { kind: "move"; parent: files_PendingParent; name: string; cursor: string | null; probed?: boolean }
@@ -480,7 +480,9 @@ export function files_visible_resolve_program_create(
 			case "target":
 				return yield* target(operation.target);
 			case "facts": {
-				const own = yield* call<files_visible_resolve_Resolved | null>({ kind: "target", target: operation.target });
+				const own = operation.claimOnly
+					? null
+					: yield* call<files_visible_resolve_Resolved | null>({ kind: "target", target: operation.target });
 				const target = operation.target;
 				const node =
 					target.kind === "saved"
@@ -497,13 +499,16 @@ export function files_visible_resolve_program_create(
 				const pending = source?.moveCohortId
 					? yield* read(() => files_saved_placement_db_get_proposal(db, source._id, args.fixedView))
 					: source;
-				const parentTarget =
-					target.kind === "private" && node && "parent" in node ? node.parent : pending?.pendingMove?.destParent;
+				const parentTarget = operation.claimOnly
+					? undefined
+					: target.kind === "private" && node && "parent" in node
+						? node.parent
+						: pending?.pendingMove?.destParent;
 				const resolvedParent = parentTarget
 					? yield* call<files_visible_resolve_Parent | null>({ kind: "parent", parent: parentTarget })
 					: null;
 				const savedParent =
-					target.kind === "saved" && node && "parentId" in node
+					!operation.claimOnly && target.kind === "saved" && node && "parentId" in node
 						? yield* call<files_visible_resolve_Parent | null>({
 								kind: "parent",
 								parent: node.parentId === "root" ? { kind: "root" } : { kind: "saved", id: node.parentId },

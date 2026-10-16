@@ -738,9 +738,17 @@ unused fields when a node moves to a shallower folder or root.
 
 **Unfinished resolution.** A read budget ends one worker step, not the target's result. The worker saves its resolver frames and keeps the overlay job counted. It resumes against the same source and selected-view pins; a changed pin clears old work in pages before restarting. It publishes structural docs only after resolution completes. The path-free Pending list stays immediate. A saved MIME change advances the shared source pin while leased, without creating work for each owner.
 
-Inline resolution checks all seven transaction metrics before each source read. A selected-view
+Full inline path resolution checks all seven transaction metrics before each source read. A selected-view
 helper can read several docs, so a logical read count alone is not enough. It leaves 25% free
-to save unfinished work and its counted follow-up. Durable steps keep their own small step limits.
+to save unfinished work and its counted follow-up. The short claim check keeps the durable step's
+256-read reserve and leaves 25% free for the other metrics. Durable steps keep their own small step limits.
+
+Closed private nodes need no path lookup. The flush removes their derived docs from their
+source state. Their existing counted jobs clear any stored resolver frames before search is ready.
+
+A saved node without a pending move or replacement needs only a claim check to update its hide.
+It must not wait for an unused path. If a folder hide changes, the targets job keeps `ownerPathPending` until
+it resolves the parent path and queues the child-path work. Removing the hide must not lose that work.
 
 **Sealed private parents.** Owner staging uses the After view after every saved header is sealed.
 For a private parent, its checked receipt must name that same cohort and After. The reader then

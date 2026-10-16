@@ -259,6 +259,10 @@ type TargetMark = Scope & {
 	 */
 	fieldsChanged: boolean;
 	/**
+	 * A folder hide changed before its path was ready. Its children still need a path refresh.
+	 */
+	ownerPathPending?: boolean;
+	/**
 	 * The owner's own draft write: its folder changes may run the inline owner path step.
 	 */
 	inline: boolean;
@@ -510,6 +514,7 @@ function mark_target(
 		target: files_PendingTarget;
 		pendingUpdateId?: Id<"files_pending_updates">;
 		fieldsChanged?: boolean;
+		ownerPathPending?: boolean;
 		inline: boolean;
 		ownWrite?: boolean;
 		oldPosition?: Pick<Doc<"files_pending_places">, "parent" | "name">;
@@ -533,6 +538,7 @@ function mark_target(
 	if (args.pendingUpdateId) mark.pendingUpdateIds.add(args.pendingUpdateId);
 	if (args.oldPosition) (mark.oldPositions ??= []).push(args.oldPosition);
 	mark.fieldsChanged ||= args.fieldsChanged === true;
+	mark.ownerPathPending ||= args.ownerPathPending;
 	mark.inline ||= args.inline;
 	mark.ownWrite ||= args.ownWrite === true;
 }
@@ -542,7 +548,7 @@ function mark_target(
  */
 function defer_target(
 	state: FlushMarks,
-	mark: Pick<TargetMark, keyof Scope | "target" | "pendingUpdateIds" | "fieldsChanged">,
+	mark: Pick<TargetMark, keyof Scope | "target" | "pendingUpdateIds" | "fieldsChanged" | "ownerPathPending">,
 ) {
 	const key = scope_key(mark);
 	const group = state.deferred.get(key) ?? {
@@ -553,7 +559,12 @@ function defer_target(
 	};
 	const pendingUpdateIds = mark.pendingUpdateIds.size > 0 ? [...mark.pendingUpdateIds] : [null];
 	for (const pendingUpdateId of pendingUpdateIds)
-		group.items.push({ target: mark.target, pendingUpdateId, fieldsChanged: mark.fieldsChanged });
+		group.items.push({
+			target: mark.target,
+			pendingUpdateId,
+			fieldsChanged: mark.fieldsChanged,
+			ownerPathPending: mark.ownerPathPending,
+		});
 	state.deferred.set(key, group);
 }
 
@@ -661,7 +672,12 @@ export function files_pending_overlay_db_set_own_job(ctx: MutationCtx, job: Doc<
  */
 export function files_pending_overlay_db_mark_target(
 	ctx: MutationCtx,
-	args: Scope & { target: files_PendingTarget; pendingUpdateId?: Id<"files_pending_updates">; fieldsChanged?: boolean },
+	args: Scope & {
+		target: files_PendingTarget;
+		pendingUpdateId?: Id<"files_pending_updates">;
+		fieldsChanged?: boolean;
+		ownerPathPending?: boolean;
+	},
 ) {
 	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
 	if (!state) throw should_never_happen("Overlay mark outside the mutation wrapper", { target: args.target });
@@ -1117,6 +1133,28 @@ export async function files_pending_overlay_db_resolve_facts(
 			);
 	let stateDoc = await by_key("state").unique();
 	let saved = stateDoc ? (JSON.parse(stateDoc.value) as { fence: string; facts?: files_visible_resolve_Facts }) : null;
+	// The wrapper updates these source fields after every write in this mutation.
+	const privateNode =
+		args.target.kind === "private"
+			? ((ctx as WrappedCtx)[FLUSH_MARKS]?.lastKnown.get(args.target.id) ??
+				(await ctx.db.get("files_pending_nodes", args.target.id)))
+			: null;
+	// Closed private nodes have no place or type entry. Their old paths need no resolver.
+	const closed =
+		args.target.kind === "private" &&
+		(!privateNode ||
+			privateNode.state !== "active" ||
+			privateNode.userId !== args.userId ||
+			privateNode.organizationId !== args.organizationId ||
+			privateNode.workspaceId !== args.workspaceId);
+	const emptyFacts: files_visible_resolve_Facts = {
+		own: null,
+		parent: null,
+		savedParent: null,
+		claimed: false,
+		cycle: false,
+	};
+	if (!saved && closed) return emptyFacts;
 	if (!saved && args.reader && !args.reader.exhausted) {
 		const facts = await args.reader.resolveFacts(args.target, async () => {
 			// Keep room to save unfinished work and its counted follow-up job.
@@ -1159,10 +1197,11 @@ export async function files_pending_overlay_db_resolve_facts(
 		for (const doc of docs) await ctx.db.delete("files_pending_overlay_resolve_work", doc._id);
 		return docs.length < 64;
 	};
-	if (saved && (saved.fence !== fence || saved.facts)) {
+	if (saved && (closed || saved.fence !== fence || saved.facts)) {
 		if (!(await clear())) return null;
 		await ctx.db.delete("files_pending_overlay_resolve_work", stateDoc!._id);
 		stateDoc = null;
+		if (closed) return emptyFacts;
 		if (saved.fence === fence && saved.facts) return saved.facts;
 		saved = null;
 	}
@@ -1390,40 +1429,40 @@ export async function files_pending_overlay_db_compute_target(
 	} else {
 		const node = await db.get("files_pending_nodes", target.id);
 		if (
-			pendingUpdate &&
-			node?.state === "active" &&
-			node.userId === args.userId &&
-			node.organizationId === args.organizationId &&
-			node.workspaceId === args.workspaceId
-		) {
-			const parent = args.facts ? args.facts.parent : await reader.resolveParent(node.parent);
-			const own = args.facts ? args.facts.own : await reader.resolve(target);
-			place = {
-				...scope,
-				target,
-				pendingUpdateId: pendingUpdate._id,
-				parent: await db_place_parent(db, scope, node.parent, reader.fixedView, await reader.getView()),
-				name: node.name,
-				lowercaseExtension: files_lowercase_extension(node.name, node.kind),
-				kind: node.kind,
-				updatedAt: pendingUpdate.updatedAt,
-				isPathless: parent === null,
-				ownerTreePath: parent ? files_derive_tree_path_for_file_node(`${parent.path}/${node.name}`, node.kind) : "",
-				childTreePath:
-					node.kind === "folder" && own ? files_derive_tree_path_for_file_node(own.entry.path, "folder") : null,
-				isVisible: parent !== null && own !== null && !own.hidden,
-				accessNodeId: parent?.accessNode?._id ?? null,
-				// A private node inside a moved saved folder goes through that move.
-				destinationAccessNodeIds: parent?.destinationAccessNodeIds ?? [],
-			};
-			typeEntry = files_pending_types_compute({
-				pendingUpdate,
-				node,
-				parent: place.parent,
-				fallbackTreePath: place.ownerTreePath,
-				resolved: own,
-			});
-		}
+			!pendingUpdate ||
+			node?.state !== "active" ||
+			node.userId !== args.userId ||
+			node.organizationId !== args.organizationId ||
+			node.workspaceId !== args.workspaceId
+		)
+			return { hide, place, typeEntry, listKeys: [], savedNode };
+		const parent = args.facts ? args.facts.parent : await reader.resolveParent(node.parent);
+		const own = args.facts ? args.facts.own : await reader.resolve(target);
+		place = {
+			...scope,
+			target,
+			pendingUpdateId: pendingUpdate._id,
+			parent: await db_place_parent(db, scope, node.parent, reader.fixedView, await reader.getView()),
+			name: node.name,
+			lowercaseExtension: files_lowercase_extension(node.name, node.kind),
+			kind: node.kind,
+			updatedAt: pendingUpdate.updatedAt,
+			isPathless: parent === null,
+			ownerTreePath: parent ? files_derive_tree_path_for_file_node(`${parent.path}/${node.name}`, node.kind) : "",
+			childTreePath:
+				node.kind === "folder" && own ? files_derive_tree_path_for_file_node(own.entry.path, "folder") : null,
+			isVisible: parent !== null && own !== null && !own.hidden,
+			accessNodeId: parent?.accessNode?._id ?? null,
+			// A private node inside a moved saved folder goes through that move.
+			destinationAccessNodeIds: parent?.destinationAccessNodeIds ?? [],
+		};
+		typeEntry = files_pending_types_compute({
+			pendingUpdate,
+			node,
+			parent: place.parent,
+			fallbackTreePath: place.ownerTreePath,
+			resolved: own,
+		});
 	}
 
 	if (!args.facts && reader.exhausted)
@@ -1681,18 +1720,20 @@ async function db_sync_target_lists(
 		savedNode: Doc<"files_nodes"> | null;
 		oldPendingUpdateId?: Id<"files_pending_updates">;
 		syncFacts?: boolean;
+		listKeys?: Doc<"files_pending_list_rows">["listKey"][];
 	},
 ) {
 	const { ctx } = flush;
 	const { pendingUpdate, savedNode, oldPendingUpdateId } = args;
 	const { userId, organizationId, workspaceId } = mark;
 	const scope = { userId, organizationId, workspaceId };
-	const listed = pendingUpdate && (await files_pending_overlay_db_pending_update_is_listed({ ctx, pendingUpdate }));
-	const listKeys: Doc<"files_pending_list_rows">["listKey"][] = !listed
-		? []
-		: pendingUpdate.threadIds?.length
-			? ["all", ...pendingUpdate.threadIds]
-			: ["all", "own"];
+	const listed =
+		args.listKeys === undefined &&
+		pendingUpdate &&
+		(await files_pending_overlay_db_pending_update_is_listed({ ctx, pendingUpdate }));
+	const listKeys: Doc<"files_pending_list_rows">["listKey"][] =
+		args.listKeys ??
+		(!listed ? [] : pendingUpdate.threadIds?.length ? ["all", ...pendingUpdate.threadIds] : ["all", "own"]);
 	const pendingUpdateIds = new Set(mark.pendingUpdateIds);
 	if (oldPendingUpdateId) pendingUpdateIds.add(oldPendingUpdateId);
 	if (pendingUpdate) pendingUpdateIds.add(pendingUpdate._id);
@@ -1752,31 +1793,64 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 			q.eq("userId", userId).eq("target.kind", target.kind).eq("target.id", target.id),
 		)
 		.unique();
-	const facts = await files_pending_overlay_db_resolve_facts(ctx, {
-		...scope,
-		target,
-		allowPagination: state.ownJob?.doc.kind === "targets",
-		reader,
-	});
-	if (!facts) {
-		defer_target(state, mark);
-		await db_mark_old_claims(flush, mark, true);
-		await db_sync_target_lists(flush, mark, {
-			pendingUpdate,
-			savedNode: target.kind === "saved" ? await files_saved_placement_db_get_node(ctx.db, target.id) : null,
-			syncFacts: false,
-		});
-		return;
+	const source = target.kind === "private" ? state.lastKnown.get(target.id) : null;
+	// A source write already closed this draft. Any old frames have their own counted job.
+	const closedSource = !state.ownJob && source?.state !== undefined && source.state !== "active";
+	let claimFacts: files_visible_resolve_Facts | null = null;
+	// A claim needs no path walk. Use the same small step as the durable fallback, in memory.
+	if (
+		target.kind === "saved" &&
+		!pendingUpdate?.pendingMove &&
+		!pendingUpdate?.pendingReplacement &&
+		!state.ownJob &&
+		!mark.ownerPathPending
+	) {
+		const remaining = (await ctx.meta.getTransactionMetrics()).databaseQueries.remaining;
+		const claimReader = files_visible_resolve_db_create(ctx.db, { ...scope, includeHidden: true, readLimit: 128 });
+		claimFacts = await claimReader.resolveFacts(
+			target,
+			async () =>
+				Object.entries(await ctx.meta.getTransactionMetrics()).every(([key, metric]) =>
+					key === "databaseQueries"
+						? metric.remaining > JOB_READER_MARGIN
+						: metric.used * 4 < (metric.used + metric.remaining) * 3,
+				),
+			{ claimOnly: true, stepLimit: Math.min(256, Math.max(0, remaining - JOB_READER_MARGIN)) },
+		);
 	}
-	const desired = await files_pending_overlay_db_compute_target(ctx.db, reader, {
-		...scope,
-		target,
-		facts,
-		pendingUpdate:
-			pendingUpdate?.organizationId === mark.organizationId && pendingUpdate.workspaceId === mark.workspaceId
-				? pendingUpdate
-				: null,
-	});
+	const facts = closedSource
+		? undefined
+		: (claimFacts ??
+			(await files_pending_overlay_db_resolve_facts(ctx, {
+				...scope,
+				target,
+				allowPagination: state.ownJob?.doc.kind === "targets",
+				reader,
+			})));
+	if (facts === null) {
+		defer_target(state, mark);
+		// Old frames may take more pages, but closed drafts must disappear from listings now.
+		if (target.kind !== "private" || state.lastKnown.get(target.id)?.state === "active") {
+			await db_mark_old_claims(flush, mark, true);
+			await db_sync_target_lists(flush, mark, {
+				pendingUpdate,
+				savedNode: target.kind === "saved" ? await files_saved_placement_db_get_node(ctx.db, target.id) : null,
+				syncFacts: false,
+			});
+			return;
+		}
+	}
+	const desired = closedSource
+		? { hide: null, place: null, typeEntry: null, listKeys: [], savedNode: null }
+		: await files_pending_overlay_db_compute_target(ctx.db, reader, {
+				...scope,
+				target,
+				facts: facts ?? undefined,
+				pendingUpdate:
+					pendingUpdate?.organizationId === mark.organizationId && pendingUpdate.workspaceId === mark.workspaceId
+						? pendingUpdate
+						: null,
+			});
 	// A hard deleted saved target needs no reader. Its claim and folder effects go to jobs, so
 	// a hard delete of a node with many drafts stays small.
 	const hardDeleted = target.kind === "saved" && desired.savedNode === null;
@@ -1863,6 +1937,7 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 		pendingUpdate,
 		savedNode: desired.savedNode,
 		oldPendingUpdateId: place?.pendingUpdateId,
+		listKeys: desired.listKeys,
 	});
 
 	// A place that appears, goes, moves or changes visibility can start or end a claim.
@@ -1878,7 +1953,7 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 
 	// One rule for folder changes: the places under the folder's old paths follow it.
 	const isFolder = (place ?? next)?.kind === "folder" || desired.savedNode?.kind === "folder";
-	if (isFolder && (((place !== null || next !== null) && factsChanged) || hideChanged)) {
+	if (isFolder && (((place !== null || next !== null) && factsChanged) || hideChanged || mark.ownerPathPending)) {
 		const prefixes = new Set<string>();
 		if (place) {
 			prefixes.add(place.ownerTreePath);
@@ -1887,7 +1962,16 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 		// A saved folder with no place before: its children build on its saved path.
 		else if (desired.savedNode) {
 			const node = desired.savedNode;
-			const parent = facts.savedParent;
+			const fullFacts = claimFacts
+				? await files_pending_overlay_db_resolve_facts(ctx, {
+						...scope,
+						target,
+						allowPagination: false,
+						reader,
+					})
+				: facts;
+			if (fullFacts === null) defer_target(state, { ...mark, ownerPathPending: true });
+			const parent = fullFacts?.savedParent;
 			if (parent) prefixes.add(files_derive_tree_path_for_file_node(`${parent.path}/${node.name}`, "folder"));
 		}
 		for (const prefix of prefixes)

@@ -12,21 +12,30 @@ import { archive_nodes, files_nodes_db_rebuild_node, unarchive_nodes } from "./f
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { files_metadata_committed_field_sort_fields } from "./files_metadata.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
+import * as resolver from "../server/files-visible-resolve.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
 	test_mocks_fill_db_with,
+	test_move_nodes,
+	test_rename_node,
 	test_run_with_flush,
+	test_seed_folder_chain,
 	test_spy_handler,
 } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
-import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
+import {
+	files_pending_overlay_db_flush,
+	files_pending_overlay_db_mark_target,
+} from "../server/files-pending-overlay.ts";
+import { files_type_query_db_get_readiness } from "../server/files-type-query.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_MAX_TEXT_CONTENT_BYTES, files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 import {
 	add_member,
 	budget_recorder,
 	expect_under_convex_limits,
+	finish_scheduled,
 	insert_saved_node,
 	mock_overlay_limits_storage,
 	share_100_times,
@@ -41,73 +50,425 @@ afterEach(() => {
 });
 
 describe("discard_file_pending_update", () => {
-	test("discards a 256-node private folder that claims a saved name", async () => {
+	const start_unfinished_work = async (
+		t: ReturnType<typeof test_convex>,
+		proposals: Doc<"files_pending_updates">[],
+		frameCount: number,
+	) => {
+		const create = resolver.files_visible_resolve_db_create;
+		const spy = vi.spyOn(resolver, "files_visible_resolve_db_create").mockImplementation((db, args) => {
+			const reader = create(db, args);
+			return {
+				...reader,
+				resolveFacts: async () => null,
+				resume: (operation, options) => reader.resume(operation, { ...options, stepLimit: 1 }),
+			};
+		});
+		try {
+			await test_run_with_flush(t, async (ctx) => {
+				for (const proposal of proposals)
+					files_pending_overlay_db_mark_target(ctx, { ...proposal, pendingUpdateId: proposal._id });
+			});
+		} finally {
+			spy.mockRestore();
+		}
+		// Expand existing owned work to exercise cleanup across pages, without an orphan frame set.
+		for (const proposal of proposals)
+			await t.run(async (ctx) => {
+				for (let index = 0; index < frameCount; index++)
+					await ctx.db.insert("files_pending_overlay_resolve_work", {
+						organizationId: proposal.organizationId,
+						workspaceId: proposal.workspaceId,
+						userId: proposal.userId,
+						target: proposal.target,
+						key: `m:fixture:${index}`,
+						value: JSON.stringify({ operation: { kind: "facts", target: proposal.target } }),
+					});
+			});
+	};
+
+	test.each([
+		[0, 0, 0],
+		[20, 0, 0],
+		[0, 65, 0],
+		[0, 0, 128],
+	])(
+		"discards a 256-node private folder that claims a saved name, saved depth %i, stored frames %i, chats %i",
+		async (depth, frameCount, threadCount) => {
+			const t = test_convex({ transactionLimits: true });
+			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+
+			const chain = await test_seed_folder_chain(t, {
+				scope,
+				createdBy: db.userId,
+				parentId: "root",
+				parentPath: "",
+				startDepth: 1,
+				depth,
+				restrictedScopeNodeId: null,
+			});
+			let area = await t.run((ctx) => insert_saved_node(ctx, db, { parent: null, name: "area", kind: "folder" }));
+			const threadIds: Id<"ai_chat_threads">[] = [];
+			if (threadCount > 0) {
+				const folder = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+					...scope,
+					path: "/area/drafts",
+					kind: "folder",
+				});
+				if (folder._nay) throw new Error(folder._nay.message);
+				for (let index = 0; index < threadCount; index++) {
+					const threadId = await t.run((ctx) =>
+						ctx.db.insert("ai_chat_threads", {
+							organizationId: scope.organizationId,
+							workspaceId: scope.workspaceId,
+							clientGeneratedId: `discard-${index}`,
+							title: null,
+							archived: false,
+							runtime: "aisdk_5",
+							createdBy: scope.userId,
+							updatedBy: scope.userId,
+							updatedAt: Date.now(),
+							newestNodeId: null,
+							starred: false,
+						}),
+					);
+					threadIds.push(threadId);
+					// Real renames add contributors without adding content to the draft.
+					const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+						...scope,
+						target: folder._yay.target,
+						destParent: { kind: "saved", id: area._id },
+						destName: index % 2 === 0 ? "renamed" : "drafts",
+						threadId,
+					});
+					if (moved._nay) throw new Error(moved._nay.message);
+				}
+			}
+			// A single Discard answers `needs_review` for a private child folder, a child file with content,
+			// or a draft move into the tree. So the largest tree it removes is one folder with 255 new, empty
+			// files.
+			for (let index = 0; index < 255; index++) {
+				const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+					...scope,
+					path: `${area.path}/drafts/note-${index}.md`,
+					kind: "file",
+					...(threadCount > 0 ? { threadId: threadIds[index % threadCount] } : {}),
+				});
+				if (created._nay) throw new Error(created._nay.message);
+			}
+			if (depth > 0) {
+				expect(
+					await test_move_nodes(t, asOwner, {
+						membershipId: db.membershipId,
+						itemIds: [area._id],
+						targetParentId: chain.id,
+					}),
+				).toEqual({ _yay: null });
+				area = (await t.run((ctx) => ctx.db.get("files_nodes", area._id)))!;
+				expect(`${area.path}/drafts/note-254.md`).toHaveLength(2 * depth + 24);
+			}
+			// Another user saves a folder named "drafts" under area. The private folder now claims that name.
+			const claimed = await test_run_with_flush(t, async (ctx) => {
+				const other = await add_member(ctx, db, "clerk_discard_other");
+				const claimed = await insert_saved_node(ctx, db, {
+					parent: area,
+					name: "drafts",
+					kind: "folder",
+					createdBy: other,
+				});
+				for (let index = 0; index < 10; index++)
+					await insert_saved_node(ctx, db, {
+						parent: claimed,
+						name: `note-${index}.md`,
+						kind: "file",
+						createdBy: other,
+					});
+				return claimed;
+			});
+			await finish_scheduled(
+				t,
+				async () => await t.run(async (ctx) => (await ctx.db.query("files_pending_overlay_jobs").first()) === null),
+			);
+			expect(
+				await t.run((ctx) =>
+					ctx.db
+						.query("files_pending_hides")
+						.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", claimed._id).eq("userId", scope.userId))
+						.unique(),
+				),
+			).not.toBeNull();
+			const root = await t.run(async (ctx) => {
+				const node = (await ctx.db.query("files_pending_nodes").collect()).find((node) => node.name === "drafts")!;
+				const proposal = await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_user_target", (q) =>
+						q.eq("userId", db.userId).eq("target.kind", "private").eq("target.id", node._id),
+					)
+					.unique();
+				return { node, proposal: proposal! };
+			});
+			expect(await t.run(async (ctx) => (await ctx.db.query("files_pending_nodes").collect()).length)).toBe(256);
+			if (frameCount > 0) {
+				const proposals = await t.run((ctx) => ctx.db.query("files_pending_updates").collect());
+				await start_unfinished_work(t, proposals, frameCount);
+			}
+
+			const { result, cost } = await asOwner.run(async (ctx) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				const result = await ctx.runMutation(api.files_pending_updates.discard_file_pending_update, {
+					membershipId: db.membershipId,
+					target: { kind: "private", id: root.node._id },
+					pendingUpdateId: root.proposal._id,
+					reviewedRevision: root.proposal.revision,
+				});
+				return { result, cost: transaction_cost(before, await ctx.meta.getTransactionMetrics()) };
+			});
+			console.info(
+				`discard_file_pending_update, 256 private nodes, depth ${depth}, frames ${frameCount}, chats ${threadCount}`,
+				cost,
+			);
+
+			expect(result).toEqual({ _yay: null });
+			const nodes = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+			expect(nodes.filter((node) => node.state !== "discarded")).toEqual([]);
+			expect_under_convex_limits(cost);
+			await t.run(async (ctx) => {
+				expect(
+					await ctx.db
+						.query("files_pending_hides")
+						.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", claimed._id).eq("userId", scope.userId))
+						.unique(),
+				).toBeNull();
+				expect(await ctx.db.query("files_pending_type_entries").collect()).toEqual([]);
+				expect(await ctx.db.query("files_pending_places").collect()).toEqual([]);
+				expect(await ctx.db.query("files_pending_list_rows").collect()).toEqual([]);
+			});
+			await t.finishAllScheduledFunctions(vi.runAllTimers);
+			await t.run(async (ctx) => {
+				expect(await ctx.db.query("files_pending_nodes").collect()).toEqual([]);
+				expect(await ctx.db.query("files_pending_updates").collect()).toEqual([]);
+				expect(await ctx.db.query("files_pending_overlay_resolve_work").collect()).toEqual([]);
+				expect(await ctx.db.query("files_pending_overlay_jobs").collect()).toEqual([]);
+				expect(await files_type_query_db_get_readiness(ctx.db, scope)).toEqual({ state: "ready" });
+			});
+		},
+		120_000,
+	);
+
+	test("closing a private draft clears stored resolver work in counted pages", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-
-		await t.run(async (ctx) => {
-			await insert_saved_node(ctx, db, { parent: null, name: "area", kind: "folder" });
+		const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...scope,
+			path: "/note.md",
+			kind: "file",
 		});
-		// A single Discard answers `needs_review` for a private child folder, a child file with content,
-		// or a draft move into the tree. So the largest tree it removes is one folder with 255 new, empty
-		// files.
-		for (let index = 0; index < 255; index++) {
-			const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
-				...scope,
-				path: `/area/drafts/note-${index}.md`,
-				kind: "file",
-			});
-			if (created._nay) throw new Error(created._nay.message);
-		}
-		// Another user then saves `/area/drafts` with files. The owner's private folder now claims that name.
+		if (created._nay) throw new Error(created._nay.message);
+		const proposal = (await t.run((ctx) => ctx.db.query("files_pending_updates").unique()))!;
+		await start_unfinished_work(t, [proposal], 258);
+		expect(
+			await asOwner.mutation(api.files_pending_updates.discard_file_pending_update, {
+				membershipId: db.membershipId,
+				target: proposal.target,
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+			}),
+		).toEqual({ _yay: null });
 		await t.run(async (ctx) => {
-			const area = (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/area")!;
-			const other = await add_member(ctx, db, "clerk_discard_other");
-			const claimed = await insert_saved_node(ctx, db, {
-				parent: area,
-				name: "drafts",
+			expect((await ctx.db.query("files_pending_nodes").unique())?.state).toBe("discarded");
+			expect(await ctx.db.query("files_pending_list_rows").collect()).toEqual([]);
+			expect(await ctx.db.query("files_pending_places").collect()).toEqual([]);
+			expect(await ctx.db.query("files_pending_type_entries").collect()).toEqual([]);
+			const work = await ctx.db.query("files_pending_overlay_resolve_work").collect();
+			expect(work.length).toBeGreaterThan(0);
+			expect(await files_type_query_db_get_readiness(ctx.db, scope)).toEqual({ state: "updating" });
+		});
+		const listed = await t.query(internal.files_visible.internal_list_children_places, {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			visibilityUserId: scope.userId,
+			folderPath: "/",
+			orderBy: "name",
+			order: "asc",
+			numItems: 10,
+			position: { cursor: null, lastKey: null, rangeStart: null },
+		});
+		expect(listed._nay).toBeUndefined();
+		expect(listed._yay?.rows).toEqual([]);
+		const unfinished: number[] = [];
+		test_spy_handler(run_overlay_job, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			const work = await ctx.db.query("files_pending_overlay_resolve_work").collect();
+			if (work.length > 0) {
+				unfinished.push(work.length);
+				expect(await files_type_query_db_get_readiness(ctx.db, scope)).toEqual({ state: "updating" });
+			}
+			return result;
+		});
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(unfinished.length).toBeGreaterThan(0);
+		await t.run(async (ctx) => {
+			expect(await ctx.db.query("files_pending_overlay_resolve_work").collect()).toEqual([]);
+			expect(await ctx.db.query("files_pending_overlay_jobs").collect()).toEqual([]);
+			expect(await ctx.db.query("files_pending_type_entries").collect()).toEqual([]);
+			expect(await ctx.db.query("files_pending_places").collect()).toEqual([]);
+			expect(await ctx.db.query("files_pending_updates").collect()).toEqual([]);
+			expect(await files_type_query_db_get_readiness(ctx.db, scope)).toEqual({ state: "ready" });
+		});
+	});
+
+	test("discarding a private file restores a claimed folder before its child path work finishes", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const { folder, other, membershipId } = await test_run_with_flush(t, async (ctx) => {
+			const other = await add_member(ctx, db, "clerk_claim_other");
+			const folder = await insert_saved_node(ctx, db, {
+				parent: null,
+				name: "old",
 				kind: "folder",
 				createdBy: other,
 			});
-			for (let index = 0; index < 10; index++)
-				await insert_saved_node(ctx, db, {
-					parent: claimed,
-					name: `note-${index}.md`,
-					kind: "file",
-					createdBy: other,
-				});
-		});
-		const root = await t.run(async (ctx) => {
-			const node = (await ctx.db.query("files_pending_nodes").collect()).find((node) => node.name === "drafts")!;
-			const proposal = await ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_user_target", (q) =>
-					q.eq("userId", db.userId).eq("target.kind", "private").eq("target.id", node._id),
+			await insert_saved_node(ctx, db, { parent: folder, name: "g", kind: "folder", createdBy: other });
+			const membership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", other)
+						.eq("organizationId", scope.organizationId)
+						.eq("workspaceId", scope.workspaceId),
 				)
 				.unique();
-			return { node, proposal: proposal! };
+			return { folder, other, membershipId: membership!._id };
 		});
-		expect(await t.run(async (ctx) => (await ctx.db.query("files_pending_nodes").collect()).length)).toBe(256);
-
-		const { result, cost } = await asOwner.run(async (ctx) => {
-			const before = await ctx.meta.getTransactionMetrics();
-			const result = await ctx.runMutation(api.files_pending_updates.discard_file_pending_update, {
-				membershipId: db.membershipId,
-				target: { kind: "private", id: root.node._id },
-				pendingUpdateId: root.proposal._id,
-				reviewedRevision: root.proposal.revision,
-			});
-			return { result, cost: transaction_cost(before, await ctx.meta.getTransactionMetrics()) };
+		const nested = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...scope,
+			path: "/old/g/note.md",
+			kind: "file",
 		});
-		console.info("discard_file_pending_update, 256 private nodes", cost);
-
-		expect(result).toEqual({ _yay: null });
-		const nodes = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
-		expect(nodes.filter((node) => node.state !== "discarded")).toEqual([]);
-		expect_under_convex_limits(cost);
-	}, 120_000);
+		if (nested._nay) throw new Error(nested._nay.message);
+		const claimant = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...scope,
+			path: "/claimed",
+			kind: "file",
+		});
+		if (claimant._nay) throw new Error(claimant._nay.message);
+		expect(
+			(
+				await test_rename_node(t, t.withIdentity({ issuer: "https://clerk.test", external_id: other }), {
+					membershipId,
+					nodeId: folder._id,
+					path: "claimed",
+				})
+			)._nay,
+		).toBeUndefined();
+		await finish_scheduled(
+			t,
+			async () => await t.run(async (ctx) => (await ctx.db.query("files_pending_overlay_jobs").first()) === null),
+		);
+		const proposal = await t.run(async (ctx) => {
+			expect(
+				await ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", folder._id).eq("userId", scope.userId))
+					.unique(),
+			).not.toBeNull();
+			expect(
+				await ctx.db
+					.query("files_pending_places")
+					.withIndex("by_target_user", (q) =>
+						q
+							.eq("target.kind", nested._yay.target.kind)
+							.eq("target.id", nested._yay.target.id)
+							.eq("userId", scope.userId),
+					)
+					.unique(),
+			).toMatchObject({ isVisible: false });
+			return (await ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_user_target", (q) =>
+					q
+						.eq("userId", scope.userId)
+						.eq("target.kind", claimant._yay.target.kind)
+						.eq("target.id", claimant._yay.target.id),
+				)
+				.unique())!;
+		});
+		const create = resolver.files_visible_resolve_db_create;
+		const spy = vi.spyOn(resolver, "files_visible_resolve_db_create").mockImplementation((readerDb, args) => {
+			const reader = create(readerDb, args);
+			return {
+				...reader,
+				resolveFacts: (target, budget, options) =>
+					options?.claimOnly ? reader.resolveFacts(target, budget, options) : Promise.resolve(null),
+				resume: (operation, options) => reader.resume(operation, { ...options, stepLimit: 1 }),
+			};
+		});
+		try {
+			expect(
+				await asOwner.mutation(api.files_pending_updates.discard_file_pending_update, {
+					membershipId: db.membershipId,
+					target: proposal.target,
+					pendingUpdateId: proposal._id,
+					reviewedRevision: proposal.revision,
+				}),
+			).toEqual({ _yay: null });
+		} finally {
+			spy.mockRestore();
+		}
+		await t.run(async (ctx) => {
+			expect(
+				await ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", folder._id).eq("userId", scope.userId))
+					.unique(),
+			).toBeNull();
+			const jobs = await ctx.db.query("files_pending_overlay_jobs").collect();
+			expect(
+				jobs.some(
+					(job) =>
+						job.kind === "targets" && job.items.some((item) => item.target.id === folder._id && item.ownerPathPending),
+				),
+			).toBe(true);
+			expect(await files_type_query_db_get_readiness(ctx.db, scope)).toEqual({ state: "updating" });
+		});
+		await finish_scheduled(
+			t,
+			async () => await t.run(async (ctx) => (await ctx.db.query("files_pending_overlay_jobs").first()) === null),
+		);
+		await t.run(async (ctx) => {
+			expect(
+				await ctx.db
+					.query("files_pending_places")
+					.withIndex("by_target_user", (q) =>
+						q
+							.eq("target.kind", nested._yay.target.kind)
+							.eq("target.id", nested._yay.target.id)
+							.eq("userId", scope.userId),
+					)
+					.unique(),
+			).toMatchObject({ ownerTreePath: "/claimed/g/note.md", isVisible: true });
+			expect(
+				await ctx.db
+					.query("files_pending_type_entries")
+					.withIndex("by_target_user", (q) =>
+						q
+							.eq("target.kind", nested._yay.target.kind)
+							.eq("target.id", nested._yay.target.id)
+							.eq("userId", scope.userId),
+					)
+					.unique(),
+			).toMatchObject({ ownerTreePath: "/claimed/g/note.md", isVisible: true });
+			expect(await ctx.db.query("files_pending_overlay_resolve_work").collect()).toEqual([]);
+			expect(await files_type_query_db_get_readiness(ctx.db, scope)).toEqual({ state: "ready" });
+		});
+	});
 });
 
 describe("hard delete", () => {
