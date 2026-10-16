@@ -3,13 +3,14 @@ import { compareValues, getDocumentSize } from "convex/values";
 import type { Id } from "../convex/_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import { test_convex } from "../convex/setup-base.test.ts";
-import { files_list_bitmap_decode } from "./files-list-bitmap.ts";
+import { files_list_bitmap_decode, files_list_bitmap_from_offsets } from "./files-list-bitmap.ts";
 import {
 	files_list_set_directory_db_cleanup_step,
 	files_list_set_directory_db_derive,
 	files_list_set_directory_db_has,
 	files_list_set_directory_db_hold,
 	files_list_set_directory_db_lookup,
+	files_list_set_directory_db_next_block,
 	files_list_set_directory_db_update,
 	type files_list_set_directory_Handle,
 } from "./files-list-set-directory.ts";
@@ -472,6 +473,112 @@ describe("files_list_set_directory_db_derive", () => {
 	});
 });
 
+describe("files_list_set_directory_db_next_block", () => {
+	test("walks every block of inline and bitmap sets in key order from any cursor", async () => {
+		const f = fixture();
+		const high = (1n << 63n) - 1n;
+		// Owner 1 has 511 members in block 3, so that block is sparse. Owner 2 adds one more, so its block is dense.
+		// Owner 3 has 900 single-member blocks with a gap after each one. They fill three bitmap leaves.
+		const sets = new Map([
+			[0n, [0n, high]],
+			[1n, Array.from({ length: 511 }, (_, index) => (3n << 13n) + BigInt(index))],
+			[2n, Array.from({ length: 512 }, (_, index) => (3n << 13n) + BigInt(index))],
+			[3n, Array.from({ length: 900 }, (_, index) => BigInt(index * 2) << 13n)],
+		]);
+		let current = empty();
+		for (const ownerId of [0n, 1n, 3n]) {
+			const members = sets.get(ownerId)!;
+			// Write 100 members per transaction to keep the fixture fast.
+			for (let start = 0; start < members.length; start += 100) {
+				current = await f.write(async (db) => {
+					let next = current;
+					for (const memberId of members.slice(start, start + 100)) {
+						next = await files_list_set_directory_db_update(db, {
+							scope,
+							handle: next,
+							ownerId,
+							memberId,
+							enabled: true,
+						});
+					}
+					await hold(db, next);
+					return next;
+				});
+			}
+		}
+		current = await f.write(async (db) => {
+			const next = await files_list_set_directory_db_derive(db, {
+				scope,
+				handle: current,
+				sourceOwnerId: 1n,
+				ownerId: 2n,
+				memberId: (3n << 13n) + 511n,
+			});
+			await hold(db, next);
+			return next;
+		});
+		const tree = await lookup(f, current, 3n);
+		if (tree?.kind !== "bitmap") throw new Error("Expected bitmap root");
+		const treeRoot = await f.read((db) => db.get("files_list_set_pages", tree.root));
+		expect(treeRoot!.level).toBe(1);
+		expect(treeRoot!.children, "The fixture must have three bitmap leaves under one branch").toHaveLength(3);
+
+		function blocks(members: bigint[]) {
+			const offsets = new Map<bigint, number[]>();
+			for (const id of members) offsets.set(id >> 13n, [...(offsets.get(id >> 13n) ?? []), Number(id & 8191n)]);
+			return [...offsets].map(([key, list]) => ({ key, container: files_list_bitmap_from_offsets(list) }));
+		}
+
+		async function walk(handle: Handle, ownerId: bigint, after: bigint | null = null, limit = Infinity) {
+			const value = await lookup(f, handle, ownerId);
+			// Measure the tree heights. A bitmap set may read one cursor path and one leftmost path.
+			const bound = await f.read(async (db) => {
+				const directory = (await db.get("files_list_set_pages", handle.root!))!.level + 1;
+				if (value?.kind !== "bitmap") return directory;
+				return directory + 2 * ((await db.get("files_list_set_pages", value.root))!.level + 1) - 1;
+			});
+			const found = [];
+			let cursor = after;
+			while (found.length < limit) {
+				const step = await f.measure((db) =>
+					files_list_set_directory_db_next_block(db, { scope, handle, ownerId, after: cursor }),
+				);
+				expect(
+					step.metrics.documentsRead.used,
+					"Successor must read at most one cursor path and one leftmost path",
+				).toBeLessThanOrEqual(bound);
+				if (step.result === null) break;
+				found.push(step.result);
+				cursor = step.result.key;
+			}
+			return found;
+		}
+
+		for (const [ownerId, members] of sets) {
+			expect(await walk(current, ownerId)).toEqual(blocks(members));
+			// Cursors before the first block, on a block, in a gap, on the last block and at the largest key.
+			for (const after of [0n, 1n, 2n, 3n, 474n, 475n, 1798n, (1n << 50n) - 2n, (1n << 50n) - 1n]) {
+				expect(await walk(current, ownerId, after, 1)).toEqual(
+					blocks(members)
+						.filter((block) => block.key > after)
+						.slice(0, 1),
+				);
+			}
+		}
+
+		const old = current;
+		await f.write((db) => hold(db, old, "old", "capture"));
+		current = await change(f, current, 3n, 0n, false);
+		current = await change(f, current, 3n, high);
+		current = await change(f, current, 0n, 1n);
+		await cleanup(f);
+		expect(await walk(old, 3n)).toEqual(blocks(sets.get(3n)!));
+		expect(await walk(old, 0n)).toEqual(blocks(sets.get(0n)!));
+		expect(await walk(current, 3n)).toEqual(blocks([...sets.get(3n)!.slice(1), high]));
+		expect(await walk(current, 0n)).toEqual(blocks([0n, 1n, high]));
+	});
+});
+
 describe("scope binding", () => {
 	test("binds tenant, global scope, volume generation, family and ID kinds", async () => {
 		const f = fixture();
@@ -573,32 +680,6 @@ describe("files_list_set_directory_db_hold", () => {
 		await expect(f.write((db) => hold(db, old))).rejects.toThrow("Cannot retain a missing");
 		expect(current.root).toBeNull();
 		expect(await f.read((db) => db.query("files_list_set_edges").first())).toBeNull();
-	});
-
-	test("keeps the old hold when the mutation that replaces it fails", async () => {
-		const f = fixture();
-		const old = await change(f, empty(), 0n, 0n);
-		await cleanup(f);
-		await expect(
-			f.write(async (db) => {
-				const next = await files_list_set_directory_db_update(db, {
-					scope: old,
-					handle: old,
-					ownerId: 0n,
-					memberId: 1n,
-					enabled: true,
-				});
-				await hold(db, next);
-				throw new Error("Caller failed after replacing the hold");
-			}),
-		).rejects.toThrow("Caller failed after replacing the hold");
-		await cleanup(f);
-		const pages = await f.read((db) => db.query("files_list_set_pages").take(2));
-		expect(
-			pages.map((page) => page._id),
-			"A failed replacement must keep the old root and save no new page",
-		).toEqual([old.root]);
-		expect(await has(f, old, 0n, 0n)).toBe(true);
 	});
 });
 

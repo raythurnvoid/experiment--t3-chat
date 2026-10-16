@@ -21,7 +21,7 @@ type PageId = Id<"files_list_set_pages">;
 type Root = PageId | null;
 type Owner = Doc<"files_list_set_edges">["owner"];
 // A page holds bitmap blocks of one large set, set records keyed by owner ID, or child page ranges.
-type Kind = (typeof PAGE_KINDS)[number];
+type Kind = keyof typeof PAGE_TAGS;
 type Item = { key: bigint; value: files_list_bitmap_Container | files_list_set_directory_Set | PageId };
 type Page = { kind: Kind; level: number; items: Item[] };
 
@@ -38,8 +38,8 @@ export type files_list_set_directory_Set =
 	| { kind: "inline"; ids: bigint[] }
 	| { kind: "bitmap"; root: PageId; count: bigint };
 
-// The first header byte stores the kind's index plus one.
-const PAGE_KINDS = ["bitmap", "set", "branch"] as const;
+// The first header byte stores the page kind's tag. Saved pages keep these numbers, so never change them.
+const PAGE_TAGS = { bitmap: 1, set: 2, branch: 3 } as const;
 const PAGE_BYTES = 8192;
 const PAGE_HEADER_BYTES = 4;
 const MIN_WEIGHT = 3072;
@@ -72,6 +72,11 @@ function check_handle(handle: files_list_set_directory_Handle, scope: Scope) {
 
 function check_id(id: bigint) {
 	if (id < 0n || id >= 1n << 63n) throw new RangeError("List set ID must be a nonnegative int64");
+}
+
+function check_block_key(key: bigint) {
+	if (key < 0n || key >= 1n << (63n - BLOCK_SHIFT))
+		throw new RangeError("List set block key must come from a nonnegative int64 ID");
 }
 
 function set_value(item: Item): files_list_set_directory_Set {
@@ -179,7 +184,7 @@ export async function files_list_set_directory_db_hold(
 }
 
 /**
- * A page body starts with a 4-byte header: the kind's index plus one, a zero byte, and a uint16 item count.
+ * A page body starts with a 4-byte header: the kind's tag, a zero byte, and a uint16 item count.
  * Each item then has a uint64 key and one record. All numbers are big-endian.
  *
  * - bitmap: one block from `files_list_bitmap_encode`.
@@ -198,7 +203,7 @@ async function read_page(db: QueryCtx["db"], id: PageId, scope: Scope): Promise<
 	}
 
 	const view = new DataView(doc.body);
-	const kind = PAGE_KINDS[view.getUint8(0) - 1];
+	const kind = (Object.keys(PAGE_TAGS) as Kind[]).find((name) => PAGE_TAGS[name] === view.getUint8(0));
 	if (!kind || view.getUint8(1) !== 0) {
 		throw should_never_happen("Invalid list set page header", { id });
 	}
@@ -244,9 +249,10 @@ async function read_page(db: QueryCtx["db"], id: PageId, scope: Scope): Promise<
 
 async function save_page(db: MutationCtx["db"], page: Page, scope: Scope) {
 	if (!page.items.length || !fits(page)) throw should_never_happen("List set page does not fit", { level: page.level });
+
 	const body = new ArrayBuffer(PAGE_HEADER_BYTES + page_size(page, record_bytes));
 	const view = new DataView(body);
-	view.setUint8(0, PAGE_KINDS.indexOf(page.kind) + 1);
+	view.setUint8(0, PAGE_TAGS[page.kind]);
 	view.setUint16(2, page.items.length);
 	const children: PageId[] = [];
 	let position = PAGE_HEADER_BYTES;
@@ -278,9 +284,11 @@ async function save_page(db: MutationCtx["db"], page: Page, scope: Scope) {
 			}
 		}
 	}
+
 	if (children.length > MAX_PAGE_REFS) {
 		throw should_never_happen("Too many list set page references", { level: page.level });
 	}
+
 	const id = await db.insert("files_list_set_pages", {
 		namespace: scope.namespace,
 		family: scope.family,
@@ -298,6 +306,7 @@ async function save_page(db: MutationCtx["db"], page: Page, scope: Scope) {
 
 	for (const child of children) await retain(db, { kind: "page", pageId: id }, child, scope);
 	await db.insert("files_list_set_cleanup_tasks", { namespace: scope.namespace, family: scope.family, target: id });
+
 	return id;
 }
 
@@ -313,8 +322,9 @@ async function save_parts(db: MutationCtx["db"], page: Page, scope: Scope): Prom
 	}
 	const left = { ...page, items: page.items.slice(0, cut) };
 	const right = { ...page, items: page.items.slice(cut) };
-	if (underfull(left) || underfull(right))
+	if (underfull(left) || underfull(right)) {
 		throw should_never_happen("List set split is underfull", { kind: page.kind });
+	}
 	return [
 		{ key: left.items[0]!.key, value: await save_page(db, left, scope) },
 		{ key: right.items[0]!.key, value: await save_page(db, right, scope) },
@@ -400,6 +410,20 @@ async function edit_root(
 	}
 }
 
+/**
+ * Group member IDs into 8,192-ID bitmap block records. Sorted IDs give the blocks in key order.
+ */
+function id_blocks(ids: bigint[]) {
+	const blocks = new Map<bigint, number[]>();
+	for (const id of ids) {
+		const block = id >> BLOCK_SHIFT;
+		const members = blocks.get(block) ?? [];
+		members.push(Number(id & BLOCK_MASK));
+		blocks.set(block, members);
+	}
+	return [...blocks].map(([key, members]) => ({ key, value: files_list_bitmap_from_offsets(members) }));
+}
+
 async function find_item(
 	db: QueryCtx["db"],
 	root: Root,
@@ -416,6 +440,26 @@ async function find_item(
 	return page.items.find((item) => item.key === key) ?? null;
 }
 
+/**
+ * Find the first bitmap block with a key above `after`. Read the cursor path first. If that path has no key above
+ * `after`, read the leftmost path of the next child. A tree of height H costs at most 2H - 1 page reads.
+ */
+async function next_item(db: QueryCtx["db"], root: PageId, after: bigint | null, scope: Scope): Promise<Item | null> {
+	const page = await read_page(db, root, scope);
+	if (page.kind !== "branch") {
+		if (page.kind !== "bitmap") throw should_never_happen("Wrong list set page kind", { root });
+		return page.items.find((item) => after === null || item.key > after) ?? null;
+	}
+
+	// A branch key is the smallest key of its child, and pages are never empty. So every child after the cursor's
+	// child has a key above `after`, and this loop reads at most two children.
+	for (let index = after === null ? 0 : child_at(page.items, after); index < page.items.length; index++) {
+		const item = await next_item(db, child_value(page.items[index]!), after, scope);
+		if (item !== null) return item;
+	}
+	return null;
+}
+
 export async function files_list_set_directory_db_lookup(
 	db: QueryCtx["db"],
 	args: { scope: Scope; handle: files_list_set_directory_Handle; ownerId: bigint },
@@ -426,16 +470,49 @@ export async function files_list_set_directory_db_lookup(
 	return item === null ? null : set_value(item);
 }
 
+/**
+ * Return one 8,192-ID block of a set, or null when the set has no member in it.
+ */
+export async function files_list_set_directory_db_block_at(
+	db: QueryCtx["db"],
+	args: { scope: Scope; handle: files_list_set_directory_Handle; ownerId: bigint; key: bigint },
+) {
+	check_block_key(args.key);
+	const value = await files_list_set_directory_db_lookup(db, args);
+	if (value === null) return null;
+	const item =
+		value.kind === "inline"
+			? id_blocks(value.ids).find((block) => block.key === args.key)
+			: await find_item(db, value.root, args.key, "bitmap", args.scope);
+	return item ? bitmap_value(item) : null;
+}
+
 export async function files_list_set_directory_db_has(
 	db: QueryCtx["db"],
 	args: { scope: Scope; handle: files_list_set_directory_Handle; ownerId: bigint; memberId: bigint },
 ) {
 	check_id(args.memberId);
+	const block = await files_list_set_directory_db_block_at(db, { ...args, key: args.memberId >> BLOCK_SHIFT });
+	return block !== null && files_list_bitmap_offsets(block).includes(Number(args.memberId & BLOCK_MASK));
+}
+
+/**
+ * Return the first block of a set with a key above `after`, or null when no block is left.
+ * One call reads one directory path and, for a bitmap set of height H, at most 2H - 1 set pages.
+ * An inline set reads only the directory path.
+ */
+export async function files_list_set_directory_db_next_block(
+	db: QueryCtx["db"],
+	args: { scope: Scope; handle: files_list_set_directory_Handle; ownerId: bigint; after: bigint | null },
+) {
+	if (args.after !== null) check_block_key(args.after);
 	const value = await files_list_set_directory_db_lookup(db, args);
-	if (value === null) return false;
-	if (value.kind === "inline") return value.ids.includes(args.memberId);
-	const item = await find_item(db, value.root, args.memberId >> BLOCK_SHIFT, "bitmap", args.scope);
-	return item !== null && files_list_bitmap_offsets(bitmap_value(item)).includes(Number(args.memberId & BLOCK_MASK));
+	if (value === null) return null;
+	const item =
+		value.kind === "inline"
+			? id_blocks(value.ids).find((block) => args.after === null || block.key > args.after)
+			: await next_item(db, value.root, args.after, args.scope);
+	return item ? { key: item.key, container: bitmap_value(item) } : null;
 }
 
 async function edit_set(
@@ -456,15 +533,7 @@ async function edit_set(
 
 		// Promotion has exactly 65 IDs. Even 65 separate blocks take only 65 * 13 bytes, so save them as one
 		// bitmap leaf. `next` is sorted, so the blocks come out in key order.
-		const blocks = new Map<bigint, number[]>();
-		for (const id of next) {
-			const block = id >> BLOCK_SHIFT;
-			const members = blocks.get(block) ?? [];
-			members.push(Number(id & BLOCK_MASK));
-			blocks.set(block, members);
-		}
-		const items = [...blocks].map(([key, members]) => ({ key, value: files_list_bitmap_from_offsets(members) }));
-		const root = await save_page(db, { kind: "bitmap", level: 0, items }, scope);
+		const root = await save_page(db, { kind: "bitmap", level: 0, items: id_blocks(next) }, scope);
 		return { kind: "bitmap", root, count: BigInt(next.length) };
 	}
 
