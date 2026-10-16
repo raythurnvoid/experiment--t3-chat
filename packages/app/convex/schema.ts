@@ -36,6 +36,45 @@ const files_nodes_write_policy_validator = v.union(
 	}),
 );
 
+export const files_list_namespace_validator = v.union(
+	v.object({
+		kind: v.literal("workspace"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+	}),
+	v.object({
+		kind: v.literal("global"),
+		workspaceId: v.union(
+			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+		),
+	}),
+	v.object({
+		kind: v.literal("volume"),
+		organizationId: v.id("organizations"),
+		ownerWorkspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		volumeId: v.id("plugins_volumes"),
+		generationId: v.id("plugins_volume_generations"),
+	}),
+);
+
+export const files_list_set_family_validator = v.union(
+	v.literal("policy_entries"),
+	v.literal("source_policies"),
+	v.literal("entry_epochs"),
+);
+
+export const files_list_set_owner_validator = v.union(
+	v.object({ kind: v.literal("page"), pageId: v.id("files_list_set_pages") }),
+	v.object({
+		kind: v.literal("hold"),
+		purpose: v.union(v.literal("head"), v.literal("capture"), v.literal("writer")),
+		// This names a server-owned record or request. It is not a public capability.
+		id: v.string(),
+	}),
+);
+
 /**
  * The full list of permissions. Users build roles out of these, but can never add a new one.
  **/
@@ -4727,6 +4766,30 @@ const app_convex_schema = defineSchema({
 			"sortName",
 			"name",
 		]),
+
+	// Immutable membership pages. Holds and page edges retain shared older versions.
+	files_list_set_pages: defineTable({
+		namespace: files_list_namespace_validator,
+		family: files_list_set_family_validator,
+		body: v.bytes(),
+		level: v.number(),
+		children: v.array(v.id("files_list_set_pages")),
+	}),
+
+	files_list_set_edges: defineTable({
+		namespace: files_list_namespace_validator,
+		family: files_list_set_family_validator,
+		owner: files_list_set_owner_validator,
+		target: v.id("files_list_set_pages"),
+	})
+		.index("by_namespace_family_owner", ["namespace", "family", "owner"])
+		.index("by_target", ["target"]),
+
+	files_list_set_gc: defineTable({
+		namespace: files_list_namespace_validator,
+		family: files_list_set_family_validator,
+		target: v.id("files_list_set_pages"),
+	}).index("by_namespace_family", ["namespace", "family"]),
 
 	files_nodes: defineTable({
 		moveCohortId: v.optional(v.id("files_move_cohorts")),
