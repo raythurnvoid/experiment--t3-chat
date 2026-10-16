@@ -117,28 +117,135 @@ async function db_pending_job(ctx: MutationCtx, cohort: Doc<"files_move_cohorts"
 
 export const arm = internalMutation({
 	args: {
-		runId: v.id("files_transfer_runs"), cohortId: v.id("files_move_cohorts"),
-		runGeneration: v.number(),
+		runId: v.id("files_transfer_runs"),
+		cohortId: v.id("files_move_cohorts"),
 	},
 	returns: v.object({
-		runId: v.id("files_transfer_runs"), cohortId: v.id("files_move_cohorts"),
-		step: v.number(), runGeneration: v.number(), jobId: v.id("_scheduled_functions"),
-		serverNow: v.number(), scheduledTime: v.number(),
+		runId: v.id("files_transfer_runs"),
+		cohortId: v.id("files_move_cohorts"),
+		step: v.number(),
+		runGeneration: v.number(),
+		jobId: v.id("_scheduled_functions"),
+		serverNow: v.number(),
+		scheduledTime: v.number(),
+		previousRunGeneration: v.number(),
+		readyWindow: v.object({
+			nodes: v.array(
+				v.object({
+					recordId: v.id("files_move_cohort_nodes"),
+					nodeId: v.id("files_nodes"),
+					metadataId: v.id("files_metadata_docs"),
+				}),
+			),
+		}),
 	}),
 	handler: async (ctx, args) => {
 		const current = await ctx.db.get("files_move_cohorts", args.cohortId);
-		if (!current) throw new Error("MOVE_PAGE_PROOF_SETUP_SCOPE_OR_TUPLE");
-		const cohort = await db_check(ctx, { ...args, step: current.step });
+		if (!current?.runJob) throw new Error("MOVE_PAGE_PROOF_SETUP_SCOPE_OR_TUPLE");
+		const cohort = await db_check(ctx, { ...args, step: current.step, runGeneration: current.runJob.generation });
+		const now = Date.now();
 		// Keep the proof window inside the normal two-minute recovery delay.
-		if (Date.now() - cohort.operationTime > 30_000)
-			throw new Error("MOVE_PAGE_PROOF_SETUP_COHORT_AGE");
+		if (now - cohort.operationTime > 30_000) throw new Error("MOVE_PAGE_PROOF_SETUP_COHORT_AGE");
+		const previousOwner = cohort.runJob;
+		if (!previousOwner) throw new Error("MOVE_PAGE_PROOF_SETUP_OWNER");
+		const previousRunGeneration = previousOwner.generation;
+		const previousJob = await ctx.db.system.get(previousOwner.id);
+		const previousArgs: unknown = previousJob?.args[0];
+		// A running chain keeps its entry step while the logical owner advances.
+		if (
+			!previousJob ||
+			previousJob.name !== "files_move_run.js:run" ||
+			(previousJob.state.kind !== "pending" && previousJob.state.kind !== "inProgress") ||
+			previousJob.scheduledTime > now ||
+			previousJob.args.length !== 1 ||
+			typeof previousArgs !== "object" ||
+			previousArgs === null ||
+			!("cohortId" in previousArgs) ||
+			previousArgs.cohortId !== cohort._id ||
+			!("runGeneration" in previousArgs) ||
+			previousArgs.runGeneration !== previousRunGeneration ||
+			!("mode" in previousArgs) ||
+			previousArgs.mode !== "chain" ||
+			!("step" in previousArgs) ||
+			typeof previousArgs.step !== "number" ||
+			!Number.isSafeInteger(previousArgs.step) ||
+			previousArgs.step < 0 ||
+			previousArgs.step > cohort.step
+		)
+			throw new Error("MOVE_PAGE_PROOF_SETUP_JOB_WINDOW");
+		if (cohort.workPhase !== "sides") throw new Error("MOVE_PAGE_PROOF_SETUP_SIDES_WINDOW");
+		const cursor = cohort.stagingCursor
+			? (JSON.parse(cohort.stagingCursor) as { order: number; part: number; page: string | null })
+			: { order: -1, part: 0, page: null };
+		if (
+			!Number.isSafeInteger(cursor.order) ||
+			cursor.order < -1 ||
+			![0, 1, 2, 3].includes(cursor.part) ||
+			cursor.page !== null
+		)
+			throw new Error("MOVE_PAGE_PROOF_SETUP_SIDES_WINDOW");
+		// This bounded prefix is only for the fixed QA fixture, not a Move limit.
+		const records = await ctx.db
+			.query("files_move_cohort_nodes")
+			.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id).gt("order", cursor.order))
+			.take(8);
+		const nodes: Array<{
+			recordId: Id<"files_move_cohort_nodes">;
+			nodeId: Id<"files_nodes">;
+			metadataId: Id<"files_metadata_docs">;
+		}> = [];
+		for (const [index, record] of records.entries()) {
+			const [before, after, item] = await Promise.all([
+				record.beforePlaceId ? ctx.db.get("files_saved_places", record.beforePlaceId) : null,
+				record.afterPlaceId ? ctx.db.get("files_saved_places", record.afterPlaceId) : null,
+				record.itemId ? ctx.db.get("files_move_cohort_items", record.itemId) : null,
+			]);
+			const ownsContent = item?.nodeRecordId === record._id && item.contentId !== null;
+			if (
+				!before ||
+				!after ||
+				before.cohortId !== cohort._id ||
+				after.cohortId !== cohort._id ||
+				before.view !== "before" ||
+				after.view !== "after" ||
+				before.nodeId !== record.nodeId ||
+				after.nodeId !== record.nodeId ||
+				ownsContent ||
+				before.archiveOperationId !== after.archiveOperationId
+			)
+				throw new Error("MOVE_PAGE_PROOF_SETUP_SIDES_WINDOW");
+			if (index === 0 && cursor.part !== 0) continue;
+			const metadata = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", cohort.organizationId)
+						.eq("workspaceId", cohort.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", record.nodeId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined),
+				)
+				.first();
+			if (metadata) nodes.push({ recordId: record._id, nodeId: record.nodeId, metadataId: metadata._id });
+			if (nodes.length === 2) break;
+		}
+		if (nodes.length !== 2) throw new Error("MOVE_PAGE_PROOF_SETUP_SIDES_WINDOW");
 		await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id, handoff: true, delayMs: 60_000 });
 		const armed = await ctx.db.get("files_move_cohorts", cohort._id);
 		if (!armed) throw new Error("MOVE_PAGE_PROOF_SETUP_OWNER");
 		const { owner, job, serverNow } = await db_pending_job(ctx, armed);
+		if (owner.generation !== previousRunGeneration + 1) throw new Error("MOVE_PAGE_PROOF_SETUP_OWNER");
 		return {
-			runId: args.runId, cohortId: armed._id, step: armed.step,
-			runGeneration: owner.generation, jobId: job._id, serverNow, scheduledTime: job.scheduledTime,
+			runId: args.runId,
+			cohortId: armed._id,
+			step: armed.step,
+			runGeneration: owner.generation,
+			jobId: job._id,
+			serverNow,
+			scheduledTime: job.scheduledTime,
+			previousRunGeneration,
+			readyWindow: { nodes },
 		};
 	},
 });
