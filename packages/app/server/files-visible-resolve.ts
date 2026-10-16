@@ -102,13 +102,14 @@ export function files_visible_resolve_db_create(
 	async function run<T>(
 		operation: files_visible_resolve_Operation,
 		hasReadBudget?: () => Promise<boolean>,
+		stepLimit = Number.MAX_SAFE_INTEGER,
 	): Promise<T | null> {
 		if (budget.exhausted) return null;
 		await machine.next();
 		const outcome = await machine.run({
 			operation,
 			fence: args.resume?.fence ?? "query",
-			steps: Number.MAX_SAFE_INTEGER,
+			steps: stepLimit,
 			readLimit: Math.max(0, budget.readLimit - budget.readCount),
 			hasReadBudget,
 		});
@@ -158,8 +159,16 @@ export function files_visible_resolve_db_create(
 		fixedView: args.fixedView,
 		resume,
 		resolve: (target: files_PendingTarget) => run<files_visible_resolve_Resolved>({ kind: "target", target }),
-		resolveFacts: (target: files_PendingTarget, hasReadBudget?: () => Promise<boolean>) =>
-			run<files_visible_resolve_Facts>({ kind: "facts", target }, hasReadBudget),
+		resolveFacts: (
+			target: files_PendingTarget,
+			hasReadBudget?: () => Promise<boolean>,
+			options?: { claimOnly?: boolean; stepLimit?: number },
+		) =>
+			run<files_visible_resolve_Facts>(
+				{ kind: "facts", target, ...(options?.claimOnly ? { claimOnly: true } : {}) },
+				hasReadBudget,
+				options?.stepLimit,
+			),
 		resolveParent: (parent: files_PendingParent) => run<files_visible_resolve_Parent>({ kind: "parent", parent }),
 		findSavedMove: (parent: files_PendingParent, name: string) =>
 			run<Doc<"files_pending_updates">>({ kind: "move", parent, name, cursor: null }),

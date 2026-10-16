@@ -816,6 +816,7 @@ export const run_job = internalMutation({
 					target: item.target,
 					pendingUpdateId: item.pendingUpdateId ?? undefined,
 					fieldsChanged: item.fieldsChanged,
+					ownerPathPending: item.ownerPathPending,
 				});
 				done++;
 			}

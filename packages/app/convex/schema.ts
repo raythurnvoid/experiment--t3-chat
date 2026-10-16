@@ -4406,6 +4406,11 @@ const app_convex_schema = defineSchema({
 						 * A pending metadata doc of the target changed, so its place fields sync again.
 						 */
 						fieldsChanged: v.boolean(),
+						/**
+						 * The hide changed before its folder path was ready. Keep that follow-up until it is queued.
+						 * Missing means no path follow-up was deferred.
+						 */
+						ownerPathPending: v.optional(v.boolean()),
 					}),
 				),
 			}),
