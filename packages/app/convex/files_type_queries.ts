@@ -267,8 +267,6 @@ export const begin = internalMutation({
 			return Result({ _nay: { message: "Invalid file search options" } });
 		if (!(await files_type_queries_db_authorize(ctx, args)))
 			return Result({ _nay: { message: "File search unavailable" } });
-		// Keep draft search closed until existing proposals pass the index backfill and audit.
-		if (args.overlay) return Result({ _nay: { message: "Content-type search is being prepared. Try again later." } });
 		const queryId = await ctx.db.insert("files_type_queries", {
 			...args,
 			// A later call may resume this query. Its own run is checked at the caller boundary.
