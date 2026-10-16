@@ -134,10 +134,10 @@ function expect_costs({ costs, walks }: ReturnType<typeof track_costs>) {
 	console.info("deep source Normalize peaks", JSON.stringify(Object.fromEntries(peaks)));
 }
 
-async function read_continuation(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_transfer_runs">) {
+async function read_normalize_state(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"files_transfer_runs">) {
 	const state = await f.t.run(async (ctx) => {
 		const run = await ctx.db.get("files_transfer_runs", runId);
-		if (!run?.selection?.normalizingParentPath) throw new Error("Expected a real unfinished Normalize walk");
+		if (!run?.selection) throw new Error("Expected the Normalize selection");
 		const activity = await ctx.db
 			.query("activities")
 			.withIndex("by_source_id", (q) => q.eq("source.id", runId))
@@ -154,18 +154,21 @@ async function read_continuation(f: Awaited<ReturnType<typeof fixture>>, runId: 
 	});
 	expect(state.run.step).toBe("normalize");
 	if (!state.next?.path || !state.activity?.progress) throw new Error("Expected the unfinished input and its Activity");
-	const remainingParent = state.run.selection!.normalizingParentPath!;
+	const remainingParent = state.run.selection!.normalizingParentPath;
 	expect(state.next.order, "the continuation belongs to the first input after the cursor").toBe(
 		state.run.selection!.cursor + 1,
 	);
-	expect(
-		state.next.path.startsWith(remainingParent + "/"),
-		"the remaining parent belongs to the frozen source path",
-	).toBe(true);
-	const checked =
-		state.next.path.slice(0, state.next.path.lastIndexOf("/")).split("/").length - remainingParent.split("/").length;
-	expect(checked, "the unfinished source has made parent-check progress").toBeGreaterThan(0);
-	expect(checked % 32, "the next unchecked parent follows complete 32-check slices").toBe(0);
+	// A yield can also fall between completed sources.
+	if (remainingParent !== undefined) {
+		expect(
+			state.next.path.startsWith(remainingParent + "/"),
+			"the remaining parent belongs to the frozen source path",
+		).toBe(true);
+		const checked =
+			state.next.path.slice(0, state.next.path.lastIndexOf("/")).split("/").length - remainingParent.split("/").length;
+		expect(checked, "the unfinished source has made parent-check progress").toBeGreaterThan(0);
+		expect(checked % 32, "the next unchecked parent follows complete 32-check slices").toBe(0);
+	}
 	expect(
 		state.items.some((item) => item.source.id === state.next!.source.id),
 		"an unfinished source is not discovered",
@@ -197,7 +200,7 @@ describe("Transfer source normalization", () => {
 		const accepted = await acceptance;
 		if (accepted._nay) throw new Error(accepted._nay.message);
 		const { runId, activityId } = accepted._yay;
-		let partial = await read_continuation(f, runId);
+		let partial = await read_normalize_state(f, runId);
 		expect(
 			partial.activity!.progress!.discovered,
 			"the unfinished source leaves discovered at the completed input count",
@@ -209,7 +212,11 @@ describe("Transfer source normalization", () => {
 			await f.t.mutation(internal.files_transfer.advance, { runId });
 			const run = await f.t.run((ctx) => ctx.db.get("files_transfer_runs", runId));
 			if (run?.step !== "normalize") break;
-			const next = await read_continuation(f, runId);
+			const next = await read_normalize_state(f, runId);
+			if (next.run.selection!.normalizingParentPath === undefined)
+				expect(next.run.selection!.cursor, "a completed source advances its input cursor").toBeGreaterThan(
+					partial.run.selection!.cursor,
+				);
 			if (next.run.selection!.cursor === partial.run.selection!.cursor)
 				expect(next.activity!.progress!.discovered, "a resumed unfinished source leaves discovered unchanged").toBe(
 					partial.activity!.progress!.discovered,
@@ -289,7 +296,8 @@ describe("Transfer source normalization", () => {
 		await expect(finalAppend, "complete deep input append stays within the real mutation limits").resolves.toEqual({
 			_yay: null,
 		});
-		const partial = await read_continuation(f, runId);
+		const partial = await read_normalize_state(f, runId);
+		expect(partial.run.selection!.normalizingParentPath, "replay starts during a saved parent walk").toBeTruthy();
 		expect(partial.items, "covered children and their duplicate create no root item").toEqual([]);
 		expect(partial.activity!.progress!.discovered).toBe(0);
 		const scheduled = await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
@@ -354,7 +362,8 @@ describe("Transfer source normalization", () => {
 		const accepted = await f.asUser.mutation(api.files_transfer.accept_input, args);
 		if (accepted._nay) throw new Error(accepted._nay.message);
 		const { runId, activityId } = accepted._yay;
-		const partial = await read_continuation(f, runId);
+		const partial = await read_normalize_state(f, runId);
+		expect(partial.run.selection!.normalizingParentPath, "Stop starts during a saved parent walk").toBeTruthy();
 		expect(await f.asUser.mutation(api.files_transfer.stop, { membershipId: f.scope.membershipId, runId })).toEqual({
 			_yay: null,
 		});
