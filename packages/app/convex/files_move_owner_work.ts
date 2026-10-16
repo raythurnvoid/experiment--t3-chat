@@ -485,6 +485,7 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 			work.target.kind === "saved"
 				? await files_saved_placement_db_get_node(ctx.db, work.target.id, { cohortId: cohort._id, view: "before" })
 				: await ctx.db.get("files_pending_nodes", work.target.id);
+		let parentPage = false;
 		if (node?.kind === "folder") {
 			await db_add_parent(ctx, cohort._id, work.userId, work.target);
 			const place = await ctx.db
@@ -498,7 +499,7 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 						.eq("moveView.view", undefined),
 				)
 				.unique();
-			const facts = await files_pending_overlay_db_resolve_facts(ctx, {
+			const resolved = await files_pending_overlay_db_resolve_facts(ctx, {
 				organizationId: cohort.organizationId,
 				workspaceId: cohort.workspaceId,
 				userId: work.userId,
@@ -506,8 +507,9 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 				target: work.target,
 				allowPagination: true,
 			});
-			if (!facts) return Result({ _yay: { done: false, paged: true, parentPage: true } });
-			const own = facts.own;
+			if (!resolved.facts) return Result({ _yay: { done: false, paged: true, parentPage: true } });
+			parentPage = resolved.parentPage;
+			const own = resolved.facts.own;
 			for (const prefix of new Set([
 				place?.ownerTreePath,
 				place?.childTreePath,
@@ -523,7 +525,7 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 			}
 		}
 		await ctx.db.patch("files_move_owner_work", work._id, { status: "planned" });
-		return Result({ _yay: { done: false, paged: node?.kind === "folder", parentPage: node?.kind === "folder" } });
+		return Result({ _yay: { done: false, paged: parentPage, parentPage } });
 	}
 	// Each probe below uses the same range as its page.
 	const private_children = ({ userId, parent }: ParentRange) =>
@@ -812,8 +814,9 @@ export async function files_move_owner_work_db_stage(ctx: MutationCtx, args: Arg
 		if (cursor.phase === "headers") {
 			const staged = await files_pending_overlay_db_stage_owner(ctx, { ...args, ownerWorkId: range.ownerWorkId });
 			if (staged._nay) return staged;
-			paged = true;
-			parentPage = true;
+			// Unfinished facts also need a fresh transaction.
+			parentPage = staged._yay.parentPage || "unfinished" in staged._yay;
+			paged = parentPage;
 			if ("unfinished" in staged._yay) break;
 			cursor.phase = "pending_plain";
 		} else if (cursor.phase === "pending_plain" || cursor.phase === "pending_metadata") {
