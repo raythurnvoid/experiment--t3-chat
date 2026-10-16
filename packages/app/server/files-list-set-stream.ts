@@ -10,6 +10,7 @@ import { files_list_set_block_combine } from "./files-list-set-block.ts";
 import {
 	files_list_set_directory_db_block_at,
 	files_list_set_directory_db_next_block,
+	files_list_set_directory_ID_KINDS,
 	type files_list_set_directory_Handle,
 } from "./files-list-set-directory.ts";
 
@@ -32,22 +33,31 @@ export type files_list_set_stream_Expr =
  * Check every leaf before the first page read, so one expression never mixes ID spaces. The same namespace and
  * member kind do not grant access. The caller picks the sets the reader may use.
  *
- * The directory checks each block key before its first read.
+ * The directory checks each block key before its first read. It also checks the handle's family, but only when
+ * that set runs, after other sets may have read pages. So check the family's member kind here too.
  */
-function check_domain(expr: files_list_set_stream_Expr, namespace: Namespace, memberKind: MemberKind) {
+function check_expr(expr: files_list_set_stream_Expr, namespace: Namespace, memberKind: MemberKind) {
 	if (expr.kind === "set") {
-		if (compareValues(expr.handle.namespace, namespace) !== 0 || expr.handle.memberKind !== memberKind) {
-			throw should_never_happen("List set stream domain mismatch", { handle: expr.handle, namespace, memberKind });
+		if (
+			compareValues(expr.handle.namespace, namespace) !== 0 ||
+			expr.handle.memberKind !== memberKind ||
+			files_list_set_directory_ID_KINDS[expr.handle.family].member !== memberKind
+		) {
+			throw should_never_happen("List set stream namespace or member kind mismatch", {
+				handle: expr.handle,
+				namespace,
+				memberKind,
+			});
 		}
 		if (expr.ownerId < 0n || expr.ownerId >= 1n << 63n) throw new RangeError("List set ID must be a nonnegative int64");
 	} else if (expr.kind === "difference") {
-		check_domain(expr.left, namespace, memberKind);
-		check_domain(expr.right, namespace, memberKind);
+		check_expr(expr.left, namespace, memberKind);
+		check_expr(expr.right, namespace, memberKind);
 	} else {
 		if (expr.kind === "intersection" && !expr.inputs.length) {
 			throw should_never_happen("List set intersection needs an input");
 		}
-		for (const input of expr.inputs) check_domain(input, namespace, memberKind);
+		for (const input of expr.inputs) check_expr(input, namespace, memberKind);
 	}
 }
 
@@ -153,7 +163,7 @@ export async function files_list_set_stream_db_next(
 	db: QueryCtx["db"],
 	args: { namespace: Namespace; memberKind: MemberKind; expr: files_list_set_stream_Expr; after: bigint | null },
 ) {
-	check_domain(args.expr, args.namespace, args.memberKind);
+	check_expr(args.expr, args.namespace, args.memberKind);
 	return next(db, args.expr, args.after);
 }
 
@@ -164,6 +174,6 @@ export async function files_list_set_stream_db_block_at(
 	db: QueryCtx["db"],
 	args: { namespace: Namespace; memberKind: MemberKind; expr: files_list_set_stream_Expr; key: bigint },
 ) {
-	check_domain(args.expr, args.namespace, args.memberKind);
+	check_expr(args.expr, args.namespace, args.memberKind);
 	return block_at(db, args.expr, args.key);
 }

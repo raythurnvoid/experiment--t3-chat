@@ -52,7 +52,11 @@ const INLINE_MAX = 64;
 // Split member IDs into 8,192-ID bitmap blocks. The block key is `id >> 13n` and the offset is `id & 8191n`.
 const BLOCK_SHIFT = 13n;
 const BLOCK_MASK = 8191n;
-const id_kinds = {
+
+/**
+ * The owner and member ID kinds of each family. The set stream also checks handles with it before any read.
+ */
+export const files_list_set_directory_ID_KINDS = {
 	policy_entries: { owner: "policy", member: "entry" },
 	audience_policies: { owner: "audience", member: "policy" },
 } as const;
@@ -65,7 +69,8 @@ function check_scope(stored: Scope, scope: Scope) {
 
 function check_handle(handle: files_list_set_directory_Handle, scope: Scope) {
 	check_scope(handle, scope);
-	if (handle.ownerKind !== id_kinds[scope.family].owner || handle.memberKind !== id_kinds[scope.family].member) {
+	const kinds = files_list_set_directory_ID_KINDS[scope.family];
+	if (handle.ownerKind !== kinds.owner || handle.memberKind !== kinds.member) {
 		throw should_never_happen("List set ID kind mismatch", { handle, scope });
 	}
 }
@@ -75,8 +80,9 @@ function check_id(id: bigint) {
 }
 
 function check_block_key(key: bigint) {
-	if (key < 0n || key >= 1n << (63n - BLOCK_SHIFT))
+	if (key < 0n || key >= 1n << (63n - BLOCK_SHIFT)) {
 		throw new RangeError("List set block key must come from a nonnegative int64 ID");
+	}
 }
 
 function set_value(item: Item): files_list_set_directory_Set {

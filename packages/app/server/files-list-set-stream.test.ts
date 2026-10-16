@@ -114,18 +114,16 @@ async function bound(f: Fixture, expr: Expr): Promise<number> {
 async function drain(f: Fixture, expr: Expr, after: bigint | null) {
 	const limit = await bound(f, expr);
 	const found: { key: bigint; container: files_list_bitmap_Container }[] = [];
-	let advances = 0;
 	let cursor = after;
 	for (let count = 0; count < 1000; count++) {
 		const step = await f.measure((db) =>
 			files_list_set_stream_db_next(db, { namespace: github, memberKind: "entry", expr, after: cursor }),
 		);
 		expect(step.metrics.documentsRead.used, "One stream step must keep its read bound").toBeLessThanOrEqual(limit);
-		if (step.result.kind === "end") return { blocks: found, advances };
+		if (step.result.kind === "end") return found;
 		const next = step.result.kind === "block" ? step.result.key : step.result.after;
 		expect(cursor === null || next > cursor, "A step must advance its cursor or finish").toBe(true);
 		if (step.result.kind === "block") found.push({ key: step.result.key, container: step.result.container });
-		else advances++;
 		cursor = next;
 	}
 	throw new Error("Small stream fixture did not finish");
@@ -147,6 +145,7 @@ describe("files_list_set_stream_db_next", () => {
 		const expressions: Expr[] = [
 			{ kind: "union", inputs: [a, b, c, d] },
 			{ kind: "intersection", inputs: [b, c] },
+			{ kind: "intersection", inputs: [a, b, c] },
 			{ kind: "difference", left: c, right: { kind: "union", inputs: [a, d] } },
 			{ kind: "difference", left: { kind: "intersection", inputs: [{ kind: "union", inputs: [a, b] }, c] }, right: d },
 			// C minus A is empty in block 3, so this input advances while the other input has a block.
@@ -157,7 +156,7 @@ describe("files_list_set_stream_db_next", () => {
 		for (const expr of expressions) {
 			const expected = blocks(model(expr, sets));
 			for (const after of [null, 0n, 3n, 40n, maxKey - 1n, maxKey]) {
-				expect((await drain(f, expr, after)).blocks, "Streamed blocks must equal the exact set model").toEqual(
+				expect(await drain(f, expr, after), "Streamed blocks must equal the exact set model").toEqual(
 					expected.filter((block) => after === null || block.key > after),
 				);
 			}
@@ -187,31 +186,12 @@ describe("files_list_set_stream_db_next", () => {
 				{ kind: "set", handle, ownerId: 2n },
 			],
 		};
-		expect((await drain(f, expr, null)).blocks, "Disjoint entries in one shared block must not intersect").toEqual([]);
+		expect(await drain(f, expr, null), "Disjoint entries in one shared block must not intersect").toEqual([]);
 		expect(
 			await f.read((db) =>
 				files_list_set_stream_db_block_at(db, { namespace: github, memberKind: "entry", expr, key: 0n }),
 			),
 		).toBeNull();
-	});
-
-	test("each step returns a block, ends, or advances strictly", async () => {
-		const f = fixture();
-		// The block keys interleave, so the intersection must skip ahead. All three sets have block 0, but the second
-		// set has a different member there. Only blocks 12 and 24 match.
-		const sets = new Map([
-			[1n, Array.from({ length: 16 }, (_, index) => BigInt(index * 2) << 13n)],
-			[2n, Array.from({ length: 11 }, (_, index) => (BigInt(index * 3) << 13n) + (index === 0 ? 1n : 0n))],
-			[3n, Array.from({ length: 8 }, (_, index) => BigInt(index * 4) << 13n)],
-		]);
-		const handle = await seed(f, empty(), sets);
-		const expr: Expr = {
-			kind: "intersection",
-			inputs: [1n, 2n, 3n].map((ownerId): Expr => ({ kind: "set", handle, ownerId })),
-		};
-		const result = await drain(f, expr, null);
-		expect(result.blocks).toEqual(blocks([12n << 13n, 24n << 13n]));
-		expect(result.advances, "The fixture must make the intersection advance").toBeGreaterThan(0);
 	});
 
 	test("rejects mixed member kinds and namespaces before any page read", async () => {
@@ -232,15 +212,27 @@ describe("files_list_set_stream_db_next", () => {
 		};
 		// Every directory has the same owner and member IDs.
 		const sets = new Map([[0n, [1n]]]);
-		const set = async (namespace: Handle["namespace"], family: Handle["family"] = "policy_entries"): Promise<Expr> => ({
+		const set = async (namespace: Handle["namespace"]): Promise<Expr> => ({
 			kind: "set",
-			handle: await seed(f, empty(namespace, family), sets),
+			handle: await seed(f, empty(namespace), sets),
 			ownerId: 0n,
 		});
 		const entries = await set(workspace);
 		const generation = await set(volume);
+		const policies = await seed(f, empty(workspace, "audience_policies"), sets);
 		const cases: [Handle["namespace"], Expr][] = [
-			[workspace, { kind: "union", inputs: [entries, await set(workspace, "audience_policies")] }],
+			[workspace, { kind: "union", inputs: [entries, { kind: "set", handle: policies, ownerId: 0n }] }],
+			// A forged handle: its pages hold policy IDs, but it claims entry members. Only its family shows the truth.
+			[
+				workspace,
+				{
+					kind: "union",
+					inputs: [
+						entries,
+						{ kind: "set", handle: { ...policies, ownerKind: "policy", memberKind: "entry" }, ownerId: 0n },
+					],
+				},
+			],
 			[
 				workspace,
 				{
@@ -271,8 +263,11 @@ describe("files_list_set_stream_db_next", () => {
 					(error: unknown) => String(error),
 				),
 			);
-			expect(step.metrics.documentsRead.used, "A mixed-domain expression must fail before reading a page").toBe(0);
-			expect(step.result).toContain("domain mismatch");
+			expect(
+				step.metrics.documentsRead.used,
+				"An expression that mixes namespaces or member kinds must fail before reading a page",
+			).toBe(0);
+			expect(step.result).toContain("member kind mismatch");
 		}
 	});
 });

@@ -6,7 +6,7 @@ import {
 
 /**
  * Combine one matching 8,192-ID block. Empty blocks have no stored record.
- * The map caller checks the namespace, ID kind and block key before this step.
+ * The set directory and the set stream check the namespace, ID kind and block key before this step.
  */
 export function files_list_set_block_combine(args: {
 	left: files_list_bitmap_Container | null;
