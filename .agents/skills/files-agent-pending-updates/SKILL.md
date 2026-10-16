@@ -742,8 +742,8 @@ unused fields when a node moves to a shallower folder or root.
 
 Full inline path resolution checks all seven transaction metrics before each source read. A selected-view
 helper can read several docs, so a logical read count alone is not enough. It leaves 25% free
-to save unfinished work and its counted follow-up. The short claim check keeps the durable step's
-256-read reserve and leaves 25% free for the other metrics. Durable steps keep their own small step limits.
+to save unfinished work and its counted follow-up. The short claim check keeps 256 index ranges
+free and leaves 25% free for the other metrics. Durable steps keep their own small step limits.
 
 Closed private nodes need no path lookup. The flush removes their derived docs from their
 source state. Their existing counted jobs clear any stored resolver frames before search is ready.
