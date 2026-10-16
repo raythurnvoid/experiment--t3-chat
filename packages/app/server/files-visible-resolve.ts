@@ -137,10 +137,10 @@ export function files_visible_resolve_db_create(
 		});
 		if (outcome.status !== "invalidated") budget.readCount += outcome.reads;
 		if (outcome.status === "invalidated") return { status: "invalidated" as const };
-		if (outcome.status === "unfinished") return { status: "unfinished" as const };
+		if (outcome.status === "unfinished") return { status: "unfinished" as const, paginated: outcome.paginated };
 		const value = outcome.value as files_visible_resolve_Value<T>;
 		const hidden = value === null || (typeof value === "object" && "hidden" in value && value.hidden);
-		return { status: hidden ? ("hidden" as const) : ("resolved" as const), value };
+		return { status: hidden ? ("hidden" as const) : ("resolved" as const), value, paginated: outcome.paginated };
 	}
 
 	return {

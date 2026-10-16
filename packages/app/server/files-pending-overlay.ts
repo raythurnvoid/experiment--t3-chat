@@ -1117,7 +1117,7 @@ export async function files_pending_overlay_db_resolve_facts(
 		allowPagination: boolean;
 		reader?: Reader;
 	},
-): Promise<files_visible_resolve_Facts | null> {
+): Promise<{ facts: files_visible_resolve_Facts | null; parentPage: boolean }> {
 	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId, userId: args.userId };
 	const by_key = (key: string) =>
 		ctx.db
@@ -1154,14 +1154,14 @@ export async function files_pending_overlay_db_resolve_facts(
 		claimed: false,
 		cycle: false,
 	};
-	if (!saved && closed) return emptyFacts;
+	if (!saved && closed) return { facts: emptyFacts, parentPage: false };
 	if (!saved && args.reader && !args.reader.exhausted) {
 		const facts = await args.reader.resolveFacts(args.target, async () => {
 			// Keep room to save unfinished work and its counted follow-up job.
 			const metrics = await ctx.meta.getTransactionMetrics();
 			return Object.values(metrics).every((metric) => metric.used * 4 < (metric.used + metric.remaining) * 3);
 		});
-		if (facts && !args.reader.exhausted) return facts;
+		if (facts && !args.reader.exhausted) return { facts, parentPage: false };
 	}
 	const state = await files_pending_review_facts_db_pin_structure(ctx.db, scope);
 	const view = await files_saved_placement_db_get_view(ctx.db, scope);
@@ -1198,11 +1198,11 @@ export async function files_pending_overlay_db_resolve_facts(
 		return docs.length < 64;
 	};
 	if (saved && (closed || saved.fence !== fence || saved.facts)) {
-		if (!(await clear())) return null;
+		if (!(await clear())) return { facts: null, parentPage: false };
 		await ctx.db.delete("files_pending_overlay_resolve_work", stateDoc!._id);
 		stateDoc = null;
-		if (closed) return emptyFacts;
-		if (saved.fence === fence && saved.facts) return saved.facts;
+		if (closed) return { facts: emptyFacts, parentPage: false };
+		if (saved.fence === fence && saved.facts) return { facts: saved.facts, parentPage: false };
 		saved = null;
 	}
 	const docs = new Map<string, Doc<"files_pending_overlay_resolve_work"> | null>();
@@ -1235,7 +1235,6 @@ export async function files_pending_overlay_db_resolve_facts(
 	const remaining = (await ctx.meta.getTransactionMetrics()).databaseQueries.remaining;
 	const marks = (ctx as WrappedCtx)[FLUSH_MARKS];
 	const allowPagination = args.allowPagination && !marks?.resolverPaginationUsed;
-	if (allowPagination && marks) marks.resolverPaginationUsed = true;
 	const result = await reader.resume(
 		{ kind: "facts", target: args.target },
 		{
@@ -1244,12 +1243,14 @@ export async function files_pending_overlay_db_resolve_facts(
 		},
 	);
 	if (result.status === "invalidated") throw should_never_happen("Overlay resolver fence differs from its state", args);
+	const parentPage = result.paginated;
+	if (parentPage && marks) marks.resolverPaginationUsed = true;
 	if (result.status !== "unfinished") {
-		if (!saved) return result.value;
+		if (!saved) return { facts: result.value, parentPage };
 		await write_state(result.value);
-		if (!(await clear())) return null;
+		if (!(await clear())) return { facts: null, parentPage };
 		await ctx.db.delete("files_pending_overlay_resolve_work", stateDoc!._id);
-		return result.value;
+		return { facts: result.value, parentPage };
 	}
 	for (const [key, value] of writes) {
 		const doc = await read(key);
@@ -1266,7 +1267,7 @@ export async function files_pending_overlay_db_resolve_facts(
 			});
 	}
 	await write_state();
-	return null;
+	return { facts: null, parentPage };
 }
 
 /**
@@ -1517,7 +1518,7 @@ export async function files_pending_overlay_db_stage_owner(
 	if (checked._nay) return checked;
 	const { cohort, work } = checked._yay;
 	if (work.status === "staged" || work.status === "validated" || work.status === "materialized")
-		return Result({ _yay: work });
+		return Result({ _yay: { ...work, parentPage: false } });
 	const scope = { organizationId: cohort.organizationId, workspaceId: cohort.workspaceId, userId: work.userId };
 	const source = await ctx.db
 		.query("files_pending_updates")
@@ -1554,13 +1555,13 @@ export async function files_pending_overlay_db_stage_owner(
 	const before = { cohortId: cohort._id, view: "before" as const };
 	const after = { cohortId: cohort._id, view: "after" as const };
 	const pendingUpdate = source ? await files_saved_placement_db_get_proposal(ctx.db, source._id, after) : null;
-	const facts = await files_pending_overlay_db_resolve_facts(ctx, {
+	const { facts, parentPage } = await files_pending_overlay_db_resolve_facts(ctx, {
 		...scope,
 		target: pendingUpdate?.target ?? work.target,
 		fixedView: after,
 		allowPagination: true,
 	});
-	if (!facts) return Result({ _yay: { ...work, unfinished: true } });
+	if (!facts) return Result({ _yay: { ...work, unfinished: true, parentPage } });
 	const beforeType = await ctx.db
 		.query("files_pending_type_entries")
 		.withIndex("by_target_user", (q) =>
@@ -1622,7 +1623,7 @@ export async function files_pending_overlay_db_stage_owner(
 		if (slot?.cohortId !== cohort._id) throw should_never_happen("Staged owner has no workspace slot", args);
 		await files_saved_placement_db_bump_search_generation(ctx, cohort);
 	}
-	return Result({ _yay: { ...work, ...fields } });
+	return Result({ _yay: { ...work, ...fields, parentPage } });
 }
 
 type Flush = {
@@ -1826,7 +1827,7 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 				target,
 				allowPagination: state.ownJob?.doc.kind === "targets",
 				reader,
-			})));
+			})).facts);
 	if (facts === null) {
 		defer_target(state, mark);
 		// Old frames may take more pages, but closed drafts must disappear from listings now.
@@ -1963,12 +1964,12 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 		else if (desired.savedNode) {
 			const node = desired.savedNode;
 			const fullFacts = claimFacts
-				? await files_pending_overlay_db_resolve_facts(ctx, {
+				? (await files_pending_overlay_db_resolve_facts(ctx, {
 						...scope,
 						target,
 						allowPagination: false,
 						reader,
-					})
+					})).facts
 				: facts;
 			if (fullFacts === null) defer_target(state, { ...mark, ownerPathPending: true });
 			const parent = fullFacts?.savedParent;

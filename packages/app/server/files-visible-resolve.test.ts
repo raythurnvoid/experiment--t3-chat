@@ -1,10 +1,40 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, onTestFinished, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
 import { files_visible_resolve_db_create, type files_visible_resolve_Store } from "./files-visible-resolve.ts";
+import {
+	files_pending_overlay_db_flush,
+	files_pending_overlay_db_resolve_facts,
+	files_pending_overlay_db_wrap,
+} from "./files-pending-overlay.ts";
+
+function track_pages<T extends object>(query: T, pages: Id<"files_pending_updates">[][], indexed = false): T {
+	return new Proxy(query, {
+		get(target, key) {
+			const method: unknown = Reflect.get(target, key);
+			if (typeof method !== "function") return method;
+			if (key === "withIndex")
+				return (...args: unknown[]) =>
+					track_pages(
+						Reflect.apply(method, target, args),
+						pages,
+						args[0] === "by_org_ws_user_pendingMove_destParent_destName",
+					);
+			if (key === "paginate" && indexed)
+				return async (...args: unknown[]) => {
+					const result = (await Reflect.apply(method, target, args)) as {
+						page: Array<{ _id: Id<"files_pending_updates"> }>;
+					};
+					pages.push(result.page.map((doc) => doc._id));
+					return result;
+				};
+			return method.bind(target);
+		},
+	});
+}
 
 function saved_work() {
 	const docs = new Map<string, string>();
@@ -61,10 +91,136 @@ async function fixture() {
 			return results;
 		});
 
-	return { t, db, create_saved, draft_move, resolve };
+	return { t, db, asUser, create_saved, draft_move, resolve };
 }
 
 describe("files_visible_resolve_db_create", () => {
+	test("reports real claim pages through the facade and owner wrapper", async () => {
+		// Keep the closed proposals until their scheduled cleanup runs.
+		vi.useFakeTimers();
+		onTestFinished(() => {
+			vi.useRealTimers();
+		});
+		const f = await fixture();
+		const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
+		const empty = await f.create_saved("empty");
+		const targets: files_PendingTarget[] = [];
+		const proposalIds = [];
+		for (const name of ["one", "two"]) {
+			targets.push(await f.create_saved(name));
+			const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+				...scope,
+				path: `/draft-${name}`,
+				kind: "folder",
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const target = created._yay.target;
+			const pendingUpdateId = created._yay.pendingUpdateId;
+			if (target.kind !== "private" || !pendingUpdateId) throw new Error("Expected the private folder proposal");
+			const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				...scope,
+				target,
+				destParent: { kind: "root" },
+				destName: name,
+				replace: true,
+			});
+			if (moved._nay) throw new Error(moved._nay.message);
+			const proposal = await f.t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
+			if (!proposal) throw new Error("Expected the private replacement proposal");
+			expect(
+				await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
+					membershipId: f.db.membershipId,
+					target,
+					pendingUpdateId,
+					reviewedRevision: proposal.revision,
+				}),
+			).toEqual({ _yay: null });
+			expect(await f.t.run((ctx) => ctx.db.get("files_pending_nodes", target.id))).toMatchObject({
+				state: "discarded",
+			});
+			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId))).toMatchObject({
+				pendingMove: { destParent: { kind: "root" }, destName: name },
+			});
+			proposalIds.push(pendingUpdateId);
+		}
+
+		const pages: Id<"files_pending_updates">[][] = [];
+		const observe = <T extends Parameters<typeof files_visible_resolve_db_create>[0]>(db: T): T =>
+			new Proxy(db, {
+				get(target, key) {
+					const method: unknown = Reflect.get(target, key);
+					if (typeof method !== "function") return method;
+					if (key === "query")
+						return (...args: unknown[]) => track_pages(Reflect.apply(method, target, args), pages);
+					return method.bind(target);
+				},
+			});
+		const { store } = saved_work();
+		const operation = { kind: "move", parent: { kind: "root" }, name: "one", cursor: null } as const;
+		await f.t.run(async (ctx) => {
+			const reader = files_visible_resolve_db_create(observe(ctx.db), {
+				...scope,
+				resume: { store, fence: "same-view" },
+			});
+			expect(await reader.resume(operation, { stepLimit: 256, allowPagination: false })).toEqual({
+				status: "unfinished",
+				paginated: false,
+			});
+			expect(pages).toEqual([]);
+			expect(await reader.resume(operation, { stepLimit: 256 }), "The facade reports its actual native page").toEqual({
+				status: "hidden",
+				value: null,
+				paginated: true,
+			});
+			expect(await reader.resume(operation, { stepLimit: 256 })).toEqual({
+				status: "hidden",
+				value: null,
+				paginated: false,
+			});
+		});
+		expect(pages).toEqual([[proposalIds[0]]]);
+		pages.length = 0;
+
+		await f.t.run(async (ctx) => {
+			const observed = { ...ctx, db: observe(ctx.db) };
+			const wrapped = { ...observed, ...files_pending_overlay_db_wrap(observed) };
+			const args = { ...scope, allowPagination: true };
+			const noPage = await files_pending_overlay_db_resolve_facts(wrapped, { ...args, target: empty });
+			expect(noPage.facts?.own?.entry.path).toBe("/empty");
+			expect(noPage.parentPage, "Allowing a page does not consume the owner's page slot").toBe(false);
+			const first = await files_pending_overlay_db_resolve_facts(wrapped, { ...args, target: targets[0]! });
+			expect(first.parentPage, "The owner wrapper reports its actual native page").toBe(true);
+			expect(first.facts?.own?.entry.path).toBe("/one");
+			const second = await files_pending_overlay_db_resolve_facts(wrapped, { ...args, target: targets[1]! });
+			expect(second, "The next owner waits before a second parent page").toEqual({ facts: null, parentPage: false });
+			await files_pending_overlay_db_flush(wrapped);
+		});
+		expect(pages, "Only the first owner's real page ran in this parent").toEqual([[proposalIds[0]]]);
+		pages.length = 0;
+		let finished = false;
+		for (let step = 0; step < 10; step++) {
+			const result = await f.t.run(async (ctx) => {
+				const observed = { ...ctx, db: observe(ctx.db) };
+				const wrapped = { ...observed, ...files_pending_overlay_db_wrap(observed) };
+				const result = await files_pending_overlay_db_resolve_facts(wrapped, {
+					...scope,
+					target: targets[1]!,
+					allowPagination: true,
+				});
+				await files_pending_overlay_db_flush(wrapped);
+				return result;
+			});
+			if (step === 0) expect(result.parentPage, "The next parent reads the waiting owner's native page").toBe(true);
+			if (result.facts) {
+				expect(result.facts.own?.entry.path).toBe("/two");
+				finished = true;
+				break;
+			}
+		}
+		expect(finished).toBe(true);
+		expect(pages, "The waiting owner's source page is read once").toEqual([[proposalIds[1]]]);
+	});
+
 	test("resumes a path deeper than 256 targets without returning a budget miss", async () => {
 		const f = await fixture();
 		const depth = 270;

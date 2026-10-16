@@ -75,7 +75,8 @@ export function files_visible_resolve_machine_create<Operation>(args: {
 			head = { fence: input.fence, operation: operationKey, depth: 0, complete: false };
 			await set("frame:0", { operation: input.operation, results: [] });
 		}
-		let paginated = input.allowPagination === false;
+		// Saved results are not a new page in this call.
+		let paginated = false;
 		let reads = 0;
 		for (let step = 0; !head.complete && step < input.steps; step++) {
 			const frame = await get<Frame<Operation>>(`frame:${head.depth}`);
@@ -113,7 +114,7 @@ export function files_visible_resolve_machine_create<Operation>(args: {
 			let result: unknown = null;
 			if (effect.kind === "read") {
 				if (reads >= input.readLimit) break;
-				if (effect.paginated && paginated) break;
+				if (effect.paginated && (paginated || input.allowPagination === false)) break;
 				// A selected-view helper can read several docs. Check the caller's real budget too.
 				if (input.hasReadBudget && !(await input.hasReadBudget())) break;
 				if (effect.paginated) paginated = true;
@@ -136,8 +137,8 @@ export function files_visible_resolve_machine_create<Operation>(args: {
 		}
 		await set("head", head);
 		return head.complete
-			? { status: "complete" as const, value: head.result, reads }
-			: { status: "unfinished" as const, reads };
+			? { status: "complete" as const, value: head.result, reads, paginated }
+			: { status: "unfinished" as const, reads, paginated };
 	}
 
 	return {
