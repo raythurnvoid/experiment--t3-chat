@@ -2655,7 +2655,7 @@ async function db_advance_step(
 	return {
 		kind: "next" as const,
 		step: cohort.step + 1,
-		yield: result._yay.parentPage === true || cohort.workPhase === "publish",
+		yield: result._yay.paged === true || result._yay.parentPage === true || cohort.workPhase === "publish",
 	};
 }
 
