@@ -144,6 +144,14 @@ describe("crypto_seal_cursor", () => {
 		expect((await seal("/a")).length).toBe((await seal(`/${"a".repeat(880)}`)).length);
 	});
 
+	test("seals a large full sort key without expanding all bytes into arguments", async () => {
+		const largePayload = { lastKey: "a".repeat(256 * 1024) };
+		const pending = crypto_seal_cursor({ purpose: "files_list", scope, payload: largePayload });
+		await expect(pending, "A large full key must seal without an argument-count error").resolves.toMatch(/^c1\./);
+		const cursor = await pending;
+		expect(await crypto_open_cursor({ purpose: "files_list", scope, cursor })).toEqual(largePayload);
+	});
+
 	test("opens cursors of the previous secret after a rotation, and refuses an unknown secret", async () => {
 		const cursor = await crypto_seal_cursor({ purpose: "files_list", scope, payload });
 

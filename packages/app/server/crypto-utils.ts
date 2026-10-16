@@ -1,4 +1,5 @@
 import type { LiteralUnion } from "type-fest";
+import { fromUint8Array } from "js-base64";
 import { convex_error } from "./convex-utils.ts";
 
 const text_encoder = new TextEncoder();
@@ -194,10 +195,8 @@ export async function crypto_seal_cursor(args: { purpose: CursorPurpose; scope: 
 	bytes.set(current.kid);
 	bytes.set(nonce, 4);
 	bytes.set(new Uint8Array(ciphertext), 16);
-	const base64url = btoa(String.fromCharCode(...bytes))
-		.replaceAll("+", "-")
-		.replaceAll("/", "_")
-		.replaceAll("=", "");
+	// Full sort keys can exceed String.fromCharCode's argument limit.
+	const base64url = fromUint8Array(bytes, true);
 	return `c1.${base64url}`;
 }
 
