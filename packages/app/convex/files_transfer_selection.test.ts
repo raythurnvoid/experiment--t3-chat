@@ -177,10 +177,14 @@ describe("Transfer selection pages", () => {
 		60_000,
 	);
 
-	test.each(["private roots", "new private parents"] as const)(
-		"joined Move Apply keeps 25% free with %s",
-		async (scenario) => {
-			const paths = Array.from({ length: 8 }, (_, index) => `/source-${index}`);
+	test.each([
+		{ scenario: "private roots", count: 7, requiresJoin: true },
+		{ scenario: "private roots", count: 8, requiresJoin: false },
+		{ scenario: "new private parents", count: 8, requiresJoin: true },
+	] as const)(
+		"Move Apply keeps 25% free with $count $scenario",
+		async ({ scenario, count, requiresJoin }) => {
+			const paths = Array.from({ length: count }, (_, index) => `/source-${index}`);
 			const f = await fixture(scenario === "private roots" ? ["/target"] : paths);
 			const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
 				membershipId: f.scope.membershipId,
@@ -293,7 +297,7 @@ describe("Transfer selection pages", () => {
 			if (scenario === "private roots")
 				expect(
 					(await holds()).map((hold) => hold.target),
-					"Start holds all eight private sources",
+					"Start holds every private source",
 				).toEqual(sources);
 			else
 				expect(await holds(), "Start holds the new private destination").toMatchObject([
@@ -316,10 +320,12 @@ describe("Transfer selection pages", () => {
 				}
 				if (step === 29) throw new Error("The parent did not reach its first proposal Apply");
 			}
-			expect(
-				["select", "normalize", "plan"],
-				"the first proposal Apply shares its transaction with an earlier parent phase",
-			).toContain(firstApplyCall?.entryStep);
+			// Seven private roots leave room for Apply; eight finish Plan just over the join threshold.
+			if (requiresJoin)
+				expect(
+					["select", "normalize", "plan"],
+					"the first proposal Apply shares its transaction with an earlier parent phase",
+				).toContain(firstApplyCall?.entryStep);
 			expect(await holds(), "the first proposal Apply keeps its output hold").toEqual(
 				expect.arrayContaining([expect.objectContaining({ target: sources[0], role: "output" })]),
 			);
@@ -330,7 +336,7 @@ describe("Transfer selection pages", () => {
 			await test_finish_transfer_run(f.asUser, runId);
 			expect(
 				(await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.scope.membershipId, runId }))?.activity,
-				"all eight exact source IDs finish as proposals",
+				"all selected source IDs finish as proposals",
 			).toMatchObject({ status: "succeeded", progress: { completed: sources.length, failed: 0, canceled: 0 } });
 			const items = await f.t.run((ctx) =>
 				ctx.db
@@ -405,8 +411,8 @@ describe("Transfer selection pages", () => {
 					);
 					peaks.set(key, Math.max(peaks.get(key) ?? 0, metric.used));
 				}
-			console.info("first joined Move Apply", scenario, JSON.stringify(firstApplyCall));
-			console.info("joined Move Apply peaks", scenario, JSON.stringify(Object.fromEntries(peaks)));
+			console.info("first Move Apply", scenario, count, JSON.stringify(firstApplyCall));
+			console.info("Move Apply peaks", scenario, count, JSON.stringify(Object.fromEntries(peaks)));
 		},
 		60_000,
 	);

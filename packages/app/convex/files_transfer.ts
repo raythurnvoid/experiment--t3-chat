@@ -185,26 +185,36 @@ async function db_get_run_memberships(args: {
 		if (authorized._nay) return null;
 	}
 
+	// This guard does not write. Equal scopes can share its actor docs.
 	const memberships = await Promise.all(
 		[run.sourceScope, run.destinationScope].map(async (scope) => {
-			const currentLifetime = await organizations_membership_lifetimes_db_get(ctx, {
-				workspaceId: scope.workspaceId,
-				userId: run.userId,
-			});
+			const currentLifetime =
+				scope.workspaceId === run.workspaceId
+					? lifetime
+					: await organizations_membership_lifetimes_db_get(ctx, {
+							workspaceId: scope.workspaceId,
+							userId: run.userId,
+						});
 			if (
 				!currentLifetime?.active ||
 				currentLifetime.membershipId !== scope.membershipId ||
 				currentLifetime.lifetime !== scope.membershipLifetime
 			)
 				return null;
-			const current = await organizations_db_get_membership(ctx, {
-				userId: run.userId,
-				membershipId: scope.membershipId,
-			});
+			const current =
+				scope.membershipId === activity.membershipId
+					? membership
+					: await organizations_db_get_membership(ctx, {
+							userId: run.userId,
+							membershipId: scope.membershipId,
+						});
 			if (!current || current.organizationId !== scope.organizationId || current.workspaceId !== scope.workspaceId)
 				return null;
-			const workspace = await ctx.db.get("organizations_workspaces", scope.workspaceId);
-			return workspace && workspace.pluginDataPurgeStartedAt === undefined ? current : null;
+			const currentWorkspace =
+				scope.workspaceId === run.workspaceId
+					? workspace
+					: await ctx.db.get("organizations_workspaces", scope.workspaceId);
+			return currentWorkspace && currentWorkspace.pluginDataPurgeStartedAt === undefined ? current : null;
 		}),
 	);
 	const [source, destination] = memberships;

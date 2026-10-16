@@ -72,6 +72,89 @@ describe("saved Move input acceptance", () => {
 		});
 	});
 
+	test("reuses equal scope facts while accepting another source page", async () => {
+		const paths = ["/one", "/two", "/three"];
+		const { t, db, asUser, folders } = await create_folder_fixture(paths);
+		const sourceIds = paths.map((path) => folders.get(path)!);
+		const targetId = folders.get("/target")!;
+		const accepted = await asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: db.membershipId,
+			requestId: "equal-scope-reads",
+			kind: "move",
+			expectedSourceCount: 3,
+			sourceIds: [sourceIds[0]!],
+			targetParentId: targetId,
+		});
+		if (accepted._nay) throw new Error(accepted._nay.message);
+		const scopeReads = { workspace: 0, membership: 0, lifetime: 0 };
+		test_spy_handler(append_input, async (handler, ctx, args) => {
+			const trackedDb = new Proxy(ctx.db, {
+				get(target, key) {
+					const member: unknown = Reflect.get(target, key);
+					if (typeof member !== "function") return member;
+					if (key === "query")
+						return (...queryArgs: unknown[]) => {
+							if (queryArgs[0] === "organizations_membership_lifetimes") scopeReads.lifetime++;
+							return Reflect.apply(member, target, queryArgs);
+						};
+					if (key === "get")
+						return (...getArgs: unknown[]) => {
+							if (getArgs[0] === "organizations_workspaces" && getArgs[1] === db.workspaceId) scopeReads.workspace++;
+							if (getArgs[0] === "organizations_workspaces_users" && getArgs[1] === db.membershipId)
+								scopeReads.membership++;
+							return Reflect.apply(member, target, getArgs);
+						};
+					return member.bind(target);
+				},
+			});
+			return await handler({ ...ctx, db: trackedDb }, args);
+		});
+		expect(
+			await asUser.mutation(api.files_transfer.append_input, {
+				membershipId: db.membershipId,
+				runId: accepted._yay.runId,
+				offset: 1,
+				sourceIds: [sourceIds[1]!],
+			}),
+		).toEqual({ _yay: null });
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", accepted._yay.runId))).toMatchObject({
+			step: "uploading",
+			selection: { count: 2, expectedCount: 3 },
+		});
+		const selection = await t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_selection_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", accepted._yay.runId))
+				.collect(),
+		);
+		expect(selection.map((item) => item.source)).toEqual(sourceIds.slice(0, 2).map((id) => ({ kind: "saved", id })));
+		// The public ownership check reads the membership once too.
+		expect(scopeReads, "equal Move scopes read authority docs once per guard").toEqual({
+			workspace: 1,
+			membership: 2,
+			lifetime: 1,
+		});
+		expect(
+			await asUser.mutation(api.files_transfer.append_input, {
+				membershipId: db.membershipId,
+				runId: accepted._yay.runId,
+				offset: 2,
+				sourceIds: [sourceIds[2]!],
+			}),
+		).toEqual({ _yay: null });
+		await test_finish_transfer_run(asUser, accepted._yay.runId);
+		for (const [index, id] of sourceIds.entries())
+			expect(await t.run((ctx) => ctx.db.get("files_nodes", id))).toMatchObject({
+				_id: id,
+				parentId: targetId,
+				path: `/target${paths[index]}`,
+			});
+		expect(await t.run((ctx) => ctx.db.get("activities", accepted._yay.activityId))).toMatchObject({
+			status: "succeeded",
+			progress: { total: 3, completed: 3, failed: 0 },
+		});
+	});
+
 	test.each(["accept_input", "append_input"] as const)("replays a committed lost %s reply", async (door) => {
 		const { t, db, asUser, folders } = await create_folder_fixture(["/source"]);
 		const sourceId = folders.get("/source")!;
