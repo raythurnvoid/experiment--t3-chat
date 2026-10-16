@@ -74,6 +74,8 @@ Check a saved file, a private create, a replacement with another type, and a mov
 folder. Follow each printed continuation exactly. The combined saved and pending
 paths must stay alphabetical. A short or empty page can still have a continuation.
 An unfinished foreground search exits 3 and prints its own continuation.
+Compare all returned paths with a complete fixture list, not the catalog's rough
+file count. Require every expected path once and in order.
 
 Run a plain `find ... &` while pending path work is active. Use explicit `jobs` and
 `jobs -o N` reads to check progress and output. The queued job must keep its stored
@@ -81,6 +83,8 @@ output clean, resume without repeating earlier writes, and finish one requested 
 An unrelated `printf` must contain only its requested text. Check receipt recovery
 with `jobs --call TOOL_CALL_ID` and paged `jobs --calls`; never repeat a write to
 recover its result. Discard only this run's proposals and verify the saved baseline.
+If the job finishes before you observe its wait, report that live wait check as
+unverified. A completed job and passing unit tests do not prove a live wait was seen.
 
 ## Resolve copied file links and node IDs
 
