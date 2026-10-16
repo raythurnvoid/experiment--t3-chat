@@ -166,8 +166,10 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   shared budget allows it. Ordinary native pages run through the lean `files_move_pages` queries.
   Each child has one page journal and shares the parent's transaction, writes and seven budgets.
   The parent keeps all writes and flushes. It checks the shared budget after each page unit.
-  A private `paged` result ends the local unit. `parentPage` ends the transaction only when the
-  page ran in the parent. Review-input pages and media validation still use that parent boundary.
+  A private `paged` result ends the local unit. Parent pages and unfinished owner facts end
+  the transaction. Review-input pages and media validation still use that parent boundary.
+  The facts resolver reports only pages run in the current call. Full facts that finish without
+  a page can join. Unfinished facts save their progress and wait for a new transaction.
   No page call uses a stale snapshot. Null-cursor drains see earlier parent tags and deletes.
   Heavy text preparation keeps its own step. `files_move_run.run` loads the content or media
   preparation helper with a literal `import()` only when needed. It calls the action helper
