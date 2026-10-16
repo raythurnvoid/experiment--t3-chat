@@ -211,6 +211,8 @@ matter, continue a chat you already made for the same task instead of starting a
 
 Reuse `QA paged message edit` in `chitchat-qa/home` (`n175v5tanrcx2363yz4478h0w58fn2nc`) for loading older history and editing or retrying messages more than 50 nodes behind the leaf. It has two long branches with 56 and 58 short fixture nodes.
 
+Reuse `Move Folder QA Check` in `chitchat-qa/home` (`n1708nc8w74tp1gne8n8jxa7r98gcg8k`) for agent folder Move checks. Its pending rename was discarded. The saved empty folder remains at `/qa-profile-20261005-folder-a/new-folder`, with no metadata or pending changes.
+
 Reuse `QA native-popovers mount 0928` in `personal/home` (`n17e1df2cqn1p6m8kkac9nq8d58f8674`) for this Mount's Bash checks. The saved first turn lists the Mount and reads its README without changing files.
 
 Use saved chat `n174jx56n9dhr2eahg93prek198fba90` in `personal/home` as evidence for natural Mount discovery and later web search. It used GPT-6 Luna in Agent mode. Its first turn had no chat history or supplied path. Stored Bash calls read the README and `AGENTS.md`; the next turn used web search.

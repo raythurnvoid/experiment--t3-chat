@@ -1415,13 +1415,30 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   controls can leave radios above the scroll area. At 512×768 the dialog scrolls and keeps its footer
   visible. The quick audit counts 18px radio inputs; inspect their clickable labels before treating
   these size warnings as accessibility failures. Escape returns focus to the Properties trigger.
-- The editor is Monaco. Synthetic keyboard input does not reach it. Set the text through the editor
+- The editor is Monaco. `.fill()` can leave its model unchanged. Set the text through the editor
   handle from page context:
   `monaco.editor.getEditors().find((e) => e.getRawOptions().ariaLabel === "Metadata YAML").setValue(yaml)`.
   After opening Properties, wait for the textbox named `Metadata YAML` before reading the handle;
   the dialog can appear before Monaco mounts, so an immediate lookup can return `undefined`.
   Get `monaco` with `await import("/@id/monaco-editor")` — the bare specifier `"monaco-editor"` does not
   resolve in page context under the Vite dev server, it throws `Failed to resolve module specifier`.
+  In a published build, import the exact loaded editor module instead. Its export names can change:
+
+  ```js
+  const editorUrl = performance.getEntriesByType("resource")
+    .map((entry) => entry.name)
+    .find((url) => /\/assets\/editor\.api-[^/]+\.js/.test(url));
+  const editorModule = await import(editorUrl);
+  const editorApi = Object.values(editorModule)
+    .find((value) => value && typeof value.getEditors === "function");
+  editorApi.getEditors()
+    .find((editor) => editor.getRawOptions().ariaLabel === "Metadata YAML")
+    .setValue(yaml);
+  ```
+
+  Open Properties first. If resource timing lost the module URL, install the larger timing buffer
+  from the profiling skill before loading a fresh owned tab. Do not guess the asset name.
+  This checks the editor model and Save. It does not prove normal keyboard typing.
 - Monaco inside this dialog hoists nothing, unlike the file editors. Its suggest and hover widgets
   clip at the editor box on purpose — see the layering note in `known-hazards.md`. Do not "fix" a
   clipped widget by pointing `overflowWidgetsDomNode` at `#app_monaco_hoisting_container`.
