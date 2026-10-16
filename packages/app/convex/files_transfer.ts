@@ -2053,8 +2053,8 @@ async function db_seal(args: {
 	const checked = await db_check_copy_job({ ctx, run, job });
 	if (checked._nay) return checked;
 	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
-	if (!(await db_get_run_memberships({ ctx, run, activity })))
-		return Result({ _nay: { message: "Permission denied" } });
+	const memberships = await db_get_run_memberships({ ctx, run, activity });
+	if (!memberships) return Result({ _nay: { message: "Permission denied" } });
 	if (!run.selection) return Result({ _nay: { name: "invalid_selection", message: "This transfer has no selection" } });
 	if (run.step !== "uploading") return Result({ _yay: null });
 	if (run.selection.count !== run.selection.expectedCount)
@@ -2087,7 +2087,7 @@ async function db_seal(args: {
 		run.origin.kind === "clipboard" &&
 		(await files_pending_overlay_db_can_join_step(ctx))
 	) {
-		await db_advance(ctx, { runId: run._id });
+		await db_advance(ctx, { runId: run._id }, memberships);
 	} else {
 		await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 	}
@@ -3198,6 +3198,9 @@ async function db_commit_move(args: {
 		await db_pause_item({ ctx, item, kind: "source_changed" });
 		return;
 	}
+	// A saved Move has its source scope in the run workspace. So pins taken here are the same pins the
+	// new cohort would take below in this transaction, and it reuses them.
+	let pins: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>> | undefined;
 	if (source.kind === "folder" && source.parentId !== targetParentId) {
 		let validation = run.moveValidation;
 		if (
@@ -3206,7 +3209,7 @@ async function db_commit_move(args: {
 			validation.treePath !== source.treePath ||
 			!(await files_media_validation_db_versions_match(ctx, { versions: validation.versions, pendingVersions: [] }))
 		) {
-			const pins = await files_media_validation_db_capture_versions(ctx, {
+			pins = await files_media_validation_db_capture_versions(ctx, {
 				userId: run.userId,
 				scopes: [run.sourceScope],
 			});
@@ -3323,6 +3326,7 @@ async function db_commit_move(args: {
 		itemId: item._id,
 		fence: run.revision,
 		attemptFence: item.attempt,
+		pins,
 	});
 	if (started._nay) {
 		if (started._nay.name === "move_busy") {
@@ -3487,8 +3491,19 @@ async function db_prepare_parent_folders(ctx: MutationCtx, run: Doc<"files_trans
 	return false;
 }
 
-async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_runs"> }) {
-	// Each joined unit repeats the current access, Stop, destination and workspace checks.
+async function db_advance(
+	ctx: MutationCtx,
+	args: { runId: Id<"files_transfer_runs"> },
+	/**
+	 * Seal checked these in the same transaction just before.
+	 */
+	sealedMemberships?: Awaited<ReturnType<typeof db_get_run_memberships>>,
+) {
+	// Each joined unit reads the run and its Activity again and repeats the Stop and deadline checks.
+	// The access, wait and destination checks run once per transaction. The units that join below
+	// write only this run, its selection and items, and its Activity. Those writes cannot change these
+	// checks, so a second check in the same transaction would give the same answer.
+	let membership: Doc<"organizations_workspaces_users"> | null = null;
 	while (true) {
 		const run = await ctx.db.get("files_transfer_runs", args.runId);
 		if (!run) return null;
@@ -3502,7 +3517,7 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 			await db_cancel_items({ ctx, run, now: Date.now() });
 			return null;
 		}
-		const cohort = await db_get_active_move_cohort(ctx, run);
+		const cohort = membership ? null : await db_get_active_move_cohort(ctx, run);
 		if (cohort?.origin.kind === "transfer" && cohort.origin.runId === run._id) {
 			await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id });
 			return null;
@@ -3514,78 +3529,70 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 		if (activity.status === "awaiting_input") return null;
 		if (run.step === "uploading") return null;
 
-		const memberships = await db_get_run_memberships({ ctx, run, activity });
-		if (!memberships) {
-			await db_stop_run({ ctx, run, errorMessage: "Permission denied" });
-			return null;
-		}
-		const membership = memberships.destination;
-		if (cohort) {
-			await ctx.db.patch("activities", activity._id, {
-				updatedAt: Date.now(),
-				deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
-				// The card says why nothing moves. It never names the other Move or its files.
-				errorCode: files_MOVE_WAIT_CODE,
-			});
-			await ctx.scheduler.runAfter(1000, internal.files_transfer.advance, { runId: run._id });
-			return null;
-		}
-		if (activity.errorCode === files_MOVE_WAIT_CODE)
-			await ctx.db.patch("activities", activity._id, { errorCode: undefined });
-
-		// Finish an owned group first. Rename then gets the next free boundary.
-		let waitingForRename = false;
-		for (const workspaceId of new Set([
-			run.workspaceId,
-			run.sourceScope.workspaceId,
-			run.destinationScope.workspaceId,
-		])) {
-			const nextRename = await files_transfer_queries_db_get_current_activity(ctx, { userId: run.userId, workspaceId }, true);
-			if (nextRename && nextRename.source.id !== run._id) {
-				waitingForRename = true;
-				break;
+		if (!membership) {
+			const memberships = sealedMemberships ?? (await db_get_run_memberships({ ctx, run, activity }));
+			if (!memberships) {
+				await db_stop_run({ ctx, run, errorMessage: "Permission denied" });
+				return null;
 			}
-		}
-		let waitingForCopy = false;
-		if (run.rename) {
-			// Copy may have started in another chat workspace. Wait for its exact workers to drain.
-			const sourceCopy = await ctx.db
-				.query("files_transfer_runs")
-				.withIndex("by_user_source_workspace_kind_inFlight", (q) =>
-					q
-						.eq("userId", run.userId)
-						.eq("sourceScope.workspaceId", run.workspaceId)
-						.eq("kind", "copy")
-						.gt("inFlight", 0),
-				)
-				.first();
-			const destinationCopy = sourceCopy
-				? null
-				: await ctx.db
-						.query("files_transfer_runs")
-						.withIndex("by_user_destination_workspace_kind_inFlight", (q) =>
-							q
-								.eq("userId", run.userId)
-								.eq("destinationScope.workspaceId", run.workspaceId)
-								.eq("kind", "copy")
-								.gt("inFlight", 0),
-						)
-						.first();
-			waitingForCopy = Boolean(sourceCopy || destinationCopy);
-		}
-		if (waitingForRename || waitingForCopy) {
-			await ctx.db.patch("activities", activity._id, {
-				updatedAt: Date.now(),
-				deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
-			});
-			await ctx.scheduler.runAfter(1000, internal.files_transfer.advance, { runId: run._id });
-			return null;
-		}
-		if (run.kind === "move") {
-			// Wait for stored paths to settle before validating or publishing another root.
-			const repair = run.repairOpId ? await ctx.db.get("files_subtree_ops", run.repairOpId) : null;
-			const blocker = repair ?? (await files_subtree_ops_db_find_repair(ctx, run.sourceScope));
-			if (blocker) {
+			if (cohort) {
+				await ctx.db.patch("activities", activity._id, {
+					updatedAt: Date.now(),
+					deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
+					// The card says why nothing moves. It never names the other Move or its files.
+					errorCode: files_MOVE_WAIT_CODE,
+				});
+				await ctx.scheduler.runAfter(1000, internal.files_transfer.advance, { runId: run._id });
+				return null;
+			}
+			if (activity.errorCode === files_MOVE_WAIT_CODE)
+				await ctx.db.patch("activities", activity._id, { errorCode: undefined });
+
+			// Finish an owned group first. Rename then gets the next free boundary.
+			let waitingForRename = false;
+			for (const workspaceId of new Set([
+				run.workspaceId,
+				run.sourceScope.workspaceId,
+				run.destinationScope.workspaceId,
+			])) {
+				const nextRename = await files_transfer_queries_db_get_current_activity(
+					ctx,
+					{ userId: run.userId, workspaceId },
+					true,
+				);
+				if (nextRename && nextRename.source.id !== run._id) {
+					waitingForRename = true;
+					break;
+				}
+			}
+			let waitingForCopy = false;
+			if (run.rename) {
+				// Copy may have started in another chat workspace. Wait for its exact workers to drain.
+				const sourceCopy = await ctx.db
+					.query("files_transfer_runs")
+					.withIndex("by_user_source_workspace_kind_inFlight", (q) =>
+						q
+							.eq("userId", run.userId)
+							.eq("sourceScope.workspaceId", run.workspaceId)
+							.eq("kind", "copy")
+							.gt("inFlight", 0),
+					)
+					.first();
+				const destinationCopy = sourceCopy
+					? null
+					: await ctx.db
+							.query("files_transfer_runs")
+							.withIndex("by_user_destination_workspace_kind_inFlight", (q) =>
+								q
+									.eq("userId", run.userId)
+									.eq("destinationScope.workspaceId", run.workspaceId)
+									.eq("kind", "copy")
+									.gt("inFlight", 0),
+							)
+							.first();
+				waitingForCopy = Boolean(sourceCopy || destinationCopy);
+			}
+			if (waitingForRename || waitingForCopy) {
 				await ctx.db.patch("activities", activity._id, {
 					updatedAt: Date.now(),
 					deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
@@ -3593,20 +3600,34 @@ async function db_advance(ctx: MutationCtx, args: { runId: Id<"files_transfer_ru
 				await ctx.scheduler.runAfter(1000, internal.files_transfer.advance, { runId: run._id });
 				return null;
 			}
-			if (run.repairOpId) await ctx.db.patch("files_transfer_runs", run._id, { repairOpId: undefined });
-		}
-
-		if (!run.rename) {
-			const destination = await db_get_destination(ctx, {
-				run,
-				membership,
-				parent: run.targetParent,
-				expectedPath: run.targetPath,
-			});
-			if (destination._nay) {
-				await db_stop_run({ ctx, run, errorMessage: destination._nay.message });
-				return null;
+			if (run.kind === "move") {
+				// Wait for stored paths to settle before validating or publishing another root.
+				const repair = run.repairOpId ? await ctx.db.get("files_subtree_ops", run.repairOpId) : null;
+				const blocker = repair ?? (await files_subtree_ops_db_find_repair(ctx, run.sourceScope));
+				if (blocker) {
+					await ctx.db.patch("activities", activity._id, {
+						updatedAt: Date.now(),
+						deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
+					});
+					await ctx.scheduler.runAfter(1000, internal.files_transfer.advance, { runId: run._id });
+					return null;
+				}
+				if (run.repairOpId) await ctx.db.patch("files_transfer_runs", run._id, { repairOpId: undefined });
 			}
+
+			if (!run.rename) {
+				const destination = await db_get_destination(ctx, {
+					run,
+					membership: memberships.destination,
+					parent: run.targetParent,
+					expectedPath: run.targetPath,
+				});
+				if (destination._nay) {
+					await db_stop_run({ ctx, run, errorMessage: destination._nay.message });
+					return null;
+				}
+			}
+			membership = memberships.destination;
 		}
 
 		if (activity.status === "queued") {

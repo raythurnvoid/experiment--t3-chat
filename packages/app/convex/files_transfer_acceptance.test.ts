@@ -26,8 +26,28 @@ describe("saved Move input acceptance", () => {
 			sourceIds: [sourceId],
 			targetParentId: folders.get("/target")!,
 		};
+		const guardReads = { repair: 0, lifetime: 0 };
+		test_spy_handler(accept_input, async (handler, ctx, args) => {
+			const trackedDb = new Proxy(ctx.db, {
+				get(target, key) {
+					const member: unknown = Reflect.get(target, key);
+					if (typeof member !== "function") return member;
+					if (key === "query")
+						return (...queryArgs: unknown[]) => {
+							if (queryArgs[0] === "files_subtree_ops") guardReads.repair++;
+							if (queryArgs[0] === "organizations_membership_lifetimes") guardReads.lifetime++;
+							return Reflect.apply(member, target, queryArgs);
+						};
+					return member.bind(target);
+				},
+			});
+			return await handler({ ...ctx, db: trackedDb }, args);
+		});
 		const accepted = await asUser.mutation(api.files_transfer.accept_input, args);
 		if (accepted._nay) throw new Error(accepted._nay.message);
+		// Select, Normalize, Plan and Commit join this one transaction. Seal and these units share one
+		// access check and one repair wait. Start and the cohort read the other lifetimes.
+		expect(guardReads, "Move acceptance runs each transfer guard once").toEqual({ repair: 4, lifetime: 6 });
 		const { runId, activityId } = accepted._yay;
 		const run = (await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))!;
 		expect(run.step, "complete saved input activates in its acceptance mutation").not.toBe("uploading");

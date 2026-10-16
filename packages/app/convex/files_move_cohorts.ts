@@ -196,6 +196,10 @@ async function db_begin(
 		| "attemptFence"
 		| "itemCount"
 	>,
+	/**
+	 * Pins the caller took for this user and scope earlier in the same transaction.
+	 */
+	capturedPins?: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>>,
 ) {
 	const authorized = await db_get_membership(ctx, args);
 	if (authorized._nay) return authorized;
@@ -220,7 +224,8 @@ async function db_begin(
 			return Result({ _yay: current._id });
 		return Result({ _nay: { name: "move_busy", message: "Another Move is finishing. This Move will wait." } });
 	}
-	const pins = await files_media_validation_db_capture_versions(ctx, { userId: args.userId, scopes: [args] });
+	const pins =
+		capturedPins ?? (await files_media_validation_db_capture_versions(ctx, { userId: args.userId, scopes: [args] }));
 	const now = Date.now();
 	const generation = (slot?.generation ?? 0) + 1;
 	const cohortId = await ctx.db.insert("files_move_cohorts", {
@@ -595,7 +600,13 @@ export async function files_move_cohorts_db_stop_origin(
 
 export async function files_move_cohorts_db_begin_transfer_item(
 	ctx: MutationCtx,
-	args: { runId: Id<"files_transfer_runs">; itemId: Id<"files_transfer_items">; fence: number; attemptFence: number },
+	args: {
+		runId: Id<"files_transfer_runs">;
+		itemId: Id<"files_transfer_items">;
+		fence: number;
+		attemptFence: number;
+		pins: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>> | undefined;
+	},
 ) {
 	const run = await ctx.db.get("files_transfer_runs", args.runId);
 	const item = await ctx.db.get("files_transfer_items", args.itemId);
@@ -613,17 +624,21 @@ export async function files_move_cohorts_db_begin_transfer_item(
 	const activity = await activities_db_require_by_source_id(ctx, run._id);
 	if (!activities_is_active(activity.status) || activity.deadlineAt <= Date.now())
 		return Result({ _nay: { name: "stopped", message: "This Move has stopped." } });
-	return await db_begin(ctx, {
-		organizationId: run.organizationId,
-		workspaceId: run.workspaceId,
-		userId: run.userId,
-		membershipId: run.sourceScope.membershipId,
-		membershipLifetime: run.sourceScope.membershipLifetime,
-		origin: { kind: "transfer", runId: run._id, itemId: item._id },
-		fence: args.fence,
-		attemptFence: args.attemptFence,
-		itemCount: 1,
-	});
+	return await db_begin(
+		ctx,
+		{
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			userId: run.userId,
+			membershipId: run.sourceScope.membershipId,
+			membershipLifetime: run.sourceScope.membershipLifetime,
+			origin: { kind: "transfer", runId: run._id, itemId: item._id },
+			fence: args.fence,
+			attemptFence: args.attemptFence,
+			itemCount: 1,
+		},
+		args.pins,
+	);
 }
 
 async function db_parent_id(
