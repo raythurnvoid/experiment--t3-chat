@@ -140,6 +140,10 @@ Verified with the published 0.8.1 frame on 2026-09-08:
 - Run the frame-specific accessibility screen in wide, narrow, and active-modal states. Use a 512×384 CSS viewport as the layout equivalent of a 1024×768 display at 200% zoom, and label it that way. Verify actual `innerWidth`/`innerHeight` after screenshot failures: a timed-out capture can restore old metrics while Playwright's cached viewport reports the new size. Reapply a different explicit size before continuing.
 - Check reduced motion with `page.emulateMedia({ reducedMotion: "reduce" })`, then restore it. For theme checks, follow the palette recipe below: the host's root `light` class can still send dark surfaces. A local light-fallback preview must remove all host `--color-*` scales, then restore the saved frame style and class. Never call a partial two-colour override a light-theme screenshot.
 - Keep outage tests separate. Refusing only the owned frame's `/auth/lease` route checks Chitchat access renewal while Press stays online; it is not a whole-network outage. Check that drafts stay and new sends stop once the lease expires.
+- Old channels in `chitchat-qa/home` can show `Transcript sync needs attention.` with `Unauthenticated`
+  in Transcript details. That is an expired Files connection, not a new bug. **Reconnect Files**
+  fixes it: the status turns to `Saved in Files` within a few seconds. A mouse `click()` on that
+  button can stall at "performing click action"; `focus()` it and press Enter instead. Seen 2026-10-17.
 - To test a message already submitted when the network fails, use an isolated QA browser context. Click Send first, then take only that context offline, wait through lease expiry, and restore it. Require one saved message and automatic confirmation with the same request ID. Do not take the user's shared owner context offline or call the lease-only test proof of this send-recovery flow.
 
 ### Draft, unread, and deleted-copy regression checks
