@@ -1222,6 +1222,182 @@ describe("external file writes", () => {
 		).toEqual(saved);
 	});
 
+	test("the plugin writes to its own folder while its human can only read it", async () => {
+		const { t, fixture, credentials, owner, token, root } = await setup();
+		install_object_uploads();
+		// A reader needs a membership lifetime, which the fixture does not create for the sponsor.
+		const sponsor = await t.run(async (ctx) => {
+			await ctx.db.insert("organizations_membership_lifetimes", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId: fixture.userId,
+				membershipId: fixture.membershipId,
+				active: true,
+				lifetime: 1,
+			});
+			return { userId: fixture.userId, membershipLifetime: 1 };
+		});
+		const reader = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "folder-reader" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			await ctx.db.insert("organizations_membership_lifetimes", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				membershipId,
+				active: true,
+				lifetime: 1,
+			});
+			return { userId, membershipLifetime: 1 };
+		});
+		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			...credentials,
+			path: `${ROOT}/team`,
+			readOnly: true,
+			readers: [reader, sponsor],
+			resourceKey: "private",
+			rootNodeId: root.rootNodeId,
+		});
+		if (ensured._nay) throw new Error(ensured._nay.message);
+		const folderNodeId = ensured._yay.folderNodeId;
+		const headers = {
+			Authorization: `Bearer ${token}`,
+			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
+			"Content-Type": "application/json",
+		};
+		const write = async (operationId: string, sequence: number, content: string, expected: object) =>
+			await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					path: `${ROOT}/team/team.md`,
+					expectedParentNodeId: folderNodeId,
+					content,
+					nonCollaborative: true,
+					writer: {
+						writerId: ensured._yay.writerId,
+						operationId,
+						writerGeneration: 1,
+						sequence,
+						contentHash: await crypto_sha256_hex(content),
+						...expected,
+					},
+				}),
+			});
+		const sent = await write("first", 1, "One\n", {
+			expectedNodeId: null,
+			expectedContentRevision: null,
+			expectedReaderRevision: 1,
+		});
+		expect(sent.status, await sent.clone().text()).toBe(200);
+		const receipt = (await sent.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
+
+		// The sponsor stops being the owner, so they only read the private folder.
+		const nextOwner = await t.run(
+			async (ctx) => await test_mocks_fill_db_with.membership(ctx, { organizationName: "next-owner" }),
+		);
+		expect(
+			(
+				await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					userIdToAdd: nextOwner.userId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await owner.mutation(api.access_control.transfer_organization_ownership, {
+					organizationId: fixture.organizationId,
+					newOwnerUserId: nextOwner.userId,
+				})
+			)._nay,
+		).toBeUndefined();
+		const human_can = (
+			userId: Id<"users">,
+			permission: "content.read" | "content.write" | "content.permissions.manage",
+		) =>
+			t.run(async (ctx) =>
+				access_control_db_can_act_on_file_node(ctx, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					subject: { kind: "user", userId, plugin: null },
+					fileNode: (await ctx.db.get("files_nodes", folderNodeId))!,
+					permission,
+				}),
+			);
+		expect(await human_can(fixture.userId, "content.read")).toBe(true);
+		expect(await human_can(fixture.userId, "content.write")).toBe(false);
+		// Only the owner manages a plugin's private folder. A reader only reads.
+		expect(await human_can(reader.userId, "content.read")).toBe(true);
+		expect(await human_can(reader.userId, "content.permissions.manage")).toBe(false);
+
+		// A reader sync still works and keeps the plugin able to write.
+		const synced = await t.fetch("/api/v1/files/plugin-access/set", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				path: `${ROOT}/team`,
+				access: { readers: [reader, sponsor] },
+				writer: {
+					writerId: ensured._yay.writerId,
+					operationId: "sync",
+					writerGeneration: 1,
+					expectedReaderRevision: 1,
+				},
+			}),
+		});
+		expect(synced.status, await synced.clone().text()).toBe(200);
+
+		// The overwrite finds the file its human cannot write, so the node id stays.
+		const updated = await write("second", 2, "Two\n", {
+			expectedNodeId: receipt.nodeId,
+			expectedContentRevision: receipt.contentRevision,
+			expectedReaderRevision: 2,
+		});
+		expect(updated.status, await updated.clone().text()).toBe(200);
+		const second = (await updated.json()) as { nodeId: Id<"files_nodes">; receipt: { contentRevision: string } };
+		expect(second.nodeId).toBe(receipt.nodeId);
+
+		const inspected = await t.fetch("/api/v1/files/plugin-writers/inspect", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ writerId: ensured._yay.writerId, path: `${ROOT}/team/team.md`, maxBytes: 1000 }),
+		});
+		expect(inspected.status, await inspected.clone().text()).toBe(200);
+		expect(await inspected.json()).toMatchObject({ nodeId: receipt.nodeId, content: "Two\n" });
+
+		// Without read the sponsor is refused, so the plugin never writes or reads for them there.
+		const dropped = await t.fetch("/api/v1/files/plugin-access/set", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				path: `${ROOT}/team`,
+				access: { readers: [reader] },
+				writer: {
+					writerId: ensured._yay.writerId,
+					operationId: "drop",
+					writerGeneration: 1,
+					expectedReaderRevision: 2,
+				},
+			}),
+		});
+		expect(dropped.status, await dropped.clone().text()).toBe(200);
+		const refused = await write("third", 3, "Three\n", {
+			expectedNodeId: receipt.nodeId,
+			expectedContentRevision: second.receipt.contentRevision,
+			expectedReaderRevision: 3,
+		});
+		expect(refused.status, await refused.clone().text()).toBe(403);
+	});
+
 	test("a writer fence rejects an already prepared write without publishing content", async () => {
 		const { t, fixture, credentials, root } = await setup();
 		const path = `${ROOT}/general.md`;

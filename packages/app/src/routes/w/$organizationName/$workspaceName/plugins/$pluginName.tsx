@@ -2705,7 +2705,7 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 
 	return (
 		<div className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
-			<h3>Grants to apply on install</h3>
+			<h3>Folders this plugin can use</h3>
 			<p>Only grants you add below will be changed. Existing grants stay as they are.</p>
 			<MySelect
 				value={resourceKind}

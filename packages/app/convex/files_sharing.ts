@@ -618,6 +618,8 @@ export const get_node_share_state = query({
 					principal: share_principal_validator,
 					level: share_level_validator,
 					serviceAccountName: v.union(v.string(), v.null()),
+					/** The plugin this account serves here, if any. Its grants are also that plugin's folders. */
+					servicePluginName: v.union(v.string(), v.null()),
 				}),
 			),
 			/** The owner always gets in, and holds no grant, so the dialog shows them as a fixed row. */
@@ -767,7 +769,17 @@ export const get_node_share_state = query({
 					entry.principal.kind === "service_account"
 						? await ctx.db.get("access_control_service_accounts", entry.principal.serviceAccountId)
 						: null;
-				return { ...entry, serviceAccountName: account?.name ?? null };
+				const installation = account
+					? await ctx.db
+							.query("plugins_workspace_installations")
+							.withIndex("by_serviceAccount", (q) => q.eq("serviceAccountId", account._id))
+							.first()
+					: null;
+				return {
+					...entry,
+					serviceAccountName: account?.name ?? null,
+					servicePluginName: installation?.pluginName ?? null,
+				};
 			}),
 		);
 

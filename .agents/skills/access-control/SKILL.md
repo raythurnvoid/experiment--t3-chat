@@ -126,6 +126,13 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
   - An account-bound API key: `{ kind: "service_account", serviceAccountId }`. The key acts as the
     account. Its sponsor's own access does not matter. So a person who may manage service accounts
     can act as any account through a key, except inside plugin output folders.
+  - A plugin writer request (write, inspect, ensure, reader set and undo) inside this installation's
+    own private output folder: `{ kind: "service_account", serviceAccountId, installationId }`,
+    built by `plugins_external_files_db_request_subject` only while its human can still read the
+    folder. The account's own `manage` grant there decides, so the plugin writes where its human
+    only reads. A human who cannot read the folder gets the human subject, so the plugin never
+    reads or writes there for them. Only the owner, not a reader, manages that folder. The route
+    gate still checks the human's workspace content permission.
 - `access_control_db_has_permission` accepts either the existing user/public input or an exclusive
   `serviceAccountId`. The account branch runs before the human owner shortcut. It requires an
   active same-tenant account and its own content grant.
@@ -142,10 +149,12 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
   installation on the restricted folder) count as roots and take no slot. Their level is the
   account's live grant there, so lowering or removing that grant limits the plugin at once. They
   also work during a rebuild. The human must still reach them.
-- An account subject never reaches a plugin output folder, so a key bound to a plugin's account
-  cannot read that plugin's private folders.
-- A create or replace checks the folder where the item lands with the full subject. Folders above
-  it keep only the actor's own write check.
+- An account subject reaches a plugin output folder only with that installation's
+  `installationId`, so a key bound to a plugin's account cannot read that plugin's private folders.
+- A create or replace checks the folder where the item lands with the full subject. A folder above
+  it passes when the actor or the full subject can write it (the recursive create, used by
+  `ensure_writer` and app creates, and the public API replace). The public API create starts at
+  the nearest existing folder, so it walks no folder above it.
 - Credentials, capabilities, source limits, and write policies remain separate limits. Do not
   require workspace-wide account access before a file check: an account may have only one
   restricted-folder grant.

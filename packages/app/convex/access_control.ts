@@ -1000,6 +1000,12 @@ export const access_control_subject_validator = v.union(
 	v.object({
 		kind: v.literal("service_account"),
 		serviceAccountId: v.id("access_control_service_accounts"),
+		/**
+		 * Set only when a plugin acts inside its own private output folder while its human can read it:
+		 * there it acts as its account. A plugin output folder takes only this installation's subject,
+		 * so an API key bound to the same account never reaches it.
+		 */
+		installationId: v.optional(v.id("plugins_workspace_installations")),
 	}),
 );
 
@@ -1081,9 +1087,10 @@ function create_file_checker(
 		if (subject.kind === "service_account") {
 			// An account may hold an exact grant on an open node, so open nodes are checked one by one.
 			return once(`account:${scopeNodeId ?? node?._id ?? "root"}:${permission}`, async () => {
-				// A plugin output folder belongs to its plugin. No account subject reaches it, so a key bound
-				// to the plugin's own account cannot read it either.
-				if (scopeNodeId && (await output_folder(scopeNodeId))) {
+				// A plugin output folder belongs to its plugin. Only that installation's own requests reach it,
+				// so a key bound to the plugin's account cannot read it.
+				const binding = scopeNodeId ? await output_folder(scopeNodeId) : null;
+				if (binding && binding.installationId !== subject.installationId) {
 					return false;
 				}
 				return await access_control_db_has_permission(ctx, {

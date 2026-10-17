@@ -61,6 +61,7 @@ const SHARE = {
 		principal: { kind: "service_account"; serviceAccountId: string };
 		level: "read";
 		serviceAccountName: string | null;
+		servicePluginName: string | null;
 	}[],
 	link: null as { token: string; createdBy: string; createdAt: number } | null,
 };
@@ -158,6 +159,7 @@ describe("FilesShareModal", () => {
 								principal: { kind: "service_account", serviceAccountId: "account_1" },
 								level: "read",
 								serviceAccountName: null,
+								servicePluginName: null,
 							},
 						],
 					}
@@ -180,6 +182,24 @@ describe("FilesShareModal", () => {
 			}),
 		);
 		expect(mutationMock).toHaveBeenCalledTimes(1);
+	});
+
+	test("says when a service account entry backs a plugin", () => {
+		mockShareState({
+			...SHARE,
+			entries: [
+				{
+					principal: { kind: "service_account", serviceAccountId: "account_1" },
+					level: "read",
+					serviceAccountName: "Chitchat bot",
+					servicePluginName: "chitchat",
+				},
+			],
+		});
+
+		renderModal();
+		const row = document.querySelector('[data-share-principal="service_account:account_1"]') as HTMLElement;
+		expect(row.textContent).toContain("Used by plugin chitchat: this also changes the folders the plugin can use.");
 	});
 
 	test("hides service choices when the caller cannot manage service accounts", async () => {

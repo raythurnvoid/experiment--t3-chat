@@ -1305,6 +1305,94 @@ describe("service-bound API credentials", () => {
 		expect(((await replaced.json()) as { nodeId: string }).nodeId).not.toBe(occupant._yay.nodeId);
 	});
 
+	test("an account key replaces a file below a folder only the account can write", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-account-above" });
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folder = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "a/b",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		const aId = await t.run(
+			async (ctx) => (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/a")!._id,
+		);
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: aId }))._nay,
+		).toBeUndefined();
+		const bId = await t.run(
+			async (ctx) => (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/a/b")!._id,
+		);
+		// A stored (non-editable) file keeps the write on the archive-and-recreate door.
+		const occupant = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: bId,
+			filename: "f.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 3,
+		});
+		if (occupant._nay) {
+			throw new Error(occupant._nay.message);
+		}
+		const account = await asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Area writer",
+		});
+		if (account._nay) {
+			throw new Error(account._nay.message);
+		}
+		expect(
+			(
+				await asOwner.mutation(api.access_control.set_service_account_grant, {
+					membershipId: db.membershipId,
+					serviceAccountId: account._yay.serviceAccountId,
+					resource: { kind: "file", nodeId: aId },
+					level: "write",
+				})
+			)._nay,
+		).toBeUndefined();
+		// The sponsor is an admin who is not in the restricted `/a`.
+		const admin = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-account-above-admin" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, { ...db, userId, role: "admin", now: Date.now() });
+			await quotas_db_ensure(ctx, { ...db, quotaName: "active_api_credentials", userId, now: Date.now() });
+			// A write costs credits, and the sponsor pays.
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pro" });
+			return { userId, membershipId };
+		});
+		const key = await t
+			.withIdentity({ issuer: "https://clerk.test", external_id: admin.userId })
+			.mutation(api.public_api.api_credential_create, {
+				membershipId: admin.membershipId,
+				serviceAccountId: account._yay.serviceAccountId,
+				name: "Area",
+				scopes: ["files:read", "files:write"],
+			});
+		if (key._nay) {
+			throw new Error(key._nay.message);
+		}
+
+		// The replace walks through `/a`, which the sponsor cannot write but the account can.
+		const replaced = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(key._yay.credential),
+			body: JSON.stringify({ path: "/a/b/f.md", content: "# New\n", overwrite: "replace" }),
+		});
+		expect(replaced.status, await replaced.clone().text()).toBe(200);
+	});
+
 	test("keeps the account and sponsor when rotating, then refuses a revoked account", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-key" });

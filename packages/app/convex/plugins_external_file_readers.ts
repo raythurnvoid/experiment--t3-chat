@@ -10,7 +10,10 @@ import { organizations_membership_lifetimes_db_get } from "./organizations_membe
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable } from "../server/files-write-policy.ts";
 import { plugins_external_files_db_replace_readers } from "./plugins_external_files.ts";
-import { plugins_external_files_db_authorize } from "./plugins_external_files_access.ts";
+import {
+	plugins_external_files_db_authorize,
+	plugins_external_files_db_request_subject,
+} from "./plugins_external_files_access.ts";
 import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
 import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
@@ -199,12 +202,18 @@ export const rollback = internalMutation({
 		if (binding.detachedAt !== null)
 			return Result({ _yay: { _id: null, readerRevision: binding.revision, detached: true, restored: false } });
 
+		// This is the installation's live output folder, so the plugin acts as its own account while its
+		// human can still read the folder.
 		if (
 			recoveryGrant &&
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: writer.organizationId,
 				workspaceId: writer.workspaceId,
-				subject: plugins_sandbox_subject(installation, recoveryGrant.actorUserId),
+				subject: await plugins_external_files_db_request_subject(ctx, {
+					installation,
+					actorUserId: recoveryGrant.actorUserId,
+					node: folder,
+				}),
 				fileNode: folder,
 				permission: "content.permissions.manage",
 			}))

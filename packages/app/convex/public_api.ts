@@ -3382,8 +3382,8 @@ export const publish_file_write = internalMutation({
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 
-			// Keep the actor's own replacement ceiling on each folder above the parent. The parent itself is
-			// checked with the full subject below, so a plugin root or an account grant there still works.
+			// Each folder above the parent needs write for the actor or for the full subject. The parent itself
+			// is checked with the full subject below, so a plugin root or an account grant there still works.
 			let ancestorId = parentNode?.parentId ?? files_ROOT_ID;
 			while (ancestorId !== files_ROOT_ID) {
 				const ancestor: Doc<"files_nodes"> | null = await files_saved_placement_db_get_node(ctx.db, ancestorId);
@@ -3395,6 +3395,13 @@ export const publish_file_write = internalMutation({
 						organizationId: stage.organizationId,
 						workspaceId: stage.workspaceId,
 						subject: { kind: "user", userId: writeContext.actorUserId, plugin: null },
+						fileNode: ancestor,
+						permission: "content.write",
+					})) &&
+					!(await access_control_db_can_act_on_file_node(ctx, {
+						organizationId: stage.organizationId,
+						workspaceId: stage.workspaceId,
+						subject: writeContext.subject,
 						fileNode: ancestor,
 						permission: "content.write",
 					}))

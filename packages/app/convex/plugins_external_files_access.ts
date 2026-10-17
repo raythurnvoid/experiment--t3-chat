@@ -1,6 +1,10 @@
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { access_control_db_can_act_on_file_node } from "./access_control.ts";
+import {
+	access_control_db_can_act_on_file_node,
+	access_control_db_resolve_live_restricted_scope,
+	type access_control_Subject,
+} from "./access_control.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
@@ -20,6 +24,56 @@ export async function plugins_external_files_db_get_node(
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; path: string },
 ) {
 	return await files_db_get_visible_node_by_path(ctx, args);
+}
+
+/**
+ * Who a plugin service request acts as on `node` (the node at the path, or its nearest folder).
+ * Inside a private output folder of this installation the plugin acts as its own account, so its own
+ * `manage` grant there decides and its human needs only read. Elsewhere, or when the human cannot
+ * read the folder, it acts as its human inside the sandbox roots, so it never reads for a human what
+ * that human cannot read.
+ */
+export async function plugins_external_files_db_request_subject(
+	ctx: QueryCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		actorUserId: Id<"users">;
+		node: Doc<"files_nodes"> | null;
+	},
+): Promise<access_control_Subject> {
+	const { installation } = args;
+	const scopeNodeId = args.node
+		? await access_control_db_resolve_live_restricted_scope(ctx, {
+				organizationId: installation.organizationId,
+				workspaceId: installation.workspaceId,
+				restrictedScopeNodeId: args.node.restrictedScopeNodeId,
+			})
+		: null;
+	const binding = scopeNodeId
+		? await ctx.db
+				.query("plugins_external_file_bindings")
+				.withIndex("by_node", (q) => q.eq("nodeId", scopeNodeId))
+				.first()
+		: null;
+	if (
+		binding?.detachedAt === null &&
+		binding.installationId === installation._id &&
+		args.node !== null &&
+		(await access_control_db_can_act_on_file_node(ctx, {
+			organizationId: installation.organizationId,
+			workspaceId: installation.workspaceId,
+			subject: { kind: "user", userId: args.actorUserId, plugin: null },
+			fileNode: args.node,
+			permission: "content.read",
+		}))
+	) {
+		return {
+			kind: "service_account",
+			serviceAccountId: installation.serviceAccountId,
+			installationId: installation._id,
+		};
+	}
+	return plugins_sandbox_subject(installation, args.actorUserId);
 }
 
 export async function plugins_external_files_db_authorize(
@@ -132,7 +186,11 @@ export async function plugins_external_files_db_authorize(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 	const writeContext: files_nodes_WriteContext = {
-		subject: plugins_sandbox_subject(installation, grant.actorUserId),
+		subject: await plugins_external_files_db_request_subject(ctx, {
+			installation,
+			actorUserId: grant.actorUserId,
+			node: aclNode,
+		}),
 		writer: { kind: "service_account", serviceAccountId: grant.serviceAccountId },
 		actorUserId: grant.actorUserId,
 		policyReach: "ancestors",

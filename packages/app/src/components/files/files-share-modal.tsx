@@ -663,6 +663,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		.map((entry) => ({
 			principal: entry.principal as FilesSharePrincipal,
 			level: entry.level,
+			servicePluginName: entry.servicePluginName,
 			name:
 				entry.principal.kind === "user"
 					? read_display_name(userAnagraphicDict[entry.principal.userId])
@@ -1013,7 +1014,9 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 													meta={
 														entry.principal.kind === "role"
 															? `Everyone with the ${entry.name} role`
-															: access_control_FILE_SHARE_LEVELS[entry.level].description
+															: entry.servicePluginName
+																? `Used by plugin ${entry.servicePluginName}: this also changes the folders the plugin can use.`
+																: access_control_FILE_SHARE_LEVELS[entry.level].description
 													}
 													level={entry.level}
 													editable={

@@ -630,9 +630,9 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			});
 		}
 
-		// A folder above where the item lands keeps only the actor's own write ceiling. Where it lands,
-		// the full subject decides (the checks below), so a plugin root or an account grant on a nested
-		// folder still works.
+		// A folder above where the item lands needs write for the actor or for the full subject. Where it
+		// lands, the full subject decides (the checks below), so a plugin root or an account grant on a
+		// nested folder still works.
 		if (
 			writeContext &&
 			above &&
@@ -640,6 +640,13 @@ export async function files_nodes_db_create_node_recursively_at_path(
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				subject: { kind: "user", userId: writeContext.actorUserId, plugin: null },
+				fileNode: above,
+				permission: "content.write",
+			})) &&
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				subject: writeContext.subject,
 				fileNode: above,
 				permission: "content.write",
 			}))

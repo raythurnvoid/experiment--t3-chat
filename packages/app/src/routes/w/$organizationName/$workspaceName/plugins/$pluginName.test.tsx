@@ -709,6 +709,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 		mutationMock.mockResolvedValue({ _yay: null });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		expect(screen.getByRole("heading", { name: "Folders this plugin can use" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "Add reviewed grant" }));
 		expect(mutationMock).not.toHaveBeenCalled();
 		fireEvent.click(screen.getByRole("button", { name: "Accept and update" }));
