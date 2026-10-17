@@ -415,10 +415,8 @@ function test_folder_keys(fields: string[], args: unknown) {
 	const prefix = (args as { prefix: string }).prefix.toLowerCase();
 	return fields.filter((field) => field.toLowerCase().startsWith(prefix));
 }
-// Restricted children shared with this member, on their own share stream.
-let sharedRows: (typeof NODE)[];
-// What `has_tree_children_shared` answers.
-let hasShared: boolean | null;
+// Children this member cannot open. The restricted twin gives them as locked rows.
+let lockedRows: (typeof NODE)[];
 // What `has_drafts_in_folder` answers.
 let hasDrafts: boolean;
 // The caller's permissions in `workspace_1`, from `organizations.list`.
@@ -474,8 +472,7 @@ beforeEach(() => {
 		savedParentId: null,
 	};
 	pendingChildren = [];
-	sharedRows = [];
-	hasShared = false;
+	lockedRows = [];
 	hasDrafts = false;
 	workspacePermissions = "all";
 	folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: true };
@@ -589,7 +586,7 @@ beforeEach(() => {
 			case "files_tree:list_tree_children_sorted":
 			case "files_tree:list_tree_children_shared": {
 				// Serve a whole segment at once. The hook's paging has its own tests. The tree rows are open, and
-				// `sharedRows` come on the member's own share stream.
+				// `lockedRows` come on the twin. This member has no share streams.
 				const { parentId, kind, segment, sort, filter, restricted, principalIndex } = args as {
 					parentId: string;
 					kind: string;
@@ -599,8 +596,7 @@ beforeEach(() => {
 					restricted?: boolean;
 					principalIndex?: number;
 				};
-				const source =
-					principalIndex === undefined ? (restricted ? [] : (treeNodes ?? [])) : principalIndex === 0 ? sharedRows : [];
+				const source = principalIndex !== undefined ? [] : restricted ? lockedRows : (treeNodes ?? []);
 				return segment === "missing"
 					? []
 					: source
@@ -625,6 +621,7 @@ beforeEach(() => {
 							})
 							.map((item) => ({
 								...item,
+								...(restricted ? { locked: true } : {}),
 								sortKey: files_sort_key_of({
 									sort,
 									facts: {
@@ -635,13 +632,12 @@ beforeEach(() => {
 										extension: item.name.includes(".") ? item.name.split(".").at(-1)!.toLowerCase() : null,
 										contentByteSize: item.contentByteSize,
 									},
-									metadataParts: new Map([["metadata.status", files_sort_text_key("Open")]]),
+									// Like the server, a locked row has no custom-field value in its key.
+									metadataParts: new Map(restricted ? [] : [["metadata.status", files_sort_text_key("Open")]]),
 								}),
 							}))
 							.sort((a, b) => files_sort_compare({ a: a.sortKey, b: b.sortKey, sort }));
 			}
-			case "files_tree:has_tree_children_shared":
-				return hasShared;
 			case "files_metadata:list_search_fields":
 				return [{ fieldPath: "metadata.status", valueKinds: ["string"] }];
 			case "files_metadata:list_folder_fields":
@@ -1107,6 +1103,7 @@ describe("FileNodeView private targets", () => {
 					assetId: NODE.assetId as app_convex_Id<"files_r2_assets">,
 					contentByteSize: null,
 					isRestrictedScopeRoot: false,
+					extendedScopeNodeId: null,
 					textKind: "plain_text",
 					treePath: `/${NODE._id}`,
 					pathDepth: 1,
@@ -1694,7 +1691,7 @@ describe("FileNodeView private targets", () => {
 });
 
 describe("FileNodeView folder clipboard", () => {
-	test("shows the first page at once, merges shared rows in order, and loads the next page by itself", async () => {
+	test("shows the first page at once, merges locked rows in order, and loads the next page by itself", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		const children = ["a.html", "b.html", "c.html", "d.html", "e.html", "f.html"].map((name) => ({
 			...NODE,
@@ -1704,8 +1701,8 @@ describe("FileNodeView folder clipboard", () => {
 			parentId: node._id,
 		}));
 		treeNodes = [node, ...children];
-		// Restricted children shared with this member. Their stream is done after one page.
-		sharedRows = ["bb.html", "z.html"].map((name) => ({
+		// Children this member cannot open. Their stream is done after one page.
+		lockedRows = ["bb.html", "z.html"].map((name) => ({
 			...NODE,
 			_id: name,
 			name,
@@ -1735,12 +1732,12 @@ describe("FileNodeView folder clipboard", () => {
 		});
 		renderFileView({ nodeId: node._id });
 
-		// The first page shows at once. A shared row shows where it sorts once the loaded rows reach it.
+		// The first page shows at once. A locked row shows where it sorts once the loaded rows reach it.
 		expect(await screen.findByRole("link", { name: "Open c.html" })).toBeTruthy();
 		expect(screen.getAllByRole("link", { name: /^Open / }).map((link) => link.getAttribute("aria-label"))).toEqual([
 			"Open a.html",
 			"Open b.html",
-			"Open bb.html",
+			"Open bb.html, you don't have access",
 			"Open c.html",
 		]);
 		// The table wants a full page of rows, so it asks for the next page without a click.
@@ -1749,17 +1746,17 @@ describe("FileNodeView folder clipboard", () => {
 		secondPageReady = true;
 		pushQueryChanges();
 		expect(await screen.findByRole("link", { name: "Open d.html" })).toBeTruthy();
-		expect(screen.queryByRole("link", { name: "Open z.html" })).toBeNull();
+		expect(screen.queryByRole("link", { name: "Open z.html, you don't have access" })).toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: /Show more/ }));
 		expect(screen.getAllByRole("link", { name: /^Open / }).map((link) => link.getAttribute("aria-label"))).toEqual([
 			"Open a.html",
 			"Open b.html",
-			"Open bb.html",
+			"Open bb.html, you don't have access",
 			"Open c.html",
 			"Open d.html",
 			"Open e.html",
 			"Open f.html",
-			"Open z.html",
+			"Open z.html, you don't have access",
 		]);
 		expect(screen.queryByRole("button", { name: /Show more/ })).toBeNull();
 
@@ -2077,27 +2074,35 @@ describe("FileNodeView folder sort", () => {
 		).toContain("html");
 	});
 
-	test("tells a member with shares here that a metadata sort does not show them", async () => {
+	test("a custom-field sort lists a member's locked rows last, by name, and says so", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
-		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id }];
-		sharedRows = [{ ...NODE, _id: "shared.html", name: "shared.html", path: "/Docs/shared.html", parentId: node._id }];
-		hasShared = true;
+		treeNodes = [node, { ...NODE, _id: "b.html", name: "b.html", path: "/Docs/b.html", parentId: node._id }];
+		lockedRows = ["c.html", "a.html"].map((name) => ({
+			...NODE,
+			_id: name,
+			name,
+			path: `/Docs/${name}`,
+			parentId: node._id,
+		}));
 		folderSort = { sort: [{ field: "metadata.status", direction: "asc" }], canSave: false };
 		renderFileView({ nodeId: node._id });
 
 		expect(
-			await screen.findByText("Items shared with you are not shown while sorting or filtering by metadata.status"),
+			await screen.findByText("Restricted items are listed last, by name, when you sort by a custom field."),
 		).toBeTruthy();
-		expect(screen.getByRole("link", { name: "Open a.html" })).toBeTruthy();
-		expect(screen.queryByRole("link", { name: "Open shared.html" })).toBeNull();
+		expect(screen.getAllByRole("link", { name: /^Open / }).map((link) => link.getAttribute("aria-label"))).toEqual([
+			"Open b.html",
+			"Open a.html, you don't have access",
+			"Open c.html, you don't have access",
+		]);
 	});
 
-	test("the Columns menu reads the folder field list only, never the fields of a shared row", async () => {
+	test("the Columns menu reads the folder field list only, never the fields of a locked row", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id }];
-		sharedRows = [{ ...NODE, _id: "shared.html", name: "shared.html", path: "/Docs/shared.html", parentId: node._id }];
+		lockedRows = [{ ...NODE, _id: "locked.html", name: "locked.html", path: "/Docs/locked.html", parentId: node._id }];
 		renderFileView({ nodeId: node._id });
-		expect(await screen.findByRole("link", { name: "Open shared.html" })).toBeTruthy();
+		expect(await screen.findByRole("link", { name: "Open locked.html, you don't have access" })).toBeTruthy();
 
 		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
@@ -2111,7 +2116,6 @@ describe("FileNodeView folder sort", () => {
 describe("FileNodeView folder sort states", () => {
 	let rows: NonNullable<ReturnType<typeof useFilesSortedChildren>["rows"]>;
 	let result: Partial<ReturnType<typeof useFilesSortedChildren>>;
-	const retry = vi.fn();
 
 	beforeEach(() => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
@@ -2141,7 +2145,6 @@ describe("FileNodeView folder sort states", () => {
 		}));
 		folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: false };
 		result = {};
-		retry.mockReset();
 		sortedChildrenMock.mockImplementation((props) => ({
 			rows,
 			rowsSort: props.sort,
@@ -2149,11 +2152,8 @@ describe("FileNodeView folder sort states", () => {
 			rowsNamePrefix: props.namePrefix,
 			isBusy: false,
 			isDone: true,
-			isFailed: false,
-			isFolderRefused: false,
-			hiddenSharedKey: null,
+			restrictedNote: null,
 			loadMore: loadMorePendingMock,
-			retry,
 			...result,
 		}));
 	});
@@ -2231,17 +2231,6 @@ describe("FileNodeView folder sort states", () => {
 		pushQueryChanges();
 		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("ready");
 		expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify([{ field: "name", direction: "asc" }]));
-	});
-
-	test("keeps the sort controls during a failure and offers Retry", async () => {
-		result = { rows: [rows[0]!], isFailed: true, isDone: false };
-		renderFileView({ nodeId: node._id });
-		const table = await screen.findByRole("table", { name: "Folder contents" });
-		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("failed");
-		expect(screen.getByText("Folder contents could not be loaded.")).toBeTruthy();
-		expect(screen.getByRole("button", { name: "Columns" })).toBeTruthy();
-		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-		expect(retry).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -2485,6 +2474,57 @@ describe("FileNodeView folder columns", () => {
 		anagraphic = null;
 		pushQueryChanges();
 		expect(cell()).toHaveProperty("textContent", "Unknown");
+	});
+
+	test("a locked row shows — in custom columns", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id }];
+		lockedRows = [
+			{
+				...NODE,
+				_id: "locked.html",
+				name: "locked.html",
+				path: "/Docs/locked.html",
+				parentId: node._id,
+				contentByteSize: 2048,
+			},
+		];
+		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
+			folder_1: ["name", "updated_by", "size", "metadata.status"],
+		});
+		anagraphic = { displayName: "Ada Lovelace" };
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) =>
+			getFunctionName(reference) === "files_metadata:get_field_values"
+				? {
+						values: [{ field: "metadata.status", value: "Open", isPreview: false }],
+						afterField: "metadata.status",
+						isDone: true,
+					}
+				: previousQuery(reference, args),
+		);
+		renderFileView({ nodeId: node._id });
+		const table = await screen.findByRole("table", { name: "Folder contents" });
+		act(() => observers[0]!.emit());
+		pushQueryChanges();
+
+		const [openRow, lockedRow] = within(table).getAllByRole("row").slice(1);
+		const cell = (row: HTMLElement, field: string) => row.querySelector(`[data-column-field="${field}"]`)?.textContent;
+		expect(cell(openRow!, "metadata.status")).toBe("Open");
+		expect(cell(openRow!, "updated_by")).toBe("Ada Lovelace");
+		expect(lockedRow!.getAttribute("data-file-locked")).toBe("on");
+		expect(within(lockedRow!).getByRole("link", { name: "Open locked.html, you don't have access" })).toBeTruthy();
+		expect(cell(lockedRow!, "size")).toBe("2.0 KB");
+		expect(cell(lockedRow!, "metadata.status")).toBe("—");
+		expect(cell(lockedRow!, "updated_by")).toBe("—");
+		// Its custom fields are never read.
+		expect(
+			queryMock.mock.calls.some(
+				([reference, args]) =>
+					getFunctionName(reference) === "files_metadata:get_field_values" &&
+					JSON.stringify(args).includes("locked.html"),
+			),
+		).toBe(false);
 	});
 
 	test("loads real scalar cells through the editor observer and puts Retry values in Actions", async () => {

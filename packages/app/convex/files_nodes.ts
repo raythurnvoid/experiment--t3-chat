@@ -4374,11 +4374,17 @@ export const list_subtree = internalQuery({
 		contentTypePrefix: v.optional(v.string()),
 		minDepth: v.optional(v.number()),
 		maxDepth: v.optional(v.number()),
+		/**
+		 * Direct children only: also return the children the subject cannot open, with their ids in
+		 * `lockedIds`, so a folder list shows them locked. A recursive list still leaves them out.
+		 */
+		withLocked: v.optional(v.literal(true)),
 	},
 	returns: v.object({
 		...paginationResultValidator(doc(app_convex_schema, "files_nodes")).fields,
 		frontier: v.optional(v.union(subtree_key_validator, v.null())),
 		phaseCount: v.optional(v.number()),
+		lockedIds: v.optional(v.array(v.id("files_nodes"))),
 	}),
 	handler: async (ctx, args) => {
 		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
@@ -4538,10 +4544,10 @@ export const list_subtree = internalQuery({
 			...(rootLast && rootRow ? [rootRow] : []),
 		];
 
-		// The access check can make a page shorter. The cursor still walks the whole subtree; only the
-		// page size varies.
-		// The frontier is read before the access check, so it can be a hidden doc. It must never reach a
-		// caller as plain text: `files_saved_list_page` seals it inside the public cursor.
+		// Without `withLocked`, the access check can make a page shorter. The cursor still walks the whole
+		// subtree; only the page size varies.
+		// The frontier is read before the access check, so it can be a doc the caller cannot open. It must
+		// never reach a caller as plain text: `files_saved_list_page` seals it inside the public cursor.
 		const last = result.page.at(-1);
 		const frontier = last
 			? {
@@ -4550,9 +4556,31 @@ export const list_subtree = internalQuery({
 					nodeId: "nodeId" in last ? last.nodeId : last._id,
 				}
 			: null;
+		const readable = await filter_readable(nodes);
+		// A folder list never drops a child of a readable folder: the caller sees it locked. Check the
+		// folder here, in this query: the caller looked it up in another one, and access may have changed
+		// since. A caller who cannot open it (also the workspace root, for a guest with one shared folder)
+		// gets only the children they can open.
+		if (
+			args.withLocked &&
+			directChildren &&
+			(scope.kind === "volume" ||
+				(await access_control_db_can_act_on_file_node(ctx, {
+					...args,
+					fileNode: rootNode,
+					permission: "content.read",
+				})))
+		)
+			return {
+				...result,
+				page: nodes,
+				lockedIds: nodes.filter((node) => !readable.includes(node)).map((node) => node._id),
+				frontier,
+				...(seek ? { phaseCount: phases.length } : {}),
+			};
 		return {
 			...result,
-			page: await filter_readable(nodes),
+			page: readable,
 			frontier,
 			...(seek ? { phaseCount: phases.length } : {}),
 		};
@@ -6917,7 +6945,9 @@ export const text_search_files = internalQuery({
 			// reads the same cursor again with fewer rows.
 			if (reader.exhausted || files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics()))
 				return { ...empty, isDone: false, retrySmaller: true };
-			// The folder is checked per row, on the top 1,024 matches of the workspace.
+			// The folder is checked per row, on the top 1,024 matches of the workspace. Accepted exception:
+			// content search filters after the search index; a locked item is never returned for a content
+			// match.
 			if (!entry || (pathPrefix && !entry.path.startsWith(pathPrefix))) continue;
 			items.push({
 				...entry,
@@ -7002,6 +7032,9 @@ export const search_saved = query({
 				path: doc(app_convex_schema, "files_nodes").fields.path,
 				// The media picker shows files that are not images or videos as disabled.
 				contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
+				// Name and path searches only: the caller cannot open this item, but its parent folder is
+				// readable, so its name already shows there.
+				locked: v.boolean(),
 				// Content rows only: the first matching chunk of the file on this page.
 				textChunk: v.optional(v.string()),
 				lineStart: v.optional(v.number()),
@@ -7042,8 +7075,12 @@ export const search_saved = query({
 
 		/**
 		 * Keep the active nodes of the membership's workspace that the caller may read, once each.
+		 *
+		 * With `showLocked`, a node the caller cannot open stays as a locked row when its parent folder
+		 * is readable, like in the folder list. Only name and path searches pass it: a content, custom
+		 * field or link match would tell something about the locked item itself.
 		 */
-		const readable_rows = async (nodes: Array<Doc<"files_nodes"> | null>) => {
+		const readable_rows = async (nodes: Array<Doc<"files_nodes"> | null>, showLocked = false) => {
 			const byId = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
 			for (const node of nodes) {
 				if (
@@ -7054,18 +7091,49 @@ export const search_saved = query({
 					byId.set(node._id, node);
 				}
 			}
-			const readable = await access_control_db_filter_readable_file_nodes(ctx, {
+			const access = {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				subject: { kind: "user", userId: userAuth.id, plugin: null },
-				nodes: [...byId.values()],
-			});
-			return readable.map((node) => ({
-				kind: node.kind,
-				nodeId: node._id,
-				path: node.path,
-				contentType: node.contentType,
-			}));
+			} as const;
+			// A locked row needs a readable parent folder. The parents are checked in the same call as the
+			// hits, so a deep chain of added people is walked once for both, and the parents add few reads
+			// (500-level cost test). The budget check here limits only the parent reads: a parent that is
+			// not read leaves its locked hits out (fail closed).
+			const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
+			for (const node of showLocked ? byId.values() : []) {
+				if (node.parentId === files_ROOT_ID || parents.has(node.parentId)) continue;
+				if (files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics())) break;
+				parents.set(node.parentId, await files_saved_placement_db_get_node(ctx.db, node.parentId, saved.tag));
+			}
+			const readable = new Set<Doc<"files_nodes">>(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					...access,
+					nodes: [...byId.values(), ...[...parents.values()].filter((parent) => parent !== null)],
+				}),
+			);
+			let rootReadable: boolean | undefined;
+			const rows = [];
+			for (const node of byId.values()) {
+				const locked = !readable.has(node);
+				if (locked) {
+					if (!showLocked) continue;
+					if (node.parentId === files_ROOT_ID) {
+						rootReadable ??= await access_control_db_can_act_on_file_node(ctx, {
+							...access,
+							fileNode: null,
+							permission: "content.read",
+						});
+						if (!rootReadable) continue;
+					} else {
+						const parent = parents.get(node.parentId);
+						if (!parent || !readable.has(parent)) continue;
+					}
+				}
+				// A locked row has no content: the client shows it like a locked row of a folder list.
+				rows.push({ kind: node.kind, nodeId: node._id, path: node.path, contentType: node.contentType, locked });
+			}
+			return rows;
 		};
 
 		if (clause.kind === "path") {
@@ -7085,7 +7153,7 @@ export const search_saved = query({
 				: ctx.db.normalizeId("files_nodes", clause.path);
 			return {
 				...refused,
-				page: await readable_rows([nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null]),
+				page: await readable_rows([nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null], true),
 			};
 		}
 
@@ -7166,7 +7234,7 @@ export const search_saved = query({
 				if (result.page.length > SEARCH_SAVED_MAX_ITEMS) {
 					throw convex_invalid_cursor_error("The search page grew past its cap");
 				}
-				return { ...result, page: await readable_rows(await saved.read_nodes(result.page)) };
+				return { ...result, page: await readable_rows(await saved.read_nodes(result.page), true) };
 			}
 
 			// Committed chunks only: drafts never count toward the top matches.
@@ -7187,6 +7255,8 @@ export const search_saved = query({
 				throw convex_invalid_cursor_error("The search page grew past its cap");
 			}
 			const chunks = result.page.flatMap((chunk) => (chunk.sourceKind === "committed" ? [chunk] : []));
+			// Accepted exception: content search filters after the search index; a locked item is never
+			// returned for a content match.
 			const rows = await readable_rows(
 				await Promise.all(
 					chunks.map((chunk) => files_saved_placement_db_get_node(ctx.db, chunk.fileNodeId, saved.tag)),

@@ -690,8 +690,8 @@ and values from the catalog. Each read is one index range, so it costs the same 
   when it is shared with them. Example: `/projects/budget.xlsx` is restricted, shared with Ana, and
   has `metadata.salary_band`; Ana's Columns in `/projects` does not offer `salary_band`. Keys of
   files inside a shared restricted folder still show when Ana opens that folder. The gain of fixing
-  it is small: a metadata sort or filter already drops that child (`hiddenSharedKey` in
-  `files-explorer-tree`). Do not build a per-scope catalog (decision 6 stage 3) for this: it needs a
+  it is small: a member's metadata sort lists that child in the trailing restricted group, by name,
+  and a member's metadata filter matches it through the share streams (`files-explorer-tree`). Do not build a per-scope catalog (decision 6 stage 3) for this: it needs a
   read budget and a hand-merged cursor inside one query, which the scan rules forbid, and a
   per-principal table would multiply writes by shares (up to about 12,800 per save). The search
   engine fixes it; add the Ana case to its acceptance tests.

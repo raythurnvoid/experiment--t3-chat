@@ -2467,18 +2467,18 @@ describe("list_tree_children_sorted", () => {
 		expect([...(await read_range(null, first.continueCursor)), ...rest.page.map((row) => row.name)]).toEqual(names);
 	});
 
-	test("a member reads only the open stream, and the owner merges in the restricted one", async () => {
-		const { t, db, asOwner, read_page, read_table, walk, insert_child, parentId } = await seed_folder_table();
+	test("a member reads the restricted stream as locked rows, and the owner reads it open", async () => {
+		const { t, db, asOwner, read_table, walk, insert_child, parentId } = await seed_folder_table();
 		for (const name of ["a", "b", "c", "d"]) {
 			await insert_child({ name, kind: "folder", updatedAt: 1 });
 		}
-		const hiddenId = await t.run(
+		const restrictedId = await t.run(
 			async (ctx) =>
 				(await ctx.db.query("files_nodes").collect()).find((node) => node.parentId === parentId && node.name === "b")!
 					._id,
 		);
 		expect(
-			await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: hiddenId }),
+			await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: restrictedId }),
 		).toEqual({ _yay: null });
 
 		const member = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "member-home" }));
@@ -2510,18 +2510,17 @@ describe("list_tree_children_sorted", () => {
 					.map((row) => row.name)
 					.sort(),
 			).toEqual(["a", "c", "d"]);
-			expect(
-				await read_page({
-					as: asMember,
-					membershipId,
-					kind: "folder",
-					sort,
-					restricted: true,
-					paginationOpts: { numItems: 1, cursor: null },
-				}),
-			).toEqual({ page: [], isDone: true, continueCursor: "" });
+			const memberRestricted = await walk({
+				as: asMember,
+				membershipId,
+				kind: "folder",
+				sort,
+				restricted: true,
+				numItems: 1,
+			});
+			expect(memberRestricted.flat().map((row) => [row.name, row.locked])).toEqual([["b", true]]);
 			const ownerRestricted = await walk({ kind: "folder", sort, restricted: true, numItems: 1 });
-			expect(ownerRestricted.flat().map((row) => row.name)).toEqual(["b"]);
+			expect(ownerRestricted.flat().map((row) => [row.name, row.locked])).toEqual([["b", false]]);
 		}
 		expect(await read_table({ field: "name", direction: "asc" })).toEqual(["a", "b", "c", "d"]);
 	});
@@ -3045,7 +3044,6 @@ describe("table filter caller", () => {
 						membershipId: db.membershipId,
 						parentId,
 						kind: "file",
-						archived: false,
 						principalIndex: 0,
 						sort: [{ field: "name", direction: "asc" }],
 						filter: null,
@@ -3085,7 +3083,6 @@ describe("table filter caller", () => {
 					membershipId: db.membershipId,
 					parentId,
 					kind: "file",
-					archived: false,
 					principalIndex: 0,
 					sort: [{ field: "name", direction: "asc" }],
 					filter: null,

@@ -8596,8 +8596,9 @@ describe("plugins metadata file doors", () => {
 			body: { path: "/" },
 		});
 		expect(listed.status).toBe(200);
-		const listedBody = (await listed.json()) as { items: { path: string }[] };
-		expect(listedBody.items.map((item) => item.path)).not.toContain("/probe");
+		// The folder is listed, but locked.
+		const listedBody = (await listed.json()) as { items: { path: string; locked: boolean }[] };
+		expect(listedBody.items.find((item) => item.path === "/probe")?.locked).toBe(true);
 
 		const read = await door_call({
 			t,

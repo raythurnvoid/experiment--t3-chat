@@ -180,8 +180,8 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 					loadMore: () => {},
 				};
 			},
-			// Unknown, so the folder table reads every stream.
-			useIsOwner: () => null,
+			// Unknown by default, so the folder table reads every stream.
+			useIsOwner: () => isOwner,
 		},
 	};
 });
@@ -411,14 +411,17 @@ function test_folder_keys(fields: string[], args: unknown) {
 	const prefix = (args as { prefix: string }).prefix.toLowerCase();
 	return fields.filter((field) => field.toLowerCase().startsWith(prefix));
 }
-// Restricted children shared with this member, on their own share stream.
+// Restricted children shared with this member, on their own share stream. A member reads it only for
+// a custom-field filter.
 let sharedRows: (typeof NODE)[];
-// What `has_tree_children_shared` answers.
-let hasShared: boolean | null;
+// Children this member cannot open. The restricted twin gives them as locked rows.
+let lockedRows: (typeof NODE)[];
 // What `has_drafts_in_folder` answers.
 let hasDrafts: boolean;
 // The caller's permissions in `workspace_1`, from `organizations.list`.
 let workspacePermissions: "all" | string[];
+// What `FilesTreeProvider.useIsOwner` answers.
+let isOwner: boolean | null;
 let folderSort: unknown;
 let privateView:
 	| {
@@ -471,9 +474,10 @@ beforeEach(() => {
 	};
 	pendingChildren = [];
 	sharedRows = [];
-	hasShared = false;
+	lockedRows = [];
 	hasDrafts = false;
 	workspacePermissions = "all";
+	isOwner = null;
 	folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: true };
 	browserSession = null;
 	anagraphic = null;
@@ -578,8 +582,8 @@ beforeEach(() => {
 				return folderSort;
 			case "files_tree:list_tree_children_sorted":
 			case "files_tree:list_tree_children_shared": {
-				// Serve a whole segment at once. The hook's paging has its own tests. The tree rows are open, and
-				// `sharedRows` come on the member's own share stream.
+				// Serve a whole segment at once. The hook's paging has its own tests. The tree rows are open,
+				// `lockedRows` come on the twin, and `sharedRows` come on the member's own share stream.
 				const { parentId, kind, segment, sort, filter, restricted, principalIndex } = args as {
 					parentId: string;
 					kind: string;
@@ -590,7 +594,13 @@ beforeEach(() => {
 					principalIndex?: number;
 				};
 				const source =
-					principalIndex === undefined ? (restricted ? [] : (treeNodes ?? [])) : principalIndex === 0 ? sharedRows : [];
+					principalIndex === undefined
+						? restricted
+							? lockedRows
+							: (treeNodes ?? [])
+						: principalIndex === 0
+							? sharedRows
+							: [];
 				return segment === "missing"
 					? []
 					: source
@@ -615,6 +625,7 @@ beforeEach(() => {
 							})
 							.map((item) => ({
 								...item,
+								...(restricted ? { locked: true } : {}),
 								sortKey: files_sort_key_of({
 									sort,
 									facts: {
@@ -630,8 +641,6 @@ beforeEach(() => {
 							}))
 							.sort((a, b) => files_sort_compare({ a: a.sortKey, b: b.sortKey, sort }));
 			}
-			case "files_tree:has_tree_children_shared":
-				return hasShared;
 			case "files_metadata:list_search_fields":
 				return [{ fieldPath: "metadata.status", valueKinds: ["string"] }];
 			case "files_metadata:list_folder_fields":
@@ -765,7 +774,6 @@ describe("FileNodeView folder filter", () => {
 	let rows: NonNullable<ReturnType<typeof useFilesSortedChildren>["rows"]>;
 	let result: Partial<ReturnType<typeof useFilesSortedChildren>>;
 	let rowsByScope: Map<string, typeof rows>;
-	const retry = vi.fn();
 
 	beforeEach(() => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
@@ -795,7 +803,6 @@ describe("FileNodeView folder filter", () => {
 		}));
 		result = {};
 		rowsByScope = new Map();
-		retry.mockReset();
 		sortedChildrenMock.mockImplementation((props) => ({
 			rows:
 				props.filter === null
@@ -806,11 +813,8 @@ describe("FileNodeView folder filter", () => {
 			rowsNamePrefix: props.namePrefix,
 			isBusy: false,
 			isDone: true,
-			isFailed: false,
-			isFolderRefused: false,
-			hiddenSharedKey: null,
+			restrictedNote: null,
 			loadMore: loadMorePendingMock,
-			retry,
 			...result,
 		}));
 	});
@@ -1342,42 +1346,26 @@ describe("FileNodeView folder filter", () => {
 		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(5);
 	});
 
-	test("keeps Clear and Retry on an error but removes the table when the folder is refused", async () => {
-		result = { rows: [], isDone: false };
-		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:file" });
-		await screen.findByRole("table", { name: "Folder contents" });
-		result = { rows: [], isDone: false, isFailed: true };
-		pushQueryChanges();
-		expect(screen.getByRole("alert").textContent).toBe("Filter could not be applied");
-		expect(screen.getByRole("button", { name: "Clear filter and sort" })).toBeTruthy();
-		expect(screen.getByRole("table", { name: "Folder contents" })).toBeTruthy();
-		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-		expect(retry).toHaveBeenCalledTimes(1);
-		result = { rows: undefined, isFailed: true, isFolderRefused: true };
-		pushQueryChanges();
-		expect(screen.getByRole("alert").textContent).toBe("This folder could not be loaded.");
-		expect(screen.queryByRole("table", { name: "Folder contents" })).toBeNull();
-		expect(screen.queryByRole("button", { name: "Clear filter and sort" })).toBeNull();
-	});
-
-	test("a metadata filter shows no shared row and says why, through the real hook", async () => {
+	test("a member's custom-field filter shows their shares, leaves out locked rows and says so, through the real hook", async () => {
 		sortedChildrenMock.mockReset();
+		isOwner = false;
 		sharedRows = [
 			{ ...NODE, _id: "a-shared.html", name: "a-shared.html", path: "/Docs/a-shared.html", parentId: node._id },
 		];
-		hasShared = true;
+		lockedRows = [
+			{ ...NODE, _id: "a-locked.html", name: "a-locked.html", path: "/Docs/a-locked.html", parentId: node._id },
+		];
 		renderFileView({ nodeId: node._id, filter: "metadata.status:is:Open" });
 		await screen.findByRole("link", { name: "Open file-1.html" });
-		expect(screen.queryByRole("link", { name: "Open a-shared.html" })).toBeNull();
-		expect(
-			screen.getByText("Items shared with you are not shown while sorting or filtering by metadata.status"),
-		).toBeTruthy();
+		expect(await screen.findByRole("link", { name: "Open a-shared.html" })).toBeTruthy();
+		expect(screen.queryByRole("link", { name: /^Open a-locked\.html/ })).toBeNull();
+		expect(screen.getByText("Locked items are not included when you filter by a custom field.")).toBeTruthy();
 
-		// A name filter reads the share stream, so the shared row shows and the note goes.
+		// A name filter reads the twin, so the locked row shows and the note goes.
 		cleanup();
 		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:a" });
-		expect(await screen.findByRole("link", { name: "Open a-shared.html" })).toBeTruthy();
-		expect(screen.queryByText(/^Items shared with you/)).toBeNull();
+		expect(await screen.findByRole("link", { name: "Open a-locked.html, you don't have access" })).toBeTruthy();
+		expect(screen.queryByText(/^Locked items are not included/)).toBeNull();
 	});
 });
 

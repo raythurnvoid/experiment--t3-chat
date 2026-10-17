@@ -313,6 +313,34 @@ describe("bash_run_command", () => {
 			expect(after.result?.stdout).not.toContain("after");
 		});
 
+		test("durable Copy that skipped a locked item says so and exits 1", async () => {
+			const runner = await create_bash_runner();
+			await runner.run({ command: "echo source > source.txt" });
+			await runner.run({ command: "cp source.txt copy.txt &" });
+			const waiting = await run_job(runner, 1);
+			if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+			const runId = waiting.job.copy.runId;
+			// Let the Copy run, then mark its item as one the user could not open.
+			await runner.runQuery(internal.files_transfer.get_for_agent, {
+				membershipId: waiting.membershipId,
+				threadId: waiting.threadId,
+				runId,
+			});
+			await runner.t.run(async (ctx) => {
+				const item = await ctx.db
+					.query("files_transfer_items")
+					.filter((q) => q.eq(q.field("runId"), runId))
+					.first();
+				await ctx.db.patch("files_transfer_items", item!._id, {
+					state: "skipped",
+					skipReason: "permission_denied",
+				});
+			});
+			const after = await run_job(runner, 1);
+			expect(after.result?.metadata.exitCode).toBe(1);
+			expect(after.result?.stderr).toContain("cp: some items were not copied: Permission denied\n");
+		});
+
 		test("durable Copy keeps streamed output beyond the live head in the transcript", async () => {
 			const runner = await create_bash_runner();
 			await runner.run({

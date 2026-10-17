@@ -331,7 +331,7 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 		namePrefix?: string | null;
 		restricted?: boolean;
 		/**
-		 * Read this principal's share stream (`list_tree_children_shared`) instead.
+		 * Read this principal's share stream (`list_tree_children_shared`, custom-field filters only) instead.
 		 */
 		principalIndex?: 0 | 1 | 2;
 	};
@@ -351,7 +351,6 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 		membershipId: args.membershipId ?? db.membershipId,
 		parentId,
 		kind: args.kind,
-		archived: false,
 		principalIndex,
 		sort: [args.sort],
 		filter: args.filter ?? null,
@@ -387,8 +386,8 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 		});
 
 	/**
-	 * Read one stream to its end. Every page but the last must be full, and the rows must come in
-	 * `sortKey` order.
+	 * Read one stream to its end. Every page but the last must be full, except the share streams of a
+	 * custom-field filter, which leave out rows that do not match. The rows must come in `sortKey` order.
 	 */
 	const walk = async (args: Stream & { numItems: number }) => {
 		const pages: Page["page"][] = [];
@@ -397,7 +396,9 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 			const result: Page = await read_page({ ...args, paginationOpts: { numItems: args.numItems, cursor } });
 			pages.push(result.page);
 			if (result.isDone) {
-				expect(pages.slice(0, -1).every((page) => page.length === args.numItems)).toBe(true);
+				const full =
+					args.principalIndex !== undefined || pages.slice(0, -1).every((page) => page.length === args.numItems);
+				expect(full).toBe(true);
 				const rows = pages.flat();
 				expect(
 					rows.every(
@@ -416,8 +417,8 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 	/**
 	 * The names in display order, like the browser: folders, then files. In each kind the value
 	 * segment comes before the missing one, and each segment merges the open and the restricted
-	 * stream by `sortKey`. For a `member` it merges the open stream and their 3 share streams
-	 * instead, and keeps a node shared twice once.
+	 * stream by `sortKey`. For a `member` with a custom-field filter it merges the open stream and
+	 * their 3 share streams instead, and keeps a node shared twice once.
 	 */
 	const read_table = async (
 		sort: files_sort_Clause,
@@ -429,9 +430,10 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 		} = {},
 	) => {
 		const { member, ...pageOptions } = options;
-		const streams: Array<Pick<Stream, "restricted" | "principalIndex">> = member
-			? [{ restricted: false }, { principalIndex: 0 }, { principalIndex: 1 }, { principalIndex: 2 }]
-			: [{ restricted: false }, { restricted: true }];
+		const streams: Array<Pick<Stream, "restricted" | "principalIndex">> =
+			member && options.filter?.kind === "text"
+				? [{ restricted: false }, { principalIndex: 0 }, { principalIndex: 1 }, { principalIndex: 2 }]
+				: [{ restricted: false }, { restricted: true }];
 		const names: string[] = [];
 		for (const kind of ["folder", "file"] as const) {
 			for (const segment of ["value", "missing"] as const) {

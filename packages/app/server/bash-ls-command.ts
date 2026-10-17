@@ -202,6 +202,7 @@ function format_item(args: {
 	updatedAt: number;
 	updatedBy?: string;
 	contentType?: string | null;
+	locked?: boolean;
 	display: string;
 	long: boolean;
 }) {
@@ -212,6 +213,10 @@ function format_item(args: {
 	const fields = [args.kind, new Date(args.updatedAt).toISOString(), `updatedBy=${args.updatedBy ?? "-"}`];
 	if (args.contentType != null) {
 		fields.push(`contentType=${args.contentType}`);
+	}
+	// A locked item is listed, but it cannot be opened. Its row has no author.
+	if (args.locked) {
+		fields.push("access=locked");
 	}
 	fields.push(display);
 	return fields.join("\t");
@@ -593,6 +598,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						updatedAt: dbFilesDoc.updatedAt,
 						updatedBy: dbFilesDoc.updatedBy,
 						contentType: dbFilesDoc.contentType,
+						locked: dbFilesDoc.locked,
 						display: target.absoluteShellPath,
 						long: parsed._yay.long,
 					}),
@@ -631,6 +637,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 							updatedAt: item.updatedAt,
 							updatedBy: item.updatedBy,
 							contentType: item.contentType,
+							locked: item.locked,
 							display: parsed._yay.recursive ? target.pathResolution.renderShellPath(item.path) : item.name,
 							long: parsed._yay.long,
 						}),

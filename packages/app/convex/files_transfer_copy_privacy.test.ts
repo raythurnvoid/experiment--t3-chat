@@ -226,7 +226,7 @@ describe("cross-workspace Copy privacy", () => {
 		);
 	});
 
-	test("refuses an agent Copy of a folder with a child the actor cannot read", async () => {
+	test("an agent Copy of a folder skips a child the actor cannot read and copies the rest", async () => {
 		const f = await fixture("current");
 		const created: Id<"files_nodes">[] = [];
 		for (const path of ["/folder", "/folder/open", "/folder/secret-name"]) {
@@ -244,8 +244,16 @@ describe("cross-workspace Copy privacy", () => {
 				nodeId: created[2]!,
 			}),
 		).toEqual({ _yay: null });
-		// Draft-view discovery reads a complete folder, so a hidden child stops the Copy.
-		await expect(copy(f, [{ kind: "saved", id: created[0]! }])).rejects.toThrow("Permission denied");
+		// Draft-view discovery lists the locked child, like GNU `cp -r`: it is skipped, nothing is
+		// created for it, and the rest is copied.
+		const { items } = await copy(f, [{ kind: "saved", id: created[0]! }]);
+		expect(
+			items.map((item) => [item.sourcePath, item.state, item.skipReason ?? null, item.outputTarget !== null]),
+		).toEqual([
+			["/folder", "completed", null, true],
+			["/folder/open", "completed", null, true],
+			["/folder/secret-name", "skipped", "permission_denied", false],
+		]);
 	});
 
 	test("account finalization removes transfer history and keeps the saved team copy", async () => {

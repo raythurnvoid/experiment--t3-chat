@@ -96,7 +96,7 @@ vi.mock("convex/react", async (importOriginal) => {
 	};
 });
 
-const saved_row = (path: string, extra: Partial<{ textChunk: string; lineStart: number }> = {}) =>
+const saved_row = (path: string, extra: Partial<{ textChunk: string; lineStart: number; locked: boolean }> = {}) =>
 	({ kind: "file", nodeId: `node${path}`, path, ...extra }) as SavedRow;
 
 async function open_search(query: string) {
@@ -173,6 +173,22 @@ describe("FilesSearchPalette", () => {
 		expect(navigateMock.mock.calls.at(-1)?.[0].search({ q: "budget" })).toEqual({
 			q: "budget",
 			nodeId: "node/a/budget.md",
+		});
+	});
+
+	test("a locked hit shows the lock and muted text, has no snippet, and opens its page", async () => {
+		savedPages.set(saved_key({ kind: "name", text: "plan" }), [[saved_row("/team/plan.md", { locked: true })]]);
+		await open_search("plan");
+
+		const row = await screen.findByRole("button", { name: /\/team\/plan\.md/ });
+		expect(row.classList.contains("FilesSearchPaletteGroup-item-locked")).toBe(true);
+		expect(row.getAttribute("title")).toBe("You don't have access");
+		expect(row.querySelector(".lucide-lock")).toBeTruthy();
+		expect(row.querySelector(".FilesSearchPaletteGroup-item-snippet")).toBeNull();
+		fireEvent.click(row);
+		expect(navigateMock.mock.calls.at(-1)?.[0].search({ q: "plan" })).toEqual({
+			q: "plan",
+			nodeId: "node/team/plan.md",
 		});
 	});
 

@@ -906,11 +906,11 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
   It returns `null` for an inactive or foreign membership and for every refusal
   except "Permission denied". "Permission denied" means the member has no workspace-wide read, so the
   queries continue in grant-only mode and show only what was shared with them.
-- `list_tree_children` pages one kind of child of one folder, with the same open stream and owner
-  restricted twin as `list_tree_children_sorted` below. A missing, foreign, or hidden parent gets the
-  same empty, done page as any other refusal, so the answer does not tell the caller that a hidden
-  folder exists. A grant-only member gets nothing for the root: their root rows come from
-  `list_tree_children_shared` and `list_tree_shared_roots`. The public `files/list` route keeps the
+- `list_tree_children` pages one kind of child of one folder, with the same open stream and
+  restricted twin as `list_tree_children_sorted` below. A missing or foreign parent, or one the
+  caller cannot open, gets the same empty, done page as any other refusal. That page only means
+  "cannot open": a locked folder still shows as a locked row in its parent. A grant-only member gets
+  nothing for the root: their root rows come from `list_tree_shared_roots`. The public `files/list` route keeps the
   same rule with a different answer: a missing, archived, or hidden folder gets one 404 `Folder not
   found: <path>` (see the public-api skill). A member who can read only `/Clients/Acme` gets that 404
   for `/Clients` too.
@@ -926,44 +926,49 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
 - `list_tree_children_sorted` (the sorted Files table) uses the same folder gate, and a grant-only
   member gets nothing for the root. It reads saved rows only (see the `files-explorer-tree` skill,
   "Saved-only lists"). Each stream is one kind and either the open or the restricted children:
-  - The open stream reads only rows with `isRestrictedScopeRoot: false`. Such a row shares its
-    folder's restricted scope, so every row in that index range is readable by anybody who can read
-    the folder. That is why no row is filtered after paging, and a hidden row never takes a page
-    slot or shows its sort value. This holds for members only; service accounts check each node, so
-    do not reuse this query for them. The rule is exact only outside scope and move jobs. While a job
-    runs, a child moved out of a restricted folder can still carry the old scope, and the open
-    stream already shows it. This only shows the node early to readers who get access when the job
-    ends.
-  - The restricted twin reads the rows with `isRestrictedScopeRoot: true`. Only the owner gets rows,
-    because the owner can read every node; everybody else gets an empty, done page.
+  - Every row a stream reads is returned, open or locked. No row is filtered after paging, so a page
+    is full. A row the caller cannot `content.read` comes back as a locked row: `locked: true` and
+    only its name, path, parent, kind, type, size and dates (`files_tree_locked_row_fields`). No
+    metadata, updater or members. An open row has `locked: false`. `files_tree_db_get_list_rows`
+    builds both, for `list_tree_children` and `list_tree_children_sorted`.
+  - The open stream reads only rows with `isRestrictedScopeRoot: false`. A row whose scope pair
+    (`restrictedScopeNodeId`, `extendedScopeNodeId`) equals the folder's, or that is its own
+    extended root on top of the folder's pair, is readable by anybody who can read the folder, so it
+    needs no check. Any other row (a scope or move job has not reached it yet) gets a full check
+    (`files_tree_db_get_locked_node_ids`). The checker caches each scope, so each pair costs reads
+    once.
+  - The restricted twin reads the rows with `isRestrictedScopeRoot: true`, for every reader, and
+    checks each row. The tree queries always check as a person, never as a plugin.
   - Every returned row must match its stream: the reader's organization and workspace, right
     parent, active, and both `isRestrictedScopeRoot` and `restrictedScopeNodeId === _id` equal to
     the stream's `restricted`.
-    A mismatch throws `should_never_happen`, because a stale flag would show a hidden row.
-  - A filter and a sort only pick the index range inside the same stream, so hidden restricted
-    children never change a page, its cursor, or its length.
-- `list_tree_children_shared` gives a member the restricted children shared with them, one share
-  stream per principal, for the tree and the table. It reads no drafts. The owner gets an empty,
-  done page, because the restricted twins hold those rows.
+    A mismatch throws `should_never_happen`, because a stale flag would put a row in the wrong stream.
+  - Name, size, dates and extension show on a locked row, so built-in sorts and filters read the
+    twin like the open stream.
+  - A custom field is never read for a locked row. Only the owner reads the twin by a custom-field
+    value. For a custom-field sort, other readers get the twin by name, as a trailing group after
+    the value rows (`parts: [null]`). For a custom-field filter, their twin is refused and they read
+    `list_tree_children_shared` instead. In the open stream a custom-field page leaves out a row
+    that comes back locked (job lag), so its value never places it.
+- `list_tree_children_shared` gives a member the restricted children shared with them that match a
+  custom-field text filter, one share stream per principal, for the table. It reads no drafts. The
+  owner, and any other order, gets an empty, done page.
   - A non-owner can read a restricted scope root only through a user or role `content.read` grant
     on it, so the share rows hold every candidate. Scanning the folder instead would not scale: a
     folder of one private folder per person has thousands of restricted children.
   - The server builds the `principalKey` from the caller (`principalIndex` 0 is the user, 1 and 2
     their roles from `access_control_db_resolve_role_refs`), never from the client. A role the
     member does not have gets an empty, done page.
-  - A member's page must never depend on a row hidden from them. Otherwise a cut would move when a
-    hidden row is added and leak that it exists. The stream reads only the member's share rows, so
-    hidden restricted children never change a page, its cursor, or its length.
+  - A member's filtered page must never depend on a custom field they cannot read. Otherwise a cut
+    would move when a locked child's value changes and leak that value. The stream reads only the
+    member's share rows (by name), then each row's own committed field doc, so a locked child's
+    value never changes a page, its cursor, or its length.
   - A share row is a copy, and a grant can outlive the access, for example a plugin grant whose
     membership ended. So each row is checked again: its node must be a restricted root of the
-    reader's organization and workspace, still under this parent, active or archived as the read
-    asks, and readable. A plugin grant's row must also carry the member's live membership
-    lifetime, so after a re-invite the old grant reads nothing, even while another grant keeps the
-    node readable. A row
-    that fails is dropped, so a page can be short.
-  - Share rows copy no metadata, so a metadata sort or filter gets an empty, done page.
-    `has_tree_children_shared` tells the table that the member has shares there, so it can say they
-    are not shown.
+    reader's organization and workspace, still under this parent, active, and readable. A plugin
+    grant's row must also carry the member's live membership lifetime, so after a re-invite the old
+    grant reads nothing, even while another grant keeps the node readable. A row that fails, or
+    whose field doc does not match, is dropped, so a page can be short.
 - A folder that the caller can read but that is archived gets empty pages, not a refusal, so the
   table shows no error there.
 - `isRestrictedScopeRoot` on `files_nodes` is a stored copy of `restrictedScopeNodeId === _id`, and
@@ -1012,10 +1017,8 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
   50 active files per case variant of the prefix `rea`, so a folder with 50+ names like `reaction-*.md`
   before `README.md` shows no README in the Files table.
 - Every folder row shows a chevron, even an empty one. A chevron only on folders with children would
-  tell a reader that a folder holds files they cannot see. The tree pages keep this: a hidden child
-  never takes a page slot (see `list_tree_children` above), so paging with `numItems: 1` cannot
-  count hidden children. The search box pages can still give that signal (see the decided note on
-  `files_nodes.search_saved`).
+  tell a reader that a folder holds files they cannot see. A child they cannot open shows as a
+  locked row instead (see `list_tree_children` above).
 
 ## File sharing
 
@@ -1141,8 +1144,9 @@ the folder table, and a reader can list the restricted folders it may read in pa
 - A share is a file `content.read` grant to a user, a role or a service account. Its row lives while
   the grant lives and its node is a scope root (restricted or extended) in the grant's organization
   and workspace, active or archived. A public grant has no row. "Shared with you"
-  (`list_tree_shared_roots`) lists both kinds; the folder streams (`list_tree_children_shared`) list
-  restricted roots only.
+  (`list_tree_shared_roots`) lists both kinds; the custom-field filter streams
+  (`list_tree_children_shared`) list restricted roots only, by name
+  (`by_org_ws_principal_parent_kind_archive_sortName_name`).
 - `principalKey` is `user:<userId>`, `role:<role>` or `service_account:<serviceAccountId>`. A role
   share is one row, not one row per member.
 - A row copies the node's list fields (parent, kind, archive, names, `treePath`, `updatedAt`,

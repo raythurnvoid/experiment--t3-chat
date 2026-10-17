@@ -401,7 +401,7 @@ describe("list_tree_children", () => {
 		expect(folders.isDone).toBe(true);
 	});
 
-	test("a folder whose only child is hidden lists nothing, and only the owner reads the restricted twin", async () => {
+	test("a folder whose only child is restricted shows it locked to a member and open to the owner", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const list = (as: typeof f.asAdmin, membershipId: Id<"organizations_workspaces_users">, restricted: boolean) =>
@@ -417,12 +417,13 @@ describe("list_tree_children", () => {
 		const adminPage = await list(f.asAdmin, f.admin.membershipId, false);
 		expect(adminPage.page).toEqual([]);
 		expect(adminPage.isDone).toBe(true);
-		expect(await list(f.asAdmin, f.admin.membershipId, true)).toEqual(REFUSED);
+		const adminTwin = await list(f.asAdmin, f.admin.membershipId, true);
+		expect(adminTwin.page.map((row) => [row._id, row.locked])).toEqual([[f.nodes.boxSecretId, true]]);
 
-		// The open stream never holds a restricted root, so the owner gets it from the twin only.
+		// The open stream never holds a restricted root, so both get it from the twin only.
 		expect((await list(f.asOwner, f.owner.membershipId, false)).page).toEqual([]);
 		const ownerPage = await list(f.asOwner, f.owner.membershipId, true);
-		expect(ownerPage.page.map((row) => row._id)).toEqual([f.nodes.boxSecretId]);
+		expect(ownerPage.page.map((row) => [row._id, row.locked])).toEqual([[f.nodes.boxSecretId, false]]);
 	});
 
 	test("the owner reads an archived restricted child in the archived restricted twin only", async () => {
@@ -442,32 +443,6 @@ describe("list_tree_children", () => {
 		expect((await list(true, true)).page.map((row) => row._id)).toEqual([nodeId]);
 		expect((await list(true, false)).page).toEqual([]);
 		expect((await list(false, true)).page).toEqual([]);
-	});
-
-	test("refuses a member's restricted twin before reading the folder", async () => {
-		const { parentId, add_member } = await seed_folder_table();
-		const member = await add_member("clerk_tree_twin_refusal", "member");
-		// The root has no folder to read, so a refusal at the folder costs the same only when it reads
-		// no folder.
-		const read_cost = (at: Id<"files_nodes"> | typeof files_ROOT_ID) =>
-			member.as.run(async (ctx) => {
-				const before = await ctx.meta.getTransactionMetrics();
-				const result = await ctx.runQuery(api.files_tree.list_tree_children, {
-					membershipId: member.membershipId,
-					parentId: at,
-					kind: "folder",
-					archived: false,
-					restricted: true,
-					paginationOpts: { numItems: 50, cursor: null },
-				});
-				const after = await ctx.meta.getTransactionMetrics();
-				return { result, ranges: after.databaseQueries.used - before.databaseQueries.used };
-			});
-
-		const atRoot = await read_cost(files_ROOT_ID);
-		const atFolder = await read_cost(parentId);
-		expect([atRoot.result, atFolder.result]).toEqual([REFUSED, REFUSED]);
-		expect(atFolder.ranges).toBe(atRoot.ranges);
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
@@ -546,7 +521,7 @@ describe("list_tree_children", () => {
 				paginationOpts: { numItems: 50, cursor: null },
 			});
 
-		// `/shared` is a root child shared with this member. It comes from `list_tree_children_shared`.
+		// `/shared` is a root child shared with this member. It comes from `list_tree_shared_roots`.
 		expect(await list(files_ROOT_ID, "folder")).toEqual(REFUSED);
 		expect(await list(files_ROOT_ID, "file")).toEqual(REFUSED);
 		// An open folder needs workspace read, which this member lacks.
@@ -841,8 +816,8 @@ describe("list_tree_shared_roots", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read, not the 187 guard. A cost test under `list_tree_children_shared`
-	// checks the guard number.
+	// runs before any row read, not the 176 guard. A cost test in
+	// `files_nodes.tree_children_shared.test.ts` checks the guard number.
 	test("a page whose end cursor holds more rows than it asks for asks for a split and reads no row", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);

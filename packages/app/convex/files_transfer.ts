@@ -1301,15 +1301,17 @@ async function db_insert_item(
 		| "parentItemId"
 		| "order"
 		| "discoveryDone"
-	>,
+	> &
+		Partial<Pick<Doc<"files_transfer_items">, "skipReason">>,
 ) {
 	return await ctx.db.insert("files_transfer_items", {
 		...args,
 		plannedPath: null,
 		discoveryCursor: null,
-		state: "pending",
+		// An item with a skip reason is skipped from the start, so no later step prepares or copies it.
+		state: args.skipReason ? "skipped" : "pending",
 		conflictKind: null,
-		choice: null,
+		choice: args.skipReason ? "skip" : null,
 		conflictTarget: null,
 		conflictVersion: null,
 		preparation: null,
@@ -2254,6 +2256,35 @@ export const get_for_agent = internalQuery({
 	},
 });
 
+/**
+ * The first 100 items a Copy skipped because its user cannot open them, in discovery order. Bash
+ * prints one "Permission denied" line for each, and one line without a count when there are more:
+ * the run's `skipped` count also holds `cp -n` skips.
+ */
+export const list_denied_for_agent = internalQuery({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		threadId: v.id("ai_chat_threads"),
+		runId: v.id("files_transfer_runs"),
+	},
+	returns: v.union(
+		v.object({
+			items: v.array(v.object({ path: v.string(), kind: v.union(v.literal("folder"), v.literal("file")) })),
+			isDone: v.boolean(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const run = await db_get_agent_run(ctx, args);
+		if (!run) return null;
+		const page = await ctx.db
+			.query("files_transfer_items")
+			.withIndex("by_run_skipReason_order", (q) => q.eq("runId", run._id).eq("skipReason", "permission_denied"))
+			.paginate({ numItems: 100, cursor: null });
+		return { items: page.page.map((item) => ({ path: item.sourcePath, kind: item.kind })), isDone: page.isDone };
+	},
+});
+
 export const stop_for_agent = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -2846,7 +2877,13 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 			return;
 		}
 
-		const children: Array<{ target: files_PendingTarget; name: string; path: string; kind: "file" | "folder" }> = [];
+		const children: Array<{
+			target: files_PendingTarget;
+			name: string;
+			path: string;
+			kind: "file" | "folder";
+			locked: boolean;
+		}> = [];
 		let isDone: boolean;
 		let continueCursor: string | null;
 
@@ -2892,15 +2929,12 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 				.paginate({ cursor: item.discoveryCursor, numItems: DISCOVERY_PAGE_SIZE });
 
 			for (const child of page.page) {
-				if (!(await reader.canRead(child))) {
-					await db_stop_run({ ctx, run, errorMessage: "Permission denied" });
-					return;
-				}
 				children.push({
 					target: { kind: "saved", id: child._id },
 					name: child.name,
 					path: child.path,
 					kind: child.kind,
+					locked: !(await reader.canRead(child)),
 				});
 			}
 
@@ -2909,6 +2943,7 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 		}
 
 		let added = 0;
+		let denied = 0;
 		for (const child of children) {
 			const existing = await ctx.db
 				.query("files_transfer_items")
@@ -2918,6 +2953,8 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 				.unique();
 			if (existing) continue;
 
+			// Like GNU `cp -r`, a Copy skips a child its user cannot open and copies the rest. The item is
+			// skipped from the start: nothing is created for it and a locked folder is never read.
 			await db_insert_item(ctx, {
 				organizationId: run.organizationId,
 				workspaceId: run.workspaceId,
@@ -2930,9 +2967,11 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 				kind: child.kind,
 				parentItemId: item._id,
 				order: activity.progress.discovered + added,
-				discoveryDone: child.kind === "file",
+				discoveryDone: child.kind === "file" || child.locked,
+				...(child.locked ? { skipReason: "permission_denied" as const } : {}),
 			});
-			if (run.sourceView === "draft") await db_hold_proposal({ ctx, run, target: child.target, role: "source" });
+			if (child.locked) denied += 1;
+			else if (run.sourceView === "draft") await db_hold_proposal({ ctx, run, target: child.target, role: "source" });
 			added += 1;
 		}
 
@@ -2940,8 +2979,14 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 			discoveryDone: isDone,
 			discoveryCursor: isDone ? null : continueCursor,
 		});
+		// Count the locked children here, in the same patch: `db_skip_item` would write the progress
+		// itself, and this patch would then overwrite it with the copy read above.
 		await ctx.db.patch("activities", activity._id, {
-			progress: { ...activity.progress, discovered: activity.progress.discovered + added },
+			progress: {
+				...activity.progress,
+				discovered: activity.progress.discovered + added,
+				skipped: activity.progress.skipped + denied,
+			},
 			deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
 			updatedAt: Date.now(),
 		});

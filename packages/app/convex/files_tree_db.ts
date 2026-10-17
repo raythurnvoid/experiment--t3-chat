@@ -11,10 +11,7 @@ import app_convex_schema from "./schema.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { doc } from "convex-helpers/validators";
 import { convex_error } from "../server/convex-utils.ts";
-import {
-	access_control_db_authorize_membership,
-	access_control_db_filter_readable_file_nodes,
-} from "./access_control.ts";
+import { access_control_create_file_checker, access_control_db_authorize_membership } from "./access_control.ts";
 import { files_is_ancestor_field } from "../shared/files.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 
@@ -82,6 +79,27 @@ export const files_node_public_doc_fields = {
 	canWrite: v.boolean(),
 	writeBlockedReason: v.union(v.null(), v.literal("permission"), v.literal("read_only")),
 	writePolicyState: v.union(v.literal("none"), v.literal("read_only"), v.literal("writer")),
+};
+
+/**
+ * A row of the tree lists for a child the caller cannot open. Every child of a folder the caller can
+ * open is listed, so this row shows only what the folder shows of it: name, type, size and dates.
+ * The client merges rows by `_id`, `name` and `archiveOperationId`, and opens the item by `path`,
+ * which shows the access screen.
+ */
+export const files_tree_locked_row_fields = {
+	_id: doc(app_convex_schema, "files_nodes").fields._id,
+	_creationTime: doc(app_convex_schema, "files_nodes").fields._creationTime,
+	parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+	name: doc(app_convex_schema, "files_nodes").fields.name,
+	path: doc(app_convex_schema, "files_nodes").fields.path,
+	kind: doc(app_convex_schema, "files_nodes").fields.kind,
+	contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
+	lowercaseExtension: doc(app_convex_schema, "files_nodes").fields.lowercaseExtension,
+	contentByteSize: doc(app_convex_schema, "files_nodes").fields.contentByteSize,
+	updatedAt: doc(app_convex_schema, "files_nodes").fields.updatedAt,
+	archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
+	locked: v.literal(true),
 };
 
 /**
@@ -174,13 +192,20 @@ export async function files_nodes_db_get_tree_reader(
 		defaultWorkspaceId: organization.defaultWorkspaceId,
 		isOwner: organization.ownerUserId === userAuth.id,
 		hasWorkspaceRead: !authorized._nay,
+		// One checker for the whole query: the folder check and the row checks then read each node and
+		// each "Add people" root once, also under a deep chain.
+		checker: access_control_create_file_checker(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
+		}),
 	};
 }
 
 /**
  * Load one node of the reader's workspace, or `null` when it is missing, in another workspace, or
- * hidden from the reader. All three cases give the same answer, so a caller cannot learn that a
- * hidden node exists.
+ * not readable by the reader. All three cases give the same answer, so a caller cannot learn that a
+ * node it cannot open exists.
  *
  * It does not use `files_metadata_db_get_table_node`: it keeps archived nodes, and it checks access
  * with the tree's list filter, so an open node costs no extra read, like the tree pages.
@@ -189,9 +214,9 @@ export async function files_tree_db_get_readable_node(
 	ctx: QueryCtx,
 	args: {
 		reader: {
-			userAuth: { id: Id<"users"> };
 			membership: Doc<"organizations_workspaces_users">;
 			hasWorkspaceRead: boolean;
+			checker: files_tree_db_FileChecker;
 		};
 		nodeId: Id<"files_nodes">;
 	},
@@ -205,14 +230,10 @@ export async function files_tree_db_get_readable_node(
 		return null;
 	}
 
-	const readable = await access_control_db_filter_readable_file_nodes(ctx, {
-		organizationId: args.reader.membership.organizationId,
-		workspaceId: args.reader.membership.workspaceId,
-		subject: { kind: "user", userId: args.reader.userAuth.id, plugin: null },
-		nodes: [fileNode],
-	});
-	return readable.length > 0 ? fileNode : null;
+	return (await args.reader.checker.can(fileNode, "content.read")) ? fileNode : null;
 }
+
+export type files_tree_db_FileChecker = ReturnType<typeof access_control_create_file_checker>;
 
 /**
  * Build the public tree rows for nodes the caller may read.
@@ -226,9 +247,20 @@ export async function files_tree_db_get_rows(
 		fileNodes: Doc<"files_nodes">[];
 		/** Keyed by the restricted and extended scope pair: added people change access inside a scope. */
 		canWriteContentByScope?: Map<string, Promise<boolean>>;
+		/** The query's checker, so the write checks reuse the reads of its read checks. */
+		checker?: files_tree_db_FileChecker;
 	},
 ) {
 	const canWriteContentByScope = args.canWriteContentByScope ?? new Map<string, Promise<boolean>>();
+	// The caller resolved the reader (live user, active membership), so this answers like
+	// `access_control_db_authorize_membership` for `content.write`.
+	const checker =
+		args.checker ??
+		access_control_create_file_checker(ctx, {
+			organizationId: args.membership.organizationId,
+			workspaceId: args.membership.workspaceId,
+			subject: { kind: "user", userId: args.userAuth.id, plugin: null },
+		});
 	return await Promise.all(
 		args.fileNodes.map(async (fileNode) => {
 			if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
@@ -245,12 +277,7 @@ export async function files_tree_db_get_rows(
 			const scopeKey = `${fileNode.restrictedScopeNodeId ?? ""}:${fileNode.extendedScopeNodeId ?? ""}`;
 			let canWriteContent = canWriteContentByScope.get(scopeKey);
 			if (!canWriteContent) {
-				canWriteContent = access_control_db_authorize_membership(ctx, {
-					userAuth: args.userAuth,
-					membership: args.membership,
-					permission: "content.write",
-					fileNode,
-				}).then((result) => !result._nay);
+				canWriteContent = checker.can(fileNode, "content.write");
 				canWriteContentByScope.set(scopeKey, canWriteContent);
 			}
 
@@ -271,5 +298,80 @@ export async function files_tree_db_get_rows(
 				updatedBy: fileNode.updatedBy,
 			};
 		}),
+	);
+}
+
+/**
+ * The children in one page of a folder list that the subject cannot open. `folder` is the folder,
+ * already checked as readable, or `null` for the workspace root.
+ *
+ * A child shares the folder's access when it has the folder's pair (restricted area and "Add people"
+ * root), or its own "Add people" root on top of that pair, so it needs no read. Every other child
+ * gets the full check: a restricted child (its own area), and a child the scope job has not reached
+ * yet. One checker serves the query, so each area and each "Add people" root is read once. The tree
+ * queries pass the reader's checker, which is always a person with no plugin.
+ */
+export async function files_tree_db_get_locked_node_ids(args: {
+	checker: files_tree_db_FileChecker;
+	folder: Pick<Doc<"files_nodes">, "restrictedScopeNodeId" | "extendedScopeNodeId"> | null;
+	fileNodes: Doc<"files_nodes">[];
+}) {
+	const restricted = args.folder?.restrictedScopeNodeId ?? null;
+	const extended = args.folder?.extendedScopeNodeId ?? null;
+	const toCheck = args.fileNodes.filter(
+		(node) =>
+			node.restrictedScopeNodeId !== restricted ||
+			(node.extendedScopeNodeId !== extended &&
+				!(node.extendedScopeNodeId === node._id && node.parentExtendedScopeNodeId === extended)),
+	);
+	const lockedIds = new Set<Id<"files_nodes">>();
+	for (const node of toCheck) {
+		if (!(await args.checker.can(node, "content.read"))) {
+			lockedIds.add(node._id);
+		}
+	}
+	return lockedIds;
+}
+
+/**
+ * The rows of one page of a folder list: the rows of `files_tree_db_get_rows` with `locked: false`,
+ * and a locked row for each child the caller cannot open. A locked row reads nothing more: no write
+ * access and no write rule.
+ */
+export async function files_tree_db_get_list_rows(
+	ctx: QueryCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		checker: files_tree_db_FileChecker;
+		folder: Pick<Doc<"files_nodes">, "restrictedScopeNodeId" | "extendedScopeNodeId"> | null;
+		fileNodes: Doc<"files_nodes">[];
+	},
+) {
+	const lockedIds = await files_tree_db_get_locked_node_ids(args);
+	const openRows = await files_tree_db_get_rows(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		checker: args.checker,
+		fileNodes: args.fileNodes.filter((node) => !lockedIds.has(node._id)),
+	});
+	let nextOpenRow = 0;
+	return args.fileNodes.map((node) =>
+		lockedIds.has(node._id)
+			? {
+					_id: node._id,
+					_creationTime: node._creationTime,
+					parentId: node.parentId,
+					name: node.name,
+					path: node.path,
+					kind: node.kind,
+					contentType: node.contentType,
+					lowercaseExtension: node.lowercaseExtension,
+					contentByteSize: node.contentByteSize,
+					updatedAt: node.updatedAt,
+					archiveOperationId: node.archiveOperationId,
+					locked: true as const,
+				}
+			: { ...openRows[nextOpenRow++]!, locked: false as const },
 	);
 }

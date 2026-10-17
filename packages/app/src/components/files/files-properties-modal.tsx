@@ -221,6 +221,43 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 		</div>
 	);
 });
+
+type FilesPropertiesModalLockedFacts_Props = {
+	node: FilesPropertiesModal_LockedNode;
+	nodeKind: "file" | "folder";
+};
+
+/**
+ * The facts of a node the user cannot open: only what its folder shows of it. It reads nothing.
+ */
+const FilesPropertiesModalLockedFacts = memo(function FilesPropertiesModalLockedFacts(
+	props: FilesPropertiesModalLockedFacts_Props,
+) {
+	const { node, nodeKind } = props;
+
+	const location = node.path.slice(0, node.path.lastIndexOf("/")) || "/";
+	const lines = [
+		...(nodeKind === "file" ? [`Content type: ${node.contentType ?? "Unknown"}`] : []),
+		...(nodeKind === "file" && node.contentByteSize !== undefined
+			? [`Size: ${files_format_size(node.contentByteSize ?? undefined)}`]
+			: []),
+		`Location: ${location}`,
+		...(node._creationTime !== undefined ? [`Created: ${facts_format_time(node._creationTime)}`] : []),
+		...(node.updatedAt !== undefined ? [`Last edited: ${facts_format_time(node.updatedAt)}`] : []),
+	];
+
+	return (
+		<div className={"FilesPropertiesModalFacts" satisfies FilesPropertiesModalFacts_ClassNames}>
+			<Editor
+				height={facts_height(lines.length)}
+				language="yaml"
+				theme={app_monaco_THEME_NAME_DARK}
+				value={lines.join("\n")}
+				options={FACTS_EDITOR_OPTIONS}
+			/>
+		</div>
+	);
+});
 // #endregion facts
 
 // #region write policy
@@ -1769,16 +1806,32 @@ type FilesPropertiesModal_ClassNames =
 	| "FilesPropertiesModal-confirm-modal"
 	| "FilesPropertiesModal-confirm-text";
 
+/**
+ * What a folder list shows of a node the user cannot open. A search match has no size or times, so
+ * those lines are left out.
+ */
+type FilesPropertiesModal_LockedNode = {
+	path: string;
+	contentType: string | null;
+	contentByteSize?: number | null;
+	_creationTime?: number;
+	updatedAt?: number;
+};
+
 export type FilesPropertiesModal_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	nodeName: string;
 	nodeKind: "file" | "folder";
+	/**
+	 * Set for a node the user cannot open. The dialog then shows only these facts and reads nothing.
+	 */
+	lockedNode?: FilesPropertiesModal_LockedNode | null;
 	returnFocusRef?: RefObject<HTMLElement | null>;
 	onClose: () => void;
 };
 
 export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: FilesPropertiesModal_Props) {
-	const { nodeId, nodeName, nodeKind, returnFocusRef, onClose } = props;
+	const { nodeId, nodeName, nodeKind, lockedNode = null, returnFocusRef, onClose } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 	const [policySaveState, setPolicySaveState] = useState<SaveState | null>(null);
@@ -1792,19 +1845,21 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 	// the modal opens, so the first answer needs a server round trip. Wait for it here and show the
 	// skeleton. Then every section finds its answer already in the Convex cache and draws once,
 	// with the right values.
+	const readsNode = nodeId !== null && lockedNode === null;
 	const node = useQuery(
 		app_convex_api.files_tree.get_file_node_for_membership,
-		nodeId ? { membershipId, fileNodeId: nodeId } : "skip",
+		readsNode ? { membershipId, fileNodeId: nodeId } : "skip",
 	);
 	const managementState = useQuery(
 		app_convex_api.files_nodes.get_node_write_policy_management_state,
-		nodeId ? { membershipId, nodeId } : "skip",
+		readsNode ? { membershipId, nodeId } : "skip",
 	);
 	const metadataEntries = useQuery(
 		app_convex_api.files_metadata.get_entries,
-		nodeId ? { membershipId, fileNodeId: nodeId } : "skip",
+		readsNode ? { membershipId, fileNodeId: nodeId } : "skip",
 	);
-	const loading = node === undefined || managementState === undefined || metadataEntries === undefined;
+	const loading =
+		lockedNode === null && (node === undefined || managementState === undefined || metadataEntries === undefined);
 
 	const saveStates = [policySaveState, metadataSaveState];
 	const dirty = saveStates.some((saveState) => saveState?.dirty);
@@ -1884,7 +1939,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 				<MyModalHeader>
 					<MyModalHeading>Properties</MyModalHeading>
 					{/* Start with "/" to show the path from the root. */}
-					<MyModalDescription>{node?.path ?? `/${nodeName}`}</MyModalDescription>
+					<MyModalDescription>{node?.path ?? lockedNode?.path ?? `/${nodeName}`}</MyModalDescription>
 				</MyModalHeader>
 
 				<MyModalScrollableArea
@@ -1892,7 +1947,14 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 					aria-busy={loading || undefined}
 				>
 					<div className={"FilesPropertiesModal-body" satisfies FilesPropertiesModal_ClassNames}>
-						{nodeId && loading ? (
+						{nodeId && lockedNode ? (
+							<section
+								aria-label="General"
+								className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}
+							>
+								<FilesPropertiesModalLockedFacts node={lockedNode} nodeKind={nodeKind} />
+							</section>
+						) : nodeId && loading ? (
 							<FilesPropertiesModalSkeleton nodeKind={nodeKind} />
 						) : nodeId ? (
 							<>

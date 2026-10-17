@@ -849,6 +849,120 @@ describe("FilesSidebar", () => {
 		expect(createNode).not.toHaveBeenCalled();
 	});
 
+	/**
+	 * A child the user cannot open, as the tree streams give it: only its name and facts.
+	 */
+	function locked_node(name: string, archiveOperationId: string | null = null) {
+		return {
+			_id: name,
+			_creationTime: 1,
+			parentId: files_ROOT_ID,
+			name,
+			path: `/${name}`,
+			kind: "folder",
+			contentType: null,
+			lowercaseExtension: null,
+			contentByteSize: null,
+			updatedAt: 1,
+			archiveOperationId,
+			locked: true,
+		} as unknown as files_VisibleTreeNode;
+	}
+
+	test("a locked folder has no expand arrow and opens the locked screen", async () => {
+		treeState.nodes = [...treeState.nodes, locked_node("team")];
+		const onPrimaryAction = vi.fn();
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" onPrimaryAction={onPrimaryAction} />);
+		const row = await view.findByRole("treeitem", { name: "team, you don't have access" });
+
+		expect(row.getAttribute("data-file-locked")).toBe("on");
+		expect(view.getByRole("button", { name: "Expand folder alpha" })).toBeTruthy();
+		expect(view.queryByRole("button", { name: /^Expand folder team/ })).toBeNull();
+		expect(row.hasAttribute("aria-expanded")).toBe(false);
+		// The arrow keys do not open it either.
+		act(() => row.focus());
+		fireEvent.keyDown(row, { key: "ArrowRight", code: "ArrowRight" });
+		expect(treeState.requestedFolderIds).not.toContain("team");
+		expect(row.hasAttribute("aria-expanded")).toBe(false);
+
+		// Click and Enter open it. The node route shows the locked screen.
+		fireEvent.click(row.querySelector(".FilesSidebarTreeItemPrimaryAction")!);
+		expect(onPrimaryAction).toHaveBeenCalledWith("team", "folder");
+		onPrimaryAction.mockClear();
+		fireEvent.keyDown(row, { key: "Enter", code: "Enter" });
+		expect(onPrimaryAction).toHaveBeenCalledWith("team", "folder");
+	});
+
+	test("a locked row has only Copy path and Properties", async () => {
+		treeState.nodes = [...treeState.nodes, locked_node("team")];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const row = await view.findByRole("treeitem", { name: "team, you don't have access" });
+
+		fireEvent.contextMenu(row);
+		await view.findByRole("menuitem", { name: "Copy path" });
+		expect(view.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy path", "Properties"]);
+		fireEvent.click(view.getByRole("menuitem", { name: "Properties" }));
+		expect(await view.findByRole("dialog", { name: "Properties" })).toBeTruthy();
+		// Its share state, write access and node are never read.
+		expect(queryCalls.some(([, args]) => JSON.stringify(args).includes('"team"'))).toBe(false);
+	});
+
+	test("F2 and Delete do nothing on a locked row", async () => {
+		treeState.nodes = [...treeState.nodes, locked_node("team")];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		// F2 renames an open row, so the key reaches the tree.
+		const bravo = await view.findByRole("treeitem", { name: "bravo" });
+		act(() => bravo.focus());
+		fireEvent.keyDown(bravo, { key: "F2", code: "F2" });
+		fireEvent.keyUp(bravo, { key: "F2", code: "F2" });
+		const input = await view.findByRole("textbox", { name: "Rename bravo" });
+		fireEvent.keyDown(input, { key: "Escape", code: "Escape" });
+		await waitFor(() => expect(view.queryByRole("textbox")).toBeNull());
+
+		const row = view.getByRole("treeitem", { name: "team, you don't have access" });
+		act(() => row.focus());
+		fireEvent.keyDown(row, { key: "F2", code: "F2" });
+		fireEvent.keyUp(row, { key: "F2", code: "F2" });
+		fireEvent.keyDown(row, { key: "Delete", code: "Delete" });
+		fireEvent.keyUp(row, { key: "Delete", code: "Delete" });
+		expect(view.queryByRole("textbox")).toBeNull();
+		expect(view.queryByRole("dialog")).toBeNull();
+		expect(createNode).not.toHaveBeenCalled();
+	});
+
+	test("a rename to a locked sibling's name is refused on the client", async () => {
+		treeState.nodes = [...treeState.nodes, locked_node("team")];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		await view.findByRole("treeitem", { name: "team, you don't have access" });
+		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Rename" }));
+		const input = await view.findByRole("textbox", { name: "Rename bravo" });
+		fireEvent.change(input, { target: { value: "team" } });
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+		expect(await view.findByText(/already exists/)).toBeTruthy();
+		expect(createNode).not.toHaveBeenCalled();
+	});
+
+	test("a locked archived row has no Restore", async () => {
+		treeState.nodes = [...treeState.nodes, locked_node("old", "qa-archive")];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		fireEvent.click(await view.findByRole("button", { name: "More options" }));
+		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show archived items" });
+		fireEvent.click(showArchived);
+		fireEvent.keyDown(showArchived, { key: "Escape" });
+		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
+
+		fireEvent.contextMenu(await view.findByRole("treeitem", { name: "old archived, you don't have access" }));
+		await view.findByRole("menuitem", { name: "Copy path" });
+		expect(view.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy path", "Properties"]);
+		expect(view.queryByRole("menuitem", { name: "Restore" })).toBeNull();
+	});
+
 	test("a Restore that throws shows an error toast", async () => {
 		const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
 		vi.spyOn(console, "error").mockImplementation(() => {});

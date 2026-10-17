@@ -13,6 +13,7 @@ import {
 	test_mocks,
 } from "./setup.test.ts";
 import {
+	access_control_create_file_checker,
 	access_control_db_ensure_role_assignment,
 	access_control_db_filter_readable_file_nodes,
 	access_control_db_can_act_on_file_node,
@@ -23,6 +24,7 @@ import {
 	type access_control_Subject,
 } from "./access_control.ts";
 import type { plugins_SandboxRoot } from "./plugins_service_accounts.ts";
+import { files_tree_db_get_locked_node_ids } from "./files_tree_db.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { plugins_external_files_db_request_subject } from "./plugins_external_files_access.ts";
 import {
@@ -185,9 +187,9 @@ function access_control_test_read_membership_id(
 }
 
 /**
- * The ids of one folder's active children that the Files tree shows the caller. Read every stream
- * of the tree, one page each: the open stream, the owner's restricted twin, and a member's 3 share
- * streams.
+ * The ids of one folder's active children that the Files tree lets the caller open. Read both
+ * streams of the tree, one page each: the open stream and the restricted twin. A child the caller
+ * cannot open comes back as a locked row, so it is left out here.
  */
 async function access_control_test_read_tree_child_ids(
 	as: ReturnType<typeof access_control_test_identity>,
@@ -198,24 +200,31 @@ async function access_control_test_read_tree_child_ids(
 ) {
 	const stream = { ...args, archived: false, paginationOpts: { numItems: 50, cursor: null } };
 	const pages = await Promise.all(
-		(["folder", "file"] as const).flatMap((kind) => [
-			...[false, true].map((restricted) =>
-				as.query(api.files_tree.list_tree_children, { ...stream, kind, restricted }),
-			),
-			...([0, 1, 2] as const).map((principalIndex) =>
-				as.query(api.files_tree.list_tree_children_shared, {
-					...stream,
-					kind,
-					principalIndex,
-					sort: [{ field: "name", direction: "asc" }],
-					filter: null,
-					namePrefix: null,
-					segment: "value",
-				}),
-			),
-		]),
+		(["folder", "file"] as const).flatMap((kind) =>
+			[false, true].map((restricted) => as.query(api.files_tree.list_tree_children, { ...stream, kind, restricted })),
+		),
 	);
-	return pages.flatMap((result) => result.page.map((fileNode) => fileNode._id));
+	// A member with no workspace read gets an empty root; their shares at the root come from the
+	// "Shared with you" streams.
+	const sharedRoots =
+		args.parentId === files_ROOT_ID
+			? await Promise.all(
+					([0, 1, 2] as const).map((principalIndex) =>
+						as.query(api.files_tree.list_tree_shared_roots, {
+							membershipId: args.membershipId,
+							archived: false,
+							principalIndex,
+							paginationOpts: stream.paginationOpts,
+						}),
+					),
+				)
+			: [];
+	return [
+		...pages.flatMap((result) => result.page.filter((row) => !row.locked).map((row) => row._id)),
+		...sharedRoots.flatMap((result) =>
+			result.page.filter((row) => row.parentId === files_ROOT_ID).map((row) => row._id),
+		),
+	];
 }
 
 /**
@@ -1390,6 +1399,24 @@ describe("plugin sandbox", () => {
 		expect(kept.map((node) => node.path)).toEqual(["/o/a.md", "/o/b.md"]);
 	});
 
+	// The tree queries never pass a plugin checker. This checks only that the helper follows its checker.
+	test("the locked-row helper follows a plugin checker's sandbox roots", async () => {
+		const { t, nodes, plugin, scope, fixture } = await seed();
+		const locked = (subject: access_control_Subject) =>
+			t.run(async (ctx) => [
+				...(await files_tree_db_get_locked_node_ids({
+					checker: access_control_create_file_checker(ctx, { ...scope, subject }),
+					folder: nodes.r,
+					fileNodes: [nodes.x, nodes.inner],
+				})),
+			]);
+		// `/r/in` is its own restricted folder, outside the root's area, so the plugin lists it locked.
+		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.r._id }, level: "read" }]);
+		expect(await locked(subject)).toEqual([nodes.inner._id]);
+		// Its human opens both.
+		expect(await locked({ kind: "user", userId: fixture.ownerId, plugin: null })).toEqual([]);
+	});
+
 	test("a write checks each existing folder on its path", async () => {
 		const { t, nodes, plugin, scope, fixture } = await seed();
 		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.o._id }, level: "write" }]);
@@ -1479,7 +1506,12 @@ describe("plugin sandbox", () => {
 
 		// Only this installation's subject reaches the folder.
 		expect(await can(own, nodes.x, "content.write")).toBe(true);
-		expect(await can({ ...own, installationId: other }, nodes.x)).toBe(false);
+		expect(
+			await can(
+				{ kind: "service_account", serviceAccountId: installation.serviceAccountId, installationId: other },
+				nodes.x,
+			),
+		).toBe(false);
 		expect(await can({ kind: "service_account", serviceAccountId: installation.serviceAccountId }, nodes.x)).toBe(
 			false,
 		);
@@ -6630,7 +6662,7 @@ describe("file sharing", () => {
 		expect(restrictedNode?.restrictedScopeNodeId).toBe(folderId);
 	});
 
-	test("a restricted folder disappears for a member who was not given it", async () => {
+	test("a restricted folder is locked for a member who was not given it", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "restrict-org",
@@ -6648,9 +6680,9 @@ describe("file sharing", () => {
 					membershipId: fixture.memberMembershipId,
 					fileNodeId: String(folderId),
 				}),
-				// The child holds no grant of its own. It is hidden because the folder above it is restricted,
+				// The child holds no grant of its own. It is locked because the folder above it is restricted,
 				// which is what the cascade writes into `restrictedScopeNodeId`. `memberChild` being null checks
-				// this. `memberFolderChildren` is empty only because the list refuses the hidden folder.
+				// this. `memberFolderChildren` is empty only because the list refuses the locked folder.
 				fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
 					membershipId: fixture.memberMembershipId,
 					fileNodeId: String(childId),

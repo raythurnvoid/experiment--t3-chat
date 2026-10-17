@@ -1182,8 +1182,11 @@ type FileNodeRef = {
  * The file checks of one subject inside one call. Rows share the workspace answer, each restricted
  * scope answer and the sandbox roots, so a list pays for each once. Make a new one after a write that
  * changes grants.
+ *
+ * A query that checks several things (a folder, its rows, their write access) can pass one checker to
+ * each, so the nodes and "Add people" roots of a deep chain are read once for the whole query.
  */
-function create_file_checker(
+export function access_control_create_file_checker(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Doc<"files_nodes">["organizationId"];
@@ -1472,7 +1475,7 @@ export async function access_control_db_filter_readable_file_nodes<T extends Fil
 		nodes: readonly T[];
 	},
 ): Promise<T[]> {
-	const checker = create_file_checker(ctx, args);
+	const checker = access_control_create_file_checker(ctx, args);
 	const kept: T[] = [];
 	for (const node of args.nodes) {
 		if (await checker.can(node, "content.read")) {
@@ -1505,7 +1508,7 @@ export async function access_control_db_can_act_on_file_node(
 		permission: access_control_Permission;
 	},
 ) {
-	return await create_file_checker(ctx, args).can(args.fileNode, args.permission);
+	return await access_control_create_file_checker(ctx, args).can(args.fileNode, args.permission);
 }
 
 // Null means the exact resource is unavailable.

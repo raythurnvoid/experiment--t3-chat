@@ -21,6 +21,8 @@ import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import {
+	access_control_create_file_checker,
+	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
 	access_control_subject_validator,
 } from "./access_control.ts";
@@ -52,6 +54,7 @@ import {
 } from "../server/server-utils.ts";
 import {
 	files_ANCESTOR_FIELD_COUNT,
+	files_ROOT_ID,
 	files_derive_tree_path_for_file_node,
 	files_pending_update_content_is_stale,
 	files_pending_update_has_pending_chunks,
@@ -77,6 +80,11 @@ const STREAM_ACCESS_CHUNK = 25;
 // The hidden folders one subtree stream call reads under the listing folder.
 const STREAM_HIDDEN_FOLDERS_MAX = 1_000;
 
+// The most index ranges one folder access check can read: a folder 500 levels deep in an Add-people
+// chain with the grant only at its top. The cost test under `internal_search_name_saved` measured
+// about 2,000. A name search starts a new one only while it still fits the Convex limit of 4,096.
+const SEARCH_PARENT_CHECK_MAX_RANGES = 2_300;
+
 const listing_args = {
 	folderPath: v.string(),
 	mode: v.union(v.literal("children"), v.literal("subtree"), v.literal("recent")),
@@ -99,7 +107,8 @@ const internal_listing_args = v.object({
 	visibilityUserId: v.id("users"),
 	subject: access_control_subject_validator,
 	overlayUserId: v.optional(v.id("users")),
-	// Transfer discovery must refuse an incomplete folder instead of hiding unreadable children.
+	// Transfer discovery must refuse an incomplete folder instead of leaving rows out. Saved children
+	// it cannot open come back locked, so it decides about those itself.
 	requireComplete: v.optional(v.boolean()),
 });
 
@@ -120,9 +129,17 @@ const entry_validator = v.object({
 	name: v.string(),
 	kind: doc(app_convex_schema, "files_nodes").fields.kind,
 	updatedAt: v.number(),
-	updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
+	/**
+	 * Missing on a locked row: who changed an item is not shown to someone who cannot open it.
+	 */
+	updatedBy: v.optional(doc(app_convex_schema, "files_nodes").fields.updatedBy),
 	contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
 	preparing: v.boolean(),
+	/**
+	 * A saved child the caller cannot open. Its folder is readable, so its name, type, size and dates
+	 * show, like a file `ls` lists but `cat` cannot read.
+	 */
+	locked: v.boolean(),
 });
 
 const listing_result = v_result({
@@ -268,9 +285,11 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 				seen.add(item.target.id);
 				items.push(item);
 			}
+			// A locked folder is listed but not entered: nothing under it is read.
 			if (
 				args.mode === "subtree" &&
 				item.kind === "folder" &&
+				!item.locked &&
 				(args.maxDepth === undefined || relativeDepth < args.maxDepth)
 			)
 				frames.push({ path: item.path, cursor: null });
@@ -549,7 +568,8 @@ const stream_args = v.object({
 	visibilityUserId: v.id("users"),
 	subject: access_control_subject_validator,
 	overlayUserId: v.optional(v.id("users")),
-	// Transfer discovery must refuse an incomplete folder instead of hiding unreadable children.
+	// Transfer discovery must refuse an incomplete folder instead of leaving rows out. Saved children
+	// it cannot open come back locked, so it decides about those itself.
 	requireComplete: v.optional(v.boolean()),
 	folderPath: v.string(),
 	numItems: v.number(),
@@ -841,9 +861,10 @@ function stream_rows_after<T>(args: {
  * Decide stream rows one by one under the listing read budget, and say where the stream goes on.
  * Always decides at least one row, so every call makes progress.
  *
- * `decide` returns the row to show, null to drop it, "denied" when access drops it,
- * "denied_destination" when a draft moves the row into a folder the user can no longer read, or "stop"
- * when the reader ran out before this row.
+ * `decide` returns the row to show, null to drop it, "denied" when access drops it (recursive, recent
+ * and search streams; the saved children stream marks the row locked instead), "denied_destination"
+ * when a draft moves the row into a folder the user can no longer read, or "stop" when the reader ran
+ * out before this row.
  */
 async function db_stream_decide<T>(
 	ctx: QueryCtx,
@@ -1057,17 +1078,19 @@ function db_stream_saved_access(
  */
 async function db_stream_saved_item(
 	ctx: QueryCtx,
-	args: { node: Doc<"files_nodes">; path: string; overlayUserId: Id<"users"> | null },
+	args: { node: Doc<"files_nodes">; path: string; overlayUserId: Id<"users"> | null; locked?: boolean },
 ): Promise<StreamDecision> {
-	const { node, path, overlayUserId } = args;
-	const sourceProposal = overlayUserId
-		? await ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_user_target", (q) =>
-					q.eq("userId", overlayUserId).eq("target.kind", "saved").eq("target.id", node._id),
-				)
-				.unique()
-		: null;
+	const { node, path, overlayUserId, locked = false } = args;
+	// A locked row shows the saved fields only: no author, and no draft read for it.
+	const sourceProposal =
+		overlayUserId && !locked
+			? await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_user_target", (q) =>
+						q.eq("userId", overlayUserId).eq("target.kind", "saved").eq("target.id", node._id),
+					)
+					.unique()
+			: null;
 	const proposal = sourceProposal ? await files_saved_placement_db_get_proposal(ctx.db, sourceProposal._id) : null;
 	return {
 		item: {
@@ -1076,9 +1099,10 @@ async function db_stream_saved_item(
 			name: path_name_of(path),
 			kind: node.kind,
 			updatedAt: node.updatedAt,
-			updatedBy: node.updatedBy,
+			...(locked ? {} : { updatedBy: node.updatedBy }),
 			contentType: proposal?.pendingReplacement?.contentType ?? node.contentType,
 			preparing: false,
+			locked,
 		},
 	};
 }
@@ -1164,6 +1188,7 @@ async function db_stream_place_item(
 				updatedBy: accessNode.updatedBy,
 				contentType: proposal?.pendingReplacement?.contentType ?? accessNode.contentType,
 				preparing: false,
+				locked: false,
 			},
 			...(place.kind === "folder"
 				? { movedIn: { savedNodeId: place.target.id, ownerTreePath: place.ownerTreePath } }
@@ -1181,6 +1206,7 @@ async function db_stream_place_item(
 			updatedBy: place.userId,
 			contentType: intent && intent.kind !== "folder" ? intent.contentType : null,
 			preparing: files_visible_is_preparing(proposal),
+			locked: false,
 		},
 	};
 }
@@ -1251,7 +1277,14 @@ function db_stream_places_under(
 
 /**
  * Saved children of the listing folder, in name or update order. The user's hides in the page come
- * from one exact window.
+ * from one exact window. Every child is returned; one the caller cannot open is marked `locked`.
+ *
+ * The read budget check in `db_stream_decide` runs before each row, so a call stops near 3,000
+ * ranges. The room left under Convex's 4,096 must hold one more row. Under the owner's overlay the
+ * worst row is a restricted child with no cached answer, 9 ranges (measured in the cost test "ls of a
+ * folder with many restricted children stays under the Convex limits"). Outside it, the row that
+ * starts a chunk checks all `STREAM_ACCESS_CHUNK` rows with a new checker, so it costs up to 25 such
+ * rows, and more when the folder sits deep in an Add-people chain: that checker reads the chain again.
  */
 export const internal_list_children_saved = internalQuery({
 	args: {
@@ -1267,6 +1300,15 @@ export const internal_list_children_saved = internalQuery({
 		if (!opened._yay) return stream_done(null);
 		const { reader, root, saved } = opened._yay;
 		if (root.parent.kind === "private") return stream_done(root.parent);
+		// The workspace root has no row, so ask about it here. A caller who cannot open it (a guest with
+		// one shared folder) must not see the names of its children.
+		if (
+			root.parent.kind === "root" &&
+			!(reader
+				? await reader.canRead(null)
+				: await access_control_db_can_act_on_file_node(ctx, { ...args, fileNode: null, permission: "content.read" }))
+		)
+			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 
 		const parentId = root.parent.kind === "saved" ? root.parent.id : "root";
 		const byTime = args.orderBy === "updatedAt";
@@ -1404,11 +1446,13 @@ export const internal_list_children_saved = internalQuery({
 						? "denied_destination"
 						: null;
 				}
-				if (!(await can_read(node))) return "denied";
+				// No child is dropped: one the caller cannot open comes back locked. The access answer is
+				// cached per scope pair, so rows of the folder's own area cost no read after the first.
 				return await db_stream_saved_item(ctx, {
 					node,
 					path: `${parentPath}/${node.name}`,
 					overlayUserId: reader ? args.visibilityUserId : null,
+					locked: !(await can_read(node)),
 				});
 			},
 		});
@@ -2185,12 +2229,44 @@ export const internal_search_name_saved = internalQuery({
 		const movedFolder = args.movedIn ? scope : null;
 		const can_read = db_stream_saved_access(ctx, args, reader, page.page);
 		const retry = Result({ _yay: { ...search_name_done, isDone: false, retrySmaller: true } });
+		// A locked hit shows, name only, when its parent folder is readable, like in `ls`. Each parent
+		// is checked once, and the checks share one checker, so hits in one folder read its chain once.
+		const checker = access_control_create_file_checker(ctx, args);
+		const parentChecks = new Map<Doc<"files_nodes">["parentId"], Promise<boolean>>();
+		const parent_readable = async (parentId: Doc<"files_nodes">["parentId"]) => {
+			if (parentId === files_ROOT_ID) return await (reader ? reader.canRead(null) : checker.can(null, "content.read"));
+			if (reader) {
+				// The saved parent: a hit whose own draft moved it is hidden above. The resolve of the hit
+				// already read it.
+				const parent = await reader.resolve({ kind: "saved", id: parentId });
+				return parent !== null && (await reader.canRead(parent.accessNode));
+			}
+			const parent = await files_saved_placement_db_get_node(ctx.db, parentId, tag);
+			return parent !== null && (await checker.can(parent, "content.read"));
+		};
+		/** Whether a locked hit shows, or "retry" when its parent check may not fit this page. */
+		const locked_hit_shows = async (index: number, parentId: Doc<"files_nodes">["parentId"]) => {
+			let check = parentChecks.get(parentId);
+			if (!check) {
+				// A new parent check can read a long chain after the budget check of the row. End the page
+				// instead when it might not fit; the first row always has room.
+				const used = (await ctx.meta.getTransactionMetrics()).databaseQueries.used;
+				if (index > 0 && used + SEARCH_PARENT_CHECK_MAX_RANGES > 4_096) return "retry";
+				check = parent_readable(parentId);
+				parentChecks.set(parentId, check);
+			}
+			const readable = await check;
+			return reader?.exhausted ? "retry" : readable;
+		};
 		const items: Infer<typeof entry_validator>[] = [];
 		for (const [index, node] of page.page.entries()) {
 			if (index > 0 && files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics())) return retry;
 			if (!reader) {
-				if (!(await can_read(node))) continue;
-				const decision = await db_stream_saved_item(ctx, { node, path: node.path, overlayUserId: null });
+				const locked = !(await can_read(node));
+				const shows = locked ? await locked_hit_shows(index, node.parentId) : true;
+				if (shows === "retry") return retry;
+				if (!shows) continue;
+				const decision = await db_stream_saved_item(ctx, { node, path: node.path, overlayUserId: null, locked });
 				items.push(decision.item!);
 				continue;
 			}
@@ -2205,11 +2281,15 @@ export const internal_search_name_saved = internalQuery({
 			if (reader.exhausted) return retry;
 			if (resolved?.entry.kind !== "saved" || !resolved.entry.path.startsWith(under)) continue;
 			if (movedFolder && resolved.entry.path !== under + node.path.slice(movedFolder.treePath.length)) continue;
-			if (!(await reader.canRead(resolved.accessNode))) continue;
+			const locked = !(await reader.canRead(resolved.accessNode));
+			const shows = locked ? await locked_hit_shows(index, node.parentId) : true;
+			if (shows === "retry") return retry;
+			if (!shows) continue;
 			const decision = await db_stream_saved_item(ctx, {
 				node,
 				path: resolved.entry.path,
 				overlayUserId: args.visibilityUserId,
+				locked,
 			});
 			items.push(decision.item!);
 		}

@@ -51,6 +51,7 @@ function set_root_files() {
 		kind: "file",
 		contentType,
 		archiveOperationId: null,
+		locked: false,
 	}));
 	for (const kind of ["folder", "file"] as const) {
 		const streamArgs = files_tree_stream_args({
@@ -67,13 +68,6 @@ function set_root_files() {
 		});
 		results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), EMPTY_PAGE);
 		for (const principalIndex of [0, 1, 2] as const) {
-			results.set(
-				watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children_shared), {
-					...streamArgs.shared(principalIndex),
-					paginationOpts: { cursor: null },
-				}),
-				EMPTY_PAGE,
-			);
 			results.set(
 				watch_key(getFunctionName(app_convex_api.files_tree.list_tree_shared_roots), {
 					membershipId: MEMBERSHIP_ID,

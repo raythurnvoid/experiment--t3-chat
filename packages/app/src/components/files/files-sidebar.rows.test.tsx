@@ -1000,6 +1000,29 @@ describe("FilesSidebar", () => {
 		expect(view.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
 	});
 
+	test("a locked search hit shows the lock, opens its page, and has only Copy path and Properties", async () => {
+		set_saved(
+			{ kind: "name", text: "plan" },
+			{ rows: [{ ...saved_row("/team/plan.md"), contentType: null, locked: true }], isDone: true },
+		);
+		const handlePrimaryAction = vi.fn();
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="delta" onPrimaryAction={handlePrimaryAction} />);
+		await view.findByRole("treeitem", { name: "alpha" });
+
+		fireEvent.change(view.getByRole("combobox"), { target: { value: "plan" } });
+		const results = await view.findByRole("region", { name: "Search results" }, { timeout: 5_000 });
+		const row = await within(results).findByRole("button", { name: "plan.md in /team, you don't have access" });
+		expect(row.classList.contains("FilesSidebarSearchResults-row-locked")).toBe(true);
+		expect(row.getAttribute("title")).toBe("You don't have access");
+		fireEvent.click(row);
+		expect(handlePrimaryAction).toHaveBeenCalledWith("plan.md", "file");
+
+		fireEvent.contextMenu(row);
+		await view.findByRole("menuitem", { name: "Copy path" });
+		expect(view.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy path", "Properties"]);
+	});
+
 	test("while archived items show, the search says it lists active items only", async () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="delta" />);

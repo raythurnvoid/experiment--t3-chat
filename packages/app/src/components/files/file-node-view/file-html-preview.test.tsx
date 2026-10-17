@@ -109,6 +109,7 @@ const NODE = {
 	contentFrontmatterTooLargeIndexDocumentCount: null,
 	restrictedScopeNodeId: null,
 	isRestrictedScopeRoot: false,
+	extendedScopeNodeId: null,
 	writePolicy: null,
 	newChildWritePolicy: null,
 	canWrite: true,

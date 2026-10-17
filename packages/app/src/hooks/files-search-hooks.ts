@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { useQueries, type UsePaginatedQueryResult } from "convex/react";
+import { useEffect, useState } from "react";
+import type { UsePaginatedQueryResult } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { useFn } from "./utils-hooks.ts";
 import { useFilesSavedView } from "./files-saved-view-hooks.ts";
@@ -202,7 +202,10 @@ type FilesSortedChildrenRow = {
 	createdAt: number;
 	updatedAt: number;
 	contentByteSize: number | null;
-	updatedBy: app_convex_Id<"users">;
+	/**
+	 * Null for a locked row: it shows only its name, type, size and dates.
+	 */
+	updatedBy: app_convex_Id<"users"> | null;
 	contentType: app_convex_Doc<"files_nodes">["contentType"];
 	treeRow: FunctionReturnType<typeof app_convex_api.files_tree.list_tree_children_sorted>["page"][number];
 	sortKey: files_sort_RowKey;
@@ -301,26 +304,27 @@ type useFilesSortedChildren_Props = {
 };
 
 /**
- * The streams of one kind and one segment of the folder table: the open rows, the owner's
- * restricted rows (empty for everyone else), then the restricted children shared with a member,
- * one stream per principal (empty for the owner). A metadata sort or filter has no shared rows
- * (`metadataKey`).
+ * The streams of one kind and one segment of the folder table: the open rows, the restricted
+ * twin, then the restricted children shared with a member, one stream per principal. The twin gives
+ * each child the user cannot open as a locked row. Only a custom-field filter of a member reads the
+ * shares instead of the twin: a locked row's custom field is never read, so the filter never shows
+ * it (`customFieldFilter`).
  */
 function useFilesSortedChildrenSource(
 	props: useFilesSortedChildren_Props & {
 		kind: app_convex_Doc<"files_nodes">["kind"];
 		segment: FilesSortedChildrenRow["segment"];
 		active: boolean;
-		metadataKey: string | null;
+		customFieldFilter: boolean;
 		savedStream: files_SavedStream | null;
 		viewLoading: boolean;
 	},
 ): FilesSortedChildrenStream[] {
 	const { membershipId, folderId, sort, filter, namePrefix, kind, segment, active, isOwner } = props;
-	// Skip the streams that cannot have rows. Only the owner reads the restricted twin, and only a
-	// member reads shares, which have no metadata copy. The server refuses them all the same.
-	const skipsTwin = isOwner === false;
-	const skipsShares = props.metadataKey !== null || isOwner === true;
+	// Skip the streams that cannot have rows. While the role loads, read both: the server answers an
+	// empty page to the reader a stream is not for.
+	const skipsTwin = props.customFieldFilter && isOwner === false;
+	const skipsShares = !props.customFieldFilter || isOwner === true;
 	const sortedArgs = (restricted: boolean) =>
 		!active || sort === null || props.savedStream === null || (restricted && skipsTwin)
 			? ("skip" as const)
@@ -328,7 +332,17 @@ function useFilesSortedChildrenSource(
 	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
 		!active || sort === null || props.savedStream === null || skipsShares
 			? ("skip" as const)
-			: { membershipId, parentId: folderId, kind, archived: false, principalIndex, sort, filter, namePrefix, segment, savedStream: props.savedStream };
+			: {
+					membershipId,
+					parentId: folderId,
+					kind,
+					principalIndex,
+					sort,
+					filter,
+					namePrefix,
+					segment,
+					savedStream: props.savedStream,
+				};
 	const options = { initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE };
 
 	const open = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_sorted, sortedArgs(false), options);
@@ -345,7 +359,7 @@ function useFilesSortedChildrenSource(
 			createdAt: row._creationTime,
 			updatedAt: row.updatedAt,
 			contentByteSize: row.contentByteSize,
-			updatedBy: row.updatedBy,
+			updatedBy: row.locked ? null : row.updatedBy,
 			contentType: row.contentType,
 			treeRow: row,
 			segment,
@@ -375,7 +389,7 @@ function useFilesSortedChildrenSegment(
 		kind: app_convex_Doc<"files_nodes">["kind"];
 		segment: FilesSortedChildrenRow["segment"];
 		active: boolean;
-		metadataKey: string | null;
+		customFieldFilter: boolean;
 		savedView: ReturnType<typeof useFilesSavedView>;
 	},
 ) {
@@ -394,21 +408,25 @@ function useFilesSortedChildrenSegment(
  * done. Each segment merges the streams of `useFilesSortedChildrenSegment`, and a node that two
  * streams hold (shared to the member and to their role) shows once.
  *
+ * A custom-field sort gives a member the restricted rows by name, with no value in their key, so
+ * the merge puts them after the value rows. A custom-field filter of a member never shows a locked
+ * row. `restrictedNote` tells the member why.
+ *
  * While a page or a new sort loads, `rows` keeps the last settled rows and `isBusy` is true. `sort:
  * null` waits.
  */
 export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
-	const { membershipId, folderId, sort, filter, namePrefix } = props;
+	const { membershipId, folderId, sort, filter, namePrefix, isOwner } = props;
 	const savedView = useFilesSavedView(membershipId, sort !== null);
 	const field = sort?.[0]?.field ?? null;
 	const metadataKey = files_table_metadata_field({ sort: sort?.[0] ?? null, filter });
+	const customFieldFilter = filter !== null && metadataKey !== null;
 	// No folder has a file.extension. A file.size sort keeps folders in the value segment, by name. A
 	// metadata sort has no missing segment: rows without the key are hidden.
 	const hasFolderMissing = filter === null && field === "extension";
 	const hasFileMissing = filter === null && (field === "extension" || field === "size");
 
 	const sortScope = JSON.stringify([membershipId, folderId, sort, filter, namePrefix, savedView.normal, savedView.cohort]);
-	const [retrying, setRetrying] = useState(false);
 	const [startedMissing, setStartedMissing] = useState({ sortScope, folder: false, file: false });
 	const started = startedMissing.sortScope === sortScope ? startedMissing : { sortScope, folder: false, file: false };
 	// The number of rows the table wants. Show more adds one page.
@@ -423,7 +441,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		kind: "folder",
 		segment: "value",
 		active: sort !== null,
-		metadataKey,
+		customFieldFilter,
 	});
 	const fileValue = useFilesSortedChildrenSegment({
 		...props,
@@ -431,7 +449,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		kind: "file",
 		segment: "value",
 		active: sort !== null,
-		metadataKey,
+		customFieldFilter,
 	});
 	const folderMissing = useFilesSortedChildrenSegment({
 		...props,
@@ -439,7 +457,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		kind: "folder",
 		segment: "missing",
 		active: hasFolderMissing && started.folder,
-		metadataKey,
+		customFieldFilter,
 	});
 	const fileMissing = useFilesSortedChildrenSegment({
 		...props,
@@ -447,24 +465,8 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		kind: "file",
 		segment: "missing",
 		active: hasFileMissing && started.file,
-		metadataKey,
+		customFieldFilter,
 	});
-
-	// Null when this user cannot read the folder. True when the member has an active share here, so a
-	// metadata sort or filter says that shared items are not shown.
-	const hasSharedRequests = useMemo(
-		(): Parameters<typeof useQueries>[0] =>
-			retrying
-				? {}
-				: {
-						hasShared: {
-							query: app_convex_api.files_tree.has_tree_children_shared,
-							args: { membershipId, parentId: folderId, archived: false },
-						},
-					},
-		[membershipId, folderId, retrying],
-	);
-	const hasShared: boolean | null | Error | undefined = useQueries(hasSharedRequests).hasShared;
 
 	// Keep a missing segment started once its value segment was exhausted. A page split briefly turns the
 	// value segment back to loading, and stopping the missing segment then would throw its pages away.
@@ -504,19 +506,12 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const mergedRows = merges.flatMap((merge) => merge.rows);
 	const blockingStream = merges.at(-1)?.blocking ?? null;
 	const isSettled =
-		sort !== null &&
-		hasShared !== undefined &&
-		!(hasShared instanceof Error) &&
-		segments.every((streams) => streams.every((stream) => stream.status !== "loading"));
+		sort !== null && segments.every((streams) => streams.every((stream) => stream.status !== "loading"));
 
 	// Load the next page of the stream that holds the merge back, until the table has the rows it wants.
 	useEffect(() => {
 		if (mergedRows.length < wantedCount && blockingStream?.status === "more") blockingStream.loadMore();
 	});
-
-	useEffect(() => {
-		if (retrying) setRetrying(false);
-	}, [retrying]);
 
 	// Keep the last settled rows of this folder, to show while a new sort or a page loads. Compare by
 	// the rows and the sort, not by array identity, so storing them cannot loop the render. Compare the
@@ -540,12 +535,8 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const loadMore = useFn(() => {
 		setWanted({ sortScope, count: mergedRows.length + FILES_SORTED_CHILDREN_PAGE_SIZE });
 	});
-	const retry = useFn(() => {
-		setRetrying(true);
-	});
-	const isFailed = hasShared === null || hasShared instanceof Error;
 	const isDone = isSettled && segments.every((streams) => streams.every((stream) => stream.status === "done"));
-	const rows = hasShared === null ? undefined : isSettled ? mergedRows : shownHeldRows?.rows;
+	const rows = isSettled ? mergedRows : shownHeldRows?.rows;
 
 	return {
 		rows,
@@ -553,14 +544,20 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		rowsSort: isSettled ? sort : (shownHeldRows?.sort ?? null),
 		rowsFilter: isSettled ? filter : (shownHeldRows?.filter ?? null),
 		rowsNamePrefix: isSettled ? namePrefix : (shownHeldRows?.namePrefix ?? null),
-		isBusy: !isFailed && !isSettled,
+		isBusy: !isSettled,
 		isDone,
-		// The `has_tree_children_shared` query answers null when this user cannot read the folder.
-		isFailed,
-		isFolderRefused: hasShared === null,
-		// The metadata key whose sort or filter hides the member's shared rows here, or null.
-		hiddenSharedKey: hasShared === true ? metadataKey : null,
+		/**
+		 * Why the member sees some restricted rows apart or not at all, or null. In a custom-field sort
+		 * only a member's restricted rows have no value in their key.
+		 */
+		restrictedNote: customFieldFilter
+			? isOwner === false
+				? ("filter" as const)
+				: null
+			: metadataKey !== null &&
+				  segments.some((streams) => streams.some((stream) => stream.rows.some((row) => row.sortKey.parts[0] === null)))
+				? ("sort" as const)
+				: null,
 		loadMore,
-		retry,
 	};
 }

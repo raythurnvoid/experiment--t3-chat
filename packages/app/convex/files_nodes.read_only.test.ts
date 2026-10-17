@@ -4778,6 +4778,8 @@ describe("files_nodes public read-only view", () => {
 		// Only the granted scope is listed; the outer lock root itself never appears.
 		expect(memberTree.map((node) => node.path).sort()).toEqual(["/outer/inner", "/outer/inner/secret.md"]);
 		for (const node of memberTree) {
+			expect(node.locked).toBe(false);
+			if (node.locked) continue;
 			// Children keep no rule of their own. The hidden outer lock does not apply here.
 			expect(node.writePolicyState).toBe("none");
 			// Raw lock fields stay on the backend. Public views only expose writePolicyState.

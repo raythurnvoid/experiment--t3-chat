@@ -125,7 +125,7 @@ async function move_draft(args: {
 }
 
 describe("internal_list", () => {
-	test("complete traversal refuses a hidden child on a later page while ordinary lists stay filtered", async () => {
+	test("complete and ordinary lists return a locked child on a later page as a locked row", async () => {
 		const owner = await fixture();
 		const { t, db } = owner;
 		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
@@ -161,15 +161,21 @@ describe("internal_list", () => {
 		expect(first._yay.items.map((item) => item.path)).toEqual(["/source/first"]);
 		expect(first._yay.isDone).toBe(false);
 		const second = await t.query(internal.files_visible.internal_list, { ...args, cursor: first._yay.continueCursor });
-		expect(second).toEqual({ _nay: { message: "Permission denied" } });
-		expect(JSON.stringify(second)).not.toContain("secret-name");
-		const filtered = await t.query(internal.files_visible.internal_list, {
+		// Only the saved fields show: no author.
+		expect(second._yay?.items).toEqual([
+			expect.objectContaining({ path: "/source/secret-name", kind: "folder", locked: true }),
+		]);
+		expect(second._yay?.items[0]).not.toHaveProperty("updatedBy");
+		const ordinary = await t.query(internal.files_visible.internal_list, {
 			...args,
 			requireComplete: false,
 			numItems: 10,
 		});
-		expect(filtered._yay?.items.map((item) => item.path)).toEqual(["/source/first"]);
-		expect(filtered._yay?.isDone).toBe(true);
+		expect(ordinary._yay?.items.map((item) => [item.path, item.locked])).toEqual([
+			["/source/first", false],
+			["/source/secret-name", true],
+		]);
+		expect(ordinary._yay?.isDone).toBe(true);
 		const readable = await t.query(internal.files_visible.internal_list, {
 			...args,
 			visibilityUserId: db.userId,
@@ -1108,5 +1114,224 @@ describe("internal_list_children_saved", () => {
 		}
 		expect(decided[0]).toBeLessThan(1_050);
 		expect(seen).toEqual(names);
+	});
+
+	// The read budget check runs before each row and stops a call past 3,000 ranges, so the 1,096
+	// ranges left under Convex's 4,096 must hold one more row. The worst row is a restricted child
+	// with no cached answer: it reads the member's grants and both roles on its own scope (9 ranges
+	// measured, so a call stops near 3,004).
+	test("ls of a folder with many restricted children stays under the Convex limits", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const big = await create_saved(f, "big");
+		const names = Array.from({ length: 600 }, (_, index) => `r-${String(index).padStart(3, "0")}`);
+		await f.t.run(async (ctx) => {
+			for (const name of names) {
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: big.id,
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "folder",
+					path: `/big/${name}`,
+					treePath: `/big/${name}/`,
+					pathDepth: 2,
+					isRestrictedScopeRoot: true,
+				});
+				// Each child is its own restricted root, so no access answer is shared between rows.
+				await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			}
+		});
+		const list = (
+			numItems: number,
+			position: { rangeStart: string | null; cursor: string | null; lastKey: unknown[] | null },
+		) =>
+			member.as.run(async (ctx) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				const result = await ctx.runQuery(internal.files_visible.internal_list_children_saved, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					visibilityUserId: member.userId,
+					subject: { kind: "user", userId: member.userId, plugin: null },
+					overlayUserId: member.userId,
+					folderPath: "/big",
+					orderBy: "name",
+					order: "asc",
+					numItems,
+					position,
+				});
+				const after = await ctx.meta.getTransactionMetrics();
+				if (result._nay) throw new Error(result._nay.message);
+				return { ...result._yay, ranges: after.databaseQueries.used - before.databaseQueries.used };
+			});
+		const start = { rangeStart: null, cursor: null, lastKey: null };
+
+		// The page cost minus the cost of a one-row page is what the other rows read.
+		const one = await list(1, start);
+		const eleven = await list(11, start);
+		const perRow = (eleven.ranges - one.ranges) / 10;
+		expect(perRow).toBeGreaterThan(0);
+		expect(3_000 + perRow).toBeLessThan(4_096);
+
+		// Every row comes back locked, over calls that each stay under the limit.
+		let position: { rangeStart: string | null; cursor: string | null; lastKey: unknown[] | null } = start;
+		const seen: string[] = [];
+		const ranges: number[] = [];
+		for (let call = 0; call < 10; call++) {
+			const result = await list(1_000, position);
+			ranges.push(result.ranges);
+			for (const row of result.rows) {
+				expect(row.item).toMatchObject({ locked: true });
+				seen.push(row.item!.name);
+			}
+			position = result.position;
+			if (result.done) break;
+		}
+		expect(seen).toEqual(names);
+		expect(Math.max(...ranges)).toBeLessThan(4_096);
+	});
+});
+
+describe("internal_search_name_saved", () => {
+	/**
+	 * Under a restricted `/t`, one Add-people chain per item in `chains`, `depth` folders deep, with
+	 * the member added only at its top. Each deepest folder holds `hits` files the member cannot open.
+	 */
+	async function seed_deep_chains(
+		f: Awaited<ReturnType<typeof fixture>>,
+		args: { chains: Array<{ name: string; depth: number }>; hits: number },
+	) {
+		const { chains, hits } = args;
+		const member = await add_member(f);
+		await f.t.run(async (ctx) => {
+			const strangerId = await ctx.db.insert("users", { clerkUserId: null });
+			const node = (fields: {
+				parentId: Id<"files_nodes"> | "root";
+				name: string;
+				path: string;
+				kind: "file" | "folder";
+			}) =>
+				ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					...fields,
+					sortName: files_sort_text_key(fields.name),
+					treePath: fields.kind === "folder" ? `${fields.path}/` : fields.path,
+					pathDepth: fields.path.split("/").length - 1,
+				});
+			const grant = (nodeId: Id<"files_nodes">, userId: Id<"users">) =>
+				ctx.db.insert("access_control_permission_grants", {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					resourceKind: "file",
+					resourceId: String(nodeId),
+					principalKind: "user",
+					userId,
+					permission: "content.read",
+					createdAt: 1,
+					updatedAt: 1,
+				});
+			const tId = await node({ parentId: "root", name: "t", path: "/t", kind: "folder" });
+			await ctx.db.patch("files_nodes", tId, { isRestrictedScopeRoot: true, restrictedScopeNodeId: tId });
+			for (const chain of chains) {
+				let parent = { _id: tId, path: "/t" };
+				for (let depth = 0; depth < chain.depth; depth++) {
+					const name = depth === 0 ? chain.name : "a";
+					const path = `${parent.path}/${name}`;
+					const nodeId = await node({ parentId: parent._id, name, path, kind: "folder" });
+					await ctx.db.patch("files_nodes", nodeId, {
+						restrictedScopeNodeId: tId,
+						extendedScopeNodeId: nodeId,
+						parentExtendedScopeNodeId: depth === 0 ? null : parent._id,
+					});
+					await grant(nodeId, depth === 0 ? member.userId : strangerId);
+					parent = { _id: nodeId, path };
+				}
+				for (let index = 0; index < hits; index++) {
+					const name = `hit-${chain.name}-${index}.md`;
+					const nodeId = await node({ parentId: parent._id, name, path: `${parent.path}/${name}`, kind: "file" });
+					// Its own restricted root with no grant: the member cannot open it.
+					await ctx.db.patch("files_nodes", nodeId, { isRestrictedScopeRoot: true, restrictedScopeNodeId: nodeId });
+				}
+			}
+		});
+		return member;
+	}
+
+	async function search(
+		f: Awaited<ReturnType<typeof fixture>>,
+		member: Awaited<ReturnType<typeof add_member>>,
+		args: { overlay: boolean; numItems: number; cursor: string | null },
+	) {
+		return await member.as.run(async (ctx) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await ctx.runQuery(internal.files_visible.internal_search_name_saved, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				visibilityUserId: member.userId,
+				subject: { kind: "user", userId: member.userId, plugin: null },
+				...(args.overlay ? { overlayUserId: member.userId } : {}),
+				folderPath: "/",
+				query: "hit",
+				numItems: args.numItems,
+				cursor: args.cursor,
+			});
+			const after = await ctx.meta.getTransactionMetrics();
+			if (result._nay) throw new Error(result._nay.message);
+			return { ...result._yay, ranges: after.databaseQueries.used - before.databaseQueries.used };
+		});
+	}
+
+	// The owner's reader resolves each hit's path within its own read limit, so its chain is shorter.
+	test.each([
+		{ overlay: true, depth: 200 },
+		{ overlay: false, depth: 500 },
+	])("ten locked hits in one deep folder check the folder once (%o)", async ({ overlay, depth }) => {
+		const f = await fixture();
+		const member = await seed_deep_chains(f, { chains: [{ name: "x", depth }], hits: 10 });
+
+		const result = await search(f, member, { overlay, numItems: 100, cursor: null });
+		expect(result.retrySmaller).toBe(false);
+		expect(result.items.map((item) => [item.name, item.locked]).toSorted()).toEqual(
+			Array.from({ length: 10 }, (_, index) => [`hit-x-${index}.md`, true]).toSorted(),
+		);
+		expect(result.ranges).toBeLessThan(4_096);
+	});
+
+	// Without the reader, the checks of x and y end under the 3,000 row budget, so a third deep check
+	// would pass 4,096.
+	test.each([
+		{ overlay: true, depths: [200, 100, 200] },
+		{ overlay: false, depths: [500, 220, 500] },
+	])("locked hits in three deep folders never pass the Convex limit (%o)", async ({ overlay, depths }) => {
+		const f = await fixture();
+		const chains = ["x", "y", "z"].map((name, index) => ({ name, depth: depths[index]! }));
+		const member = await seed_deep_chains(f, { chains, hits: 1 });
+
+		// First parent checks that may not fit one call end the page, and it is asked again smaller,
+		// like `files_pending_overlay_search_name` does. No call passes the limit, and every hit shows.
+		const names: string[] = [];
+		let numItems = 100;
+		let cursor: string | null = null;
+		for (let call = 0; call < 20; call++) {
+			const result = await search(f, member, { overlay, numItems, cursor });
+			expect(result.ranges).toBeLessThan(4_096);
+			if (result.retrySmaller) {
+				numItems = Math.max(1, Math.floor(numItems / 2));
+				continue;
+			}
+			names.push(...result.items.map((item) => item.name));
+			expect(result.items.every((item) => item.locked)).toBe(true);
+			if (result.isDone) break;
+			cursor = result.continueCursor;
+		}
+		expect(names.toSorted()).toEqual(["hit-x-0.md", "hit-y-0.md", "hit-z-0.md"]);
 	});
 });

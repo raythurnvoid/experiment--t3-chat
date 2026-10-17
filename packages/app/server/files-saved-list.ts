@@ -28,6 +28,8 @@ function compare_keys(a: Key, b: Key) {
  *
  * Answers `_nay` named `folder_unavailable` when the folder is missing or archived, `folder_locked`
  * when the caller cannot open it, and `not_a_folder` when the path is a readable file.
+ *
+ * Every row has `locked`. Only a list of direct children with `withLocked` returns locked rows.
  */
 export async function files_saved_list_page(
 	ctx: Pick<ActionCtx, "runQuery">,
@@ -118,6 +120,7 @@ export async function files_saved_list_page(
 		nodeId: node._id,
 	});
 	const page: Doc<"files_nodes">[] = [];
+	const lockedIds = new Set<Id<"files_nodes">>();
 	let isDone = false;
 	// Source order follows migration. A doc moved between these reads is seen at least once.
 	if (view.migrationDirection === "to_normal") sources.reverse();
@@ -143,6 +146,7 @@ export async function files_saved_list_page(
 					const phaseCount = "phaseCount" in result ? (result.phaseCount ?? 1) : 1;
 					const frontier = "frontier" in result ? (result.frontier ?? null) : null;
 					const done = result.isDone && phase + 1 >= phaseCount;
+					for (const nodeId of "lockedIds" in result ? (result.lockedIds ?? []) : []) lockedIds.add(nodeId);
 					if (frontier || done) {
 						batches.push({ rows: result.page, frontier, done });
 						break;
@@ -190,5 +194,7 @@ export async function files_saved_list_page(
 	}
 	// `lastKey` can be a doc the caller may not read, so the cursor must hide it.
 	const continueCursor = isDone ? "" : await crypto_seal_cursor({ purpose: "files_list", scope, payload: { lastKey } });
-	return Result({ _yay: { page, continueCursor, isDone } });
+	return Result({
+		_yay: { page: page.map((node) => ({ ...node, locked: lockedIds.has(node._id) })), continueCursor, isDone },
+	});
 }

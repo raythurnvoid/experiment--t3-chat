@@ -2966,19 +2966,20 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		namePrefix,
 		isOwner,
 	});
-	const isFolderFailed = folderSort === null || sortedChildren.isFolderRefused;
+	const isFolderFailed = folderSort === null;
 	const isShowingHeldRows =
 		sortedChildren.rows !== undefined &&
 		(JSON.stringify(sortedChildren.rowsFilter) !== JSON.stringify(filter) ||
 			sortedChildren.rowsNamePrefix !== namePrefix ||
 			JSON.stringify(sortedChildren.rowsSort) !== JSON.stringify(sort));
 	// A table row can be on a page the tree store has not loaded, so the move checks read both lists.
-	// A set keeps this linear: both lists can hold thousands of rows.
+	// A set keeps this linear: both lists can hold thousands of rows. A locked row cannot move or take
+	// a drop, so it stays out.
 	const treeNodeIds = new Set(fileNodesList?.map((node) => node._id));
 	const savedNodesList = [
 		...(fileNodesList ?? []),
 		...(sortedChildren.rows ?? []).flatMap((row) =>
-			row.treeRow && !treeNodeIds.has(row.treeRow._id) ? [row.treeRow] : [],
+			row.treeRow && !row.treeRow.locked && !treeNodeIds.has(row.treeRow._id) ? [row.treeRow] : [],
 		),
 	];
 	const folderReadme = useQuery(app_convex_api.files_tree.get_folder_readme, { membershipId, folderId: folderItemId });
@@ -3254,7 +3255,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					namePrefix={namePrefix}
 					rowsNamePrefix={sortedChildren.rowsNamePrefix}
 					isShowingHeldRows={isShowingHeldRows}
-					isFilterFailed={sortedChildren.isFailed}
 					columnValues={columnValues.values}
 					activeValueTargetCount={valueTargets.length}
 					valueQueryCount={columnValues.queryCount}
@@ -3264,7 +3264,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					canSaveSort={folderSort?.canSave === true && urlSort !== null && filter === null}
 					isSavingSort={isSavingSort}
 					isSortBusy={sortedChildren.isBusy}
-					hiddenSharedKey={sortedChildren.hiddenSharedKey}
+					restrictedNote={sortedChildren.restrictedNote}
 					hasDrafts={hasDrafts === true}
 					organizationName={organizationName}
 					workspaceName={workspaceName}
@@ -3276,7 +3276,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					onColumnsChange={handleColumnsChange}
 					onColumnsOpenChange={handleColumnsOpenChange}
 					onQueryChange={handleQueryChange}
-					onRetryFilter={sortedChildren.retry}
 					onSortChange={handleSortChange}
 					onSaveSort={handleSaveSort}
 					onActiveTargetsChange={handleActiveTargetsChange}
@@ -3925,14 +3924,16 @@ const FileNodeViewFolderExplorerColumnCells = memo(function FileNodeViewFolderEx
 	// Convex shares one subscription between rows with the same updater.
 	const updatedByAnagraphic = useQuery(
 		app_convex_api.users.get_anagraphic,
-		columns.includes("updated_by") ? { userId: row.updatedBy } : "skip",
+		columns.includes("updated_by") && row.updatedBy !== null ? { userId: row.updatedBy } : "skip",
 	);
 	return columns
 		.filter((field) => field !== "name")
 		.map((field) => {
 			let value: string | number | boolean | null = null;
 			let state: FileNodeViewFolderColumnValues["state"] | "deferred" = "ready";
-			if (field === "updated_by") {
+			if (row.treeRow.locked && !["updated", "created", "size", "extension"].includes(field)) {
+				// A locked row shows only its name, type, size and dates. Its other cells show "—".
+			} else if (field === "updated_by") {
 				if (updatedByAnagraphic === undefined) state = "loading";
 				else value = files_table_updated_by_text(updatedByAnagraphic?.displayName ?? null);
 			} else if (field === "updated") value = format_relative_time(row.updatedAt);
@@ -3992,6 +3993,7 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 	| "FileNodeViewFolderExplorer-row"
 	| "FileNodeViewFolderExplorer-row-dragging"
 	| "FileNodeViewFolderExplorer-row-cut"
+	| "FileNodeViewFolderExplorer-row-locked"
 	| "FileNodeViewFolderExplorer-row-drop-target"
 	| "FileNodeViewFolderExplorer-row-action"
 	| "FileNodeViewFolderExplorer-cell"
@@ -4301,6 +4303,77 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 						)}
 				</MyMenu>
 			</MyGridTableCell>
+		</MyGridTableRow>
+	);
+});
+
+type FileNodeViewFolderExplorerLockedRow_Props = {
+	child: Extract<FileNodeViewFolderRow["treeRow"], { locked: true }>;
+	visibleName: string;
+	columnCells: ReactNode;
+	organizationName: string;
+	workspaceName: string;
+};
+
+/**
+ * A child the user cannot open. Its link opens the access screen. It has no actions: no drag, no drop
+ * and no menu, and it reads no write access.
+ */
+const FileNodeViewFolderExplorerLockedRow = memo(function FileNodeViewFolderExplorerLockedRow(
+	props: FileNodeViewFolderExplorerLockedRow_Props,
+) {
+	const { child, visibleName, columnCells, organizationName, workspaceName } = props;
+
+	return (
+		<MyGridTableRow
+			className={cn(
+				"FileNodeViewFolderExplorer-row" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+				"FileNodeViewFolderExplorer-row-locked" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+			)}
+			data-file-node-id={child._id}
+			data-file-locked="on"
+		>
+			<MyGridTableCell
+				data-column-field="name"
+				className={cn(
+					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+					"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+				)}
+			>
+				<Link
+					aria-label={`Open ${visibleName}, you don't have access`}
+					className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+					to="/w/$organizationName/$workspaceName/files"
+					params={{ organizationName, workspaceName }}
+					search={(prev) => ({
+						...prev,
+						filter: undefined,
+						view_q: undefined,
+						nodeId: child._id,
+						pendingNodeId: undefined,
+						view: undefined,
+						fileView: undefined,
+					})}
+					draggable={false}
+				/>
+				<MyIcon
+					className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+					title="You don't have access"
+				>
+					<Lock aria-hidden />
+				</MyIcon>
+				<span className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
+					{visibleName}
+				</span>
+			</MyGridTableCell>
+			{columnCells}
+			<MyGridTableCell
+				data-column-field="actions"
+				className={cn(
+					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+					"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+				)}
+			/>
 		</MyGridTableRow>
 	);
 });
@@ -4781,14 +4854,14 @@ type FileNodeViewFolderExplorer_Props = {
 	 */
 	rowsNamePrefix: string | null;
 	isShowingHeldRows: boolean;
-	isFilterFailed: boolean;
 	columnValues: Record<string, FileNodeViewFolderColumnValues>;
 	activeValueTargetCount: number;
 	valueQueryCount: number;
 	/**
-	 * The metadata key whose sort or filter hides the member's shared rows in this folder, or null.
+	 * Whether a custom-field sort lists the restricted rows last or a custom-field filter leaves the
+	 * locked rows out, or null.
 	 */
-	hiddenSharedKey: string | null;
+	restrictedNote: "sort" | "filter" | null;
 	/**
 	 * True when the user's own drafts add, move or remove items in this folder. The table shows saved
 	 * rows only, so a note points to the Pending tab.
@@ -4813,7 +4886,6 @@ type FileNodeViewFolderExplorer_Props = {
 	onColumnsChange: (columns: string[]) => void;
 	onColumnsOpenChange: (open: boolean) => void;
 	onQueryChange: FileNodeViewFolderFilterBar_Props["onChange"];
-	onRetryFilter: () => void;
 	onSortChange: (sort: files_sort_Sort) => void;
 	onSaveSort: () => void;
 	onActiveTargetsChange: (keys: string[]) => void;
@@ -4843,11 +4915,10 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		namePrefix,
 		rowsNamePrefix,
 		isShowingHeldRows,
-		isFilterFailed,
 		columnValues,
 		activeValueTargetCount,
 		valueQueryCount,
-		hiddenSharedKey,
+		restrictedNote,
 		hasDrafts,
 		organizationName,
 		workspaceName,
@@ -4859,7 +4930,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		onColumnsChange,
 		onColumnsOpenChange,
 		onQueryChange,
-		onRetryFilter,
 		onSortChange,
 		onSaveSort,
 		onActiveTargetsChange,
@@ -4871,10 +4941,10 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const hasFilter = filter !== null || rowsFilter !== null;
 	const displayedSort = rowsSort ?? sort;
 	const isApplyingSort = rowsSort === null || JSON.stringify(sort) !== JSON.stringify(rowsSort);
-	const sortState = isFilterFailed ? "failed" : isApplyingSort ? "applying" : "ready";
-	const filterState = isFilterFailed ? "failed" : isShowingHeldRows || (isSortBusy && hasFilter) ? "applying" : "ready";
+	const sortState = isApplyingSort ? "applying" : "ready";
+	const filterState = isShowingHeldRows || (isSortBusy && hasFilter) ? "applying" : "ready";
 	const emptyMessage =
-		visibleChildItems.length > 0 || filterState === "failed" || filterState === "applying"
+		visibleChildItems.length > 0 || filterState === "applying"
 			? null
 			: !isDone
 				? isSortBusy
@@ -5021,7 +5091,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	return (
 		<div
 			data-sort-state={sortState}
-			data-filter-state={hasFilter || filterState === "failed" ? filterState : undefined}
+			data-filter-state={hasFilter ? filterState : undefined}
 			className={"FileNodeViewFolderExplorer" satisfies FileNodeViewFolderExplorer_ClassNames}
 		>
 			<div className={"FileNodeViewFolderExplorer-toolbar" satisfies FileNodeViewFolderExplorer_ClassNames}>
@@ -5064,14 +5134,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					Applying filter…
 				</p>
 			)}
-			{filterState === "failed" && (
-				<div className={"FileNodeViewFolderExplorer-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					<p role="alert">{hasFilter ? "Filter could not be applied" : "Folder contents could not be loaded."}</p>
-					<MyButton variant="outline" onClick={onRetryFilter}>
-						Retry
-					</MyButton>
-				</div>
-			)}
 			{/* Steady states are static text, not live regions. */}
 			{filterOrderField !== null && (
 				<p
@@ -5086,10 +5148,12 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					Rows without {metadataKey} are hidden
 				</p>
 			)}
-			{/* Shared items have no copy for metadata keys, so a member sees why they are missing. */}
-			{hiddenSharedKey !== null && (
+			{/* A locked row's custom field is never read, so a member sees why some rows are apart or missing. */}
+			{restrictedNote !== null && (
 				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					Items shared with you are not shown while sorting or filtering by {hiddenSharedKey}
+					{restrictedNote === "sort"
+						? "Restricted items are listed last, by name, when you sort by a custom field."
+						: "Locked items are not included when you filter by a custom field."}
 				</p>
 			)}
 			{hasDrafts && (
@@ -5121,7 +5185,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					ref={setTableElement}
 					aria-label="Folder contents"
 					aria-describedby={filterOrderField !== null ? sortNoteId : undefined}
-					aria-busy={isSortBusy && !isFilterFailed}
+					aria-busy={isSortBusy}
 					className={"FileNodeViewFolderExplorer-table" satisfies FileNodeViewFolderExplorer_ClassNames}
 					style={{ gridTemplateColumns: gridColumns }}
 					data-sort-fields={JSON.stringify(displayedSort)}
@@ -5206,6 +5270,18 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 							);
 							const retryValues = values?.state === "failed" ? () => onRetryValues(key) : undefined;
 							const child = row.treeRow;
+							if (child.locked) {
+								return (
+									<FileNodeViewFolderExplorerLockedRow
+										key={key}
+										child={child}
+										visibleName={row.name}
+										columnCells={columnCells}
+										organizationName={organizationName}
+										workspaceName={workspaceName}
+									/>
+								);
+							}
 							return (
 								<FileNodeViewFolderExplorerRow
 									key={key}
@@ -5614,7 +5690,7 @@ const FileNodeViewLocked = memo(function FileNodeViewLocked(props: FileNodeViewL
 	return (
 		<div className={"FileNodeViewLocked" satisfies FileNodeViewLocked_ClassNames}>
 			<h1 className={"FileNodeViewLocked-title" satisfies FileNodeViewLocked_ClassNames}>
-				<LockKeyhole aria-hidden /> You don't have access to this item
+				<Lock aria-hidden /> You don't have access to this item
 			</h1>
 			<p className={"FileNodeViewLocked-description" satisfies FileNodeViewLocked_ClassNames}>
 				Ask the owner, or someone who manages this folder, to share it with you.
@@ -5736,7 +5812,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// Load the shown folder's rows, and the selected node with the folders above it for the breadcrumb.
 	// A draft pins its saved parent instead, so its breadcrumb gets every saved folder above it.
 	// The whole workspace can hold many thousands of nodes, so never load all of them here.
-	const fileNodesList = FilesTreeProvider.useFolders({
+	const treeRows = FilesTreeProvider.useFolders({
 		folderIds: loadedFolderId && !isRootNodeSelected ? [loadedFolderId] : [],
 		archived: false,
 		pinnedNodeIds:
@@ -5746,6 +5822,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					? [privateTargetView.savedParentId]
 					: [],
 	}).rows;
+	// The view reads only the rows the user can open. The folder table shows the locked rows itself.
+	const fileNodesList = useMemo(() => treeRows?.filter((row) => !row.locked), [treeRows]);
 
 	// Show the loaded tree node while the query starts. A null answer must still clear the view.
 	const resolvedNode =

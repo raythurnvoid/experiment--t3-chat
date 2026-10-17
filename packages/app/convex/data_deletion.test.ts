@@ -6369,7 +6369,7 @@ describe("process_workspace_deletion_request", () => {
 					(["access_control_permission_grants", "files_share_rows", "files_nodes"] as const).map(
 						async (table) =>
 							(await ctx.db.query(table).collect()).filter(
-								(doc) => doc.workspaceId === scope.workspaceId && (table !== "access_control_permission_grants" || doc.resourceKind === "file"),
+								(doc) => doc.workspaceId === scope.workspaceId && (table !== "access_control_permission_grants" || ("resourceKind" in doc && doc.resourceKind === "file")),
 							).length,
 					),
 				),

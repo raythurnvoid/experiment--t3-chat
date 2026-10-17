@@ -208,6 +208,11 @@
 		overflow: hidden;
 	}
 
+	/* A match the user cannot open. */
+	.FilesSidebarSearchResults-row-locked .FilesSidebarSearchResults-row-name {
+		color: var(--color-fg-08);
+	}
+
 	.FilesSidebarSearchResults-row-path {
 		font-size: 0.75rem;
 		/* fg-07 at this size fails AA on the row highlight, like the palette path. */
@@ -658,6 +663,11 @@
 
 	.FilesSidebarTreeItem-content-cut > .FilesSidebarTreeItemPrimaryContent {
 		color: var(--color-fg-06);
+	}
+
+	/* A row the user cannot open. */
+	.FilesSidebarTreeItem-content-locked > .FilesSidebarTreeItemPrimaryContent {
+		color: var(--color-fg-08);
 	}
 
 	.FilesSidebarTreeItemPrimaryContent-read-only {

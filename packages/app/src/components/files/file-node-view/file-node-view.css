@@ -1061,6 +1061,17 @@
 		color: var(--color-fg-06);
 	}
 
+	/* A locked row cannot be dragged, and its muted name says it cannot be opened. */
+	.FileNodeViewFolderExplorer-row-locked {
+		&:active {
+			cursor: default;
+		}
+
+		.FileNodeViewFolderExplorer-link {
+			color: var(--color-fg-08);
+		}
+	}
+
 	.FileNodeViewFolderExplorer-row-drop-target {
 		background: var(--color-base-1-06);
 	}

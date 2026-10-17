@@ -46,23 +46,36 @@ function watch_key(name: string, args: Record<string, unknown>) {
 function tree_row(args: { id: string; parentId: string; kind: "file" | "folder"; contentType?: string }) {
 	const { id, parentId, kind, contentType = null } = args;
 	const parentPath = parentId === "root" ? "" : `/${parentId}`;
-	return { _id: id, parentId, name: id, path: `${parentPath}/${id}`, kind, contentType, archiveOperationId: null };
+	return {
+		_id: id,
+		parentId,
+		name: id,
+		path: `${parentPath}/${id}`,
+		kind,
+		contentType,
+		archiveOperationId: null,
+		locked: false,
+	};
 }
 
 /**
- * Answer every stream of one folder: the open streams with the given pages, and the owner's
- * restricted twins and the member's share streams with an empty, done page.
+ * Answer both streams of one folder: the open streams with the given pages, and the restricted twins
+ * with `lockedFolders` or an empty, done page.
  */
 function set_folder(args: {
 	parentId: string;
 	folders?: Array<ReturnType<typeof tree_row>>;
 	files?: Array<ReturnType<typeof tree_row>>;
 	/**
+	 * Folders the user cannot open, in the twin of the folders stream.
+	 */
+	lockedFolders?: Array<ReturnType<typeof tree_row>>;
+	/**
 	 * The open files stream is not done after its first page, and this is its second page.
 	 */
 	nextFiles?: Array<ReturnType<typeof tree_row>>;
 }) {
-	const { parentId, folders = [], files = [], nextFiles } = args;
+	const { parentId, folders = [], files = [], lockedFolders = [], nextFiles } = args;
 	for (const kind of ["folder", "file"] as const) {
 		const streamArgs = files_tree_stream_args({
 			membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
@@ -85,16 +98,10 @@ function set_folder(args: {
 				page: nextFiles,
 			});
 		}
-		results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), EMPTY_PAGE);
-		for (const principalIndex of [0, 1, 2] as const) {
-			results.set(
-				watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children_shared), {
-					...streamArgs.shared(principalIndex),
-					paginationOpts: { cursor: null },
-				}),
-				EMPTY_PAGE,
-			);
-		}
+		results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), {
+			...EMPTY_PAGE,
+			page: kind === "folder" ? lockedFolders.map((row) => ({ ...row, locked: true })) : [],
+		});
 	}
 }
 
@@ -293,7 +300,7 @@ describe("FilesNodePicker", () => {
 			}),
 			{
 				...EMPTY_PAGE,
-				page: [{ kind: "file", nodeId: "names", path: "/a/b/names.md", contentType: "text/markdown" }],
+				page: [{ kind: "file", nodeId: "names", path: "/a/b/names.md", contentType: "text/markdown", locked: false }],
 			},
 		);
 		render(<PickerHarness initialQuery="/a/b/na" />);
@@ -307,6 +314,7 @@ describe("FilesNodePicker", () => {
 			path: "/a/b/names.md",
 			kind: "file",
 			contentType: "text/markdown",
+			locked: false,
 		});
 	});
 
@@ -469,6 +477,29 @@ describe("FilesNodePicker", () => {
 		fireEvent.keyDown(textbox, { key: "Enter" });
 		expect(status.firstChild, "a second Enter puts the reason in a new node").not.toBe(firstMessage);
 		expect(status.textContent).toBe("Not an image or video");
+	});
+
+	test("a locked folder cannot be picked", async () => {
+		set_folder({
+			parentId: "root",
+			folders: [tree_row({ id: "docs", parentId: "root", kind: "folder" })],
+			lockedFolders: [tree_row({ id: "team", parentId: "root", kind: "folder" })],
+		});
+		set_shared_roots([]);
+		render(<PickerHarness initialQuery="" />);
+
+		const lockedOption = await screen.findByRole("option", { name: "team" });
+		await waitFor(() => expect(option_names()).toEqual(["docs", "teamYou don't have access to this folder."]));
+		expect(lockedOption.getAttribute("aria-disabled")).toBe("true");
+		expect(document.getElementById(lockedOption.getAttribute("aria-describedby")!)?.textContent).toBe(
+			"You don't have access to this folder.",
+		);
+
+		fireEvent.click(lockedOption);
+		expect(screen.getByRole("status").textContent, "a locked folder does not open").toBe(
+			"You don't have access to this folder.",
+		);
+		expect(screen.getByRole("navigation", { name: "Folder path" }).textContent).toBe("/");
 	});
 
 	test("Enter that confirms IME text does not pick a row", async () => {

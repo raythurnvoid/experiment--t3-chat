@@ -2537,10 +2537,10 @@ describe("locked paths", () => {
 	const mount = "/home/cloud-usr/w/lock-team/home";
 
 	/**
-	 * A member runner in a team workspace where `/Team` (with everything in it) and the file
-	 * `/open/locked.md` are restricted roots the member has no grant on.
+	 * A member runner in a team workspace where `/Team` and `/open/Sub` (with everything in them), the
+	 * file `/open/locked.md` and each file in `/many` are restricted roots the member has no grant on.
 	 */
-	async function create_locked_runner() {
+	async function create_locked_runner(args: { manyCount?: number } = {}) {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "lock-team", workspaceName: "home" }),
@@ -2551,8 +2551,14 @@ describe("locked paths", () => {
 				{ path: "/Team/secret.md", content: "team secret\n", withRealYjsSnapshot: true },
 				{ path: "/open/locked.md", content: "locked body\n", withRealYjsSnapshot: true },
 				{ path: "/open/a.md", content: "open body\n", withRealYjsSnapshot: true },
+				{ path: "/open/Sub/hidden.md", content: "hidden body\n" },
+				...Array.from({ length: args.manyCount ?? 0 }, (_, index) => ({
+					path: `/many/f-${String(index).padStart(3, "0")}.md`,
+					content: "many\n",
+				})),
 			],
 		});
+		const subId = await get_seeded_node_id(owner, "/open/Sub");
 		const teamId = await get_seeded_node_id(owner, "/Team");
 		const lockedId = await get_seeded_node_id(owner, "/open/locked.md");
 		const member = await t.run(async (ctx) => {
@@ -2577,6 +2583,10 @@ describe("locked paths", () => {
 			for (const node of await ctx.db.query("files_nodes").collect()) {
 				if (node.path === "/Team" || node.path.startsWith("/Team/"))
 					await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: teamId });
+				if (node.path === "/open/Sub" || node.path.startsWith("/open/Sub/"))
+					await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: subId });
+				if (node.path.startsWith("/many/"))
+					await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: node._id });
 			}
 			await ctx.db.patch("files_nodes", lockedId, { restrictedScopeNodeId: lockedId });
 			return { userId, membershipId };
@@ -2707,6 +2717,82 @@ describe("locked paths", () => {
 		const destination = await runner.run({ command: `cp ${mount}/open/a.md ${mount}/Team/a.md` });
 		expect(destination.stderr).toBe(`cp: cannot access '${mount}/Team/a.md': Permission denied\n`);
 		expect(await list_pending_updates(runner)).toEqual([]);
+	});
+
+	test("ls lists a locked child, and ls -l marks it", async () => {
+		const runner = await create_locked_runner();
+
+		const list = await runner.run({ command: `ls ${mount}/open` });
+		expect(list.metadata.exitCode, list.stderr).toBe(0);
+		expect(list.stdout.trim().split("\n").toSorted()).toEqual(["Sub/", "a.md", "locked.md"]);
+
+		const long = (await runner.run({ command: `ls -l ${mount}/open` })).stdout.trim().split("\n");
+		const lockedLine = long.find((line) => line.endsWith("\tlocked.md"));
+		expect(lockedLine).toMatch(/^file\t\S+\tupdatedBy=-\tcontentType=\S+\taccess=locked\tlocked\.md$/);
+		expect(long.find((line) => line.endsWith("\tSub/"))).toMatch(/\tupdatedBy=-\taccess=locked\tSub\/$/);
+		expect(long.find((line) => line.endsWith("\ta.md"))).not.toContain("access=locked");
+		expect(long.find((line) => line.endsWith("\ta.md"))).not.toContain("updatedBy=-");
+		// The file operand form marks it too.
+		expect((await runner.run({ command: `ls -l ${mount}/open/locked.md` })).stdout).toContain("\taccess=locked\t");
+	});
+
+	test("cp -r copies what it can and prints Permission denied for a locked file and folder", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `cp -r ${mount}/open ${mount}/copy` });
+
+		const copied = (await runner.run({ command: `ls ${mount}/copy` })).stdout.trim().split("\n");
+		expect(copied).toContain("a.md");
+		expect(copied).not.toContain("locked.md");
+		// A locked folder is not created at the destination, and nothing under it is read.
+		expect(copied).not.toContain("Sub/");
+		expect(result.metadata.exitCode).toBe(1);
+		expect(result.stdout).toMatch(/^Transfer \S+: 2 ready for review, 2 skipped, 0 failed\. /);
+		expect(result.stderr.split("\n").toSorted()).toEqual(
+			[
+				"",
+				`cp: cannot access '${mount}/open/Sub': Permission denied`,
+				`cp: cannot open '${mount}/open/locked.md' for reading: Permission denied`,
+			].toSorted(),
+		);
+		const items = await runner.t.run((ctx) => ctx.db.query("files_transfer_items").collect());
+		expect(items.map((item) => item.sourcePath).toSorted()).toEqual(
+			["/open", "/open/Sub", "/open/a.md", "/open/locked.md"].toSorted(),
+		);
+		expect(items.filter((item) => item.skipReason === "permission_denied").map((item) => item.state)).toEqual([
+			"skipped",
+			"skipped",
+		]);
+	});
+
+	test("cp -r prints a count line past 100 locked items", async () => {
+		const runner = await create_locked_runner({ manyCount: 102 });
+
+		const result = await runner.run({ command: `cp -r ${mount}/many ${mount}/many-copy` });
+
+		expect(result.metadata.exitCode).toBe(1);
+		expect(result.stdout).toContain(" 102 skipped, ");
+		const lines = result.stderr.trim().split("\n");
+		expect(lines).toHaveLength(101);
+		expect(lines[0]).toBe(`cp: cannot open '${mount}/many/f-000.md' for reading: Permission denied`);
+		expect(lines.at(-1)).toBe("cp: more items were not copied: Permission denied");
+	});
+
+	test("find -name prints a locked file whose folder is readable, and nothing inside a locked folder", async () => {
+		const runner = await create_locked_runner();
+
+		const locked = await runner.run({ command: `find ${mount} -name locked` });
+		expect(locked.metadata.exitCode, locked.stderr).toBe(0);
+		expect(locked.stdout).toContain(`${mount}/open/locked.md`);
+		// Both hits sit inside a locked folder, so they are not shown.
+		for (const name of ["secret", "hidden"]) {
+			const hidden = await runner.run({ command: `find ${mount} -name ${name}` });
+			expect(hidden.stdout, name).not.toContain(`${name}.md`);
+		}
+		// The hit is listed, not readable.
+		expect((await runner.run({ command: `cat ${mount}/open/locked.md` })).stderr).toBe(
+			`cat: ${mount}/open/locked.md: Permission denied\n`,
+		);
 	});
 
 	test("writing over a locked file says Permission denied", async () => {

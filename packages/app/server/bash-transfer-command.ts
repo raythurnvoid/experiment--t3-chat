@@ -359,16 +359,30 @@ export async function bash_transfer_command_run(
 				const failed = progress?.failed ?? 0;
 				// A run that stopped before any item has nothing to review; print only why it stopped.
 				const stoppedEmpty = activity.status !== "succeeded" && completed + skipped + failed === 0;
+				// Like GNU `cp -r`, name each item the copy skipped because the user cannot open it. Past 100,
+				// one line keeps the output short. It has no count: `skipped` also counts items `cp -n` left alone.
+				const denied =
+					command === "cp" && skipped > 0
+						? await ctx.runQuery(internal.files_transfer.list_denied_for_agent, scope)
+						: null;
+				const deniedLines = (denied?.items ?? []).map((item) =>
+					item.kind === "file"
+						? `cp: cannot open '${sourceRoot.renderShellPath(item.path)}' for reading: Permission denied\n`
+						: `cp: cannot access '${sourceRoot.renderShellPath(item.path)}': Permission denied\n`,
+				);
+				if (denied && !denied.isDone) deniedLines.push("cp: more items were not copied: Permission denied\n");
 				return {
 					stdout: stoppedEmpty
 						? ""
 						: `Transfer ${runId}: ${completed} ready for review, ${skipped} skipped, ${failed} failed. Activity ${activityId}. Review in Files.\n`,
-					stderr: activity.errorMessage
-						? `${command}: ${activity.errorMessage}\n`
-						: stoppedEmpty
-							? `${command}: transfer stopped. Activity ${activityId}\n`
-							: "",
-					exitCode: activity.status === "succeeded" ? 0 : 1,
+					stderr:
+						deniedLines.join("") +
+						(activity.errorMessage
+							? `${command}: ${activity.errorMessage}\n`
+							: stoppedEmpty
+								? `${command}: transfer stopped. Activity ${activityId}\n`
+								: ""),
+					exitCode: activity.status === "succeeded" && deniedLines.length === 0 ? 0 : 1,
 				};
 			}
 

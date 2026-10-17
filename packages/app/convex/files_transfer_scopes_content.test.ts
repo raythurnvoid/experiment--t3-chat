@@ -77,7 +77,7 @@ describe("cross-workspace Move refusal", () => {
 });
 
 describe("complete folder Copy", () => {
-	test("refuses an unreadable saved child before creating a private copy", async () => {
+	test("skips an unreadable saved child and creates nothing for it", async () => {
 		const f = await fixture();
 		const created = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: f.owner.membershipId,
@@ -119,29 +119,25 @@ describe("complete folder Copy", () => {
 				runId: started._yay.runId,
 			}),
 		).toEqual({ _yay: null });
-		for (let step = 0; step < 3; step++)
+		for (let step = 0; step < 10; step++)
 			await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 		const view = await f.asUser.query(api.files_transfer_queries.get, {
 			membershipId: f.current.membershipId,
 			runId: started._yay.runId,
 		});
 		expect(view).toMatchObject({
-			activity: {
-				status: "failed",
-				progress: { completed: 0 },
-				errorMessage: "Permission denied",
-			},
+			activity: { status: "succeeded", progress: { completed: 1, skipped: 1 }, errorMessage: null },
 		});
-		expect(JSON.stringify(view)).not.toContain("hidden-name");
 		await f.t.run(async (ctx) => {
-			expect(await ctx.db.query("files_pending_nodes").collect()).toEqual([]);
+			expect((await ctx.db.query("files_pending_nodes").collect()).map((node) => node.name)).toEqual(["source"]);
 			expect(await ctx.db.query("files_r2_assets").collect()).toEqual([]);
 			expect((await ctx.db.get("files_nodes", created._yay.nodeId))?.archiveOperationId).toBeNull();
 		});
 	});
 
 	// With 50 readable children the refusal comes on the second discovery page, after the first page
-	// was already added to the manifest.
+	// was already added to the manifest. A locked saved child is skipped now, so the refusal comes from
+	// the user's own draft move of a node into the folder that they can no longer open.
 	test.each([1, 50])("refuses Retry after discovery stopped with %i readable children", async (readableCount) => {
 		const f = await fixture();
 		for (let index = 0; index < readableCount; index++) {
@@ -156,9 +152,23 @@ describe("complete folder Copy", () => {
 		const hidden = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: f.owner.membershipId,
 			parentId: "root",
-			path: "source/zz-hidden",
+			path: "elsewhere/zz-hidden",
 		});
 		if (hidden._nay) throw new Error(hidden._nay.message);
+		const sourceFolder = await f.asUser.query(api.files_nodes.get_visible_target_by_path, {
+			membershipId: f.current.membershipId,
+			path: "/source",
+		});
+		if (sourceFolder?.target.kind !== "saved") throw new Error("Missing source folder");
+		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: f.current.organizationId,
+			workspaceId: f.current.workspaceId,
+			userId: f.current.userId,
+			target: { kind: "saved", id: hidden._yay.nodeId },
+			destParent: sourceFolder.target,
+			destName: "zz-hidden",
+		});
+		if (moved._nay) throw new Error(moved._nay.message);
 		expect(
 			await f.asOwner.mutation(api.files_sharing.restrict_node, {
 				membershipId: f.owner.membershipId,

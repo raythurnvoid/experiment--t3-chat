@@ -5,8 +5,9 @@ import { api } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import { files_sort_text_key, type files_sort_Clause } from "../shared/files-sort.ts";
-import { files_table_filter_order_field, type files_table_Filter } from "../shared/files-table.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
+import type { files_table_Filter } from "../shared/files-table.ts";
+import { files_metadata_db_write_entries } from "./files_metadata.ts";
 import { insert_tree_node, seed_tree_access_fixture, seed_folder_table } from "./files_nodes.setup.test.ts";
 
 beforeEach(() => {
@@ -31,105 +32,21 @@ describe("list_tree_children_shared", () => {
 	const REFUSED = { page: [], isDone: true, continueCursor: "" };
 	const BY_NAME = { field: "name", direction: "asc" } as const;
 	const FIRST_PAGE = { numItems: 10, cursor: null };
-	const DAY = Date.UTC(2026, 8, 4);
-	const HOUR = 60 * 60 * 1000;
-
-	/**
-	 * 164 children. Every restricted child but `hidden` and `zz-hidden.md` is shared with a member: 150
-	 * files and a folder. So the member's table must be the owner's table without those two.
-	 * Each share row checks its access with reads that scan the whole grant table in convex-test, so a
-	 * bigger table costs a lot more time. No limit needs more rows: the member pages still take many pages.
-	 */
-	async function seed_shared_table() {
-		const seeded = await seed_folder_table();
-		const children = [
-			...Array.from({ length: 160 }, (_, index) => ({
-				name: `f-${String(index).padStart(3, "0")}${[".md", ".txt", ""][index % 3]}`,
-				kind: "file" as const,
-				// 37 and 160 share no factor, so every file has its own time.
-				updatedAt: DAY + (((index * 37) % 160) - 80) * HOUR,
-				lowercaseExtension: ["md", "txt", undefined][index % 3],
-				contentByteSize: index % 4 === 0 ? undefined : (index * 7) % 500,
-				restricted: index % 16 !== 0,
-			})),
-			{ name: "alpha", kind: "folder" as const, updatedAt: DAY },
-			{ name: "beta", kind: "folder" as const, updatedAt: DAY - HOUR, restricted: true },
-			{ name: "hidden", kind: "folder" as const, updatedAt: DAY + HOUR, restricted: true },
-			{
-				name: "zz-hidden.md",
-				kind: "file" as const,
-				updatedAt: DAY,
-				lowercaseExtension: "md",
-				contentByteSize: 7,
-				restricted: true,
-			},
-		];
-		const ids = await seeded.insert_children(children);
-		const member = await seeded.add_member("clerk_shared_table", "member");
-		const hidden = ["hidden", "zz-hidden.md"];
-		const sharedIds = ids.filter((_, index) => children[index]!.restricted && !hidden.includes(children[index]!.name));
-		expect(sharedIds).toHaveLength(151);
-		await seeded.grant_read({ userId: member.userId }, sharedIds);
-		return { ...seeded, member, hidden };
-	}
-
-	// One test per sort and direction: each one reads the 164 rows twice.
-	test.each(
-		["name", "created", "updated", "extension", "size"].flatMap((field) =>
-			(["asc", "desc"] as const).map((direction) => ({ field, direction })),
-		),
-	)(
-		"a member pages 150 user shares in the $field $direction sort, like the owner's table without the hidden rows",
-		async (sort) => {
-			const { read_table, member, hidden } = await seed_shared_table();
-
-			const owner = await read_table(sort, { numItems: 200 });
-			expect(owner).toHaveLength(164);
-			// 20 rows per page, so the 151 shares take 8 pages.
-			expect(await read_table(sort, { numItems: 20, member })).toEqual(owner.filter((name) => !hidden.includes(name)));
-		},
-	);
-
-	const day = { start: DAY, end: DAY + 24 * HOUR };
-	// With a filter there is no `missing` segment, so the direction only flips the index order. One
-	// direction per filter is enough, and each index gets both directions across the rows.
-	test.each([
-		{ filter: { kind: "name", field: "name", op: "starts_with", value: "f-" }, namePrefix: null, direction: "asc" },
-		{ filter: { kind: "extension", field: "extension", op: "is", value: "md" }, namePrefix: null, direction: "asc" },
-		{ filter: { kind: "extension", field: "extension", op: "is", value: "md" }, namePrefix: "f-", direction: "desc" },
-		{ filter: { kind: "extension", field: "extension", op: "missing" }, namePrefix: null, direction: "asc" },
-		{ filter: { kind: "size", field: "size", op: "is", value: 7 }, namePrefix: null, direction: "asc" },
-		{ filter: { kind: "size", field: "size", op: "missing" }, namePrefix: null, direction: "desc" },
-		{ filter: { kind: "size", field: "size", op: "at_least", value: 250 }, namePrefix: null, direction: "asc" },
-		{ filter: { kind: "size", field: "size", op: "at_most", value: 100 }, namePrefix: null, direction: "desc" },
-		{ filter: { kind: "date", field: "updated", op: "on", ...day }, namePrefix: null, direction: "asc" },
-		{ filter: { kind: "date", field: "updated", op: "before", ...day }, namePrefix: null, direction: "desc" },
-		{ filter: { kind: "date", field: "updated", op: "after", ...day }, namePrefix: null, direction: "asc" },
-		{
-			filter: { kind: "date", field: "created", op: "after", start: 0, end: 24 * HOUR },
-			namePrefix: null,
-			direction: "desc",
-		},
-	] satisfies Array<{ filter: files_table_Filter; namePrefix: string | null; direction: "asc" | "desc" }>)(
-		"a member pages 150 user shares in the $filter.field $filter.op filter (prefix $namePrefix, $direction), like the owner's table without the hidden rows",
-		async ({ filter, namePrefix, direction }) => {
-			const { read_table, member, hidden } = await seed_shared_table();
-			const sort = { field: files_table_filter_order_field(filter), direction };
-
-			const owner = await read_table(sort, { filter, namePrefix, numItems: 200 });
-			expect(owner.length).toBeGreaterThan(0);
-			expect(await read_table(sort, { filter, namePrefix, numItems: 20, member })).toEqual(
-				owner.filter((name) => !hidden.includes(name)),
-			);
-		},
-	);
+	// The share streams serve only custom-field filters. `present` is in value order, so its share rows
+	// come after the open rows, by name.
+	const PRESENT = { kind: "text", field: "metadata.status", op: "present" } as const satisfies files_table_Filter;
+	const BY_STATUS = { field: "metadata.status", direction: "asc" } as const;
+	const STATUS = [{ key: "status", value: "open" }];
 
 	test("a role share shows for every member with the role, and a node shared twice shows once", async () => {
-		const { t, parentId, insert_children, add_member, grant_read, read_page, read_table } = await seed_folder_table();
-		const [teamId, mineId] = await insert_children([
-			{ name: "team", kind: "folder", updatedAt: 1, restricted: true },
-			{ name: "mine", kind: "folder", updatedAt: 1, restricted: true },
+		const { t, parentId, insert_children, add_member, grant_read, set_metadata, read_page, read_table } =
+			await seed_folder_table();
+		const ids = await insert_children([
+			{ name: "team.md", kind: "file", updatedAt: 1, restricted: true },
+			{ name: "mine.md", kind: "file", updatedAt: 1, restricted: true },
 		]);
+		const [teamId, mineId] = ids;
+		await set_metadata(ids.map((id) => [id, STATUS]));
 		const first = await add_member("clerk_role_share_first", "member");
 		const second = await add_member("clerk_role_share_second", "member");
 		await grant_read({ role: "member" }, [teamId!]);
@@ -141,106 +58,46 @@ describe("list_tree_children_shared", () => {
 		for (const member of [first, second]) {
 			const rolePage = await read_page({
 				...member,
-				kind: "folder",
-				sort: BY_NAME,
+				kind: "file",
+				sort: BY_STATUS,
+				filter: PRESENT,
 				principalIndex: 1,
 				paginationOpts: FIRST_PAGE,
 			});
-			expect(rolePage.page.map((row) => row.name)).toEqual(["team"]);
+			expect(rolePage.page.map((row) => [row.name, row.sortKey])).toEqual([
+				["team.md", { parts: [null], nameKey: ["team.md", "team.md"] }],
+			]);
 		}
-		expect(await read_table(BY_NAME, { member: first })).toEqual(["mine", "team"]);
-		expect(await read_table(BY_NAME, { member: second })).toEqual(["team"]);
-	});
-
-	test("a shared folder sorts in the missing segment of an extension sort", async () => {
-		const { insert_children, add_member, grant_read, read_page, read_table } = await seed_folder_table();
-		const ids = await insert_children([
-			{ name: "alpha", kind: "folder", updatedAt: 1 },
-			{ name: "beta", kind: "folder", updatedAt: 1, restricted: true },
-			{ name: "a.md", kind: "file", updatedAt: 1, lowercaseExtension: "md", restricted: true },
-		]);
-		const member = await add_member("clerk_extension_folder", "member");
-		await grant_read({ userId: member.userId }, ids.slice(1));
-		const sort = { field: "extension", direction: "desc" } as const;
-		const read = (segment: "value" | "missing") =>
-			read_page({ ...member, kind: "folder", sort, segment, principalIndex: 0, paginationOpts: FIRST_PAGE });
-
-		expect((await read("value")).page).toEqual([]);
-		expect((await read("missing")).page.map((row) => [row.name, row.sortKey])).toEqual([
-			["beta", { parts: [null], nameKey: ["beta", "beta"] }],
-		]);
-		expect(await read_table(sort, { member })).toEqual(["alpha", "beta", "a.md"]);
-	});
-
-	test("a share made long after its node sorts by the node's creation time", async () => {
-		const { insert_child, add_member, grant_read, read_table } = await seed_folder_table();
-		// The older node gets the later share, and the name order is the other way.
-		const olderId = await insert_child({ name: "b-older", kind: "folder", updatedAt: 1, restricted: true });
-		const newerId = await insert_child({ name: "a-newer", kind: "folder", updatedAt: 1, restricted: true });
-		const member = await add_member("clerk_created_share", "member");
-		await grant_read({ userId: member.userId }, [newerId]);
-		await grant_read({ userId: member.userId }, [olderId]);
-
-		for (const direction of ["asc", "desc"] as const) {
-			const sort = { field: "created", direction };
-			const owner = await read_table(sort);
-			expect(owner).toEqual(direction === "asc" ? ["b-older", "a-newer"] : ["a-newer", "b-older"]);
-			expect(await read_table(sort, { member })).toEqual(owner);
-		}
-	});
-
-	test("the archived sidebar reads a member's archived shares, in name order only", async () => {
-		const { t, parentId, insert_children, add_member, grant_read } = await seed_folder_table();
-		const ids = await insert_children([
-			{ name: "kept", kind: "folder", updatedAt: 1, restricted: true },
-			{ name: "gone", kind: "folder", updatedAt: 1, restricted: true },
-		]);
-		const member = await add_member("clerk_archived_share", "member");
-		await grant_read({ userId: member.userId }, ids);
-		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", ids[1]!, { archiveOperationId: "archive-1" }));
-		const read = (archived: boolean, sort: files_sort_Clause = BY_NAME) =>
-			member.as.query(api.files_tree.list_tree_children_shared, {
-				membershipId: member.membershipId,
-				parentId,
-				kind: "folder",
-				archived,
-				principalIndex: 0,
-				sort: [sort],
-				filter: null,
-				namePrefix: null,
-				segment: "value",
-				paginationOpts: FIRST_PAGE,
-			});
-
-		expect((await read(false)).page.map((row) => row.name)).toEqual(["kept"]);
-		expect((await read(true)).page.map((row) => [row.name, row.sortKey])).toEqual([
-			["gone", { parts: [["archive-1", "gone", "gone"]], nameKey: ["gone", "gone"] }],
-		]);
-		expect(await read(true, { field: "updated", direction: "desc" })).toEqual(REFUSED);
+		expect(await read_table(BY_STATUS, { filter: PRESENT, member: first })).toEqual(["mine.md", "team.md"]);
+		expect(await read_table(BY_STATUS, { filter: PRESENT, member: second })).toEqual(["team.md"]);
 	});
 
 	test("the owner gets no share rows, even for a node shared with themselves", async () => {
-		const { db, insert_child, grant_read, read_page, read_table } = await seed_folder_table();
-		const nodeId = await insert_child({ name: "mine", kind: "folder", updatedAt: 1, restricted: true });
+		const { db, insert_child, grant_read, set_metadata, read_page, read_table } = await seed_folder_table();
+		const nodeId = await insert_child({ name: "mine.md", kind: "file", updatedAt: 1, restricted: true });
+		await set_metadata([[nodeId, STATUS]]);
 		await grant_read({ userId: db.userId }, [nodeId]);
 
 		for (const principalIndex of [0, 1, 2] as const) {
-			expect(await read_page({ kind: "folder", sort: BY_NAME, principalIndex, paginationOpts: FIRST_PAGE })).toEqual(
-				REFUSED,
-			);
+			expect(
+				await read_page({ kind: "file", sort: BY_STATUS, filter: PRESENT, principalIndex, paginationOpts: FIRST_PAGE }),
+			).toEqual(REFUSED);
 		}
-		expect(await read_table(BY_NAME)).toEqual(["mine"]);
+		// The owner reads the restricted metadata twin instead.
+		expect(await read_table(BY_STATUS, { filter: PRESENT })).toEqual(["mine.md"]);
 	});
 
 	test("a share row that no longer matches its node or its access shows nothing", async () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-		const { t, parentId, insert_children, add_member, grant_read, read_table } = await seed_folder_table();
+		const { t, parentId, insert_children, add_member, grant_read, set_metadata, read_table } =
+			await seed_folder_table();
 		const names = ["archived", "foreign", "kept", "moved", "renamed", "unrestricted", "unshared"];
 		const ids = await insert_children([
-			...names.map((name) => ({ name, kind: "folder" as const, updatedAt: 1, restricted: true })),
+			...names.map((name) => ({ name: `${name}.md`, kind: "file" as const, updatedAt: 1, restricted: true })),
 			{ name: "elsewhere", kind: "folder", updatedAt: 1 },
 		]);
 		const [archivedId, foreignId, , movedId, renamedId, unrestrictedId, unsharedId, elsewhereId] = ids;
+		await set_metadata(ids.slice(0, 7).map((id) => [id, STATUS]));
 		const member = await add_member("clerk_stale_share", "member");
 		await grant_read({ userId: member.userId }, ids.slice(0, 7));
 
@@ -255,7 +112,10 @@ describe("list_tree_children_shared", () => {
 				workspaceId: other.workspaceId,
 			});
 			await ctx.db.patch("files_nodes", movedId!, { parentId: elsewhereId! });
-			await ctx.db.patch("files_nodes", renamedId!, { name: "a-renamed", sortName: files_sort_text_key("a-renamed") });
+			await ctx.db.patch("files_nodes", renamedId!, {
+				name: "a-renamed.md",
+				sortName: files_sort_text_key("a-renamed.md"),
+			});
 			await ctx.db.patch("files_nodes", unrestrictedId!, { restrictedScopeNodeId: parent!.restrictedScopeNodeId });
 			const grants = await ctx.db.query("access_control_permission_grants").collect();
 			const grant = grants.find((doc) => doc.resourceId === String(unsharedId));
@@ -263,7 +123,7 @@ describe("list_tree_children_shared", () => {
 		});
 
 		// Dropped rows make a page short, so read each stream in one page.
-		expect(await read_table(BY_NAME, { member, numItems: 10 })).toEqual(["elsewhere", "kept"]);
+		expect(await read_table(BY_STATUS, { filter: PRESENT, member, numItems: 10 })).toEqual(["kept.md"]);
 		// A copy out of step with its node is a bug, so it is logged.
 		expect(
 			new Set(
@@ -274,102 +134,52 @@ describe("list_tree_children_shared", () => {
 		).toEqual(new Set([archivedId, movedId, renamedId]));
 	});
 
-	test("a metadata sort or filter gives a member no share rows", async () => {
+	test("every order but a custom-field filter gives a member no share rows", async () => {
 		const { insert_children, add_member, grant_read, set_metadata, read_page, read_table } = await seed_folder_table();
 		const ids = await insert_children([
 			{ name: "open.md", kind: "file", updatedAt: 1 },
 			{ name: "shared.md", kind: "file", updatedAt: 1, restricted: true },
 		]);
-		await set_metadata(ids.map((id) => [id, [{ key: "status", value: "open" }]]));
+		await set_metadata(ids.map((id) => [id, STATUS]));
 		const member = await add_member("clerk_metadata_share", "member");
 		await grant_read({ userId: member.userId }, [ids[1]!]);
-		const status = { field: "metadata.status", direction: "asc" } as const;
+		const read = (sort: typeof BY_NAME | typeof BY_STATUS, filter: files_table_Filter | null = null) =>
+			read_page({ ...member, kind: "file", sort, filter, principalIndex: 0, paginationOpts: FIRST_PAGE });
 
-		expect(
-			await read_page({ ...member, kind: "file", sort: status, principalIndex: 0, paginationOpts: FIRST_PAGE }),
-		).toEqual(REFUSED);
-		expect(
-			await read_page({
-				...member,
-				kind: "file",
-				sort: status,
-				filter: { kind: "text", field: "metadata.status", op: "present" },
-				principalIndex: 0,
-				paginationOpts: FIRST_PAGE,
-			}),
-		).toEqual(REFUSED);
-		expect(await read_table(status, { member })).toEqual(["open.md"]);
+		expect(await read(BY_NAME)).toEqual(REFUSED);
+		expect(await read(BY_STATUS)).toEqual(REFUSED);
+		expect(await read(BY_NAME, { kind: "name", field: "name", op: "starts_with", value: "s" })).toEqual(REFUSED);
+		expect((await read(BY_STATUS, PRESENT)).page.map((row) => row.name)).toEqual(["shared.md"]);
+		// The sort and the name order read the restricted twin instead.
+		expect(await read_table(BY_STATUS, { member })).toEqual(["open.md", "shared.md"]);
 		expect(await read_table(BY_NAME, { member })).toEqual(["open.md", "shared.md"]);
 	});
 
-	test("a member's first tree page shows their 3 shares past 1,500 restricted children they cannot read", async () => {
-		const { parentId, insert_children, add_member, grant_read } = await seed_folder_table();
-		const ids = await insert_children(
-			[
-				...Array.from({ length: 1500 }, (_, index) => `h-${String(index).padStart(4, "0")}`),
-				"zz-1",
-				"zz-2",
-				"zz-3",
-			].map((name) => ({ name, kind: "folder" as const, updatedAt: 1, restricted: true })),
-		);
-		const member = await add_member("clerk_tree_many_hidden", "member");
-		await grant_read({ userId: member.userId }, ids.slice(1500));
-		const paginationOpts = { numItems: 50, cursor: null };
-
-		// The tree's first page of the folder: the open stream and the member's own share stream.
-		const open = await member.as.query(api.files_tree.list_tree_children, {
-			membershipId: member.membershipId,
-			parentId,
-			kind: "folder",
-			archived: false,
-			restricted: false,
-			paginationOpts,
-		});
-		expect(open).toMatchObject({ page: [], isDone: true });
-		const shared = await member.as.query(api.files_tree.list_tree_children_shared, {
-			membershipId: member.membershipId,
-			parentId,
-			kind: "folder",
-			archived: false,
-			principalIndex: 0,
-			sort: [BY_NAME],
-			filter: null,
-			namePrefix: null,
-			segment: "value",
-			paginationOpts,
-		});
-		expect(shared.page.map((row) => row.name)).toEqual(["zz-1", "zz-2", "zz-3"]);
-		expect(shared.isDone).toBe(true);
-	});
-
 	test("refuses a folder the caller cannot read, and gives a grant-only member their shares at the root", async () => {
-		const { t, db, asOwner, parentId, add_member, grant_read } = await seed_folder_table();
+		const { t, db, asOwner, parentId, add_member, grant_read, set_metadata } = await seed_folder_table();
 		const member = await add_member("clerk_root_grant_only", null);
 		expect(
 			await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: parentId }),
 		).toEqual({ _yay: null });
+		await set_metadata([[parentId, STATUS]]);
 		await grant_read({ userId: member.userId }, [parentId]);
 		const args = {
 			membershipId: member.membershipId,
 			parentId: "root" as const,
 			kind: "folder" as const,
-			sort: [BY_NAME],
-			filter: null,
+			sort: [BY_STATUS],
+			filter: PRESENT,
 			namePrefix: null,
 			segment: "value" as const,
 			paginationOpts: FIRST_PAGE,
 		};
 
-		const root = await member.as.query(api.files_tree.list_tree_children_shared, {
-			...args,
-			archived: false,
-			principalIndex: 0,
-		});
+		const root = await member.as.query(api.files_tree.list_tree_children_shared, { ...args, principalIndex: 0 });
 		expect(root.page.map((row) => row.name)).toEqual(["table"]);
 		// The member has no role, so no role stream.
-		expect(
-			await member.as.query(api.files_tree.list_tree_children_shared, { ...args, archived: false, principalIndex: 1 }),
-		).toEqual(REFUSED);
+		expect(await member.as.query(api.files_tree.list_tree_children_shared, { ...args, principalIndex: 1 })).toEqual(
+			REFUSED,
+		);
 		// The sorted pages give this member nothing at the root.
 		expect(await member.as.query(api.files_tree.list_tree_children_sorted, { ...args, restricted: false })).toEqual(
 			REFUSED,
@@ -382,22 +192,20 @@ describe("list_tree_children_shared", () => {
 				...args,
 				membershipId: other.membershipId,
 				parentId,
-				archived: false,
 				principalIndex: 0,
 			}),
 		).toEqual(REFUSED);
 	});
 
-	test("refuses the owner, a missing role, a metadata order and an archived non-name order before reading the folder", async () => {
+	test("refuses the owner, a missing role and every order but a custom-field filter before reading the folder", async () => {
 		const { db, asOwner, parentId, add_member } = await seed_folder_table();
 		const member = await add_member("clerk_shared_cheap_refusal", null);
 		const base = {
 			membershipId: member.membershipId,
 			kind: "folder" as const,
-			archived: false,
 			principalIndex: 0 as const,
-			sort: [BY_NAME],
-			filter: null,
+			sort: [BY_STATUS] as Array<{ field: string; direction: "asc" | "desc" }>,
+			filter: PRESENT as files_table_Filter | null,
 			namePrefix: null,
 			segment: "value" as const,
 			paginationOpts: FIRST_PAGE,
@@ -406,8 +214,8 @@ describe("list_tree_children_shared", () => {
 			{ as: asOwner, args: { ...base, membershipId: db.membershipId } },
 			// The member has no role, so no role stream.
 			{ as: member.as, args: { ...base, principalIndex: 1 as const } },
-			{ as: member.as, args: { ...base, sort: [{ field: "metadata.status", direction: "asc" as const }] } },
-			{ as: member.as, args: { ...base, archived: true, sort: [{ field: "updated", direction: "desc" as const }] } },
+			{ as: member.as, args: { ...base, filter: null } },
+			{ as: member.as, args: { ...base, sort: [BY_NAME], filter: null } },
 		];
 		// The root has no folder to read, so a refusal at the folder costs the same only when it reads
 		// no folder.
@@ -428,17 +236,18 @@ describe("list_tree_children_shared", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read, not the 176 guard. The cost test below checks the guard number.
+	// runs before any row read, not the guard. The cost test below checks the guard number.
 	test("a page whose end cursor holds more rows than it asks for asks for a split and reads no row", async () => {
-		const { t, insert_children, add_member, grant_read, read_page } = await seed_folder_table();
+		const { t, insert_children, add_member, grant_read, set_metadata, read_page } = await seed_folder_table();
 		const names = Array.from({ length: 103 }, (_, index) => `n-${String(index).padStart(4, "0")}.md`);
 		const ids = await insert_children(
 			names.map((name) => ({ name, kind: "file" as const, updatedAt: 1, restricted: true })),
 		);
+		await set_metadata(ids.map((id) => [id, STATUS]));
 		const member = await add_member("clerk_shared_split", "member");
 		await grant_read({ userId: member.userId }, ids);
 		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			read_page({ ...member, kind: "file", sort: BY_NAME, principalIndex: 0, paginationOpts });
+			read_page({ ...member, kind: "file", sort: BY_STATUS, filter: PRESENT, principalIndex: 0, paginationOpts });
 
 		// 100 rows and 2 more put the end cursor after row 102: one more than `numItems` + 1.
 		const first = await read({ numItems: 100, cursor: null });
@@ -461,14 +270,14 @@ describe("list_tree_children_shared", () => {
 	// Guard = floor(3,000 index ranges / index ranges read by the worst row). The admin holds a
 	// workspace role, an organization role and a plugin grant, and each row is its own scope. The
 	// worst row is shared with their second role and also has an old plugin grant to the admin: the
-	// read check reads that grant, then the live membership lifetime, then the roles.
-	// `list_tree_shared_roots` reads rows the same way.
+	// read check reads that grant, then the live membership lifetime, then the roles. A filter row
+	// also reads its field doc.
 	test.each([
 		{ principalIndex: 0, oldPluginGrant: false },
 		{ principalIndex: 2, oldPluginGrant: false },
 		{ principalIndex: 2, oldPluginGrant: true },
 	] as const)(
-		"the share page guard fits the measured reads of the worst row of both share queries (principal $principalIndex, old plugin grant $oldPluginGrant)",
+		"the share page guards fit the measured reads of the worst row (principal $principalIndex, old plugin grant $oldPluginGrant)",
 		async ({ principalIndex, oldPluginGrant }) => {
 			const t = test_convex();
 			const f = await seed_tree_access_fixture(t);
@@ -479,9 +288,13 @@ describe("list_tree_children_shared", () => {
 						ctx,
 						owner: f.owner,
 						parentId: f.nodes.openId,
-						path: `/open/a-${index}`,
-						kind: "folder",
+						path: `/open/a-${index}.md`,
+						kind: "file",
 						scope: "self",
+					});
+					await files_metadata_db_write_entries(ctx, {
+						fileNode: (await ctx.db.get("files_nodes", nodeId))!,
+						entries: STATUS,
 					});
 					await ctx.db.insert("access_control_permission_grants", {
 						organizationId: f.owner.organizationId,
@@ -511,20 +324,19 @@ describe("list_tree_children_shared", () => {
 					}
 				}
 			});
-			const read_cost = (numItems: number, query: "children" | "roots") =>
+			const read_cost = (numItems: number, query: "filter" | "roots") =>
 				f.asAdmin.run(async (ctx) => {
 					const paginationOpts = { numItems, cursor: null };
 					const before = await ctx.meta.getTransactionMetrics();
 					const result =
-						query === "children"
+						query === "filter"
 							? await ctx.runQuery(api.files_tree.list_tree_children_shared, {
 									membershipId: f.admin.membershipId,
 									parentId: f.nodes.openId,
-									kind: "folder",
-									archived: false,
+									kind: "file",
 									principalIndex,
-									sort: [BY_NAME],
-									filter: null,
+									sort: [BY_STATUS],
+									filter: PRESENT,
 									namePrefix: null,
 									segment: "value",
 									paginationOpts,
@@ -541,107 +353,17 @@ describe("list_tree_children_shared", () => {
 
 			// The new `a-*` shares come first by name in both queries. The page cost minus the cost of a
 			// one-row page is what the other rows read.
-			for (const query of ["children", "roots"] as const) {
+			for (const [query, guard] of [
+				["filter", 166],
+				["roots", 176],
+			] as const) {
 				const one = await read_cost(1, query);
 				const six = await read_cost(6, query);
 				expect([one.rows, six.rows]).toEqual([1, 6]);
 				const perRow = (six.ranges - one.ranges) / 5;
 				expect(perRow).toBeGreaterThan(0);
-				expect(176).toBeLessThanOrEqual(Math.floor(3000 / perRow));
+				expect(guard).toBeLessThanOrEqual(Math.floor(3000 / perRow));
 			}
 		},
 	);
-});
-
-describe("has_tree_children_shared", () => {
-	test("says whether a member has an active share in the folder, and the owner gets false", async () => {
-		const { db, asOwner, parentId, insert_children, add_member, grant_read } = await seed_folder_table();
-		const ids = await insert_children([
-			{ name: "open.md", kind: "file", updatedAt: 1 },
-			{ name: "shared.md", kind: "file", updatedAt: 1, restricted: true },
-		]);
-		const member = await add_member("clerk_has_shared", "member");
-		const other = await add_member("clerk_has_shared_other", "member");
-		await grant_read({ userId: member.userId }, [ids[1]!]);
-		await grant_read({ userId: db.userId }, [ids[1]!]);
-		const has_shared = (as: typeof asOwner, membershipId: Id<"organizations_workspaces_users">) =>
-			as.query(api.files_tree.has_tree_children_shared, { membershipId, parentId, archived: false });
-
-		expect(await has_shared(member.as, member.membershipId)).toBe(true);
-		expect(await has_shared(other.as, other.membershipId)).toBe(false);
-		// The owner reads every restricted child in the restricted twin, even one shared with them.
-		expect(await has_shared(asOwner, db.membershipId)).toBe(false);
-	});
-
-	test("an archived share counts only for the archived read", async () => {
-		const { t, parentId, insert_child, add_member, grant_read } = await seed_folder_table();
-		const nodeId = await insert_child({ name: "gone", kind: "folder", updatedAt: 1, restricted: true });
-		const member = await add_member("clerk_has_shared_archived", "member");
-		await grant_read({ userId: member.userId }, [nodeId]);
-		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", nodeId, { archiveOperationId: "archive-1" }));
-		const has_shared = (archived: boolean) =>
-			member.as.query(api.files_tree.has_tree_children_shared, {
-				membershipId: member.membershipId,
-				parentId,
-				archived,
-			});
-
-		expect(await has_shared(false)).toBe(false);
-		expect(await has_shared(true)).toBe(true);
-	});
-
-	test("a plugin grant share counts only with the member's live membership lifetime", async () => {
-		const { t, db, parentId, insert_child, add_member, grant_read } = await seed_folder_table();
-		const nodeId = await insert_child({ name: "plugin", kind: "folder", updatedAt: 1, restricted: true });
-		const member = await add_member("clerk_has_shared_plugin", "member");
-		await grant_read({ userId: member.userId, externalPluginMembershipLifetime: 1 }, [nodeId]);
-		const lifetimeId = await t.run((ctx) =>
-			ctx.db.insert("organizations_membership_lifetimes", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: member.userId,
-				membershipId: member.membershipId,
-				lifetime: 2,
-				active: true,
-			}),
-		);
-		const has_shared = () =>
-			member.as.query(api.files_tree.has_tree_children_shared, {
-				membershipId: member.membershipId,
-				parentId,
-				archived: false,
-			});
-
-		// After a re-invite the old grant reads nothing.
-		expect(await has_shared()).toBe(false);
-		await t.run((ctx) => ctx.db.patch("organizations_membership_lifetimes", lifetimeId, { lifetime: 1 }));
-		expect(await has_shared()).toBe(true);
-	});
-
-	test("refuses a folder the caller cannot read, and gives a grant-only member their shares at the root", async () => {
-		const { t, db, asOwner, parentId, add_member, grant_read } = await seed_folder_table();
-		const member = await add_member("clerk_has_shared_grant_only", null);
-		expect(
-			await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: parentId }),
-		).toEqual({ _yay: null });
-		await grant_read({ userId: member.userId }, [parentId]);
-
-		expect(
-			await member.as.query(api.files_tree.has_tree_children_shared, {
-				membershipId: member.membershipId,
-				parentId: "root",
-				archived: false,
-			}),
-		).toBe(true);
-
-		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
-		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
-		expect(
-			await asOther.query(api.files_tree.has_tree_children_shared, {
-				membershipId: other.membershipId,
-				parentId,
-				archived: false,
-			}),
-		).toBeNull();
-	});
 });

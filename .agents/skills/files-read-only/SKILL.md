@@ -196,23 +196,23 @@ items keep their rules):
 - Managed: set the rule (`completed`), or count it as `skipped` when it already matches.
 - Readable but not managed: count it as `blocked`. Walk on into a folder like that, because items
   inside it may have their own grant.
-- Hidden (not readable): never count or name it. A hidden folder is skipped with everything inside
+- Locked (not readable): do not count it. A locked folder is skipped with everything inside
   it, like `chmod -R` skips a folder it cannot read. Its contents are skipped inside the same page,
-  and the next page starts at the first path after them. A hidden file skips only itself.
+  and the next page starts at the first path after them. A locked file skips only itself.
 
 A step ends after 50 counted items, 200 checked nodes, or 1,000 read nodes. The read limit matters
-because the contents of a hidden folder are read but not checked. A step that stops before 50 counted
-items passed hidden items, so it keeps its counts on the run (`unpublishedProgress`) and leaves the
+because the contents of a locked folder are read but not checked. A step that stops before 50 counted
+items passed locked items, so it keeps its counts on the run (`unpublishedProgress`) and leaves the
 Activity as it is. The next step fills those counts up to 50. So the Activity progress, `updatedAt`, and the 30-minute
-`deadlineAt` change only at a full 50 or at the end, and the requester never sees how many hidden
+`deadlineAt` change only at a full 50 or at the end, and the requester never sees how many locked
 items a step passed. The deadline is an idle limit. A long job that keeps showing progress never
 times out. A step that updated anything advances the media validation clock once. The last step sets
 `total` and finishes with `activities_get_result_status`. Only blocked items give `failed`, and a mix
 gives `partial`. Stop, the deadline cron, and a failed check finish the Activity at once. They add
 the kept `unpublishedProgress` first, so "Stopped. N items were updated." counts every updated item.
 A step that was already scheduled then does nothing. A long stretch with nothing visible does not move
-the deadline, so a job can time out while it walks well over a million hidden items. That is the cost
-of never showing hidden items.
+the deadline, so a job can time out while it walks well over a million locked items. That is the cost
+of not counting locked items.
 
 # Enforcement Rules
 

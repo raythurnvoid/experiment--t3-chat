@@ -43,9 +43,16 @@ the same producer with private proposals. `files_pending_updates.ts` and
   "This Copy stopped before it found all its files. Start a new Copy instead." Every publication checks source identity and destination placement. Copy into
   a descendant is allowed when it cannot replace or merge into a captured source. It never discovers
   its own output. Move into a descendant is refused.
-- Full-folder Copy checks every included saved child. If one cannot be read, discovery refuses
-  with fixed text and creates no output. Apply the actor's pending paths and deletes first.
-  Other users' private drafts are not part of that view. Ordinary lists still hide unreadable items.
+- Full-folder Copy checks every included saved child. A child the actor cannot open is locked:
+  discovery stores its item as `skipped` with `skipReason: "permission_denied"`, creates nothing
+  for it, and does not read inside a locked folder. The rest is copied, and the run still succeeds
+  with the locked items counted in `progress.skipped`. Bash `cp` reads the first 100 of these items
+  (`files_transfer.list_denied_for_agent`), prints one GNU-style `Permission denied` line for each
+  and one `more items were not copied` line for the rest, and exits 1. Apply the actor's pending paths and deletes first.
+  Other users' private drafts are not part of that view. Folder lists show the same children as
+  locked rows.
+- Move does not discover children, so it does not check them. A folder Move moves the items the
+  actor cannot open with it, at Accept too, like a GNU `mv` rename.
 - Two file workers may prepare bytes at once. The item records its attempt, assets, payer, and
   completed node. A repeated callback cannot create another copy or bill it again. Reserving
   cross-workspace output IDs does not spend one of the three content-worker attempts.

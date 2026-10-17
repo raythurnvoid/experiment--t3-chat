@@ -4429,8 +4429,8 @@ const app_convex_schema = defineSchema({
 	/**
 	 * One doc per share: a file `content.read` grant to a user, a role or a service account, while its
 	 * node is a restricted scope root in the grant's workspace, active or archived. A service account
-	 * grant also has a doc while its node is open. The other fields copy the node, so each index mirrors
-	 * a folder table sort index for one principal. A role share is one doc, not one per member, so a
+	 * grant also has a doc while its node is open. The other fields copy the node, so an index can list
+	 * one principal's shares in a folder table order. A role share is one doc, not one per member, so a
 	 * role membership change writes nothing.
 	 *
 	 * Derived docs: only the overlay flush (`server/files-pending-overlay.ts`, with the helpers in
@@ -4465,9 +4465,9 @@ const app_convex_schema = defineSchema({
 		 */
 		externalPluginMembershipLifetime: v.union(v.number(), v.null()),
 	})
-		// `archiveOperationId` comes after `kind`, so an archived view reads `.gt(null)` as its last
-		// bounded field. The fields after it copy the saved folder table sort indexes.
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
+		// A member's restricted children of one folder by name, for the folder table's custom-field
+		// filters (`list_tree_children_shared`). Every other folder list reads the restricted twin.
 		.index("by_org_ws_principal_parent_kind_archive_sortName_name", [
 			"organizationId",
 			"workspaceId",
@@ -4477,56 +4477,6 @@ const app_convex_schema = defineSchema({
 			"parentId",
 			"kind",
 			"archiveOperationId",
-			"sortName",
-			"name",
-		])
-		.index("by_org_ws_principal_parent_kind_archive_nodeCreationTime", [
-			"organizationId",
-			"workspaceId",
-			"principalKey",
-			"moveView.cohortId",
-			"moveView.view",
-			"parentId",
-			"kind",
-			"archiveOperationId",
-			"nodeCreationTime",
-		])
-		.index("by_org_ws_principal_parent_kind_archive_updatedAt_sortName_name", [
-			"organizationId",
-			"workspaceId",
-			"principalKey",
-			"moveView.cohortId",
-			"moveView.view",
-			"parentId",
-			"kind",
-			"archiveOperationId",
-			"updatedAt",
-			"sortName",
-			"name",
-		])
-		.index("by_org_ws_principal_parent_kind_archive_ext_sortName_name", [
-			"organizationId",
-			"workspaceId",
-			"principalKey",
-			"moveView.cohortId",
-			"moveView.view",
-			"parentId",
-			"kind",
-			"archiveOperationId",
-			"lowercaseExtension",
-			"sortName",
-			"name",
-		])
-		.index("by_org_ws_principal_parent_kind_archive_size_sortName_name", [
-			"organizationId",
-			"workspaceId",
-			"principalKey",
-			"moveView.cohortId",
-			"moveView.view",
-			"parentId",
-			"kind",
-			"archiveOperationId",
-			"contentByteSize",
 			"sortName",
 			"name",
 		])
@@ -6335,9 +6285,15 @@ const app_convex_schema = defineSchema({
 		 */
 		outputWritePolicy: v.optional(files_nodes_write_policy_validator),
 		errorMessage: v.union(v.string(), v.null()),
+		/**
+		 * Why a skipped item was skipped. `permission_denied`: a Copy met a child its user cannot open.
+		 * Missing: skipped by a person or by the conflict policy.
+		 */
+		skipReason: v.optional(v.literal("permission_denied")),
 	})
 		.index("by_run_source", ["runId", "source.kind", "source.id"])
 		.index("by_source", ["source.kind", "source.id"])
+		.index("by_run_skipReason_order", ["runId", "skipReason", "order"])
 		.index("by_sourceParent", ["sourceParent.kind", "sourceParent.id"])
 		.index("by_preparation_privateNode", ["preparation.privateNodeId"])
 		.index("by_outputTarget", ["outputTarget.kind", "outputTarget.id"])

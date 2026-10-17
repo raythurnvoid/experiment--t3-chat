@@ -931,8 +931,8 @@ describe("advance", () => {
 		expect(await get_node(fixture, "/target/source")).toBeNull();
 	});
 
-	test("refuses an unreadable descendant before copying its readable parent", async () => {
-		const fixture = await create_folder_fixture(["/source", "/source/hidden-name"]);
+	test("a copy skips a locked child in the saved view, copies the rest, and counts it as skipped", async () => {
+		const fixture = await create_folder_fixture(["/source", "/source/hidden-name", "/source/open"]);
 		const { t, db, asUser, folders } = fixture;
 		const member = await add_member(fixture);
 		expect(
@@ -951,16 +951,20 @@ describe("advance", () => {
 			targetParentId: folders.get("/target")!,
 		});
 		if (started._nay) throw new Error(started._nay.message);
-		await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
-		const view = await member.asUser.query(api.files_transfer_queries.get, {
-			membershipId: member.membershipId,
-			runId: started._yay.runId,
+		const read = () =>
+			member.asUser.query(api.files_transfer_queries.get, {
+				membershipId: member.membershipId,
+				runId: started._yay.runId,
+			});
+		for (let step = 0; step < 100 && activities_is_active((await read())!.activity.status); step++)
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+
+		// The skipped count comes from the discovery patch, so a later write must not lose it.
+		expect(await read()).toMatchObject({
+			activity: { status: "succeeded", progress: { completed: 2, skipped: 1 }, errorMessage: null },
 		});
-		expect(view).toMatchObject({
-			activity: { status: "failed", progress: { completed: 0 }, errorMessage: "Permission denied" },
-		});
-		expect(JSON.stringify(view)).not.toContain("hidden-name");
-		expect(await get_node(fixture, "/target/source")).toBeNull();
+		expect(await get_node(fixture, "/target/source/open")).not.toBeNull();
+		expect(await get_node(fixture, "/target/source/hidden-name")).toBeNull();
 	});
 
 	// A member's running copy must stop when they are removed and invited again, because the invite

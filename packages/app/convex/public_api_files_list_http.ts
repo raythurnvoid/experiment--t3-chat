@@ -146,6 +146,8 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									contentTypePrefixes: contentTypePrefixes.size > 0 ? [...contentTypePrefixes] : undefined,
 									minDepth: 1,
 									maxDepth: body._yay.recursive ? undefined : 1,
+									// A folder list shows the children the caller cannot open as locked items.
+									...(body._yay.recursive ? {} : { withLocked: true as const }),
 								});
 							} catch (error) {
 								if (
@@ -215,7 +217,8 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 										callId: pluginCallId,
 										tokenHash: await crypto_sha256_hex(auth._yay.presentedToken),
 										requiredScope: "files:list",
-										nodes: result.page.map((item) => ({ nodeId: item._id, path: item.path })),
+										// A locked item is listed, not read, so the run needs no read check for it.
+										nodes: result.page.flatMap((item) => (item.locked ? [] : [{ nodeId: item._id, path: item.path }])),
 									},
 								);
 								if (checked._nay?.name === "locked")
@@ -265,14 +268,15 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 											contentType: item.contentType ?? null,
 											updatedAt: item.updatedAt,
 											// A file stays pending until its R2 object is confirmed. Files without an
-											// asset doc have nothing pending, so they are ready.
+											// asset doc have nothing pending, so they are ready. A locked item has no state.
 											status:
-												item.kind === "file"
+												item.kind === "file" && !item.locked
 													? assetState && !assetState.ready
 														? ("pending" as const)
 														: ("ready" as const)
 													: null,
 											size: assetState ? assetState.size : null,
+											locked: item.locked,
 										};
 									}),
 									cursor: result.continueCursor,

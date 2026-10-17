@@ -2,7 +2,7 @@ import "./files-search-palette.css";
 
 import * as Ariakit from "@ariakit/react";
 import { useNavigate } from "@tanstack/react-router";
-import { FileText, Folder, Search } from "lucide-react";
+import { FileText, Folder, Lock, Search } from "lucide-react";
 import { memo, useEffect, useId, useRef, useState } from "react";
 
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
@@ -42,6 +42,7 @@ type FilesSearchPaletteGroup_ClassNames =
 	| "FilesSearchPaletteGroup-state"
 	| "FilesSearchPaletteGroup-list"
 	| "FilesSearchPaletteGroup-item"
+	| "FilesSearchPaletteGroup-item-locked"
 	| "FilesSearchPaletteGroup-item-icon"
 	| "FilesSearchPaletteGroup-item-name"
 	| "FilesSearchPaletteGroup-item-path"
@@ -152,11 +153,18 @@ const FilesSearchPaletteGroup = memo(function FilesSearchPaletteGroup(props: Fil
 						<div role="listitem" key={row.nodeId}>
 							<Ariakit.CompositeItem
 								render={<MyButton variant="ghost-highlightable" />}
-								className={"FilesSearchPaletteGroup-item" satisfies FilesSearchPaletteGroup_ClassNames}
+								className={cn(
+									"FilesSearchPaletteGroup-item" satisfies FilesSearchPaletteGroup_ClassNames,
+									row.locked && ("FilesSearchPaletteGroup-item-locked" satisfies FilesSearchPaletteGroup_ClassNames),
+								)}
+								title={row.locked ? "You don't have access" : undefined}
 								{...({ "data-node-id": row.nodeId } satisfies FilesSearchPaletteGroup_CustomAttributes)}
+								// A locked match opens its page, which shows the access screen. It has no snippet.
 								onClick={() => onSelect(row.nodeId)}
 							>
-								{row.kind === "folder" ? (
+								{row.locked ? (
+									<Lock className={"FilesSearchPaletteGroup-item-icon" satisfies FilesSearchPaletteGroup_ClassNames} />
+								) : row.kind === "folder" ? (
 									<Folder
 										className={"FilesSearchPaletteGroup-item-icon" satisfies FilesSearchPaletteGroup_ClassNames}
 									/>
@@ -171,6 +179,7 @@ const FilesSearchPaletteGroup = memo(function FilesSearchPaletteGroup(props: Fil
 								<span className={"FilesSearchPaletteGroup-item-path" satisfies FilesSearchPaletteGroup_ClassNames}>
 									{row.path}
 								</span>
+								{row.locked ? <span className="sr-only">, you don't have access</span> : null}
 								{row.textChunk ? (
 									<span className={"FilesSearchPaletteGroup-item-snippet" satisfies FilesSearchPaletteGroup_ClassNames}>
 										{files_search_palette_snippet(row.textChunk, snippetText)}

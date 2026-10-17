@@ -1942,10 +1942,18 @@ export const take_bash_job_copy_result = internalMutation({
 			return null;
 		}
 		const progress = copyActivity.progress;
+		// A job result has no shell paths, so it says only that some items were locked, like the exit code.
+		const runId = copy.runId;
+		const denied = await ctx.db
+			.query("files_transfer_items")
+			.withIndex("by_run_skipReason_order", (q) => q.eq("runId", runId).eq("skipReason", "permission_denied"))
+			.first();
 		const result = {
 			stdout: `Transfer ${copy.runId}: ${progress.completed ?? 0} ready for review, ${progress.skipped ?? 0} skipped, ${progress.failed ?? 0} failed. Activity ${copyActivity._id}. Review in Files.\n`,
-			stderr: copyActivity.errorMessage ? `${copy.command ?? "cp"}: ${copyActivity.errorMessage}\n` : "",
-			exitCode: copyActivity.status === "succeeded" ? 0 : 1,
+			stderr:
+				(denied ? "cp: some items were not copied: Permission denied\n" : "") +
+				(copyActivity.errorMessage ? `${copy.command ?? "cp"}: ${copyActivity.errorMessage}\n` : ""),
+			exitCode: copyActivity.status === "succeeded" && !denied ? 0 : 1,
 		};
 		return await db_deliver_bash_job_copy(ctx, {
 			invocation: { ...invocation, job: { ...invocation.job, excludedCopyWaitMs } },

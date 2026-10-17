@@ -108,6 +108,8 @@ export const discover_sources = internalQuery({
 			}));
 			let stopped = false;
 			for (const item of listed._yay.items) {
+				// A locked skill folder cannot be opened, so its SKILL.md cannot be read.
+				if (item.locked) continue;
 				if (await overBudget()) {
 					stopped = true;
 					break;

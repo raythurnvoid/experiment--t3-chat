@@ -38,8 +38,8 @@ function watch_key(name: string, args: Record<string, unknown>) {
 const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
 
 /**
- * The key of one tree stream of a folder: the open one by default, the owner's restricted twin with
- * `restricted`, or a member's share stream with `principalIndex`.
+ * The key of one tree stream of a folder: the open one by default, or the restricted twin with
+ * `restricted`.
  */
 function children_key(args: {
 	parentId: string;
@@ -47,10 +47,9 @@ function children_key(args: {
 	cursor: string | null;
 	archived?: boolean;
 	restricted?: boolean;
-	principalIndex?: 0 | 1 | 2;
 	savedStream?: files_SavedStream;
 }) {
-	const { archived = false, cursor, kind, parentId, restricted = false, principalIndex } = args;
+	const { archived = false, cursor, kind, parentId, restricted = false } = args;
 	const streamArgs = files_tree_stream_args({
 		membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
 		folderId: parentId as app_convex_Id<"files_nodes">,
@@ -59,27 +58,19 @@ function children_key(args: {
 		savedStream: args.savedStream ?? { kind: "normal", generation: 0 },
 	});
 
-	return principalIndex === undefined
-		? watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children), {
-				...streamArgs.children(restricted),
-				paginationOpts: { cursor },
-			})
-		: watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children_shared), {
-				...streamArgs.shared(principalIndex),
-				paginationOpts: { cursor },
-			});
+	return watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children), {
+		...streamArgs.children(restricted),
+		paginationOpts: { cursor },
+	});
 }
 
 /**
- * Answer the first page of every stream of a folder but the open ones with an empty, done page, like
- * the server does for a member with no shares there.
+ * Answer the first page of the restricted twins of a folder with an empty, done page, like the server
+ * does for a folder with no restricted child.
  */
 function receive_empty_twins(parentId: string) {
 	for (const kind of ["folder", "file"] as const) {
 		receive(children_key({ parentId, kind, cursor: null, restricted: true }), EMPTY_PAGE);
-		for (const principalIndex of [0, 1, 2] as const) {
-			receive(children_key({ parentId, kind, cursor: null, principalIndex }), EMPTY_PAGE);
-		}
 	}
 }
 
@@ -111,6 +102,10 @@ function receive(key: string, result: unknown) {
 
 function row(id: string, parentId = "root") {
 	return { _id: id, parentId, name: id, archiveOperationId: null };
+}
+
+function locked_row(id: string, parentId = "root") {
+	return { ...row(id, parentId), locked: true };
 }
 
 function FoldersConsumer(props: { folderIds: string[]; archived?: boolean; pinnedNodeIds?: string[] }) {
@@ -211,7 +206,6 @@ describe("FilesTreeProvider.useFolders", () => {
 		for (const savedStream of [normal, cohort]) {
 			for (const kind of ["folder", "file"] as const) {
 				for (const restricted of [false, true]) results.set(children_key({ parentId: "root", kind, cursor: null, restricted, savedStream }), EMPTY_PAGE);
-				for (const principalIndex of [0, 1, 2] as const) results.set(children_key({ parentId: "root", kind, cursor: null, principalIndex, savedStream }), EMPTY_PAGE);
 			}
 		}
 		results.set(children_key({ parentId: "root", kind: "file", cursor: null, savedStream: normal }), { ...EMPTY_PAGE, page: [row("b.md")] });
@@ -330,30 +324,26 @@ describe("FilesTreeProvider.useFolders", () => {
 		expect(screen.getByLabelText("Rows").textContent).toBe("a.md,b.md");
 	});
 
-	test("merges a folder's open and share streams in name order and shows a node shared twice once", () => {
+	test("merges a folder's open and locked rows in name order and shows a node both streams hold once", () => {
 		render(
 			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
-		receive_empty_twins("root");
 		// Each stream comes in the folder table's name order: numbers by value and no case.
 		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), {
-			page: [row("a9"), row("C")],
+			page: [row("a9"), row("b"), row("C")],
 			isDone: true,
 			continueCursor: "",
 		});
-		receive(children_key({ parentId: "root", kind: "folder", cursor: null, principalIndex: 0 }), {
-			page: [row("a10"), row("b")],
-			isDone: true,
-			continueCursor: "",
-		});
-		receive(children_key({ parentId: "root", kind: "folder", cursor: null, principalIndex: 1 }), {
-			page: [row("b")],
+		// `b` just became restricted, so for a moment both streams hold it.
+		receive(children_key({ parentId: "root", kind: "folder", cursor: null, restricted: true }), {
+			page: [locked_row("a10"), locked_row("b")],
 			isDone: true,
 			continueCursor: "",
 		});
 		receive(children_key({ parentId: "root", kind: "file", cursor: null }), EMPTY_PAGE);
+		receive(children_key({ parentId: "root", kind: "file", cursor: null, restricted: true }), EMPTY_PAGE);
 
 		expect(screen.getByLabelText("Rows").textContent).toBe("a9,a10,b,C");
 	});
@@ -414,21 +404,21 @@ describe("FilesTreeProvider.useFolders", () => {
 			isDone: true,
 			continueCursor: "",
 		});
-		receive(children_key({ parentId: "root", kind: "file", cursor: null, principalIndex: 0 }), {
-			page: [row("b.md")],
+		receive(children_key({ parentId: "root", kind: "file", cursor: null, restricted: true }), {
+			page: [locked_row("b.md")],
 			isDone: false,
 			continueCursor: "b",
 		});
-		// `d.md` waits: the next page of the share stream could still hold a row before it.
+		// `d.md` waits: the next page of the twin could still hold a row before it.
 		expect(screen.getByLabelText("Rows").textContent).toBe("a.md,b.md");
 		expect(screen.getByLabelText("Status").textContent).toBe("root:more");
 
 		fireEvent.click(screen.getByRole("button", { name: "More root" }));
-		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: "b", principalIndex: 0 }))?.size).toBe(
+		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: "b", restricted: true }))?.size).toBe(
 			1,
 		);
-		receive(children_key({ parentId: "root", kind: "file", cursor: "b", principalIndex: 0 }), {
-			page: [row("c.md")],
+		receive(children_key({ parentId: "root", kind: "file", cursor: "b", restricted: true }), {
+			page: [locked_row("c.md")],
 			isDone: true,
 			continueCursor: "",
 		});
@@ -444,11 +434,8 @@ describe("FilesTreeProvider.useFolders", () => {
 		);
 		for (const archived of [false, true]) {
 			for (const kind of ["folder", "file"] as const) {
-				receive(children_key({ parentId: "root", kind, cursor: null, archived, restricted: true }), EMPTY_PAGE);
-				for (const principalIndex of [0, 1, 2] as const) {
-					receive(children_key({ parentId: "root", kind, cursor: null, archived, principalIndex }), EMPTY_PAGE);
-				}
 				if (!(archived && kind === "file")) {
+					receive(children_key({ parentId: "root", kind, cursor: null, archived, restricted: true }), EMPTY_PAGE);
 					receive(children_key({ parentId: "root", kind, cursor: null, archived }), EMPTY_PAGE);
 				}
 			}
@@ -459,8 +446,11 @@ describe("FilesTreeProvider.useFolders", () => {
 			isDone: true,
 			continueCursor: "",
 		});
-		receive(children_key({ parentId: "root", kind: "file", cursor: null, archived: true, principalIndex: 0 }), {
-			page: [archived_row("m.md", "op-1"), archived_row("b.md", "op-2")],
+		receive(children_key({ parentId: "root", kind: "file", cursor: null, archived: true, restricted: true }), {
+			page: [
+				{ ...locked_row("m.md"), archiveOperationId: "op-1" },
+				{ ...locked_row("b.md"), archiveOperationId: "op-2" },
+			],
 			isDone: true,
 			continueCursor: "",
 		});
@@ -524,28 +514,24 @@ describe("FilesTreeProvider.useFolders", () => {
 		expect(rowsByRender.at(-1)).toBe(rows);
 	});
 
-	test("once the role is known, reads no share stream for the owner and no restricted twin for a member", () => {
+	test("reads two streams of each kind for the owner and a member alike, and the Shared with you group for a member only", () => {
 		const organizations_key = watch_key(getFunctionName(app_convex_api.organizations.list), {});
+		const tree_children_name = getFunctionName(app_convex_api.files_tree.list_tree_children);
+		const watched_tree_streams = () =>
+			[...listeners].filter(([key, callbacks]) => callbacks.size > 0 && JSON.parse(key).name === tree_children_name)
+				.length;
 		const view = render(
 			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
-		// While the role loads, every stream is read.
+		expect(watched_tree_streams()).toBe(4);
 		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: null, restricted: true }))?.size).toBe(
-			1,
-		);
-		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: null, principalIndex: 0 }))?.size).toBe(
 			1,
 		);
 
 		receive(organizations_key, { workspaceIdsPermissionsDict: { workspace_1: "all" } });
-		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: null, restricted: true }))?.size).toBe(
-			1,
-		);
-		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: null, principalIndex: 0 }))?.size).toBe(
-			0,
-		);
+		expect(watched_tree_streams()).toBe(4);
 		expect(listeners.get(shared_roots_key({ principalIndex: 0 }))?.size).toBe(0);
 		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), EMPTY_PAGE);
 		receive(children_key({ parentId: "root", kind: "folder", cursor: null, restricted: true }), EMPTY_PAGE);
@@ -555,11 +541,11 @@ describe("FilesTreeProvider.useFolders", () => {
 			continueCursor: "",
 		});
 		receive(children_key({ parentId: "root", kind: "file", cursor: null, restricted: true }), {
-			page: [row("a.md")],
+			page: [locked_row("a.md")],
 			isDone: true,
 			continueCursor: "",
 		});
-		// The owner's skipped streams do not hold the folder or the group back.
+		// The owner's skipped group does not hold the folder or the group back.
 		expect(screen.getByLabelText("Rows").textContent).toBe("a.md,b.md");
 		expect(screen.getByLabelText("Status").textContent).toBe("root:done");
 		expect(screen.getByLabelText("Shared").textContent).toBe(":done");
@@ -570,10 +556,9 @@ describe("FilesTreeProvider.useFolders", () => {
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
+		// A member reads the same two streams: the twin gives the children they cannot open as locked rows.
+		expect(watched_tree_streams()).toBe(4);
 		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: null, restricted: true }))?.size).toBe(
-			0,
-		);
-		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: null, principalIndex: 0 }))?.size).toBe(
 			1,
 		);
 		expect(listeners.get(shared_roots_key({ principalIndex: 0 }))?.size).toBe(1);

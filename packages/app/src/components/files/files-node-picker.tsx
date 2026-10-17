@@ -2,7 +2,7 @@ import "./files-node-picker.css";
 
 import { useQueries, useQuery } from "convex/react";
 import type { FunctionArgs, FunctionReference } from "convex/server";
-import { FileText, Folder } from "lucide-react";
+import { FileText, Folder, Lock } from "lucide-react";
 import {
 	Fragment,
 	memo,
@@ -110,6 +110,10 @@ export type FilesNodePicker_Row = {
 	path: string;
 	kind: app_convex_Doc<"files_nodes">["kind"];
 	contentType: app_convex_Doc<"files_nodes">["contentType"];
+	/**
+	 * The user cannot open it. It shows disabled.
+	 */
+	locked: boolean;
 };
 
 /**
@@ -325,7 +329,16 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 		rows.flatMap((row): FilesNodePicker_Row[] =>
 			select === "folder" && row.kind === "file"
 				? []
-				: [{ nodeId: row._id, name: row.name, path: row.path, kind: row.kind, contentType: row.contentType }],
+				: [
+						{
+							nodeId: row._id,
+							name: row.name,
+							path: row.path,
+							kind: row.kind,
+							contentType: row.contentType,
+							locked: row.locked,
+						},
+					],
 		);
 	const searchRows = search.rows.map(
 		(row): FilesNodePicker_Row => ({
@@ -334,6 +347,7 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 			path: row.path,
 			kind: row.kind,
 			contentType: row.contentType,
+			locked: row.locked,
 		}),
 	);
 	const sharedRows = browse.shared ? toPickerRows(browse.shared.rows) : [];
@@ -343,18 +357,19 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 	// `useQueries` subscribes again whenever the queries object changes, and the React Compiler does
 	// not memoize hook arguments, so an inline object would loop the render. Memoize on the ids joined as text.
 	// Read the ids from the hook results: the rows above end up in items, so the compiler treats them as changing.
+	// A locked file is never pickable, so it is not asked about.
 	const shownFileIdsText = !pickableFilesQuery
 		? ""
 		: isSearch
 			? [
 					...new Set(
 						[...normalSearch.results, ...cohortSearch.results].flatMap((row) =>
-							row.kind === "file" ? [row.nodeId] : [],
+							row.kind === "file" && !row.locked ? [row.nodeId] : [],
 						),
 					),
 				].join(",")
 			: [...(browse.shared?.rows ?? []), ...browse.children.rows]
-					.flatMap((row) => (row.kind === "file" ? [row._id] : []))
+					.flatMap((row) => (row.kind === "file" && !row.locked ? [row._id] : []))
 					.join(",");
 	const pickableQuery = pickableFilesQuery?.query;
 	const pickableFilesQueries = useMemo(() => {
@@ -384,8 +399,10 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 		kind: "node",
 		key: `${sectionKey}:${row.nodeId}`,
 		row,
-		pickable:
-			row.kind === "folder"
+		// A locked folder does not open: the user cannot list it.
+		pickable: row.locked
+			? { ok: false, reason: `You don't have access to this ${row.kind}.` }
+			: row.kind === "folder"
 				? { ok: true }
 				: pickableFilesQuery && unpickableFileIds.has(row.nodeId)
 					? { ok: false, reason: pickableFilesQuery.reason }
@@ -605,6 +622,8 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 					icon={
 						item.kind === "leading" ? (
 							item.row.icon
+						) : item.kind === "node" && item.row.locked ? (
+							<Lock />
 						) : item.kind === "folder" || item.row.kind === "folder" ? (
 							<Folder />
 						) : (
@@ -619,7 +638,7 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 					reason={reason}
 					reasonId={reasonId}
 					// The folder picker has two actions: a folder row opens, and the first row saves.
-					hint={select === "folder" && item.kind === "node" ? "Open" : null}
+					hint={select === "folder" && item.kind === "node" && !isDisabled ? "Open" : null}
 				/>
 			);
 		// A disabled row is named by its label alone. Its reason is the description, so it is read once.

@@ -733,7 +733,8 @@ describe("private pending text", () => {
 			await ctx.db.patch("organizations", draft.organizationId, { ownerUserId: other.userId });
 		});
 		expect(await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target })).toBeNull();
-		expect(await list_root_for_test(t, { membershipId })).toMatchObject({ _yay: { items: [] } });
+		// The user can no longer open the workspace root, so listing it says so, like `ls` on a locked folder.
+		expect(await list_root_for_test(t, { membershipId })).toMatchObject({ _nay: { name: "permission_denied" } });
 		// The row's own view is null above, so the Pending tab shows it as restricted.
 		expect(
 			(

@@ -4,8 +4,17 @@ import type { FunctionArgs } from "convex/server";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { test_convex, test_move_nodes, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_move_nodes,
+	test_create_saved_text_file,
+	test_mocks_fill_db_with,
+	test_spy_handler,
+} from "./setup.test.ts";
+import { search_saved } from "./files_nodes.ts";
+import { expect_under_convex_limits, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 import { files_metadata_SEARCH_VALUE_MAX_LENGTH, type files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import {
 	files_search_query_parse,
@@ -46,9 +55,22 @@ vi.mock("@ai-sdk/openai", async (importOriginal) => {
 	};
 });
 
+// A test sets this to act as if the listing read budget ran out.
+const overListBudget = vi.hoisted(() => ({ on: false }));
+vi.mock("../server/files-pending-overlay.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../server/files-pending-overlay.ts")>();
+	return {
+		...actual,
+		files_pending_overlay_list_over_budget: (
+			...args: Parameters<typeof actual.files_pending_overlay_list_over_budget>
+		) => overListBudget.on || actual.files_pending_overlay_list_over_budget(...args),
+	};
+});
+
 const test = baseTest;
 
 beforeEach(() => {
+	overListBudget.on = false;
 	generateTextMock.mockReset();
 	streamTextMock.mockReset();
 	inlineAiProvider.model = null;
@@ -649,4 +671,278 @@ describe("search box doors", () => {
 			new Set([seeded.openTaskId, seeded.fixedTaskId]),
 		);
 	});
+});
+
+describe("search box locked hits", () => {
+	/** One first page of `search_saved` as `path → locked`, or the problem message. */
+	async function search_locked(args: Parameters<typeof search_saved_page>[0]) {
+		const result = await args.asWho.query(api.files_nodes.search_saved, {
+			membershipId: args.membershipId,
+			clause: args.clause,
+			folderPath: args.folderPath,
+			paginationOpts: { numItems: 50, cursor: null },
+		});
+		return Object.fromEntries(
+			result.page.map((row) => (row.kind === "problem" ? [row.message, null] : [row.path, row.locked])),
+		);
+	}
+
+	async function restrict(
+		seeded: Awaited<ReturnType<typeof seed_search_box_fixture>> & { t: ReturnType<typeof test_convex> },
+		nodeId: Id<"files_nodes">,
+	) {
+		await reset_file_write_rate_limits(seeded.t, seeded.db.userId);
+		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: seeded.db.membershipId,
+			nodeId,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+	}
+
+	/** The fixture, a member who reads the workspace, and the open task restricted by the owner. */
+	async function seed_locked_task() {
+		const t = test_convex();
+		const seeded = { ...(await seed_search_box_fixture(t)), t };
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "locked" });
+		await t.run(async (ctx) =>
+			access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				userId: member.userId,
+				role: "member",
+				now: Date.now(),
+			}),
+		);
+		await restrict(seeded, seeded.openTaskId);
+		const search = (clause: FunctionArgs<typeof api.files_nodes.search_saved>["clause"], folderPath?: string) =>
+			search_locked({ asWho: member.asMember, membershipId: member.membershipId, clause, folderPath });
+		return { t, seeded, member, search };
+	}
+
+	const openTaskPath = "/tasks/2026-09-04-raw-media.md";
+	const fixedTaskPath = "/tasks/2026-08-20-waiting-room.md";
+	const archivedTaskPath = "/tasks-archive/2026-07-01-old.md";
+
+	test("a name search shows a locked file whose folder is readable", async () => {
+		const { seeded, member, search } = await seed_locked_task();
+
+		expect(await search({ kind: "name", text: "2026" })).toEqual({
+			[openTaskPath]: true,
+			[fixedTaskPath]: false,
+			[archivedTaskPath]: false,
+		});
+		expect(await search({ kind: "name", text: "2026" }, "/tasks")).toEqual({
+			[openTaskPath]: true,
+			[fixedTaskPath]: false,
+		});
+		expect(await search({ kind: "path", path: openTaskPath })).toEqual({ [openTaskPath]: true });
+		expect(await search({ kind: "path", path: seeded.openTaskId })).toEqual({ [openTaskPath]: true });
+
+		// The locked row has only what a folder list shows: no content.
+		const result = await member.asMember.query(api.files_nodes.search_saved, {
+			membershipId: member.membershipId,
+			clause: { kind: "path", path: openTaskPath },
+			paginationOpts: { numItems: 50, cursor: null },
+		});
+		expect(result.page).toEqual([
+			{
+				kind: "file",
+				nodeId: seeded.openTaskId,
+				path: openTaskPath,
+				contentType: "text/markdown;charset=utf-8",
+				locked: true,
+			},
+		]);
+	});
+
+	test("a name search does not show a locked file whose folder is locked", async () => {
+		const t = test_convex();
+		const seeded = { ...(await seed_search_box_fixture(t)), t };
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "locked-folder" });
+		await t.run(async (ctx) =>
+			access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				userId: member.userId,
+				role: "member",
+				now: Date.now(),
+			}),
+		);
+		await restrict(seeded, seeded.tasksFolderId);
+		const search = (clause: FunctionArgs<typeof api.files_nodes.search_saved>["clause"]) =>
+			search_locked({ asWho: member.asMember, membershipId: member.membershipId, clause });
+
+		expect(await search({ kind: "name", text: "2026" })).toEqual({ [archivedTaskPath]: false });
+		expect(await search({ kind: "path", path: openTaskPath })).toEqual({});
+		// The locked folder itself sits in the readable root, so it shows locked.
+		expect(await search({ kind: "name", text: "tasks", nodeKind: "folder" })).toEqual({
+			"/tasks": true,
+			"/tasks-archive": false,
+		});
+	});
+
+	test("a content search never returns a locked file", async () => {
+		const { search } = await seed_locked_task();
+
+		expect(await search({ kind: "content", text: "Body" })).toEqual({
+			[fixedTaskPath]: false,
+			[archivedTaskPath]: false,
+		});
+	});
+
+	test("a metadata search never returns a locked file", async () => {
+		const { search } = await seed_locked_task();
+
+		expect(
+			await search({ kind: "metadata", plan: { op: "eq", fieldPath: "frontmatter.status", value: "open" } }),
+		).toEqual({ [archivedTaskPath]: false });
+		expect(
+			await search({ kind: "metadata", plan: { op: "exists", fieldPath: "frontmatter.status" } }, "/tasks"),
+		).toEqual({ [fixedTaskPath]: false });
+	});
+
+	test("a link search never returns a locked file", async () => {
+		const { t, seeded, search } = await seed_locked_task();
+		await t.run(async (ctx) => {
+			for (const nodeId of [seeded.openTaskId, seeded.archivedTaskId]) {
+				await ctx.db.insert("files_share_links", {
+					organizationId: seeded.db.organizationId,
+					workspaceId: seeded.db.workspaceId,
+					nodeId,
+					token: `token-${nodeId}`,
+					restrictedScopeNodeId: null,
+					ancestorNodeIds: [],
+					createdBy: seeded.db.userId,
+					createdAt: Date.now(),
+				});
+			}
+		});
+
+		expect(await search({ kind: "link" })).toEqual({ [archivedTaskPath]: false });
+	});
+
+	test("a name search finds a file the caller reads through Add people", async () => {
+		const t = test_convex();
+		const seeded = { ...(await seed_search_box_fixture(t)), t };
+		// No role: the member reads only what they are added to.
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "added" });
+		await restrict(seeded, seeded.openTaskId);
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const added = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+			principal: { kind: "user", userId: member.userId },
+			level: "read",
+		});
+		if (added._nay) throw new Error(added._nay.message);
+
+		// The restricted file inside the added folder stays locked, and shows because its folder is readable.
+		// The archive is in a folder the member cannot open, so it does not show.
+		expect(
+			await search_locked({
+				asWho: member.asMember,
+				membershipId: member.membershipId,
+				clause: { kind: "name", text: "2026" },
+			}),
+		).toEqual({ [openTaskPath]: true, [fixedTaskPath]: false });
+	});
+
+	test("a name search with deep boundaries stays under the limits", async () => {
+		const t = test_convex();
+		const seeded = { ...(await seed_search_box_fixture(t)), t };
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "deep" });
+		const fileId = await test_create_saved_text_file(t, { membershipId: seeded.db.membershipId, path: "/top/x.md" });
+		const topId = (await t.run((ctx) => ctx.db.get("files_nodes", fileId)))!.parentId as Id<"files_nodes">;
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const added = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: seeded.db.membershipId,
+			nodeId: topId,
+			principal: { kind: "user", userId: member.userId },
+			level: "read",
+		});
+		if (added._nay) throw new Error(added._nay.message);
+
+		// 500 folders under `/top`, each an extended root with grants that do not name the member, so
+		// every check walks the whole chain. Hits sit at 3 depths: open files the member reads through
+		// the chain, and restricted files that are locked. Inserted directly: the search and the access
+		// check read only these fields.
+		const hitPaths = await t.run(async (ctx) => {
+			const { _id, _creationTime, ...template } = (await ctx.db.get("files_nodes", topId))!;
+			const strangerId = await ctx.db.insert("users", { clerkUserId: null });
+			const paths = { open: [] as string[], locked: [] as string[] };
+			let parent = { _id, path: template.path };
+			for (let depth = 1; depth <= 500; depth++) {
+				const path = `${parent.path}/a`;
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...template,
+					name: "a",
+					parentId: parent._id,
+					path,
+					treePath: `${path}/`,
+					parentExtendedScopeNodeId: parent._id,
+				});
+				await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId });
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: seeded.db.organizationId,
+					workspaceId: seeded.db.workspaceId,
+					resourceKind: "file",
+					resourceId: String(nodeId),
+					principalKind: "user",
+					userId: strangerId,
+					permission: "content.read",
+					createdAt: 1,
+					updatedAt: 1,
+				});
+				parent = { _id: nodeId, path };
+				if (depth !== 250 && depth !== 400 && depth !== 500) continue;
+				for (let index = 0; index < 5; index++) {
+					for (const locked of [false, true]) {
+						const name = `deephit ${locked ? "locked" : "open"} ${depth} ${index}.md`;
+						const hitId = await ctx.db.insert("files_nodes", {
+							...template,
+							kind: "file",
+							name,
+							parentId: nodeId,
+							path: `${path}/${name}`,
+							treePath: `${path}/${name}`,
+							extendedScopeNodeId: locked ? null : nodeId,
+							parentExtendedScopeNodeId: undefined,
+						});
+						if (locked)
+							await ctx.db.patch("files_nodes", hitId, { restrictedScopeNodeId: hitId, isRestrictedScopeRoot: true });
+						paths[locked ? "locked" : "open"].push(`${path}/${name}`);
+					}
+				}
+			}
+			return paths;
+		});
+
+		let cost: ReturnType<typeof transaction_cost> | null = null;
+		test_spy_handler(search_saved, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
+			return result;
+		});
+		const search = () =>
+			search_locked({
+				asWho: member.asMember,
+				membershipId: member.membershipId,
+				clause: { kind: "name", text: "deephit" },
+			});
+		const all = Object.fromEntries([
+			...hitPaths.open.map((path) => [path, false]),
+			...hitPaths.locked.map((path) => [path, true]),
+		]);
+
+		// The hits and their folders share one check, so the chain is walked once.
+		expect(await search()).toEqual(all);
+		console.info("Name search with 500-level boundaries", cost);
+		expect_under_convex_limits(cost!);
+		expect(cost!.databaseQueries).toBeLessThan(3_000);
+
+		// With the budget gone, the folders are not read: the locked hits drop and the open ones stay.
+		overListBudget.on = true;
+		expect(await search()).toEqual(Object.fromEntries(hitPaths.open.map((path) => [path, false])));
+	}, 120_000);
 });

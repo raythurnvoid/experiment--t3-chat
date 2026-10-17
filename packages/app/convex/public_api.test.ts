@@ -4312,6 +4312,7 @@ describe("locked and missing paths", () => {
 			secretId,
 			hiddenFileId,
 			hiddenIds,
+			memberUserId: member.userId,
 			ownerCredential: await create_key(asOwner, db.membershipId),
 			memberCredential: await create_key(asMember, member.membershipId),
 		};
@@ -4429,6 +4430,47 @@ describe("locked and missing paths", () => {
 		for (const body of [{}, { path: "" }, { path: "/" }]) {
 			expect((await list(t, f.memberCredential, body)).status).toBe(200);
 		}
+	});
+
+	test("files list shows a locked child of a readable folder as a locked item", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+
+		const listed = await list(t, f.memberCredential, { path: "/" });
+		expect(listed.status).toBe(200);
+		// A locked item keeps its name and kind, with no asset state.
+		expect(listed.body.items).toMatchObject([
+			{ path: "/b.md", locked: false },
+			{ path: "/hidden.md", kind: "file", nodeId: f.hiddenFileId, locked: true, status: null },
+			{ path: "/notes", locked: false },
+			{ path: "/secret", kind: "folder", nodeId: f.secretId, locked: true },
+		]);
+		// A recursive list still leaves locked items out.
+		const recursive = await list(t, f.memberCredential, { path: "/", recursive: true });
+		expect(recursive.body.items.map((item) => item.path)).not.toContain("/hidden.md");
+	});
+
+	test("a folder list of a folder the caller cannot open returns no locked rows", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+
+		// The route looks the folder up in another query first. Call the list alone, like after a
+		// restrict that lands between the two calls.
+		const listed = await t.query(internal.files_nodes.list_subtree, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			visibilityUserId: f.memberUserId,
+			subject: { kind: "user", userId: f.memberUserId, plugin: null },
+			folderPath: "/secret",
+			minDepth: 1,
+			maxDepth: 1,
+			numItems: 50,
+			cursor: null,
+			withLocked: true,
+		});
+		// Only the shared folder the member was given is left, and nothing is marked locked.
+		expect(listed.page.map((node) => node.path)).toEqual(["/secret/shared"]);
+		expect(listed).not.toHaveProperty("lockedIds");
 	});
 
 	test("answers 404 when the folder is archived between pages, and 400 when it is replaced", async () => {

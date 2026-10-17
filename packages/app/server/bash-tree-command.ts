@@ -482,7 +482,8 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				continue;
 			}
 			const prefix = segments.length === 1 ? "|-- " : `${"|   ".repeat(segments.length - 1)}|-- `;
-			lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}`);
+			// A locked item is listed but cannot be opened, so nothing under a locked folder is shown.
+			lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}${item.locked ? "  [locked]" : ""}`);
 		}
 
 		// Emit a complete continuation command so the next page can be copied without
