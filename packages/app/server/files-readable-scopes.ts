@@ -81,7 +81,12 @@ export async function files_readable_scopes_db_reader(
 		return {
 			mode: "scoped" as const,
 			...ids,
-			principalKeys: live ? [files_share_rows_principal_key("service_account", subject.serviceAccountId)] : [],
+			principalKeys: live
+				? [
+						files_share_rows_principal_key("service_account", subject.serviceAccountId),
+						...(account.role !== undefined ? [files_share_rows_principal_key("role", account.role)] : []),
+					]
+				: [],
 			openReadable:
 				live &&
 				(await access_control_db_has_permission(ctx, {

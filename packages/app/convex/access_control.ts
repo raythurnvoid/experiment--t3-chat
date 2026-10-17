@@ -156,7 +156,8 @@ async function resolve_role_permissions(
  * such as editing or deleting that role. Pass `{ kind: "workspaces" }` when the role reaches one
  * target through a known membership set. A default-workspace `set_user_role` assignment uses the
  * target's active workspaces, a workspace assignment uses only that workspace, and an
- * invite uses only the workspaces it joins. A grant outside that set can never reach the target
+ * invite uses only the workspaces it joins. A service-account role uses only the account's
+ * workspace. A grant outside that set can never reach the target
  * through this operation, so weighing it would refuse for a reason the caller cannot act on.
  *
  * Each grant is judged in the workspace it lives in, and the caller must be a member there: nobody
@@ -1173,7 +1174,8 @@ function create_file_checker(
 			);
 
 		// The installation's own output folders are roots that take no slot. Their level is the account's
-		// live grant there, so removing or lowering that grant limits the plugin at once.
+		// live grant there, so removing or lowering that grant limits the plugin at once. A role share
+		// never counts here: any manual share on an output folder detaches its binding.
 		const binding = scopeNodeId ? await output_folder(scopeNodeId) : null;
 		if (node && scopeNodeId && binding?.installationId === plugin.installationId) {
 			const installation = await once("installation", () =>
@@ -1372,7 +1374,21 @@ export async function access_control_db_has_permission(
 		if (grant) {
 			return true;
 		}
-		if (scopeNodeId || args.resource.kind !== "file") {
+		if (scopeNodeId) {
+			// The account's role gives the restricted-folder shares that name it, as it does for a member.
+			return (
+				account.role !== undefined &&
+				(await db_get_role_permission_grant(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					resourceKind: "file",
+					resourceId: String(scopeNodeId),
+					role: account.role,
+					permission: args.permission,
+				})) !== null
+			);
+		}
+		if (args.resource.kind !== "file") {
 			return false;
 		}
 
@@ -1950,6 +1966,7 @@ const service_account_validator = v.object({
 	createdAt: v.number(),
 	updatedAt: v.number(),
 	revokedAt: v.union(v.number(), v.null()),
+	role: doc(app_convex_schema, "access_control_service_accounts").fields.role,
 });
 
 const service_account_resource_validator = v.union(
@@ -1975,8 +1992,8 @@ const service_account_grant_validator = v.object({
 });
 
 function get_public_service_account_fields(account: Doc<"access_control_service_accounts">) {
-	const { _id, name, createdBy, createdAt, updatedAt, revokedAt } = account;
-	return { _id, name, createdBy, createdAt, updatedAt, revokedAt };
+	const { _id, name, createdBy, createdAt, updatedAt, revokedAt, role } = account;
+	return { _id, name, createdBy, createdAt, updatedAt, revokedAt, role };
 }
 
 async function db_get_service_account_context(
@@ -2315,6 +2332,89 @@ export const rename_service_account = mutation({
 	},
 });
 
+/**
+ * An API key bound to the account acts as the account, so giving it a role needs the same authority
+ * as giving that role to a member. Otherwise a service-account manager with a weak role could set
+ * `admin`, mint a key and read what is shared with `admin`.
+ */
+export const set_service_account_role = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+		/** `null` removes the role. */
+		role: v.union(v.null(), doc(app_convex_schema, "access_control_role_assignments").fields.role),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const context = await db_get_service_account_context(ctx, args.membershipId);
+		if (context._nay) {
+			return context;
+		}
+		if (!context._yay.canManage) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const { membership, organization, defaultWorkspaceId, userAuth } = context._yay;
+		const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+		if (!account || account.organizationId !== organization._id || account.workspaceId !== membership.workspaceId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (args.role !== null && account.revokedAt !== null) {
+			return Result({ _nay: { message: "Service account is unavailable" } });
+		}
+
+		const limit = await rate_limiter_limit_by_key(ctx, { name: "roles_write", key: userAuth.id });
+		if (limit) {
+			return Result({ _nay: { message: limit.message } });
+		}
+
+		// The member-role rule of `set_user_role`. The account belongs to this one workspace.
+		const isDefaultWorkspace = account.workspaceId === defaultWorkspaceId;
+		const callerPermissions = await access_control_db_resolve_effective_permissions(ctx, {
+			organizationId: organization._id,
+			workspaceId: account.workspaceId,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			userId: userAuth.id,
+		});
+		const canManageMembers =
+			callerPermissions === "all" ||
+			callerPermissions.has("organization.members.manage") ||
+			(!isDefaultWorkspace && callerPermissions.has("workspace.members.manage"));
+		if (!canManageMembers) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// Removing a role gives out nothing, so only giving one checks the ceiling.
+		if (args.role !== null) {
+			const refused = await db_caller_cannot_assign_role(ctx, {
+				organization,
+				defaultWorkspaceId,
+				callerPermissions,
+				role: args.role,
+				joinedWorkspaceIds: [account.workspaceId],
+				userId: userAuth.id,
+			});
+			if (refused) {
+				return Result({ _nay: refused });
+			}
+		}
+
+		const role = args.role ?? undefined;
+		if (account.role !== role) {
+			await ctx.db.patch("access_control_service_accounts", account._id, { role, updatedAt: Date.now() });
+			await access_control_changes_db_record(ctx, [
+				{
+					scope: { kind: "service_account", serviceAccountId: account._id },
+					event: { kind: "refresh", reason: "permissions" },
+				},
+			]);
+		}
+
+		return Result({ _yay: null });
+	},
+});
+
 export const revoke_service_account = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -2346,7 +2446,12 @@ export const revoke_service_account = mutation({
 
 		if (account.revokedAt === null) {
 			const now = Date.now();
-			await ctx.db.patch("access_control_service_accounts", account._id, { revokedAt: now, updatedAt: now });
+			// The role goes too. A revoked account cannot get it back, so it would block `delete_role` for good.
+			await ctx.db.patch("access_control_service_accounts", account._id, {
+				revokedAt: now,
+				updatedAt: now,
+				role: undefined,
+			});
 			await access_control_changes_db_record(ctx, [
 				{
 					scope: { kind: "service_account", serviceAccountId: account._id },
@@ -3020,6 +3125,18 @@ export const delete_role = mutation({
 		if (assignments.length > MAX_ROLE_ASSIGNMENT_COUNT) {
 			return Result({ _nay: { message: "Too many members hold this role to delete it" } });
 		}
+		const account = await ctx.db
+			.query("access_control_service_accounts")
+			.withIndex("by_organization_role", (q) => q.eq("organizationId", role.organizationId).eq("role", role._id))
+			.first();
+		if (account) {
+			const workspace = await ctx.db.get("organizations_workspaces", account.workspaceId);
+			return Result({
+				_nay: {
+					message: `The service account "${account.name}" in workspace "${workspace?.name ?? "unknown"}" still uses this role`,
+				},
+			});
+		}
 
 		const memberships = await Promise.all(
 			assignments.map((assignment) =>
@@ -3124,6 +3241,78 @@ export const delete_role = mutation({
 // #endregion Custom roles
 
 // #region Role assignment
+
+/**
+ * Why the caller may not give `role`, or `null` when they may. Used by `set_user_role` and
+ * `set_service_account_role`.
+ *
+ * Nobody may give out more than they have. We compare every permission in the role, even one that
+ * would do nothing in this workspace today. That way the saved assignment never promises more than
+ * the caller could give. If we compared only the permissions that work today, the doc would grant
+ * more than the caller has on the day those rules change.
+ *
+ * `callerPermissions` is read at the target's workspace, and
+ * `access_control_db_resolve_effective_permissions` also adds the organization role without checking
+ * membership. So a caller who is not a member there can look like they hold workspace-scoped
+ * permissions that the permission check would refuse them in that workspace. That looks like a hole
+ * but is not one. The same caller can give the same role in the default workspace, where this same
+ * set is the limit and the "adds nothing" rule of `set_user_role` does not apply. And a role given in
+ * the default workspace gives the target *more* than one given in another workspace: it works in
+ * every workspace. Every real target has a membership and an assignment in the default workspace,
+ * because invites always create them. So this check asks what the caller's role contains, not what
+ * they could use right there.
+ *
+ * The same rule covers the half of a role that lives outside its permission list. A share list can
+ * name a role, so giving one also hands over its Files and plugin grants in `joinedWorkspaceIds`.
+ * Managing members alone does not permit handing out those grants.
+ */
+async function db_caller_cannot_assign_role(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organization: Doc<"organizations">;
+		defaultWorkspaceId: Id<"organizations_workspaces">;
+		callerPermissions: Awaited<ReturnType<typeof access_control_db_resolve_effective_permissions>>;
+		role: access_control_RoleRef;
+		joinedWorkspaceIds: Id<"organizations_workspaces">[];
+		userId: Id<"users">;
+	},
+) {
+	// Look the role up first, so even the owner cannot store a deleted role or one from another organization.
+	const rolePermissions = await resolve_role_permissions(ctx, {
+		organizationId: args.organization._id,
+		role: args.role,
+	});
+	if (!rolePermissions) {
+		return { message: "Not found" };
+	}
+	if (args.callerPermissions === "all") {
+		return null;
+	}
+	const callerPermissions = args.callerPermissions;
+	const missing = rolePermissions.find((permission) => !callerPermissions.has(permission));
+	if (missing) {
+		return { message: `You cannot assign a role that grants "${access_control_PERMISSION_CATALOG[missing].label}"` };
+	}
+
+	const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
+		organization: args.organization,
+		defaultWorkspaceId: args.defaultWorkspaceId,
+		reach: { kind: "workspaces", joinedWorkspaceIds: args.joinedWorkspaceIds },
+		role: args.role,
+		userId: args.userId,
+	});
+	if (blockingGrant) {
+		// The node is not named. A caller who cannot open it should not learn which file it is from a
+		// refusal, and the role name is enough to act on.
+		return {
+			message:
+				blockingGrant.permission !== "workspace.plugins.manage"
+					? `You cannot assign this role: it is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`
+					: "You cannot assign this role: it is on a plugin access list you cannot manage",
+		};
+	}
+	return null;
+}
 
 export const set_user_role = mutation({
 	args: {
@@ -3264,65 +3453,28 @@ export const set_user_role = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		// Nobody may give out more than they have. We compare every permission in the role, even one
-		// that would do nothing in this workspace today. That way the saved assignment never promises
-		// more than the caller could give. If we compared only the permissions that work today, the doc
-		// grant more than the caller has on the day those rules change.
-		//
-		// `callerPermissions` is read at `args.workspaceId`, and
-		// `access_control_db_resolve_effective_permissions` also adds the organization role
-		// without checking membership. So a caller who is not a member here can look like they hold
-		// workspace-scoped permissions that the permission check would refuse them in this workspace.
-		// That looks like a hole but is not one. The same caller can give the same role in the default
-		// workspace, where this same set is the limit and the "adds nothing" rule below does not apply.
-		// And a role given in the default workspace gives the target *more* than one given here: it
-		// works in every workspace, not only this one. Every real target has a membership and an
-		// assignment in the default workspace, because invites always create them. So this check asks
-		// what the caller's role contains, not what they could use right here.
-		if (callerPermissions !== "all") {
-			const missing = rolePermissions.find((permission) => !callerPermissions.has(permission));
-			if (missing) {
-				return Result({
-					_nay: {
-						message: `You cannot assign a role that grants "${access_control_PERMISSION_CATALOG[missing].label}"`,
-					},
-				});
-			}
-
-			// The same rule, for the half of a role that lives outside its permission list. A share list
-			// can name a role, so assigning one also hands over its Files and plugin grants.
-			// Managing members alone does not permit handing out those grants.
-			let joinedWorkspaceIds = [args.workspaceId];
-			// The organization role reaches every workspace the target has joined. The workspace quota
-			// bounds this complete membership list.
-			if (isDefaultWorkspace) {
-				const targetMemberships = await ctx.db
-					.query("organizations_workspaces_users")
-					.withIndex("by_active_user_organization_workspace", (q) =>
-						q.eq("active", true).eq("userId", args.userId).eq("organizationId", organization._id),
-					)
-					.collect();
-				joinedWorkspaceIds = targetMemberships.map((membership) => membership.workspaceId);
-			}
-			const blockingGrant = await access_control_db_role_file_grant_caller_cannot_give(ctx, {
-				organization,
-				defaultWorkspaceId,
-				reach: { kind: "workspaces", joinedWorkspaceIds },
-				role: args.role,
-				userId: userAuth.id,
-			});
-			if (blockingGrant) {
-				// The node is not named. A caller who cannot open it should not learn which file it is
-				// from a refusal, and the role name is enough to act on.
-				return Result({
-					_nay: {
-						message:
-							blockingGrant.permission !== "workspace.plugins.manage"
-								? `You cannot assign this role: it is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`
-								: "You cannot assign this role: it is on a plugin access list you cannot manage",
-					},
-				});
-			}
+		// The organization role reaches every workspace the target has joined. The workspace quota
+		// bounds this complete membership list.
+		let joinedWorkspaceIds = [args.workspaceId];
+		if (isDefaultWorkspace && callerPermissions !== "all") {
+			const targetMemberships = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q.eq("active", true).eq("userId", args.userId).eq("organizationId", organization._id),
+				)
+				.collect();
+			joinedWorkspaceIds = targetMemberships.map((membership) => membership.workspaceId);
+		}
+		const refused = await db_caller_cannot_assign_role(ctx, {
+			organization,
+			defaultWorkspaceId,
+			callerPermissions,
+			role: args.role,
+			joinedWorkspaceIds,
+			userId: userAuth.id,
+		});
+		if (refused) {
+			return Result({ _nay: refused });
 		}
 
 		// Roles can only add power. A workspace role weaker than the organization role changes

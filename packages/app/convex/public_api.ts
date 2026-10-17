@@ -468,6 +468,10 @@ async function get_workspace_content_permissions(
 						.eq("permission", permission),
 				)
 				.first()) !== null;
+		// A role reaches the restricted folders shared with it, so it counts as reaching some file.
+		if ((await ctx.db.get("access_control_service_accounts", subject.serviceAccountId))?.role !== undefined) {
+			return { read: true, write: true };
+		}
 		const [read, write] = await Promise.all([holds("content.read"), holds("content.write")]);
 		return { read, write };
 	}

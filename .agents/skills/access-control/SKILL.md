@@ -159,6 +159,16 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
 - Create, rename, revoke, account binding, and grant management require that permission. Names
   are trimmed, nonempty, and at most `access_control_MAX_SERVICE_ACCOUNT_NAME_LENGTH` (80).
   Creating an account gives no grants or credentials.
+- An account may hold one role (`role` on the account, missing = none). The role gives only the
+  restricted-folder shares that name it, as it does for a member, never the role's workspace
+  permission list. Lists read the role's share rows too. Plugin sandbox roots never include role
+  shares. `set_service_account_role` needs `workspace.service_accounts.manage`, the member-role rule
+  of `set_user_role`, and the same ceiling (`db_caller_cannot_assign_role`): a key bound to the
+  account acts as the account, so nobody may give it more than they could give a member.
+  Anyone with `workspace.service_accounts.manage` can mint a key for the account and so use the
+  role's reach, which grows when someone shares another restricted folder with the role.
+  A revoked account cannot get a role, and revoke removes it. `delete_role` refuses while an
+  account holds the role, and names the account and its workspace.
 - Grant edits also require the actor's `content.permissions.manage` on the actual resource.
   Every added level permission must already be held by that actor there. File-only managers
   do not need workspace content management. Removal checks management but gives no new level.
@@ -690,7 +700,7 @@ product decision, so record the answer here before changing the behaviour. An en
 
 - **The public API refuses a grant-only person.** Each file scope maps to an app permission, which
   `get_workspace_content_permissions` answers about the *workspace* for a person's key. An account
-  key only needs any grant there.
+  key only needs any grant there, or a role.
   Somebody whose only access is a direct grant on one restricted file gets 403 before any per-file
   check, so their API key cannot use the grant the UI honours. This is under-permission, not a leak.
 - **An outgoing owner keeps nothing.** The owner holds no grant docs anywhere — `restrict_node` skips

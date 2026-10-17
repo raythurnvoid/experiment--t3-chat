@@ -48,7 +48,11 @@ import {
 	access_control_FILE_SHARE_LEVEL_KEYS,
 	access_control_FILE_SHARE_LEVELS,
 	access_control_MAX_SERVICE_ACCOUNT_NAME_LENGTH,
+	access_control_SYSTEM_ROLE_MATRIX,
+	access_control_SYSTEM_ROLES,
+	access_control_is_system_role,
 	type access_control_FileShareLevel,
+	type access_control_RoleRef,
 } from "../../../../../../shared/access-control.ts";
 
 type Account = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_service_account>>;
@@ -72,7 +76,8 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 	onClose: () => void;
 }) {
 	const { account, onClose } = props;
-	const { membershipId } = AppTenantProvider.useContext();
+	const { membershipId, organizationId } = AppTenantProvider.useContext();
+	const customRoles = useQuery(app_convex_api.access_control.list_roles, { organizationId });
 	const grants = usePaginatedQuery(
 		app_convex_api.access_control.list_service_account_grants,
 		{ membershipId, serviceAccountId: account._id },
@@ -86,6 +91,7 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 	const [error, setError] = useState<string | null>(null);
 	const dialogRef = useRef<HTMLDivElement>(null);
 	const pathHelperId = useId();
+	const roleHelperId = useId();
 
 	const node = useQuery(
 		app_convex_api.files_nodes.get_authorized_by_path,
@@ -144,6 +150,43 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 			.finally(() => setPending(false));
 	};
 
+	const handleChangeRole = (role: access_control_RoleRef | null) => {
+		if (pending || role === (account.role ?? null)) {
+			return;
+		}
+
+		setPending(true);
+		setError(null);
+
+		Promise.try(() =>
+			app_convex.mutation(app_convex_api.access_control.set_service_account_role, {
+				membershipId,
+				serviceAccountId: account._id,
+				role,
+			}),
+		)
+			.then((result) => {
+				if (result._nay) {
+					setError(result._nay.message);
+				}
+			})
+			.catch((caughtError: unknown) => {
+				console.error("[RouteServiceAccountsGrants.handleChangeRole] Failed to change role", {
+					error: caughtError,
+					serviceAccountId: account._id,
+				});
+				setError("Could not change the role. Try again.");
+			})
+			.finally(() => setPending(false));
+	};
+
+	const roleName = (role: access_control_RoleRef) =>
+		access_control_is_system_role(role)
+			? access_control_SYSTEM_ROLE_MATRIX[role].label
+			: customRoles === undefined
+				? "…"
+				: (customRoles.find((candidate) => candidate._id === role)?.name ?? "Deleted role");
+
 	return (
 		<MyModal
 			open
@@ -160,6 +203,40 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 				</MyModalHeader>
 				<MyModalScrollableArea>
 					<div className={"RouteServiceAccounts-fields" satisfies RouteServiceAccounts_ClassNames}>
+						<MySelect
+							value={account.role ?? "none"}
+							setValue={(next) => {
+								void handleChangeRole(next === "none" ? null : (next as access_control_RoleRef));
+							}}
+						>
+							<MySelectLabel>Role</MySelectLabel>
+							<MySelectTrigger
+								disabled={account.revokedAt !== null}
+								aria-busy={pending || undefined}
+								aria-describedby={roleHelperId}
+							>
+								<MyButton variant="outline">
+									{account.role ? roleName(account.role) : "No role"}
+									<MySelectOpenIndicator />
+								</MyButton>
+							</MySelectTrigger>
+							<MySelectPopover unmountOnHide>
+								<MySelectPopoverContent>
+									<MySelectItem value="none">No role</MySelectItem>
+									{[...access_control_SYSTEM_ROLES, ...(customRoles ?? []).map((role) => role._id)].map((role) => (
+										<MySelectItem key={role} value={role}>
+											{roleName(role)}
+										</MySelectItem>
+									))}
+								</MySelectPopoverContent>
+							</MySelectPopover>
+						</MySelect>
+						<p
+							id={roleHelperId}
+							className={"RouteServiceAccounts-description" satisfies RouteServiceAccounts_ClassNames}
+						>
+							The account opens restricted folders shared with its role. It does not get the role's other permissions.
+						</p>
 						{grants.status === "LoadingFirstPage" ? (
 							<p role="status">Loading grants…</p>
 						) : grants.results.length === 0 ? (

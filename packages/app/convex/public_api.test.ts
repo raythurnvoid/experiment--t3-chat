@@ -1179,6 +1179,63 @@ describe("service-bound API credentials", () => {
 		expect((await read("/open.md")).status).toBe(404);
 	});
 
+	test("a key bound to an account with a role reads role shares", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-account-role-key" });
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const teamFileId = await seed_markdown_file({ t, ...db, path: "/team/t.md", committedMarkdown: "Team text" });
+		const teamId = await t.run(
+			async (ctx) => (await ctx.db.get("files_nodes", teamFileId))!.parentId as Id<"files_nodes">,
+		);
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: teamId }))
+				._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: db.membershipId,
+					nodeId: teamId,
+					principal: { kind: "role", role: "member" },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+		const account = await asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Team reader",
+		});
+		if (account._nay) {
+			throw new Error(account._nay.message);
+		}
+		// The account holds no grant of its own, only the role.
+		expect(
+			await asOwner.mutation(api.access_control.set_service_account_role, {
+				membershipId: db.membershipId,
+				serviceAccountId: account._yay.serviceAccountId,
+				role: "member",
+			}),
+		).toEqual({ _yay: null });
+		const key = await asOwner.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId: account._yay.serviceAccountId,
+			name: "Team",
+			scopes: ["files:read"],
+		});
+		if (key._nay) {
+			throw new Error(key._nay.message);
+		}
+
+		const read = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(key._yay.credential),
+			body: JSON.stringify({ path: "/team/t.md" }),
+		});
+		expect(read.status, await read.clone().text()).toBe(200);
+		expect(await read.json()).toMatchObject({ content: expect.stringContaining("Team text") });
+	});
+
 	test("an account key replaces a stored file inside its grant on a nested restricted folder", async () => {
 		const t = test_convex();
 		install_r2_object_reads();

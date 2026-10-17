@@ -23,7 +23,12 @@ vi.mock("convex/react", () => ({
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
-		useContext: () => ({ membershipId: "membership_1", organizationName: "personal", workspaceName: "home" }),
+		useContext: () => ({
+			membershipId: "membership_1",
+			organizationId: "organization_1",
+			organizationName: "personal",
+			workspaceName: "home",
+		}),
 	},
 }));
 
@@ -41,6 +46,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_service_account_grant_management_state: "management",
 			set_service_account_grant: "set_grant",
 			remove_service_account_grant: "remove_grant",
+			list_roles: "roles",
+			set_service_account_role: "set_role",
 		},
 		files_nodes: { get_authorized_by_path: "node" },
 	},
@@ -89,6 +96,9 @@ beforeEach(() => {
 		}
 		if (query === "node") {
 			return { nodeId: "child_1" };
+		}
+		if (query === "roles") {
+			return [{ _id: "role_1", name: "Reports" }];
 		}
 		return undefined;
 	});
@@ -185,6 +195,25 @@ describe("RouteServiceAccounts", () => {
 				level: "read",
 			}),
 		);
+	});
+
+	test("sets the account role and shows a refused change", async () => {
+		mutationMock.mockResolvedValue({ _nay: { message: "Permission denied" } });
+
+		renderRoute();
+		fireEvent.click(screen.getByRole("button", { name: "Manage grants" }));
+		expect(screen.getByText(/does not get the role's other/)).toBeTruthy();
+		fireEvent.click(screen.getByRole("combobox", { name: "Role" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Reports" }));
+
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("set_role", {
+				membershipId: "membership_1",
+				serviceAccountId: "account_1",
+				role: "role_1",
+			}),
+		);
+		expect((await screen.findByRole("alert")).textContent).toBe("Permission denied");
 	});
 
 	test("shows and submits the actual restricted scope for a child path", async () => {

@@ -8875,9 +8875,16 @@ const app_convex_schema = defineSchema({
 		createdAt: v.number(),
 		updatedAt: v.number(),
 		revokedAt: v.union(v.number(), v.null()),
+		/**
+		 * Missing means no role. The role gives the account only the restricted-folder shares that name
+		 * it. It never gives the role's workspace permission list: a role like `admin` holds many, and
+		 * an API key bound to the account acts alone. Plugin sandbox roots never include role shares.
+		 */
+		role: v.optional(access_control_role_ref_validator),
 	})
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
-		.index("by_organization_workspace_revokedAt", ["organizationId", "workspaceId", "revokedAt"]),
+		.index("by_organization_workspace_revokedAt", ["organizationId", "workspaceId", "revokedAt"])
+		.index("by_organization_role", ["organizationId", "role"]),
 
 	/**
 	 * Custom roles, which always apply to the whole organization. System roles live in code, so they

@@ -35,10 +35,15 @@ import {
 	access_control_PERMISSION_CATALOG,
 	access_control_SYSTEM_ROLE_MATRIX,
 	access_control_SYSTEM_ROLES,
+	type access_control_Permission,
 } from "../shared/access-control.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
+import {
+	files_readable_scopes_db_enumerate_by_path,
+	files_readable_scopes_db_reader,
+} from "../server/files-readable-scopes.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
@@ -990,6 +995,214 @@ describe("access_control_db_has_permission service accounts", () => {
 			expect(await readable([node, restricted])).toEqual([]);
 			expect(await can_write(restricted)).toBe(false);
 		});
+	});
+
+	test("a service account with a role reads the restricted folders shared with that role, nothing more", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account role",
+			suffix: "account-role",
+		});
+		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "Reporter",
+		});
+		const serviceAccountId = created._yay!.serviceAccountId;
+		const shared = await access_control_test_seed_open_folder(fixture, { name: "shared" });
+		const open = await access_control_test_seed_open_folder(fixture, { name: "open" });
+		expect(
+			(
+				await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: fixture.ownerMembershipId,
+					nodeId: shared,
+				})
+			)._nay,
+		).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: fixture.ownerMembershipId,
+					nodeId: shared,
+					principal: { kind: "role", role: "member" },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+		const subject = { kind: "service_account" as const, serviceAccountId };
+		const scope = { organizationId: fixture.organizationId, workspaceId: fixture.defaultWorkspaceId };
+		const can = (nodeId: Id<"files_nodes">) =>
+			t.run(async (ctx) =>
+				access_control_db_can_act_on_file_node(ctx, {
+					...scope,
+					subject,
+					fileNode: (await ctx.db.get("files_nodes", nodeId))!,
+					permission: "content.read",
+				}),
+			);
+		expect(await can(shared)).toBe(false);
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			await fixture.asOwner.mutation(api.access_control.set_service_account_role, {
+				membershipId: fixture.ownerMembershipId,
+				serviceAccountId,
+				role: "member",
+			}),
+		).toEqual({ _yay: null });
+		expect(await can(shared)).toBe(true);
+		// The role's own workspace permissions do not come with it.
+		expect(await can(open)).toBe(false);
+		// A list reads the role's share rows too: they are the second stream, after the account's own.
+		const listed = await t.run(async (ctx) => {
+			const reader = await files_readable_scopes_db_reader(ctx, { ...scope, subject });
+			if (reader.mode !== "scoped") throw new Error("expected a scoped reader");
+			const page = await files_readable_scopes_db_enumerate_by_path(ctx, {
+				reader,
+				tag: undefined,
+				principalIndex: 1,
+				folderTreePath: "/",
+				afterTreePath: null,
+				numItems: 10,
+			});
+			return page.items.map((item) => item.node._id);
+		});
+		expect(listed).toEqual([shared]);
+
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			await fixture.asOwner.mutation(api.access_control.set_service_account_role, {
+				membershipId: fixture.ownerMembershipId,
+				serviceAccountId,
+				role: null,
+			}),
+		).toEqual({ _yay: null });
+		expect(await can(shared)).toBe(false);
+	});
+
+	test("a service-account manager cannot give a role above their own", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account role ceiling",
+			suffix: "account-role-ceiling",
+		});
+		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "Key holder",
+		});
+		const serviceAccountId = created._yay!.serviceAccountId;
+		const set_member_role = async (permissions: Array<access_control_Permission>, name: string) => {
+			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+			const role = await fixture.asOwner.mutation(api.access_control.create_role, {
+				organizationId: fixture.organizationId,
+				name,
+				description: "",
+				permissions,
+			});
+			expect(role._nay).toBeUndefined();
+			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+			expect(
+				(
+					await fixture.asOwner.mutation(api.access_control.set_user_role, {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+						userId: fixture.memberId,
+						role: role._yay!.roleId,
+					})
+				)._nay,
+			).toBeUndefined();
+		};
+		const give = async (role: "admin" | "viewer") => {
+			await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+			return await fixture.asMember.mutation(api.access_control.set_service_account_role, {
+				membershipId: fixture.memberMembershipId,
+				serviceAccountId,
+				role,
+			});
+		};
+
+		// Managing accounts alone is not enough: giving a role needs the members rule too.
+		await set_member_role(["content.read", "workspace.service_accounts.manage"], "Accounts only");
+		expect((await give("viewer"))._nay?.message).toBe("Permission denied");
+
+		// With members manage, the role still may not grant more than the caller holds.
+		await set_member_role(
+			["content.read", "workspace.service_accounts.manage", "organization.members.manage"],
+			"Accounts and members",
+		);
+		const refused = await give("admin");
+		expect(refused._nay?.message).toMatch(/^You cannot assign a role that grants/);
+		// `t.run` turns a missing field into null.
+		const kept = await t.run(
+			async (ctx) => (await ctx.db.get("access_control_service_accounts", serviceAccountId))?.role,
+		);
+		expect(kept).toBe(null);
+		expect(await give("viewer")).toEqual({ _yay: null });
+	});
+
+	test("a role a service account holds cannot be deleted", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account role delete",
+			suffix: "account-role-delete",
+		});
+		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "Holder",
+		});
+		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Reports",
+			description: "",
+			permissions: ["content.read"],
+		});
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			await fixture.asOwner.mutation(api.access_control.set_service_account_role, {
+				membershipId: fixture.ownerMembershipId,
+				serviceAccountId: created._yay!.serviceAccountId,
+				role: role._yay!.roleId,
+			}),
+		).toEqual({ _yay: null });
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(await fixture.asOwner.mutation(api.access_control.delete_role, { roleId: role._yay!.roleId }))._nay?.message,
+		).toMatch(/^The service account "Holder" in workspace ".+" still uses this role$/);
+
+		// Revoking the account removes its role, so the role can be deleted.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			await fixture.asOwner.mutation(api.access_control.revoke_service_account, {
+				membershipId: fixture.ownerMembershipId,
+				serviceAccountId: created._yay!.serviceAccountId,
+			}),
+		).toEqual({ _yay: null });
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			await fixture.asOwner.mutation(api.access_control.set_service_account_role, {
+				membershipId: fixture.ownerMembershipId,
+				serviceAccountId: created._yay!.serviceAccountId,
+				role: role._yay!.roleId,
+			}),
+		).toEqual({ _nay: { message: "Service account is unavailable" } });
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(await fixture.asOwner.mutation(api.access_control.delete_role, { roleId: role._yay!.roleId })).toEqual({
+			_yay: null,
+		});
+
+		// Even the owner cannot store a role that no longer exists.
+		const other = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "Other",
+		});
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			await fixture.asOwner.mutation(api.access_control.set_service_account_role, {
+				membershipId: fixture.ownerMembershipId,
+				serviceAccountId: other._yay!.serviceAccountId,
+				role: role._yay!.roleId,
+			}),
+		).toEqual({ _nay: { message: "Not found" } });
 	});
 
 	test("a guest cannot act on an open file through can_act", async () => {
@@ -9741,9 +9954,12 @@ describe("file sharing", () => {
 				onStep: async () => {
 					if (observedUnrepairedChild) return;
 					const cohort = await t.run(async (ctx) => {
-						const slot = await ctx.db.query("files_move_workspace_slots").withIndex("by_workspace", (q) =>
-							q.eq("organizationId", fixture.organizationId).eq("workspaceId", fixture.defaultWorkspaceId),
-						).unique();
+						const slot = await ctx.db
+							.query("files_move_workspace_slots")
+							.withIndex("by_workspace", (q) =>
+								q.eq("organizationId", fixture.organizationId).eq("workspaceId", fixture.defaultWorkspaceId),
+							)
+							.unique();
 						return slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
 					});
 					if (!cohort || cohort.publishedAt === null) return;
@@ -9751,10 +9967,13 @@ describe("file sharing", () => {
 					if (child?.restrictedScopeNodeId !== null) return;
 					observedUnrepairedChild = true;
 					// The selected view must hide the child before its stored scope is repaired.
-					expect(await fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
-						membershipId: fixture.memberMembershipId,
-						fileNodeId: String(childId),
-					}), "A published Move hides unrepaired descendants").toBeNull();
+					expect(
+						await fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
+							membershipId: fixture.memberMembershipId,
+							fileNodeId: String(childId),
+						}),
+						"A published Move hides unrepaired descendants",
+					).toBeNull();
 					const started = await fixture.asMember.mutation(api.files_transfer.accept_input, {
 						membershipId: fixture.memberMembershipId,
 						requestId: "move-unrepaired-child-out",
@@ -9765,13 +9984,17 @@ describe("file sharing", () => {
 					});
 					if (started._nay) throw new Error(started._nay.message);
 					memberRunId = started._yay.runId;
-					expect(await fixture.asMember.mutation(api.files_transfer.seal, {
-						membershipId: fixture.memberMembershipId,
-						runId: memberRunId,
-					})).toEqual({ _yay: null });
+					expect(
+						await fixture.asMember.mutation(api.files_transfer.seal, {
+							membershipId: fixture.memberMembershipId,
+							runId: memberRunId,
+						}),
+					).toEqual({ _yay: null });
 					await t.mutation(internal.files_transfer.advance, { runId: memberRunId });
-					expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", memberRunId!)),
-						"A Move requested during repair waits before selection").toMatchObject({ step: "select" });
+					expect(
+						await t.run((ctx) => ctx.db.get("files_transfer_runs", memberRunId!)),
+						"A Move requested during repair waits before selection",
+					).toMatchObject({ step: "select" });
 					expect(await t.run((ctx) => ctx.db.get("files_nodes", childId))).toMatchObject({ parentId: openId });
 				},
 			});
@@ -9782,10 +10005,13 @@ describe("file sharing", () => {
 
 			if (!memberRunId) throw new Error("Expected the member's waiting Move");
 			await test_finish_transfer_run(fixture.asMember, memberRunId);
-			expect(await fixture.asMember.query(api.files_transfer_queries.get, {
-				membershipId: fixture.memberMembershipId,
-				runId: memberRunId,
-			}), "The waiting Move checks access after repair").toMatchObject({
+			expect(
+				await fixture.asMember.query(api.files_transfer_queries.get, {
+					membershipId: fixture.memberMembershipId,
+					runId: memberRunId,
+				}),
+				"The waiting Move checks access after repair",
+			).toMatchObject({
 				activity: { status: "failed", errorMessage: "Permission denied" },
 			});
 			expect(await t.run((ctx) => ctx.db.get("files_nodes", childId))).toMatchObject({ parentId: openId });
