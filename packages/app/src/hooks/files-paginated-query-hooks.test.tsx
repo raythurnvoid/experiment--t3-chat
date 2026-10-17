@@ -1,5 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { ConvexProvider, ConvexReactClient, usePaginatedQuery } from "convex/react";
+import { ConvexQueryCacheProvider } from "convex-helpers/react/cache";
 import {
 	getFunctionName,
 	makeFunctionReference,
@@ -24,8 +25,14 @@ const listeners = new Map<string, Set<() => void>>();
 const watches = new Map<string, Watch>();
 let client: ConvexReactClient;
 
+// The cache keeps no idle query here, so a test can check that a pager stops listening. While a pager
+// listens, the cache adds one more listener to the same query.
 function Wrapper(props: { children: ReactNode }) {
-	return <ConvexProvider client={client}>{props.children}</ConvexProvider>;
+	return (
+		<ConvexProvider client={client}>
+			<ConvexQueryCacheProvider maxIdleEntries={0}>{props.children}</ConvexQueryCacheProvider>
+		</ConvexProvider>
+	);
 }
 
 function renderPager(initialArgs: Args | "skip" = args) {
@@ -118,7 +125,6 @@ describe("useFilesPaginatedQuery", () => {
 			expect(listeners.get(first.key)?.size).toBe(0);
 			const fresh = activeWatches()[0]!;
 			expect(fresh.args.paginationOpts.cursor).toBeNull();
-			expect(fresh.args.paginationOpts.id).not.toBe(first.args.paginationOpts.id);
 			answer(fresh, page(["current"], true, ""));
 			expect(hook.result.current.results).toEqual([{ name: "current" }]);
 			expect(hook.result.current.status).toBe("Exhausted");
@@ -159,7 +165,7 @@ describe("useFilesPaginatedQuery", () => {
 		answer(side === "left" ? left : right, changedView());
 		act(() => hook.result.current.loadMore(2));
 		expect(watches.size, "a split view error creates no retry session").toBe(3);
-		expect(listeners.get(parent.key)?.size, "a failed split never replaces its parent").toBe(1);
+		expect(listeners.get(parent.key)?.size, "a failed split never replaces its parent").toBeGreaterThan(0);
 		expect(hook.result.current).toMatchObject({ results: [], isLoading: true });
 		hook.rerender({ args: { ...args, savedStream: { kind: "normal", generation: 1 } }, query });
 		expect(activeWatches()).toHaveLength(1);
@@ -258,7 +264,7 @@ describe("useFilesPaginatedQuery", () => {
 			});
 			if (status === "SplitRequired") expect(hook.result.current.results).toEqual([]);
 			answer(right, page(["c", "d", "e"], false, "z"));
-			expect(listeners.get(parent.key)?.size, "one child cannot complete a split").toBe(1);
+			expect(listeners.get(parent.key)?.size, "one child cannot complete a split").toBeGreaterThan(0);
 			answer(left, page(["a", "b"], false, "m"));
 			expect(hook.result.current.results.map((row) => row.name)).toEqual(["a", "b", "c", "d", "e"]);
 			expect(listeners.get(parent.key)?.size).toBe(0);
@@ -343,7 +349,7 @@ describe("useFilesPaginatedQuery", () => {
 		expect(hook.result.current.results).toEqual([]);
 	});
 
-	test("uses distinct negative sessions beside a standard SDK pager", () => {
+	test("shares one negative session between Files pagers, apart from a standard SDK pager", () => {
 		renderHook(
 			() => ({
 				first: useFilesPaginatedQuery(query, args, { initialNumItems: 2 }),
@@ -353,9 +359,29 @@ describe("useFilesPaginatedQuery", () => {
 			{ wrapper: Wrapper },
 		);
 		const ids = activeWatches().map((watch) => watch.args.paginationOpts.id!);
-		expect(new Set(ids).size).toBe(3);
-		expect(ids.filter((id) => id < 0)).toHaveLength(2);
+		expect(ids).toHaveLength(2);
+		expect(ids.filter((id) => id < 0)).toHaveLength(1);
 		expect(ids.filter((id) => id >= 0)).toHaveLength(1);
+	});
+
+	test("a pager that mounts again shows its cached first page at once", () => {
+		function CachingWrapper(props: { children: ReactNode }) {
+			return (
+				<ConvexProvider client={client}>
+					<ConvexQueryCacheProvider>{props.children}</ConvexQueryCacheProvider>
+				</ConvexProvider>
+			);
+		}
+		const usePager = () => useFilesPaginatedQuery(query, args, { initialNumItems: 2 });
+		const first = renderHook(usePager, { wrapper: CachingWrapper });
+		const watch = activeWatches()[0]!;
+		answer(watch, page(["a"], true, ""));
+		first.unmount();
+		expect(listeners.get(watch.key)?.size, "the cache keeps the query subscribed").toBe(1);
+
+		const second = renderHook(usePager, { wrapper: CachingWrapper });
+		expect(watches.size, "the second pager uses the same query args").toBe(1);
+		expect(second.result.current.results).toEqual([{ name: "a" }]);
 	});
 
 	test("keeps the memoized rows and session on a same-args rerender", () => {

@@ -145,6 +145,7 @@ import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-d
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { useConvex, useQueries, useQuery } from "convex/react";
+import { useQuery as useCachedQuery } from "convex-helpers/react/cache";
 import type { FunctionReturnType } from "convex/server";
 import { compareValues } from "convex/values";
 import {
@@ -2926,7 +2927,10 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const { move } = FilesClipboardProvider.useContext();
 
 	// The table waits for the folder's saved sort, so it never loads by name first and then sorts again.
-	const folderSort = useQuery(app_convex_api.files_folder_sorts.get_folder_sort, {
+	// The folder's own queries use the query cache, so going back to a folder shows it at once. Row
+	// queries stay uncached. The cache keeps at most 250 idle queries, and the rows of a big folder would
+	// push out the folder's own queries.
+	const folderSort = useCachedQuery(app_convex_api.files_folder_sorts.get_folder_sort, {
 		membershipId,
 		folderId: folderItemId,
 	});
@@ -2982,10 +2986,16 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			row.treeRow && !row.treeRow.locked && !treeNodeIds.has(row.treeRow._id) ? [row.treeRow] : [],
 		),
 	];
-	const folderReadme = useQuery(app_convex_api.files_tree.get_folder_readme, { membershipId, folderId: folderItemId });
-	const hasDrafts = useQuery(app_convex_api.files_tree.has_drafts_in_folder, { membershipId, folderId: folderItemId });
+	const folderReadme = useCachedQuery(app_convex_api.files_tree.get_folder_readme, {
+		membershipId,
+		folderId: folderItemId,
+	});
+	const hasDrafts = useCachedQuery(app_convex_api.files_tree.has_drafts_in_folder, {
+		membershipId,
+		folderId: folderItemId,
+	});
 
-	const canWriteFolder = useQuery(app_convex_api.files_tree.get_current_user_file_write_permission, {
+	const canWriteFolder = useCachedQuery(app_convex_api.files_tree.get_current_user_file_write_permission, {
 		membershipId,
 		nodeId: folderItemId,
 	});
@@ -4801,7 +4811,11 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer-column-header-actions"
 	| "FileNodeViewFolderExplorer-sort-button"
 	| "FileNodeViewFolderExplorer-sort-indicator"
+	| "FileNodeViewFolderExplorer-skeleton-row"
+	| "FileNodeViewFolderExplorer-skeleton-icon"
+	| "FileNodeViewFolderExplorer-skeleton"
 	| "FileNodeViewFolderExplorer-show-more"
+	| "FileNodeViewFolderExplorer-show-more-skeleton"
 	| "FileNodeViewFolderExplorer-show-less"
 	| "FileNodeViewFolderExplorer-show-less-cover";
 
@@ -4943,16 +4957,16 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const isApplyingSort = rowsSort === null || JSON.stringify(sort) !== JSON.stringify(rowsSort);
 	const sortState = isApplyingSort ? "applying" : "ready";
 	const filterState = isShowingHeldRows || (isSortBusy && hasFilter) ? "applying" : "ready";
+	// No rows to keep on screen while rows load, so the table shows skeleton rows in their place.
+	const isLoadingRows = visibleChildItems.length === 0 && isSortBusy;
 	const emptyMessage =
-		visibleChildItems.length > 0 || filterState === "applying"
+		visibleChildItems.length > 0 || isLoadingRows || filterState === "applying"
 			? null
 			: !isDone
-				? isSortBusy
-					? "Loading folder contents…"
-					: // A stream has more pages, but the loaded ones hold no row to show yet.
-						hasFilter
-						? "No matches loaded yet. Show more to keep looking."
-						: "No items on the loaded pages. Show more to keep looking."
+				? // A stream has more pages, but the loaded ones hold no row to show yet.
+					hasFilter
+					? "No matches loaded yet. Show more to keep looking."
+					: "No items on the loaded pages. Show more to keep looking."
 				: hasFilter
 					? "No rows match this filter"
 					: files_sort_field_is_built_in(displayedSort[0]!.field)
@@ -5180,7 +5194,12 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					</span>
 				)}
 			</p>
-			<div className={"FileNodeViewFolderExplorer-table-scroll" satisfies FileNodeViewFolderExplorer_ClassNames}>
+			<div
+				className={cn(
+					"FileNodeViewFolderExplorer-table-scroll" satisfies FileNodeViewFolderExplorer_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+				)}
+			>
 				<MyGridTable
 					ref={setTableElement}
 					aria-label="Folder contents"
@@ -5200,7 +5219,9 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 						>
 							{columns.map((field) => {
 								// The header shows the sort the user asked for right away, even while the old rows stay.
-								const direction = sortField === field ? sort[0]!.direction : null;
+								// Before the first rows, `sort` can still be the default while the saved sort loads, so
+								// show no arrow yet. Otherwise the arrow could jump to another column.
+								const direction = sortField === field && rowsSort !== null ? sort[0]!.direction : null;
 								const sortDisabledReason =
 									filterOrderField !== null && field !== filterOrderField
 										? `Remove the filter to sort by ${files_folder_table_query_field_text(field)}`
@@ -5300,6 +5321,48 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 								/>
 							);
 						})}
+						{/* Show as many rows as the table shows at first, in the same columns, so the real rows
+						    replace them without moving the page. The table's aria-busy tells that rows load. */}
+						{isLoadingRows &&
+							Array.from({ length: FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT }, (_, index) => (
+								<MyGridTableRow
+									key={index}
+									className={"FileNodeViewFolderExplorer-skeleton-row" satisfies FileNodeViewFolderExplorer_ClassNames}
+									aria-hidden="true"
+								>
+									<MyGridTableCell
+										className={cn(
+											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+											"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+										)}
+									>
+										<MySkeleton
+											className={"FileNodeViewFolderExplorer-skeleton-icon" satisfies FileNodeViewFolderExplorer_ClassNames}
+										/>
+										<MySkeleton
+											className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
+										/>
+									</MyGridTableCell>
+									{columns
+										.filter((field) => field !== "name")
+										.map((field) => (
+											<MyGridTableCell
+												key={field}
+												className={"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+											>
+												<MySkeleton
+													className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
+												/>
+											</MyGridTableCell>
+										))}
+									<MyGridTableCell
+										className={cn(
+											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+											"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+										)}
+									/>
+								</MyGridTableRow>
+							))}
 					</MyGridTableBody>
 				</MyGridTable>
 			</div>
@@ -5320,6 +5383,16 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				>
 					Show more
 				</MyButton>
+			)}
+			{/* Keep the Show more row's space while rows load. Then a folder with more rows than the table
+			    shows at first does not push the page down when the button appears. */}
+			{isLoadingRows && (
+				<div
+					className={"FileNodeViewFolderExplorer-show-more-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
+					aria-hidden="true"
+				>
+					<MySkeleton className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames} />
+				</div>
 			)}
 			{canShowLess && (
 				<>
@@ -5364,6 +5437,12 @@ type FileNodeViewFolderReadme_Props = {
 const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: FileNodeViewFolderReadme_Props) {
 	const { readmeNodeId, isReadmeLoading, canWrite, isCreatingReadme, onCreateReadmeClick } = props;
 
+	// Show nothing until we know if the folder has a README. A skeleton would have to guess between the
+	// README and the "No README.md" box, and a wrong guess changes shape twice.
+	if (isReadmeLoading) {
+		return null;
+	}
+
 	return (
 		<section className={"FileNodeViewFolderReadme" satisfies FileNodeViewFolderReadme_ClassNames}>
 			{readmeNodeId ? (
@@ -5373,8 +5452,6 @@ const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: F
 					</MyIcon>
 					<h2 className={"FileNodeViewFolderReadme-title" satisfies FileNodeViewFolderReadme_ClassNames}>README.md</h2>
 				</div>
-			) : isReadmeLoading ? (
-				<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
 			) : (
 				<div className={"FileNodeViewFolderReadme-empty" satisfies FileNodeViewFolderReadme_ClassNames}>
 					<h2 className={"FileNodeViewFolderReadme-empty-title" satisfies FileNodeViewFolderReadme_ClassNames}>
@@ -5771,7 +5848,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
 
-	const queriedNode = useQuery(
+	// Use the query cache for the selected node and its folder README, so going back to a node shows it at once.
+	const queriedNode = useCachedQuery(
 		app_convex_api.files_tree.get_file_node_for_membership,
 		searchNodeId && !isRootNodeSelected
 			? {
@@ -5785,7 +5863,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		app_convex_api.files_tree.get_file_node_access_for_membership,
 		searchNodeId && !isRootNodeSelected && queriedNode === null ? { membershipId, fileNodeId: searchNodeId } : "skip",
 	);
-	const selectedTargetView = useQuery(
+	const selectedTargetView = useCachedQuery(
 		app_convex_api.files_pending_target.get_file_pending_target,
 		searchPrivateNodeId
 			? { membershipId, target: { kind: "private", id: searchPrivateNodeId } }
@@ -5825,9 +5903,15 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// The view reads only the rows the user can open. The folder table shows the locked rows itself.
 	const fileNodesList = useMemo(() => treeRows?.filter((row) => !row.locked), [treeRows]);
 
-	// Show the loaded tree node while the query starts. A null answer must still clear the view.
+	// Show the loaded tree node while the query starts. A row from any open folder counts, such as a
+	// sidebar row in another expanded folder. A null answer must still clear the view. A locked row
+	// has no content fields, so it waits for the query, which shows the locked screen.
+	const loadedNode = FilesTreeProvider.useLoadedNode(searchNodeId && !isRootNodeSelected ? searchNodeId : undefined);
 	const resolvedNode =
-		queriedNode === undefined ? fileNodesList?.find((item) => item._id === searchNodeId) : queriedNode;
+		queriedNode === undefined
+			? (fileNodesList?.find((item) => item._id === searchNodeId) ??
+				(loadedNode && !loadedNode.locked ? loadedNode : undefined))
+			: queriedNode;
 	const resolvedNodeId = isRootNodeSelected ? files_ROOT_ID : (resolvedNode?._id ?? null);
 	// Keep create actions scoped to the visible folder/root selection; file views use this toolbar only for editor actions.
 	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;
@@ -5838,7 +5922,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		() => files_collect_protected_descendant_ids(fileNodesList ?? []),
 		[fileNodesList],
 	);
-	const folderReadme = useQuery(
+	const folderReadme = useCachedQuery(
 		app_convex_api.files_tree.get_folder_readme,
 		targetFolderId ? { membershipId, folderId: targetFolderId } : "skip",
 	);

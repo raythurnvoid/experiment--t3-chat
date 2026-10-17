@@ -19,6 +19,12 @@ vi.mock("@/lib/app-channels-context.tsx", () => ({
 	AppChannelsProvider: (props: { children: ReactNode }) => props.children,
 }));
 
+// Skip the query cache, so one test's queries do not stay for the next.
+vi.mock("convex-helpers/react/cache", async () => {
+	const { useQueries, useQuery } = await import("convex/react");
+	return { useQueries, useQuery };
+});
+
 const MEMBERSHIP_ID = "membership_1";
 const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
 

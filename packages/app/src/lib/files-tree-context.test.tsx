@@ -17,6 +17,12 @@ vi.mock("@/lib/app-channels-context.tsx", () => ({
 	AppChannelsProvider: (props: { children: ReactNode }) => props.children,
 }));
 
+// Skip the query cache. It adds its own listener to each query, and these tests count the pager listeners.
+vi.mock("convex-helpers/react/cache", async () => {
+	const { useQueries, useQuery } = await import("convex/react");
+	return { useQueries, useQuery };
+});
+
 const results = new Map<string, unknown>();
 const listeners = new Map<string, Set<() => void>>();
 let client: ConvexReactClient;

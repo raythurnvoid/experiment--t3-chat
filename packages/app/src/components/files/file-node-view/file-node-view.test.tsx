@@ -88,6 +88,12 @@ vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
 	return { useFilesPaginatedQuery: usePaginatedQuery };
 });
 
+// The cached hooks use the `convex/react` mock below.
+vi.mock("convex-helpers/react/cache", async () => {
+	const { useQueries, useQuery } = await import("convex/react");
+	return { useQueries, useQuery };
+});
+
 vi.mock("convex/react", async () => {
 	const { useEffect, useId, useMemo, useState } = await import("react");
 	return {
@@ -182,6 +188,8 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 					loadMore: () => {},
 				};
 			},
+			// `useFolders` already serves every row.
+			useLoadedNode: () => undefined,
 			// Unknown, so the folder table reads every stream.
 			useIsOwner: () => null,
 		},
@@ -1857,7 +1865,7 @@ describe("FileNodeView folder sort", () => {
 			).toBe(true),
 		);
 		expect(table.getAttribute("aria-busy")).toBe("true");
-		expect(screen.getByText("Loading folder contents…")).toBeTruthy();
+		expect(table.querySelectorAll(".FileNodeViewFolderExplorer-skeleton-row")).toHaveLength(5);
 		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("applying");
 	});
 

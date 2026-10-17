@@ -8,6 +8,7 @@ import { ClerkProvider } from "@clerk/clerk-react";
 import { ThemeProvider } from "./components/theme-provider.tsx";
 import { AppToaster } from "./components/app-toaster.tsx";
 import { ConvexProvider, ConvexProviderWithAuth } from "convex/react";
+import { ConvexQueryCacheProvider } from "convex-helpers/react/cache";
 import { AppAuthProvider } from "./components/app-auth.tsx";
 import { AppHotkeysProvider } from "./components/app-hotkeys.tsx";
 import type { AppElementId } from "./lib/dom-utils.ts";
@@ -54,7 +55,9 @@ if (url_is_share_path(router.state.location.pathname)) {
 		<StrictMode>
 			<ThemeProvider>
 				<ConvexProvider client={app_convex}>
-					<RouterProvider router={router} />
+					<ConvexQueryCacheProvider>
+						<RouterProvider router={router} />
+					</ConvexQueryCacheProvider>
 				</ConvexProvider>
 				<AppToaster />
 			</ThemeProvider>
@@ -88,7 +91,11 @@ if (url_is_share_path(router.state.location.pathname)) {
 					<ClerkProvider publishableKey={publishableKey} clerkJSVersion={CLERK_JS_VERSION} afterSignOutUrl="/">
 						<AppAuthProvider>
 							<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useConvexAuth}>
-								<RouterProvider router={router} />
+								{/* Keep a query subscribed for 5 minutes after its last user unmounts, so going back to a
+								    folder shows its rows at once. Only hooks imported from `convex-helpers/react/cache` use it. */}
+								<ConvexQueryCacheProvider>
+									<RouterProvider router={router} />
+								</ConvexQueryCacheProvider>
 							</ConvexProviderWithAuth>
 						</AppAuthProvider>
 					</ClerkProvider>

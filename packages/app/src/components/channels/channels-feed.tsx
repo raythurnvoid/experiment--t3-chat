@@ -108,6 +108,12 @@ export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?
 	const { inbox, inboxUnreadCount, inboxHasMore } = AppChannelsProvider.useContext();
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { people } = useChannelsPeople();
+
+	// Hide the compact popover block when there is nothing to show or load.
+	if (compact && inbox.results.length === 0 && inbox.status === "Exhausted") {
+		return null;
+	}
+
 	return (
 		<section
 			className={cn(

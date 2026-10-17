@@ -137,6 +137,17 @@ Root loading must check the expected first-page row IDs in order, on the same `F
 table, plus `aria-busy="false"` and `data-sort-state="ready"`. The URL can change while the previous
 folder table still says ready. Before timing Home, check the source folder's exact row IDs too.
 An unfiltered table has no `data-filter-state` attribute. Do not wait for it to say `ready`.
+While a folder has no rows to show yet, the table holds five `.FileNodeViewFolderExplorer-skeleton-row`
+rows and `aria-busy="true"`. The README area renders nothing until its query answers. There is no
+"Loading" text to wait for. A cached revisit shows no skeleton at all.
+The skeleton lasts only about 200–600 ms, so a screenshot taken after it appears usually misses it.
+Throttling the CPU over CDP does not help. `page.routeWebSocket` fails over the extension relay
+(`__pwWebSocketBinding is not exposed`), so you cannot hold back Convex replies either. Instead,
+before the click, install a `MutationObserver` that copies the editor area's `outerHTML` and its
+rect when the first skeleton row appears. After the load, put that copy in a fixed overlay at the
+same rect, take the screenshot, then remove the overlay and the observer.
+To time a click on `link "Open <name>"`, use `page.mouse.click` on its box. `locator.click` waits for
+the navigation, and while a big folder renders it can time out after the click already worked.
 The Root preview shows five rows. Use Show more before timing a source outside that preview.
 
 Search suggestions can cover result rows and Clear search. Close them with Escape before clicking.

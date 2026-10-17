@@ -66,6 +66,9 @@
 		flex: 1;
 
 		overflow-y: auto;
+		/* Keep the vertical scrollbar's space even when the content fits. Otherwise the panel gets
+		   narrower the moment loaded content (such as a folder README) makes it scroll. */
+		scrollbar-gutter: stable;
 
 		contain: strict;
 		container: FileNodeView-editor-area / size;
@@ -908,25 +911,33 @@
 		overflow-wrap: anywhere;
 	}
 
+	/* The frame is on the scroll box, not on the table, so the horizontal scrollbar sits inside the
+	   frame. The scrollbar always shows, even when the table fits. Its space is then always there,
+	   and long names that make the table wider do not push the page down. Overlay scrollbars take no
+	   space, so nothing moves there either. */
 	.FileNodeViewFolderExplorer-table-scroll {
 		width: 100%;
-		overflow-x: auto;
-	}
-
-	.FileNodeViewFolderExplorer-table {
-		width: 100%;
-		min-width: max-content;
-		overflow: hidden;
+		overflow: scroll hidden;
 
 		border: 1px solid var(--color-fg-03);
 		border-radius: 8px;
 		background: var(--color-base-1-04);
 
 		/* Keep the bottom flat when Show more or Show less follows the table. */
-		.FileNodeViewFolderExplorer:has(.FileNodeViewFolderExplorer-show-more, .FileNodeViewFolderExplorer-show-less) & {
+		.FileNodeViewFolderExplorer:has(
+				.FileNodeViewFolderExplorer-show-more,
+				.FileNodeViewFolderExplorer-show-less,
+				.FileNodeViewFolderExplorer-show-more-skeleton
+			)
+			& {
 			border-bottom-left-radius: 0;
 			border-bottom-right-radius: 0;
 		}
+	}
+
+	.FileNodeViewFolderExplorer-table {
+		width: 100%;
+		min-width: max-content;
 	}
 
 	.FileNodeViewFolderExplorer-header-row {
@@ -1074,6 +1085,38 @@
 
 	.FileNodeViewFolderExplorer-row-drop-target {
 		background: var(--color-base-1-06);
+	}
+
+	/* Keep the real row's height: 44px cells, which the actions button gives a real row, plus the border.
+	   So the minimum goes on the cells, not on the row. */
+	.FileNodeViewFolderExplorer-skeleton-row {
+		> .FileNodeViewFolderExplorer-cell {
+			min-height: 44px;
+		}
+
+		&:not(:last-child) {
+			border-bottom: 1px solid var(--color-fg-03);
+		}
+	}
+
+	.FileNodeViewFolderExplorer-skeleton-icon {
+		width: 16px;
+		height: 16px;
+		flex: 0 0 auto;
+
+		border-radius: 4px;
+	}
+
+	.FileNodeViewFolderExplorer-skeleton {
+		width: 60%;
+		height: 12px;
+
+		border-radius: 4px;
+
+		/* Vary the name widths a little, so the rows look like names and not like one block. */
+		.FileNodeViewFolderExplorer-skeleton-row:nth-child(even) .FileNodeViewFolderExplorer-cell-name & {
+			width: 40%;
+		}
 	}
 
 	.FileNodeViewFolderExplorer-row-action {
@@ -1358,6 +1401,24 @@
 				0 -1px 0 var(--color-fg-03),
 				inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
 				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
+		}
+	}
+
+	/* The same box as the Show more button, so the button takes its place without moving the page. */
+	.FileNodeViewFolderExplorer-show-more-skeleton {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		height: 45px;
+
+		border: 1px solid var(--color-fg-03);
+		border-top: none;
+		border-radius: 0 0 8px 8px;
+		background: var(--color-base-1-04);
+
+		.FileNodeViewFolderExplorer-skeleton {
+			width: 72px;
 		}
 	}
 
