@@ -180,6 +180,8 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 					loadMore: () => {},
 				};
 			},
+			// `useFolders` already serves every row.
+			useLoadedNode: () => undefined,
 			// Unknown, so the folder table reads every stream.
 			useIsOwner: () => null,
 		},

@@ -5747,9 +5747,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					: [],
 	}).rows;
 
-	// Show the loaded tree node while the query starts. A null answer must still clear the view.
+	// Show the loaded tree node while the query starts. A row from any open folder counts, such as a
+	// sidebar row in another expanded folder. A null answer must still clear the view.
+	const loadedNode = FilesTreeProvider.useLoadedNode(searchNodeId && !isRootNodeSelected ? searchNodeId : undefined);
 	const resolvedNode =
-		queriedNode === undefined ? fileNodesList?.find((item) => item._id === searchNodeId) : queriedNode;
+		queriedNode === undefined
+			? (fileNodesList?.find((item) => item._id === searchNodeId) ?? loadedNode)
+			: queriedNode;
 	const resolvedNodeId = isRootNodeSelected ? files_ROOT_ID : (resolvedNode?._id ?? null);
 	// Keep create actions scoped to the visible folder/root selection; file views use this toolbar only for editor actions.
 	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;

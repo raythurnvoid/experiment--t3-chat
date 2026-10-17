@@ -120,6 +120,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 vi.mock("@/lib/files-tree-context.tsx", () => ({
 	FilesTreeProvider: {
 		useFolders: () => ({ rows: [], statusByFolderId: new Map(), hoistedIds: new Set(), loadMore: () => {} }),
+		useLoadedNode: () => undefined,
 	},
 }));
 vi.mock("@/components/app-auth.tsx", () => ({

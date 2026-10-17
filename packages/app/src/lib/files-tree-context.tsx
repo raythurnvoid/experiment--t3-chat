@@ -549,6 +549,28 @@ const FilesTreeProvider = Object.assign(
 		},
 
 		/**
+		 * The node's row when any open folder has loaded it, else undefined. Every consumer's folders
+		 * count, so a row the sidebar shows is found even when the caller did not ask for its folder.
+		 */
+		useLoadedNode: function useLoadedNode(nodeId: string | undefined) {
+			const value = use(FilesTreeContext);
+			if (!value) {
+				throw new Error("FilesTreeProvider.useLoadedNode must be used within FilesTreeProvider");
+			}
+
+			if (nodeId === undefined) {
+				return undefined;
+			}
+			for (const result of value.folderResults.values()) {
+				const row = result.rows.find((item) => item._id === nodeId);
+				if (row) {
+					return row;
+				}
+			}
+			return undefined;
+		},
+
+		/**
 		 * Whether the reader owns the organization, or null while that loads. The owner reads restricted
 		 * children in the restricted twins, and a member reads them in the share streams.
 		 */
