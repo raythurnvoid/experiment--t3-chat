@@ -45,14 +45,15 @@ const RouteFiles = memo(function RouteFiles() {
 			}
 
 			// Keep the same arg order as the folder view, so both share one subscription.
-			const unsubscribe = convex
-				.watchQuery(app_convex_api.files_tree.get_folder_readme, {
-					membershipId,
-					folderId: nodeId as app_convex_Doc<"files_nodes">["parentId"],
-				})
-				.onUpdate(() => {});
-			// The folder view holds its own subscription once it mounts, so this one can end.
-			setTimeout(unsubscribe, 10_000);
+			// The folder view holds its own subscription once it mounts, so this one ends after 10s.
+			// Do not call `watchQuery(...).onUpdate(() => {})` here: the React Compiler turns the empty
+			// callback into one shared function, the client keeps it once per query, and the second
+			// unsubscribe throws.
+			convex.prewarmQuery({
+				query: app_convex_api.files_tree.get_folder_readme,
+				args: { membershipId, folderId: nodeId as app_convex_Doc<"files_nodes">["parentId"] },
+				extendSubscriptionFor: 10_000,
+			});
 		});
 	}, [router, convex, membershipId]);
 

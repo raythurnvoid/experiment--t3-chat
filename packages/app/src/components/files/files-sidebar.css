@@ -210,7 +210,7 @@
 
 	/* A match the user cannot open. */
 	.FilesSidebarSearchResults-row-locked .FilesSidebarSearchResults-row-name {
-		color: var(--color-fg-08);
+		color: var(--color-fg-06);
 	}
 
 	.FilesSidebarSearchResults-row-path {
@@ -667,7 +667,7 @@
 
 	/* A row the user cannot open. */
 	.FilesSidebarTreeItem-content-locked > .FilesSidebarTreeItemPrimaryContent {
-		color: var(--color-fg-08);
+		color: var(--color-fg-06);
 	}
 
 	.FilesSidebarTreeItemPrimaryContent-read-only {

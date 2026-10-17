@@ -1,7 +1,22 @@
+import { act, render } from "@testing-library/react";
+import { ConvexProvider, ConvexReactClient } from "convex/react";
+import { createElement, type ComponentType } from "react";
 import { describe, expect, test, vi } from "vitest";
 
+const routerListeners = vi.hoisted(() => [] as Array<(event: unknown) => void>);
+
 vi.mock("@tanstack/react-router", () => ({
-	createFileRoute: (_path: string) => (options: unknown) => ({ options }),
+	createFileRoute: (_path: string) => (options: unknown) => ({
+		options,
+		useNavigate: () => () => Promise.resolve(),
+		useSearch: () => ({}),
+	}),
+	useRouter: () => ({
+		subscribe: (_name: string, listener: (event: unknown) => void) => {
+			routerListeners.push(listener);
+			return () => {};
+		},
+	}),
 }));
 
 vi.mock("@/components/files/file-node-view/file-node-view.tsx", () => ({
@@ -10,7 +25,7 @@ vi.mock("@/components/files/file-node-view/file-node-view.tsx", () => ({
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
-		useContext: () => ({ organizationName: "personal", workspaceName: "home" }),
+		useContext: () => ({ membershipId: "m1", organizationName: "personal", workspaceName: "home" }),
 	},
 }));
 
@@ -48,5 +63,25 @@ describe("validateSearch", () => {
 		expect(validateSearch.parse({ filter: "junk" }).filter).toBeUndefined();
 		expect(validateSearch.parse({ view_q: "file.na" }).view_q).toBe("file.na");
 		expect(validateSearch.parse({ view_q: "a".repeat(2001) }).view_q).toBeUndefined();
+	});
+});
+
+describe("README preload", () => {
+	test("two navigations to the same folder each end their own README subscription", () => {
+		vi.useFakeTimers();
+		// A socket that never opens keeps the real client local.
+		const client = new ConvexReactClient("https://files-route-test.convex.cloud", {
+			webSocketConstructor: class {} as unknown as typeof WebSocket,
+		});
+		const view = render(
+			createElement(ConvexProvider, { client }, createElement(Route.options.component as ComponentType)),
+		);
+		const event = { pathChanged: false, toLocation: { search: { nodeId: "k57" } } };
+		for (const listener of routerListeners) listener(event);
+		for (const listener of routerListeners) listener(event);
+		// The real client throws when one listener is removed twice.
+		expect(() => act(() => vi.advanceTimersByTime(10_000))).not.toThrow();
+		view.unmount();
+		vi.useRealTimers();
 	});
 });

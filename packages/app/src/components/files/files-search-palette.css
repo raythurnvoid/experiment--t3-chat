@@ -147,7 +147,7 @@
 
 	/* A match the user cannot open. */
 	.FilesSearchPaletteGroup-item-locked .FilesSearchPaletteGroup-item-name {
-		color: var(--color-fg-08);
+		color: var(--color-fg-06);
 	}
 
 	.FilesSearchPaletteGroup-item-path {
