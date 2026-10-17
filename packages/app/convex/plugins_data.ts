@@ -12,7 +12,7 @@ import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
-import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
@@ -3964,6 +3964,15 @@ async function db_sync_file_access_bindings(args: {
 			if (remove) {
 				await ctx.db.delete("access_control_permission_grants", grant._id);
 				if (grant.principalKind !== "service_account") readersChanged = true;
+				else if (grant.serviceAccountId) {
+					await plugins_db_sync_sandbox_root(ctx, {
+						organizationId: binding.organizationId,
+						workspaceId: binding.workspaceId,
+						serviceAccountId: grant.serviceAccountId,
+						resource: { kind: "file", nodeId: binding.nodeId },
+						level: null,
+					});
+				}
 				continue;
 			}
 			if (grant.principalKind === "user" && grant.userId && grant.permission === "content.read") {

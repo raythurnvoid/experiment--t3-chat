@@ -39,7 +39,7 @@ import {
 	organizations_membership_lifetimes_db_get,
 	organizations_membership_lifetimes_db_record,
 } from "./organizations_membership_lifetimes.ts";
-import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import app_convex_schema from "./schema.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
@@ -662,6 +662,12 @@ export async function access_control_db_set_service_account_grant(
 				}
 			}
 		}
+	}
+
+	// Before any write: a 21st plugin folder refuses the whole change.
+	const synced = await plugins_db_sync_sandbox_root(ctx, args);
+	if (synced._nay) {
+		return synced;
 	}
 
 	const wanted = new Set<access_control_GrantPermission>(

@@ -133,7 +133,12 @@ describe("install_version service accounts", () => {
 		).toBeUndefined();
 
 		const rebound = (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installation._id)))!;
-		expect(rebound).toEqual({ ...beforeRebind, serviceAccountId: replacement._yay.serviceAccountId });
+		// The new account's roots are built by a background job.
+		expect(rebound).toEqual({
+			...beforeRebind,
+			serviceAccountId: replacement._yay.serviceAccountId,
+			sandbox: { roots: [], rebuild: { status: "running", leaseUntil: expect.any(Number) } },
+		});
 		expect(
 			await t.run((ctx) => plugins_db_get_live_service_account(ctx, { installation: rebound, serviceAccountId })),
 		).toBeNull();

@@ -108,6 +108,7 @@ import {
 } from "./files_share_links_db.ts";
 import { files_updated_by_db_delete_for_node, files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
+import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { access_control_db_authorize_membership, access_control_db_authorize_node, access_control_db_authorize_file_write, access_control_db_can_act_on_file_node, access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
@@ -2052,6 +2053,17 @@ export async function files_nodes_db_hard_delete_node(
 		...lastSequenceSavedDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
 		...shareGrants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)),
 	]);
+	// A deleted account grant frees its plugin folder slot.
+	for (const grant of shareGrants) {
+		if (grant.principalKind !== "service_account" || !grant.serviceAccountId) continue;
+		await plugins_db_sync_sandbox_root(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			serviceAccountId: grant.serviceAccountId,
+			resource: { kind: "file", nodeId: node._id },
+			level: null,
+		});
+	}
 
 	for (const assetId of assetIds) {
 		const asset = await ctx.db.get("files_r2_assets", assetId);

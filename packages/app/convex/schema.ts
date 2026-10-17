@@ -158,6 +158,19 @@ const playwriter_command_identity_validator = v.object({
 });
 
 /**
+ * One folder a plugin credential may reach. A copy of one grant of the plugin's service account.
+ */
+export const plugins_sandbox_root_validator = v.object({
+	target: v.union(
+		// Open content only: nodes whose live restricted scope is null. Stops at every restricted folder.
+		v.object({ kind: v.literal("open") }),
+		// This node and what is below it in the same restricted area. A file root reaches only that file.
+		v.object({ kind: v.literal("folder"), nodeId: v.id("files_nodes") }),
+	),
+	level: v.union(v.literal("read"), v.literal("write"), v.literal("manage")),
+});
+
+/**
  * Which MCP server a doc is about: a server a plugin declares, or a server a member added. Every doc
  * that names an MCP server keeps it in one `target` field, and indexes use its nested paths.
  */
@@ -6969,10 +6982,34 @@ const app_convex_schema = defineSchema({
 		 * The skill names the install dialog showed.
 		 */
 		acceptedSkillNames: v.array(v.string()),
+		/**
+		 * The folders this plugin's credentials may reach: a copy of its service account's grants, at
+		 * most 20. Every account grant write keeps it in sync. Plugin output folders are never roots.
+		 * See "Sandbox roots" in the `plugin-system` skill.
+		 *
+		 * Missing = not backfilled yet. Required after the backfill.
+		 */
+		sandbox: v.optional(
+			v.object({
+				roots: v.array(plugins_sandbox_root_validator),
+				// Not null while a background job builds `roots` from all the account's grants. Plugin
+				// requests reach no folder until it ends. `leaseUntil` is the job's token; a cron restarts an
+				// expired one. `too_many_folders` waits for a grant change of the account.
+				rebuild: v.union(
+					v.null(),
+					v.object({ status: v.literal("running"), leaseUntil: v.number() }),
+					v.object({ status: v.literal("too_many_folders") }),
+				),
+			}),
+		),
 		installedBy: v.id("users"),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
 	})
+		// Grant writes keep `sandbox` in sync.
+		.index("by_serviceAccount", ["serviceAccountId"])
+		// Finds sandbox rebuilds whose chain stopped.
+		.index("by_sandboxRebuildLeaseUntil", ["sandbox.rebuild.leaseUntil"])
 		.index("by_organization_workspace_status_updatedAt", ["organizationId", "workspaceId", "status", "updatedAt"])
 		.index("by_organization_workspace_status_pluginName", ["organizationId", "workspaceId", "status", "pluginName"])
 		.index("by_organization_workspace_pluginName", ["organizationId", "workspaceId", "pluginName"])

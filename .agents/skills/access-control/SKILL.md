@@ -159,6 +159,8 @@ still needs account management. Install/update grants are explicit input, with a
 ceiling. Omitted grants stay unchanged. Updates, ensure calls, and reinstall never recreate grants
 or reactivate an account. Explicit installation rebind changes only its trusted tuple binding and
 installation pin. It does not move policies, copy grants, or rewrite old run/session/grant pins.
+It rebuilds the installation's sandbox roots (a copy of the account's grants) in a background
+job; see "Sandbox roots" in `../plugin-system/SKILL.md`.
 `plugins_db_get_live_service_account` checks the active account, saved pin, current version, and
 exact publisher/source tuple without repairing them.
 

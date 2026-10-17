@@ -46,6 +46,9 @@ crons.cron("recover expired activities", "*/5 * * * *", internal.activities.reco
 // Every 5 minutes — look up the usage of model calls whose request ended without saving it.
 crons.cron("recover model call usage", "*/5 * * * *", internal.ai_model_call_receipts.recover_due, {});
 
+// Every 5 minutes — restart plugin sandbox rebuilds whose chain stopped.
+crons.cron("recover plugin sandbox rebuilds", "*/5 * * * *", internal.plugins.recover_sandbox_rebuilds, {});
+
 // Every 5 minutes — restart the billing outbox drainer when its chain stopped.
 crons.cron("recover billing usage event outbox", "*/5 * * * *", internal.billing.recover_usage_event_outbox, {});
 

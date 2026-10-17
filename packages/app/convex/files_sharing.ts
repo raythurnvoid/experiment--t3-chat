@@ -40,6 +40,7 @@ import {
 } from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
+import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
@@ -243,12 +244,31 @@ async function db_detach_file_access_binding(args: {
 			)
 			.take(MAX_FILE_SHARE_GRANT_DOCS);
 		let changed = false;
+		const accountPermissions = new Map<Id<"access_control_service_accounts">, Set<access_control_GrantPermission>>();
 		for (const grant of grants) {
+			if (grant.principalKind === "service_account" && grant.serviceAccountId) {
+				const permissions = accountPermissions.get(grant.serviceAccountId) ?? new Set();
+				accountPermissions.set(grant.serviceAccountId, permissions.add(grant.permission));
+			}
 			if (grant.externalPluginMembershipLifetime !== undefined) {
 				await ctx.db.patch("access_control_permission_grants", grant._id, {
 					externalPluginMembershipLifetime: undefined,
 				});
 				changed = true;
+			}
+		}
+		// The folder is no longer a plugin output folder, so the account grant becomes a sandbox root.
+		for (const [serviceAccountId, permissions] of accountPermissions) {
+			const synced = await plugins_db_sync_sandbox_root(ctx, {
+				organizationId: externalBinding.organizationId,
+				workspaceId: externalBinding.workspaceId,
+				serviceAccountId,
+				resource: { kind: "file", nodeId: node._id },
+				level: access_control_file_share_level_from_permissions(permissions),
+			});
+			// Do not refuse a sharing change for a plugin limit. The plugin just does not reach the folder.
+			if (synced._nay) {
+				console.warn("Skipped a sandbox root past the plugin folder cap", { nodeId: node._id, serviceAccountId });
 			}
 		}
 		if (changed) {
