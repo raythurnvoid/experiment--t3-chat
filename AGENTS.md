@@ -420,6 +420,8 @@ Follow the existing test file's layout. When adding a new related group or reorg
 
 Add a test only when it protects behavior that can break silently. Every new test is code to maintain.
 
+A test is not a normal last step of a change. The default is no new test. Do not add one because a test file is nearby or because the change feels finished. Before you write one, name in one sentence the wrong behavior that could ship unnoticed. If you cannot name it, do not add the test.
+
 - Add one for business rules, permissions, data transforms, validation, race conditions, and bugs you fixed (the test must fail with the fix off).
 - Do not add one for text, labels, layout, class names, or a prop that is only passed through and shown.
 - Add at most one test per new behavior. Do not test each branch of a simple condition.
