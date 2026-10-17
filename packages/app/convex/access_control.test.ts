@@ -1684,9 +1684,11 @@ describe("set_node_share_grant service accounts", () => {
 			suffix: "plugin-account-share",
 		});
 		const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
-		const installation = (await t.run(
-			async (ctx) => await ctx.db.get("plugins_workspace_installations", installationId),
-		))!;
+		const installation = (await t.run(async (ctx) => {
+			const doc = await ctx.db.get("plugins_workspace_installations", installationId);
+			await ctx.db.patch("plugins_versions", doc!.pluginVersionId, { displayName: "Access Plugin" });
+			return doc;
+		}))!;
 		const nodeId = await access_control_test_seed_open_folder(fixture, { name: "plugin-input" });
 		const principal = { kind: "service_account" as const, serviceAccountId: installation.serviceAccountId };
 		expect(
@@ -1705,7 +1707,7 @@ describe("set_node_share_grant service accounts", () => {
 				membershipId: fixture.ownerMembershipId,
 				nodeId,
 			}),
-		).toMatchObject({ entries: [{ principal, servicePluginName: installation.pluginName }] });
+		).toMatchObject({ entries: [{ principal, servicePluginName: "Access Plugin" }] });
 	});
 
 	test("shares exact open nodes and removes a stored grant after a move changes its scope", async () => {

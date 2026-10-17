@@ -775,10 +775,11 @@ export const get_node_share_state = query({
 							.withIndex("by_serviceAccount", (q) => q.eq("serviceAccountId", account._id))
 							.first()
 					: null;
+				const version = installation ? await ctx.db.get("plugins_versions", installation.pluginVersionId) : null;
 				return {
 					...entry,
 					serviceAccountName: account?.name ?? null,
-					servicePluginName: installation?.pluginName ?? null,
+					servicePluginName: version?.displayName ?? null,
 				};
 			}),
 		);
