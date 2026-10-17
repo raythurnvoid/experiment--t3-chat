@@ -1096,6 +1096,7 @@ describe("plugin ui sessions", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					extendedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
 					writePolicy: null,
 					archiveOperationId: null,

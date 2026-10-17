@@ -1247,6 +1247,7 @@ async function test_insert_committed_external_markdown(args: {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
@@ -1558,6 +1559,7 @@ describe("non-collaborative files", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 

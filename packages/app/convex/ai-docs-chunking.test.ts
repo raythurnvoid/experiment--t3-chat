@@ -61,6 +61,7 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
 			newChildWritePolicy: null,

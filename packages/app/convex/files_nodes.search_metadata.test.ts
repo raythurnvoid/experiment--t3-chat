@@ -145,6 +145,7 @@ async function test_insert_searchable_markdown_file(args: {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
@@ -904,6 +905,7 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
@@ -3411,6 +3413,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
 

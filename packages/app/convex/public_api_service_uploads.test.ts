@@ -4395,6 +4395,7 @@ describe("service upload archive", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					extendedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
 					writePolicy: null,
 					newChildWritePolicy: null,

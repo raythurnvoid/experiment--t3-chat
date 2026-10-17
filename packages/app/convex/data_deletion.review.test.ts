@@ -133,6 +133,7 @@ async function data_deletion_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
 		writePolicy: null,
 
@@ -294,6 +295,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
@@ -1219,6 +1221,7 @@ async function review_seed_all_workspace_content(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
@@ -1261,6 +1264,7 @@ async function review_seed_all_workspace_content(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
 

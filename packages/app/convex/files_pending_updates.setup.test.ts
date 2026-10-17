@@ -195,6 +195,7 @@ export async function seed_file_with_markdown(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
 		writePolicy: null,
 		newChildWritePolicy: null,
@@ -274,6 +275,7 @@ export async function seed_folder_node(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
 		writePolicy: null,
 
@@ -407,6 +409,7 @@ export async function seed_non_collaborative_file(args: { ctx: MutationCtx; path
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
 		writePolicy: null,
 

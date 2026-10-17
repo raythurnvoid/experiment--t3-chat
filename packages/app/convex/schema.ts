@@ -553,7 +553,7 @@ const files_saved_placement_fields = {
 	isRestrictedScopeRoot: v.boolean(),
 	// Same as the `files_nodes` fields.
 	parentScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
-	extendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+	extendedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	parentExtendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 	updatedAt: v.number(),
 	updatedBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
@@ -4951,9 +4951,9 @@ const app_convex_schema = defineSchema({
 		/**
 		 * The nearest extended root at or above this node, below its restricted root, or null. An
 		 * extended root is an open item that has its own added people ("Add people"). A restricted root
-		 * always has null. Missing only until the backfill sets null.
+		 * always has null.
 		 */
-		extendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+		extendedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 		/**
 		 * Set only on an extended root: the parent's `extendedScopeNodeId`, so a permission check can
 		 * follow the chain of extended roots up. Missing means the node is not an extended root.

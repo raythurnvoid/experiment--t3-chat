@@ -591,7 +591,7 @@ export async function files_nodes_db_set_restricted_scope(args: {
 			while (!parentScopeNodeId && parentId !== files_ROOT_ID) {
 				const parent = await files_saved_placement_db_get_node(ctx.db, parentId, fixedView);
 				if (!parent) break;
-				if (parent._id === place.parentId) parentExtendedScopeNodeId = parent.extendedScopeNodeId ?? null;
+				if (parent._id === place.parentId) parentExtendedScopeNodeId = parent.extendedScopeNodeId;
 				if (parent.isRestrictedScopeRoot) parentScopeNodeId = parent._id;
 				parentId = parent.parentId;
 			}
@@ -3510,8 +3510,8 @@ export async function files_nodes_db_rebuild_node(
 		// A restricted root starts with no added people from above. An extended root keeps its own and
 		// links to its parent's chain. Any other child takes its parent's chain.
 		extendedScopeNodeId:
-			restrictedScopeNodeId === node._id ? null : isExtendedRoot ? node._id : (parent.extendedScopeNodeId ?? null),
-		...(isExtendedRoot ? { parentExtendedScopeNodeId: parent.extendedScopeNodeId ?? null } : {}),
+			restrictedScopeNodeId === node._id ? null : isExtendedRoot ? node._id : parent.extendedScopeNodeId,
+		...(isExtendedRoot ? { parentExtendedScopeNodeId: parent.extendedScopeNodeId } : {}),
 	};
 	if (
 		node.path === fields.path &&
@@ -3519,9 +3519,8 @@ export async function files_nodes_db_rebuild_node(
 		node.pathDepth === fields.pathDepth &&
 		node.restrictedScopeNodeId === fields.restrictedScopeNodeId &&
 		(!isBoundary || node.parentScopeNodeId === parent.restrictedScopeNodeId) &&
-		// A node from before the backfill has no field yet. The backfill writes it, not the job.
-		(node.extendedScopeNodeId ?? null) === fields.extendedScopeNodeId &&
-		(!isExtendedRoot || node.parentExtendedScopeNodeId === (parent.extendedScopeNodeId ?? null))
+		node.extendedScopeNodeId === fields.extendedScopeNodeId &&
+		(!isExtendedRoot || node.parentExtendedScopeNodeId === parent.extendedScopeNodeId)
 	) {
 		return false;
 	}

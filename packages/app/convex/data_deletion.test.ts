@@ -136,6 +136,7 @@ async function data_deletion_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
 		writePolicy: null,
 
@@ -698,6 +699,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
@@ -4728,6 +4730,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
@@ -4893,6 +4896,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
@@ -5222,6 +5226,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
@@ -5799,6 +5804,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
@@ -5896,6 +5902,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
@@ -6079,6 +6086,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
@@ -6127,6 +6135,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 
 				archiveOperationId: null,
@@ -8580,6 +8589,7 @@ describe("finalize_user_deletion_data", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					extendedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
 					writePolicy: null,
 

@@ -152,6 +152,7 @@ describe("ensure_plugin_folder", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					extendedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
 					archiveOperationId: null,
 					newChildWritePolicy: null,

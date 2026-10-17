@@ -1026,7 +1026,7 @@ export async function access_control_db_extended_chain_allows(
 		root_allows: (rootId: Id<"files_nodes">) => Promise<boolean>;
 	},
 ) {
-	let pointer = args.node.extendedScopeNodeId ?? null;
+	let pointer = args.node.extendedScopeNodeId;
 	let lastPathLength = Infinity;
 	for (let deadHops = 0; pointer && deadHops <= DEAD_SCOPE_MAX_HOPS;) {
 		const root = await args.get_node(pointer);
@@ -1044,7 +1044,7 @@ export async function access_control_db_extended_chain_allows(
 		lastPathLength = root.treePath.length;
 		if (root.parentExtendedScopeNodeId === undefined) {
 			deadHops += 1;
-			pointer = root.extendedScopeNodeId ?? null;
+			pointer = root.extendedScopeNodeId;
 			continue;
 		}
 		if (await args.root_allows(root._id)) {
@@ -1250,7 +1250,7 @@ function create_file_checker(
 		}
 		const full =
 			node.treePath !== undefined && node.extendedScopeNodeId !== undefined
-				? { ...node, treePath: node.treePath }
+				? { ...node, treePath: node.treePath, extendedScopeNodeId: node.extendedScopeNodeId }
 				: await get_node(node._id);
 		if (!full) {
 			return false;

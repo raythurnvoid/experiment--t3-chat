@@ -87,6 +87,7 @@ describe("tenant deletion with many direct file grants", () => {
 							contentFrontmatterTooLargeFieldCount: null,
 							contentFrontmatterTooLargeIndexDocumentCount: null,
 							restrictedScopeNodeId: null,
+							extendedScopeNodeId: null,
 							isRestrictedScopeRoot: false,
 							writePolicy: null,
 

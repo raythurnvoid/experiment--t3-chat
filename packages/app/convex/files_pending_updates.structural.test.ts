@@ -243,6 +243,7 @@ describe("upsert_file_pending_move_in_db", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
@@ -6622,6 +6623,7 @@ describe("pending path overlay reads", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 

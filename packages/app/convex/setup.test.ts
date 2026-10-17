@@ -1250,6 +1250,7 @@ export const test_mocks = {
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
+				extendedScopeNodeId: null,
 				writePolicy: null,
 				newChildWritePolicy: null,
 				archiveOperationId: null,

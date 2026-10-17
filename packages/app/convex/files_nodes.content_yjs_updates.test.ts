@@ -801,6 +801,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				writePolicy: null,
 

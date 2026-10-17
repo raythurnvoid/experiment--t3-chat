@@ -41,8 +41,8 @@ export type files_VisibleEntry =
 
 export type files_VisibleTreeNode = Omit<
 	app_convex_Doc<"files_nodes">,
-	// The public node queries leave out both write policies. They also leave out `sortName` and
-	// `isRestrictedScopeRoot`: only server indexes read them.
+	// The public node queries leave out both write policies. They also leave out `sortName`,
+	// `isRestrictedScopeRoot` and `extendedScopeNodeId`: only the server reads them.
 	| "organizationId"
 	| "workspaceId"
 	| "createdBy"
@@ -51,6 +51,7 @@ export type files_VisibleTreeNode = Omit<
 	| "newChildWritePolicy"
 	| "sortName"
 	| "isRestrictedScopeRoot"
+	| "extendedScopeNodeId"
 > & {
 	organizationId: app_convex_Id<"organizations">;
 	workspaceId: app_convex_Id<"organizations_workspaces">;
