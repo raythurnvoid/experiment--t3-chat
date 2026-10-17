@@ -11,8 +11,8 @@ may change the node. Selecting a writer grants no file access.
 
 A writer rule lists one or more writers. Each writer is a human user or a service account, and any
 listed writer may edit. Ordinary app, agent, and Bash operations use
-the human. A service-bound key or plugin backend uses its bound account, with the current human actor
-as a separate permission ceiling. Plugin names, labels, run IDs, and upload targets do not identify a
+the human. A service-bound key or plugin backend writes as its bound account. A bound key's access is
+the account's own; a plugin's access is its human's inside the sandbox roots. Plugin names, labels, run IDs, and upload targets do not identify a
 writer. They remain separate integration constraints.
 
 Each file and folder has its own `writePolicy`. A parent rule never blocks a child by itself.
@@ -146,10 +146,11 @@ reads no children, so Properties and policy saves cost the same on a folder like
 rename and move-out of its direct children (see above). Each restricted child keeps its own
 `content.permissions.manage` for its own rule.
 
-The setter requires current actor and optional account `content.permissions.manage` on the actual
-target. Apply to contents runs from Save only when the person checks it and confirms (see UI
-Capability Model). Every listed user must be an active workspace
-member, and every listed account must be active in the same workspace, or the save refuses with
+The setter requires `content.permissions.manage` on the actual target for the request's subject
+(a person, a plugin inside its sandbox roots, or an account). Apply to contents runs from Save only
+when the person checks it and confirms (see UI Capability Model). Every listed user must be an
+active workspace member, and every listed account must be active in the same workspace, or the
+save refuses with
 "Writer is not available". A stored writer who left or was revoked stays in the stored rule and
 still counts for the write check. The management state hides it (see UI Capability Model), so a
 manager who saves the rule again drops or replaces it. Only a new or changed rule checks its
@@ -215,7 +216,7 @@ of never showing hidden items.
 
 # Enforcement Rules
 
-- Use this order: current auth and membership, actor/account ACL, resource scope and policy, conflict
+- Use this order: current auth and membership, the subject's ACL, resource scope and policy, conflict
   details, then writes. Policy is outside ACL because owner permission does not bypass a policy.
 - `files_nodes_db_require_writable` accepts trusted writer, actor, resource scope, and policy reach.
   It does not read plugin docs or infer identity from labels. Its callers establish current credentials
@@ -228,7 +229,7 @@ of never showing hidden items.
   destination folder's selected-writer rule when creating a child there. A parent read-only rule
   still never blocks an unlocked child. Generic sealed service doors use direct reach and keep
   their destination and target limits. Public service writer requests may use ancestor reach only
-  after their sealed destination, current service secret, `workspace.files.own-write`, actor/account
+  after their sealed destination, current service secret, `workspace.files.own-write`, the subject's
   ACL, labels, and pinned output scope pass.
 - Generic account keys use account permissions and their validated resource scope. Invoke plugins
   also keep accepted capability, editable label, source, and current installation checks. UI sessions
@@ -392,8 +393,9 @@ of never showing hidden items.
   operation is cancelled with a durable receipt before success is returned; late reader calls refuse.
   This cancellation changes no sharing and requires a recognized sealed grant for the pinned root.
   After an upgrade or account rebind, an old proof cannot authorize the undo. A current sealed
-  grant for the same installation and exact root may recover that recorded operation. The current
-  actor and account need Files write and sharing-management access. Current labels, policies,
+  grant for the same installation and exact root may recover that recorded operation. The plugin, as
+  the current actor inside its sandbox roots, needs Files write and sharing-management access. In its
+  own output folder the account's live grant sets the level. Current labels, policies,
   membership lifetimes, writer generation, and reader revision still apply. A detached binding is
   acknowledged without changing sharing. No old credential grants new authority.
 - Private draft moves check current access and policy on their saved source and destination parents.
@@ -406,7 +408,7 @@ of never showing hidden items.
   keeps its saved occupant until Save. Discard, expiry, and moving the draft elsewhere leave that
   occupant unchanged, including after a policy refusal. Bash `/tmp` and readable copy-out stay usable.
 - Raw path/overlay resolution remains unfiltered so hidden occupied paths still conflict. Authorized
-  read entrypoints apply actor and optional account visibility after lookup. Lists never expose raw
+  read entrypoints apply the request subject's visibility after lookup. Lists never expose raw
   policy fields or hidden writer/source identity.
 
 # Error Contract
@@ -456,7 +458,7 @@ A committed target stays terminal. Only a named tenant, workspace, or account de
 these use `db_purge_organization_workspace_content_batch` in `data_deletion.ts`.
 
 Those retry doors still recheck the target's original destination seal, active current path, and
-current actor/account authority and restricted-file ACL. Fresh attempts also repeat paid-plan and
+current subject authority and restricted-file ACL. Fresh attempts also repeat paid-plan and
 stored-cap admission. A later lock alone does not stop them.
 If a service call observes that a member moved the file outside the seal, it closes those doors
 permanently for that target. The accepted R2 event can still finish and charge the file's real size.
@@ -568,7 +570,7 @@ control only because its save is running. Folder radio groups use unique names.
 
 # Related Skills
 
-- `../access-control/SKILL.md`: actor/account permissions, grants, and account management.
+- `../access-control/SKILL.md`: subjects, permissions, grants, and account management.
 - `../files-agent-pending-updates/SKILL.md`: proposal, commit, discard, and private cleanup.
 - `../files-editable-text/SKILL.md`: Yjs write doors and shape guards.
 - `../files-explorer-tree/SKILL.md`: tree operations and row interactions.

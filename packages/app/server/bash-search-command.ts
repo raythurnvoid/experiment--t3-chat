@@ -268,8 +268,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						userId: pageArgs.mount.fs.ctxData.userId,
-						// Volume reads check the original user's live access at the query boundary.
-						hasWorkspaceRead: true,
+						subject: { kind: "user", userId: pageArgs.mount.fs.ctxData.userId, plugin: null },
 						query: parsed._yay.query,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
@@ -316,9 +315,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						userId: pageArgs.mount.fs.ctxData.userId,
-						// Plugin trees live under the reserved global organization, where no node can be
-						// restricted, so workspace read holds by construction.
-						hasWorkspaceRead: true,
+						subject: { kind: "user", userId: pageArgs.mount.fs.ctxData.userId, plugin: null },
 						query: parsed._yay.query,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
@@ -355,8 +352,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
 				userId: scope.ctxData.userId,
-				// Agent reads recheck both the source chat and this destination in the query.
-				hasWorkspaceRead: true,
+				subject: { kind: "user", userId: scope.ctxData.userId, plugin: null },
 				query: parsed._yay.query,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,

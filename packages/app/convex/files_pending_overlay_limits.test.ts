@@ -291,6 +291,7 @@ describe("discard_file_pending_update", () => {
 			organizationId: scope.organizationId,
 			workspaceId: scope.workspaceId,
 			visibilityUserId: scope.userId,
+			subject: { kind: "user", userId: scope.userId, plugin: null },
 			folderPath: "/",
 			orderBy: "name",
 			order: "asc",

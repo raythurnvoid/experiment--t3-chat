@@ -11,7 +11,7 @@ import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable } from "../server/files-write-policy.ts";
 import { plugins_external_files_db_replace_readers } from "./plugins_external_files.ts";
 import { plugins_external_files_db_authorize } from "./plugins_external_files_access.ts";
-import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
 import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
@@ -204,8 +204,7 @@ export const rollback = internalMutation({
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: writer.organizationId,
 				workspaceId: writer.workspaceId,
-				userId: recoveryGrant.actorUserId,
-				serviceAccountId: recoveryGrant.serviceAccountId,
+				subject: plugins_sandbox_subject(installation, recoveryGrant.actorUserId),
 				fileNode: folder,
 				permission: "content.permissions.manage",
 			}))
@@ -234,6 +233,7 @@ export const rollback = internalMutation({
 			organizationId: writer.organizationId,
 			workspaceId: writer.workspaceId,
 			writeContext: {
+				subject: plugins_sandbox_subject(installation, authority.actorUserId),
 				writer: { kind: "service_account", serviceAccountId: authority.serviceAccountId },
 				actorUserId: authority.actorUserId,
 				resourceScope: { kind: "node", nodeId: folder._id },

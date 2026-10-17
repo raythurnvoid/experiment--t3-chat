@@ -846,6 +846,7 @@ describe("bash_run_command", () => {
 				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
 				userId: runner.seeded.userId,
+				subject: { kind: "user", userId: runner.seeded.userId, plugin: null },
 				overlayUserId: runner.seeded.userId,
 				path: "/prefix.txt",
 				mode: { kind: "prefix", maxBytes: 8 },

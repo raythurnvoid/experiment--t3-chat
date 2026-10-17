@@ -439,6 +439,7 @@ describe("agent file write source", () => {
 		for (const overlayUserId of [undefined, f.home.userId]) {
 			expect(
 				await f.t.query(internal.files_nodes.read_file_content_from_chunks, {
+					subject: { kind: "user" as const, userId: f.scope.userId, plugin: null },
 					...f.scope,
 					overlayUserId,
 					committedOnly: overlayUserId === undefined,
@@ -558,6 +559,7 @@ describe("agent file write source", () => {
 					organizationId: f.home.organizationId,
 					workspaceId: f.home.workspaceId,
 					visibilityUserId: f.home.userId,
+					subject: { kind: "user", userId: f.home.userId, plugin: null },
 					overlayUserId: f.home.userId,
 					path: "/notes",
 				}),
@@ -572,6 +574,7 @@ describe("agent file write source", () => {
 						organizationId: f.home.organizationId,
 						workspaceId: f.home.workspaceId,
 						visibilityUserId: f.home.userId,
+						subject: { kind: "user", userId: f.home.userId, plugin: null },
 						overlayUserId: f.home.userId,
 						path: "/notes",
 					}),
@@ -607,6 +610,7 @@ describe("agent file write source", () => {
 				organizationId: f.home.organizationId,
 				workspaceId: f.home.workspaceId,
 				visibilityUserId: f.home.userId,
+				subject: { kind: "user", userId: f.home.userId, plugin: null },
 				path: "/kept-notes",
 			}),
 		).toMatchObject({ kind: "saved", node: { kind: "folder", createdBy: f.home.userId } });
@@ -681,6 +685,7 @@ describe("agent file write source", () => {
 				expect(after?.revision).toBe(before!.revision + 1);
 				expect(
 					await f.t.query(internal.files_nodes.read_file_content_from_chunks, {
+						subject: { kind: "user" as const, userId: f.scope.userId, plugin: null },
 						...f.scope,
 						path: "/private-note.txt",
 						overlayUserId: f.home.userId,

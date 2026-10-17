@@ -439,7 +439,7 @@ describe("bash_text_search_files", () => {
 		organizationId: "organization_1" as Id<"organizations">,
 		workspaceId: "workspace_1" as Id<"organizations_workspaces">,
 		userId: "user_1" as Id<"users">,
-		hasWorkspaceRead: true,
+		subject: { kind: "user" as const, userId: "user_1" as Id<"users">, plugin: null },
 		query: "needle",
 		numItems: 8,
 		cursor: null,

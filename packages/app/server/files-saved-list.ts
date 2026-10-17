@@ -48,7 +48,7 @@ export async function files_saved_list_page(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		visibilityUserId: args.visibilityUserId,
-		serviceAccountId: args.serviceAccountId,
+		subject: args.subject,
 		folderPath: args.folderPath,
 	};
 	const memberArgs = {
@@ -69,7 +69,7 @@ export async function files_saved_list_page(
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					visibilityUserId: args.visibilityUserId,
-					serviceAccountId: args.serviceAccountId,
+					subject: args.subject,
 					path,
 				}),
 	]);

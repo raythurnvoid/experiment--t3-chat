@@ -5458,7 +5458,7 @@ export const list_run_history = query({
 		const context = await plugins_access_db_authorize_management(ctx, { ...args, userId: userAuth.id });
 		if (context._nay?.message === "Unauthenticated") throw convex_error(context._nay);
 		if (context._nay || !context._yay.installation) return { page: [], continueCursor: "", isDone: true };
-		const { installation, organization, workspace, defaultWorkspaceId } = context._yay;
+		const { installation, organization, workspace } = context._yay;
 		const activities = await ctx.db
 			.query("activities")
 			.withIndex("by_source_installation_updatedAt", (q) => q.eq("source.installationId", installation._id))
@@ -5485,23 +5485,13 @@ export const list_run_history = query({
 		const nodes = await Promise.all(
 			runs.map(async (run) => (run.fileNodeId ? files_saved_placement_db_get_node(ctx.db, run.fileNodeId) : null)),
 		);
-		const canReadContent = await access_control_db_has_permission(ctx, {
-			organizationId: organization._id,
-			workspaceId: workspace._id,
-			defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resource: { kind: "workspace", id: workspace._id },
-			permission: "content.read",
-			userId: userAuth.id,
-		});
 		const readableNodeIds = new Set(
 			(
 				await access_control_db_filter_readable_file_nodes(ctx, {
 					organizationId: organization._id,
 					workspaceId: workspace._id,
-					userId: userAuth.id,
+					subject: { kind: "user", userId: userAuth.id, plugin: null },
 					nodes: nodes.filter((node) => node !== null),
-					hasWorkspaceRead: canReadContent,
 				})
 			).map((node) => node._id),
 		);
@@ -5690,20 +5680,10 @@ export const list_recent_runs = query({
 		// A member with exact plugin management access can see run failures without `content.read`.
 		// The file a run touched is workspace content, so it becomes `null`
 		// unless this caller may read that one file — the same value a run whose file was deleted returns.
-		// A failed check does not decide on its own: it is handed to the filter below, because a grant on
-		// one folder is enough to read the runs about what is inside it.
+		// A grant on one folder is enough to read the runs about what is inside it.
 		//
 		// `file` is the only content field hidden here. `errorMessage` is text written by the plugin and
 		// can still contain a path; that is the plugin author's choice.
-		const canReadContent = await access_control_db_has_permission(ctx, {
-			organizationId: authorization._yay.membership.organizationId,
-			workspaceId: authorization._yay.membership.workspaceId,
-			defaultWorkspaceId: authorization._yay.defaultWorkspaceId,
-			organizationOwnerUserId: authorization._yay.organization.ownerUserId,
-			resource: { kind: "workspace", id: String(authorization._yay.membership.workspaceId) },
-			permission: "content.read",
-			userId: userAuth.id,
-		});
 
 		// Managers see hidden runs too. Feed opt-in does not hide operational history.
 		const activities = await ctx.db
@@ -5739,9 +5719,8 @@ export const list_recent_runs = query({
 				await access_control_db_filter_readable_file_nodes(ctx, {
 					organizationId: authorization._yay.membership.organizationId,
 					workspaceId: authorization._yay.membership.workspaceId,
-					userId: userAuth.id,
+					subject: { kind: "user", userId: userAuth.id, plugin: null },
 					nodes: runFileNodes.filter((fileNode) => fileNode !== null),
-					hasWorkspaceRead: canReadContent,
 				})
 			).map((fileNode) => fileNode._id),
 		);

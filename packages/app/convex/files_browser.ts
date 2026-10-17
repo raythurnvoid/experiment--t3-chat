@@ -410,6 +410,7 @@ export const authorize_browser_source = internalQuery({
 			workspaceId: args.workspaceId,
 			path: args.path,
 			visibilityUserId: args.userId,
+			subject: { kind: "user", userId: args.userId, plugin: null },
 			overlayUserId: args.userId,
 		})) as files_nodes_get_visible_entry_by_path_Result;
 		if (!entry || entry.node.kind !== "file" || String(entry.node._id) !== args.nodeId) {
@@ -1778,6 +1779,7 @@ async function read_saved_snapshot_text(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
+		subject: { kind: "user", userId: args.userId, plugin: null },
 		path: args.path,
 		includePending: false,
 		overlayUserId: args.userId,
@@ -2754,6 +2756,7 @@ export const agent_open_file_browser = internalAction({
 			workspaceId: args.source.workspaceId,
 			path: args.path,
 			visibilityUserId: args.source.userId,
+			subject: { kind: "user", userId: args.source.userId, plugin: null },
 			overlayUserId: args.source.userId,
 		})) as files_nodes_get_visible_entry_by_path_Result;
 		if (!entry || entry.node.kind !== "file") return Result({ _nay: { message: "Not found" } });

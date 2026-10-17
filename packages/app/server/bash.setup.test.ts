@@ -716,6 +716,7 @@ export async function get_private_entry(runner: Awaited<ReturnType<typeof create
 		organizationId: runner.seeded.organizationId,
 		workspaceId: runner.seeded.workspaceId,
 		visibilityUserId: runner.ctxData.userId,
+		subject: { kind: "user", userId: runner.ctxData.userId, plugin: null },
 		overlayUserId: runner.ctxData.userId,
 		path,
 	});
@@ -944,6 +945,7 @@ export async function accept_pending_update_for_test(
 		organizationId: runner.seeded.organizationId,
 		workspaceId: runner.seeded.workspaceId,
 		userId: runner.seeded.userId,
+		subject: { kind: "user", userId: runner.seeded.userId, plugin: null },
 		path: args.path,
 		overlayUserId: runner.seeded.userId,
 	});

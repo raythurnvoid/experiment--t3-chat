@@ -194,6 +194,7 @@ describe("private text publication", () => {
 			collaborationEnabled: true,
 		});
 		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 			...scope,
 			path: `/brief.${extension}`,
 		});
@@ -403,6 +404,7 @@ describe("copy_transfer_file", () => {
 				organizationId: current.organizationId,
 				workspaceId: current.workspaceId,
 				userId: current.userId,
+				subject: { kind: "user", userId: current.userId, plugin: null },
 				path: index === 0 ? "/first.md" : "/second.md",
 				overlayUserId: current.userId,
 			});
@@ -436,6 +438,7 @@ describe("copy_transfer_file", () => {
 			expect(item?.outputTarget).toEqual({ kind: "private", id: copy.item.preparation!.privateNodeId });
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toHaveLength(1);
 			const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 				...scope,
 				path: "/copied.txt",
 				overlayUserId: db.userId,
@@ -509,6 +512,7 @@ describe("copy_transfer_file", () => {
 		expect(
 			(
 				await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 					...scope,
 					path: "/copied.txt",
 					overlayUserId: db.userId,
@@ -608,6 +612,7 @@ describe("copy_transfer_file", () => {
 		expect(copied?.yjsLastSequenceId === null).toBe(!collaborative);
 		if (collaborative) expect(copied?.yjsLastSequenceId).not.toBe(before?.yjsLastSequenceId);
 		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 			...scope,
 			path: item!.outputPath!,
 		});
@@ -719,6 +724,7 @@ describe("copy_transfer_file", () => {
 		expect(
 			(
 				await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 					...scope,
 					path: "/copies/restore.txt",
 				})
@@ -727,6 +733,7 @@ describe("copy_transfer_file", () => {
 		expect(
 			(
 				await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 					...scope,
 					path: "/restore.txt",
 				})
@@ -776,6 +783,7 @@ describe("copy_transfer_file", () => {
 		editor.destroy();
 		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
 		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 			...scope,
 			path: "/copies/restore.txt",
 		});
@@ -952,6 +960,7 @@ describe("copy_transfer_file", () => {
 		const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
 		expect(item?.state).toBe("completed");
 		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 			...scope,
 			path: "/copies/restore.txt",
 		});
@@ -1012,6 +1021,7 @@ describe("copy_transfer_file", () => {
 		expect(
 			(
 				await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 					...scope,
 					path: "/copies/restore.txt",
 				})

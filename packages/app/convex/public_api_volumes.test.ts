@@ -1204,12 +1204,13 @@ describe("scheduled Files response authority", () => {
 		const f = await fixture({ scheduled: true });
 		const file = await readable_file(f);
 		const afterIo = async () => {
-			await f.t.run(async (ctx) => {
-				const grants = await ctx.db.query("access_control_permission_grants").collect();
-				for (const grant of grants)
-					if (grant.serviceAccountId === f.installation.serviceAccountId && grant.resourceId === file.nodeId)
-						await ctx.db.delete("access_control_permission_grants", grant._id);
+			// The real removal, so the plugin's sandbox copy of the grant goes too.
+			const removed = await f.asOwner.mutation(api.access_control.remove_service_account_grant, {
+				membershipId: f.owner.membershipId,
+				serviceAccountId: f.installation.serviceAccountId,
+				resource: { kind: "file", nodeId: file.nodeId },
 			});
+			if (removed._nay) throw new Error(removed._nay.message);
 		};
 		const response = kind === "read" ? await read_after_io(f, afterIo) : await list_after_io(f, afterIo);
 		expect(response.status, "scheduled Files responses must repeat live account permission").toBe(404);

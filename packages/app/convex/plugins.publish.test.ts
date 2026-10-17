@@ -906,6 +906,7 @@ describe("plugins publish_version", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 			userId: membership.userId,
+			subject: { kind: "user", userId: membership.userId, plugin: null },
 			path: `/${published._yay.pluginVersionId}/dist/backend/worker.js`,
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
@@ -914,6 +915,7 @@ describe("plugins publish_version", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 			userId: membership.userId,
+			subject: { kind: "user", userId: membership.userId, plugin: null },
 			path: `/${published._yay.pluginVersionId}/dist/bonobo.plugin.json`,
 			mode: { kind: "full", maxBytes: 100_000 },
 		});

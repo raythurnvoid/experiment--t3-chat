@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { doc } from "convex-helpers/validators";
 
@@ -40,7 +40,7 @@ import {
 	organizations_membership_lifetimes_db_record,
 } from "./organizations_membership_lifetimes.ts";
 import { plugins_db_get_live_service_account, plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { plugins_sandbox_root_validator } from "./schema.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -976,169 +976,300 @@ export async function access_control_db_resolve_live_restricted_scope(
 }
 
 /**
- * Keep only the file nodes the user and optional service account may read.
- *
- * Human-only callers prove workspace-wide `content.read` first, or pass `hasWorkspaceRead: false`.
- * With workspace read, unrestricted nodes need no extra check. Restricted nodes share one check
- * per scope.
- *
- * With a service account, check both the actor and account on each scope or exact node. This branch
- * does not use `hasWorkspaceRead`: an account may hold an exact grant on an unrestricted node.
+ * Who one request acts as. Every file check takes one subject: a person, a person acting through a
+ * plugin, or a service account alone. A check never asks about a user and an account together.
+ */
+export const access_control_subject_validator = v.union(
+	v.object({
+		kind: v.literal("user"),
+		userId: v.id("users"),
+		/**
+		 * Set for plugin credentials. The plugin acts as its human, but only inside the installation's
+		 * sandbox roots and its own output folders. Null for people (UI, Bash, chat).
+		 */
+		plugin: v.union(
+			v.null(),
+			v.object({
+				installationId: v.id("plugins_workspace_installations"),
+				/** Empty while the installation rebuilds its roots, so the plugin reaches no folder then. */
+				roots: v.array(plugins_sandbox_root_validator),
+			}),
+		),
+	}),
+	v.object({
+		kind: v.literal("service_account"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+	}),
+);
+
+export type access_control_Subject = Infer<typeof access_control_subject_validator>;
+
+type SubjectPlugin = NonNullable<Extract<access_control_Subject, { kind: "user" }>["plugin"]>;
+
+type FileNodeRef = {
+	_id: Id<"files_nodes">;
+	restrictedScopeNodeId: Id<"files_nodes"> | null;
+	/** Read from the node when missing. Only plugin subjects need it. */
+	treePath?: string;
+};
+
+/**
+ * The file checks of one subject inside one call. Rows share the workspace answer, each restricted
+ * scope answer and the sandbox roots, so a list pays for each once. Make a new one after a write that
+ * changes grants.
+ */
+function create_file_checker(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		subject: access_control_Subject;
+	},
+) {
+	const { subject } = args;
+	const cache = new Map<string, Promise<unknown>>();
+	const once = <T>(key: string, load: () => Promise<T>) => {
+		let answer = cache.get(key) as Promise<T> | undefined;
+		if (!answer) {
+			answer = load();
+			cache.set(key, answer);
+		}
+		return answer;
+	};
+
+	const load_tenant = () =>
+		once("tenant", async () => {
+			const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
+			const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
+			const organization = organizationId ? await ctx.db.get("organizations", organizationId) : null;
+			if (!organizationId || !workspaceId || !organization?.defaultWorkspaceId) {
+				return null;
+			}
+			return {
+				organizationId,
+				workspaceId,
+				defaultWorkspaceId: organization.defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+			};
+		});
+
+	const live_scope = (
+		tenant: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+		pointer: Id<"files_nodes"> | null,
+	) =>
+		once(`live:${pointer}`, () =>
+			access_control_db_resolve_live_restricted_scope(ctx, { ...tenant, restrictedScopeNodeId: pointer }),
+		);
+
+	const output_folder = (scopeNodeId: Id<"files_nodes">) =>
+		once(`output:${scopeNodeId}`, async () => {
+			const binding = await ctx.db
+				.query("plugins_external_file_bindings")
+				.withIndex("by_node", (q) => q.eq("nodeId", scopeNodeId))
+				.first();
+			return binding?.detachedAt === null ? binding : null;
+		});
+
+	/** The subject's own access on a live scope (null = open), before any sandbox limit. */
+	const scope_allows = (
+		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
+		node: FileNodeRef | null,
+		scopeNodeId: Id<"files_nodes"> | null,
+		permission: access_control_Permission,
+	) => {
+		if (subject.kind === "service_account") {
+			// An account may hold an exact grant on an open node, so open nodes are checked one by one.
+			return once(`account:${scopeNodeId ?? node?._id ?? "root"}:${permission}`, async () => {
+				// A plugin output folder belongs to its plugin. No account subject reaches it, so a key bound
+				// to the plugin's own account cannot read it either.
+				if (scopeNodeId && (await output_folder(scopeNodeId))) {
+					return false;
+				}
+				return await access_control_db_has_permission(ctx, {
+					...tenant,
+					serviceAccountId: subject.serviceAccountId,
+					resource: node
+						? { kind: "file", id: node._id, restrictedScopeNodeId: scopeNodeId }
+						: { kind: "workspace", id: tenant.workspaceId },
+					permission,
+				});
+			});
+		}
+
+		return once(`user:${scopeNodeId}:${permission}`, async () => {
+			if (subject.userId === tenant.organizationOwnerUserId) {
+				return true;
+			}
+			if (scopeNodeId) {
+				return await has_restricted_file_permission(ctx, {
+					...tenant,
+					scopeNodeId,
+					permission,
+					userId: subject.userId,
+				});
+			}
+			// An open node needs the workspace permission. Asking here, not trusting the caller, keeps a
+			// guest with one shared folder out of every open node.
+			return await access_control_db_has_permission(ctx, {
+				...tenant,
+				userId: subject.userId,
+				resource: { kind: "workspace", id: tenant.workspaceId },
+				permission,
+			});
+		});
+	};
+
+	const load_sandbox_roots = (
+		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
+		roots: SubjectPlugin["roots"],
+	) =>
+		once("roots", async () => {
+			const loaded: Array<
+				| { kind: "open"; level: access_control_FileShareLevel }
+				| {
+						kind: "folder";
+						node: Doc<"files_nodes">;
+						area: Id<"files_nodes"> | null;
+						level: access_control_FileShareLevel;
+				  }
+			> = [];
+			for (const root of roots) {
+				if (root.target.kind === "open") {
+					loaded.push({ kind: "open", level: root.level });
+					continue;
+				}
+				const node = await ctx.db.get("files_nodes", root.target.nodeId);
+				// An archived node keeps its path, so a new item at that path would match it. It gives nothing.
+				if (
+					!node ||
+					node.organizationId !== tenant.organizationId ||
+					node.workspaceId !== tenant.workspaceId ||
+					node.archiveOperationId !== null
+				) {
+					continue;
+				}
+				const area = await live_scope(tenant, node.restrictedScopeNodeId);
+				// A root on a node inside a restricted area that is not its own restricted folder gives
+				// nothing, the same as its account grant.
+				if (area !== null && area !== node._id) {
+					continue;
+				}
+				loaded.push({ kind: "folder", node, area, level: root.level });
+			}
+			return loaded;
+		});
+
+	/** Whether a plugin subject's sandbox reaches the node with this permission. */
+	const sandbox_allows = async (
+		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
+		plugin: SubjectPlugin,
+		node: FileNodeRef | null,
+		scopeNodeId: Id<"files_nodes"> | null,
+		permission: access_control_Permission,
+	) => {
+		const allows = (level: access_control_FileShareLevel) =>
+			(access_control_FILE_SHARE_LEVELS[level].permissions as readonly access_control_Permission[]).includes(
+				permission,
+			);
+
+		// The installation's own output folders are roots that take no slot. Their level is the account's
+		// live grant there, so removing or lowering that grant limits the plugin at once.
+		const binding = scopeNodeId ? await output_folder(scopeNodeId) : null;
+		if (node && scopeNodeId && binding?.installationId === plugin.installationId) {
+			const installation = await once("installation", () =>
+				ctx.db.get("plugins_workspace_installations", plugin.installationId),
+			);
+			return (
+				installation !== null &&
+				(await access_control_db_has_permission(ctx, {
+					...tenant,
+					serviceAccountId: installation.serviceAccountId,
+					resource: { kind: "file", id: node._id, restrictedScopeNodeId: scopeNodeId },
+					permission,
+				}))
+			);
+		}
+
+		const treePath = node ? (node.treePath ?? (await ctx.db.get("files_nodes", node._id))?.treePath) : undefined;
+		for (const root of await load_sandbox_roots(tenant, plugin.roots)) {
+			if (!allows(root.level)) continue;
+			if (root.kind === "open") {
+				if (scopeNodeId === null) return true;
+				continue;
+			}
+			// A file root is that one file: its `treePath` has no trailing `/`, so a prefix would also
+			// match a sibling with a longer name. A folder root stops at restricted folders inside it.
+			const inside =
+				root.node._id === node?._id ||
+				(root.node.kind === "folder" && treePath !== undefined && treePath.startsWith(root.node.treePath));
+			if (inside && scopeNodeId === root.area) return true;
+		}
+		return false;
+	};
+
+	/** `node: null` is the workspace root, for a create there. */
+	const can = async (node: FileNodeRef | null, permission: access_control_Permission) => {
+		const tenant = await load_tenant();
+		if (!tenant) {
+			// Volumes and read-only mounts have no organization doc here. Their callers check access first,
+			// nothing in them is restricted, and only people read them through here.
+			if (node?.restrictedScopeNodeId) {
+				console.error("Cannot resolve the organization while checking a restricted file node", {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+				});
+				return false;
+			}
+			return subject.kind === "user" && subject.plugin === null;
+		}
+
+		const scopeNodeId = node ? await live_scope(tenant, node.restrictedScopeNodeId) : null;
+		if (!(await scope_allows(tenant, node, scopeNodeId, permission))) {
+			return false;
+		}
+		return (
+			subject.kind === "service_account" ||
+			subject.plugin === null ||
+			(await sandbox_allows(tenant, subject.plugin, node, scopeNodeId, permission))
+		);
+	};
+
+	return { can };
+}
+
+/**
+ * Keep only the file nodes the subject may read.
  *
  * Use this on every surface that returns more than one node. Without it a restricted file keeps its
  * name and path visible in the tree, in search, and in the activity list, which tells everyone in
  * the workspace exactly what they are not allowed to open.
  */
-export async function access_control_db_filter_readable_file_nodes<
-	T extends { _id: Id<"files_nodes">; restrictedScopeNodeId: Id<"files_nodes"> | null },
->(
+export async function access_control_db_filter_readable_file_nodes<T extends FileNodeRef>(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		userId: Id<"users">;
+		subject: access_control_Subject;
 		nodes: readonly T[];
-		serviceAccountId?: Id<"access_control_service_accounts">;
-		/**
-		 * Whether the caller holds workspace-wide `content.read`. Defaults to `true`, which is what
-		 * every list surface proves before calling.
-		 *
-		 * Pass `false` for a user whose role gives them no workspace-wide read but who may still have
-		 * been given one folder. Then only the restricted nodes they hold a grant on are kept, and
-		 * every open node is dropped.
-		 */
-		hasWorkspaceRead?: boolean;
 	},
 ): Promise<T[]> {
-	if (args.serviceAccountId) {
-		const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
-		const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
-		const organization = organizationId ? await ctx.db.get("organizations", organizationId) : null;
-		if (!organizationId || !workspaceId || !organization?.defaultWorkspaceId) {
-			return [];
-		}
-
-		const readableByNodeId = new Map<Id<"files_nodes">, boolean>();
-		const kept: T[] = [];
-
-		for (const node of args.nodes) {
-			const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
-				organizationId,
-				workspaceId,
-				restrictedScopeNodeId: node.restrictedScopeNodeId,
-			});
-			const key = scopeNodeId ?? node._id;
-			let readable = readableByNodeId.get(key);
-			if (readable === undefined) {
-				const permissionArgs = {
-					organizationId,
-					workspaceId,
-					defaultWorkspaceId: organization.defaultWorkspaceId,
-					organizationOwnerUserId: organization.ownerUserId,
-					resource: { kind: "file" as const, id: node._id, restrictedScopeNodeId: scopeNodeId },
-					permission: "content.read" as const,
-				};
-				readable =
-					((await access_control_db_has_permission(ctx, { ...permissionArgs, userId: args.userId })) ||
-						(!scopeNodeId &&
-							(await access_control_db_has_permission(ctx, {
-								...permissionArgs,
-								userId: args.userId,
-								resource: { kind: "workspace", id: workspaceId },
-							})))) &&
-					(await access_control_db_has_permission(ctx, { ...permissionArgs, serviceAccountId: args.serviceAccountId }));
-				readableByNodeId.set(key, readable);
-			}
-			if (readable) {
-				kept.push(node);
-			}
-		}
-
-		return kept;
-	}
-
-	const hasWorkspaceRead = args.hasWorkspaceRead ?? true;
-
-	// Nothing here is restricted, so the caller's workspace-wide read already covers all of it. This
-	// is the normal case, and it costs no database read at all. It is also what keeps the reserved
-	// global organization working: nothing can restrict a node there, so we never try to load it as a
-	// real organization below.
-	if (hasWorkspaceRead && !args.nodes.some((node) => node.restrictedScopeNodeId)) {
-		return [...args.nodes];
-	}
-
-	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
-	const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
-	const organization = organizationId ? await ctx.db.get("organizations", organizationId) : null;
-	const defaultWorkspaceId = organization?.defaultWorkspaceId;
-
-	// The owner may read everything.
-	if (organization && args.userId === organization.ownerUserId) {
-		return [...args.nodes];
-	}
-
-	const readableByScopeNodeId = new Map<Id<"files_nodes">, boolean>();
+	const checker = create_file_checker(ctx, args);
 	const kept: T[] = [];
-
 	for (const node of args.nodes) {
-		const pointer = node.restrictedScopeNodeId;
-		if (!pointer) {
-			// An open node is exactly what workspace-wide read covers, so without that read it is out.
-			if (hasWorkspaceRead) {
-				kept.push(node);
-			}
-			continue;
-		}
-
-		if (!organizationId || !workspaceId || !defaultWorkspaceId) {
-			// The organization cannot be read, so no grant can be checked. Drop the restricted nodes and
-			// keep the rest: refusing everything would empty a whole workspace over a broken
-			// organization doc, and keeping everything would hand out the files this pointer protects.
-			console.error("Cannot resolve the organization while filtering restricted file nodes", {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-			});
-			continue;
-		}
-
-		let readable = readableByScopeNodeId.get(pointer);
-		if (readable === undefined) {
-			const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
-				organizationId,
-				workspaceId,
-				restrictedScopeNodeId: pointer,
-			});
-			readable = scopeNodeId
-				? await has_restricted_file_permission(ctx, {
-						organizationId,
-						workspaceId,
-						defaultWorkspaceId,
-						scopeNodeId,
-						permission: "content.read",
-						userId: args.userId,
-					})
-				: // No restricted folder is live on this pointer's chain, so it is an open node and the
-					// workspace-wide read decides. Caching each answer under the stored pointer is safe:
-					// every node carrying the same pointer resolves to the same scope.
-					hasWorkspaceRead;
-			readableByScopeNodeId.set(pointer, readable);
-		}
-
-		if (readable) {
+		if (await checker.can(node, "content.read")) {
 			kept.push(node);
 		}
 	}
-
 	return kept;
 }
 
 /**
- * Whether `userId` may do `permission` on one already-loaded node, when only the ids are on hand.
+ * Whether the subject may do `permission` on one already-loaded node, when only the ids are on hand.
  *
  * For the handlers that never see a membership doc: the db helpers under `files_nodes.ts`, and the
- * public-API mutations that authorize a token instead of a member. Like the read filter above, it
- * assumes the caller already proved the workspace-wide permission, so a node with no restricted scope
- * costs no database read and answers yes.
+ * public-API mutations that authorize a token instead of a member. An open node needs the subject's
+ * workspace permission, so the caller does not have to prove it first. `fileNode: null` asks about
+ * the workspace root, for a create there.
  *
  * Reach for this whenever a write path **finds** a node after its permission check: the folder a
  * recursive create walks into, the file already sitting on a destination path, a descendant swept up
@@ -1150,84 +1281,12 @@ export async function access_control_db_can_act_on_file_node(
 	args: {
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		userId: Id<"users">;
-		fileNode: { _id: Id<"files_nodes">; restrictedScopeNodeId: Id<"files_nodes"> | null };
-		serviceAccountId?: Id<"access_control_service_accounts">;
+		subject: access_control_Subject;
+		fileNode: FileNodeRef | null;
 		permission: access_control_Permission;
 	},
 ) {
-	if (!args.serviceAccountId && !args.fileNode.restrictedScopeNodeId) {
-		return true;
-	}
-
-	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
-	const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
-	const organization = organizationId ? await ctx.db.get("organizations", organizationId) : null;
-	const defaultWorkspaceId = organization?.defaultWorkspaceId;
-	if (!organizationId || !workspaceId || !organization || !defaultWorkspaceId) {
-		// Same call as the read filter: with no organization doc no grant can be checked, and the safe
-		// answer for a restricted node is no.
-		console.error("Cannot resolve the organization while checking a restricted file node", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-		});
-		return false;
-	}
-
-	if (args.serviceAccountId) {
-		const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
-			organizationId,
-			workspaceId,
-			restrictedScopeNodeId: args.fileNode.restrictedScopeNodeId,
-		});
-		const permissionArgs = {
-			organizationId,
-			workspaceId,
-			defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resource: {
-				kind: "file" as const,
-				id: args.fileNode._id,
-				restrictedScopeNodeId: scopeNodeId,
-			},
-			permission: args.permission,
-		};
-
-		return (
-			((await access_control_db_has_permission(ctx, { ...permissionArgs, userId: args.userId })) ||
-				(!scopeNodeId &&
-					(await access_control_db_has_permission(ctx, {
-						...permissionArgs,
-						userId: args.userId,
-						resource: { kind: "workspace", id: workspaceId },
-					})))) &&
-			(await access_control_db_has_permission(ctx, { ...permissionArgs, serviceAccountId: args.serviceAccountId }))
-		);
-	}
-
-	if (args.userId === organization.ownerUserId) {
-		return true;
-	}
-
-	const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
-		organizationId,
-		workspaceId,
-		restrictedScopeNodeId: args.fileNode.restrictedScopeNodeId,
-	});
-	if (!scopeNodeId) {
-		// No restricted folder is live on this pointer's chain, and the caller already holds the
-		// workspace-wide permission.
-		return true;
-	}
-
-	return await has_restricted_file_permission(ctx, {
-		organizationId,
-		workspaceId,
-		defaultWorkspaceId,
-		scopeNodeId,
-		permission: args.permission,
-		userId: args.userId,
-	});
+	return await create_file_checker(ctx, args).can(args.fileNode, args.permission);
 }
 
 // Null means the exact resource is unavailable.

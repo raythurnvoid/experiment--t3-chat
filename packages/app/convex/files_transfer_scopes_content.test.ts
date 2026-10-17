@@ -304,6 +304,7 @@ describe("copy_transfer_file scopes", () => {
 					organizationId: f.personal.organizationId,
 					workspaceId: f.personal.workspaceId,
 					userId: f.personal.userId,
+					subject: { kind: "user", userId: f.personal.userId, plugin: null },
 					overlayUserId: f.personal.userId,
 					path,
 					includePending,

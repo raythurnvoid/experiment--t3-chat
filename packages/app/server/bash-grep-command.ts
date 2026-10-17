@@ -754,8 +754,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
-					// Agent reads recheck their source and destination. Reserved trees have no file restrictions.
-					hasWorkspaceRead: true,
+					subject: { kind: "user", userId: pathResolution.ctxData.userId, plugin: null },
 					query: recursivePattern,
 					numItems: 20,
 					cursor: null,

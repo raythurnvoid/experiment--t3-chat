@@ -1360,6 +1360,7 @@ export async function list_root_for_test(
 		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
 		visibilityUserId: membership.userId,
+		subject: { kind: "user", userId: membership.userId, plugin: null },
 		overlayUserId: membership.userId,
 		folderPath: "/",
 		mode: "children",

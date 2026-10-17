@@ -147,12 +147,14 @@ async function fixture() {
 		organizationId: db.organizationId,
 		workspaceId: saved.volumeId,
 		userId: db.userId,
+		subject: { kind: "user" as const, userId: db.userId, plugin: null },
 		agentSource,
 	};
 	const listArgs = {
 		organizationId: db.organizationId,
 		workspaceId: saved.volumeId,
 		visibilityUserId: db.userId,
+		subject: { kind: "user" as const, userId: db.userId, plugin: null },
 		overlayUserId: db.userId,
 		agentSource,
 		folderPath: "/",

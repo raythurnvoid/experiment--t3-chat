@@ -786,6 +786,7 @@ describe("r2 asset content", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/stale-read.md",
 		});
 
@@ -1022,6 +1023,7 @@ describe("r2 asset content", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/pending-read.md",
 			pendingUpdateId: pendingUpdate._id,
 		});
@@ -1415,6 +1417,7 @@ describe("r2 asset content", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/photo.png.description.md",
 		});
 		expect(readResult?.content).toContain("PLUGIN_IMAGE_E2E_2026");
@@ -1569,12 +1572,14 @@ describe("r2 asset content", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null },
 				path: "/clip.mp4.summary.md",
 			}),
 			asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null },
 				path: "/clip.mp4.transcript.md",
 			}),
 		]);
@@ -1667,6 +1672,7 @@ describe("r2 asset content", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null },
 				path: "/voice.wav.transcript.md",
 			},
 		);
@@ -4823,7 +4829,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query: "archiveneedle",
 			numItems: 10,
 			cursor: null,
@@ -5600,6 +5606,7 @@ describe("get_data_for_public_download_url", () => {
 				workspaceId: volumeId,
 				fileNodeId: "invalid",
 				visibilityUserId: db.userId,
+				subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			}),
 		).rejects.toThrow(/Expected ID for table "organizations_workspaces"/);
 	});

@@ -825,6 +825,7 @@ test("create_folder_node allows tenant files under /.mounts", async () => {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		visibilityUserId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path: "/.mounts",
 	});
 	expect(node?._id).toBe(result._yay.nodeId);
@@ -1069,6 +1070,7 @@ test("get_by_path ignores archived files with duplicate path", async () => {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		visibilityUserId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path: `/${db.files.file_root_1.name}`,
 	});
 
@@ -2344,6 +2346,7 @@ describe("selected file writers", () => {
 
 		const serviceAccountId = created._yay.serviceAccountId;
 		const writeContext: files_nodes_WriteContext = {
+			subject: { kind: "service_account", serviceAccountId },
 			writer: { kind: "service_account", serviceAccountId },
 			actorUserId: fixture.db.userId,
 			resourceScope: { kind: "workspace" },
@@ -4087,6 +4090,7 @@ describe("files_nodes read-only reads", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/locked-source/source.md",
 			mode: { kind: "full", maxBytes: files_get_utf8_byte_size(files_INITIAL_CONTENT) + 1000 },
 		});

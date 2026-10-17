@@ -56,6 +56,7 @@ describe("copy_transfer_file media", () => {
 			organizationId: f.destination.organizationId,
 			workspaceId: f.destination.workspaceId,
 			userId: f.destination.userId,
+			subject: { kind: "user", userId: f.destination.userId, plugin: null },
 			path: "/document.md",
 			includePending: false,
 		});
@@ -81,6 +82,7 @@ describe("copy_transfer_file media", () => {
 			organizationId: f.destination.organizationId,
 			workspaceId: f.destination.workspaceId,
 			userId: f.destination.userId,
+			subject: { kind: "user", userId: f.destination.userId, plugin: null },
 			overlayUserId: f.destination.userId,
 			path: "/document.md",
 		});
@@ -260,6 +262,7 @@ describe("copy_transfer_file media", () => {
 			organizationId: f.destination.organizationId,
 			workspaceId: f.destination.workspaceId,
 			userId: f.destination.userId,
+			subject: { kind: "user", userId: f.destination.userId, plugin: null },
 			overlayUserId: f.destination.userId,
 			path: "/document.md",
 		});
@@ -353,6 +356,7 @@ describe("copy_transfer_file media", () => {
 				organizationId: f.destination.organizationId,
 				workspaceId: f.destination.workspaceId,
 				userId: f.destination.userId,
+				subject: { kind: "user", userId: f.destination.userId, plugin: null },
 				overlayUserId: f.destination.userId,
 				path: "/document.md",
 			});

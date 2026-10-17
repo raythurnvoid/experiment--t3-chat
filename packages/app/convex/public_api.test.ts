@@ -1105,6 +1105,149 @@ describe("service-bound API credentials", () => {
 		expect(await refused.json()).toEqual({ message: "Permission denied" });
 	});
 
+	test("an account-bound key acts as the account, not as its sponsor", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-account-acts" });
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const vaultFileId = await seed_markdown_file({ t, ...db, path: "/vault/v.md", committedMarkdown: "Vault text" });
+		await seed_markdown_file({ t, ...db, path: "/open.md", committedMarkdown: "Open text" });
+		const vaultId = await t.run(
+			async (ctx) => (await ctx.db.get("files_nodes", vaultFileId))!.parentId as Id<"files_nodes">,
+		);
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: vaultId })
+			)._nay,
+		).toBeUndefined();
+		const account = await asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Vault reader",
+		});
+		if (account._nay) {
+			throw new Error(account._nay.message);
+		}
+		const serviceAccountId = account._yay.serviceAccountId;
+		expect(
+			(
+				await asOwner.mutation(api.access_control.set_service_account_grant, {
+					membershipId: db.membershipId,
+					serviceAccountId,
+					resource: { kind: "file", nodeId: vaultId },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+		// The sponsor is an admin who is not in the restricted folder.
+		const admin = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-account-acts-admin" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, { ...db, userId, role: "admin", now: Date.now() });
+			await quotas_db_ensure(ctx, { ...db, quotaName: "active_api_credentials", userId, now: Date.now() });
+			return { userId, membershipId };
+		});
+		const key = await t
+			.withIdentity({ issuer: "https://clerk.test", external_id: admin.userId })
+			.mutation(api.public_api.api_credential_create, {
+				membershipId: admin.membershipId,
+				serviceAccountId,
+				name: "Vault",
+				scopes: ["files:read"],
+			});
+		if (key._nay) {
+			throw new Error(key._nay.message);
+		}
+		const read = (path: string) =>
+			t.fetch("/api/v1/files/read", {
+				method: "POST",
+				headers: auth_headers(key._yay.credential),
+				body: JSON.stringify({ path }),
+			});
+
+		// The account's grant is enough, though the sponsor cannot open the folder.
+		const vault = await read("/vault/v.md");
+		expect(vault.status).toBe(200);
+		expect(await vault.json()).toMatchObject({ content: expect.stringContaining("Vault text") });
+		// The sponsor can read the open file, but the account has no grant there.
+		expect((await read("/open.md")).status).toBe(404);
+	});
+
+	test("an account key replaces a stored file inside its grant on a nested restricted folder", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-account-nested-replace" });
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folder = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "a/b",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		const folderId = await t.run(
+			async (ctx) => (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/a/b")!._id,
+		);
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: folderId })
+			)._nay,
+		).toBeUndefined();
+		// A stored (non-editable) file keeps the write on the archive-and-recreate door.
+		const occupant = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: folderId,
+			filename: "f.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 3,
+		});
+		if (occupant._nay) {
+			throw new Error(occupant._nay.message);
+		}
+		const account = await asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Nested writer",
+		});
+		if (account._nay) {
+			throw new Error(account._nay.message);
+		}
+		// The account can write only in `/a/b`, not in the open `/a` above it.
+		expect(
+			(
+				await asOwner.mutation(api.access_control.set_service_account_grant, {
+					membershipId: db.membershipId,
+					serviceAccountId: account._yay.serviceAccountId,
+					resource: { kind: "file", nodeId: folderId },
+					level: "write",
+				})
+			)._nay,
+		).toBeUndefined();
+		const key = await asOwner.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId: account._yay.serviceAccountId,
+			name: "Nested",
+			scopes: ["files:read", "files:write"],
+		});
+		if (key._nay) {
+			throw new Error(key._nay.message);
+		}
+
+		const replaced = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(key._yay.credential),
+			body: JSON.stringify({ path: "/a/b/f.md", content: "# New\n", overwrite: "replace" }),
+		});
+		expect(replaced.status, await replaced.clone().text()).toBe(200);
+		expect(((await replaced.json()) as { nodeId: string }).nodeId).not.toBe(occupant._yay.nodeId);
+	});
+
 	test("keeps the account and sponsor when rotating, then refuses a revoked account", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-key" });
@@ -1131,10 +1274,11 @@ describe("service-bound API credentials", () => {
 			headers: auth_headers(created._yay.credential),
 		});
 		expect(inspected.status).toBe(200);
+		// The key acts as the account, and the account holds no grant yet, so it cannot read files.
 		expect(await inspected.json()).toMatchObject({
 			serviceAccountId,
 			sponsorUserId: db.userId,
-			scopes: ["files:read", "files:permissions"],
+			scopes: ["files:permissions"],
 		});
 		const rotated = await asUser.mutation(api.public_api.api_credential_rotate, {
 			membershipId: db.membershipId,
@@ -3187,6 +3331,7 @@ describe("public files API", () => {
 		}
 
 		const reservedRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
@@ -6594,6 +6739,7 @@ describe("files read-only locks", () => {
 					organizationId: writer.db.organizationId,
 					workspaceId: writer.db.workspaceId,
 					visibilityUserId: writer.userId,
+					subject: { kind: "user" as const, userId: writer.userId, plugin: null },
 					path: literalPath,
 				}),
 			).toBeNull();
@@ -6623,6 +6769,7 @@ describe("files read-only locks", () => {
 			] as const) {
 				expect((await find_active_node({ t, db: writer.db, path }))?._id).toBe(nodeId);
 				const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					subject: { kind: "user" as const, userId: writer.db.userId, plugin: null },
 					organizationId: writer.db.organizationId,
 					workspaceId: writer.db.workspaceId,
 					userId: writer.db.userId,
@@ -6782,6 +6929,7 @@ describe("files read-only locks", () => {
 						organizationId: writer.db.organizationId,
 						workspaceId: writer.db.workspaceId,
 						visibilityUserId: writer.userId,
+						subject: { kind: "user" as const, userId: writer.userId, plugin: null },
 						path: "/destination/source/note.md",
 					}),
 					"the read-only member sees the selected after placement",

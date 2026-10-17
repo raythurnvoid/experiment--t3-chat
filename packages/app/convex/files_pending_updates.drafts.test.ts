@@ -1445,6 +1445,7 @@ describe("upsert_file_pending_update", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/pending-plain-read.json",
 		});
 		expect(readState?.content).toBe(pendingText);
@@ -1479,6 +1480,7 @@ describe("upsert_file_pending_update", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/pending-stale-lineage.md",
 		});
 		expect(beforeBump?.content).toContain("Pending draft");
@@ -1497,6 +1499,7 @@ describe("upsert_file_pending_update", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/pending-stale-lineage.md",
 		});
 		expect(afterBump?.content).toBe(seeded.baseMarkdown);

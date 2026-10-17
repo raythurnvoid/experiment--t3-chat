@@ -542,6 +542,7 @@ export function bash_head_tail_wc_command_create(args: {
 						organizationId: pathResolution.ctxData.organizationId,
 						workspaceId: pathResolution.ctxData.workspaceId,
 						userId: pathResolution.ctxData.userId,
+						subject: { kind: "user", userId: pathResolution.ctxData.userId, plugin: null },
 						path: dbFilesPath,
 						overlayUserId: pathResolution.fs.overlayUserId,
 						mode: {

@@ -1,9 +1,9 @@
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
+import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
-import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
 import { crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { files_db_get_visible_node_by_path, files_ROOT_ID } from "../server/files.ts";
 import {
@@ -132,6 +132,7 @@ export async function plugins_external_files_db_authorize(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 	const writeContext: files_nodes_WriteContext = {
+		subject: plugins_sandbox_subject(installation, grant.actorUserId),
 		writer: { kind: "service_account", serviceAccountId: grant.serviceAccountId },
 		actorUserId: grant.actorUserId,
 		policyReach: "ancestors",
@@ -180,9 +181,11 @@ export async function plugins_external_files_db_authorize(
 				!selectedChild &&
 				(await files_metadata_db_read_entry(ctx, { ...scope, fileNodeId: root._id, key: "plugin-name" })) ===
 					installation.pluginName &&
+				// Recovery returns only IDs and changes nothing, so it needs only the human to still see the
+				// folder. The account may have lost its grant there.
 				(await access_control_db_can_act_on_file_node(ctx, {
 					...scope,
-					userId: grant.actorUserId,
+					subject: { kind: "user", userId: grant.actorUserId, plugin: null },
 					fileNode: node,
 					permission: "content.read",
 				}))
@@ -194,30 +197,16 @@ export async function plugins_external_files_db_authorize(
 			}
 		}
 	}
-	let allowed: boolean;
-	if (aclNode) {
-		allowed = await access_control_db_can_act_on_file_node(ctx, {
+	// No node on the path yet means a create at the workspace root.
+	if (
+		!(await access_control_db_can_act_on_file_node(ctx, {
 			...scope,
-			userId: grant.actorUserId,
-			serviceAccountId: grant.serviceAccountId,
+			subject: writeContext.subject,
 			fileNode: aclNode,
 			permission: "content.write",
-		});
-	} else {
-		const organization = await ctx.db.get("organizations", grant.organizationId);
-		if (!organization?.defaultWorkspaceId) return Result({ _nay: { message: "Permission denied" } });
-		const permission = {
-			...scope,
-			defaultWorkspaceId: organization.defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resource: { kind: "workspace" as const, id: String(workspace._id) },
-			permission: "content.write" as const,
-		};
-		allowed =
-			(await access_control_db_has_permission(ctx, { ...permission, userId: grant.actorUserId })) &&
-			(await access_control_db_has_permission(ctx, { ...permission, serviceAccountId: grant.serviceAccountId }));
-	}
-	if (!allowed) return Result({ _nay: { message: "Permission denied" } });
+		}))
+	)
+		return Result({ _nay: { message: "Permission denied" } });
 	const writable = await files_nodes_db_require_writable(ctx, {
 		...scope,
 		writeContext,

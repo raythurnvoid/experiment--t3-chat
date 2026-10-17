@@ -169,6 +169,7 @@ test("metadata reads merge normal and selected facts before and after the switch
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			userId: f.db.userId,
+			subject: { kind: "user", userId: f.db.userId, plugin: null },
 			path: "/meta.txt",
 		});
 	expect((await byPath())?.values, "Indexed metadata keeps selected before docs").toEqual([
@@ -266,6 +267,7 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					visibilityUserId: db.userId,
+					subject: { kind: "user", userId: db.userId, plugin: null },
 					overlayUserId: db.userId,
 					folderPath,
 					mode: "metadata",

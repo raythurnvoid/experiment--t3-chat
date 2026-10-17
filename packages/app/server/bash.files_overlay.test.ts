@@ -396,6 +396,7 @@ describe("bash_run_command", () => {
 				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
 				visibilityUserId: runner.ctxData.userId,
+				subject: { kind: "user", userId: runner.ctxData.userId, plugin: null },
 				path: "/note.md",
 			}),
 		).toBeNull();
@@ -429,6 +430,7 @@ describe("bash_run_command", () => {
 				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
 				visibilityUserId: runner.ctxData.userId,
+				subject: { kind: "user", userId: runner.ctxData.userId, plugin: null },
 				path: "/reader-draft/lines.txt",
 			}),
 		).toBeNull();

@@ -5,6 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import type { plugins_sandbox_root_validator } from "./schema.ts";
+import type { access_control_Subject } from "./access_control.ts";
 import {
 	access_control_FILE_SHARE_PERMISSIONS,
 	access_control_file_share_level_from_permissions,
@@ -68,6 +69,22 @@ const SANDBOX_REBUILD_LEASE_MS = 10 * 60 * 1000;
 
 /** Grants read per rebuild step. Each one costs two reads (binding, node). */
 const SANDBOX_REBUILD_PAGE_SIZE = 100;
+
+/** A plugin acts as its human, inside the installation's sandbox roots. */
+export function plugins_sandbox_subject(
+	installation: Doc<"plugins_workspace_installations">,
+	userId: Id<"users">,
+): access_control_Subject {
+	return {
+		kind: "user",
+		userId,
+		plugin: {
+			installationId: installation._id,
+			// A running rebuild has not read all grants yet, so the plugin reaches no folder until it ends.
+			roots: installation.sandbox.rebuild === null ? installation.sandbox.roots : [],
+		},
+	};
+}
 
 export function plugins_sandbox_root_key(target: plugins_SandboxRoot["target"]) {
 	return target.kind === "open" ? "open" : target.nodeId;

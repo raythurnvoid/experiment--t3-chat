@@ -41,6 +41,7 @@ import { organizations_db_get_membership } from "./organizations_memberships_db.
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
+	access_control_subject_validator,
 } from "./access_control.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
@@ -381,7 +382,7 @@ type get_data_for_create_signed_download_url_Result =
  */
 export const get_data_for_public_download_url = internalQuery({
 	args: {
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		subject: access_control_subject_validator,
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.string(),
@@ -432,8 +433,7 @@ export const get_data_for_public_download_url = internalQuery({
 		const [readableNode] = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			userId: args.visibilityUserId,
-			serviceAccountId: args.serviceAccountId,
+			subject: args.subject,
 			nodes: [fileNode],
 		});
 		if (!readableNode) {

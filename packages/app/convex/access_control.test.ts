@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
 	test_save_file_pending_update,
 	test_convex,
@@ -20,7 +20,10 @@ import {
 	access_control_db_resolve_effective_permissions,
 	access_control_db_role_file_grant_caller_cannot_give,
 	access_control_db_set_service_account_grant,
+	type access_control_Subject,
 } from "./access_control.ts";
+import type { plugins_SandboxRoot } from "./plugins_service_accounts.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import {
 	organizations_db_create,
 	organizations_db_create_workspace,
@@ -915,7 +918,7 @@ describe("service account controls", () => {
 });
 
 describe("access_control_db_has_permission service accounts", () => {
-	test("isolates account grants, restricts workspace fallback, and intersects the owner at every read helper", async () => {
+	test("a service account subject reads with its own grants only", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "Account isolation",
@@ -938,31 +941,18 @@ describe("access_control_db_has_permission service accounts", () => {
 				defaultWorkspaceId: fixture.defaultWorkspaceId,
 				organizationOwnerUserId: fixture.ownerId,
 			};
-			const check = (target: typeof node, permission: "content.read" | "content.write" = "content.read") =>
-				access_control_db_has_permission(ctx, {
-					...common,
-					serviceAccountId,
-					resource: { kind: "file", id: target._id, restrictedScopeNodeId: target.restrictedScopeNodeId },
-					permission,
-				});
-			expect(await check(node)).toBe(false);
-			expect(
-				await access_control_db_filter_readable_file_nodes(ctx, {
-					...common,
-					userId: fixture.ownerId,
-					serviceAccountId,
-					nodes: [node, other],
-				}),
-			).toEqual([]);
-			expect(
-				await access_control_db_can_act_on_file_node(ctx, {
-					...common,
-					userId: fixture.ownerId,
-					serviceAccountId,
-					fileNode: node,
-					permission: "content.write",
-				}),
-			).toBe(false);
+			const subject = { kind: "service_account" as const, serviceAccountId };
+			const readable = async (nodes: Array<typeof node>) =>
+				(await access_control_db_filter_readable_file_nodes(ctx, { ...common, subject, nodes })).map(
+					(item) => item._id,
+				);
+			const can_write = (fileNode: typeof node | null) =>
+				access_control_db_can_act_on_file_node(ctx, { ...common, subject, fileNode, permission: "content.write" });
+
+			// The owner made the account, but the account acts alone: it starts with no reach.
+			expect(await readable([node, other])).toEqual([]);
+			expect(await can_write(node)).toBe(false);
+			expect(await can_write(null)).toBe(false);
 
 			await access_control_db_set_service_account_grant(ctx, {
 				...common,
@@ -970,20 +960,8 @@ describe("access_control_db_has_permission service accounts", () => {
 				resource: { kind: "file", nodeId },
 				level: "read",
 			});
-
-			expect(await check(node)).toBe(true);
-			expect(await check(node, "content.write")).toBe(false);
-			expect(await check(other)).toBe(false);
-			expect(
-				(
-					await access_control_db_filter_readable_file_nodes(ctx, {
-						...common,
-						userId: fixture.ownerId,
-						serviceAccountId,
-						nodes: [node, other],
-					})
-				).map((item) => item._id),
-			).toEqual([nodeId]);
+			expect(await readable([node, other])).toEqual([nodeId]);
+			expect(await can_write(node)).toBe(false);
 
 			await access_control_db_set_service_account_grant(ctx, {
 				...common,
@@ -991,9 +969,34 @@ describe("access_control_db_has_permission service accounts", () => {
 				resource: { kind: "workspace" },
 				level: "write",
 			});
+			expect(await can_write(other)).toBe(true);
+			expect(await can_write(null)).toBe(true);
 
-			expect(await check(other, "content.write")).toBe(true);
+			await ctx.db.patch("files_nodes", otherId, { restrictedScopeNodeId: otherId });
+			const restricted = (await ctx.db.get("files_nodes", otherId))!;
+			// A workspace grant does not reach into a restricted folder.
+			expect(await readable([restricted])).toEqual([]);
 
+			await access_control_db_set_service_account_grant(ctx, {
+				...common,
+				serviceAccountId,
+				resource: { kind: "file", nodeId: otherId },
+				level: "write",
+			});
+			// No person has to be in the folder too: the account's own grant decides.
+			expect(await can_write(restricted)).toBe(true);
+
+			await ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: 1 });
+			expect(await readable([node, restricted])).toEqual([]);
+			expect(await can_write(restricted)).toBe(false);
+		});
+	});
+
+	test("a guest cannot act on an open file through can_act", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, { name: "Guest open", suffix: "guest-open" });
+		const nodeId = await access_control_test_seed_open_folder(fixture, { name: "open" });
+		await t.run(async (ctx) => {
 			const assignments = await ctx.db
 				.query("access_control_role_assignments")
 				.withIndex("by_organization_workspace_user", (q) =>
@@ -1006,74 +1009,297 @@ describe("access_control_db_has_permission service accounts", () => {
 			for (const assignment of assignments) {
 				await ctx.db.delete("access_control_role_assignments", assignment._id);
 			}
-
-			for (const permission of ["content.read", "content.write"] as const) {
-				await ctx.db.insert("access_control_permission_grants", {
+			const node = (await ctx.db.get("files_nodes", nodeId))!;
+			const act = (permission: "content.read" | "content.write") =>
+				access_control_db_can_act_on_file_node(ctx, {
 					organizationId: fixture.organizationId,
 					workspaceId: fixture.defaultWorkspaceId,
-					resourceKind: "workspace",
-					resourceId: fixture.defaultWorkspaceId,
-					principalKind: "user",
-					userId: fixture.memberId,
+					subject: { kind: "user", userId: fixture.memberId, plugin: null },
+					fileNode: node,
 					permission,
-					createdAt: 1,
-					updatedAt: 1,
 				});
-			}
-			// A direct human workspace grant still covers an open node when an account is present.
-			expect(
-				await access_control_db_filter_readable_file_nodes(ctx, {
-					...common,
-					userId: fixture.memberId,
-					serviceAccountId,
-					nodes: [other],
-				}),
-			).toEqual([other]);
-			expect(
-				await access_control_db_can_act_on_file_node(ctx, {
-					...common,
-					userId: fixture.memberId,
-					serviceAccountId,
-					fileNode: other,
-					permission: "content.write",
-				}),
-			).toBe(true);
-
-			await ctx.db.patch("files_nodes", otherId, { restrictedScopeNodeId: otherId });
-			const restricted = (await ctx.db.get("files_nodes", otherId))!;
-			expect(await check(restricted)).toBe(false);
-
-			await access_control_db_set_service_account_grant(ctx, {
-				...common,
-				serviceAccountId,
-				resource: { kind: "file", nodeId: otherId },
-				level: "write",
-			});
-			expect(await check(restricted, "content.write")).toBe(true);
-			// The account can read here, but its human actor was never added to this scope.
-			expect(
-				await access_control_db_filter_readable_file_nodes(ctx, {
-					...common,
-					userId: fixture.memberId,
-					serviceAccountId,
-					nodes: [restricted],
-				}),
-			).toEqual([]);
-			expect(
-				await access_control_db_can_act_on_file_node(ctx, {
-					...common,
-					userId: fixture.memberId,
-					serviceAccountId,
-					fileNode: restricted,
-					permission: "content.write",
-				}),
-			).toBe(false);
-
-			await ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: 1 });
-
-			expect(await check(node)).toBe(false);
-			expect(await check(restricted)).toBe(false);
+			// Without a role the member has no workspace permission, so an open node is out of reach.
+			expect(await act("content.read")).toBe(false);
+			expect(await act("content.write")).toBe(false);
 		});
+	});
+});
+
+describe("plugin sandbox", () => {
+	/**
+	 * `/top.md`, an open folder `/o` with `a.md`, `a.md.bak` and `b.md`, a restricted folder `/r` with
+	 * `x.md`, and a restricted folder `/r/in` with `y.md`. Only the owner reads `/r`.
+	 */
+	async function seed() {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, { name: "Sandbox", suffix: "sandbox" });
+		const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
+		const nodes = await t.run(async (ctx) => {
+			const insert = async (
+				parent: Doc<"files_nodes"> | null,
+				name: string,
+				kind: "file" | "folder",
+				restrict = false,
+			) => {
+				const path = `${parent?.path ?? ""}/${name}`;
+				const id = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					createdBy: fixture.ownerId,
+					updatedBy: fixture.ownerId,
+					parentId: parent?._id ?? files_ROOT_ID,
+					name,
+					sortName: files_sort_text_key(name),
+					kind,
+					path,
+					treePath: kind === "folder" ? `${path}/` : path,
+					pathDepth: path.split("/").length - 1,
+					restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
+				});
+				if (restrict) await ctx.db.patch("files_nodes", id, { restrictedScopeNodeId: id });
+				return (await ctx.db.get("files_nodes", id))!;
+			};
+			const top = await insert(null, "top.md", "file");
+			const o = await insert(null, "o", "folder");
+			const a = await insert(o, "a.md", "file");
+			const aLonger = await insert(o, "a.md.bak", "file");
+			const b = await insert(o, "b.md", "file");
+			const r = await insert(null, "r", "folder", true);
+			const x = await insert(r, "x.md", "file");
+			const inner = await insert(r, "in", "folder", true);
+			const y = await insert(inner, "y.md", "file");
+			return { top, o, a, aLonger, b, r, x, inner, y };
+		});
+		const scope = { organizationId: fixture.organizationId, workspaceId: fixture.defaultWorkspaceId };
+		const plugin = (userId: Id<"users">, roots: plugins_SandboxRoot[]) => ({
+			kind: "user" as const,
+			userId,
+			plugin: { installationId, roots },
+		});
+		const can = (
+			subject: access_control_Subject,
+			fileNode: Doc<"files_nodes"> | null,
+			permission: "content.read" | "content.write" = "content.read",
+		) => t.run((ctx) => access_control_db_can_act_on_file_node(ctx, { ...scope, subject, fileNode, permission }));
+		/** Make `/r` an output folder of `installationId`. */
+		const own_output_folder = (installationId: Id<"plugins_workspace_installations">) =>
+			t.run(async (ctx) => {
+				const writerId = await ctx.db.insert("plugins_external_file_writers", {
+					...scope,
+					installationId,
+					resourceKey: "private",
+					rootNodeId: nodes.r._id,
+					folderNodeId: nodes.r._id,
+					rootPath: "/r",
+					path: "/r",
+					generation: 1,
+					updatedAt: Date.now(),
+				});
+				await ctx.db.insert("plugins_external_file_bindings", {
+					...scope,
+					installationId,
+					writerId,
+					nodeId: nodes.r._id,
+					revision: 1,
+					detachedAt: null,
+					updatedAt: Date.now(),
+				});
+			});
+		return { t, fixture, installationId, nodes, scope, plugin, can, own_output_folder };
+	}
+
+	test("a plugin reaches only inside its roots, at the root's level", async () => {
+		const { nodes, plugin, can, fixture } = await seed();
+		const writer = plugin(fixture.memberId, [{ target: { kind: "folder", nodeId: nodes.o._id }, level: "write" }]);
+		expect(await can(writer, nodes.a)).toBe(true);
+		expect(await can(writer, nodes.a, "content.write")).toBe(true);
+		// Outside the root, and at the workspace root, nothing.
+		expect(await can(writer, nodes.top)).toBe(false);
+		expect(await can(writer, null, "content.write")).toBe(false);
+
+		const reader = plugin(fixture.memberId, [{ target: { kind: "folder", nodeId: nodes.o._id }, level: "read" }]);
+		expect(await can(reader, nodes.a)).toBe(true);
+		expect(await can(reader, nodes.a, "content.write")).toBe(false);
+	});
+
+	test("a plugin never reaches beyond its human", async () => {
+		const { nodes, plugin, can, fixture } = await seed();
+		const roots: plugins_SandboxRoot[] = [{ target: { kind: "folder", nodeId: nodes.r._id }, level: "manage" }];
+		// The member cannot read `/r`, so its plugin cannot either, whatever the root says.
+		expect(await can(plugin(fixture.memberId, roots), nodes.x)).toBe(false);
+		expect(await can(plugin(fixture.ownerId, roots), nodes.x)).toBe(true);
+	});
+
+	test("an open root and a folder root stop at restricted folders", async () => {
+		const { nodes, plugin, can, fixture } = await seed();
+		const open = plugin(fixture.ownerId, [{ target: { kind: "open" }, level: "write" }]);
+		expect(await can(open, nodes.top)).toBe(true);
+		expect(await can(open, nodes.a)).toBe(true);
+		expect(await can(open, null, "content.write")).toBe(true);
+		expect(await can(open, nodes.x)).toBe(false);
+
+		const folder = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.r._id }, level: "write" }]);
+		expect(await can(folder, nodes.x)).toBe(true);
+		expect(await can(folder, nodes.inner)).toBe(false);
+		expect(await can(folder, nodes.y)).toBe(false);
+	});
+
+	test("a file root reaches only that file, not a sibling with a longer name", async () => {
+		const { nodes, plugin, can, fixture } = await seed();
+		const file = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.a._id }, level: "write" }]);
+		expect(await can(file, nodes.a, "content.write")).toBe(true);
+		expect(await can(file, nodes.aLonger)).toBe(false);
+		expect(await can(file, nodes.o)).toBe(false);
+	});
+
+	test("a root on a deleted node gives nothing", async () => {
+		const { t, nodes, plugin, can, fixture } = await seed();
+		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.o._id }, level: "write" }]);
+		await t.run((ctx) => ctx.db.delete("files_nodes", nodes.o._id));
+		expect(await can(subject, nodes.a)).toBe(false);
+	});
+
+	test("a root on an archived node gives nothing, also to a new item at its path", async () => {
+		const { t, nodes, plugin, can, fixture } = await seed();
+		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.o._id }, level: "write" }]);
+		const fresh = await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodes.o._id, { archiveOperationId: "archive-o" });
+			const id = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				createdBy: fixture.ownerId,
+				updatedBy: fixture.ownerId,
+				parentId: files_ROOT_ID,
+				name: "o",
+				sortName: files_sort_text_key("o"),
+				kind: "folder",
+				path: "/o",
+				treePath: "/o/",
+				pathDepth: 1,
+				restrictedScopeNodeId: null,
+			});
+			return (await ctx.db.get("files_nodes", id))!;
+		});
+		expect(await can(subject, fresh)).toBe(false);
+	});
+
+	test("a plugin list keeps only the rows inside its roots", async () => {
+		const { t, nodes, plugin, scope, fixture } = await seed();
+		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.o._id }, level: "read" }]);
+		const kept = await t.run((ctx) =>
+			access_control_db_filter_readable_file_nodes(ctx, {
+				...scope,
+				subject,
+				nodes: [nodes.top, nodes.a, nodes.b, nodes.r, nodes.x],
+			}),
+		);
+		expect(kept.map((node) => node.path)).toEqual(["/o/a.md", "/o/b.md"]);
+	});
+
+	test("a write checks each existing folder on its path", async () => {
+		const { t, nodes, plugin, scope, fixture } = await seed();
+		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.o._id }, level: "write" }]);
+		const create = (path: string) =>
+			t.run((ctx) =>
+				files_nodes_db_create_node_recursively_at_path(ctx, {
+					...scope,
+					userId: fixture.ownerId,
+					parentId: files_ROOT_ID,
+					path,
+					kind: "file",
+					now: Date.now(),
+					writeContext: {
+						subject,
+						writer: { kind: "user", userId: fixture.ownerId },
+						actorUserId: fixture.ownerId,
+						resourceScope: { kind: "workspace" },
+						policyReach: "ancestors",
+					},
+				}),
+			);
+		// `/r` is outside the root, so nothing is created under it.
+		expect((await create("/r/new/n.md"))._nay?.message).toBe("Permission denied");
+		expect((await create("/o/new/n.md"))._nay).toBeUndefined();
+		const paths = await t.run(async (ctx) => (await ctx.db.query("files_nodes").collect()).map((node) => node.path));
+		expect(paths).toContain("/o/new/n.md");
+		expect(paths).not.toContain("/r/new");
+	});
+
+	test("a write into a nested root keeps only the actor's ceiling on the folders above it", async () => {
+		const { t, nodes, plugin, scope, fixture } = await seed();
+		// The root is `/r/in`. `/r` above it is outside the root, but the owner can write there.
+		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.inner._id }, level: "write" }]);
+		const created = await t.run((ctx) =>
+			files_nodes_db_create_node_recursively_at_path(ctx, {
+				...scope,
+				userId: fixture.ownerId,
+				parentId: files_ROOT_ID,
+				path: "/r/in/n.md",
+				kind: "file",
+				now: Date.now(),
+				writeContext: {
+					subject,
+					writer: { kind: "user", userId: fixture.ownerId },
+					actorUserId: fixture.ownerId,
+					resourceScope: { kind: "workspace" },
+					policyReach: "ancestors",
+				},
+			}),
+		);
+		expect(created._nay).toBeUndefined();
+	});
+
+	test("an installation's own output folder follows the account's live grant, also during a rebuild", async () => {
+		const { t, nodes, plugin, can, fixture, scope, installationId, own_output_folder } = await seed();
+		const other = await access_control_test_seed_plugin_installation({ t, fixture, name: "other-plugin" });
+		await own_output_folder(installationId);
+		const grant = (level: "read" | "write" | null) =>
+			t.run(async (ctx) => {
+				const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+				const granted = await access_control_db_set_service_account_grant(ctx, {
+					...scope,
+					serviceAccountId: installation.serviceAccountId,
+					resource: { kind: "file", nodeId: nodes.r._id },
+					level,
+				});
+				if (granted._nay) throw new Error(granted._nay.message);
+			});
+		// No roots at all, as while the roots rebuild. With no account grant the folder gives nothing.
+		expect(await can(plugin(fixture.ownerId, []), nodes.x)).toBe(false);
+		await grant("write");
+		expect(await can(plugin(fixture.ownerId, []), nodes.x, "content.write")).toBe(true);
+		// Lowering or removing the grant limits the plugin at once.
+		await grant("read");
+		expect(await can(plugin(fixture.ownerId, []), nodes.x)).toBe(true);
+		expect(await can(plugin(fixture.ownerId, []), nodes.x, "content.write")).toBe(false);
+		await grant(null);
+		expect(await can(plugin(fixture.ownerId, []), nodes.x)).toBe(false);
+		await grant("write");
+		// Still never beyond the human.
+		expect(await can(plugin(fixture.memberId, []), nodes.x)).toBe(false);
+		// Another plugin does not own it.
+		expect(
+			await can({ kind: "user", userId: fixture.ownerId, plugin: { installationId: other, roots: [] } }, nodes.x),
+		).toBe(false);
+	});
+
+	test("a key bound to a plugin's account cannot read the plugin's private output folder", async () => {
+		const { t, nodes, can, installationId, scope, own_output_folder } = await seed();
+		await own_output_folder(installationId);
+		const serviceAccountId = await t.run(async (ctx) => {
+			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+			const granted = await access_control_db_set_service_account_grant(ctx, {
+				...scope,
+				serviceAccountId: installation.serviceAccountId,
+				resource: { kind: "file", nodeId: nodes.r._id },
+				level: "manage",
+			});
+			if (granted._nay) throw new Error(granted._nay.message);
+			return installation.serviceAccountId;
+		});
+		expect(await can({ kind: "service_account", serviceAccountId }, nodes.x)).toBe(false);
 	});
 });
 
@@ -8607,6 +8833,7 @@ describe("file sharing", () => {
 		const memberRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			...readArgs,
 			userId: fixture.memberId,
+			subject: { kind: "user", userId: fixture.memberId, plugin: null },
 		});
 		expect(memberRead).toBeNull();
 
@@ -9373,7 +9600,7 @@ describe("file sharing", () => {
 						await access_control_db_filter_readable_file_nodes(ctx, {
 							organizationId: fixture.organizationId,
 							workspaceId: fixture.defaultWorkspaceId,
-							userId,
+							subject: { kind: "user", userId, plugin: null },
 							nodes: [(await ctx.db.get("files_nodes", childId))!],
 						})
 					).map((node) => node._id),
@@ -9449,7 +9676,7 @@ describe("file sharing", () => {
 						await access_control_db_filter_readable_file_nodes(ctx, {
 							organizationId: fixture.organizationId,
 							workspaceId: fixture.defaultWorkspaceId,
-							userId: fixture.memberId,
+							subject: { kind: "user", userId: fixture.memberId, plugin: null },
 							nodes: [(await ctx.db.get("files_nodes", childId))!],
 						})
 					).map((node) => node._id),
@@ -9871,8 +10098,16 @@ describe("file sharing", () => {
 			cursor: null,
 		} as const;
 		const [ownerFound, memberFound] = await Promise.all([
-			t.query(internal.files_nodes.search_paths, { ...searchArgs, visibilityUserId: fixture.ownerId }),
-			t.query(internal.files_nodes.search_paths, { ...searchArgs, visibilityUserId: fixture.memberId }),
+			t.query(internal.files_nodes.search_paths, {
+				...searchArgs,
+				visibilityUserId: fixture.ownerId,
+				subject: { kind: "user", userId: fixture.ownerId, plugin: null },
+			}),
+			t.query(internal.files_nodes.search_paths, {
+				...searchArgs,
+				visibilityUserId: fixture.memberId,
+				subject: { kind: "user", userId: fixture.memberId, plugin: null },
+			}),
 		]);
 
 		// The owner matches the restricted folder, the file inside it, and the open one. The member keeps

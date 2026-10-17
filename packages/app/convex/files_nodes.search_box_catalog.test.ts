@@ -135,6 +135,7 @@ describe("search box doors", () => {
 				organizationId: seeded.db.organizationId,
 				workspaceId: seeded.db.workspaceId,
 				userId: member.userId,
+				subject: { kind: "user", userId: member.userId, plugin: null },
 				overlayUserId: member.userId,
 				path: "/tasks",
 			});

@@ -5,6 +5,7 @@ import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_set_service_account_grant,
+	type access_control_Subject,
 } from "../convex/access_control.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -38,6 +39,8 @@ async function fixture() {
 		return userId;
 	};
 	const { v, w } = await t.run(async (ctx) => ({ v: await add_member(ctx, "clerk_v"), w: await add_member(ctx, "clerk_w") }));
+	/** V as a person acting alone. */
+	const viewer = { kind: "user" as const, userId: v, plugin: null };
 
 	/**
 	 * Insert a saved node. A restricted root points at itself; other nodes take their parent's scope.
@@ -85,17 +88,17 @@ async function fixture() {
 		});
 
 	/**
-	 * Run one query step as `userId`, with an optional service account.
+	 * Run one query step as `subject`.
 	 */
 	const as_reader = async <T>(
-		args: { userId: Id<"users">; serviceAccountId?: Id<"access_control_service_accounts"> },
+		args: access_control_Subject,
 		run: (
 			ctx: QueryCtx,
 			reader: Extract<Awaited<ReturnType<typeof files_readable_scopes_db_reader>>, { mode: "scoped" }>,
 		) => Promise<T>,
 	) =>
 		await t.run(async (ctx) => {
-			const reader = await files_readable_scopes_db_reader(ctx, { ...scope, ...args });
+			const reader = await files_readable_scopes_db_reader(ctx, { ...scope, subject: args });
 			if (reader.mode !== "scoped") throw new Error("Expected a scoped reader");
 			return await run(ctx, reader);
 		});
@@ -103,7 +106,7 @@ async function fixture() {
 	/**
 	 * One page of each principal's items under `/`, as `kind:treePath`.
 	 */
-	const enumerate = async (args: { userId: Id<"users">; serviceAccountId?: Id<"access_control_service_accounts"> }) => {
+	const enumerate = async (args: access_control_Subject) => {
 		const count = await as_reader(args, async (_ctx, reader) => reader.principalKeys.length);
 		const pages = [];
 		// Each principal is its own `.paginate()` stream, so each one is its own query.
@@ -128,16 +131,13 @@ async function fixture() {
 		return pages;
 	};
 
-	const plan = (
-		args: { userId: Id<"users">; serviceAccountId?: Id<"access_control_service_accounts"> },
-		at: string | null,
-	) =>
+	const plan = (args: access_control_Subject, at: string | null) =>
 		as_reader(args, async (ctx, reader) => {
 			const { partitions } = await files_readable_scopes_db_plan(ctx, { reader, tag: undefined, folder: null, at });
 			return partitions;
 		});
 
-	return { t, db, scope, v, w, insert, share, as_reader, enumerate, plan };
+	return { t, db, scope, v, w, viewer, insert, share, as_reader, enumerate, plan };
 }
 
 describe("files_readable_scopes", () => {
@@ -166,7 +166,7 @@ describe("files_readable_scopes", () => {
 			return { inner, r };
 		});
 
-		const pages = await f.enumerate({ userId: f.v });
+		const pages = await f.enumerate(f.viewer);
 		expect(pages.map(({ items, isDone }) => ({ items, isDone }))).toEqual([
 			{ items: ["scope:/g/in/", "scope:/o/r/", "scope:/s1/"], isDone: true },
 			{ items: ["scope:/s2/"], isDone: true },
@@ -175,15 +175,15 @@ describe("files_readable_scopes", () => {
 		for (const page of pages) expect(page.documentsRead).toBeLessThan(50);
 
 		// A list that goes on inside a readable folder keeps it open, also under a hidden folder.
-		expect(await f.plan({ userId: f.v }, "/g/in/x.md")).toEqual([
+		expect(await f.plan(f.viewer, "/g/in/x.md")).toEqual([
 			{ scopeNodeId: null, treePath: "/" },
 			{ scopeNodeId: inner._id, treePath: "/g/in/" },
 		]);
-		expect(await f.plan({ userId: f.v }, "/o/r/")).toEqual([
+		expect(await f.plan(f.viewer, "/o/r/")).toEqual([
 			{ scopeNodeId: null, treePath: "/" },
 			{ scopeNodeId: r._id, treePath: "/o/r/" },
 		]);
-		expect(await f.plan({ userId: f.v }, "/h-0001/x.md")).toEqual([{ scopeNodeId: null, treePath: "/" }]);
+		expect(await f.plan(f.viewer, "/h-0001/x.md")).toEqual([{ scopeNodeId: null, treePath: "/" }]);
 	});
 
 	test("keeps the children of an unrestricted folder in a partition while the unrestrict job runs", async () => {
@@ -194,7 +194,7 @@ describe("files_readable_scopes", () => {
 			for (let index = 0; index < 100; index++) await f.insert(ctx, s, `c-${String(index).padStart(3, "0")}.md`, "file");
 			return s;
 		});
-		expect(await f.plan({ userId: f.v }, null)).toEqual([{ scopeNodeId: null, treePath: "/" }]);
+		expect(await f.plan(f.viewer, null)).toEqual([{ scopeNodeId: null, treePath: "/" }]);
 
 		const asOwner = f.t.withIdentity({ issuer: "https://clerk.test", external_id: f.db.userId });
 		expect(
@@ -207,7 +207,7 @@ describe("files_readable_scopes", () => {
 		);
 		expect(pointers).toContain(s._id);
 		// The folder is open again, so the children that still point at it are open content too.
-		expect(await f.plan({ userId: f.v }, null)).toEqual([
+		expect(await f.plan(f.viewer, null)).toEqual([
 			{ scopeNodeId: null, treePath: "/" },
 			{ scopeNodeId: s._id, treePath: "/s/" },
 		]);
@@ -218,7 +218,7 @@ describe("files_readable_scopes", () => {
 			if (!(await f.t.run((ctx) => ctx.db.query("files_subtree_ops").first()))) break;
 			vi.advanceTimersToNextTimer();
 		}
-		expect(await f.plan({ userId: f.v }, null)).toEqual([{ scopeNodeId: null, treePath: "/" }]);
+		expect(await f.plan(f.viewer, null)).toEqual([{ scopeNodeId: null, treePath: "/" }]);
 	});
 
 	test("reads only the scope ops over the folder, and says when it stops at the cap", async () => {
@@ -244,7 +244,7 @@ describe("files_readable_scopes", () => {
 			return { folder, s1 };
 		});
 		const plan = () =>
-			f.as_reader({ userId: f.v }, (ctx, reader) =>
+			f.as_reader(f.viewer, (ctx, reader) =>
 				files_readable_scopes_db_plan(ctx, { reader, tag: undefined, folder, at: null }),
 			);
 		expect(await plan()).toEqual({
@@ -271,7 +271,7 @@ describe("files_readable_scopes", () => {
 		expect(await plan()).toMatchObject({ truncated: true });
 	});
 
-	test("an owner acting through a service account reads the account's folders and open nodes only", async () => {
+	test("a service account reads its own folders and open nodes only", async () => {
 		const f = await fixture();
 		const serviceAccountId = await test_run_with_flush(f.t, async (ctx) => {
 			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
@@ -296,19 +296,29 @@ describe("files_readable_scopes", () => {
 			}
 			return serviceAccountId;
 		});
-		const caller = { userId: f.db.userId, serviceAccountId };
+		const caller = { kind: "service_account" as const, serviceAccountId };
 
 		expect((await f.enumerate(caller)).map(({ items, isDone }) => ({ items, isDone }))).toEqual([
 			{ items: ["scope:/s/", "node:/x.md"], isDone: true },
 		]);
 		// The account has no workspace grant, so open content is not one partition.
 		expect(await f.plan(caller, null)).toEqual([]);
-		// The owner alone reads every row, and a member through an account has no partitioned read yet, so
-		// every row is checked.
+		// The owner alone reads every row, and a plugin has no partitioned read yet, so every row is checked.
 		expect(
 			await f.t.run(async (ctx) => [
-				await files_readable_scopes_db_reader(ctx, { ...f.scope, userId: f.db.userId }),
-				await files_readable_scopes_db_reader(ctx, { ...f.scope, userId: f.v, serviceAccountId }),
+				await files_readable_scopes_db_reader(ctx, {
+					...f.scope,
+					subject: { kind: "user", userId: f.db.userId, plugin: null },
+				}),
+				await files_readable_scopes_db_reader(ctx, {
+					...f.scope,
+					// The reader only asks whether a plugin is set, so any installation id works here.
+					subject: {
+						kind: "user",
+						userId: f.v,
+						plugin: { installationId: "x" as Id<"plugins_workspace_installations">, roots: [] },
+					},
+				}),
 			]),
 		).toEqual([
 			{ mode: "flat", filter: false },

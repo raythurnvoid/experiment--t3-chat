@@ -203,9 +203,8 @@ export async function files_tree_db_get_readable_node(
 	const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 		organizationId: args.reader.membership.organizationId,
 		workspaceId: args.reader.membership.workspaceId,
-		userId: args.reader.userAuth.id,
+		subject: { kind: "user", userId: args.reader.userAuth.id, plugin: null },
 		nodes: [fileNode],
-		hasWorkspaceRead: args.reader.hasWorkspaceRead,
 	});
 	return readable.length > 0 ? fileNode : null;
 }

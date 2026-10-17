@@ -370,8 +370,7 @@ export const inspect = internalQuery({
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: facts._yay.installation.organizationId,
 				workspaceId: facts._yay.installation.workspaceId,
-				userId: facts._yay.serviceGrant.actorUserId,
-				serviceAccountId: facts._yay.serviceGrant.serviceAccountId,
+				subject: facts._yay.writeContext.subject,
 				fileNode: facts._yay.node,
 				permission: "content.read",
 			}))
@@ -541,8 +540,7 @@ export const change_scope = internalMutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: writer.organizationId,
 					workspaceId: writer.workspaceId,
-					userId: facts._yay.serviceGrant.actorUserId,
-					serviceAccountId: facts._yay.serviceGrant.serviceAccountId,
+					subject: facts._yay.writeContext.subject,
 					fileNode: folder,
 					permission: "content.permissions.manage",
 				}))

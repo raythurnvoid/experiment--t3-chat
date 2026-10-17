@@ -17,7 +17,11 @@ import type { RegisteredMutation } from "convex/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
-import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
+import {
+	access_control_db_can_act_on_file_node,
+	access_control_db_has_permission,
+	type access_control_Subject,
+} from "./access_control.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
 import { files_nodes_db_archive_nodes, files_nodes_db_hard_delete_node, files_nodes_db_set_write_policy } from "./files_nodes.ts";
@@ -58,7 +62,7 @@ import {
 } from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
-import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 
 // #region shared
@@ -236,6 +240,7 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 			workspace,
 			defaultWorkspaceId: organization.defaultWorkspaceId,
 			serviceAccountId: grant.serviceAccountId,
+			subject: plugins_sandbox_subject(installation, grant.actorUserId),
 		},
 	});
 }
@@ -499,7 +504,7 @@ async function db_authorize_live_target_node(
 	args: {
 		target: Doc<"plugin_service_storage_targets">;
 		principal: ServiceUploadPrincipal;
-		serviceAccountId: Id<"access_control_service_accounts">;
+		subject: access_control_Subject;
 	},
 ) {
 	// Target keys are installation-wide, so the stored destination is the boundary between two
@@ -531,9 +536,8 @@ async function db_authorize_live_target_node(
 		!(await access_control_db_can_act_on_file_node(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
-			userId: args.principal.actorUserId,
+			subject: args.subject,
 			fileNode: node,
-			serviceAccountId: args.serviceAccountId,
 			permission: "content.write",
 		}))
 	) {
@@ -851,7 +855,7 @@ export const create_upload_target = internalMutation({
 			const liveNode = await db_authorize_live_target_node(ctx, {
 				target: existingTarget,
 				principal: args.principal,
-				serviceAccountId: authorized._yay.serviceAccountId,
+				subject: authorized._yay.subject,
 			});
 			if (liveNode._nay) {
 				return liveNode;
@@ -911,9 +915,8 @@ export const create_upload_target = internalMutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: args.principal.organizationId,
 					workspaceId: args.principal.workspaceId,
-					userId: args.principal.actorUserId,
+					subject: authorized._yay.subject,
 					fileNode: existingNode,
-					serviceAccountId: authorized._yay.serviceAccountId,
 					permission: "content.write",
 				}))
 			) {
@@ -927,12 +930,12 @@ export const create_upload_target = internalMutation({
 		// what exists below that folder comes after its access checks.
 		const segments = path_extract_segments_from(args.path);
 		const { node: effectiveDestinationAclNode, depth: parentDepth } = await lookups.find_existing_parent(args.path);
+		// No folder on the path yet means a create at the workspace root.
 		if (
-			effectiveDestinationAclNode &&
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.principal.organizationId,
 				workspaceId: args.principal.workspaceId,
-				userId: args.principal.actorUserId,
+				subject: authorized._yay.subject,
 				fileNode: effectiveDestinationAclNode,
 				permission: "content.write",
 			}))
@@ -944,6 +947,7 @@ export const create_upload_target = internalMutation({
 		}
 
 		const writeContext: files_nodes_WriteContext = {
+			subject: authorized._yay.subject,
 			writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
 			actorUserId: args.principal.actorUserId,
 			resourceScope: {
@@ -954,24 +958,6 @@ export const create_upload_target = internalMutation({
 			policyReach: "direct",
 		};
 		const writeTarget = { kind: "create" as const, parentNode: effectiveDestinationAclNode, path: args.path };
-		const accountCanWrite = await access_control_db_has_permission(ctx, {
-			organizationId: args.principal.organizationId,
-			workspaceId: args.principal.workspaceId,
-			defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
-			organizationOwnerUserId: authorized._yay.organization.ownerUserId,
-			resource: effectiveDestinationAclNode
-				? {
-						kind: "file",
-						id: String(effectiveDestinationAclNode._id),
-						restrictedScopeNodeId: effectiveDestinationAclNode.restrictedScopeNodeId,
-					}
-				: { kind: "workspace", id: String(args.principal.workspaceId) },
-			serviceAccountId: authorized._yay.serviceAccountId,
-			permission: "content.write",
-		});
-		if (!accountCanWrite) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
@@ -1301,7 +1287,7 @@ export const remint_upload_target = internalMutation({
 		const liveNode = await db_authorize_live_target_node(ctx, {
 			target,
 			principal: args.principal,
-			serviceAccountId: authorized._yay.serviceAccountId,
+			subject: authorized._yay.subject,
 		});
 		if (liveNode._nay) {
 			return liveNode;
@@ -1413,7 +1399,7 @@ export const finalize_upload_target = internalMutation({
 		const liveNode = await db_authorize_live_target_node(ctx, {
 			target,
 			principal: args.principal,
-			serviceAccountId: authorized._yay.serviceAccountId,
+			subject: authorized._yay.subject,
 		});
 		if (liveNode._nay) {
 			return liveNode;
@@ -1582,6 +1568,7 @@ export const delete_upload_target = internalMutation({
 				continue;
 			}
 			const writeContext: files_nodes_WriteContext = {
+				subject: authorized._yay.subject,
 				writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
 				actorUserId: args.principal.actorUserId,
 				resourceScope: { kind: "node", nodeId: match.node._id },
@@ -1591,8 +1578,7 @@ export const delete_upload_target = internalMutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: args.principal.organizationId,
 					workspaceId: args.principal.workspaceId,
-					userId: args.principal.actorUserId,
-					serviceAccountId: authorized._yay.serviceAccountId,
+					subject: authorized._yay.subject,
 					fileNode: match.node,
 					permission: "content.write",
 				}))
@@ -1792,7 +1778,7 @@ export async function public_api_service_uploads_db_collect_bounded_descendants(
  * The meeting is gone, so its files must leave the workspace tree. They are real committed files
  * though, and in this product deleting a file means archiving it, so the service archives too. One
  * operation id covers the folder and its whole subtree. Local policies are cleared only when the
- * actor and account can manage them, so a member can restore the set later. The stored
+ * actor, inside the sandbox roots, can manage them, so a member can restore the set later. The stored
  * bytes stay charged. This quota only grows, so neither archive nor physical deletion gives bytes
  * back.
  *
@@ -1801,8 +1787,8 @@ export async function public_api_service_uploads_db_collect_bounded_descendants(
  * installation created it, or, when this installation has no upload target at the destination at
  * all, the folder carries the `plugin-name` label of this plugin. The host writes that label on
  * every node a `files/write` by the grant creates. A member may also set the label by hand, and a
- * folder at the destination with no such label answers zero. The accepted capability, actor
- * permissions, account grants, and current policies must all allow the archive. A member can
+ * folder at the destination with no such label answers zero. The accepted capability, the actor's
+ * permissions inside the sandbox roots, and current policies must all allow the archive. A member can
  * still have put something of their own in the folder, so a refusal anywhere in the subtree
  * refuses the whole call. The delete workflow fails visibly on a refusal and can be retried once
  * the member clears what blocked it.
@@ -1947,6 +1933,7 @@ export const archive_destination = internalMutation({
 		const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === null);
 
 		const writeContext: files_nodes_WriteContext = {
+			subject: authorized._yay.subject,
 			writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
 			actorUserId: args.principal.actorUserId,
 			resourceScope: { kind: "subtree", nodeId: destination._id },
@@ -1960,8 +1947,7 @@ export const archive_destination = internalMutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: args.principal.organizationId,
 					workspaceId: args.principal.workspaceId,
-					userId: args.principal.actorUserId,
-					serviceAccountId: authorized._yay.serviceAccountId,
+					subject: authorized._yay.subject,
 					fileNode: node,
 					permission: "content.write",
 				}))

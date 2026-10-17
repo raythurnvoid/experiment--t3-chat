@@ -577,6 +577,7 @@ describe("materialize_file_content and restore_snapshot_r2", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null },
 				path: "/review-restore.txt",
 			});
 			expect.soft(result._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
@@ -1204,6 +1205,7 @@ describe("restore_snapshot_r2", () => {
 				expect(node?.textKind).toBe(rootKind);
 				expect(node?.collaborationEnabled === false).toBe(off);
 				const content = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					subject: { kind: "user" as const, userId: fixture.scope.userId, plugin: null },
 					...fixture.scope,
 					path: sourceRootKind === "rich_text" ? "/restore.md" : "/restore.txt",
 				});
@@ -1408,6 +1410,7 @@ describe("restore_snapshot_r2", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null },
 				path: "/restore.txt",
 			});
 			expect(read?.content).toBe(destinationOff ? "Original text\n" : "Version saved with collaboration off\n");
@@ -1524,6 +1527,7 @@ describe("copy_transfer_file saved replacement", () => {
 			expect(
 				(
 					await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+						subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 						...scope,
 						path: "/restore.txt",
 						includePending: false,
@@ -1791,6 +1795,7 @@ describe("accept_file_pending_replacement", () => {
 		});
 		expect(after?.yjsLastSequenceId !== null).toBe(!expectedOff);
 		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 			...scope,
 			path: "/restore.txt",
 		});

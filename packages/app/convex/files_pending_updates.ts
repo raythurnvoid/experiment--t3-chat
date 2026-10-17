@@ -3044,7 +3044,7 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				subject: { kind: "user", userId: args.userId, plugin: null },
 				fileNode: file,
 				permission: "content.write",
 			}))
@@ -3199,7 +3199,7 @@ export const refresh_file_pending_update_in_db = internalMutation({
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				subject: { kind: "user", userId: args.userId, plugin: null },
 				fileNode: file,
 				permission: "content.write",
 			}))
@@ -3447,7 +3447,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				subject: { kind: "user", userId: args.userId, plugin: null },
 				fileNode: file,
 				permission: "content.write",
 			}))
@@ -5119,6 +5119,7 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			writeContext: {
+				subject: { kind: "user", userId: args.userId, plugin: null },
 				writer: { kind: "user", userId: args.userId },
 				actorUserId: args.userId,
 				resourceScope: { kind: "workspace" },
@@ -7114,15 +7115,10 @@ export const get_pending_move_occupant = query({
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 		};
-		const workspaceRead = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
 		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 			...scope,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
 			nodes: [node],
-			hasWorkspaceRead: !workspaceRead._nay,
 		});
 		if (!readable) return null;
 
@@ -10440,7 +10436,7 @@ export const get_data_for_pending_replacement_accept = internalQuery({
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				subject: { kind: "user", userId: args.userId, plugin: null },
 				fileNode,
 				permission: "content.write",
 			}))

@@ -275,6 +275,7 @@ async function read_volume(
 	const visibleArgs = {
 		...f.scope,
 		visibilityUserId: f.reader.userId,
+		subject: { kind: "user" as const, userId: f.reader.userId, plugin: null },
 		agentSource: source ?? undefined,
 	};
 	const matchArgs = {
@@ -307,6 +308,7 @@ async function read_volume(
 			cursor: null,
 		}),
 		full: await f.t.query(internal.files_nodes.read_file_content_from_chunks, {
+			subject: { kind: "user" as const, userId: args.userId, plugin: null },
 			...args,
 			path: f.path,
 			mode: { kind: "full", maxBytes: 100_000 },
@@ -323,12 +325,16 @@ async function read_volume(
 		plainMatches: await f.t.query(internal.files_nodes.match_plain_text_file_lines, matchArgs),
 		search: await f.t.query(internal.files_nodes.text_search_files, {
 			...args,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: args.userId, plugin: null },
 			query: "Zorptelemetry",
 			numItems: 10,
 			cursor: null,
 		}),
-		metadata: await f.t.query(internal.files_metadata.get_index_values_by_path, { ...args, path: f.path }),
+		metadata: await f.t.query(internal.files_metadata.get_index_values_by_path, {
+			subject: { kind: "user" as const, userId: args.userId, plugin: null },
+			...args,
+			path: f.path,
+		}),
 		metadataSearch: await test_meta_search(f.t, {
 			...args,
 			plan: { op: "eq", fieldPath: "metadata.status", value: "published" },
@@ -722,7 +728,7 @@ describe("volume tenant API isolation", () => {
 		expect(
 			await f.t.query(internal.files_nodes.text_search_files, {
 				...args,
-				hasWorkspaceRead: true,
+				subject: { kind: "user" as const, userId: args.userId, plugin: null },
 				query: "Zorptelemetry",
 				numItems: 10,
 				cursor: null,
@@ -735,7 +741,13 @@ describe("volume tenant API isolation", () => {
 			}),
 		).toMatchObject({ items: [] });
 		for (const path of [f.path, "/.mounts/sources/repo/notes.md"]) {
-			expect(await f.t.query(internal.files_metadata.get_index_values_by_path, { ...args, path })).toBeNull();
+			expect(
+				await f.t.query(internal.files_metadata.get_index_values_by_path, {
+					subject: { kind: "user" as const, userId: args.userId, plugin: null },
+					...args,
+					path,
+				}),
+			).toBeNull();
 		}
 	});
 });
@@ -757,7 +769,10 @@ describe("volume action final checks", () => {
 			const args = { ...f.scope, userId: f.reader.userId, path: f.path, agentSource: f.agentSource };
 			const read = () => {
 				if (action === "full")
-					return f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, args);
+					return f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+						...args,
+						subject: { kind: "user", userId: f.reader.userId, plugin: null },
+					});
 				if (action === "head")
 					return f.t.action(internal.files_nodes_content.read_file_line_range, { ...args, startLine: 1, maxLines: 1 });
 				if (action === "tail")
@@ -834,6 +849,7 @@ describe("volume content storage", () => {
 		});
 		expect(mostPendingInserts, "large text must stay within 1,000 concurrent I/O calls").toBeLessThanOrEqual(1_000);
 		const read = await f.t.query(internal.files_nodes.read_file_content_from_chunks, {
+			subject: { kind: "user" as const, userId: f.reader.userId, plugin: null },
 			...f.scope,
 			userId: f.reader.userId,
 			agentSource: f.agentSource,

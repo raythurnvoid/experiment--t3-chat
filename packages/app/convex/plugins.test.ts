@@ -853,6 +853,7 @@ describe("plugins Phase 0", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 			userId: membership.userId,
+			subject: { kind: "user", userId: membership.userId, plugin: null },
 			path: `/${registered.pluginVersionId}/dist/backend/worker.js`,
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
@@ -2749,6 +2750,7 @@ describe("plugins Phase 0", () => {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
+			subject: { kind: "user", userId: membership.userId, plugin: null },
 			path: "/video.transcript.md",
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
@@ -2757,6 +2759,7 @@ describe("plugins Phase 0", () => {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: membership.userId,
+			subject: { kind: "user", userId: membership.userId, plugin: null },
 			path: "/video.summary.md",
 			mode: { kind: "full", maxBytes: 100_000 },
 		});

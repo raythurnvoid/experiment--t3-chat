@@ -148,6 +148,7 @@ describe("internal_list", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			visibilityUserId: other.userId,
+			subject: { kind: "user" as const, userId: other.userId, plugin: null },
 			overlayUserId: other.userId,
 			folderPath: "/source",
 			mode: "children" as const,
@@ -172,6 +173,7 @@ describe("internal_list", () => {
 		const readable = await t.query(internal.files_visible.internal_list, {
 			...args,
 			visibilityUserId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			overlayUserId: db.userId,
 			numItems: 10,
 		});
@@ -236,6 +238,7 @@ describe("internal_list", () => {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			visibilityUserId: f.db.userId,
+			subject: { kind: "user", userId: f.db.userId, plugin: null },
 			overlayUserId: f.db.userId,
 			folderPath: "/source",
 			mode: "children",
@@ -281,6 +284,7 @@ describe("internal_list", () => {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			visibilityUserId: f.db.userId,
+			subject: { kind: "user", userId: f.db.userId, plugin: null },
 			overlayUserId: f.db.userId,
 			folderPath: "/",
 			mode: "children",
@@ -307,6 +311,7 @@ describe("internal_list", () => {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				visibilityUserId: f.db.userId,
+				subject: { kind: "user", userId: f.db.userId, plugin: null },
 				overlayUserId: f.db.userId,
 				folderPath: "/",
 				mode: "children",
@@ -336,6 +341,7 @@ describe("internal_list", () => {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			visibilityUserId: f.db.userId,
+			subject: { kind: "user" as const, userId: f.db.userId, plugin: null },
 			overlayUserId: f.db.userId,
 		};
 		const first = await f.t.query(internal.files_visible.internal_list, {
@@ -1081,7 +1087,7 @@ describe("internal_list_children_saved", () => {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				visibilityUserId: f.db.userId,
-				serviceAccountId,
+				subject: { kind: "service_account", serviceAccountId },
 				folderPath: "/big",
 				orderBy: "name",
 				order: "asc",

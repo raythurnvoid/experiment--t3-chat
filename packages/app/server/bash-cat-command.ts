@@ -199,6 +199,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 						organizationId: pathResolution.ctxData.organizationId,
 						workspaceId: pathResolution.ctxData.workspaceId,
 						userId: pathResolution.ctxData.userId,
+						subject: { kind: "user", userId: pathResolution.ctxData.userId, plugin: null },
 						path: target.dbFilesPath,
 						overlayUserId: pathResolution.fs.overlayUserId,
 						mode: {
@@ -263,6 +264,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
+					subject: { kind: "user", userId: pathResolution.ctxData.userId, plugin: null },
 					path: target.dbFilesPath,
 					overlayUserId: pathResolution.fs.overlayUserId,
 					mode: {

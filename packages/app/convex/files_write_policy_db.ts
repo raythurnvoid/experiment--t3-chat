@@ -5,11 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { files_ROOT_ID } from "../server/files.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import {
-	access_control_db_authorize_membership,
-	access_control_db_authorize_node,
-	access_control_db_has_permission,
-} from "./access_control.ts";
+import { access_control_db_authorize_node, access_control_db_can_act_on_file_node } from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import { files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } from "../shared/files.ts";
 import {
@@ -90,44 +86,34 @@ export async function files_write_policy_db_has_write_context_permission(
 		return false;
 	}
 
-	const membership = await ctx.db
-		.query("organizations_workspaces_users")
-		.withIndex("by_active_user_organization_workspace", (q) =>
-			q
-				.eq("active", true)
-				.eq("userId", args.writeContext.actorUserId)
-				.eq("organizationId", organizationId)
-				.eq("workspaceId", workspaceId),
-		)
-		.first();
-	if (!membership || membership.pendingOrganizationRemoval) {
-		return false;
+	const subject = args.writeContext.subject;
+	if (subject.kind === "user") {
+		// The person must still exist and be a member here. An account's liveness is part of its own check.
+		const user = await ctx.db.get("users", subject.userId);
+		if (!user || user.deletedAt != null) {
+			return false;
+		}
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", subject.userId)
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId),
+			)
+			.first();
+		if (!membership || membership.pendingOrganizationRemoval) {
+			return false;
+		}
 	}
 
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth: { id: args.writeContext.actorUserId },
-		membership,
-		fileNode: args.node ?? undefined,
-		permission: args.permission,
-	});
-	if (authorized._nay) {
-		return false;
-	}
-
-	if (args.writeContext.writer.kind === "user") {
-		return true;
-	}
-
-	return await access_control_db_has_permission(ctx, {
+	return await access_control_db_can_act_on_file_node(ctx, {
 		organizationId,
 		workspaceId,
-		defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
-		organizationOwnerUserId: authorized._yay.organization.ownerUserId,
-		resource: args.node
-			? { kind: "file", id: String(args.node._id), restrictedScopeNodeId: args.node.restrictedScopeNodeId }
-			: { kind: "workspace", id: String(workspaceId) },
+		subject,
+		fileNode: args.node,
 		permission: args.permission,
-		serviceAccountId: args.writeContext.writer.serviceAccountId,
 	});
 }
 

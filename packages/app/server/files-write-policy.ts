@@ -2,10 +2,14 @@
 
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { QueryCtx, MutationCtx } from "../convex/_generated/server.js";
+import type { access_control_Subject } from "../convex/access_control.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
 export type files_nodes_WriteContext = {
+	/** Who the write's access checks act as. */
+	subject: access_control_Subject;
+	/** Only matches named writers of a write policy. Access checks use `subject`. */
 	writer: Extract<NonNullable<Doc<"files_nodes">["writePolicy"]>, { mode: "writer" }>["writers"][number];
 	actorUserId: Id<"users">;
 	resourceScope:
@@ -196,6 +200,7 @@ export async function files_nodes_db_require_user_writable(
 		workspaceId: args.node.workspaceId,
 		target: { kind: "node", node: args.node },
 		writeContext: {
+			subject: { kind: "user", userId: args.userId, plugin: null },
 			writer: { kind: "user", userId: args.userId },
 			actorUserId: args.userId,
 			resourceScope: { kind: "workspace" },

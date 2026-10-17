@@ -58,6 +58,7 @@ describe("full metadata reads", () => {
 			organizationId: runner.seeded.organizationId,
 			workspaceId: runner.seeded.workspaceId,
 			userId: runner.seeded.userId,
+			subject: { kind: "user", userId: runner.seeded.userId, plugin: null },
 			path: "/docs/readme.md",
 		});
 		expect(index?.values[0]?.stringValue).toHaveLength(1025);
@@ -140,6 +141,7 @@ describe("full metadata reads", () => {
 		expect(page.continueCursor).not.toBeNull();
 		let joined = page.values.map((item) => item.fragment ?? item.value).join("");
 		const before = await runner.t.query(internal.files_metadata.get_read_source_by_path, {
+			subject: { kind: "user" as const, userId: readArgs.userId, plugin: null },
 			...readArgs,
 			agentSource: { ...source, run: runner.chatRun },
 		});
@@ -167,6 +169,7 @@ describe("full metadata reads", () => {
 		const run = { runId: started._yay.runId, generation: started._yay.generation };
 		expect(run.runId).not.toBe(runner.chatRun.runId);
 		const after = await runner.t.query(internal.files_metadata.get_read_source_by_path, {
+			subject: { kind: "user" as const, userId: readArgs.userId, plugin: null },
 			...readArgs,
 			agentSource: { ...source, run },
 		});
@@ -174,6 +177,7 @@ describe("full metadata reads", () => {
 		expect(after?.revision, "The source revision did not change between turns").toBe(before?.revision);
 		expect(
 			await runner.t.query(internal.files_metadata.get_read_source_by_path, {
+				subject: { kind: "user" as const, userId: readArgs.userId, plugin: null },
 				...readArgs,
 				agentSource: { ...source, run: runner.chatRun },
 			}),

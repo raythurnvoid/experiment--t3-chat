@@ -8,10 +8,7 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
-import {
-	access_control_db_authorize_membership,
-	access_control_db_filter_readable_file_nodes,
-} from "./access_control.ts";
+import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import {
 	activities_db_delete,
 	activities_db_finish,
@@ -221,6 +218,7 @@ export const start = mutation({
 			organizationId: folder.organizationId,
 			workspaceId: folder.workspaceId,
 			writeContext: {
+				subject: { kind: "user", userId: userAuth.id, plugin: null },
 				writer: { kind: "user", userId: userAuth.id },
 				actorUserId: userAuth.id,
 				resourceScope: { kind: "workspace" },
@@ -326,6 +324,7 @@ export const advance = internalMutation({
 			return null;
 		}
 		const writeContext: files_nodes_WriteContext = {
+			subject: { kind: "user", userId: run.userId, plugin: null },
 			writer: { kind: "user", userId: run.userId },
 			actorUserId: run.userId,
 			resourceScope: { kind: "workspace" },
@@ -360,13 +359,6 @@ export const advance = internalMutation({
 				updatedAt: now,
 			});
 		}
-
-		// A member whose role gives no workspace read can still read the folders shared with them.
-		const workspaceRead = await access_control_db_authorize_membership(ctx, {
-			userAuth: { id: run.userId },
-			membership,
-			permission: "content.read",
-		});
 
 		// Carry the counts that earlier steps did not show yet, so this step fills them up to 50.
 		const progress = with_unpublished_progress(activity.progress, run);
@@ -440,9 +432,8 @@ export const advance = internalMutation({
 				const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 					organizationId: run.organizationId,
 					workspaceId: run.workspaceId,
-					userId: run.userId,
+					subject: { kind: "user", userId: run.userId, plugin: null },
 					nodes: [node],
-					hasWorkspaceRead: !workspaceRead._nay,
 				});
 				if (readable) {
 					progress.blocked += 1;

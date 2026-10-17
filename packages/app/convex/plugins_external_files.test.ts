@@ -758,6 +758,7 @@ describe("public plugin writer archive", () => {
 						{ key: "plugin-name", value: "project-notes" },
 					],
 					writeContext: {
+						subject: { kind: "user", userId: fixture.userId, plugin: null },
 						writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
 						actorUserId: fixture.userId,
 						policyReach: "ancestors",
@@ -2974,7 +2975,7 @@ describe("external file readers", () => {
 					await access_control_db_can_act_on_file_node(ctx, {
 						organizationId: fixture.organizationId,
 						workspaceId: fixture.workspaceId,
-						userId: user.userId,
+						subject: { kind: "user", userId: user.userId, plugin: null },
 						fileNode: (await ctx.db.get("files_nodes", nodeId))!,
 						permission: "content.read",
 					}),

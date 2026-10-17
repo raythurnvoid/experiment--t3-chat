@@ -335,6 +335,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path: "/restore-r2.md",
 	});
 	expect(readResult?.content).toBe(restoredMarkdown);
@@ -563,6 +564,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/notes.md",
 		});
 		expect(readResult?.content).toBe(versionText);
@@ -630,6 +632,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/notes.md",
 		});
 		expect(readResult?.content).toBe("plain version\n");
@@ -703,6 +706,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
+					subject: { kind: "user", userId: db.userId, plugin: null },
 					path: "/notes.md",
 				},
 			);
@@ -739,6 +743,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
+					subject: { kind: "user", userId: db.userId, plugin: null },
 					path: "/notes.md",
 				},
 			);
@@ -1684,6 +1689,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: MOUNT_FILE_PATH,
 			mode: { kind: "full", maxBytes: 1_000_000 },
 		});
@@ -1694,6 +1700,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: MOUNT_FILE_PATH,
 			mode: { kind: "lines", startLine: 4, maxLines: 2 },
 		});
@@ -1924,7 +1931,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query: "Zorptelemetry",
 			pathPrefix: "/t3-chat",
 			numItems: 20,
@@ -1937,7 +1944,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query: "Zorptelemetry",
 			numItems: 20,
 			cursor: null,

@@ -210,6 +210,7 @@ describe("copy_transfer_file scopes", () => {
 						organizationId: destinationScope.organizationId,
 						workspaceId: destinationScope.workspaceId,
 						userId: f.personal.userId,
+						subject: { kind: "user", userId: f.personal.userId, plugin: null },
 						path: "/copy.txt",
 						overlayUserId: f.personal.userId,
 					})
@@ -319,6 +320,7 @@ describe("copy_transfer_file scopes", () => {
 					organizationId: f.current.organizationId,
 					workspaceId: f.current.workspaceId,
 					userId: f.personal.userId,
+					subject: { kind: "user", userId: f.personal.userId, plugin: null },
 					path: "/copy.txt",
 					overlayUserId: f.personal.userId,
 				})

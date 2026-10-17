@@ -4553,6 +4553,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			visibilityUserId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-delete.md",
 			overlayUserId: seeded.userId,
 		});
@@ -4562,6 +4563,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			visibilityUserId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-delete.md",
 		});
 		expect(committed?._id).toBe(seeded.nodeId);
@@ -4603,6 +4605,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			visibilityUserId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-delete-folder/child.md",
 			overlayUserId: seeded.userId,
 		});
@@ -4612,6 +4615,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			visibilityUserId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-delete-folder/child.md",
 		});
 		expect(childCommitted?._id).toBe(seeded.nodeId);
@@ -6496,6 +6500,7 @@ describe("reads behind a pure-move row", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/read-move-src.md",
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
@@ -6507,6 +6512,7 @@ describe("reads behind a pure-move row", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/read-move-src.md",
 		});
 		expect(markdownState?.content).toBe(seeded.baseMarkdown);
@@ -6544,6 +6550,7 @@ describe("pending path overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			visibilityUserId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-dest.md",
 			overlayUserId: seeded.userId,
 		});
@@ -6555,6 +6562,7 @@ describe("pending path overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			visibilityUserId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-src.md",
 			overlayUserId: seeded.userId,
 		});
@@ -6565,6 +6573,7 @@ describe("pending path overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			visibilityUserId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-src.md",
 		});
 		expect(committedSource?._id).toBe(seeded.nodeId);
@@ -6572,6 +6581,7 @@ describe("pending path overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			visibilityUserId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-dest.md",
 		});
 		expect(committedDest).toBeNull();
@@ -6623,6 +6633,7 @@ describe("pending path overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			visibilityUserId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-src.md",
 			overlayUserId: seeded.userId,
 		});
@@ -6680,6 +6691,7 @@ describe("pending path overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-content-dest.md",
 			overlayUserId: seeded.userId,
 			mode: { kind: "full", maxBytes: 100_000 },
@@ -6693,6 +6705,7 @@ describe("pending path overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-content-dest.md",
 			overlayUserId: seeded.userId,
 		});
@@ -6704,6 +6717,7 @@ describe("pending path overlay reads", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/overlay-content-src.md",
 			overlayUserId: seeded.userId,
 			mode: { kind: "full", maxBytes: 100_000 },

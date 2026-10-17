@@ -54,7 +54,8 @@ makes no API calls. The checks use public APIs and the selected user's real self
    Check the role and both root and leaf shares. A Member may have workspace-wide read
    access; use a temporary role without it when needed. Grant the account read access to
    both folders, and the user read access only to the allowed folder. Use that user's own
-   consent form and file proof before assignment.
+   consent form and file proof before assignment. The run acts as the user inside the
+   account's folders (its sandbox roots), so the user's own access decides the denied read.
    Hash the bytes returned by the saved-file API. Rich-text Yjs reads can add a final LF
    that the saved bytes do not have. Compare privately; do not change the file to fix the hash.
    The owner control must reach the denied-file read with 200, then fail the named success

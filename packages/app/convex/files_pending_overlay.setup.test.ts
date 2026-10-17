@@ -313,6 +313,7 @@ export async function fixture(transactionLimits?: NonNullable<Parameters<typeof 
 			organizationId: v.organizationId,
 			workspaceId: v.workspaceId,
 			visibilityUserId: v.userId,
+			subject: { kind: "user", userId: v.userId, plugin: null },
 			overlayUserId: v.userId,
 			folderPath: "/",
 			mode: "subtree",

@@ -228,7 +228,7 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 			(
 				await f.t.query(internal.files_nodes.text_search_files, {
 					...scope,
-					hasWorkspaceRead: true,
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 					query,
 					numItems: 10,
 					cursor: null,

@@ -2418,6 +2418,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			...readScope,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path,
 			mode: { kind: "full", maxBytes: 10_000 },
 		});
@@ -2466,6 +2467,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		const state = await t.query(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
 			...readScope,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path,
 		});
 		if (!state) throw new Error("expected a content state");
@@ -2480,7 +2482,14 @@ describe("overlay reads on a file with collaboration off", () => {
 			for (let page = 0; page < 10; page++) {
 				const result: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await t.query(
 					internal.files_nodes.text_search_files,
-					{ ...readScope, userId: seeded.userId, hasWorkspaceRead: true, query, numItems: 10, cursor },
+					{
+						...readScope,
+						userId: seeded.userId,
+						subject: { kind: "user", userId: seeded.userId, plugin: null },
+						query,
+						numItems: 10,
+						cursor,
+					},
 				);
 				paths.push(...result.items.map((item) => item.path));
 				if (result.isDone) break;
@@ -2502,6 +2511,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			...readScope,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path,
 			mode: { kind: "full", maxBytes: 10_000 },
 		});
@@ -2548,6 +2558,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		const state = await t.query(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
 			...readScope,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path,
 		});
 		if (!state) throw new Error("expected a content state");
@@ -2562,7 +2573,14 @@ describe("overlay reads on a file with collaboration off", () => {
 			for (let page = 0; page < 10; page++) {
 				const result: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await t.query(
 					internal.files_nodes.text_search_files,
-					{ ...readScope, userId: seeded.userId, hasWorkspaceRead: true, query, numItems: 10, cursor },
+					{
+						...readScope,
+						userId: seeded.userId,
+						subject: { kind: "user", userId: seeded.userId, plugin: null },
+						query,
+						numItems: 10,
+						cursor,
+					},
 				);
 				paths.push(...result.items.map((item) => item.path));
 				if (result.isDone) break;
@@ -2670,6 +2688,7 @@ describe("overlay reads on a file with collaboration off", () => {
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
+				subject: { kind: "user", userId: seeded.userId, plugin: null },
 				path,
 			});
 			return found?.values.find((value) => value.fieldPath === "frontmatter.title")?.stringValue;
@@ -2868,7 +2887,7 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: seeded.userId, plugin: null },
 			query: "markedneedle",
 			numItems: 10,
 			cursor: null,
@@ -2883,6 +2902,7 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/mark.txt",
 			mode: { kind: "full", maxBytes: 1000 },
 		});

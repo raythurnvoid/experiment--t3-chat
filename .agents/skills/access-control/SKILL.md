@@ -23,7 +23,7 @@ Membership says where you are. Access control says what you may do there.
   3. **Direct grant** — an `access_control_permission_grants` doc for file sharing, private plugin
      scopes, or an exact plugin setup/management list.
 - Grants are allow-only. There are no deny grants.
-- A file's write policy is separate from ACL. Check the actor and any service account first.
+- A file's write policy is separate from ACL. Check the request's subject first.
   Then apply that node's own `writePolicy`. Owners do not bypass a
   read-only or named-writer policy. See `../files-read-only/SKILL.md` for the policy rules.
 - Changing a folder's write policy needs `content.permissions.manage` on that folder only. A hidden
@@ -118,19 +118,41 @@ Service accounts are workspace identities for software. They are not users and h
 owner rights, billing rights, public fallback, or private plugin-data scope rights. Their
 `createdBy` field is audit data, not authority.
 
+- Every file check acts as one **subject** (`access_control_Subject`). No check asks two
+  principals.
+  - A person (UI, Bash, chat, jobs): `{ kind: "user", userId, plugin: null }`.
+  - A plugin run, page or service grant: its human plus `plugin: { installationId, roots }`, built
+    by `plugins_sandbox_subject`.
+  - An account-bound API key: `{ kind: "service_account", serviceAccountId }`. The key acts as the
+    account. Its sponsor's own access does not matter. So a person who may manage service accounts
+    can act as any account through a key, except inside plugin output folders.
 - `access_control_db_has_permission` accepts either the existing user/public input or an exclusive
   `serviceAccountId`. The account branch runs before the human owner shortcut. It requires an
   active same-tenant account and its own content grant.
 - Workspace grants cover unrestricted content. An unrestricted file/folder grant covers that
   exact node, not its descendants. Restricted content requires a grant at the nearest live
   restricted scope. A workspace grant never crosses that boundary.
-- Delegated requests require both the human actor and account check on the actual resource.
-  Credentials, capabilities, source limits, and write policies remain separate limits. Do not
+- A plugin subject reaches a node only when its human can, and the node is inside one of the
+  installation's **sandbox roots** at a level that gives the permission. An `open` root covers open
+  content only. A folder root covers that folder and what is below it in the same restricted area;
+  it stops at every restricted folder inside. A file root covers only that file (its `treePath` is
+  not a prefix test). A root on a deleted or archived node gives nothing. Roots are empty while
+  they rebuild, and after a rebuild that found more than 20 folders.
+- The installation's own output folders (a live `plugins_external_file_bindings` row of this
+  installation on the restricted folder) count as roots and take no slot. Their level is the
+  account's live grant there, so lowering or removing that grant limits the plugin at once. They
+  also work during a rebuild. The human must still reach them.
+- An account subject never reaches a plugin output folder, so a key bound to a plugin's account
+  cannot read that plugin's private folders.
+- A create or replace checks the folder where the item lands with the full subject. Folders above
+  it keep only the actor's own write check.
+- Credentials, capabilities, source limits, and write policies remain separate limits. Do not
   require workspace-wide account access before a file check: an account may have only one
   restricted-folder grant.
-- `access_control_db_filter_readable_file_nodes` and `access_control_db_can_act_on_file_node`
-  accept optional `serviceAccountId`. When present, they intersect both checks, including for
-  owner and unrestricted nodes. Their loaded node inputs include `_id`.
+- `access_control_db_filter_readable_file_nodes` and `access_control_db_can_act_on_file_node` take
+  `subject`. Their loaded node inputs include `_id`; a plugin subject reads `treePath` when it is
+  missing. Internal read queries also keep `visibilityUserId`: it picks personal rows, pins, and
+  drafts only. Drafts are read only when `access_control_subject_reads_drafts(subject)`.
 - Any active workspace member may list/get active account labels for pickers. Revoked accounts
   and grant pages require `workspace.service_accounts.manage`. This permission is in the existing
   catalog and admin role. Personal/default workspaces support accounts.
@@ -666,8 +688,9 @@ These are real and confirmed against the code. None is an oversight to patch qui
 product decision, so record the answer here before changing the behaviour. An entry that starts with
 **Decided** already has its answer. Do not report it again as a finding.
 
-- **The public API refuses a grant-only user.** Each file scope maps to an app permission, which
-  `has_workspace_content_permission` answers about the *workspace*.
+- **The public API refuses a grant-only person.** Each file scope maps to an app permission, which
+  `get_workspace_content_permissions` answers about the *workspace* for a person's key. An account
+  key only needs any grant there.
   Somebody whose only access is a direct grant on one restricted file gets 403 before any per-file
   check, so their API key cannot use the grant the UI honours. This is under-permission, not a leak.
 - **An outgoing owner keeps nothing.** The owner holds no grant docs anywhere — `restrict_node` skips
@@ -798,9 +821,8 @@ so at the top.
   an index already holds "what this reader can see". That multiplies by files × readers, and every
   share change rewrites it. Reading a page and dropping rows instead gives short or empty pages and
   cursors that show where hidden rows are.
-- A plugin run under hiding needs "the user AND the account can read it" per row. No index serves an
-  intersection of two principals, so every list paid a per-row filter (the "Known gap" in
-  `server/files-readable-scopes.ts`).
+- A plugin list checks every row, because its sandbox roots have no share rows that an index could
+  read. Under hiding that per-row filter gives short or empty pages.
 - With locked rows, a folder list reads one index range for everyone. A recursive read only has to
   check the restricted folders on its way, not every row.
 
@@ -813,8 +835,8 @@ so at the top.
   `EACCES` ("Permission denied"); `find` prints `find: '<path>': Permission denied` and goes on. Samba
   has `hide unreadable`, off by default.
 - Linux Landlock: a sandboxed process gets a set of allowed folders (roots) on top of its user's
-  rights. Plugin runs will work this way here: the installation stores its sandbox roots now, and
-  the reads start to use them in a later change.
+  rights. Plugin requests work this way here: every file check of a plugin run, page or service
+  grant also needs one of the installation's sandbox roots (see "Service accounts").
 - Do not add a hide switch (access-based enumeration) to Files. It brings back every problem above.
 
 **The leak rule.** A locked row is visible; its content, custom fields and members are not. Any output
@@ -1078,12 +1100,11 @@ Changes in C2 (slice S9: replaced by the walk), see "Locked, not hidden".
 hidden row only to drop it. Rows are split by their stored `restrictedScopeNodeId`: open content
 (null) and one partition per restricted folder. No list reads it yet.
 
-- `files_readable_scopes_db_reader` is the one flat-mode decision. The owner without a service
-  account, plugin volumes and GLOBAL reserved workspaces read flat with `filter: false`: every row is
-  readable. A member acting through a service account reads flat with `filter: true`: the per-row
-  filter checks every row, because an intersection of the account's and the member's folders has
-  no bounded read yet (a known gap until the user decides). Everyone else is `scoped`, with the share row principals
-  to read (the member and their roles, or the account when the owner acts through it).
+- `files_readable_scopes_db_reader` takes a `subject` and is the one flat-mode decision. The owner
+  as a person, plugin volumes and GLOBAL reserved workspaces read flat with `filter: false`: every
+  row is readable. A plugin subject reads flat with `filter: true`: the per-row filter checks every
+  row. Everyone else is `scoped`, with the share row principals to read (the member and their
+  roles, or the account).
 - `files_readable_scopes_db_enumerate_by_path` pages one principal's rows on
   `by_org_ws_principal_archive_treePath` under a folder, after a `treePath`, and checks each row
   again like the share streams. It gives `scope` items (restricted folders) and `node` items (open
@@ -1333,7 +1354,8 @@ mark in the Files tree and the `file.link:public` search filter.
 
 - Missing current-user auth throws `Unauthenticated`. A bad membership or tenant answers `null`.
 - A member with only file grants (no workspace `content.read`) is allowed, like the tree reader:
-  on "Permission denied" it filters with `hasWorkspaceRead: false`.
+  it filters with the person subject, and an open node needs the workspace permission, so a guest
+  keeps only its granted files.
 - It filters the docs with `access_control_db_filter_readable_file_nodes`, using the scope stored
   on each link. It does not load the nodes: the hooks that change a file's scope delete its link
   in the same write.

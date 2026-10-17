@@ -1465,6 +1465,7 @@ describe("bash_run_command", () => {
 				organizationId: "GLOBAL",
 				workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 				visibilityUserId: runner.seeded.userId,
+				subject: { kind: "user", userId: runner.seeded.userId, plugin: null },
 				path: reviewRoot,
 			});
 			await runner.t.mutation(internal.plugins.delete_review_source_tree, { reviewRoot });
@@ -1498,6 +1499,7 @@ describe("bash_run_command", () => {
 				organizationId: "GLOBAL",
 				workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 				visibilityUserId: runner.seeded.userId,
+				subject: { kind: "user", userId: runner.seeded.userId, plugin: null },
 				path: `${reviewRoot}/dist/worker.js`,
 			});
 			expect(reserved).not.toBeNull();

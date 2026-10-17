@@ -204,6 +204,7 @@ describe("search_paths", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				visibilityUserId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null },
 				pathQuery: path,
 				numItems: 50,
 				cursor: null,
@@ -249,7 +250,7 @@ describe("text_search_files", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
-				hasWorkspaceRead: true,
+				subject: { kind: "user" as const, userId: db.userId, plugin: null },
 				query: "prefixneedle",
 				numItems: 50,
 				cursor: null,
@@ -288,7 +289,7 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query: "scopeneedle",
 			numItems,
 			cursor,
@@ -310,7 +311,7 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
-				hasWorkspaceRead: true,
+				subject: { kind: "user" as const, userId: db.userId, plugin: null },
 				query: "scopeneedle",
 				numItems: 1,
 				cursor,
@@ -371,7 +372,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query,
 			numItems: 10,
 			cursor: null,
@@ -494,7 +495,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: otherUserId,
-		hasWorkspaceRead: true,
+		subject: { kind: "user" as const, userId: otherUserId, plugin: null },
 		query: "committedneedle",
 		numItems: 10,
 		cursor: null,
@@ -614,6 +615,7 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path: "/meta/invoice.md",
 	});
 	expect(metadata).toMatchObject({
@@ -720,6 +722,7 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path,
 	});
 	expect(pendingMetadata).toMatchObject({
@@ -826,6 +829,7 @@ test("a pure-move row keeps committed metadata visible", async () => {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path: "/meta-moved.md",
 		overlayUserId: db.userId,
 	});
@@ -857,6 +861,7 @@ test("a pure-move row keeps committed metadata visible", async () => {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path: "/meta-moved.md",
 		overlayUserId: db.userId,
 	});
@@ -1199,6 +1204,7 @@ test("file metadata stays visible while a pending content edit hides committed f
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path,
 		overlayUserId: db.userId,
 	});
@@ -1437,6 +1443,7 @@ describe("folder metadata", () => {
 			}),
 		).toEqual(updated._yay.entries);
 		const read = await t.query(internal.files_metadata.get_index_values_by_path, {
+			subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 			...scope,
 			path: "/folder-metadata",
 			overlayUserId: db.userId,
@@ -1458,6 +1465,7 @@ describe("folder metadata", () => {
 		).toEqual({ _yay: null });
 		expect(
 			await t.query(internal.files_metadata.get_index_values_by_path, {
+				subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 				...scope,
 				path: "/folder-metadata",
 				overlayUserId: db.userId,
@@ -1734,6 +1742,7 @@ describe("folder metadata", () => {
 
 		const read = (path: string, userId: Id<"users">) =>
 			t.query(internal.files_metadata.get_index_values_by_path, {
+				subject: { kind: "user" as const, userId: userId, plugin: null },
 				...scope,
 				userId,
 				path,
@@ -3290,7 +3299,7 @@ test("text_search_files scopes pending hits to a path prefix without sibling-pre
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query: "pendingscopeneedle",
 			numItems: 10,
 			cursor: null,
@@ -3340,7 +3349,7 @@ test("text_search_files drops pending hits for archived files", async () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query: "archivedpendingneedle",
 			numItems: 10,
 			cursor: null,
@@ -3437,7 +3446,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query,
 			numItems: 10,
 			cursor: null,
@@ -3489,7 +3498,7 @@ test("text_search_files updates unified committed search scope when files are ar
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query,
 			numItems: 10,
 			cursor: null,
@@ -3560,7 +3569,7 @@ test("text_search_files paginates unified pending and committed chunks with the 
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query: "pagingneedle",
 			numItems: 2,
 			cursor,
@@ -3664,7 +3673,7 @@ test("search_saved finds each saved file once by its content, with its best chun
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
-		hasWorkspaceRead: true,
+		subject: { kind: "user" as const, userId: db.userId, plugin: null },
 		query: "palneedle",
 		targets: [{ kind: "saved", id: doubleChunkNodeId }],
 		numItems: 2,

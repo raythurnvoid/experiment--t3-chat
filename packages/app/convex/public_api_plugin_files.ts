@@ -2,7 +2,8 @@
 // and `/api/v1/files/plugin-access/set` (routes in `public_api_plugin_files_http_routes.ts`).
 //
 // Editable `plugin-name` metadata selects the files and folders a plugin can use.
-// Current capabilities, actor and account permissions, and write policies control each operation.
+// Current capabilities, the actor's permissions inside the sandbox roots, and write policies control
+// each operation.
 
 import { v, type Infer } from "convex/values";
 import type { RegisteredMutation, RegisteredQuery } from "convex/server";
@@ -12,7 +13,8 @@ import type { ActionCtx, MutationCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
+import { access_control_db_can_act_on_file_node } from "./access_control.ts";
+import { plugins_sandbox_subject } from "./plugins_service_accounts.ts";
 import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_set_write_policy, files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
@@ -243,6 +245,7 @@ export const ensure_plugin_folder = internalMutation({
 		}
 
 		const writeContext: files_nodes_WriteContext = {
+			subject: plugins_sandbox_subject(installation, args.userId),
 			writer: { kind: "service_account", serviceAccountId: pluginRun.serviceAccountId },
 			actorUserId: args.userId,
 			policyReach: "ancestors",
@@ -268,30 +271,13 @@ export const ensure_plugin_folder = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		const [organization, workspace] = await Promise.all([
-			ctx.db.get("organizations", args.organizationId),
-			ctx.db.get("organizations_workspaces", args.workspaceId),
-		]);
-		if (!organization?.defaultWorkspaceId || !workspace) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		const permissionArgs = {
-			organizationId: organization._id,
-			workspaceId: workspace._id,
-			defaultWorkspaceId: organization.defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resource: deepest
-				? { kind: "file" as const, id: String(deepest._id), restrictedScopeNodeId: deepest.restrictedScopeNodeId }
-				: { kind: "workspace" as const, id: String(workspace._id) },
-			permission: "content.write" as const,
-		};
-		const canWrite =
-			(await access_control_db_has_permission(ctx, { ...permissionArgs, userId: args.userId })) &&
-			(await access_control_db_has_permission(ctx, {
-				...permissionArgs,
-				serviceAccountId: pluginRun.serviceAccountId,
-			}));
+		const canWrite = await access_control_db_can_act_on_file_node(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			subject: writeContext.subject,
+			fileNode: deepest,
+			permission: "content.write",
+		});
 
 		if (!canWrite) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -540,8 +526,7 @@ export const archive_plugin_path = internalMutation({
 					!(await access_control_db_can_act_on_file_node(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						userId: args.userId,
-						serviceAccountId: installation.serviceAccountId,
+						subject: facts.writeContext.subject,
 						fileNode: swept,
 						permission: "content.write",
 					}))
@@ -712,8 +697,7 @@ export const set_plugin_access = internalMutation({
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
-				serviceAccountId: installation.serviceAccountId,
+				subject: writeContext.subject,
 				fileNode: node,
 				permission: "content.permissions.manage",
 			}))
@@ -1437,8 +1421,7 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 		const scope = {
 			organizationId: writer.organizationId,
 			workspaceId: writer.workspaceId,
-			userId: auth._yay.principal.actorUserId,
-			serviceAccountId: auth._yay.principal.serviceAccountId,
+			subject: auth._yay.principal.subject,
 		};
 		if (node.collaborationEnabled) {
 			const state = await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
@@ -1452,6 +1435,7 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 		} else {
 			const read = await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
 				...scope,
+				userId: auth._yay.principal.actorUserId,
 				path: node.path,
 				committedOnly: true,
 				mode: { kind: "full", maxBytes: body._yay.maxBytes },

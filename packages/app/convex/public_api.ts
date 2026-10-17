@@ -8,7 +8,12 @@ import { z } from "zod";
 import { doc } from "convex-helpers/validators";
 import app_convex_schema, { ai_chat_workspaces_source_validator } from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope, ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
-import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
+import {
+	access_control_db_can_act_on_file_node,
+	access_control_db_has_permission,
+	access_control_subject_validator,
+	type access_control_Subject,
+} from "./access_control.ts";
 import {
 	ACTIVITIES_ESTIMATE_MAX_MS,
 	activities_db_add_target,
@@ -108,7 +113,7 @@ import {
 	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
 } from "./public_api_http_auth.ts";
-import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { public_api_service_uploads_db_validate_node_target } from "./public_api_service_uploads.ts";
@@ -409,61 +414,28 @@ async function authorize_credential_account_binding(
 }
 
 /**
- * Pass `fileNode` when the answer is about one file. Without it the question is about the workspace,
- * and a restricted file would be judged by the caller's role, which is exactly what a restriction
- * takes away.
+ * Pass `fileNode` when the answer is about one file. Without it the question is about the workspace
+ * root, and a restricted file would be judged by the caller's role, which is exactly what a
+ * restriction takes away.
  */
 async function has_workspace_content_permission(
 	ctx: QueryCtx,
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		userId: Id<"users">;
-		serviceAccountId?: Id<"access_control_service_accounts">;
+		subject: access_control_Subject;
 		permission: "content.read" | "content.write" | "content.permissions.manage";
 		fileNode?: Doc<"files_nodes">;
 	},
 ) {
-	if (args.fileNode && args.serviceAccountId) {
-		return await access_control_db_can_act_on_file_node(ctx, { ...args, fileNode: args.fileNode });
-	}
+	return await access_control_db_can_act_on_file_node(ctx, { ...args, fileNode: args.fileNode ?? null });
+}
 
-	const [organization, workspace] = await Promise.all([
-		ctx.db.get("organizations", args.organizationId),
-		ctx.db.get("organizations_workspaces", args.workspaceId),
-	]);
-	if (
-		!organization ||
-		!workspace ||
-		!organization.defaultWorkspaceId ||
-		workspace.organizationId !== organization._id
-	) {
-		return false;
-	}
-
-	const resource = args.fileNode
-		? {
-				kind: "file" as const,
-				id: String(args.fileNode._id),
-				restrictedScopeNodeId: args.fileNode.restrictedScopeNodeId,
-			}
-		: { kind: "workspace" as const, id: String(workspace._id) };
-	const permissionArgs = {
-		organizationId: organization._id,
-		workspaceId: workspace._id,
-		defaultWorkspaceId: organization.defaultWorkspaceId,
-		organizationOwnerUserId: organization.ownerUserId,
-		resource,
-		permission: args.permission,
-	};
-	return (
-		(await access_control_db_has_permission(ctx, { ...permissionArgs, userId: args.userId })) &&
-		(!args.serviceAccountId ||
-			(await access_control_db_has_permission(ctx, {
-				...permissionArgs,
-				serviceAccountId: args.serviceAccountId,
-			})))
-	);
+/** A key bound to a service account acts as the account alone. Its user only sponsors the key. */
+function credential_subject(credential: Doc<"api_credentials">): access_control_Subject {
+	return credential.serviceAccountId
+		? { kind: "service_account", serviceAccountId: credential.serviceAccountId }
+		: { kind: "user", userId: credential.userId, plugin: null };
 }
 
 /**
@@ -477,12 +449,53 @@ async function get_workspace_content_permissions(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		userId: Id<"users">;
+		subject: access_control_Subject;
 	},
 ) {
+	const { subject } = args;
+	if (subject.kind === "service_account") {
+		// An account often holds folder grants only. The route needs to know only that the account
+		// reaches some file. Each file check then decides with the account's own grants.
+		const holds = async (permission: "content.read" | "content.write") =>
+			(await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_org_workspace_serviceAccount_permission_resource", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("serviceAccountId", subject.serviceAccountId)
+						.eq("principalKind", "service_account")
+						.eq("permission", permission),
+				)
+				.first()) !== null;
+		const [read, write] = await Promise.all([holds("content.read"), holds("content.write")]);
+		return { read, write };
+	}
+
+	// The route gate asks about the person. A plugin's sandbox roots limit each file check later.
+	const [organization, workspace] = await Promise.all([
+		ctx.db.get("organizations", args.organizationId),
+		ctx.db.get("organizations_workspaces", args.workspaceId),
+	]);
+	if (
+		!organization ||
+		!workspace ||
+		!organization.defaultWorkspaceId ||
+		workspace.organizationId !== organization._id
+	) {
+		return { read: false, write: false };
+	}
+	const permissionArgs = {
+		organizationId: organization._id,
+		workspaceId: workspace._id,
+		defaultWorkspaceId: organization.defaultWorkspaceId,
+		organizationOwnerUserId: organization.ownerUserId,
+		resource: { kind: "workspace" as const, id: String(workspace._id) },
+		userId: subject.userId,
+	};
 	const [read, write] = await Promise.all([
-		has_workspace_content_permission(ctx, { ...args, permission: "content.read" }),
-		has_workspace_content_permission(ctx, { ...args, permission: "content.write" }),
+		access_control_db_has_permission(ctx, { ...permissionArgs, permission: "content.read" }),
+		access_control_db_has_permission(ctx, { ...permissionArgs, permission: "content.write" }),
 	]);
 	return { read, write };
 }
@@ -1364,6 +1377,8 @@ export const resolve_principal = internalQuery({
 				kind: v.literal("public_api_grant"),
 				agentSource: doc(app_convex_schema, "public_api_grants").fields.agentSource,
 				serviceAccountId: v.null(),
+				/** Who file checks act as. */
+				subject: access_control_subject_validator,
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				userId: v.id("users"),
@@ -1377,6 +1392,8 @@ export const resolve_principal = internalQuery({
 			v.object({
 				kind: v.literal("user_api_key"),
 				serviceAccountId: v.union(v.id("access_control_service_accounts"), v.null()),
+				/** Who file checks act as. */
+				subject: access_control_subject_validator,
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				userId: v.id("users"),
@@ -1389,6 +1406,8 @@ export const resolve_principal = internalQuery({
 			v.object({
 				kind: v.literal("plugin_run"),
 				serviceAccountId: v.id("access_control_service_accounts"),
+				/** Who file checks act as. */
+				subject: access_control_subject_validator,
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				runId: v.id("plugins_event_runs"),
@@ -1416,13 +1435,16 @@ export const resolve_principal = internalQuery({
 				/**
 				 * Always null: a plugin run has no destination seal. The read routes call
 				 * `public_api_is_path_inside_prefix(path, principal.pathPrefix)`, which treats null as
-				 * "anywhere" — right here, because the run's real boundary is its actor's eyes.
+				 * "anywhere" — right here, because the run's real boundary is its `subject`: the actor
+				 * inside the sandbox roots.
 				 */
 				pathPrefix: v.null(),
 			}),
 			v.object({
 				kind: v.literal("plugin_ui"),
 				serviceAccountId: v.id("access_control_service_accounts"),
+				/** Who file checks act as. */
+				subject: access_control_subject_validator,
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				userId: v.id("users"),
@@ -1439,6 +1461,8 @@ export const resolve_principal = internalQuery({
 			v.object({
 				kind: v.literal("plugin_service"),
 				serviceAccountId: v.id("access_control_service_accounts"),
+				/** Who file checks act as. */
+				subject: access_control_subject_validator,
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				grantId: v.id("plugin_service_grants"),
@@ -1599,8 +1623,9 @@ export const resolve_principal = internalQuery({
 				}
 			}
 			// Any run may read files under the same consent a frame reads with. The backend runs the
-			// same publisher code either way, the run reads with its actor's eyes, and without this an
-			// invoke endpoint could not read the files it maintains. `files:download` stays source-only.
+			// same publisher code either way, the run reads as its actor inside the sandbox roots, and
+			// without this an invoke endpoint could not read the files it maintains. `files:download`
+			// stays source-only.
 			if (acceptedCapabilities.includes("workspace.files.read")) {
 				scopes.push("files:read", "files:list");
 			}
@@ -1623,6 +1648,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_run" as const,
 					serviceAccountId: pluginRun.serviceAccountId,
+					subject: plugins_sandbox_subject(installation, pluginRun.actorUserId),
 					organizationId: pluginRun.organizationId,
 					workspaceId: pluginRun.workspaceId,
 					runId: pluginRun._id,
@@ -1704,7 +1730,7 @@ export const resolve_principal = internalQuery({
 			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: session.organizationId,
 				workspaceId: session.workspaceId,
-				userId: session.userId,
+				subject: plugins_sandbox_subject(installation, session.userId),
 			});
 
 			// Workspace file reads are consent-gated; UI sessions never get secrets or outbound scopes.
@@ -1729,6 +1755,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_ui" as const,
 					serviceAccountId: session.serviceAccountId,
+					subject: plugins_sandbox_subject(installation, session.userId),
 					organizationId: session.organizationId,
 					workspaceId: session.workspaceId,
 					userId: session.userId,
@@ -1811,7 +1838,7 @@ export const resolve_principal = internalQuery({
 			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: grant.organizationId,
 				workspaceId: grant.workspaceId,
-				userId: grant.actorUserId,
+				subject: plugins_sandbox_subject(installation, grant.actorUserId),
 			});
 
 			// The grant is issued with the scopes the exchange asked for, but the installation's accepted
@@ -1848,6 +1875,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_service" as const,
 					serviceAccountId: grant.serviceAccountId,
+					subject: plugins_sandbox_subject(installation, grant.actorUserId),
 					organizationId: grant.organizationId,
 					workspaceId: grant.workspaceId,
 					grantId: grant._id,
@@ -1912,16 +1940,18 @@ export const resolve_principal = internalQuery({
 			if (!membership) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
+			const subject = credential_subject(credential);
 			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: credential.organizationId,
 				workspaceId: credential.workspaceId,
-				userId: credential.userId,
+				subject,
 			});
 
 			return Result({
 				_yay: {
 					kind: "user_api_key" as const,
 					serviceAccountId: credential.serviceAccountId,
+					subject,
 					organizationId: credential.organizationId,
 					workspaceId: credential.workspaceId,
 					userId: credential.userId,
@@ -1966,7 +1996,7 @@ export const resolve_principal = internalQuery({
 		const contentPermissions = await get_workspace_content_permissions(ctx, {
 			organizationId: grant.organizationId,
 			workspaceId: grant.workspaceId,
-			userId: grant.userId,
+			subject: { kind: "user", userId: grant.userId, plugin: null },
 		});
 
 		return Result({
@@ -1974,6 +2004,7 @@ export const resolve_principal = internalQuery({
 				kind: "public_api_grant" as const,
 				agentSource: grant.agentSource,
 				serviceAccountId: null,
+				subject: { kind: "user" as const, userId: grant.userId, plugin: null },
 				organizationId: grant.organizationId,
 				workspaceId: grant.workspaceId,
 				userId: grant.userId,
@@ -2157,12 +2188,12 @@ async function db_authorize_file_policy_request(
 	}
 
 	const credential = liveCredential._yay;
+	const subject = credential_subject(credential);
 	if (
 		!(await has_workspace_content_permission(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			userId: credential.userId,
-			serviceAccountId: credential.serviceAccountId ?? undefined,
+			subject,
 			fileNode: node,
 			permission: args.requiredScope === "files:permissions" ? "content.permissions.manage" : "content.read",
 		}))
@@ -2171,6 +2202,7 @@ async function db_authorize_file_policy_request(
 	}
 
 	const writeContext: files_nodes_WriteContext = {
+		subject,
 		writer:
 			credential.serviceAccountId === null
 				? { kind: "user", userId: credential.userId }
@@ -2412,8 +2444,7 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: run.organizationId,
 					workspaceId: run.workspaceId,
-					userId: run.actorUserId,
-					serviceAccountId: run.serviceAccountId,
+					subject: plugins_sandbox_subject(live._yay.installation, run.actorUserId),
 					fileNode: node,
 					permission: "content.read",
 				}))
@@ -2538,12 +2569,12 @@ export async function public_api_db_revalidate_file_write_principal(
 			if (!invokeActorMembership) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
+			const subject = plugins_sandbox_subject(installation, args.userId);
 			if (
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					userId: args.userId,
-					serviceAccountId: pluginRun.serviceAccountId,
+					subject,
 					permission: "content.write",
 					...(labelledNode ? { fileNode: labelledNode } : {}),
 				}))
@@ -2572,6 +2603,7 @@ export async function public_api_db_revalidate_file_write_principal(
 					installation,
 					serviceGrant: null,
 					writeContext: {
+						subject,
 						writer: { kind: "service_account", serviceAccountId: pluginRun.serviceAccountId },
 						actorUserId: args.userId,
 						resourceScope,
@@ -2622,11 +2654,14 @@ export async function public_api_db_revalidate_file_write_principal(
 		if (!actorMembership) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+		// An upload run writes only beside the file the person uploaded, so it acts as that person
+		// there, without the sandbox roots.
+		const subject: access_control_Subject = { kind: "user", userId: args.userId, plugin: null };
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				subject,
 				permission: "content.write",
 				fileNode: sourceFileNode,
 			}))
@@ -2640,6 +2675,7 @@ export async function public_api_db_revalidate_file_write_principal(
 				installation,
 				serviceGrant: null,
 				writeContext: {
+					subject,
 					writer: { kind: "service_account", serviceAccountId: pluginRun.serviceAccountId },
 					actorUserId: args.userId,
 					resourceScope,
@@ -2727,12 +2763,12 @@ export async function public_api_db_revalidate_file_write_principal(
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+		const subject = plugins_sandbox_subject(installation, args.userId);
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
-				serviceAccountId: grant.serviceAccountId,
+				subject,
 				permission: "content.write",
 				...(aclNode ? { fileNode: aclNode } : {}),
 			}))
@@ -2746,6 +2782,7 @@ export async function public_api_db_revalidate_file_write_principal(
 				installation,
 				serviceGrant: grant,
 				writeContext: {
+					subject,
 					writer: { kind: "service_account", serviceAccountId: grant.serviceAccountId },
 					actorUserId: args.userId,
 					resourceScope: targetNode ? { kind: "node", nodeId: targetNode._id } : resourceScope,
@@ -2764,11 +2801,15 @@ export async function public_api_db_revalidate_file_write_principal(
 		return liveCredential;
 	}
 	const credential = liveCredential._yay;
+	const subject = credential_subject(credential);
+	// A person's key needs workspace write first, like the app. A key bound to an account may hold
+	// only folder grants, so its write is checked on the target below.
 	if (
+		subject.kind === "user" &&
 		!(await has_workspace_content_permission(ctx, {
 			organizationId: credential.organizationId,
 			workspaceId: credential.workspaceId,
-			userId: credential.userId,
+			subject,
 			permission: "content.write",
 		}))
 	) {
@@ -2780,6 +2821,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			installation: null,
 			serviceGrant: null,
 			writeContext: {
+				subject,
 				writer:
 					credential.serviceAccountId === null
 						? { kind: "user", userId: credential.userId }
@@ -2857,8 +2899,6 @@ async function db_preflight_file_write_target(
 	},
 ) {
 	const writeContext = args.pluginFacts.writeContext;
-	const serviceAccountId =
-		writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 	const { lookups } = args;
 	const activeNode = await lookups.get(args.path);
 	if (activeNode) {
@@ -2866,10 +2906,9 @@ async function db_preflight_file_write_target(
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				subject: writeContext.subject,
 				permission: "content.write",
 				fileNode: activeNode,
-				serviceAccountId,
 			}))
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -2898,8 +2937,7 @@ async function db_preflight_file_write_target(
 		!(await has_workspace_content_permission(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			userId: args.userId,
-			serviceAccountId,
+			subject: writeContext.subject,
 			fileNode: ancestor ?? undefined,
 			permission: "content.write",
 		}))
@@ -3268,8 +3306,6 @@ export const publish_file_write = internalMutation({
 		}
 
 		const writeContext = revalidated._yay.writeContext;
-		const serviceAccountId =
-			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 		const activeNode = await lookups.get(stage.path);
 		const parent = await lookups.find_existing_parent(stage.path);
 		const parentNode = parent.node;
@@ -3277,8 +3313,7 @@ export const publish_file_write = internalMutation({
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
 				workspaceId: stage.workspaceId,
-				userId: stage.userId,
-				serviceAccountId,
+				subject: writeContext.subject,
 				fileNode: activeNode ?? parentNode ?? undefined,
 				permission: "content.write",
 			}))
@@ -3335,8 +3370,7 @@ export const publish_file_write = internalMutation({
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: stage.organizationId,
 					workspaceId: stage.workspaceId,
-					userId: stage.userId,
-					serviceAccountId,
+					subject: writeContext.subject,
 					fileNode: activeNode,
 					permission: "content.permissions.manage",
 				}))
@@ -3344,8 +3378,9 @@ export const publish_file_write = internalMutation({
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 
-			// Keep the actor's existing replacement ceiling on each folder in the path.
-			let ancestorId = activeNode.parentId;
+			// Keep the actor's own replacement ceiling on each folder above the parent. The parent itself is
+			// checked with the full subject below, so a plugin root or an account grant there still works.
+			let ancestorId = parentNode?.parentId ?? files_ROOT_ID;
 			while (ancestorId !== files_ROOT_ID) {
 				const ancestor: Doc<"files_nodes"> | null = await files_saved_placement_db_get_node(ctx.db, ancestorId);
 				if (!ancestor) {
@@ -3355,7 +3390,7 @@ export const publish_file_write = internalMutation({
 					!(await access_control_db_can_act_on_file_node(ctx, {
 						organizationId: stage.organizationId,
 						workspaceId: stage.workspaceId,
-						userId: stage.userId,
+						subject: { kind: "user", userId: writeContext.actorUserId, plugin: null },
 						fileNode: ancestor,
 						permission: "content.write",
 					}))
@@ -3375,8 +3410,7 @@ export const publish_file_write = internalMutation({
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
 				workspaceId: stage.workspaceId,
-				userId: stage.userId,
-				serviceAccountId,
+				subject: writeContext.subject,
 				fileNode: parentNode ?? undefined,
 				permission: "content.write",
 			}))
@@ -3679,8 +3713,6 @@ export const publish_file_fill = internalMutation({
 			return Result({ _yay: { nodeId: revalidated._yay.receipt.nodeId } });
 		}
 		const writeContext = revalidated._yay.writeContext;
-		const serviceAccountId =
-			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 		// Bind only the tenant and node before access checks. Path, archive, type, mode, and lineage
 		// are details a caller without node access must not learn from the conflict response.
 		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.expectedNodeId);
@@ -3695,10 +3727,9 @@ export const publish_file_fill = internalMutation({
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
 				workspaceId: stage.workspaceId,
-				userId: stage.userId,
+				subject: writeContext.subject,
 				permission: "content.write",
 				fileNode,
-				serviceAccountId,
 			}))
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -3903,8 +3934,6 @@ export const publish_file_touch = internalMutation({
 			return revalidated;
 		}
 		const writeContext = revalidated._yay.writeContext;
-		const serviceAccountId =
-			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 
 		const activeNode = await lookups.get(stage.path);
 		if (activeNode) {
@@ -3915,10 +3944,9 @@ export const publish_file_touch = internalMutation({
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: stage.organizationId,
 					workspaceId: stage.workspaceId,
-					userId: stage.userId,
+					subject: writeContext.subject,
 					permission: "content.write",
 					fileNode: activeNode,
-					serviceAccountId,
 				}))
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
@@ -4014,10 +4042,9 @@ export const publish_file_touch = internalMutation({
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
 				workspaceId: stage.workspaceId,
-				userId: stage.userId,
+				subject: writeContext.subject,
 				permission: "content.write",
 				fileNode: ancestor ?? undefined,
-				serviceAccountId,
 			}))
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -4166,9 +4193,7 @@ export const can_write_file_node = internalQuery({
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
-				serviceAccountId:
-					writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined,
+				subject: writeContext.subject,
 				fileNode,
 				permission: "content.write",
 			}))
@@ -4345,8 +4370,6 @@ export const create_file_upload_targets = internalMutation({
 			return revalidated;
 		}
 		const writeContext = revalidated._yay.writeContext;
-		const serviceAccountId =
-			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 
 		const organization = await ctx.db.get("organizations", args.organizationId);
 		if (!organization) {
@@ -4394,10 +4417,9 @@ export const create_file_upload_targets = internalMutation({
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					userId: args.userId,
+					subject: writeContext.subject,
 					permission: "content.write",
 					fileNode: existingNode,
-					serviceAccountId,
 				}))
 			) {
 				return Result({ _nay: { message: "Permission denied", data: { path: rawItem.path } } });
@@ -4409,7 +4431,7 @@ export const create_file_upload_targets = internalMutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					userId: args.userId,
+					subject: writeContext.subject,
 					fileNode: parentNode,
 					permission: "content.write",
 				}))
@@ -4420,8 +4442,7 @@ export const create_file_upload_targets = internalMutation({
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					userId: args.userId,
-					serviceAccountId,
+					subject: writeContext.subject,
 					fileNode: parentNode ?? undefined,
 					permission: "content.write",
 				}))
@@ -4482,8 +4503,7 @@ export const create_file_upload_targets = internalMutation({
 					!(await has_workspace_content_permission(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						userId: args.userId,
-						serviceAccountId,
+						subject: writeContext.subject,
 						fileNode: existingNode,
 						permission: "content.permissions.manage",
 					}))
@@ -4838,7 +4858,8 @@ export async function public_api_write_one_text_file(
 		 */
 		userId: Id<"users">;
 		visibilityUserId: Id<"users">;
-		serviceAccountId: Id<"access_control_service_accounts"> | null;
+		/** Who the read checks act as. */
+		subject: access_control_Subject;
 		principalRef: Infer<typeof file_write_principal_ref_validator>;
 		path: string;
 		expectedParentNodeId?: string;
@@ -4873,7 +4894,7 @@ export async function public_api_write_one_text_file(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		visibilityUserId: args.visibilityUserId,
-		serviceAccountId: args.serviceAccountId ?? undefined,
+		subject: args.subject,
 		path: args.path,
 	})) as files_nodes_get_by_path_Result;
 	if (activeNode?.kind === "folder") {
@@ -4929,7 +4950,7 @@ export async function public_api_write_one_text_file(
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.visibilityUserId,
-				serviceAccountId: args.serviceAccountId ?? undefined,
+				subject: args.subject,
 				path: args.path,
 				committedOnly: true,
 				mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
@@ -5089,8 +5110,7 @@ export async function public_api_write_one_text_file(
 		const materializationState = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			userId: args.visibilityUserId,
-			serviceAccountId: args.serviceAccountId ?? undefined,
+			subject: args.subject,
 			nodeId: activeNode._id,
 		})) as get_file_content_materialization_state_Result;
 		if (materializationState) {
@@ -5555,9 +5575,9 @@ export async function public_api_http_read_file(args: {
 		agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
-		// A plugin run has no user of its own, so it reads with its actor's eyes.
+		// A plugin run has no user of its own, so its actor's id picks drafts. Access uses `subject`.
 		userId: public_api_visibility_user_id(principal),
-		serviceAccountId: principal.serviceAccountId ?? undefined,
+		subject: principal.subject,
 		path: requestedPath,
 		includePending: false,
 		maxBytes: Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES),
@@ -5679,7 +5699,7 @@ export async function public_api_http_read_many(args: {
 				organizationId: principal.organizationId,
 				workspaceId: principal.workspaceId,
 				userId: principal.userId,
-				serviceAccountId: principal.serviceAccountId ?? undefined,
+				subject: principal.subject,
 				path: filePath,
 				includePending: false,
 				maxBytes,
@@ -5804,7 +5824,7 @@ export async function public_api_http_read_bytes(args: {
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId: principal.userId,
-			serviceAccountId: principal.serviceAccountId ?? undefined,
+			subject: principal.subject,
 			path: requestedPath,
 			includePending: false,
 		};
@@ -6330,7 +6350,7 @@ export async function public_api_http_write_file(args: {
 				organizationId: principal.organizationId,
 				workspaceId: principal.workspaceId,
 				visibilityUserId: principal.actorUserId,
-				serviceAccountId: principal.serviceAccountId,
+				subject: principal.subject,
 				path: requestedPath,
 			})) as files_nodes_get_by_path_Result;
 			shape =
@@ -6407,7 +6427,7 @@ export async function public_api_http_write_file(args: {
 		workspaceId: principal.workspaceId,
 		userId: public_api_visibility_user_id(principal),
 		visibilityUserId: public_api_visibility_user_id(principal),
-		serviceAccountId: principal.serviceAccountId,
+		subject: principal.subject,
 		principalRef,
 		path: requestedPath,
 		expectedParentNodeId: body._yay.expectedParentNodeId,
@@ -6716,7 +6736,7 @@ export async function public_api_http_write_many(args: {
 				organizationId: principal.organizationId,
 				workspaceId: principal.workspaceId,
 				visibilityUserId: public_api_visibility_user_id(principal),
-				serviceAccountId: principal.serviceAccountId ?? undefined,
+				subject: principal.subject,
 				path: file.path,
 			}),
 		),
@@ -6757,7 +6777,7 @@ export async function public_api_http_write_many(args: {
 						workspaceId: principal.workspaceId,
 						userId: principal.userId,
 						visibilityUserId: public_api_visibility_user_id(principal),
-						serviceAccountId: principal.serviceAccountId,
+						subject: principal.subject,
 						principalRef,
 						path: file.path,
 						content: file.content,
@@ -7003,7 +7023,7 @@ export async function public_api_http_touch_files(args: {
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			visibilityUserId: public_api_visibility_user_id(principal),
-			serviceAccountId: principal.serviceAccountId ?? undefined,
+			subject: principal.subject,
 			path: requestedPath,
 		})) as files_nodes_get_by_path_Result;
 		if (activeNode) {
@@ -7333,7 +7353,7 @@ export async function public_api_http_download_urls(args: {
 				workspaceId: principal.workspaceId,
 				fileNodeId,
 				visibilityUserId: public_api_visibility_user_id(principal),
-				serviceAccountId: principal.serviceAccountId ?? undefined,
+				subject: principal.subject,
 			}),
 		),
 	);
@@ -7392,7 +7412,7 @@ export async function public_api_http_download_urls(args: {
 						workspaceId: principal.workspaceId,
 						fileNodeId: data.fileNode._id,
 						visibilityUserId: public_api_visibility_user_id(principal),
-						serviceAccountId: principal.serviceAccountId ?? undefined,
+						subject: principal.subject,
 					},
 				);
 				return refreshed?.asset.r2Key ?? null;
@@ -7523,7 +7543,7 @@ export async function public_api_http_download_urls(args: {
 				workspaceId: principal.workspaceId,
 				fileNodeId: item.fileNodeId,
 				visibilityUserId: public_api_visibility_user_id(principal),
-				serviceAccountId: principal.serviceAccountId ?? undefined,
+				subject: principal.subject,
 			}),
 		),
 	);

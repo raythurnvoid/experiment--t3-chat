@@ -1436,6 +1436,7 @@ describe("resolve_conflicts", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			overlayUserId: db.userId,
 			path: "/target/report.txt",
 			includePending: true,

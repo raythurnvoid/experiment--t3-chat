@@ -333,6 +333,7 @@ describe("cross-workspace Copy privacy", () => {
 				organizationId: f.destination.organizationId,
 				workspaceId: f.destination.workspaceId,
 				userId: f.destination.userId,
+				subject: { kind: "user", userId: f.destination.userId, plugin: null },
 				overlayUserId: f.destination.userId,
 				path: "/document.md",
 			});

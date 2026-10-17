@@ -20,7 +20,11 @@ import app_convex_schema, {
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
-import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
+import {
+	access_control_db_filter_readable_file_nodes,
+	access_control_subject_validator,
+} from "./access_control.ts";
+import { access_control_subject_reads_drafts } from "../shared/access-control.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { files_metadata_db_query_saved_plan } from "./files_metadata.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
@@ -93,7 +97,7 @@ const internal_listing_args = v.object({
 	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 	visibilityUserId: v.id("users"),
-	serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+	subject: access_control_subject_validator,
 	overlayUserId: v.optional(v.id("users")),
 	// Transfer discovery must refuse an incomplete folder instead of hiding unreadable children.
 	requireComplete: v.optional(v.boolean()),
@@ -147,7 +151,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 	const fileScope = files_db_resolve_scope(ctx, args.workspaceId);
 	const ownerScope =
 		args.overlayUserId === args.visibilityUserId &&
-		args.serviceAccountId === undefined &&
+		access_control_subject_reads_drafts(args.subject) &&
 		!organizations_is_global_organization_id(args.organizationId) &&
 		fileScope.kind === "workspace";
 	const reader =
@@ -176,7 +180,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 		args.organizationId,
 		args.workspaceId,
 		args.visibilityUserId,
-		args.serviceAccountId,
+		args.subject,
 		args.overlayUserId,
 		folderPath,
 		args.mode,
@@ -234,7 +238,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			visibilityUserId: args.visibilityUserId,
-			serviceAccountId: args.serviceAccountId,
+			subject: args.subject,
 			overlayUserId: args.overlayUserId,
 			requireComplete: args.requireComplete,
 			folderPath: frame.path,
@@ -543,7 +547,7 @@ const stream_args = v.object({
 	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 	visibilityUserId: v.id("users"),
-	serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+	subject: access_control_subject_validator,
 	overlayUserId: v.optional(v.id("users")),
 	// Transfer discovery must refuse an incomplete folder instead of hiding unreadable children.
 	requireComplete: v.optional(v.boolean()),
@@ -670,7 +674,7 @@ async function db_stream_open(ctx: QueryCtx, args: StreamOpenArgs & { readLimit?
 	// The owner's overlay in a workspace. `tenant` is set only then, with the reader.
 	const ownerScope =
 		args.overlayUserId === args.visibilityUserId &&
-		args.serviceAccountId === undefined &&
+		access_control_subject_reads_drafts(args.subject) &&
 		!organizations_is_global_organization_id(organizationId) &&
 		fileScope.kind === "workspace";
 	const tenant = ownerScope ? { organizationId, workspaceId: fileScope.workspaceId } : null;
@@ -1035,8 +1039,7 @@ function db_stream_saved_access(
 			const kept = await access_control_db_filter_readable_file_nodes(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.visibilityUserId,
-				serviceAccountId: args.serviceAccountId,
+				subject: args.subject,
 				nodes: chunk,
 			});
 			for (const chunkNode of chunk) readable.set(chunkNode._id, kept.includes(chunkNode));
@@ -2630,8 +2633,7 @@ export const internal_search_metadata_saved = internalQuery({
 					const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						userId: args.visibilityUserId,
-						serviceAccountId: args.serviceAccountId,
+						subject: args.subject,
 						nodes: [node],
 					});
 					if (readable.length === 0) return "denied";

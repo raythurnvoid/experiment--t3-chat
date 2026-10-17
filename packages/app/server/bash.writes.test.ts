@@ -264,6 +264,7 @@ describe("bash_run_command", () => {
 					organizationId: runner.seeded.organizationId,
 					workspaceId: runner.seeded.workspaceId,
 					visibilityUserId: runner.seeded.userId,
+					subject: { kind: "user", userId: runner.seeded.userId, plugin: null },
 					path: `${destinationPath}/skill.md`,
 				});
 				expect(literal).toBeNull();
@@ -319,6 +320,7 @@ describe("bash_run_command", () => {
 					organizationId: runner.seeded.organizationId,
 					workspaceId: runner.seeded.workspaceId,
 					visibilityUserId: member.userId,
+					subject: { kind: "user", userId: member.userId, plugin: null },
 					path: hiddenPath,
 				}),
 			).toBeNull();

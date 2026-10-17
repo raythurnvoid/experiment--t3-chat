@@ -63,9 +63,8 @@ export async function activities_feed_db_filter_visible(
 			await access_control_db_filter_readable_file_nodes(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				subject: { kind: "user", userId: args.userId, plugin: null },
 				nodes: targetNodes,
-				hasWorkspaceRead: args.hasWorkspaceRead,
 			})
 		).map((fileNode) => fileNode._id),
 	);

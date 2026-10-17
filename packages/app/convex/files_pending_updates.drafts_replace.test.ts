@@ -429,6 +429,7 @@ describe("private pending text", () => {
 			const proposal = await t.run((ctx) => files_db_get_pending_update(ctx, { ...scope, target: sourceTarget }));
 			if (!proposal) throw new Error("Expected the moved proposal");
 			const read = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+				subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 				...scope,
 				overlayUserId: scope.userId,
 				path: "/destination.txt",

@@ -231,7 +231,8 @@ export async function files_metadata_read_full_page(
 			organizationId: source.organizationId,
 			workspaceId: source.workspaceId,
 			userId: source.userId,
-			serviceAccountId: caller?.serviceAccountId,
+			// A membership caller is the person of `source.userId`.
+			subject: caller?.subject ?? { kind: "user", userId: source.userId, plugin: null },
 			path: source.path,
 			overlayUserId: caller?.overlayUserId,
 			includePending: source.textRead.includePending,

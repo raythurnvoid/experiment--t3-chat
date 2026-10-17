@@ -57,6 +57,7 @@ describe("same-workspace document Copy", () => {
 			organizationId: f.current.organizationId,
 			workspaceId: f.current.workspaceId,
 			userId: f.current.userId,
+			subject: { kind: "user", userId: f.current.userId, plugin: null },
 			overlayUserId: f.current.userId,
 			path: "/copy.md",
 		});
@@ -156,6 +157,7 @@ describe("same-workspace document Copy", () => {
 				organizationId: f.current.organizationId,
 				workspaceId: f.current.workspaceId,
 				userId: f.current.userId,
+				subject: { kind: "user", userId: f.current.userId, plugin: null },
 				overlayUserId: f.current.userId,
 				path: "/copy.md",
 			});
@@ -197,6 +199,7 @@ describe("same-workspace document Copy", () => {
 			organizationId: f.personal.organizationId,
 			workspaceId: f.personal.workspaceId,
 			userId: f.personal.userId,
+			subject: { kind: "user", userId: f.personal.userId, plugin: null },
 			overlayUserId: f.personal.userId,
 			path: "/copy.md",
 		});
@@ -344,6 +347,7 @@ describe("same-workspace document Copy", () => {
 			organizationId: f.current.organizationId,
 			workspaceId: f.current.workspaceId,
 			userId: f.current.userId,
+			subject: { kind: "user", userId: f.current.userId, plugin: null },
 			path: "/copies/document.md",
 			includePending: false,
 		});

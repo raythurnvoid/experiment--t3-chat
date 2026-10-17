@@ -1207,6 +1207,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		organizationId: server_ai_tools_test_ctx_data.organizationId,
 		workspaceId: server_ai_tools_test_ctx_data.workspaceId,
 		visibilityUserId: server_ai_tools_test_user_id,
+		subject: { kind: "user", userId: server_ai_tools_test_user_id, plugin: null },
 		overlayUserId: server_ai_tools_test_user_id,
 		path: "/docs/hello.md",
 	});
@@ -1230,6 +1231,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		userId: server_ai_tools_test_user_id,
+		subject: { kind: "user", userId: server_ai_tools_test_user_id, plugin: null },
 		path: "/docs/hello.md",
 		pendingUpdateId: undefined,
 		overlayUserId: server_ai_tools_test_user_id,
@@ -1526,6 +1528,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		userId: server_ai_tools_test_user_id,
+		subject: { kind: "user", userId: server_ai_tools_test_user_id, plugin: null },
 		path: "/docs/newline.md",
 		pendingUpdateId: undefined,
 		overlayUserId: server_ai_tools_test_user_id,

@@ -229,7 +229,7 @@ export const get_folder_readme = query({
 		if (!reader) {
 			return null;
 		}
-		const { userAuth, membership, hasWorkspaceRead } = reader;
+		const { userAuth, membership } = reader;
 
 		// Use the same folder gate as `list_tree_children`, so a hidden folder answers like a missing one.
 		if (
@@ -296,9 +296,8 @@ export const get_folder_readme = query({
 		const readmes = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
 			nodes: candidates,
-			hasWorkspaceRead,
 		});
 		if (readmes.length === 0) {
 			return null;
@@ -508,7 +507,7 @@ async function db_get_share_tree_rows(
 		shareRows: Doc<"files_share_rows">[];
 	},
 ) {
-	const { userAuth, membership, hasWorkspaceRead } = args.reader;
+	const { userAuth, membership } = args.reader;
 	const liveLifetime = args.shareRows.some((shareRow) => shareRow.externalPluginMembershipLifetime !== null)
 		? await organizations_membership_lifetimes_db_get(ctx, { workspaceId: membership.workspaceId, userId: userAuth.id })
 		: null;
@@ -547,9 +546,8 @@ async function db_get_share_tree_rows(
 			await access_control_db_filter_readable_file_nodes(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
+				subject: { kind: "user", userId: userAuth.id, plugin: null },
 				nodes: pairs.map((pair) => pair.node),
-				hasWorkspaceRead,
 			})
 		).map((node) => node._id),
 	);

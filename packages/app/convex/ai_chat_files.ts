@@ -1665,6 +1665,7 @@ export const accept_bash_job_copy_source = internalMutation({
 			organizationId: checkpoint.sourceScope.organizationId,
 			workspaceId: checkpoint.sourceScope.workspaceId,
 			visibilityUserId: invocation.userId,
+			subject: { kind: "user", userId: invocation.userId, plugin: null },
 			overlayUserId: invocation.userId,
 			path: args.path,
 		});

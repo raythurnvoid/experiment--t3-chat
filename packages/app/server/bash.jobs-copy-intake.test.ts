@@ -99,6 +99,7 @@ describe("bash_run_command", () => {
 				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
 				visibilityUserId: runner.ctxData.userId,
+				subject: { kind: "user", userId: runner.ctxData.userId, plugin: null },
 				overlayUserId: runner.ctxData.userId,
 				path: "/after.txt",
 			});
@@ -134,6 +135,7 @@ describe("bash_run_command", () => {
 					organizationId: runner.seeded.organizationId,
 					workspaceId: runner.seeded.workspaceId,
 					visibilityUserId: runner.ctxData.userId,
+					subject: { kind: "user", userId: runner.ctxData.userId, plugin: null },
 					overlayUserId: runner.ctxData.userId,
 					path: "/copies/docs/tutorial.md",
 				});

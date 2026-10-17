@@ -74,6 +74,8 @@ import {
 	files_pending_review_facts_db_sync,
 } from "./files-pending-review-facts.ts";
 import { path_tree_prefix_upper_bound, server_path_normalize } from "./server-utils.ts";
+import type { access_control_Subject } from "../convex/access_control.ts";
+import { access_control_subject_reads_drafts } from "../shared/access-control.ts";
 import {
 	files_move_reservations_db_enter,
 	files_move_reservations_db_find_blocker,
@@ -3234,7 +3236,7 @@ export async function files_pending_overlay_list(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		visibilityUserId: Id<"users">;
-		serviceAccountId?: Id<"access_control_service_accounts">;
+		subject: access_control_Subject;
 		overlayUserId?: Id<"users">;
 		requireComplete?: boolean;
 		folderPath: string;
@@ -3255,7 +3257,7 @@ export async function files_pending_overlay_list(
 	},
 ): Promise<files_visible_list_Result> {
 	const { order } = args;
-	const overlay = args.overlayUserId === args.visibilityUserId && args.serviceAccountId === undefined;
+	const overlay = args.overlayUserId === args.visibilityUserId && access_control_subject_reads_drafts(args.subject);
 	// A descending subtree would meet a moved-in folder after its own rows, so only saved-only reads
 	// may use it (mount listings).
 	if (args.mode === "subtree" && order === "desc" && overlay)
@@ -3268,7 +3270,7 @@ export async function files_pending_overlay_list(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		visibilityUserId: args.visibilityUserId,
-		serviceAccountId: args.serviceAccountId,
+		subject: args.subject,
 		overlayUserId: args.overlayUserId,
 		requireComplete: args.requireComplete,
 		folderPath: args.folderPath,
@@ -3296,7 +3298,7 @@ export async function files_pending_overlay_list(
 		args.organizationId,
 		args.workspaceId,
 		args.visibilityUserId,
-		args.serviceAccountId,
+		args.subject,
 		args.overlayUserId,
 		args.folderPath,
 		args.mode,
@@ -3677,6 +3679,7 @@ export async function files_pending_overlay_search_name(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		visibilityUserId: Id<"users">;
+		subject: access_control_Subject;
 		overlayUserId?: Id<"users">;
 		folderPath: string;
 		query: string;
@@ -3685,12 +3688,13 @@ export async function files_pending_overlay_search_name(
 		cursor: string | null;
 	},
 ) {
-	const overlay = args.overlayUserId === args.visibilityUserId;
+	const overlay = args.overlayUserId === args.visibilityUserId && access_control_subject_reads_drafts(args.subject);
 	const streamArgs = {
 		agentSource: args.agentSource,
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		visibilityUserId: args.visibilityUserId,
+		subject: args.subject,
 		overlayUserId: args.overlayUserId,
 		folderPath: args.folderPath,
 	};
@@ -3706,6 +3710,7 @@ export async function files_pending_overlay_search_name(
 		args.organizationId,
 		args.workspaceId,
 		args.visibilityUserId,
+		args.subject,
 		args.overlayUserId,
 		args.folderPath,
 		args.query,

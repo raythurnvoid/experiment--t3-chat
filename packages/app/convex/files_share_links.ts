@@ -1158,8 +1158,7 @@ export const list_workspace_links = query({
 		const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			hasWorkspaceRead: reader.hasWorkspaceRead,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
 			nodes: links.map((link) => ({
 				_id: link.nodeId,
 				restrictedScopeNodeId: link.restrictedScopeNodeId,

@@ -106,7 +106,12 @@ import { doc } from "convex-helpers/validators";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { access_control_db_authorize_file_write, access_control_db_authorize_node } from "./access_control.ts";
+import {
+	access_control_db_authorize_file_write,
+	access_control_db_authorize_node,
+	access_control_subject_validator,
+	type access_control_Subject,
+} from "./access_control.ts";
 import {
 	billing_db_check_credits,
 	billing_db_check_paid_plan,
@@ -865,11 +870,9 @@ export const create_file_node = internalMutation({
 			}
 		}
 		// Every caller here is an action: it proved this permission in an earlier transaction and then
-		// went off to write R2 objects. A role taken away in that gap would still land a file. The walk
-		// below only asks `access_control_db_can_act_on_file_node`, which waves an open node through on
-		// the promise that the workspace permission was already proved — and that promise is exactly
-		// what goes stale. So ask again, here, in the transaction that writes. SYSTEM writes come from
-		// trusted server flows and have no user to ask about.
+		// went off to write R2 objects. A role taken away in that gap would still land a file. So ask
+		// again, here, in the transaction that writes. SYSTEM writes come from trusted server flows and
+		// have no user to ask about.
 		//
 		// The reserved global scopes (mount mirrors, plugin sources) have no memberships to ask about,
 		// so they are skipped here the same way the node check skips them.
@@ -3062,6 +3065,7 @@ export const copy_transfer_file = internalAction({
 				organizationId: data.organizationId,
 				workspaceId: data.workspaceId,
 				userId: data.userId,
+				subject: { kind: "user", userId: data.userId, plugin: null },
 				path: data.savedPath,
 				includePending: false,
 				maxBytes: files_MAX_TEXT_CONTENT_BYTES,
@@ -3307,6 +3311,7 @@ export const copy_transfer_file = internalAction({
 							organizationId: copyData.destinationScope.organizationId,
 							workspaceId: copyData.destinationScope.workspaceId,
 							userId: copyData.userId,
+							subject: { kind: "user", userId: copyData.userId, plugin: null },
 							path: copyData.replacement.path,
 							includePending: false,
 							maxBytes: files_MAX_TEXT_CONTENT_BYTES,
@@ -3612,7 +3617,7 @@ export const get_file_byte_read_source = internalQuery({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		subject: access_control_subject_validator,
 		path: v.string(),
 		includePending: v.boolean(),
 	},
@@ -3642,7 +3647,7 @@ export const get_file_byte_read_source = internalQuery({
 			workspaceId: args.workspaceId,
 			path: args.path,
 			visibilityUserId: args.userId,
-			serviceAccountId: args.serviceAccountId,
+			subject: args.subject,
 			overlayUserId: args.includePending ? args.userId : undefined,
 		})) as files_nodes_get_visible_entry_by_path_Result;
 		if (!entry || entry.node.kind !== "file" || entry.pendingUpdate?.preparation) return null;
@@ -3673,7 +3678,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		subject: access_control_subject_validator,
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		includePending: v.optional(v.boolean()),
@@ -3711,7 +3716,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			workspaceId: args.workspaceId,
 			path: args.path,
 			visibilityUserId: args.userId,
-			serviceAccountId: args.serviceAccountId,
+			subject: args.subject,
 			overlayUserId: args.overlayUserId,
 		})) as files_nodes_get_visible_entry_by_path_Result;
 
@@ -3986,7 +3991,7 @@ async function files_can_finish_agent_read(args: {
 	organizationId: Doc<"files_nodes">["organizationId"];
 	workspaceId: Doc<"files_nodes">["workspaceId"];
 	userId: Id<"users">;
-	serviceAccountId?: Id<"access_control_service_accounts">;
+	subject: access_control_Subject;
 	path: string;
 	overlayUserId?: Id<"users">;
 	target: files_PendingTarget;
@@ -3998,7 +4003,7 @@ async function files_can_finish_agent_read(args: {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		visibilityUserId: args.userId,
-		serviceAccountId: args.serviceAccountId,
+		subject: args.subject,
 		path: args.path,
 		overlayUserId: args.overlayUserId,
 	})) as files_nodes_get_visible_entry_by_path_Result;
@@ -4018,7 +4023,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		subject: access_control_subject_validator,
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		includePending: v.optional(v.boolean()),
@@ -4041,7 +4046,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
-			serviceAccountId: args.serviceAccountId,
+			subject: args.subject,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
 			includePending: args.includePending,
@@ -4142,6 +4147,7 @@ async function files_resolve_readable_content_or_window(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
+		subject: { kind: "user", userId: args.userId, plugin: null },
 		path: args.path,
 		pendingUpdateId: args.pendingUpdateId,
 		overlayUserId: args.overlayUserId,
@@ -4234,6 +4240,7 @@ export const read_file_line_range = internalAction({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
+			subject: { kind: "user", userId: args.userId, plugin: null },
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
 			overlayUserId: args.overlayUserId,
@@ -4257,7 +4264,8 @@ export const read_file_line_range = internalAction({
 			return null;
 		}
 		const range = files_line_range_from_text({ content: resolved.text, startLine, maxLines });
-		if (!(await files_can_finish_agent_read({ ctx, ...args, target: resolved.target }))) return null;
+		const subject = { kind: "user" as const, userId: args.userId, plugin: null };
+		if (!(await files_can_finish_agent_read({ ctx, ...args, subject, target: resolved.target }))) return null;
 		// Stopped on the byte window (not line count / EOF): output may be partial.
 		const scanTruncated = !resolved.fetchedAllBytes && range.linesReturned < maxLines;
 		return {
@@ -4330,6 +4338,7 @@ export const read_file_tail_lines = internalAction({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
+			subject: { kind: "user", userId: args.userId, plugin: null },
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
 			overlayUserId: args.overlayUserId,
@@ -4355,7 +4364,8 @@ export const read_file_tail_lines = internalAction({
 				throw convex_error({ message: "Failed to reconstruct latest file content", cause: reconstructed._nay });
 			}
 			const tail = files_tail_lines_from_text(reconstructed._yay.text, maxLines);
-			if (!(await files_can_finish_agent_read({ ctx, ...args, target: state.target }))) return null;
+			const subject = { kind: "user" as const, userId: args.userId, plugin: null };
+			if (!(await files_can_finish_agent_read({ ctx, ...args, subject, target: state.target }))) return null;
 			return { target: state.target, content: tail.content, moreLines: tail.moreAbove, scanTruncated: false };
 		}
 
@@ -4370,7 +4380,8 @@ export const read_file_tail_lines = internalAction({
 		const bytes = new Uint8Array(await response.arrayBuffer());
 		const text = new TextDecoder("utf-8").decode(bytes);
 		const tail = files_tail_lines_from_text(text, maxLines);
-		if (!(await files_can_finish_agent_read({ ctx, ...args, target: state.target }))) return null;
+		const subject = { kind: "user" as const, userId: args.userId, plugin: null };
+		if (!(await files_can_finish_agent_read({ ctx, ...args, subject, target: state.target }))) return null;
 		// If the trailing window didn't reach the start of the file, the earliest returned line
 		// could be partial — only relevant for files larger than the scan window.
 		const scanTruncated = start > 0;
@@ -4440,7 +4451,8 @@ export const read_file_content_stats = internalAction({
 		}
 		// Same wc semantics as the materialized path, but on a possibly-partial window (lower bounds).
 		const counts = files_compute_wc_counts(resolved.text);
-		if (!(await files_can_finish_agent_read({ ctx, ...args, target: resolved.target }))) return null;
+		const subject = { kind: "user" as const, userId: args.userId, plugin: null };
+		if (!(await files_can_finish_agent_read({ ctx, ...args, subject, target: resolved.target }))) return null;
 		return {
 			target: resolved.target,
 			lineCount: counts.lineCount,

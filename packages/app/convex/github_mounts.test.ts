@@ -704,6 +704,7 @@ describe("sync_mount", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: readerUserId,
+			subject: { kind: "user", userId: readerUserId, plugin: null },
 			path: `/${MOUNT}/${COMMIT_1}/README.md`,
 			mode: { kind: "full", maxBytes: 1_000_000 },
 		});
@@ -808,6 +809,7 @@ describe("sync_mount", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: readerUserId,
+			subject: { kind: "user", userId: readerUserId, plugin: null },
 			path: `/${MOUNT}/${COMMIT_2}/README.md`,
 			mode: { kind: "full", maxBytes: 1_000_000 },
 		});
@@ -862,6 +864,7 @@ describe("sync_mount", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: readerUserId,
+			subject: { kind: "user", userId: readerUserId, plugin: null },
 			path: `/${MOUNT}/${COMMIT_1}/README.md`,
 			mode: { kind: "full", maxBytes: 1_000_000 },
 		});

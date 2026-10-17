@@ -88,7 +88,15 @@ async function all_pages(read: (cursor: string | null) => Promise<PageResult>, f
 function read_path(fixture: Fixture, field: string, cursor: string | null = null, path = "/restore.md") {
 	return fixture.asUser.action((ctx) =>
 		files_metadata_read_full_page(ctx, {
-			caller: { kind: "path", args: { ...fixture.scope, overlayUserId: fixture.db.userId, path } },
+			caller: {
+				kind: "path",
+				args: {
+					subject: { kind: "user" as const, userId: fixture.scope.userId, plugin: null },
+					...fixture.scope,
+					overlayUserId: fixture.db.userId,
+					path,
+				},
+			},
 			field,
 			format: "json",
 			cursor,

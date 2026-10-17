@@ -74,6 +74,7 @@ async function copy_media(row: { documentReplacement: boolean; mediaCount: numbe
 		organizationId: f.destination.organizationId,
 		workspaceId: f.destination.workspaceId,
 		userId: f.destination.userId,
+		subject: { kind: "user", userId: f.destination.userId, plugin: null },
 		overlayUserId: f.destination.userId,
 		path: "/document.md",
 	});
@@ -129,6 +130,7 @@ describe("copy_transfer_file media", () => {
 				organizationId: f.destination.organizationId,
 				workspaceId: f.destination.workspaceId,
 				userId: f.destination.userId,
+				subject: { kind: "user", userId: f.destination.userId, plugin: null },
 				overlayUserId: f.destination.userId,
 				path,
 			});

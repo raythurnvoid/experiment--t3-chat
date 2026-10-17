@@ -2,7 +2,8 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { QueryCtx } from "./_generated/server.js";
 import type { Infer } from "convex/values";
 import type { ai_chat_workspaces_source_validator } from "./schema.ts";
-import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
+import { access_control_db_filter_readable_file_nodes, type access_control_Subject } from "./access_control.ts";
+import { access_control_subject_reads_drafts } from "../shared/access-control.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_db_authorize_volume_read } from "./files_volume_access.ts";
@@ -26,8 +27,8 @@ export async function files_search_db_create_reader(
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		userId: Id<"users">;
 		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
-		serviceAccountId?: Id<"access_control_service_accounts">;
-		hasWorkspaceRead?: boolean;
+		/** Who the access checks act as. `userId` only picks drafts. */
+		subject: access_control_Subject;
 	},
 ) {
 	const scope = files_db_resolve_scope(ctx, args.workspaceId);
@@ -45,7 +46,7 @@ export async function files_search_db_create_reader(
 		}
 	}
 	const ownerReader =
-		args.serviceAccountId === undefined &&
+		access_control_subject_reads_drafts(args.subject) &&
 		!organizations_is_global_organization_id(args.organizationId) &&
 		scope.kind === "workspace"
 			? await files_visible_db_create_reader(ctx, {
@@ -100,9 +101,7 @@ export async function files_search_db_create_reader(
 						? await access_control_db_filter_readable_file_nodes(ctx, {
 								organizationId: args.organizationId,
 								workspaceId: args.workspaceId,
-								userId: args.userId,
-								serviceAccountId: args.serviceAccountId,
-								hasWorkspaceRead: args.hasWorkspaceRead,
+								subject: args.subject,
 								nodes: [node],
 							})
 						: [];

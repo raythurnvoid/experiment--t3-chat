@@ -578,18 +578,23 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		args.userId === users_SYSTEM_AUTHOR
 			? null
 			: (args.writeContext ?? {
+					subject: { kind: "user", userId: args.userId, plugin: null },
 					writer: { kind: "user", userId: args.userId },
 					actorUserId: args.userId,
 					resourceScope: { kind: "workspace" },
 					policyReach: "ancestors",
 				});
 
+	// The last existing folder walked into. Once the walk goes one folder deeper, it is above where the
+	// item lands.
+	let above: Doc<"files_nodes"> | null = null;
 	// Resolve every existing segment before creating anything. A later refusal must leave no folders.
 	for (const [i, name] of segments.entries()) {
 		const known = i < segments.length - 1 ? args.folders?.get(path_join(parentPath, name)) : undefined;
 		if (known) {
 			parentNode = known;
 			parentPath = known.path;
+			above = known;
 			continue;
 		}
 		const existing = await files_saved_placement_db_get_slot(ctx.db, {
@@ -601,19 +606,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		firstMissing = i;
 		if (!existing) {
 			break;
-		}
-
-		if (
-			writeContext &&
-			!(await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: writeContext.actorUserId,
-				fileNode: existing,
-				permission: "content.write",
-			}))
-		) {
-			return Result({ _nay: { message: "Permission denied" } });
 		}
 
 		const isLeaf = i === segments.length - 1;
@@ -638,8 +630,25 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			});
 		}
 
+		// A folder above where the item lands keeps only the actor's own write ceiling. Where it lands,
+		// the full subject decides (the checks below), so a plugin root or an account grant on a nested
+		// folder still works.
+		if (
+			writeContext &&
+			above &&
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				subject: { kind: "user", userId: writeContext.actorUserId, plugin: null },
+				fileNode: above,
+				permission: "content.write",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 		parentNode = existing;
 		parentPath = existing.path;
+		above = existing;
 		args.folders?.set(existing.path, existing);
 	}
 

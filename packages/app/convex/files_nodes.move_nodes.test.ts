@@ -699,6 +699,7 @@ describe("existing service-account writer policy", () => {
 				});
 				const before = await ctx.db.query("files_nodes").collect();
 				const writeContext: files_nodes_WriteContext = {
+					subject: { kind: "service_account", serviceAccountId },
 					writer: { kind: "service_account", serviceAccountId },
 					actorUserId: db.userId,
 					resourceScope: { kind: "workspace" },

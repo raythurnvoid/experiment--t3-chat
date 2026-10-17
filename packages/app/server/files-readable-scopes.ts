@@ -6,7 +6,8 @@
 // The readable restricted folders come from the caller's share rows (`server/files-share-rows.ts`) on
 // `by_org_ws_principal_archive_treePath`, in path order. Nested folders use the nearest scope only: a
 // readable folder inside a hidden one is its own partition. A service account also reads single open
-// nodes through its own grants, and its share rows give those nodes too.
+// nodes through its own grants, and its share rows give those nodes too. A plugin is limited by its
+// sandbox roots, which have no share rows, so a plugin list checks every row.
 //
 // Only the transitional partitions have a cap (`TRANSITIONAL_MAX_SCOPE_OPS`). Past it the plan hides
 // more, never less, and says so with `truncated`, so a reader that needs a whole folder can stop.
@@ -18,6 +19,7 @@ import {
 	access_control_db_has_permission,
 	access_control_db_resolve_live_restricted_scope,
 	access_control_db_resolve_role_refs,
+	type access_control_Subject,
 } from "../convex/access_control.ts";
 import { files_db_resolve_scope } from "../convex/files_scopes.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -37,20 +39,19 @@ type Reader = Extract<Awaited<ReturnType<typeof files_readable_scopes_db_reader>
  * How one caller lists files.
  *
  * - `flat`: one stream on the scope-less indexes. With `filter: false` every row is readable: the
- *   owner without a service account reads everything, and plugin volumes and GLOBAL reserved
- *   workspaces have no restricted folders. With `filter: true` the per-row filter must check every
- *   row: a member acting through a service account has no partitioned read yet.
+ *   owner reads everything, and plugin volumes and GLOBAL reserved workspaces have no restricted
+ *   folders. With `filter: true` the per-row filter must check every row: a plugin has no
+ *   partitioned read yet.
  * - `scoped`: one partition per readable scope. `principalKeys` are the share row streams to read: the
- *   member and their roles, or the service account when the owner acts through it (the owner reads
- *   everything, so the account decides alone). `openReadable` says whether open content is readable.
+ *   member and their roles, or the service account. `openReadable` says whether open content is
+ *   readable.
  */
 export async function files_readable_scopes_db_reader(
 	ctx: QueryCtx,
 	args: {
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		userId: Id<"users">;
-		serviceAccountId?: Id<"access_control_service_accounts">;
+		subject: access_control_Subject;
 	},
 ) {
 	const scope = files_db_resolve_scope(ctx, args.workspaceId);
@@ -59,18 +60,12 @@ export async function files_readable_scopes_db_reader(
 	const organization = await ctx.db.get("organizations", organizationId);
 	if (!organization?.defaultWorkspaceId)
 		throw should_never_happen("The workspace has no organization", { organizationId });
-	const isOwner = args.userId === organization.ownerUserId;
-	if (isOwner && !args.serviceAccountId) return { mode: "flat" as const, filter: false };
-	// Known gap until the user decides: the account's and the member's folders have no bounded
-	// intersection read, so this caller pays the per-row filter.
-	if (!isOwner && args.serviceAccountId) return { mode: "flat" as const, filter: true };
+	const subject = args.subject;
+	if (subject.kind === "user" && subject.plugin !== null) return { mode: "flat" as const, filter: true };
+	if (subject.kind === "user" && subject.userId === organization.ownerUserId)
+		return { mode: "flat" as const, filter: false };
 
-	const ids = {
-		organizationId,
-		workspaceId: scope.workspaceId,
-		userId: args.userId,
-		serviceAccountId: args.serviceAccountId,
-	};
+	const ids = { organizationId, workspaceId: scope.workspaceId, subject };
 	const permissionArgs = {
 		organizationId,
 		workspaceId: scope.workspaceId,
@@ -79,17 +74,20 @@ export async function files_readable_scopes_db_reader(
 		resource: { kind: "workspace" as const, id: scope.workspaceId },
 		permission: "content.read" as const,
 	};
-	if (args.serviceAccountId) {
-		const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+	if (subject.kind === "service_account") {
+		const account = await ctx.db.get("access_control_service_accounts", subject.serviceAccountId);
 		// A revoked account keeps its grants and rows, but reads nothing.
 		const live = account?.revokedAt === null && account.workspaceId === scope.workspaceId;
 		return {
 			mode: "scoped" as const,
 			...ids,
-			principalKeys: live ? [files_share_rows_principal_key("service_account", args.serviceAccountId)] : [],
+			principalKeys: live ? [files_share_rows_principal_key("service_account", subject.serviceAccountId)] : [],
 			openReadable:
 				live &&
-				(await access_control_db_has_permission(ctx, { ...permissionArgs, serviceAccountId: args.serviceAccountId })),
+				(await access_control_db_has_permission(ctx, {
+					...permissionArgs,
+					serviceAccountId: subject.serviceAccountId,
+				})),
 		};
 	}
 
@@ -97,16 +95,16 @@ export async function files_readable_scopes_db_reader(
 		organizationId,
 		workspaceId: scope.workspaceId,
 		defaultWorkspaceId: organization.defaultWorkspaceId,
-		userId: args.userId,
+		userId: subject.userId,
 	});
 	return {
 		mode: "scoped" as const,
 		...ids,
 		principalKeys: [
-			files_share_rows_principal_key("user", args.userId),
+			files_share_rows_principal_key("user", subject.userId),
 			...roleRefs.map((role) => files_share_rows_principal_key("role", role)),
 		],
-		openReadable: await access_control_db_has_permission(ctx, { ...permissionArgs, userId: args.userId }),
+		openReadable: await access_control_db_has_permission(ctx, { ...permissionArgs, userId: subject.userId }),
 	};
 }
 
@@ -125,9 +123,7 @@ async function db_can_read_partition(ctx: QueryCtx, reader: Reader, storedScopeN
 	const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 		organizationId: reader.organizationId,
 		workspaceId: reader.workspaceId,
-		userId: reader.userId,
-		serviceAccountId: reader.serviceAccountId,
-		hasWorkspaceRead: reader.openReadable,
+		subject: reader.subject,
 		nodes: [{ _id: scopeNodeId, restrictedScopeNodeId: scopeNodeId }],
 	});
 	return readable.length > 0;
@@ -159,15 +155,14 @@ async function db_get_readable_items(ctx: QueryCtx, reader: Reader, rows: Doc<"f
 	const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 		organizationId: reader.organizationId,
 		workspaceId: reader.workspaceId,
-		userId: reader.userId,
-		serviceAccountId: reader.serviceAccountId,
-		hasWorkspaceRead: reader.openReadable,
+		subject: reader.subject,
 		nodes,
 	});
 	const items: Array<{ kind: "scope" | "node"; node: Doc<"files_nodes"> }> = [];
 	for (const node of readable) {
 		if (node.restrictedScopeNodeId === node._id) items.push({ kind: "scope", node });
-		else if (node.restrictedScopeNodeId === null && reader.serviceAccountId) items.push({ kind: "node", node });
+		else if (node.restrictedScopeNodeId === null && reader.subject.kind === "service_account")
+			items.push({ kind: "node", node });
 	}
 	return items;
 }

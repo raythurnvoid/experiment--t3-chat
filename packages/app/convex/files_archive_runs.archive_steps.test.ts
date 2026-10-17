@@ -562,7 +562,7 @@ describe("apply_file_pending_archive", () => {
 		const search = () =>
 			f.t.query(internal.files_nodes.text_search_files, {
 				...scope,
-				hasWorkspaceRead: true,
+				subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 				query: "draftword",
 				numItems: 10,
 				cursor: null,

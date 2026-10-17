@@ -1129,6 +1129,7 @@ export async function test_meta_search(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		visibilityUserId: args.userId,
+		subject: { kind: "user", userId: args.userId, plugin: null },
 		overlayUserId: args.userId,
 		folderPath: args.folderPath ?? "/",
 		mode: "metadata",

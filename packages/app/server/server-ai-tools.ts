@@ -893,6 +893,7 @@ export function ai_chat_tool_create_edit_file(
 				organizationId,
 				workspaceId,
 				visibilityUserId: ctxData.userId,
+				subject: { kind: "user", userId: ctxData.userId, plugin: null },
 				overlayUserId: ctxData.userId,
 				path: normalizedPath,
 			})) as files_nodes_get_visible_entry_by_path_Result;
@@ -944,6 +945,7 @@ export function ai_chat_tool_create_edit_file(
 						organizationId,
 						workspaceId,
 						userId: ctxData.userId,
+						subject: { kind: "user", userId: ctxData.userId, plugin: null },
 						path: normalizedPath,
 						pendingUpdateId,
 						overlayUserId: ctxData.userId,

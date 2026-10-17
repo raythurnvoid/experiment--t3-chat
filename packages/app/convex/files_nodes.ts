@@ -109,7 +109,8 @@ import {
 import { files_updated_by_db_delete_for_node, files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
-import { access_control_db_authorize_membership, access_control_db_authorize_node, access_control_db_authorize_file_write, access_control_db_can_act_on_file_node, access_control_db_filter_readable_file_nodes } from "./access_control.ts";
+import { access_control_db_authorize_membership, access_control_db_authorize_node, access_control_db_authorize_file_write, access_control_db_can_act_on_file_node, access_control_db_filter_readable_file_nodes, access_control_subject_validator, type access_control_Subject } from "./access_control.ts";
+import { access_control_subject_reads_drafts } from "../shared/access-control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
@@ -242,7 +243,8 @@ export const get_by_path = internalQuery({
 		 * unfiltered view: a restricted node answers `null` for anybody without a grant on it.
 		 */
 		visibilityUserId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		/** Who the access checks act as. `visibilityUserId` only picks personal rows and drafts. */
+		subject: access_control_subject_validator,
 		/** When set, resolve through this user's pending path overlay (their pending moves). */
 		overlayUserId: v.optional(v.id("users")),
 	},
@@ -254,7 +256,7 @@ export const get_by_path = internalQuery({
 		if (scope.kind === "volume") return await files_db_get_visible_node_by_path(ctx, args);
 		if (
 			args.overlayUserId &&
-			!args.serviceAccountId &&
+			access_control_subject_reads_drafts(args.subject) &&
 			!organizations_is_global_organization_id(args.organizationId) &&
 			scope.kind === "workspace"
 		) {
@@ -277,8 +279,7 @@ export const get_by_path = internalQuery({
 		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			userId: args.visibilityUserId,
-			serviceAccountId: args.serviceAccountId,
+			subject: args.subject,
 			nodes: [fileNode],
 		});
 		return readable ?? null;
@@ -297,7 +298,8 @@ export const get_visible_entry_by_path = internalQuery({
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		path: v.string(),
 		visibilityUserId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		/** Who the access checks act as. `visibilityUserId` only picks personal rows and drafts. */
+		subject: access_control_subject_validator,
 		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(
@@ -338,19 +340,13 @@ export const get_visible_entry_by_path = internalQuery({
 			.first();
 		if (!membership) return null;
 
-		const workspaceRead = await access_control_db_authorize_membership(ctx, {
-			userAuth: { id: args.visibilityUserId },
-			membership,
-			permission: "content.read",
-		});
-
 		const savedNode =
-			args.overlayUserId === undefined || args.serviceAccountId !== undefined
+			args.overlayUserId === undefined || !access_control_subject_reads_drafts(args.subject)
 				? await files_db_get_visible_node_by_path(ctx, { organizationId, workspaceId, path: args.path })
 				: null;
 
 		const entry: files_VisibleEntry | null =
-			args.overlayUserId === undefined || args.serviceAccountId !== undefined
+			args.overlayUserId === undefined || !access_control_subject_reads_drafts(args.subject)
 				? savedNode
 					? { kind: "saved" as const, node: savedNode, pendingUpdate: null, path: args.path }
 					: null
@@ -378,14 +374,13 @@ export const get_visible_entry_by_path = internalQuery({
 			accessNode = entry.node;
 		}
 
-		if (!accessNode) return workspaceRead._nay ? null : entry;
-		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+		// A draft at the top level has no saved parent, so it needs read on the workspace root.
+		const readable = await access_control_db_can_act_on_file_node(ctx, {
 			organizationId,
 			workspaceId,
-			userId: args.visibilityUserId,
-			serviceAccountId: args.serviceAccountId,
-			hasWorkspaceRead: !workspaceRead._nay,
-			nodes: [accessNode],
+			subject: args.subject,
+			fileNode: accessNode,
+			permission: "content.read",
 		});
 		return readable ? entry : null;
 	},
@@ -419,6 +414,7 @@ export const get_visible_target_by_path = query({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			visibilityUserId: userAuth.id,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
 			path,
 		})) as files_nodes_get_visible_entry_by_path_Result;
 		const entry: files_nodes_get_visible_entry_by_path_Result =
@@ -427,6 +423,7 @@ export const get_visible_target_by_path = query({
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				visibilityUserId: userAuth.id,
+				subject: { kind: "user", userId: userAuth.id, plugin: null },
 				overlayUserId: userAuth.id,
 				path,
 			})) as files_nodes_get_visible_entry_by_path_Result);
@@ -628,6 +625,7 @@ export const get_user_file_write_access = internalQuery({
 		}
 
 		const writeContext: files_nodes_WriteContext = {
+			subject: { kind: "user", userId: args.userId, plugin: null },
 			writer: { kind: "user", userId: args.userId },
 			actorUserId: args.userId,
 			resourceScope: { kind: "workspace" },
@@ -727,9 +725,7 @@ export async function files_nodes_db_require_swept_nodes_writable(
 			readable = await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.writeContext.actorUserId,
-				serviceAccountId:
-					args.writeContext.writer.kind === "service_account" ? args.writeContext.writer.serviceAccountId : undefined,
+				subject: args.writeContext.subject,
 				fileNode: node,
 				permission: "content.read",
 			});
@@ -942,6 +938,7 @@ export const get_node_write_policy_management_state = query({
 		return await files_nodes_db_get_write_policy_management_state(ctx, {
 			node: authorized._yay.fileNode,
 			writeContext: {
+				subject: { kind: "user", userId: userAuth.id, plugin: null },
 				writer: { kind: "user", userId: userAuth.id },
 				actorUserId: userAuth.id,
 				resourceScope: { kind: "workspace" },
@@ -1019,6 +1016,7 @@ export const set_node_write_policy = mutation({
 			node: authorized._yay.node,
 			writePolicy: args.writePolicy,
 			writeContext: {
+				subject: { kind: "user", userId: userAuth.id, plugin: null },
 				writer: { kind: "user", userId: userAuth.id },
 				actorUserId: userAuth.id,
 				resourceScope: { kind: "workspace" },
@@ -1100,6 +1098,7 @@ export const set_node_new_child_write_policy = mutation({
 			node: authorized._yay.node,
 			newChildWritePolicy: args.newChildWritePolicy,
 			writeContext: {
+				subject: { kind: "user", userId: userAuth.id, plugin: null },
 				writer: { kind: "user", userId: userAuth.id },
 				actorUserId: userAuth.id,
 				resourceScope: { kind: "workspace" },
@@ -1254,7 +1253,7 @@ export const create_folder_node_by_path = internalMutation({
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				subject: { kind: "user", userId: args.userId, plugin: null },
 				fileNode: activeNode,
 				permission: "content.write",
 			}))
@@ -2245,7 +2244,7 @@ export const create_upload_node = mutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
+					subject: { kind: "user", userId: userAuth.id, plugin: null },
 					fileNode: intermediate,
 					permission: "content.write",
 				}))
@@ -2303,7 +2302,7 @@ export const create_upload_node = mutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
+					subject: { kind: "user", userId: userAuth.id, plugin: null },
 					fileNode: existingNode,
 					permission: "content.write",
 				}))
@@ -2684,7 +2683,7 @@ export const create_upload_nodes = mutation({
 						walked.skipReason = (await access_control_db_can_act_on_file_node(ctx, {
 							organizationId: membership.organizationId,
 							workspaceId: membership.workspaceId,
-							userId: userAuth.id,
+							subject: { kind: "user", userId: userAuth.id, plugin: null },
 							fileNode: intermediate,
 							permission: "content.read",
 						}))
@@ -2695,7 +2694,7 @@ export const create_upload_nodes = mutation({
 						(!(await access_control_db_can_act_on_file_node(ctx, {
 							organizationId: membership.organizationId,
 							workspaceId: membership.workspaceId,
-							userId: userAuth.id,
+							subject: { kind: "user", userId: userAuth.id, plugin: null },
 							fileNode: intermediate,
 							permission: "content.write",
 						})) ||
@@ -2740,7 +2739,7 @@ export const create_upload_nodes = mutation({
 					const canReadBlockingNode = await access_control_db_can_act_on_file_node(ctx, {
 						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
-						userId: userAuth.id,
+						subject: { kind: "user", userId: userAuth.id, plugin: null },
 						fileNode: existingNode,
 						permission: "content.read",
 					});
@@ -2758,7 +2757,7 @@ export const create_upload_nodes = mutation({
 					!(await access_control_db_can_act_on_file_node(ctx, {
 						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
-						userId: userAuth.id,
+						subject: { kind: "user", userId: userAuth.id, plugin: null },
 						fileNode: existingNode,
 						permission: "content.write",
 					}))
@@ -3675,7 +3674,6 @@ export const archive_nodes = mutation({
 		// A node they can read but not change goes on to the job, which refuses it and archives the other
 		// named items. The write check costs no extra read for an unrestricted tree, and the read check
 		// runs only when the write check fails.
-		let hasWorkspaceRead: boolean | undefined;
 		for (const [index, fileNode] of loadedNodes.entries()) {
 			if (
 				!fileNode ||
@@ -3696,15 +3694,11 @@ export const archive_nodes = mutation({
 				// Somebody who cannot even see this node hears the same answer as somebody who named an id
 				// that is not there. Two different refusals would confirm the file exists. A member with only
 				// folder grants has no workspace read, so an open node is hidden from them too.
-				hasWorkspaceRead ??= !(
-					await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.read" })
-				)._nay;
 				const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
+					subject: { kind: "user", userId: userAuth.id, plugin: null },
 					nodes: [fileNode],
-					hasWorkspaceRead,
 				});
 				if (!readable) {
 					notFoundNodeIds.add(fileNode._id);
@@ -3848,7 +3842,7 @@ export const unarchive_nodes = mutation({
 				const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
+					subject: { kind: "user", userId: userAuth.id, plugin: null },
 					nodes: [fileNode],
 				});
 				return readable
@@ -3980,7 +3974,7 @@ async function db_list_children(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		visibilityUserId: Id<"users">;
-		serviceAccountId?: Id<"access_control_service_accounts">;
+		subject: access_control_Subject;
 		numItems: number;
 		cursor: string | null;
 		parentId?: Id<"files_nodes"> | typeof files_ROOT_ID;
@@ -3999,8 +3993,7 @@ async function db_list_children(
 			: access_control_db_filter_readable_file_nodes(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					userId: args.visibilityUserId,
-					serviceAccountId: args.serviceAccountId,
+					subject: args.subject,
 					nodes,
 				});
 
@@ -4105,7 +4098,8 @@ export const list_children = internalQuery({
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		/** Who is looking. Required so a new caller cannot forget it and list restricted nodes. */
 		visibilityUserId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		/** Who the access checks act as. `visibilityUserId` only picks personal rows and drafts. */
+		subject: access_control_subject_validator,
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
 		parentId: v.optional(v.union(v.id("files_nodes"), v.literal(files_ROOT_ID))),
@@ -4149,7 +4143,8 @@ export const list_subtree = internalQuery({
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		/** Who is looking. Required so a new caller cannot forget it and walk into a restricted folder. */
 		visibilityUserId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		/** Who the access checks act as. `visibilityUserId` only picks personal rows and drafts. */
+		subject: access_control_subject_validator,
 		folderPath: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -4234,8 +4229,7 @@ export const list_subtree = internalQuery({
 				: await access_control_db_filter_readable_file_nodes(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						userId: args.visibilityUserId,
-						serviceAccountId: args.serviceAccountId,
+						subject: args.subject,
 						nodes,
 					});
 
@@ -4368,7 +4362,8 @@ export const search_paths = internalQuery({
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		/** Who is looking. Required so a new caller cannot forget it and match a restricted path. */
 		visibilityUserId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		/** Who the access checks act as. `visibilityUserId` only picks personal rows and drafts. */
+		subject: access_control_subject_validator,
 		pathQuery: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -4458,8 +4453,7 @@ export const search_paths = internalQuery({
 				: await access_control_db_filter_readable_file_nodes(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						userId: args.visibilityUserId,
-						serviceAccountId: args.serviceAccountId,
+						subject: args.subject,
 						nodes: result.page,
 					});
 
@@ -4616,21 +4610,20 @@ export const get_file_content_materialization_state = internalQuery({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
-		userId: v.optional(v.id("users")),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		/** When set, the node must be readable by this subject. System callers leave it out. */
+		subject: v.optional(access_control_subject_validator),
 	},
 	returns: v.union(file_content_materialization_state_validator, v.null()),
 	handler: async (ctx, args) => {
-		if (args.userId !== undefined || args.serviceAccountId !== undefined) {
+		if (args.subject !== undefined) {
 			const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-			if (!node || args.userId === undefined) {
+			if (!node) {
 				return null;
 			}
 			const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
-				serviceAccountId: args.serviceAccountId,
+				subject: args.subject,
 				nodes: [node],
 			});
 			if (!readable) {
@@ -4878,7 +4871,7 @@ async function db_resolve_committed_chunk_source(
 		(await access_control_db_can_act_on_file_node(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			userId: args.userId,
+			subject: { kind: "user", userId: args.userId, plugin: null },
 			fileNode,
 			permission: "content.read",
 		}));
@@ -5229,7 +5222,8 @@ export const read_file_content_from_chunks = internalQuery({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		/** Who the access checks act as. `userId` only picks drafts. */
+		subject: access_control_subject_validator,
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
@@ -5274,7 +5268,7 @@ export const read_file_content_from_chunks = internalQuery({
 			workspaceId: args.workspaceId,
 			path: args.path,
 			visibilityUserId: args.userId,
-			serviceAccountId: args.serviceAccountId,
+			subject: args.subject,
 			overlayUserId: args.overlayUserId,
 		})) as files_nodes_get_visible_entry_by_path_Result;
 		if (!entry || entry.node.kind !== "file") return null;
@@ -6159,7 +6153,7 @@ async function db_get_text_match_source(
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				subject: { kind: "user", userId: args.userId, plugin: null },
 				fileNode,
 				permission: "content.read",
 			}))
@@ -6576,14 +6570,12 @@ const text_search_args = {
 	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 	userId: v.id("users"),
-	serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 	/**
-	 * Whether the caller proved workspace-wide content.read for this workspace.
-	 * Required on purpose: the readable filter defaults to true when the field is absent, so a
-	 * forgotten argument would fail open and stream open-file snippets to a user who only has a
-	 * per-node grant. A required field turns that mistake into a validator error instead.
+	 * Who the access checks act as. `userId` only picks drafts.
+	 * Required on purpose: a forgotten subject must be a validator error, never an unchecked search
+	 * that streams snippets of files the caller cannot read.
 	 */
-	hasWorkspaceRead: v.boolean(),
+	subject: access_control_subject_validator,
 	query: v.string(),
 	/** Optional subtree scope: keep only matches whose file path is under this folder prefix. */
 	pathPrefix: v.optional(v.string()),
@@ -6670,7 +6662,7 @@ export const text_search_files = internalQuery({
 
 		// Only the owner's overlay reads pending chunks, like the reader.
 		const ownerPending =
-			args.serviceAccountId === undefined &&
+			access_control_subject_reads_drafts(args.subject) &&
 			!organizations_is_global_organization_id(args.organizationId) &&
 			scope.kind === "workspace";
 		const view = {
@@ -6686,9 +6678,8 @@ export const text_search_files = internalQuery({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
-			serviceAccountId: args.serviceAccountId,
+			subject: args.subject,
 			agentSource: args.agentSource,
-			hasWorkspaceRead: args.hasWorkspaceRead,
 			query: args.query,
 			pathPrefix: args.pathPrefix,
 			targets: args.targets,
@@ -6855,8 +6846,7 @@ export const search_saved = query({
 			const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
-				hasWorkspaceRead: reader.hasWorkspaceRead,
+				subject: { kind: "user", userId: userAuth.id, plugin: null },
 				nodes: [...byId.values()],
 			});
 			return readable.map((node) => ({

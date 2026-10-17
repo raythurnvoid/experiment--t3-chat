@@ -77,7 +77,7 @@ describe("private search", () => {
 		const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
 		const content = await f.t.query(internal.files_nodes.text_search_files, {
 			...scope,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 			query: "privateneedle",
 			targets: [f.target],
 			numItems: 20,
@@ -174,7 +174,7 @@ describe("private search", () => {
 				workspaceId: f.db.workspaceId,
 				userId,
 				query: "privateneedle",
-				hasWorkspaceRead: true,
+				subject: { kind: "user" as const, userId: userId, plugin: null },
 				pathPrefix,
 				numItems: 20,
 				cursor: null,
@@ -235,7 +235,7 @@ describe("private search", () => {
 		const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
 		const content = await f.t.query(internal.files_nodes.text_search_files, {
 			...scope,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 			query: "privateneedle",
 			numItems: 20,
 			cursor: null,
@@ -312,7 +312,13 @@ describe("saved search during an archive", () => {
 			for (let page = 0; page < 3; page++) {
 				const result: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await t.query(
 					internal.files_nodes.text_search_files,
-					{ ...scope, hasWorkspaceRead: true, query: "catchup", numItems: 20, cursor },
+					{
+						...scope,
+						subject: { kind: "user" as const, userId: scope.userId, plugin: null },
+						query: "catchup",
+						numItems: 20,
+						cursor,
+					},
 				);
 				targets.push(...result.items.map((item) => item.target));
 				if (result.isDone) break;
@@ -403,7 +409,7 @@ describe("content search on a deep file", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
-					hasWorkspaceRead: true,
+					subject: { kind: "user" as const, userId: db.userId, plugin: null },
 					query: "zebraword",
 					numItems: 1,
 					cursor,

@@ -2856,6 +2856,7 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 				organizationId: sourceScope.organizationId,
 				workspaceId: sourceScope.workspaceId,
 				visibilityUserId: run.userId,
+				subject: { kind: "user", userId: run.userId, plugin: null },
 				overlayUserId: run.userId,
 				requireComplete: true,
 				folderPath: source.path,

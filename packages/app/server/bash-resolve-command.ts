@@ -111,6 +111,7 @@ export function bash_resolve_command_create(ctx: ActionCtx, dbFilesRoots: bash_D
 					organizationId,
 					workspaceId,
 					visibilityUserId: userId,
+					subject: { kind: "user", userId, plugin: null },
 					path: parsed._yay.path,
 				});
 				nodeId = node?._id;

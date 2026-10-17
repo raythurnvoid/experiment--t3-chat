@@ -275,6 +275,7 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 	});
 	const savedTextBeforeMove = args.dense
 		? await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
 			path: seeded.heavy.path, includePending: false,
 		})
@@ -392,6 +393,7 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		expect(metadata.every((row) => row.moveView === undefined && row.path === "/target/heavy.md" && row.treePath === row.path)).toBe(true);
 		expect(metadata.filter((row) => row.docKind === "field").every((row) => row.parentId === seeded.target._id)).toBe(true);
 		expect((await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
 			path: "/target/heavy.md", includePending: false,
 		}))?.content, "Dense metadata Move keeps its saved text").toBe(savedTextBeforeMove?.content);

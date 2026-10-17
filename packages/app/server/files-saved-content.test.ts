@@ -241,7 +241,7 @@ test("content search pages both views and refuses a cursor after side rows chang
 		organizationId: f.db.organizationId,
 		workspaceId: f.db.workspaceId,
 		userId: f.db.userId,
-		hasWorkspaceRead: true,
+		subject: { kind: "user" as const, userId: f.db.userId, plugin: null },
 		query: "needle",
 		numItems: 10,
 		cursor: null,

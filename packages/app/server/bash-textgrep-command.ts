@@ -271,8 +271,7 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
-					// Agent reads recheck their source and destination. Reserved trees have no file restrictions.
-					hasWorkspaceRead: true,
+					subject: { kind: "user", userId: pathResolution.ctxData.userId, plugin: null },
 					query: pattern,
 					numItems: TEXTGREP_RECURSIVE_PAGE_LIMIT,
 					cursor: null,

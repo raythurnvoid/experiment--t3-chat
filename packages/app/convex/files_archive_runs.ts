@@ -493,6 +493,7 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			organizationId: args.run.organizationId,
 			workspaceId: args.run.workspaceId,
 			writeContext: {
+				subject: { kind: "user", userId: args.userAuth.id, plugin: null },
 				writer: { kind: "user", userId: args.userAuth.id },
 				actorUserId: args.userAuth.id,
 				resourceScope: { kind: "workspace" },
@@ -726,6 +727,7 @@ async function db_can_replace(
 		organizationId: args.occupant.organizationId,
 		workspaceId: args.occupant.workspaceId,
 		writeContext: {
+			subject: { kind: "user", userId: args.userAuth.id, plugin: null },
 			writer: { kind: "user", userId: args.userAuth.id },
 			actorUserId: args.userAuth.id,
 			resourceScope: { kind: "workspace" },
@@ -2012,17 +2014,11 @@ export const get = query({
 			await Promise.all([...refusedNodeIds, ...archivedNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))
 		).flatMap((node) => (node && node.workspaceId === run.workspaceId ? [node] : []));
 		// Name an item only while the person may still read it.
-		const workspaceRead = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
 		const readableNodes = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
-			userId: userAuth.id,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
 			nodes: namedNodes,
-			hasWorkspaceRead: !workspaceRead._nay,
 		});
 		const nameByNodeId = new Map(readableNodes.map((node) => [node._id, node.name]));
 		const notArchived = run.refusedItems.map((refusedItem) => ({

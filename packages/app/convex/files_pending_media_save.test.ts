@@ -165,6 +165,7 @@ describe("Save ordinary rich-text media", () => {
 		});
 		expect(result?.run.unitCount, "the link joins the delete in one unit").toBe(1);
 		const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			subject: { kind: "user" as const, userId: f.scope.userId, plugin: null },
 			...f.scope,
 			path: "/document.md",
 			includePending: false,
@@ -257,6 +258,7 @@ describe("Save copied rich-text media", () => {
 				).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
 			} else expect((await save(f, copied))._nay, `a ${change} image never blocks Save`).toBeUndefined();
 			const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				subject: { kind: "user" as const, userId: f.scope.userId, plugin: null },
 				...f.scope,
 				path: "/copy.md",
 				includePending: false,

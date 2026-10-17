@@ -505,6 +505,7 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			userId: proposal.userId,
+			subject: { kind: "user", userId: proposal.userId, plugin: null },
 			overlayUserId: proposal.userId,
 			path: "/source.md",
 		});
@@ -555,6 +556,7 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			userId: proposal.userId,
+			subject: { kind: "user", userId: proposal.userId, plugin: null },
 			overlayUserId: proposal.userId,
 			path: "/target/source.md",
 		});
@@ -1252,6 +1254,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					visibilityUserId: db.userId,
+					subject: { kind: "user", userId: db.userId, plugin: null },
 					overlayUserId: db.userId,
 					folderPath,
 					mode: "children",
@@ -1390,6 +1393,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 					"unrelated drafts need no source reservation",
 				).toBeNull();
 			const metadata = await t.query(internal.files_metadata.get_index_values_by_path, {
+				subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 				...scope,
 				overlayUserId: db.userId,
 				path,
@@ -1407,6 +1411,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 			"the affected child follows the real folder switch",
 		).toBe(affectedPath);
 		const affectedMetadata = await t.query(internal.files_metadata.get_index_values_by_path, {
+			subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 			...scope,
 			overlayUserId: db.userId,
 			path: affectedPath,

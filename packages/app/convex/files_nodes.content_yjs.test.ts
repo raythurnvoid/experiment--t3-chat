@@ -1383,6 +1383,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 		...readScope,
 		userId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path,
 		mode: { kind: "full", maxBytes: files_get_utf8_byte_size(markdown) + 1000 },
 	});
@@ -1396,6 +1397,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	const lineRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 		...readScope,
 		userId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path,
 		mode: { kind: "lines", startLine: 1, maxLines: 5 },
 	});
@@ -1482,7 +1484,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	const search = await t.query(internal.files_nodes.text_search_files, {
 		...readScope,
 		userId: db.userId,
-		hasWorkspaceRead: true,
+		subject: { kind: "user" as const, userId: db.userId, plugin: null },
 		query: "externalsearchneedle",
 		numItems: 10,
 		cursor: null,
@@ -1493,6 +1495,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	const available = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 		...readScope,
 		userId: db.userId,
+		subject: { kind: "user", userId: db.userId, plugin: null },
 		path,
 	});
 	expect(available).not.toBeNull();
@@ -1658,6 +1661,7 @@ describe("non-collaborative files", () => {
 		const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			...readScope,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path,
 			mode: { kind: "full", maxBytes: files_get_utf8_byte_size(markdown) + 1000 },
 		});
@@ -1671,6 +1675,7 @@ describe("non-collaborative files", () => {
 		const overCap = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			...readScope,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path,
 			mode: { kind: "full", maxBytes: 4 },
 		});
@@ -1680,6 +1685,7 @@ describe("non-collaborative files", () => {
 		const lineRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			...readScope,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path,
 			mode: { kind: "lines", startLine: 1, maxLines: 3 },
 		});
@@ -1716,6 +1722,7 @@ describe("non-collaborative files", () => {
 		const state = await t.query(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
 			...readScope,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path,
 		});
 		expect(state).not.toBeNull();
@@ -1726,6 +1733,7 @@ describe("non-collaborative files", () => {
 		const available = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 			...readScope,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path,
 		});
 		expect(available).toMatchObject({ content: markdown });
@@ -1734,7 +1742,7 @@ describe("non-collaborative files", () => {
 		const search = await text_search_files_all_pages(t, {
 			...readScope,
 			userId: db.userId,
-			hasWorkspaceRead: true,
+			subject: { kind: "user" as const, userId: db.userId, plugin: null },
 			query: "quietneedle",
 			numItems: 10,
 			cursor: null,
@@ -1846,6 +1854,7 @@ describe("non-collaborative files", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path,
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
@@ -2004,6 +2013,7 @@ describe("non-collaborative files", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null },
 				path: "/guarded.md",
 				mode: { kind: "full", maxBytes: 100_000 },
 			});
@@ -2129,6 +2139,7 @@ describe("non-collaborative files", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/replacement-final-lock.md",
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
@@ -2192,6 +2203,7 @@ describe("non-collaborative files", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/restricted.md",
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
@@ -2332,6 +2344,7 @@ describe("non-collaborative files", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null },
 				path: "/round-trip.md",
 				mode: { kind: "full", maxBytes: 100_000 },
 			});
@@ -3103,6 +3116,7 @@ describe("non-collaborative files", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/gate.md",
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
@@ -3174,6 +3188,7 @@ describe("non-collaborative files", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/too-large.md",
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
@@ -3655,6 +3670,7 @@ describe("non-collaborative files", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
 			path: "/todo.txt",
 		});
 		expect(readResult?.content).toBe(versionText);

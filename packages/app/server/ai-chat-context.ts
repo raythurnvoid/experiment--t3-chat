@@ -32,7 +32,11 @@ async function read_file(args: {
 	const entry = await ctx.runQuery(internal.files_visible.internal_get_by_path, readArgs);
 	if (entry?.node.kind !== "file") return Result({ _yay: null });
 	const maxBytes = mode === "skill" ? ai_chat_skills_LIMITS.skill : ai_chat_skills_LIMITS.instruction;
-	const contentArgs = { ...readArgs, overlayUserId: context.source.userId };
+	const contentArgs = {
+		...readArgs,
+		subject: { kind: "user" as const, userId: context.source.userId, plugin: null },
+		overlayUserId: context.source.userId,
+	};
 	const read =
 		(await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
 			...contentArgs,

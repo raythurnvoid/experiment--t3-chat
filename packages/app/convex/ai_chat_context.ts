@@ -85,6 +85,7 @@ export const discover_sources = internalQuery({
 				organizationId,
 				workspaceId,
 				visibilityUserId: args.source.userId,
+				subject: { kind: "user", userId: args.source.userId, plugin: null },
 				overlayUserId: args.source.userId,
 				folderPath: "/.agents/skills",
 				mode: "children",

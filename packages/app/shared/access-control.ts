@@ -1,4 +1,5 @@
 import type { Doc, Id } from "../convex/_generated/dataModel";
+import type { access_control_Subject } from "../convex/access_control.ts";
 
 /** A role saved in the database: the name of a system role, or the id of a custom role. */
 export type access_control_RoleRef = Doc<"access_control_role_assignments">["role"];
@@ -237,6 +238,11 @@ export const access_control_FILE_SHARE_LEVEL_KEYS = Object.keys(
 
 /** Every permission any share level can hand out, so a caller can check them in one pass. */
 export const access_control_FILE_SHARE_PERMISSIONS = access_control_FILE_SHARE_LEVELS.manage.permissions;
+
+/** Only a person acting alone sees their own drafts. Accounts and plugins read saved files only. */
+export function access_control_subject_reads_drafts(subject: access_control_Subject) {
+	return subject.kind === "user" && subject.plugin === null;
+}
 
 /**
  * The level a set of granted permissions adds up to, or `null` when they add up to nothing.

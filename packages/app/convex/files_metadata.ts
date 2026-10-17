@@ -21,7 +21,9 @@ import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
+	access_control_subject_validator,
 } from "./access_control.ts";
+import { access_control_subject_reads_drafts } from "../shared/access-control.ts";
 import { files_nodes_db_get_tree_reader } from "./files_tree_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
@@ -1215,7 +1217,8 @@ const read_path_args_validator = v.object({
 	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 	userId: v.id("users"),
-	serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+	/** Who the access checks act as. `userId` only picks drafts. */
+	subject: access_control_subject_validator,
 	path: v.string(),
 	overlayUserId: v.optional(v.id("users")),
 });
@@ -1226,7 +1229,7 @@ async function db_get_read_entry_by_path(ctx: QueryCtx, args: Infer<typeof read_
 	if (authorized._nay) return null;
 	let entry: files_VisibleEntry | null;
 	if (
-		args.serviceAccountId === undefined &&
+		access_control_subject_reads_drafts(args.subject) &&
 		!organizations_is_global_organization_id(args.organizationId) &&
 		scope.kind === "workspace"
 	) {

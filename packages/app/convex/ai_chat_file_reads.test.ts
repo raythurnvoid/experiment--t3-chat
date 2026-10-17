@@ -117,6 +117,7 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 		organizationId: scope.organizationId,
 		workspaceId: scope.workspaceId,
 		visibilityUserId: scope.userId,
+		subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 		overlayUserId: scope.userId,
 		agentSource,
 	};
@@ -154,6 +155,7 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 					organizationId: scope.organizationId,
 					workspaceId: scope.workspaceId,
 					visibilityUserId: scope.userId,
+					subject: { kind: "user", userId: scope.userId, plugin: null },
 					agentSource,
 					folderPath: "/notes",
 					kind: "file",
@@ -168,6 +170,7 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 					organizationId: scope.organizationId,
 					workspaceId: scope.workspaceId,
 					visibilityUserId: scope.userId,
+					subject: { kind: "user", userId: scope.userId, plugin: null },
 					agentSource,
 					pathQuery: path,
 					...page,
@@ -178,6 +181,7 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 		read_file_content_from_chunks: {
 			read: () =>
 				f.t.query(internal.files_nodes.read_file_content_from_chunks, {
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
 					...scope,
 					path,
 					mode: { kind: "full", maxBytes: 1024 },
@@ -220,7 +224,13 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 				for (;;) {
 					const result: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await f.t.query(
 						internal.files_nodes.text_search_files,
-						{ ...scope, hasWorkspaceRead: true, query: "notebook", numItems: 20, cursor },
+						{
+							...scope,
+							subject: { kind: "user" as const, userId: scope.userId, plugin: null },
+							query: "notebook",
+							numItems: 20,
+							cursor,
+						},
 					);
 					items.push(...result.items);
 					if (result.isDone) return { items, isDone: true };
@@ -257,13 +267,22 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 			refused: null,
 		},
 		get_file_text_content_db_state_by_path: {
-			read: () => f.t.query(internal.files_nodes_content.get_file_text_content_db_state_by_path, { ...scope, path }),
+			read: () =>
+				f.t.query(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
+					...scope,
+					path,
+				}),
 			allowed: expect.objectContaining({ target, content: text }),
 			refused: null,
 		},
 		get_file_last_available_text_content_by_path: {
 			read: () =>
-				f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, { ...scope, path }),
+				f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
+					...scope,
+					path,
+				}),
 			allowed: expect.objectContaining({ target, content: text }),
 			refused: null,
 		},
@@ -284,12 +303,22 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 			refused: null,
 		},
 		metadata_get_read_source_by_path: {
-			read: () => f.t.query(internal.files_metadata.get_read_source_by_path, { ...scope, path }),
+			read: () =>
+				f.t.query(internal.files_metadata.get_read_source_by_path, {
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
+					...scope,
+					path,
+				}),
 			allowed: expect.objectContaining({ target, metadata: [{ key: "topic", value: "notebook" }] }),
 			refused: null,
 		},
 		metadata_get_index_values_by_path: {
-			read: () => f.t.query(internal.files_metadata.get_index_values_by_path, { ...scope, path }),
+			read: () =>
+				f.t.query(internal.files_metadata.get_index_values_by_path, {
+					subject: { kind: "user" as const, userId: scope.userId, plugin: null },
+					...scope,
+					path,
+				}),
 			allowed: expect.objectContaining({ target, fields: ["metadata.topic"] }),
 			refused: null,
 		},
