@@ -974,14 +974,18 @@ describe("paged folder moves and scope jobs", () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		// `child-0` below keeps its own scope, so the step writes the other children. One more than
-		// a step writes leaves work for the job.
-		const childCount = files_subtree_ops_STEP_MAX_NODES + 2;
+		// `child-0` below keeps its own scope, but the step still writes its new parent scope. One more
+		// child than a step writes leaves work for the job.
+		const childCount = files_subtree_ops_STEP_MAX_NODES + 1;
 		const { source } = await seed_wide_source({ t, db, childCount, metadataPerNode: 0 });
 		// A restricted child keeps its own scope. The walk still goes inside it.
 		const nested = await t.run(async (ctx) => {
 			const node = (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/source/child-0")!;
-			await ctx.db.patch("files_nodes", node._id, { isRestrictedScopeRoot: true, restrictedScopeNodeId: node._id });
+			await ctx.db.patch("files_nodes", node._id, {
+				isRestrictedScopeRoot: true,
+				restrictedScopeNodeId: node._id,
+				parentScopeNodeId: null,
+			});
 			return node;
 		});
 		const drain = async () => {
@@ -1015,6 +1019,7 @@ describe("paged folder moves and scope jobs", () => {
 		expect(restricted.size).toBe(childCount);
 		expect([...restricted].filter(([name, scope]) => name !== "child-0" && scope !== source._id)).toEqual([]);
 		expect(restricted.get("child-0")).toBe(nested._id);
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", nested._id)))?.parentScopeNodeId).toBe(source._id);
 
 		expect(
 			(await asUser.mutation(api.files_sharing.unrestrict_node, { membershipId: db.membershipId, nodeId: source._id }))
@@ -1024,6 +1029,7 @@ describe("paged folder moves and scope jobs", () => {
 		const open = await scopes();
 		expect([...open].filter(([name, scope]) => name !== "child-0" && scope !== null)).toEqual([]);
 		expect(open.get("child-0")).toBe(nested._id);
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", nested._id)))?.parentScopeNodeId).toBe(null);
 	});
 
 	// Each pair below fills one budget to its cap, then crosses that one only. The success case

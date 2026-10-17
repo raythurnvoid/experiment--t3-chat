@@ -8,6 +8,7 @@ import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { convex_error } from "../server/convex-utils.ts";
+import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_policy_db.ts";
 
 // The schema lets a migration read through an index with `customRange`.
 const app_migrations = new Migrations(components.migrations, {
@@ -181,6 +182,184 @@ export const audit_review_fact_job_count = internalQuery({
 			countedJobs: scopeStatus === "allowed" ? await db_count_review_fact_jobs(ctx.db, args) : null,
 			scopeStatus,
 		};
+	},
+});
+
+// One-time backfill. Restricted roots made before `parentScopeNodeId` existed have no value. Remove
+// these temporary tools and tests after the run and a complete audit.
+export const backfill_files_nodes_parent_scope = app_migrations.define({
+	table: "files_nodes",
+	// A node doc is small, and only a root reads its parent. Most nodes need no write.
+	batchSize: 100,
+	migrateOne: async (ctx, node) => {
+		if (!node.isRestrictedScopeRoot || node.parentScopeNodeId !== undefined) return;
+		// A Move keeps its own copies of a held node. Run when no Move is live; a held root is skipped.
+		if (node.moveCohortId) {
+			console.warn("Skipped a restricted folder held by a Move in the parent scope backfill", { id: node._id });
+			return;
+		}
+		// An open parent gets an explicit null, so "missing" keeps meaning "not a boundary".
+		return { parentScopeNodeId: await files_nodes_db_resolve_parent_restricted_scope(ctx, node) };
+	},
+});
+
+export const run_backfill_files_nodes_parent_scope = app_migrations.runner(
+	internal.migrations.backfill_files_nodes_parent_scope,
+);
+
+export const preview_files_nodes_parent_scope = internalMutation({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const result: MigrationResult = await ctx.runMutation(internal.migrations.backfill_files_nodes_parent_scope, {
+			cursor: args.cursor,
+			batchSize: 100,
+			dryRun: false,
+			oneBatchOnly: true,
+		});
+		// Throw to roll back the nested patches.
+		throw convex_error({
+			message: "Parent scope backfill preview rolled back.",
+			data: { processed: result.processed, continueCursor: result.continueCursor, isDone: result.isDone },
+		});
+	},
+});
+
+const PARENT_SCOPE_AUDIT_OPS_MAX = 64;
+
+/**
+ * One workspace per page. Check before the run that it has no live Move and no scope op: a Move
+ * hides its nodes from the backfill, and an op that ran before the deploy never removes a boundary.
+ */
+export const audit_files_nodes_parent_scope_workspace_page = internalQuery({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: paginationResultValidator(
+		v.object({
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			liveMoveCohortId: v.union(v.id("files_move_cohorts"), v.null()),
+			// Capped at PARENT_SCOPE_AUDIT_OPS_MAX + 1.
+			scopeOpCount: v.number(),
+			scopeStatus: v.union(v.literal("allowed"), v.literal("protected"), v.literal("invalid_tenant")),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("organizations_workspaces")
+			.withIndex("by_creation_time")
+			.paginate({ cursor: args.cursor, numItems: 1 });
+		return {
+			...page,
+			page: await Promise.all(
+				page.page.map(async (workspace) => {
+					const scope = { organizationId: workspace.organizationId, workspaceId: workspace._id };
+					const [slot, scopeOps, scopeStatus] = await Promise.all([
+						ctx.db
+							.query("files_move_workspace_slots")
+							.withIndex("by_workspace", (q) =>
+								q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId),
+							)
+							.unique(),
+						ctx.db
+							.query("files_subtree_ops")
+							.withIndex("by_organization_workspace_kind", (q) =>
+								q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("kind", "scope"),
+							)
+							.take(PARENT_SCOPE_AUDIT_OPS_MAX + 1),
+						db_scope_status(ctx.db, scope),
+					]);
+					return {
+						...scope,
+						liveMoveCohortId: slot?.cohortId ?? null,
+						scopeOpCount: scopeOps.length,
+						scopeStatus,
+					};
+				}),
+			),
+		};
+	},
+});
+
+const parent_scope_audit_problem_validator = v.object({
+	nodeId: v.id("files_nodes"),
+	problem: v.union(
+		v.literal("missing"),
+		v.literal("wrong_parent_scope"),
+		v.literal("former_root_without_op"),
+		v.literal("former_root_with_ended_op"),
+	),
+});
+
+/**
+ * Pass 1 of one workspace: every restricted root stores its parent's scope, and an explicit null
+ * for an open parent. A page lists only problems, so an empty page can still continue.
+ */
+export const audit_files_nodes_parent_scope_roots = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: paginationResultValidator(parent_scope_audit_problem_validator),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_isRestrictedScopeRoot_treePath", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("isRestrictedScopeRoot", true),
+			)
+			.paginate({ cursor: args.cursor, numItems: 50 });
+		const checked = await Promise.all(
+			page.page.map(async (node) => {
+				if (node.parentScopeNodeId === undefined) return { nodeId: node._id, problem: "missing" as const };
+				const expected =
+					node.parentId === "root"
+						? null
+						: ((await ctx.db.get("files_nodes", node.parentId))?.restrictedScopeNodeId ?? null);
+				return node.parentScopeNodeId === expected
+					? null
+					: { nodeId: node._id, problem: "wrong_parent_scope" as const };
+			}),
+		);
+		return { ...page, page: checked.filter((problem) => problem !== null) };
+	},
+});
+
+/**
+ * Pass 2 of one workspace, on the boundary index: a node that is not a restricted root keeps the
+ * field only while its `scopeOpId` points at a scope op that still exists.
+ */
+export const audit_files_nodes_parent_scope_boundaries = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: paginationResultValidator(parent_scope_audit_problem_validator),
+	handler: async (ctx, args) => {
+		// `undefined` sorts before `null`, so this range is every node that has the field.
+		const page = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_org_ws_parentScope_archive_treePath", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("moveCohortId", undefined)
+					.gte("parentScopeNodeId", null),
+			)
+			.paginate({ cursor: args.cursor, numItems: 50 });
+		const checked = await Promise.all(
+			page.page.map(async (node) => {
+				if (node.isRestrictedScopeRoot) return null;
+				if (!node.scopeOpId) return { nodeId: node._id, problem: "former_root_without_op" as const };
+				const op = await ctx.db.get("files_subtree_ops", node.scopeOpId);
+				return op?.kind === "scope" ? null : { nodeId: node._id, problem: "former_root_with_ended_op" as const };
+			}),
+		);
+		return { ...page, page: checked.filter((problem) => problem !== null) };
 	},
 });
 

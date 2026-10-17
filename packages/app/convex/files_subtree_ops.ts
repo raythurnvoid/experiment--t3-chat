@@ -406,6 +406,10 @@ export async function files_subtree_ops_db_start_rebuild(
 				: { ...shared, kind: "scope" },
 		now: args.now,
 	});
+	// Each root remembers its newest scope op. Only that op's end may stop it being a boundary.
+	if (args.kind === "scope") {
+		for (const root of folders) await ctx.db.patch("files_nodes", root.node._id, { scopeOpId: opId });
+	}
 	await files_subtree_ops_db_enqueue_nodes(ctx, {
 		opId,
 		nodes: folders.map((root) => ({ nodeId: root.node._id, nodeDone: true })),

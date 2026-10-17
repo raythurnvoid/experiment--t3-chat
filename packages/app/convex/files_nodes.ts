@@ -557,6 +557,11 @@ export async function files_nodes_db_set_restricted_scope(args: {
 	}
 
 	const isRestrictedScopeRoot = args.restrictedScopeNodeId === args.nodeId;
+	// A restricted root is a boundary of its parent's area. A folder that stops being one stays a
+	// boundary until its scope op ends, so a recursive read still finds the items the op has not
+	// reached. A file has no op, so it stops being one at once.
+	const boundary = (parentScopeNodeId: Id<"files_nodes"> | null) =>
+		isRestrictedScopeRoot ? { parentScopeNodeId } : node?.kind === "file" ? { parentScopeNodeId: undefined } : {};
 	if (
 		node &&
 		(node.moveCohortId ||
@@ -574,24 +579,31 @@ export async function files_nodes_db_set_restricted_scope(args: {
 				)
 				.unique();
 			if (!place) continue;
-			let scopeNodeId = isRestrictedScopeRoot ? node._id : null;
+			let parentScopeNodeId: Id<"files_nodes"> | null = null;
 			let parentId = place.parentId;
-			while (!scopeNodeId && parentId !== files_ROOT_ID) {
+			while (!parentScopeNodeId && parentId !== files_ROOT_ID) {
 				const parent = await files_saved_placement_db_get_node(ctx.db, parentId, fixedView);
 				if (!parent) break;
-				if (parent.isRestrictedScopeRoot) scopeNodeId = parent._id;
+				if (parent.isRestrictedScopeRoot) parentScopeNodeId = parent._id;
 				parentId = parent.parentId;
 			}
 			await ctx.db.patch("files_saved_places", place._id, {
-				restrictedScopeNodeId: scopeNodeId,
+				restrictedScopeNodeId: isRestrictedScopeRoot ? node._id : parentScopeNodeId,
 				isRestrictedScopeRoot,
+				...boundary(parentScopeNodeId),
 			});
 			await files_metadata_db_patch_file_scope(ctx, { ...args, isRestrictedScopeRoot, fixedView });
 		}
 	}
+	const physical = await ctx.db.get("files_nodes", args.nodeId);
 	await ctx.db.patch("files_nodes", args.nodeId, {
 		restrictedScopeNodeId: args.restrictedScopeNodeId,
 		isRestrictedScopeRoot,
+		...boundary(
+			isRestrictedScopeRoot && physical
+				? await files_nodes_db_resolve_parent_restricted_scope(ctx, { parentId: physical.parentId })
+				: null,
+		),
 	});
 	await files_metadata_db_patch_file_scope(ctx, {
 		organizationId: args.organizationId,
@@ -3426,18 +3438,22 @@ export async function files_nodes_db_rebuild_node(
 ) {
 	const { node, parent } = args;
 	const path = path_join(parent.path, node.name);
+	// A boundary, live or former, points at its parent's area.
+	const isBoundary = node.isRestrictedScopeRoot || node.parentScopeNodeId !== undefined;
 	const fields = {
 		path,
 		treePath: files_derive_tree_path_for_file_node(path, node.kind),
 		pathDepth: files_path_depth(path),
 		// A child that is its own restricted folder keeps its scope.
 		restrictedScopeNodeId: node.restrictedScopeNodeId === node._id ? node._id : parent.restrictedScopeNodeId,
+		...(isBoundary ? { parentScopeNodeId: parent.restrictedScopeNodeId } : {}),
 	};
 	if (
 		node.path === fields.path &&
 		node.treePath === fields.treePath &&
 		node.pathDepth === fields.pathDepth &&
-		node.restrictedScopeNodeId === fields.restrictedScopeNodeId
+		node.restrictedScopeNodeId === fields.restrictedScopeNodeId &&
+		(!isBoundary || node.parentScopeNodeId === parent.restrictedScopeNodeId)
 	) {
 		return false;
 	}
@@ -3539,6 +3555,10 @@ export async function files_nodes_db_restore_node(
 		pathDepth: files_path_depth(path),
 		lowercaseExtension: files_lowercase_extension(path, args.node.kind),
 		restrictedScopeNodeId,
+		// A boundary, live or former, points at the area where it lands.
+		...(args.node.isRestrictedScopeRoot || args.node.parentScopeNodeId !== undefined
+			? { parentScopeNodeId: args.parent?.restrictedScopeNodeId ?? null }
+			: {}),
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});

@@ -551,6 +551,8 @@ const files_saved_placement_fields = {
 	archivedPathLength: v.optional(v.number()),
 	restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	isRestrictedScopeRoot: v.boolean(),
+	// Same as the `files_nodes` field.
+	parentScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 	updatedAt: v.number(),
 	updatedBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 	ancestor1: v.optional(v.id("files_nodes")),
@@ -2894,6 +2896,16 @@ const app_convex_schema = defineSchema({
 			"nodeCreationTime",
 			"nodeId",
 		])
+		// The Move view of `files_nodes.by_org_ws_parentScope_archive_treePath`.
+		.index("by_view_parentScope_archive_tree", [
+			"cohortId",
+			"view",
+			"parentScopeNodeId",
+			"archiveOperationId",
+			"treePath",
+			"nodeCreationTime",
+			"nodeId",
+		])
 		.index("by_view_archive_updated", [
 			"cohortId",
 			"view",
@@ -4922,6 +4934,18 @@ const app_convex_schema = defineSchema({
 		 * `restrictedScopeNodeId`, on this node and on its committed metadata field docs.
 		 */
 		isRestrictedScopeRoot: v.boolean(),
+		/**
+		 * Set only on a boundary between two access areas: a restricted root, or a folder that just
+		 * stopped being one while its scope op still runs (`scopeOpId`). It holds the restricted scope of
+		 * the parent, or null for an open parent. Missing means the node is not a boundary. A root in an
+		 * open folder stores an explicit null, because an index tells missing and null apart.
+		 */
+		parentScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+		/**
+		 * The newest scope op started with this node as a root. Missing when none runs. The op's end
+		 * removes `parentScopeNodeId` from a former root only while this still names that op.
+		 */
+		scopeOpId: v.optional(v.id("files_subtree_ops")),
 		writePolicy: files_nodes_write_policy_validator,
 		/**
 		 * Starting protection copied once to brand-new files and subfolders.
@@ -5098,6 +5122,15 @@ const app_convex_schema = defineSchema({
 			"workspaceId",
 			"moveCohortId",
 			"isRestrictedScopeRoot",
+			"treePath",
+		])
+		// A recursive read finds the restricted folders directly inside one restricted area.
+		.index("by_org_ws_parentScope_archive_treePath", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"parentScopeNodeId",
+			"archiveOperationId",
 			"treePath",
 		])
 		.index("by_organization_workspace_archiveOperation_treePath", [

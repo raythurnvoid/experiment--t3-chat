@@ -191,6 +191,16 @@ export async function files_saved_stream_db_create(
 				: db.query("files_nodes").withIndex("by_organization_workspace_isRestrictedScopeRoot_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
+		by_parent_scope_archive_tree: (
+			range: (q: SavedRange<["parentScopeNodeId", "archiveOperationId", "treePath"]>) => IndexRange,
+		) =>
+			fixedView
+				? db.query("files_saved_places").withIndex("by_view_parentScope_archive_tree", (q) =>
+						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
+					)
+				: db.query("files_nodes").withIndex("by_org_ws_parentScope_archive_treePath", (q) =>
+						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
+					),
 		by_archive_tree: (range: (q: SavedRange<["archiveOperationId", "treePath"]>) => IndexRange) =>
 			fixedView
 				? db.query("files_saved_places").withIndex("by_view_archive_tree", (q) =>

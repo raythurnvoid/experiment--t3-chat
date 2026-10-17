@@ -564,6 +564,55 @@ describe("Move write reservations", () => {
 		]);
 	});
 
+	test("restricting a folder that a Move holds stores the parent scope in both views", async () => {
+		const f = await fixture();
+		await f.stageNode(f.parentId);
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.db.membershipId,
+				nodeId: f.parentId,
+			}),
+		).toEqual({ _yay: null });
+		const places = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_saved_places")
+				.withIndex("by_cohort_view_node", (q) => q.eq("cohortId", f.cohortId))
+				.filter((q) => q.eq(q.field("nodeId"), f.parentId))
+				.collect(),
+		);
+		expect(places.map((place) => [place.view, place.parentScopeNodeId]).sort()).toEqual([
+			["after", null],
+			["before", null],
+		]);
+		// The scope op waits for the Move, so the held folder keeps its op id.
+		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", f.parentId));
+		expect(node?.parentScopeNodeId).toBe(null);
+		expect(node?.scopeOpId).toBeDefined();
+	});
+
+	test("restricting a file that a Move moves stores each view's parent scope", async () => {
+		const f = await fixture();
+		for (const nodeId of [f.parentId, f.nodeId])
+			expect(
+				await f.asUser.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId,
+				}),
+			).toEqual({ _yay: null });
+		const places = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_saved_places")
+				.withIndex("by_cohort_view_node", (q) => q.eq("cohortId", f.cohortId))
+				.collect(),
+		);
+		// Each view uses its own parent: the old one is open, the new one is the restricted target.
+		expect(places.map((place) => [place.view, place.parentScopeNodeId]).sort()).toEqual([
+			["after", f.parentId],
+			["before", null],
+		]);
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.parentScopeNodeId).toBe(null);
+	});
+
 	test("a native accepted content job pauses before a failure marker and keeps its author", async () => {
 		const f = await fixture();
 		const slot = await f.t.run((ctx) =>

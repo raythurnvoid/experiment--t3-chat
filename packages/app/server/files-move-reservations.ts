@@ -507,7 +507,14 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 			if (patch && state.securityNodes.has(nodeId as Id<"files_nodes">)) {
 				const fields =
 					table === "files_nodes"
-						? ["writePolicy", "newChildWritePolicy", "restrictedScopeNodeId", "isRestrictedScopeRoot"]
+						? [
+								"writePolicy",
+								"newChildWritePolicy",
+								"restrictedScopeNodeId",
+								"isRestrictedScopeRoot",
+								"parentScopeNodeId",
+								"scopeOpId",
+							]
 						: table === "files_metadata_docs"
 							? ["isRestrictedScopeRoot"]
 							: [];

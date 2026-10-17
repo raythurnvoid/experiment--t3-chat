@@ -15,6 +15,7 @@ function placement_header(node: Doc<"files_nodes">) {
 		writePolicy: _policy,
 		newChildWritePolicy: _childPolicy,
 		moveCohortId: _marker,
+		scopeOpId: _scopeOp,
 		...header
 	} = node;
 	return header;

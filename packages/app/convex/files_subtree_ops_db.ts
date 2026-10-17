@@ -182,6 +182,20 @@ export async function files_subtree_ops_db_delete(
 	const walk = await files_subtree_ops_db_require_walk(ctx, args.opId);
 	await ctx.db.delete("files_subtree_op_walks", walk._id);
 
+	// A folder that stopped being restricted is a boundary only until its own newest scope op ends. A
+	// newer op on the same root does this at its own end.
+	const op = await ctx.db.get("files_subtree_ops", args.opId);
+	if (op?.kind === "scope") {
+		for (const nodeId of op.rootNodeIds) {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			if (node?.scopeOpId !== args.opId) continue;
+			await ctx.db.patch("files_nodes", nodeId, {
+				scopeOpId: undefined,
+				...(node.isRestrictedScopeRoot ? {} : { parentScopeNodeId: undefined }),
+			});
+		}
+	}
+
 	// An op that ended early can leave many nodes in its queue. Delete the rest in a later mutation.
 	const rows = await ctx.db
 		.query("files_subtree_op_nodes")

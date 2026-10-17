@@ -120,6 +120,7 @@ function placement_header(node: Doc<"files_nodes">) {
 		writePolicy: _writePolicy,
 		newChildWritePolicy: _newChildWritePolicy,
 		moveCohortId: _moveCohortId,
+		scopeOpId: _scopeOpId,
 		...header
 	} = node;
 	return header;
@@ -139,7 +140,12 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 		...header
 	} = place;
 	// Explicit optional fields clear values from the other view.
-	return { ...header, archivedPathLength: place.archivedPathLength, ...files_ancestor_fields(files_ancestor_ids(place)) };
+	return {
+		...header,
+		archivedPathLength: place.archivedPathLength,
+		parentScopeNodeId: place.parentScopeNodeId,
+		...files_ancestor_fields(files_ancestor_ids(place)),
+	};
 }
 
 async function db_read_membership(
@@ -1492,6 +1498,14 @@ async function db_headers(
 		lowercaseExtension: files_lowercase_extension(path, physical.kind),
 		restrictedScopeNodeId: scope,
 		isRestrictedScopeRoot: scope === physical._id,
+		// A restricted folder is a boundary of the area it lands in. A moved folder whose unrestrict op
+		// still runs is not one at the new place. A destination folder does not move and keeps its value.
+		parentScopeNodeId:
+			scope === physical._id
+				? (parent?.restrictedScopeNodeId ?? null)
+				: record.role === "anchor"
+					? old?.parentScopeNodeId
+					: undefined,
 		archiveOperationId: afterArchive,
 		// Already archived nodes keep their allowance even if the path changes.
 		archivedPathLength:

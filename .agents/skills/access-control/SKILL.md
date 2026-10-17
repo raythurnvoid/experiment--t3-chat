@@ -1119,6 +1119,13 @@ Changes in C2 (slice S9: replaced by the walk), see "Locked, not hidden".
 hidden row only to drop it. Rows are split by their stored `restrictedScopeNodeId`: open content
 (null) and one partition per restricted folder. No list reads it yet.
 
+- A partition boundary is a restricted root. It stores `parentScopeNodeId`, the scope of its parent
+  (`null` for an open parent), on the node and on Move places. Index:
+  `files_nodes.by_org_ws_parentScope_archive_treePath`. A root's `scopeOpId` names its newest scope
+  op, and that op's end clears it. A folder that stops being restricted keeps `parentScopeNodeId`
+  until that end, so only the newest op removes it. A file has no op, so it loses the field at once.
+  A Move of a former root drops it at the new place. No read uses them yet.
+
 - `files_readable_scopes_db_reader` takes a `subject` and is the one flat-mode decision. The owner
   as a person, plugin volumes and GLOBAL reserved workspaces read flat with `filter: false`: every
   row is readable. A plugin subject reads flat with `filter: true`: the per-row filter checks every

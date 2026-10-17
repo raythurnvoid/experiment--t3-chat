@@ -399,6 +399,7 @@ async function db_insert_node(
 		: await files_nodes_db_resolve_parent_restricted_scope(ctx, {
 				parentId: args.parentId,
 			});
+	// A new node is never a restricted root, so it gets no `parentScopeNodeId` or `scopeOpId`.
 
 	// Copying the default is an ordinary creation step. It needs no policy-management right.
 	const parentDefault = args.parent
