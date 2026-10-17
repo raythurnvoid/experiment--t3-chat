@@ -12,6 +12,7 @@ import {
 	bash_ABORT_REASON_STOPPED,
 	bash_COMMAND_EXIT_STOPPED,
 	bash_COMMAND_EXIT_TIMED_OUT,
+	bash_DbFilesPermissionDeniedError,
 	bash_resolve_db_files_shell_path,
 	bash_resolve_path,
 	bash_parse_cp_mv_operands,
@@ -137,7 +138,17 @@ export async function bash_transfer_command_prepare(args: {
 
 	const sources: files_PendingTarget[] = [];
 	for (const { source, root } of args.resolveSources === false ? [] : resolvedSources) {
-		const entry = await root.fs.getEntry(root.dbFilesPath!);
+		let entry;
+		try {
+			entry = await root.fs.getEntry(root.dbFilesPath!);
+		} catch (error) {
+			if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+			return fail(
+				command === "cp"
+					? `cannot open '${source.path}' for reading: Permission denied`
+					: `cannot move '${source.path}': Permission denied`,
+			);
+		}
 		if (!entry?.target || entry.target.kind === "root") return fail(`source '${source.path}' is not available`);
 		if (entry.preparing) return fail(`draft '${source.path}' is still preparing`);
 		if (source.requiresFolder && entry.kind !== "folder") return fail(`'${source.path}' is not a directory`);
@@ -145,7 +156,15 @@ export async function bash_transfer_command_prepare(args: {
 		sources.push(entry.target);
 	}
 
-	const destination = await destinationRoot.fs.getEntry(destinationPath);
+	// A locked destination, or a locked folder or file on its way, cannot be written.
+	const lockedDestination = () => fail(`cannot access '${parsed.destination.path}': Permission denied`);
+	let destination;
+	try {
+		destination = await destinationRoot.fs.getEntry(destinationPath);
+	} catch (error) {
+		if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+		return lockedDestination();
+	}
 	if (destination?.preparing) return fail("the destination draft is still preparing");
 
 	if (parsed.destination.requiresFolder && destination?.kind !== "folder")
@@ -167,13 +186,19 @@ export async function bash_transfer_command_prepare(args: {
 		targetName = path_name_of(destinationPath);
 		targetPath = `/${path_extract_segments_from(destinationPath).slice(0, -1).join("/")}`;
 
-		let parent = await destinationRoot.fs.getEntry(targetPath);
-		// The transfer start refuses more than 32 missing parents. Stop the walk at that count.
-		// The check below then refuses this command with the destination message.
-		while (!parent && command === "cp" && targetPath !== "/" && missingParentNames.length < 32) {
-			missingParentNames.unshift(path_name_of(targetPath));
-			targetPath = `/${path_extract_segments_from(targetPath).slice(0, -1).join("/")}`;
+		let parent;
+		try {
 			parent = await destinationRoot.fs.getEntry(targetPath);
+			// The transfer start refuses more than 32 missing parents. Stop the walk at that count.
+			// The check below then refuses this command with the destination message.
+			while (!parent && command === "cp" && targetPath !== "/" && missingParentNames.length < 32) {
+				missingParentNames.unshift(path_name_of(targetPath));
+				targetPath = `/${path_extract_segments_from(targetPath).slice(0, -1).join("/")}`;
+				parent = await destinationRoot.fs.getEntry(targetPath);
+			}
+		} catch (error) {
+			if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+			return lockedDestination();
 		}
 
 		if (parent?.kind !== "folder" || !parent.target) return fail("the destination parent is not a directory");

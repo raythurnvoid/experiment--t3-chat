@@ -657,7 +657,7 @@ function stream_done(root: files_PendingParent | null) {
  * `agentSource`, so the gate does not rely on it.
  *
  * Also resolves the listing root. Returns null when the caller may not read here or the root is not
- * a folder.
+ * a folder, and a `permission_denied` nay when the root is a locked folder.
  */
 async function db_stream_open(ctx: QueryCtx, args: StreamOpenArgs & { readLimit?: number }) {
 	const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
@@ -703,6 +703,9 @@ async function db_stream_open(ctx: QueryCtx, args: StreamOpenArgs & { readLimit?
 		if (node?.kind !== "folder") return Result({ _yay: null });
 		root = { parent: { kind: "saved", id: node._id }, savedNode: node, path: node.path };
 	}
+	// A folder the subject cannot open is locked, not empty, so the caller can say "Permission denied".
+	if (root.savedNode && !(await db_stream_saved_access(ctx, args, reader, [root.savedNode])(root.savedNode)))
+		return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 
 	return Result({
 		_yay: { reader, tenant, root, saved, treePath: files_derive_tree_path_for_file_node(root.path, "folder") },

@@ -688,8 +688,9 @@ describe("bash_run_command", () => {
 				if (door === "readFile") expect(await fs.readFile("/docs/readme.md")).toBe(readme_seed_content);
 				else expect(await fs.getEntry("/docs/readme.md")).toMatchObject({ target: { kind: "saved", id: nodeId } });
 				await revoke();
-				if (door === "readFile") await expect(fs.readFile("/docs/readme.md")).rejects.toThrow("ENOENT");
-				else expect(await fs.getEntry("/docs/readme.md")).toBeNull();
+				// The file is still there but locked now, so both say "permission denied", not "missing".
+				if (door === "readFile") await expect(fs.readFile("/docs/readme.md")).rejects.toThrow("EACCES");
+				else await expect(fs.getEntry("/docs/readme.md")).rejects.toMatchObject({ code: "EACCES" });
 			}
 			expect((await t.run((ctx) => ctx.db.get("organizations_workspaces_users", member.membershipId)))?.active).toBe(
 				true,

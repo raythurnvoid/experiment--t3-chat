@@ -331,7 +331,9 @@ describe("bash_run_command", () => {
 						? `printf changed > ${test_db_files_mount}/destination/skill.md`
 						: `cp ${test_db_files_mount}/templates/skill.md ${test_db_files_mount}/destination${door === "cp file" ? "/skill.md" : ""}`;
 			const refused = await runner.run({ command });
-			expect(refused.metadata.exitCode).not.toBe(0);
+			// The locked folder exists, so `mkdir -p` has nothing to do, like on any existing folder.
+			if (door === "mkdir") expect(refused.metadata.exitCode).toBe(0);
+			else expect(refused.metadata.exitCode).not.toBe(0);
 			expect(await list_pending_updates(runner)).toEqual([]);
 			expect(await read_committed_text(owner, literalId)).toBe("Hidden legacy text\n");
 			expect(await read_committed_text(owner, canonicalId)).toBe("Visible sibling\n");

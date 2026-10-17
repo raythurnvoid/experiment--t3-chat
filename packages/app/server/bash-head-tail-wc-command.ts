@@ -13,6 +13,8 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import { bash_sed_command_build_next_page_hint } from "./bash-sed-command.ts";
 import {
 	bash_DbFilesContentUnavailableError,
+	bash_DbFilesPermissionDeniedError,
+	bash_null_if_permission_denied,
 	bash_build_unreadable_file_advisory,
 	bash_create_glob_syntax_unsupported_message,
 	bash_enforce_reader_operand_cap,
@@ -210,7 +212,8 @@ async function find_oversized_file_operand(args: {
 		const pathResolution = bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, file), dbFilesRoots);
 		if (pathResolution.dbFilesPath == null) continue;
 
-		const dbFilesDoc = await pathResolution.fs.getEntry(pathResolution.dbFilesPath);
+		// A locked operand has no size here; the read below reports it.
+		const dbFilesDoc = await bash_null_if_permission_denied(pathResolution.fs.getEntry(pathResolution.dbFilesPath));
 		if (dbFilesDoc == null) continue;
 
 		const size: number | null = await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc });
@@ -305,7 +308,15 @@ export function bash_head_tail_wc_command_create(args: {
 					overlayUserId: pathResolution.fs.overlayUserId,
 				})) as files_nodes_read_file_content_stats_Result;
 				if (!stats) {
-					const dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
+					let dbFilesDoc;
+					try {
+						dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
+					} catch (error) {
+						if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+						stderr += `wc: ${file}: Permission denied\n`;
+						exitCode = bash_COMMAND_EXIT_FAILURE;
+						continue;
+					}
 
 					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 						stderr += `wc: ${file}: Is a directory\n`;
@@ -572,7 +583,17 @@ export function bash_head_tail_wc_command_create(args: {
 						return { stdout, stderr: "", exitCode: 0 };
 					}
 
-					const dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
+					let dbFilesDoc;
+					try {
+						dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
+					} catch (error) {
+						if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+						return {
+							stdout: "",
+							stderr: `${command}: ${file}: Permission denied\n`,
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					}
 
 					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 						return {
@@ -616,6 +637,13 @@ export function bash_head_tail_wc_command_create(args: {
 			try {
 				await commandCtx.fs.readFile(resolvedPath);
 			} catch (error) {
+				if (error instanceof bash_DbFilesPermissionDeniedError) {
+					return {
+						stdout: "",
+						stderr: `${command}: ${file}: Permission denied\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
 				if (error instanceof bash_DbFilesContentUnavailableError) {
 					return {
 						stdout: "",

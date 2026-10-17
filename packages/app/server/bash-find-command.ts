@@ -9,6 +9,7 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_parse_content_type_prefix } from "../shared/files.ts";
 import {
 	bash_APP_MOUNT_PATH,
+	bash_DbFilesPermissionDeniedError,
 	bash_clamp_listing_page_limit,
 	bash_create_glob_syntax_unsupported_message,
 	bash_cursor_id_create,
@@ -666,7 +667,14 @@ export async function bash_find_type_render(args: {
 	limit: number;
 }) {
 	if (args.result._nay)
-		return { stdout: "", stderr: `find: ${args.result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+		return {
+			stdout: "",
+			stderr:
+				args.result._nay.name === "permission_denied"
+					? `find: '${args.shellPrefix}': Permission denied\n`
+					: `find: ${args.result._nay.message}\n`,
+			exitCode: bash_COMMAND_EXIT_FAILURE,
+		};
 	const page = args.result._yay;
 	const next = async () => {
 		const cursor = await bash_cursor_id_create(args.ctx, JSON.stringify({ queryId: page.queryId, step: page.step }));
@@ -1311,7 +1319,20 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			});
 		}
 
-		const entry = target.dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(target.dbFilesPath);
+		// A locked root shows like GNU find shows it: a locked file prints, a locked folder says
+		// "Permission denied" when the listing below opens it.
+		let entry;
+		try {
+			entry =
+				target.dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(target.dbFilesPath, { allowLocked: true });
+		} catch (error) {
+			if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+			return {
+				stdout: "",
+				stderr: `find: '${target.absoluteShellPath}': Permission denied\n`,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
+			};
+		}
 
 		if (target.dbFilesPath !== "/" && !entry) {
 			return {
@@ -1448,7 +1469,14 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 							order: "asc",
 						}));
 		if (result._nay)
-			return { stdout: "", stderr: `find: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+			return {
+				stdout: "",
+				stderr:
+					result._nay.name === "permission_denied"
+						? `find: '${target.absoluteShellPath}': Permission denied\n`
+						: `find: ${result._nay.message}\n`,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
+			};
 		const lines = result._yay.items.map(
 			(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 		);

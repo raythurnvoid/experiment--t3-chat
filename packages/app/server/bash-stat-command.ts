@@ -3,6 +3,8 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_create_glob_syntax_unsupported_message,
+	bash_DbFilesPermissionDeniedError,
+	bash_null_if_permission_denied,
 	bash_enforce_reader_operand_cap,
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_get_db_file_byte_size,
@@ -224,7 +226,16 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				continue;
 			}
 
-			const dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
+			// A locked item stats like a locked row: mode 0000, no size. Below a locked folder, stat fails.
+			let dbFilesDoc;
+			try {
+				dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath, { allowLocked: true });
+			} catch (error) {
+				if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+				stderr += `stat: cannot stat '${file}': Permission denied\n`;
+				hasError = true;
+				continue;
+			}
 
 			if (!dbFilesDoc) {
 				stderr += `stat: cannot stat '${file}': No such file or directory\n`;
@@ -239,9 +250,12 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 			if (dbFilesDoc.kind === "file") {
 				// The size query is separate I/O. Recheck the exact target before releasing metadata.
-				const liveEntry = await pathResolution.fs.getEntry(dbFilesPath);
+				const liveEntry = await bash_null_if_permission_denied(
+					pathResolution.fs.getEntry(dbFilesPath, { allowLocked: true }),
+				);
 				if (
 					!liveEntry ||
+					liveEntry.locked !== dbFilesDoc.locked ||
 					liveEntry.target?.kind !== dbFilesDoc.target?.kind ||
 					(liveEntry.target?.kind !== "root" &&
 						liveEntry.target?.id !== (dbFilesDoc.target?.kind === "root" ? undefined : dbFilesDoc.target?.id)) ||
@@ -260,7 +274,7 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				file,
 				stat: {
 					isDirectory: dbFilesDoc.kind === "folder",
-					mode: dbFilesDoc.kind === "folder" ? 0o755 : 0o644,
+					mode: dbFilesDoc.locked ? 0 : dbFilesDoc.kind === "folder" ? 0o755 : 0o644,
 					size: currentDbFileSize,
 					mtime: new Date(dbFilesDoc.updatedAt),
 				},

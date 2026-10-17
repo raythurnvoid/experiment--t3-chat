@@ -69,7 +69,7 @@ import {
 	files_browser_runner_status_schema,
 	files_browser_runner_usage_schema,
 } from "../server/files-browser.ts";
-import { files_nodes_db_plan_private_node_by_path } from "./files_nodes.ts";
+import { files_nodes_db_get_path_access, files_nodes_db_plan_private_node_by_path } from "./files_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes_db.ts";
 import { files_type_queries_db_authorize, files_type_queries_request_validator } from "./files_type_queries.ts";
@@ -1669,7 +1669,25 @@ export const accept_bash_job_copy_source = internalMutation({
 			overlayUserId: invocation.userId,
 			path: args.path,
 		});
-		if (!entry) return Result({ _nay: { message: `source '${args.path}' is not available` } });
+		if (!entry) {
+			// A locked source answers like the Bash cp and mv checks; only a missing one is unavailable.
+			const access = await files_nodes_db_get_path_access(ctx, {
+				organizationId: checkpoint.sourceScope.organizationId,
+				workspaceId: checkpoint.sourceScope.workspaceId,
+				subject: { kind: "user", userId: invocation.userId, plugin: null },
+				path: args.path,
+			});
+			return Result({
+				_nay: {
+					message:
+						access.status !== "locked"
+							? `source '${args.path}' is not available`
+							: checkpoint.command === "mv"
+								? `cannot move '${args.path}': Permission denied`
+								: `cannot open '${args.path}' for reading: Permission denied`,
+				},
+			});
+		}
 		const intent = entry.kind === "private" ? entry.pendingUpdate.createIntent : undefined;
 		if (
 			entry.kind === "private" &&

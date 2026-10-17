@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server";
+import { getFunctionName } from "convex/server";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -475,5 +476,54 @@ describe("bash_text_search_files", () => {
 		const { ctx, runQuery } = fake_ctx(0);
 		await expect(bash_text_search_files(ctx, search_args)).rejects.toThrow("One content search row");
 		expect(runQuery.mock.calls.map(([, args]) => args.numItems)).toEqual([8, 4, 2, 1]);
+	});
+});
+
+describe("bash_DbFilesFs.getEntry", () => {
+	test("getEntry throws EACCES for a locked entry unless the caller opts in", async () => {
+		const lockedNode = {
+			_id: "files_nodes_1",
+			kind: "file",
+			updatedAt: 5,
+			updatedBy: "user_2",
+			contentType: "text/plain",
+		};
+		let access: unknown = { status: "locked", node: lockedNode };
+		// The normal lookup answers null for a locked path; the access query says why.
+		const runQuery = vi.fn(async (ref: unknown) =>
+			getFunctionName(ref as Parameters<typeof getFunctionName>[0]) === "files_nodes:get_path_access" ? access : null,
+		);
+		const fs = new bash_DbFilesFs({
+			ctx: { runQuery, runMutation: vi.fn(), runAction: vi.fn() } as unknown as ActionCtx,
+			ctxData: {
+				organizationId: "organization_1" as Id<"organizations">,
+				workspaceId: "workspace_1" as Id<"organizations_workspaces">,
+				organizationName: "personal",
+				workspaceName: "home",
+				userId: "user_1" as Id<"users">,
+				threadId: "thread_1" as Id<"ai_chat_threads">,
+			},
+			currentWorkspacePath,
+			allowDbFilesMkdir: false,
+		});
+
+		await expect(fs.getEntry("/team/secret.md")).rejects.toMatchObject({
+			code: "EACCES",
+			message: `EACCES: permission denied, access '${currentWorkspacePath}/team/secret.md'`,
+		});
+		await expect(fs.readFile("/team/secret.md")).rejects.toMatchObject({ code: "EACCES" });
+		const locked = await fs.getEntry("/team/secret.md", { allowLocked: true });
+		expect(locked).toMatchObject({ kind: "file", locked: true, assetId: null, contentType: "text/plain" });
+		expect(locked?.updatedBy).toBeUndefined();
+		expect((await fs.stat("/team/secret.md")).mode).toBe(0);
+		expect(await fs.exists("/team/secret.md")).toBe(true);
+
+		// Below a locked folder there is no row to show, so an opted-in caller is refused too.
+		access = { status: "locked", node: null };
+		await expect(fs.getEntry("/team/x/y.md", { allowLocked: true })).rejects.toMatchObject({ code: "EACCES" });
+		expect(await fs.exists("/team/x/y.md")).toBe(false);
+
+		access = { status: "missing" };
+		expect(await fs.getEntry("/team/missing.md")).toBeNull();
 	});
 });

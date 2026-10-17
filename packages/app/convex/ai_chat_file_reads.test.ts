@@ -419,6 +419,9 @@ describe("agent file read source", () => {
 			if (door === "list_subtree") expect(result, door).toMatchObject({ page: [], isDone: true });
 			else if (door === "search_paths" || door === "text_search_files" || door === "meta_search")
 				expect(result, door).toMatchObject({ items: [], isDone: true });
+			// A locked folder is not an empty folder.
+			else if (door === "internal_list")
+				expect(result, door).toEqual({ _nay: { name: "permission_denied", message: "Permission denied" } });
 			else expect(result, door).toEqual(restricted.refused);
 		}
 	});

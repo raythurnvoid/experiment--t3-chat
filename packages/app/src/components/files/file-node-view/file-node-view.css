@@ -18,6 +18,40 @@
 		color: hsl(var(--muted-foreground));
 	}
 
+	/* Same layout as the path route's "File not found" screen. */
+	.FileNodeViewLocked {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 12px;
+
+		padding: 48px 24px;
+
+		text-align: center;
+	}
+
+	.FileNodeViewLocked-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		margin: 0;
+
+		font-size: 1.125rem;
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+
+	.FileNodeViewLocked-description {
+		max-width: 420px;
+		margin: 0;
+
+		font-size: 1rem;
+		line-height: 1.4;
+		color: var(--color-fg-07);
+	}
+
 	.FileNodeView-main-panel,
 	.FileNodeView-editor-area,
 	.FileNodeView-content-group,

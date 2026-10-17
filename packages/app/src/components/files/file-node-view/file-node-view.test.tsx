@@ -387,7 +387,8 @@ const PRIVATE_ENTRY = {
 } as Extract<files_VisibleEntry, { kind: "private" }>;
 
 let node = NODE;
-let nodeQueryStatus: "loading" | "ready" | "missing";
+/** `locked`: the node query answers null and the access query says the node is locked. */
+let nodeQueryStatus: "loading" | "ready" | "missing" | "locked";
 let treeNodes: (typeof NODE)[] | undefined;
 // Rows in folders the view has not loaded. They show only through a pinned node's ancestors.
 let unloadedTreeNodes: (typeof NODE)[];
@@ -520,7 +521,13 @@ beforeEach(() => {
 				);
 			}
 			case "files_tree:get_file_node_for_membership":
-				return nodeQueryStatus === "loading" ? undefined : nodeQueryStatus === "missing" ? null : node;
+				return nodeQueryStatus === "loading"
+					? undefined
+					: nodeQueryStatus === "missing" || nodeQueryStatus === "locked"
+						? null
+						: node;
+			case "files_tree:get_file_node_access_for_membership":
+				return nodeQueryStatus === "locked" ? "locked" : "missing";
 			// Tests write owner views. The list returns only the stored fields of each row, and each row
 			// loads its view with `get_file_pending_target`.
 			case "files_pending_list:list_files_pending_updates":
@@ -841,6 +848,19 @@ describe("FileNodeView node loading", () => {
 		pushQueryChanges();
 		await waitFor(() => expect(screen.queryByRole("textbox", { name: "Code draft" })).toBeNull());
 		expect(editorUnmountMock).toHaveBeenCalledTimes(1);
+		expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "root", view: undefined, q: undefined });
+	});
+
+	test("a locked node shows the access screen and stays", async () => {
+		treeNodes = [];
+		nodeQueryStatus = "locked";
+		const { onNavigateSearch } = renderFileView();
+
+		expect(await screen.findByRole("heading", { name: "You don't have access to this item" })).toBeTruthy();
+		expect(screen.queryByTestId("editor")).toBeNull();
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole("button", { name: "Go to files home" }));
 		expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "root", view: undefined, q: undefined });
 	});
 

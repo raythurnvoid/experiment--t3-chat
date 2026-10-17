@@ -71,7 +71,7 @@ import { files_saved_placement_db_get_node } from "../server/files-saved-placeme
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
-import { files_nodes_db_archive_nodes, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
+import { files_nodes_db_archive_nodes, files_nodes_db_get_path_access, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
 import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
@@ -2057,6 +2057,34 @@ export const get_file_read_membership = internalQuery({
 	},
 });
 
+/**
+ * For `download-urls`: whether a node id the caller could not open is locked, not missing. Ask it
+ * only after the download lookup answered `null`. It answers a yes or no, never the node.
+ */
+export const get_download_node_locked = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		subject: access_control_subject_validator,
+		fileNodeId: v.string(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const fileNodeId = ctx.db.normalizeId("files_nodes", args.fileNodeId);
+		const fileNode = fileNodeId ? await files_saved_placement_db_get_node(ctx.db, fileNodeId) : null;
+		if (
+			!fileNode ||
+			fileNode.organizationId !== args.organizationId ||
+			fileNode.workspaceId !== args.workspaceId ||
+			fileNode.archiveOperationId !== null
+		) {
+			return false;
+		}
+		const access = await files_nodes_db_get_path_access(ctx, { ...args, path: fileNode.path });
+		return access.status === "locked";
+	},
+});
+
 // The service exchange routes in `plugins_service.ts` call these two through the generated `internal`
 // object, which erases the return type. Each alias gives that call its type back.
 
@@ -2444,7 +2472,10 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 				node.organizationId !== run.organizationId ||
 				node.workspaceId !== run.workspaceId ||
 				node.archiveOperationId !== null ||
-				node.path !== item.path ||
+				node.path !== item.path
+			)
+				return Result({ _nay: { message: "File unavailable" } });
+			if (
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: run.organizationId,
 					workspaceId: run.workspaceId,
@@ -2453,7 +2484,8 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 					permission: "content.read",
 				}))
 			)
-				return Result({ _nay: { message: "File unavailable" } });
+				// The node is still there, so it is locked, not missing.
+				return Result({ _nay: { name: "locked", message: `Permission denied: ${item.path}` } });
 		}
 		const now = Date.now();
 		await ctx.db.patch("plugins_event_run_calls", call._id, {
@@ -4405,7 +4437,7 @@ export const create_file_upload_targets = internalMutation({
 		// One set of lookups for the whole call: during a Move, each folder on the way is read once.
 		const lookups = await files_db_create_path_lookups(ctx, args);
 		for (const rawItem of args.items) {
-			// Existing literal targets win, including hidden files. Only missing paths are cased.
+			// Existing literal targets win, including locked files. Only missing paths are cased.
 			let existingNode = await lookups.get(rawItem.path);
 			const item = {
 				...rawItem,
@@ -4416,11 +4448,11 @@ export const create_file_upload_targets = internalMutation({
 			}
 
 			// Check access before any other answer for this item: on the file, and on its deepest existing
-			// folder, so a file can go into an existing folder at any depth. Then a hidden item answers 403
-			// whether it exists or not, and before a later item's error. The refusal names the path as sent,
-			// since the casing above depends on what exists.
+			// folder, so a file can go into an existing folder at any depth. Then a locked folder answers 403
+			// whether a name below it exists or not, and before a later item's error. The refusal names the
+			// path as sent, since the casing above depends on what exists.
 			// The file lookup is raw on purpose, like publish_file_write: a path holds one active node, so a
-			// restricted file the caller cannot see still has to block the create, or two nodes would end up
+			// restricted file the caller cannot open still has to block the create, or two nodes would end up
 			// on one path. That makes this node-level check the only thing standing between the caller and
 			// somebody else's restricted file, which `replace` would archive.
 			if (
@@ -4433,6 +4465,27 @@ export const create_file_upload_targets = internalMutation({
 					fileNode: existingNode,
 				}))
 			) {
+				// A create-only upload onto a locked name answers "File exists", like the OS. The name
+				// already shows as a locked row, so this tells nothing new.
+				if (args.overwrite === "fail") {
+					const access = await files_nodes_db_get_path_access(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						subject: writeContext.subject,
+						path: existingNode.path,
+					});
+					if (access.status === "locked" && access.node) {
+						return Result({
+							_nay: {
+								message:
+									existingNode.kind === "file"
+										? "A file already exists at this path"
+										: "The path cannot point to a folder",
+								data: { path: rawItem.path },
+							},
+						});
+					}
+				}
 				return Result({ _nay: { message: "Permission denied", data: { path: rawItem.path } } });
 			}
 			const found = await lookups.find_existing_parent(item.path);
@@ -4925,6 +4978,29 @@ export async function public_api_write_one_text_file(
 				data: { status: 409, errorCode: "conflict" },
 			},
 		});
+	}
+	// A create-only write onto a locked name answers "File exists", like the OS. The name already
+	// shows as a locked row, so this tells nothing new. An overwrite of it is refused as "Permission
+	// denied" by the write below.
+	if (!activeNode && args.overwrite === "fail") {
+		const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			subject: args.subject,
+			path: args.path,
+		});
+		if (access.status === "locked" && access.node) {
+			return Result({
+				_nay: {
+					name: "nay",
+					message:
+						access.node.kind === "folder"
+							? "A folder already exists at this path"
+							: "A file already exists at this path",
+					data: { status: 409, errorCode: "conflict" },
+				},
+			});
+		}
 	}
 	// A fill keeps the file's own type. A caller that names a different type asked for a file
 	// this path does not hold, so refuse instead of silently writing under the old type.
@@ -5602,6 +5678,23 @@ export async function public_api_http_read_file(args: {
 		if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
 	}
 	if (!content) {
+		// Locked, not hidden: a file the caller cannot open is 403. Only a missing one is 404.
+		const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			subject: principal.subject,
+			path: requestedPath,
+		});
+		if (access.status === "locked") {
+			return {
+				status: 403,
+				body: await fail({
+					status: 403,
+					message: `Permission denied: ${requestedPath}`,
+					errorCode: "permission_denied",
+				}),
+			} as const;
+		}
 		return {
 			status: 404,
 			body: await fail({
@@ -5628,6 +5721,11 @@ export async function public_api_http_read_file(args: {
 			nodes: [{ nodeId: content.target.id, path: requestedPath }],
 			responseBytes: bytes,
 		})) as public_api_validate_and_finish_scheduled_file_read_Result;
+		if (checked._nay?.name === "locked")
+			return {
+				status: 403,
+				body: await fail({ status: 403, message: checked._nay.message, errorCode: "permission_denied" }),
+			} as const;
 		if (checked._nay)
 			return {
 				status: 404,
@@ -5703,9 +5801,8 @@ export async function public_api_http_read_many(args: {
 
 	const maxBytes = Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES);
 	const contents = await Promise.all(
-		requestedPaths.map(async (filePath) => ({
-			path: filePath,
-			content: await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+		requestedPaths.map(async (filePath) => {
+			const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 				agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
 				organizationId: principal.organizationId,
 				workspaceId: principal.workspaceId,
@@ -5714,8 +5811,18 @@ export async function public_api_http_read_many(args: {
 				path: filePath,
 				includePending: false,
 				maxBytes,
-			}),
-		})),
+			});
+			// Locked, not hidden: a file the caller cannot open gets its own error text.
+			const access = content
+				? null
+				: await ctx.runQuery(internal.files_nodes.get_path_access, {
+						organizationId: principal.organizationId,
+						workspaceId: principal.workspaceId,
+						subject: principal.subject,
+						path: filePath,
+					});
+			return { path: filePath, content, locked: access?.status === "locked" };
+		}),
 	);
 
 	if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
@@ -5740,7 +5847,7 @@ export async function public_api_http_read_many(args: {
 		if (!item.content) {
 			errors.push({
 				path: item.path,
-				message: "File not found or exceeds the read limit.",
+				message: item.locked ? `Permission denied: ${item.path}` : "File not found or exceeds the read limit.",
 			});
 			continue;
 		}
@@ -5843,7 +5950,19 @@ export async function public_api_http_read_bytes(args: {
 			internal.files_nodes_content.get_file_byte_read_source,
 			sourceArgs,
 		);
-		if (!source) return { status: 404, body: { message: "File unavailable" } } as const;
+		if (!source) {
+			// Locked, not hidden: a file the caller cannot open is 403. Only a missing one is 404.
+			const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				subject: principal.subject,
+				path: requestedPath,
+			});
+			if (access.status === "locked") {
+				return { status: 403, body: { message: `Permission denied: ${requestedPath}` } } as const;
+			}
+			return { status: 404, body: { message: "File unavailable" } } as const;
+		}
 		if (revision !== null && revision !== source.revision) {
 			return { status: 409, body: { message: "File changed. Start a new read." } } as const;
 		}
@@ -7488,8 +7607,18 @@ export async function public_api_http_download_urls(args: {
 		datas.map(async (data, index) => {
 			const fileNodeId = fileNodeIds[index];
 			const signKey = signKeys[index];
-			if (!data || !signKey) {
-				return { fileNodeId, url: null };
+			if (!data) {
+				// Locked, not hidden: a file the caller cannot open gets its own error text.
+				const locked: boolean = await ctx.runQuery(internal.public_api.get_download_node_locked, {
+					organizationId: principal.organizationId,
+					workspaceId: principal.workspaceId,
+					subject: principal.subject,
+					fileNodeId,
+				});
+				return { fileNodeId, url: null, locked };
+			}
+			if (!signKey) {
+				return { fileNodeId, url: null, locked: false };
 			}
 			// A presigned R2 GET carries no nosniff/CSP, so the pinned type plus the disposition
 			// below is the whole defense. Both come from the stored content type: only the
@@ -7508,6 +7637,7 @@ export async function public_api_http_download_urls(args: {
 					responseContentType: serving.responseContentType,
 					responseContentDisposition: serving.responseContentDisposition,
 				}),
+				locked: false,
 			};
 		}),
 	);
@@ -7518,7 +7648,7 @@ export async function public_api_http_download_urls(args: {
 		if (entry.url) {
 			items.push({ fileNodeId: entry.fileNodeId, url: entry.url, expiresAt });
 		} else {
-			errors.push({ fileNodeId: entry.fileNodeId, message: "Not found" });
+			errors.push({ fileNodeId: entry.fileNodeId, message: entry.locked ? "Permission denied" : "Not found" });
 		}
 	}
 

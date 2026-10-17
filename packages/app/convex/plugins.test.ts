@@ -8507,7 +8507,7 @@ describe("plugins metadata file doors", () => {
 		expect(await refused.json()).toEqual({ message: "Permission denied" });
 	});
 
-	test("a run reads with its actor's eyes, so a restricted folder stays invisible", async () => {
+	test("a run reads with its actor's eyes, so a restricted folder stays locked", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
 
@@ -8588,7 +8588,7 @@ describe("plugins metadata file doors", () => {
 		const outsiderRun = await start_file_invoke_run({ t, fixture, userId: memberUserId, tokenSeed: "e" });
 
 		// Installing a plugin must not become a way around a restriction: the run sees exactly what
-		// the member who invoked it sees, which is nothing of this folder.
+		// the member who invoked it sees, so it cannot open this folder or its files.
 		const listed = await door_call({
 			t,
 			path: "/api/v1/files/list",
@@ -8605,8 +8605,8 @@ describe("plugins metadata file doors", () => {
 			apiToken: outsiderRun.apiToken,
 			body: { path: "/probe/tail.md" },
 		});
-		expect(read.status).toBe(404);
-		expect(await read.json()).toEqual({ message: "File not found or exceeds the read limit." });
+		expect(read.status).toBe(403);
+		expect(await read.json()).toEqual({ message: "Permission denied: /probe/tail.md" });
 	});
 
 	test("invoke writes label every new node and require a matching target or folder", async () => {

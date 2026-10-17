@@ -12,6 +12,7 @@ import {
 	bash_read_only_mount_error,
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
+	bash_DbFilesPermissionDeniedError,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
@@ -176,7 +177,16 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 
 			// Resolution runs through the calling user's pending path overlay: an already
 			// pending-deleted path reads as missing, like a real fs after rm.
-			const node = await target.fs.getEntry(dbFilesPath);
+			let node;
+			try {
+				node = await target.fs.getEntry(dbFilesPath);
+			} catch (error) {
+				if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+				// Like GNU rm, -f does not hide this one.
+				stderr += `rm: cannot remove '${operand}': Permission denied\n`;
+				exitCode = bash_COMMAND_EXIT_FAILURE;
+				continue;
+			}
 			if (!node?.target || node.target.kind === "root") {
 				if (!force) {
 					stderr += `rm: cannot remove '${operand}': No such file or directory\n`;

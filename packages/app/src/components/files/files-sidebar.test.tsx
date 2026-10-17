@@ -347,10 +347,11 @@ describe("FilesSidebar", () => {
 		const [alpha, bravo] = treeState.nodes;
 		treeState.sharedRoots = [
 			// `bravo` also shows in the tree, so the group row needs its own id.
-			bravo!,
+			{ ...bravo!, restrictedScopeNodeId: bravo!._id },
 			{
 				...alpha!,
 				_id: "secret" as app_convex_Id<"files_nodes">,
+				restrictedScopeNodeId: "secret" as app_convex_Id<"files_nodes">,
 				name: "secret",
 				parentId: "hidden" as app_convex_Id<"files_nodes">,
 				archiveOperationId: "archive-1",
@@ -386,6 +387,7 @@ describe("FilesSidebar", () => {
 			name,
 			path: `/hidden/${name}`,
 			parentId: "hidden" as app_convex_Id<"files_nodes">,
+			restrictedScopeNodeId: name as app_convex_Id<"files_nodes">,
 		};
 	}
 
@@ -588,7 +590,7 @@ describe("FilesSidebar", () => {
 		["Archive", "Cancel"],
 	])("closing %s with %s from a Shared with you row focuses that row, not its tree row", async (action, close) => {
 		// `bravo` also shows in the tree.
-		treeState.sharedRoots = [treeState.nodes[1]!];
+		treeState.sharedRoots = [{ ...treeState.nodes[1]!, restrictedScopeNodeId: treeState.nodes[1]!._id }];
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
 		const group = await view.findByRole("region", { name: "Shared with you" });
@@ -602,6 +604,17 @@ describe("FilesSidebar", () => {
 		// The tree would focus its row from a timer, so wait past it.
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		expect(document.activeElement).toBe(row);
+	});
+
+	test("a Shared with you row of an item with added people is not marked restricted", async () => {
+		// An open item with added people keeps `restrictedScopeNodeId` of its area, here none.
+		treeState.sharedRoots = [{ ...share("added"), restrictedScopeNodeId: null }];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+
+		const row = within(group).getByRole("button", { name: "added" });
+		expect(row.querySelector("[data-file-restricted]")).toBeNull();
 	});
 
 	test("a confirmed archive of a Shared with you row moves focus to the next group row", async () => {

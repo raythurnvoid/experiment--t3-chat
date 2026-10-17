@@ -1177,8 +1177,8 @@ describe("service-bound API credentials", () => {
 		const vault = await read("/vault/v.md");
 		expect(vault.status).toBe(200);
 		expect(await vault.json()).toMatchObject({ content: expect.stringContaining("Vault text") });
-		// The sponsor can read the open file, but the account has no grant there.
-		expect((await read("/open.md")).status).toBe(404);
+		// The sponsor can read the open file, but the account has no grant there, so it is locked.
+		expect((await read("/open.md")).status).toBe(403);
 	});
 
 	test("a key bound to an account with a role reads role shares", async () => {
@@ -4205,7 +4205,7 @@ describe("public files API", () => {
 	});
 });
 
-describe("files list hidden paths", () => {
+describe("locked and missing paths", () => {
 	/**
 	 * `/secret` is a restricted folder with 12 files the member cannot read, and `/hidden.md` is a
 	 * restricted file. The member can read `/b.md`, the empty `/notes`, and `/secret/shared`, which
@@ -4253,6 +4253,8 @@ describe("files list hidden paths", () => {
 			}
 
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-list-hidden-member" });
+			// The write route's credit gate bills the acting member, so the fixture pays.
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -4294,7 +4296,7 @@ describe("files list hidden paths", () => {
 				serviceAccountId: null,
 				membershipId,
 				name: "List reader",
-				scopes: ["files:list"],
+				scopes: ["files:list", "files:read", "files:download", "files:write"],
 			});
 			if (created._nay) throw new Error(created._nay.message);
 			return created._yay.credential;
@@ -4308,6 +4310,7 @@ describe("files list hidden paths", () => {
 			asOwner,
 			db,
 			secretId,
+			hiddenFileId,
 			hiddenIds,
 			ownerCredential: await create_key(asOwner, db.membershipId),
 			memberCredential: await create_key(asMember, member.membershipId),
@@ -4376,7 +4379,16 @@ describe("files list hidden paths", () => {
 		});
 	});
 
-	test("answers 404 for a missing or hidden folder and 400 for a readable file", async () => {
+	async function post(t: ReturnType<typeof test_convex>, route: string, credential: string, body: unknown) {
+		const response = await t.fetch(route, {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify(body),
+		});
+		return { status: response.status, body: (await response.json()) as unknown };
+	}
+
+	test("files list answers 403 for a locked path, 404 for a missing one and 400 for a readable file", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_folder(t);
 
@@ -4386,13 +4398,17 @@ describe("files list hidden paths", () => {
 				status: 404,
 				body: { message: "Folder not found: /C:/Program Files/Git" },
 			});
-			// A hidden folder or file answers exactly like a missing folder, and names no child.
-			for (const path of ["/secret", "/hidden.md"]) {
+			// A locked folder or file, and any path below a locked folder, is 403 with only a message.
+			for (const path of ["/secret", "/hidden.md", "/secret/h01.md", "/secret/nope"]) {
 				expect(await list(t, f.memberCredential, { path, recursive })).toEqual({
-					status: 404,
-					body: { message: `Folder not found: ${path}` },
+					status: 403,
+					body: { message: `Permission denied: ${path}` },
 				});
 			}
+			expect(await list(t, f.memberCredential, { path: "/notes/nope", recursive })).toEqual({
+				status: 404,
+				body: { message: "Folder not found: /notes/nope" },
+			});
 			expect(await list(t, f.memberCredential, { path: "/b.md", recursive })).toEqual({
 				status: 400,
 				body: { message: "Path must point to a folder: /b.md" },
@@ -4443,6 +4459,117 @@ describe("files list hidden paths", () => {
 			status: 400,
 			body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
 		});
+	});
+
+	test("read answers 403 for a locked file, 404 for a missing one", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const f = await seed_hidden_folder(t);
+
+		for (const path of ["/hidden.md", "/secret/h01.md", "/secret/nope.md"]) {
+			const read = await post(t, "/api/v1/files/read", f.memberCredential, { path });
+			expect(read.status, path).toBe(403);
+			expect(read.body).toEqual({ message: `Permission denied: ${path}` });
+		}
+		expect(await post(t, "/api/v1/files/read", f.memberCredential, { path: "/nope.md" })).toEqual({
+			status: 404,
+			body: { message: "File not found or exceeds the read limit." },
+		});
+		// Control: the owner reads the locked file.
+		expect((await post(t, "/api/v1/files/read", f.ownerCredential, { path: "/hidden.md" })).status).toBe(200);
+	});
+
+	test("read-many reports a locked file with the permission text", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const f = await seed_hidden_folder(t);
+
+		expect(
+			await post(t, "/api/v1/files/read-many", f.memberCredential, { paths: ["/b.md", "/hidden.md", "/nope.md"] }),
+		).toMatchObject({
+			status: 200,
+			body: {
+				files: [{ path: "/b.md" }],
+				errors: [
+					{ path: "/hidden.md", message: "Permission denied: /hidden.md" },
+					{ path: "/nope.md", message: "File not found or exceeds the read limit." },
+				],
+			},
+		});
+	});
+
+	test("read-bytes answers 403 for a locked file, 404 for a missing one", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const read_bytes = (path: string) =>
+			post(t, "/api/v1/files/read-bytes", f.memberCredential, { path, offset: 0, length: 4, revision: null });
+
+		for (const path of ["/hidden.md", "/secret/nope.md"]) {
+			expect(await read_bytes(path)).toEqual({ status: 403, body: { message: `Permission denied: ${path}` } });
+		}
+		expect(await read_bytes("/nope.md")).toEqual({ status: 404, body: { message: "File unavailable" } });
+	});
+
+	test("download-urls reports a locked file with the permission text", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const goneId = await seed_markdown_file({ t, ...f.db, path: "/gone.md", committedMarkdown: "# Gone" });
+		await t.run(async (ctx) => await ctx.db.delete("files_nodes", goneId));
+
+		expect(
+			await post(t, "/api/v1/files/download-urls", f.memberCredential, { fileNodeIds: [f.hiddenFileId, goneId] }),
+		).toEqual({
+			status: 200,
+			body: {
+				items: [],
+				errors: [
+					{ fileNodeId: f.hiddenFileId, message: "Permission denied" },
+					{ fileNodeId: goneId, message: "Not found" },
+				],
+				truncated: false,
+			},
+		});
+	});
+
+	test("an overwrite of a locked file says Permission denied", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+
+		expect(
+			await post(t, "/api/v1/files/write", f.memberCredential, {
+				path: "/hidden.md",
+				content: "# Mine",
+				overwrite: "replace",
+			}),
+		).toEqual({ status: 403, body: { message: "Permission denied" } });
+	});
+
+	test("a create-only write onto a locked name says the file exists", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const f = await seed_hidden_folder(t);
+
+		expect(
+			await post(t, "/api/v1/files/write", f.memberCredential, {
+				path: "/hidden.md",
+				content: "# Mine",
+				overwrite: "fail",
+			}),
+		).toEqual({ status: 409, body: { message: "A file already exists at this path" } });
+		expect(
+			await post(t, "/api/v1/files/upload-urls", f.memberCredential, {
+				files: [{ path: "/hidden.md", contentType: "text/markdown;charset=utf-8", size: 6 }],
+				overwrite: "fail",
+			}),
+		).toEqual({ status: 409, body: { message: "A file already exists at this path", path: "/hidden.md" } });
+		// Below a locked folder no name shows, so a create there stays Permission denied.
+		expect(
+			await post(t, "/api/v1/files/write", f.memberCredential, {
+				path: "/secret/h01.md",
+				content: "# Mine",
+				overwrite: "fail",
+			}),
+		).toEqual({ status: 403, body: { message: "Permission denied" } });
 	});
 });
 

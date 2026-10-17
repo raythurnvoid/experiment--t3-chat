@@ -109,7 +109,9 @@ const makeCtx = (
 				},
 			};
 		}
-		return await runQueryImpl(ref, queryArgs);
+		const result = await runQueryImpl(ref, queryArgs);
+		// A path the fake lookups do not know is missing, not locked.
+		return result === null && getFunctionName(ref) === "files_nodes:get_path_access" ? { status: "missing" } : result;
 	});
 	const runMutationImpl =
 		args?.runMutationImpl ??
@@ -1094,6 +1096,24 @@ test("edit_file tool treats an invalid pending update id as absent", async () =>
 
 	expect(runAction).not.toHaveBeenCalled();
 	expect(runQuery).toHaveBeenNthCalledWith(1, expect.anything(), { pendingUpdateId: "1" });
+});
+
+test("edit_file tool says Permission denied for a locked path", async () => {
+	const { ctx, runAction } = makeCtx(async (ref) =>
+		getFunctionName(ref) === "files_nodes:get_path_access" ? { status: "locked", node: null } : null,
+	);
+	const tool = ai_chat_tool_create_edit_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
+	);
+
+	await expect(
+		tool.execute?.(
+			{ path: "/team/hello.md", workspace: "current", oldString: "world", newString: "team", replaceAll: false },
+			{ toolCallId: "test", messages: [] },
+		),
+	).rejects.toThrow("Cannot edit /team/hello.md: Permission denied");
+	expect(runAction).not.toHaveBeenCalled();
 });
 
 test("edit_file tool surfaces the upsert rejection when the file is archived after the read", async () => {

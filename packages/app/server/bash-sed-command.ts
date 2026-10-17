@@ -11,6 +11,7 @@ import {
 	bash_resolve_db_files_shell_path,
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
+	bash_DbFilesPermissionDeniedError,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
@@ -118,7 +119,17 @@ export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					overlayUserId: pathResolution.fs.overlayUserId,
 				})) as files_nodes_read_file_line_range_Result;
 				if (!result) {
-					const dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
+					let dbFilesDoc;
+					try {
+						dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
+					} catch (error) {
+						if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+						return {
+							stdout: "",
+							stderr: `sed: ${fastPath.file}: Permission denied\n`,
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					}
 
 					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 						return {

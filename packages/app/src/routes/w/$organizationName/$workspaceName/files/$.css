@@ -32,7 +32,12 @@
 		text-align: center;
 	}
 
+	/* Flex keeps the lock icon of a locked path on the text line. */
 	.RouteFilesPathNotFound-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
 		margin: 0;
 
 		font-size: 1.125rem;

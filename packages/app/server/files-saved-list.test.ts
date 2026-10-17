@@ -331,7 +331,10 @@ describe("saved list action", () => {
 
 		const missing = await files_saved_list_page(ctx, { ...args, folderPath: "/missing", cursor: null });
 		expect(missing._nay?.name).toBe("folder_unavailable");
-		expect([count("get_by_path"), count("list_subtree")], "a missing folder reads no list range").toEqual([1, 0]);
+		expect(
+			[count("get_by_path"), count("get_path_access"), count("list_subtree")],
+			"a missing folder asks locked or missing once and reads no list range",
+		).toEqual([1, 1, 0]);
 		const file = await files_saved_list_page(ctx, { ...args, folderPath: "/old.txt", cursor: null });
 		expect(file._nay?.name).toBe("not_a_folder");
 
@@ -353,6 +356,7 @@ describe("saved list action", () => {
 		}
 		expect(pages.flat()).toEqual(["/target/a.txt", "/target/new.txt"]);
 		expect(count("get_by_path"), "one folder check per page").toBe(pages.length);
+		expect(count("get_path_access"), "a found folder asks no locked or missing question").toBe(0);
 	});
 
 	test("refuses a seek key outside its recursive source range", async () => {

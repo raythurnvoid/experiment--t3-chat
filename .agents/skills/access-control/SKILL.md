@@ -862,6 +862,14 @@ so at the top.
 that changes with a locked row's custom field or content leaks it, including which rows show, page
 size, empty pages, cursors and reactive reruns.
 
+**Locked or missing.** The path and id lookups still answer `null` for both, so a caller that does
+not ask fails closed. After a `null`, a surface that must say "Permission denied" asks
+`files_nodes_db_get_path_access` (`convex/files_nodes.ts`; internal query `get_path_access`, page
+query `get_path_access_for_membership`) or, by id, `files_tree.get_file_node_access_for_membership`.
+`locked` means the item exists and the subject cannot open it, or the path is below a folder they
+cannot open (a missing name there is locked too). `missing` means nothing is there and the nearest
+folder is readable. The path helper sends the node only when its parent is readable.
+
 **The search rule.** Search returns a locked item only for a name or path match. Custom-field
 searches read by restricted area. Accepted exception: content (text) search filters after the search
 index; its page shape can show only that some unreadable file matches, never which one.

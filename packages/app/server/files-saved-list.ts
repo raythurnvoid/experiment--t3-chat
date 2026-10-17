@@ -26,8 +26,8 @@ function compare_keys(a: Key, b: Key) {
 /**
  * Merge native pages after one global full key. Unused docs are read again by an exact seek.
  *
- * Answers `_nay` named `folder_unavailable` when the folder is missing, hidden or archived, and
- * `not_a_folder` when the path is a readable file.
+ * Answers `_nay` named `folder_unavailable` when the folder is missing or archived, `folder_locked`
+ * when the caller cannot open it, and `not_a_folder` when the path is a readable file.
  */
 export async function files_saved_list_page(
 	ctx: Pick<ActionCtx, "runQuery">,
@@ -74,8 +74,18 @@ export async function files_saved_list_page(
 				}),
 	]);
 	if (!view || !membership) return Result({ _yay: { page: [], continueCursor: "", isDone: true } });
-	// A hidden folder answers exactly like a missing one, so the answer does not tell that it exists.
 	if (path !== "/" && !root) {
+		// Locked, not hidden: an item the caller cannot open, or any path below a locked folder, is
+		// "Permission denied". Only a missing path is "not found".
+		const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			subject: args.subject,
+			path,
+		});
+		if (access.status === "locked") {
+			return Result({ _nay: { name: "folder_locked", message: `Permission denied: ${path}` } });
+		}
 		return Result({ _nay: { name: "folder_unavailable", message: `Folder not found: ${path}` } });
 	}
 	if (root && root.kind !== "folder") {

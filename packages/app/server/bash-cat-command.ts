@@ -4,6 +4,8 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_read_file_content_from_chunks_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
+	bash_DbFilesPermissionDeniedError,
+	bash_null_if_permission_denied,
 	bash_build_unreadable_file_advisory,
 	bash_create_glob_syntax_unsupported_message,
 	bash_enforce_reader_operand_cap,
@@ -121,7 +123,8 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				const pathResolution = bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, file), dbFilesRoots);
 				if (pathResolution.dbFilesPath == null) continue;
 
-				const dbFilesDoc = await pathResolution.fs.getEntry(pathResolution.dbFilesPath);
+				// A locked operand has no size here; the loop below reports it.
+				const dbFilesDoc = await bash_null_if_permission_denied(pathResolution.fs.getEntry(pathResolution.dbFilesPath));
 				const size = dbFilesDoc
 					? await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc })
 					: null;
@@ -184,7 +187,15 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 			// Check the current byte size before reading. Unsaved edits can be larger
 			// than the committed file, and each command asks Convex for fresh metadata.
 			if (target.dbFilesPath != null) {
-				const dbFilesDoc = await pathResolution.fs.getEntry(target.dbFilesPath);
+				let dbFilesDoc;
+				try {
+					dbFilesDoc = await pathResolution.fs.getEntry(target.dbFilesPath);
+				} catch (error) {
+					if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+					stderr += `cat: ${file}: Permission denied\n`;
+					exitCode = bash_COMMAND_EXIT_FAILURE;
+					continue;
+				}
 				const size = dbFilesDoc
 					? await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc })
 					: null;

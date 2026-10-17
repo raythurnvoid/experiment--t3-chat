@@ -3,6 +3,7 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import { path_name_of } from "../shared/paths.ts";
 import {
 	bash_DbFilesContentUnavailableError,
+	bash_DbFilesPermissionDeniedError,
 	bash_build_unreadable_file_advisory,
 	bash_create_glob_syntax_unsupported_message,
 	bash_current_workspace_path_to_db_files_path,
@@ -153,6 +154,13 @@ export function bash_cp_command_create(args: {
 
 			return { stdout: "", stderr: "", exitCode: 0 };
 		} catch (error) {
+			if (error instanceof bash_DbFilesPermissionDeniedError) {
+				return {
+					stdout: "",
+					stderr: `cp: cannot open '${operands[0]}' for reading: Permission denied\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
 			if (error instanceof bash_DbFilesContentUnavailableError) {
 				const dbFilesPath =
 					bash_current_workspace_path_to_db_files_path(sourceWorkspacePath, error.shellPath) ?? error.shellPath;

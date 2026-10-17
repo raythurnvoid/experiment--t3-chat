@@ -5,6 +5,7 @@ import type { files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_APP_MOUNT_PATH,
+	bash_DbFilesPermissionDeniedError,
 	bash_clamp_listing_page_limit,
 	bash_create_glob_syntax_unsupported_message,
 	bash_cursor_id_create,
@@ -419,7 +420,22 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		const rootDbFilesPath = target.dbFilesPath;
 
 		// The workspace root is synthetic. Other paths must resolve in the caller's visible tree.
-		const dbFilesDoc = rootDbFilesPath === "/" ? null : await target.pathResolution.fs.getEntry(rootDbFilesPath);
+		// A locked file prints like any file; a locked folder fails when the listing opens it.
+		const permissionDenied = {
+			stdout: "",
+			stderr: `tree: '${target.absoluteShellPath}': Permission denied\n`,
+			exitCode: bash_COMMAND_EXIT_FAILURE,
+		};
+		let dbFilesDoc;
+		try {
+			dbFilesDoc =
+				rootDbFilesPath === "/"
+					? null
+					: await target.pathResolution.fs.getEntry(rootDbFilesPath, { allowLocked: true });
+		} catch (error) {
+			if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+			return permissionDenied;
+		}
 
 		// Missing concrete app paths fail like normal tree paths.
 		if (rootDbFilesPath !== "/" && !dbFilesDoc) {
@@ -453,6 +469,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
 		});
+		if (result._nay?.name === "permission_denied") return permissionDenied;
 		if (result._nay)
 			return { stdout: "", stderr: `tree: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 

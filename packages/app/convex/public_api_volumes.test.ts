@@ -1154,7 +1154,8 @@ describe("scheduled Files response authority", () => {
 			headers: { Authorization: `Bearer ${f.token}` },
 			body: JSON.stringify({ path: "/private.txt" }),
 		});
-		expect(denied.status, "consent must not grant another file").toBe(404);
+		// The other file exists, so it is locked, not missing.
+		expect(denied.status, "consent must not grant another file").toBe(403);
 	});
 
 	test("registered Files routes read with the user and account", async () => {
@@ -1219,7 +1220,8 @@ describe("scheduled Files response authority", () => {
 			if (removed._nay) throw new Error(removed._nay.message);
 		};
 		const response = kind === "read" ? await read_after_io(f, afterIo) : await list_after_io(f, afterIo);
-		expect(response.status, "scheduled Files responses must repeat live account permission").toBe(404);
+		// The file is still there, so losing the grant makes it locked, not missing.
+		expect(response.status, "scheduled Files responses must repeat live account permission").toBe(403);
 		expect((await calls(f)).at(-1)?.status).toBe("failed");
 	});
 });

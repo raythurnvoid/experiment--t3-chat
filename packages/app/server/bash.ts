@@ -1364,7 +1364,7 @@ async function bash_fs_create(args: {
 		if (!filesystem) return null;
 		const dbFilesPath = bash_current_workspace_path_to_db_files_path(filesystem.currentWorkspacePath, path);
 		if (dbFilesPath === null || dbFilesPath === "/") return null;
-		const entry = await filesystem.getEntry(dbFilesPath, false);
+		const entry = await filesystem.getEntry(dbFilesPath, { recordPath: false, allowLocked: true });
 		return entry?.kind === "folder" && entry.target?.kind !== "root" ? (entry?.target ?? null) : null;
 	};
 

@@ -897,6 +897,20 @@ export function ai_chat_tool_create_edit_file(
 				overlayUserId: ctxData.userId,
 				path: normalizedPath,
 			})) as files_nodes_get_visible_entry_by_path_Result;
+			if (
+				!entry &&
+				(
+					await ctx.runQuery(internal.files_nodes.get_path_access, {
+						agentSource,
+						organizationId,
+						workspaceId,
+						subject: { kind: "user", userId: ctxData.userId, plugin: null },
+						path: normalizedPath,
+					})
+				).status === "locked"
+			) {
+				throw new Error(`Cannot edit ${normalizedPath}: Permission denied`);
+			}
 			if (entry?.node.kind !== "file") {
 				throw new Error(`File not found: ${normalizedPath}`);
 			}

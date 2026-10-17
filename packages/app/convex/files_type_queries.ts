@@ -8,6 +8,7 @@ import { internalMutation } from "./functions.ts";
 import app_convex_schema, { ai_chat_workspaces_source_validator, files_type_query_item_validator } from "./schema.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
+import { files_nodes_db_get_path_access } from "./files_nodes.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
 import { files_db_get_pending_update, files_db_get_visible_node_by_path } from "../server/files.ts";
@@ -71,7 +72,7 @@ export type files_type_queries_PageResult =
 			_yay: Omit<Page, "items"> & { items: ReadonlyArray<Infer<typeof files_type_query_item_validator>> };
 			_nay?: undefined;
 	  }
-	| { _nay: { message: string }; _yay?: undefined };
+	| { _nay: { message: string; name?: string }; _yay?: undefined };
 type Query = Doc<"files_type_queries">;
 const TTL_MS = 24 * 60 * 60 * 1000;
 const LEASE_MS = 30_000;
@@ -340,14 +341,28 @@ export const advance = internalMutation({
 				!reader && query.rootPath !== "/"
 					? await files_db_get_visible_node_by_path(ctx, { ...query, path: query.rootPath })
 					: null;
+			const permissionDenied = { name: "permission_denied", message: "Permission denied" };
+			if (query.rootPath !== "/" && !entry && !saved) {
+				// A missing name below a locked folder answers like the folder, so the name does not leak.
+				const access = scope
+					? await files_nodes_db_get_path_access(ctx, {
+							...scope,
+							subject: { kind: "user", userId: query.userId, plugin: null },
+							path: query.rootPath,
+						})
+					: null;
+				return Result({
+					_nay: access?.status === "locked" ? permissionDenied : { message: "File or folder not found" },
+				});
+			}
+			// A root the reader cannot open is locked, not missing.
 			if (
-				(query.rootPath !== "/" && !entry && !saved) ||
-				(reader &&
-					!(await reader.canRead(
-						entry?.kind === "saved" ? entry.node : resolved?.status === "resolved" ? resolved.value.accessNode : null,
-					)))
+				reader &&
+				!(await reader.canRead(
+					entry?.kind === "saved" ? entry.node : resolved?.status === "resolved" ? resolved.value.accessNode : null,
+				))
 			)
-				return Result({ _nay: { message: "File or folder not found" } });
+				return Result({ _nay: permissionDenied });
 			const root =
 				entry?.kind === "saved"
 					? { kind: "saved" as const, id: entry.node._id }

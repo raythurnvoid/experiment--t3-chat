@@ -5,6 +5,7 @@ import type { files_nodes_match_plain_text_file_lines_Result } from "../convex/f
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_create_glob_syntax_unsupported_message,
+	bash_DbFilesPermissionDeniedError,
 	bash_cursor_id_create,
 	bash_format_multiline_hint,
 	bash_GLOB_METACHARACTER_REGEX,
@@ -262,8 +263,17 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
-			const folderNode =
-				dbFilesPath == null || dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(dbFilesPath);
+			let folderNode;
+			try {
+				folderNode = dbFilesPath == null || dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(dbFilesPath);
+			} catch (error) {
+				if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+				return {
+					stdout: "",
+					stderr: `textgrep: ${operands[0]}: Permission denied\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
 
 			if (dbFilesPath != null && (dbFilesPath === "/" || folderNode?.kind === "folder")) {
 				const res = await bash_text_search_files(ctx, {
@@ -352,7 +362,17 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 					}
 				}
 
-				const dbFilesDoc = dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(dbFilesPath);
+				let dbFilesDoc;
+				try {
+					dbFilesDoc = dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(dbFilesPath);
+				} catch (error) {
+					if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+					return {
+						stdout: "",
+						stderr: `textgrep: ${inputPath}: Permission denied\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
 
 				if (!dbFilesDoc?.target || dbFilesDoc.target.kind === "root" || dbFilesDoc.kind !== "file") {
 					return {

@@ -2532,3 +2532,218 @@ describe("bash_run_command", () => {
 		expect(read.stdout).toContain("Z body");
 	});
 });
+
+describe("locked paths", () => {
+	const mount = "/home/cloud-usr/w/lock-team/home";
+
+	/**
+	 * A member runner in a team workspace where `/Team` (with everything in it) and the file
+	 * `/open/locked.md` are restricted roots the member has no grant on.
+	 */
+	async function create_locked_runner() {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "lock-team", workspaceName: "home" }),
+		);
+		const owner = await create_bash_runner({
+			shared: { t, seeded },
+			extraFiles: [
+				{ path: "/Team/secret.md", content: "team secret\n", withRealYjsSnapshot: true },
+				{ path: "/open/locked.md", content: "locked body\n", withRealYjsSnapshot: true },
+				{ path: "/open/a.md", content: "open body\n", withRealYjsSnapshot: true },
+			],
+		});
+		const teamId = await get_seeded_node_id(owner, "/Team");
+		const lockedId = await get_seeded_node_id(owner, "/open/locked.md");
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "locked-paths-member" });
+			await test_mocks_fill_db_with.membership(ctx, { userId, organizationName: "personal", workspaceName: "home" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				role: "member",
+				now: Date.now(),
+			});
+			// A restricted root points at itself; the nodes inside point at the root.
+			for (const node of await ctx.db.query("files_nodes").collect()) {
+				if (node.path === "/Team" || node.path.startsWith("/Team/"))
+					await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: teamId });
+			}
+			await ctx.db.patch("files_nodes", lockedId, { restrictedScopeNodeId: lockedId });
+			return { userId, membershipId };
+		});
+		return await create_bash_runner({ shared: { t, seeded: { ...seeded, ...member } } });
+	}
+
+	test("cat on a locked file says Permission denied", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `cat ${mount}/open/locked.md` });
+
+		expect(result.metadata.exitCode).toBe(1);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toBe(`cat: ${mount}/open/locked.md: Permission denied\n`);
+		expect((await runner.run({ command: `cat ${mount}/open/a.md` })).stdout).toBe("open body\n");
+	});
+
+	test("cat under a locked folder says Permission denied for a missing name too", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `cat ${mount}/Team/secret.md ${mount}/Team/nope.md` });
+
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toBe(
+			`cat: ${mount}/Team/secret.md: Permission denied\ncat: ${mount}/Team/nope.md: Permission denied\n`,
+		);
+		// A missing name in a readable folder is still missing.
+		expect((await runner.run({ command: `cat ${mount}/open/nope.md` })).stderr).toBe(
+			`cat: ${mount}/open/nope.md: No such file or directory\n`,
+		);
+	});
+
+	test("stat on a locked file shows mode 0000 and no owner", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `stat ${mount}/open/locked.md` });
+
+		expect(result.metadata.exitCode, result.stderr).toBe(0);
+		expect(result.stdout).toContain("Access: (0000/----------)");
+		expect((await runner.run({ command: `ls -l ${mount}/open/locked.md` })).stdout).toContain("updatedBy=-");
+		expect((await runner.run({ command: `stat ${mount}/Team/secret.md` })).stderr).toBe(
+			`stat: cannot stat '${mount}/Team/secret.md': Permission denied\n`,
+		);
+	});
+
+	test("ls on a locked folder says cannot open directory and exits 2", async () => {
+		const runner = await create_locked_runner();
+
+		const folder = await runner.run({ command: `ls ${mount}/Team` });
+		expect(folder.metadata.exitCode).toBe(2);
+		expect(folder.stdout).toBe("");
+		expect(folder.stderr).toBe(`ls: cannot open directory '${mount}/Team': Permission denied\n`);
+
+		const below = await runner.run({ command: `ls ${mount}/Team/nope` });
+		expect(below.metadata.exitCode).toBe(2);
+		expect(below.stderr).toBe(`ls: cannot access '${mount}/Team/nope': Permission denied\n`);
+
+		// A locked file shows like any file operand.
+		expect((await runner.run({ command: `ls ${mount}/open/locked.md` })).stdout).toBe(`${mount}/open/locked.md\n`);
+	});
+
+	test("cd into a locked folder works and ls then says Permission denied", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `cd ${mount}/Team && pwd && ls` });
+
+		expect(result.stdout).toBe(`${mount}/Team\n`);
+		expect(result.stderr).toBe(`ls: cannot open directory '${mount}/Team': Permission denied\n`);
+	});
+
+	test("cd below a locked folder still says No such file", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `cd ${mount}/Team/nope` });
+
+		// just-bash's built-in cd prints this text for every error. "Permission denied" needs a vendor patch.
+		expect(result.stderr).toBe(`bash: cd: ${mount}/Team/nope: No such file or directory\n`);
+	});
+
+	test("a nested shell stat says Permission denied", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `bash -c 'stat ${mount}/Team/secret.md'` });
+
+		expect(result.metadata.exitCode).toBe(1);
+		expect(result.stderr).toBe(`stat: cannot stat '${mount}/Team/secret.md': Permission denied\n`);
+	});
+
+	test("head, wc, sed, file and grep on a locked file say Permission denied", async () => {
+		const runner = await create_locked_runner();
+		const file = `${mount}/open/locked.md`;
+
+		for (const command of [
+			`head -n 1 ${file}`,
+			`wc -l ${file}`,
+			`sed -n '1,2p' ${file}`,
+			`file ${file}`,
+			`grep body ${file}`,
+		]) {
+			const result = await runner.run({ command });
+			expect(result.stdout, command).not.toContain("locked body");
+			expect(result.stderr, command).toContain("Permission denied");
+			expect(result.metadata.exitCode, command).not.toBe(0);
+		}
+	});
+
+	test("rm of a locked file says Permission denied", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `rm -f ${mount}/open/locked.md` });
+
+		expect(result.metadata.exitCode).toBe(1);
+		expect(result.stderr).toBe(`rm: cannot remove '${mount}/open/locked.md': Permission denied\n`);
+		expect(await list_pending_updates(runner)).toEqual([]);
+	});
+
+	test("cp of a locked source says cannot open for reading", async () => {
+		const runner = await create_locked_runner();
+
+		const app = await runner.run({ command: `cp ${mount}/open/locked.md ${mount}/open/copy.md` });
+		expect(app.metadata.exitCode).toBe(1);
+		expect(app.stderr).toBe(`cp: cannot open '${mount}/open/locked.md' for reading: Permission denied\n`);
+
+		const scratch = await runner.run({ command: `cp ${mount}/open/locked.md /tmp/copy.md` });
+		expect(scratch.stderr).toBe(`cp: cannot open '${mount}/open/locked.md' for reading: Permission denied\n`);
+
+		const destination = await runner.run({ command: `cp ${mount}/open/a.md ${mount}/Team/a.md` });
+		expect(destination.stderr).toBe(`cp: cannot access '${mount}/Team/a.md': Permission denied\n`);
+		expect(await list_pending_updates(runner)).toEqual([]);
+	});
+
+	test("writing over a locked file says Permission denied", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `printf changed > ${mount}/open/locked.md` });
+
+		expect(result.metadata.exitCode).not.toBe(0);
+		expect(result.stderr).toContain(`cannot write '${mount}/open/locked.md': Permission denied`);
+		expect(await list_pending_updates(runner)).toEqual([]);
+	});
+
+	test("mkdir on a locked name says File exists", async () => {
+		const runner = await create_locked_runner();
+
+		expect((await runner.run({ command: `mkdir ${mount}/Team` })).stderr).toBe(
+			`mkdir: cannot create directory '${mount}/Team': File exists\n`,
+		);
+		expect((await runner.run({ command: `mkdir ${mount}/Team/new` })).stderr).toBe(
+			`mkdir: cannot create directory '${mount}/Team/new': Permission denied\n`,
+		);
+		expect(await list_pending_updates(runner)).toEqual([]);
+	});
+
+	test("find --content-type from a locked folder says Permission denied", async () => {
+		const runner = await create_locked_runner();
+
+		for (const path of [`${mount}/Team`, `${mount}/Team/nope`]) {
+			const result = await runner.run({ command: `find ${path} --content-type text/markdown` });
+			expect(result.metadata.exitCode, path).toBe(1);
+			expect(result.stderr, path).toBe(`find: '${path}': Permission denied\n`);
+		}
+		expect((await runner.run({ command: `find ${mount}/Team` })).stderr).toBe(
+			`find: '${mount}/Team': Permission denied\n`,
+		);
+		expect((await runner.run({ command: `find ${mount}/nope --content-type text/markdown` })).stderr).toBe(
+			"find: File or folder not found\n",
+		);
+	});
+});

@@ -276,7 +276,7 @@ describe("two-root code grants", () => {
 		}
 	});
 
-	test("keeps hidden saved files indistinguishable from missing files", async () => {
+	test("says permission denied for a locked saved file and not found for a missing one", async () => {
 		const f = await fixture();
 		const nodeId = await f.file({ workspace: "current", textContent: "hidden content" });
 		expect(
@@ -301,12 +301,14 @@ describe("two-root code grants", () => {
 								? { path, offset: 0, length: 100, revision: null }
 								: { path },
 				});
-				const body = JSON.stringify(await response.json()).replaceAll(path, "/file.txt");
-				responses.push({ status: response.status, body });
+				responses.push({ status: response.status, body: JSON.stringify(await response.json()) });
 			}
-			expect(responses[0]).toEqual(responses[1]);
-			expect(responses[0]?.status).toBe(route === "read-many" ? 200 : 404);
-			expect(responses[0]?.body).not.toContain("hidden content");
+			const [locked, missing] = responses;
+			expect(locked?.status).toBe(route === "read-many" ? 200 : 403);
+			expect(missing?.status).toBe(route === "read-many" ? 200 : 404);
+			expect(locked?.body).toContain("Permission denied: /data.txt");
+			expect(missing?.body).not.toContain("Permission denied");
+			expect(locked?.body).not.toContain("hidden content");
 		}
 	});
 

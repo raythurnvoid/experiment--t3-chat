@@ -115,6 +115,20 @@ export function bash_resolve_command_create(ctx: ActionCtx, dbFilesRoots: bash_D
 					path: parsed._yay.path,
 				});
 				nodeId = node?._id;
+				// A locked path is not missing, so say why it does not resolve.
+				if (
+					!node &&
+					(
+						await ctx.runQuery(internal.files_nodes.get_path_access, {
+							agentSource: fs.ctxData.agentSource,
+							organizationId,
+							workspaceId,
+							subject: { kind: "user", userId, plugin: null },
+							path: parsed._yay.path,
+						})
+					).status === "locked"
+				)
+					return { stdout: "", stderr: "resolve: Permission denied\n", exitCode: bash_COMMAND_EXIT_FAILURE };
 			}
 			const path =
 				nodeId == null

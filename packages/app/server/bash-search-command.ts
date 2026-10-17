@@ -25,6 +25,7 @@ import {
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
 	bash_SEARCH_TOP_MATCHES_NOTE,
+	bash_DbFilesPermissionDeniedError,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
@@ -225,8 +226,18 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 
 		// `search --path` is an exact folder scope, not a prefix scan.
 		if (parsed._yay.pathShell != null && scope.dbFilesPath != null && scope.dbFilesPath !== "/") {
-			const scopedFolder = await scope.fs.getEntry(scope.dbFilesPath);
 			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
+			let scopedFolder;
+			try {
+				scopedFolder = await scope.fs.getEntry(scope.dbFilesPath);
+			} catch (error) {
+				if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+				return {
+					stdout: "",
+					stderr: `search: Permission denied: ${scopedShellPath}\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
 			if (!scopedFolder) {
 				return {
 					stdout: "",

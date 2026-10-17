@@ -274,6 +274,11 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 		app_convex_api.files_nodes.get_authorized_by_path,
 		!isSearch && folderPath !== "/" ? { membershipId, path: folderPath } : "skip",
 	);
+	// Only after a miss: say "You don't have access" for a locked folder, not "Folder not found".
+	const folderAccess = useQuery(
+		app_convex_api.files_nodes.get_path_access_for_membership,
+		folder === null && !isSearch && folderPath !== "/" ? { membershipId, path: folderPath } : "skip",
+	);
 	const folderId = folderPath === "/" ? files_ROOT_ID : folder?.kind === "folder" ? folder.nodeId : null;
 	const browse = FilesTreeProvider.usePickerFolder({
 		membershipId,
@@ -421,7 +426,12 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 						: "No matching files"
 					: null;
 	} else if (folderId === null) {
-		statusText = folder === undefined ? "Loading…" : "Folder not found";
+		statusText =
+			folder === undefined
+				? "Loading…"
+				: folderAccess === "locked"
+					? `You don't have access to ${folderPath}.`
+					: "Folder not found";
 	} else {
 		// Only a folder picker picks the root: new files can go there, but a mention of it means nothing.
 		const currentFolder: FilesNodePicker_Folder | null = folder

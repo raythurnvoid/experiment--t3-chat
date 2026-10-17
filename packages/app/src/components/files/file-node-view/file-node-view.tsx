@@ -5594,6 +5594,39 @@ const FileNodeViewTopStickyFloatingContainer = memo(function FileNodeViewTopStic
 });
 // #endregion top sticky floating container
 
+// #region locked
+type FileNodeViewLocked_ClassNames =
+	| "FileNodeViewLocked"
+	| "FileNodeViewLocked-title"
+	| "FileNodeViewLocked-description";
+
+type FileNodeViewLocked_Props = {
+	onGoHome: () => void;
+};
+
+/**
+ * The node exists, but the user cannot open it. It names nothing: the node can be below a folder the
+ * user cannot open.
+ */
+const FileNodeViewLocked = memo(function FileNodeViewLocked(props: FileNodeViewLocked_Props) {
+	const { onGoHome } = props;
+
+	return (
+		<div className={"FileNodeViewLocked" satisfies FileNodeViewLocked_ClassNames}>
+			<h1 className={"FileNodeViewLocked-title" satisfies FileNodeViewLocked_ClassNames}>
+				<LockKeyhole aria-hidden /> You don't have access to this item
+			</h1>
+			<p className={"FileNodeViewLocked-description" satisfies FileNodeViewLocked_ClassNames}>
+				Ask the owner, or someone who manages this folder, to share it with you.
+			</p>
+			<MyButton variant="outline" onClick={onGoHome}>
+				Go to files home
+			</MyButton>
+		</div>
+	);
+});
+// #endregion locked
+
 // #region root
 type FileNodeView_ClassNames =
 	| "FileNodeView"
@@ -5670,6 +5703,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					fileNodeId: searchNodeId,
 				}
 			: "skip",
+	);
+	// Only after a miss: a locked node shows the access screen, a missing one goes Home.
+	const queriedNodeAccess = useQuery(
+		app_convex_api.files_tree.get_file_node_access_for_membership,
+		searchNodeId && !isRootNodeSelected && queriedNode === null ? { membershipId, fileNodeId: searchNodeId } : "skip",
 	);
 	const selectedTargetView = useQuery(
 		app_convex_api.files_pending_target.get_file_pending_target,
@@ -6280,14 +6318,17 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	}, [searchNodeId, searchPrivateNodeId, privateTargetView, privateEntry, setLastOpenTarget]);
 
 	// If a requested node id cannot be resolved, clear stale last-open and fall back to the root folder.
+	// A locked node stays here and shows the access screen, but is not opened again on the next visit.
 	useEffect(() => {
-		if (!searchNodeId || resolvedNode === undefined || resolvedNode !== null) {
+		if (!searchNodeId || resolvedNode !== null || queriedNodeAccess === undefined || queriedNodeAccess === "found") {
 			return;
 		}
 
 		setLastOpenTarget(null);
-		navigateToNode(files_ROOT_ID);
-	}, [navigateToNode, resolvedNode, searchNodeId, setLastOpenTarget]);
+		if (queriedNodeAccess === "missing") {
+			navigateToNode(files_ROOT_ID);
+		}
+	}, [navigateToNode, queriedNodeAccess, resolvedNode, searchNodeId, setLastOpenTarget]);
 
 	const contentPanelStyle =
 		isEditorActive && editorUsesRichText
@@ -6376,7 +6417,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				/>
 			</>
 		) : searchNodeId ? (
-			<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
+			resolvedNode === null && queriedNodeAccess === "locked" ? (
+				<FileNodeViewLocked onGoHome={() => navigateToNode(files_ROOT_ID)} />
+			) : (
+				<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
+			)
 		) : null;
 	};
 

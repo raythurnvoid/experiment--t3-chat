@@ -5,6 +5,7 @@ import type { files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_APP_MOUNT_PATH,
+	bash_DbFilesPermissionDeniedError,
 	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_clamp_listing_page_limit,
 	bash_create_glob_syntax_unsupported_message,
@@ -554,7 +555,17 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				continue;
 			}
 
-			const dbFilesDoc = await target.pathResolution.fs.getEntry(dbFilesPath);
+			// A locked item shows like any item; a locked folder fails when the listing opens it.
+			// GNU ls exits 2 for both "Permission denied" errors.
+			let dbFilesDoc;
+			try {
+				dbFilesDoc = await target.pathResolution.fs.getEntry(dbFilesPath, { allowLocked: true });
+			} catch (error) {
+				if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+				stderr += `ls: cannot access '${target.absoluteShellPath}': Permission denied\n`;
+				exitCode = bash_COMMAND_EXIT_USAGE;
+				continue;
+			}
 			if (!dbFilesDoc) {
 				stderr += `ls: cannot access '${target.absoluteShellPath}': No such file or directory\n`;
 				if (exitCode === 0) {
@@ -602,6 +613,11 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					order: parsed._yay.time ? (parsed._yay.reverse ? "asc" : "desc") : parsed._yay.reverse ? "desc" : "asc",
 				});
 
+				if (result._nay?.name === "permission_denied") {
+					stderr += `ls: cannot open directory '${target.absoluteShellPath}': Permission denied\n`;
+					exitCode = bash_COMMAND_EXIT_USAGE;
+					continue;
+				}
 				if (result._nay) {
 					stderr += `ls: ${result._nay.message}\n`;
 					exitCode = bash_COMMAND_EXIT_FAILURE;

@@ -202,6 +202,47 @@ export const get_file_node_for_membership = query({
 });
 
 /**
+ * Whether a node the caller could not open is locked or gone, so the node view can show the access
+ * screen instead of going Home. Ask it only after `get_file_node_for_membership` answered `null`. It
+ * answers no name: the node can be below a folder the caller cannot open.
+ */
+export const get_file_node_access_for_membership = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		fileNodeId: v.string(),
+	},
+	returns: v.union(v.literal("found"), v.literal("locked"), v.literal("missing")),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		const fileNodeId = ctx.db.normalizeId("files_nodes", args.fileNodeId);
+		const fileNode = membership && fileNodeId ? await files_saved_placement_db_get_node(ctx.db, fileNodeId) : null;
+		// A node of another workspace is missing here, so an id from elsewhere tells nothing.
+		if (
+			!membership ||
+			!fileNode ||
+			fileNode.organizationId !== membership.organizationId ||
+			fileNode.workspaceId !== membership.workspaceId
+		) {
+			return "missing";
+		}
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+			fileNode,
+		});
+		return authorized._nay ? "locked" : "found";
+	},
+});
+
+/**
  * The README of one folder: its active file child whose name, in lowercase, is `readme.md`.
  *
  * Names sort by raw bytes, so no single index range finds every letter case. Scan the 8 case

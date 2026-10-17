@@ -218,6 +218,18 @@ afterEach(async () => {
 });
 
 describe("FilesNodePicker", () => {
+	test("a locked path says you don't have access", async () => {
+		const pathArgs = { membershipId: MEMBERSHIP_ID, path: "/team" };
+		results.set(watch_key(getFunctionName(app_convex_api.files_nodes.get_authorized_by_path), pathArgs), null);
+		results.set(
+			watch_key(getFunctionName(app_convex_api.files_nodes.get_path_access_for_membership), pathArgs),
+			"locked",
+		);
+		render(<PickerHarness initialQuery="team/" />);
+
+		expect(await screen.findByText("You don't have access to /team.")).toBeTruthy();
+	});
+
 	test("browses one folder at a time, folders first, and a folder row opens the folder", async () => {
 		set_folder({
 			parentId: "root",

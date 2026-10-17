@@ -5,6 +5,7 @@ import {
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
 	bash_create_glob_syntax_unsupported_message,
+	bash_DbFilesPermissionDeniedError,
 	bash_enforce_reader_operand_cap,
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_is_path_under,
@@ -95,7 +96,15 @@ export function bash_file_command_create(dbFilesRoots: bash_DbFilesRoots): Comma
 					hasError = true;
 					continue;
 				}
-				const entry = await pathResolution.fs.getEntry(pathResolution.dbFilesPath);
+				let entry;
+				try {
+					entry = await pathResolution.fs.getEntry(pathResolution.dbFilesPath);
+				} catch (error) {
+					if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+					stderr += `file: cannot open '${file}': Permission denied\n`;
+					hasError = true;
+					continue;
+				}
 				if (entry?.kind === "folder") {
 					description = parsed._yay.mimeType ? "inode/directory" : "directory";
 				} else if (entry) {

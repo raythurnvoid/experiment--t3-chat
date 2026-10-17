@@ -446,6 +446,8 @@ type DbFilesCacheEntry = {
 	contentSize?: number;
 	textKind: Doc<"files_nodes">["textKind"];
 	preparing?: boolean;
+	/** A saved item the user cannot open. Only `getEntry(..., { allowLocked: true })` returns it. */
+	locked?: boolean;
 };
 
 type DbFilesContext = {
@@ -518,6 +520,33 @@ export class bash_DbFilesContentUnavailableError extends Error {
 		this.name = "DbFilesContentUnavailableError";
 		this.shellPath = args.shellPath;
 		this.contentType = args.contentType;
+	}
+}
+
+/**
+ * Means the user cannot open this path: the item is locked, or it is below a folder they cannot open.
+ *
+ * Commands print their own "Permission denied" text for it. A missing path is `null`, never this.
+ */
+export class bash_DbFilesPermissionDeniedError extends Error {
+	readonly code = "EACCES";
+
+	constructor(shellPath: string) {
+		super(`EACCES: permission denied, access '${shellPath}'`);
+		this.name = "DbFilesPermissionDeniedError";
+	}
+}
+
+/**
+ * Await a `getEntry` where a locked path counts as no entry, because the caller reports it later or
+ * must not say more. Other errors still throw.
+ */
+export async function bash_null_if_permission_denied<T>(entry: Promise<T>) {
+	try {
+		return await entry;
+	} catch (error) {
+		if (error instanceof bash_DbFilesPermissionDeniedError) return null;
+		throw error;
 	}
 }
 
@@ -822,9 +851,20 @@ export class bash_DbFilesFs implements IFileSystem {
 		// a real target. Only a missing target normalizes, so private creation names new files
 		// exactly like cp and the UI create flow.
 		let dbFilesPath = requestedDbFilesPath;
+		// Writing over a locked file, or below a locked folder, fails like open(O_WRONLY) does.
+		const getTarget = async (targetPath: string) => {
+			try {
+				return await this.getEntry(targetPath);
+			} catch (error) {
+				if (error instanceof bash_DbFilesPermissionDeniedError) {
+					throw new Error(`cannot write '${shellPath}': Permission denied`);
+				}
+				throw error;
+			}
+		};
 		// Listing caches omit document shape. Writes need the current editable-text marker.
 		this.entryCache.delete(dbFilesPath);
-		let entry = await this.getEntry(dbFilesPath);
+		let entry = await getTarget(dbFilesPath);
 
 		if (!entry) {
 			dbFilesPath = files_normalize_special_node_path("file", requestedDbFilesPath);
@@ -840,7 +880,7 @@ export class bash_DbFilesFs implements IFileSystem {
 					throw new Error(`cannot write '${shellPath}': Permission denied`);
 				}
 				this.entryCache.delete(dbFilesPath);
-				entry = await this.getEntry(dbFilesPath);
+				entry = await getTarget(dbFilesPath);
 			}
 
 			const normalizedSegments = files_get_normalized_node_path_segments({
@@ -867,7 +907,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				// renamed path is a trap instead: the redirect reports success while the
 				// requested path stays missing, so refuse and name the valid path.
 				this.entryCache.delete(normalizedDbFilesPath);
-				entry = await this.getEntry(normalizedDbFilesPath);
+				entry = await getTarget(normalizedDbFilesPath);
 				if (!entry) {
 					throw new Error(
 						`cannot write '${shellPath}': app file names are normalized; write to '${this.shellPathOf(normalizedDbFilesPath)}' instead`,
@@ -1028,7 +1068,10 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async exists(path: string) {
-		return (await this.getEntry(this.toDbFilesPath(path))) != null;
+		// A locked item exists. A path below a locked folder answers false, like access() does.
+		return (
+			(await bash_null_if_permission_denied(this.getEntry(this.toDbFilesPath(path), { allowLocked: true }))) != null
+		);
 	}
 
 	async stat(path: string): Promise<FsStat> {
@@ -1036,7 +1079,8 @@ export class bash_DbFilesFs implements IFileSystem {
 		if (bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath)) {
 			throw new Error(`app file glob patterns are not supported: '${this.shellPathOf(dbFilesPath)}'`);
 		}
-		const cacheEntry = await this.getEntry(dbFilesPath);
+		// A locked item stats with mode 0, so `cd` and `test` see it without reading it.
+		const cacheEntry = await this.getEntry(dbFilesPath, { allowLocked: true });
 		if (!cacheEntry) {
 			throw new Error(`ENOENT: no such file or directory, stat '${this.shellPathOf(dbFilesPath)}'`);
 		}
@@ -1046,7 +1090,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			isFile: cacheEntry.kind === "file",
 			isDirectory: cacheEntry.kind === "folder",
 			isSymbolicLink: false,
-			mode: cacheEntry.kind === "file" ? 0o644 : 0o755,
+			mode: cacheEntry.locked ? 0 : cacheEntry.kind === "file" ? 0o644 : 0o755,
 			size: content == null ? 0 : textEncoder.encode(content).byteLength,
 			mtime: new Date(cacheEntry.updatedAt),
 		};
@@ -1060,7 +1104,16 @@ export class bash_DbFilesFs implements IFileSystem {
 		if (bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath)) {
 			throw new Error(`app file glob patterns are not supported: '${this.shellPathOf(dbFilesPath)}'`);
 		}
-		let existing = await this.getEntry(dbFilesPath);
+		// A locked name exists ("File exists"). A path below a locked folder is "Permission denied".
+		const getExisting = async (existingPath: string) => {
+			try {
+				return await this.getEntry(existingPath, { allowLocked: true });
+			} catch (error) {
+				if (error instanceof bash_DbFilesPermissionDeniedError) throw new Error("Permission denied");
+				throw error;
+			}
+		};
+		let existing = await getExisting(dbFilesPath);
 		const normalizedDbFilesPath = files_normalize_special_node_path("folder", dbFilesPath);
 		if (!existing && normalizedDbFilesPath !== dbFilesPath) {
 			dbFilesPath = await this.ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
@@ -1073,7 +1126,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			if (dbFilesPath === requestedDbFilesPath) {
 				throw new Error(`cannot create '${this.shellPathOf(dbFilesPath)}': Permission denied`);
 			}
-			existing = await this.getEntry(dbFilesPath);
+			existing = await getExisting(dbFilesPath);
 		}
 		if (existing) {
 			if (options?.recursive && existing.kind === "folder") {
@@ -1255,9 +1308,19 @@ export class bash_DbFilesFs implements IFileSystem {
 		this.observedPaths.add(path);
 	}
 
-	async getEntry(path: string, recordPath = true) {
+	/**
+	 * Resolve a stored path to its live entry, or `null` when nothing is there.
+	 *
+	 * A locked path throws `bash_DbFilesPermissionDeniedError`, so a caller that reads content fails
+	 * closed. A caller that only shows the entry (`ls`, `stat`, `cd`) passes `allowLocked` to get a
+	 * `locked: true` entry when the parent folder is readable; below a locked folder it still throws.
+	 */
+	async getEntry(
+		path: string,
+		options?: { recordPath?: boolean; allowLocked?: boolean },
+	): Promise<DbFilesCacheEntry | null> {
 		const normalizedPath = bash_normalize_path(path);
-		if (recordPath) this.observePath(normalizedPath);
+		if (options?.recordPath !== false) this.observePath(normalizedPath);
 		const cached = this.entryCache.get(normalizedPath);
 		// Only the synthetic root has no file permission to refresh.
 		if (cached && normalizedPath === "/") {
@@ -1282,7 +1345,36 @@ export class bash_DbFilesFs implements IFileSystem {
 		})) as files_nodes_get_visible_entry_by_path_Result;
 
 		if (!entry) {
+			// The lookup answers null for a locked path too. Ask which one it is, so commands can say
+			// "Permission denied" for a locked path and "No such file" only for a missing one.
+			const access = await this.ctx.runQuery(internal.files_nodes.get_path_access, {
+				agentSource: this.ctxData.agentSource,
+				organizationId: this.ctxData.organizationId,
+				workspaceId: this.ctxData.workspaceId,
+				subject: { kind: "user", userId: this.ctxData.userId, plugin: null },
+				path: normalizedPath,
+			});
+			// The path may have been readable earlier in this shell call, so drop what was cached for it.
 			this.resetProposalCaches();
+			if (access.status === "locked") {
+				if (!options?.allowLocked || !access.node) {
+					throw new bash_DbFilesPermissionDeniedError(this.shellPathOf(normalizedPath));
+				}
+				// Only what a locked row shows: no owner, no content. Not cached, so no later read uses it.
+				return {
+					target: { kind: "saved", id: access.node._id },
+					path: normalizedPath,
+					name: path_name_of(normalizedPath),
+					kind: access.node.kind,
+					updatedAt: access.node.updatedAt,
+					contentType: access.node.contentType,
+					assetId: null,
+					textKind: null,
+					locked: true,
+				};
+			}
+			// `found` means the lookup above refused the path for another reason (like the chat's
+			// workspace access or a pending delete), so it stays missing.
 			return null;
 		}
 		if (
@@ -1897,7 +1989,7 @@ async function command_substitution_loads_disallowed_shell_code(script: string, 
 					if (appRoot && dbFilesPath != null) {
 						if (
 							!bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath) &&
-							(await appRoot.fs.getEntry(dbFilesPath, false))?.kind === "file"
+							(await appRoot.fs.getEntry(dbFilesPath, { recordPath: false, allowLocked: true }))?.kind === "file"
 						) {
 							return true;
 						}

@@ -184,6 +184,12 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 										body: await fail({ status: 400, message: listed._nay.message, errorCode: "invalid_input" }),
 									} as const;
 								}
+								if (listed._nay.name === "folder_locked") {
+									return {
+										status: 403,
+										body: await fail({ status: 403, message: listed._nay.message, errorCode: "permission_denied" }),
+									} as const;
+								}
 								return {
 									status: 404,
 									body: await fail({ status: 404, message: listed._nay.message, errorCode: "not_found" }),
@@ -212,6 +218,11 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 										nodes: result.page.map((item) => ({ nodeId: item._id, path: item.path })),
 									},
 								);
+								if (checked._nay?.name === "locked")
+									return {
+										status: 403,
+										body: await fail({ status: 403, message: checked._nay.message, errorCode: "permission_denied" }),
+									} as const;
 								if (checked._nay)
 									return {
 										status: 404,

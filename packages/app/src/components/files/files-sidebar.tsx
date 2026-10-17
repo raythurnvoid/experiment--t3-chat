@@ -4203,7 +4203,15 @@ type FilesSidebarSharedGroup_CustomAttributes = {
 
 type FilesSidebarSharedGroup_Row = Pick<
 	files_VisibleTreeNode,
-	"_id" | "kind" | "name" | "path" | "archiveOperationId" | "canWrite" | "writeBlockedReason" | "writePolicyState"
+	| "_id"
+	| "kind"
+	| "name"
+	| "path"
+	| "restrictedScopeNodeId"
+	| "archiveOperationId"
+	| "canWrite"
+	| "writeBlockedReason"
+	| "writePolicyState"
 >;
 
 type FilesSidebarSharedGroupRow_Props = {
@@ -4235,7 +4243,9 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 		writeBlockedReason: row.writeBlockedReason,
 		writePolicyState: row.writePolicyState,
 	});
-	const label = `${row.name} restricted${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
+	// A share can sit on a restricted folder or on an item with added people. Only the first is restricted.
+	const isRestricted = row.restrictedScopeNodeId === row._id;
+	const label = `${row.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
 
 	const handleOpenClick = useFn(() => {
 		onOpen(row._id, row.kind);
@@ -4295,7 +4305,7 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 						{...({ "data-shared-row-id": `shared:${row._id}` } satisfies FilesSidebarSharedGroup_CustomAttributes)}
 						onClick={handleOpenClick}
 					>
-						<FilesSidebarTreeItemIcon kind={row.kind} isRestricted />
+						<FilesSidebarTreeItemIcon kind={row.kind} isRestricted={isRestricted} />
 						<span className={"FilesSidebarSharedGroup-row-name" satisfies FilesSidebarSharedGroup_ClassNames}>
 							{row.name}
 						</span>

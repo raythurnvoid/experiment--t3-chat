@@ -5,6 +5,8 @@ import type { files_nodes_match_text_file_lines_Result } from "../convex/files_n
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_create_glob_syntax_unsupported_message,
+	bash_DbFilesPermissionDeniedError,
+	bash_null_if_permission_denied,
 	bash_cursor_id_create,
 	bash_format_multiline_hint,
 	bash_GLOB_METACHARACTER_REGEX,
@@ -463,7 +465,17 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					};
 				}
 
-				const dbFilesDoc = target.dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(target.dbFilesPath);
+				let dbFilesDoc;
+				try {
+					dbFilesDoc = target.dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(target.dbFilesPath);
+				} catch (error) {
+					if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+					return {
+						stdout: "",
+						stderr: `grep: ${target.inputPath}: Permission denied\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
 				if (!dbFilesDoc?.target || dbFilesDoc.target.kind === "root" || dbFilesDoc.kind !== "file") {
 					return {
 						stdout: "",
@@ -732,10 +744,20 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				dbFilesPath: pathResolution.dbFilesPath,
 			};
 
-			const dbFilesDoc =
-				target.dbFilesPath == null || target.dbFilesPath === "/"
-					? null
-					: await pathResolution.fs.getEntry(target.dbFilesPath);
+			let dbFilesDoc;
+			try {
+				dbFilesDoc =
+					target.dbFilesPath == null || target.dbFilesPath === "/"
+						? null
+						: await pathResolution.fs.getEntry(target.dbFilesPath);
+			} catch (error) {
+				if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+				return {
+					stdout: "",
+					stderr: `grep: ${target.inputPath}: Permission denied\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
 
 			if (target.dbFilesPath != null && (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder")) {
 				// `grep -R -F` over an app folder routes to tokenized indexed full-text search, which
@@ -872,10 +894,11 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					dbFilesPath: pathResolution.dbFilesPath,
 				};
 
+				// Only picks the hint below, so a locked operand gets the default hint.
 				const dbFilesDoc =
 					target.dbFilesPath == null || target.dbFilesPath === "/"
 						? null
-						: await pathResolution.fs.getEntry(target.dbFilesPath);
+						: await bash_null_if_permission_denied(pathResolution.fs.getEntry(target.dbFilesPath));
 
 				if (
 					target.dbFilesPath === "/" ||
