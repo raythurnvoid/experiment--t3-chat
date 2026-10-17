@@ -86,6 +86,12 @@ vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
 	return { useFilesPaginatedQuery: usePaginatedQuery };
 });
 
+// The cached hooks use the `convex/react` mock below.
+vi.mock("convex-helpers/react/cache", async () => {
+	const { useQueries, useQuery } = await import("convex/react");
+	return { useQueries, useQuery };
+});
+
 vi.mock("convex/react", async () => {
 	const { useEffect, useId, useMemo, useState } = await import("react");
 	return {

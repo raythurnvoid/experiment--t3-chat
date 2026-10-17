@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQueries, type UsePaginatedQueryResult } from "convex/react";
+import type { UsePaginatedQueryResult } from "convex/react";
+import { useQueries } from "convex-helpers/react/cache";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { useFn } from "./utils-hooks.ts";
 import { useFilesSavedView } from "./files-saved-view-hooks.ts";

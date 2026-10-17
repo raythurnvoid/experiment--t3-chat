@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
+import { useQueries } from "convex-helpers/react/cache";
 import {
-	useQueries,
 	type PaginatedQueryArgs,
 	type PaginatedQueryItem,
 	type PaginatedQueryReference,
@@ -35,8 +35,12 @@ type PageState = {
 	skip: boolean;
 };
 
-// SDK pagers use nonnegative IDs. Each Files pager gets a separate journal.
-let paginationId = 0;
+// SDK pagers use nonnegative IDs, so Files pagers use negative ones. The ID is part of the query args.
+// Every pager starts with the same ID, so a pager that mounts again finds its pages in the query cache.
+// Only a pager that hit an InvalidCursor error gets a new ID. Otherwise it would get the same broken
+// page back from the cache.
+const FIRST_PAGINATION_ID = -1;
+let paginationId = FIRST_PAGINATION_ID;
 
 function next_pagination_id() {
 	paginationId -= 1;
@@ -110,8 +114,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 	const argsObject = useMemo(() => jsonToConvex(JSON.parse(argsJson)) as Record<string, Value>, [argsJson]);
 	const queryReference = useMemo(() => makeFunctionReference<"query">(queryName), [queryName]);
 	const createInitialState = useMemo(
-		() => (): PageState => {
-			const id = next_pagination_id();
+		() => (id: number): PageState => {
 			return {
 				query: queryReference,
 				args: argsObject,
@@ -132,14 +135,14 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 		},
 		[argsObject, queryReference, options.initialNumItems, skip],
 	);
-	const [state, setState] = useState<PageState>(createInitialState);
+	const [state, setState] = useState<PageState>(() => createInitialState(FIRST_PAGINATION_ID));
 	let current = state;
 	if (
 		getFunctionName(query) !== getFunctionName(state.query) ||
 		argsJson !== JSON.stringify(convexToJson(state.args)) ||
 		skip !== state.skip
 	) {
-		current = createInitialState();
+		current = createInitialState(FIRST_PAGINATION_ID);
 		setState(current);
 	}
 	const resultsObject = useQueries(current.queries) as Record<
@@ -210,7 +213,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 		return [rows, result, next];
 	}, [resultsObject, current, options.initialNumItems]);
 	// Keep the page calculation pure. Apply only its derived transition during render.
-	if (nextState === "reset") setState(createInitialState);
+	if (nextState === "reset") setState(createInitialState(next_pagination_id()));
 	else if (nextState !== null) setState(nextState);
 	const status = useMemo(() => {
 		if (!lastResult)
@@ -229,7 +232,8 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 				if (loadingMore) return;
 				loadingMore = true;
 				setState((previous) => {
-					if (previous.id !== current.id) return previous;
+					// New args can reuse the same ID, so check the args too.
+					if (previous.id !== current.id || previous.args !== current.args) return previous;
 					const key = previous.nextPageKey;
 					return {
 						...previous,
@@ -249,7 +253,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 				});
 			},
 		};
-	}, [lastResult, current.id, current.nextPageKey]);
+	}, [lastResult, current.id, current.args, current.nextPageKey]);
 	// The tree can retain an older result and its button while this view waits.
 	const loadMore = useFn(status.loadMore);
 	return { results, ...status, loadMore };

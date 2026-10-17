@@ -145,6 +145,7 @@ import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-d
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { useConvex, useQueries, useQuery } from "convex/react";
+import { useQuery as useCachedQuery } from "convex-helpers/react/cache";
 import type { FunctionReturnType } from "convex/server";
 import { compareValues } from "convex/values";
 import {
@@ -2927,7 +2928,10 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	// The table shows rows only in the folder's saved sort, so it never shows them by name first and then
 	// sorts again.
-	const folderSort = useQuery(app_convex_api.files_folder_sorts.get_folder_sort, {
+	// The folder's own queries use the query cache, so going back to a folder shows it at once. Row
+	// queries stay uncached. The cache keeps at most 250 idle queries, and the rows of a big folder would
+	// push out the folder's own queries.
+	const folderSort = useCachedQuery(app_convex_api.files_folder_sorts.get_folder_sort, {
 		membershipId,
 		folderId: folderItemId,
 	});
@@ -2994,10 +2998,16 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			row.treeRow && !treeNodeIds.has(row.treeRow._id) ? [row.treeRow] : [],
 		),
 	];
-	const folderReadme = useQuery(app_convex_api.files_tree.get_folder_readme, { membershipId, folderId: folderItemId });
-	const hasDrafts = useQuery(app_convex_api.files_tree.has_drafts_in_folder, { membershipId, folderId: folderItemId });
+	const folderReadme = useCachedQuery(app_convex_api.files_tree.get_folder_readme, {
+		membershipId,
+		folderId: folderItemId,
+	});
+	const hasDrafts = useCachedQuery(app_convex_api.files_tree.has_drafts_in_folder, {
+		membershipId,
+		folderId: folderItemId,
+	});
 
-	const canWriteFolder = useQuery(app_convex_api.files_tree.get_current_user_file_write_permission, {
+	const canWriteFolder = useCachedQuery(app_convex_api.files_tree.get_current_user_file_write_permission, {
 		membershipId,
 		nodeId: folderItemId,
 	});
@@ -5708,7 +5718,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
 
-	const queriedNode = useQuery(
+	// Use the query cache for the selected node and its folder README, so going back to a node shows it at once.
+	const queriedNode = useCachedQuery(
 		app_convex_api.files_tree.get_file_node_for_membership,
 		searchNodeId && !isRootNodeSelected
 			? {
@@ -5722,7 +5733,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		app_convex_api.files_tree.get_file_node_access_for_membership,
 		searchNodeId && !isRootNodeSelected && queriedNode === null ? { membershipId, fileNodeId: searchNodeId } : "skip",
 	);
-	const selectedTargetView = useQuery(
+	const selectedTargetView = useCachedQuery(
 		app_convex_api.files_pending_target.get_file_pending_target,
 		searchPrivateNodeId
 			? { membershipId, target: { kind: "private", id: searchPrivateNodeId } }
@@ -5777,7 +5788,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		() => files_collect_protected_descendant_ids(fileNodesList ?? []),
 		[fileNodesList],
 	);
-	const folderReadme = useQuery(
+	const folderReadme = useCachedQuery(
 		app_convex_api.files_tree.get_folder_readme,
 		targetFolderId ? { membershipId, folderId: targetFolderId } : "skip",
 	);

@@ -244,6 +244,13 @@ Tree-item components:
     `saved_search_view_changed` errors wait for new view args. They do not retry the same old
     view. Other cursor errors restart normally.
     Native page splits and end cursors stay supported. A waiting pager cannot load another page.
+    The pagers read through the query cache (`convex-helpers/react/cache`, provider in `main.tsx`).
+    It keeps a query subscribed for 5 minutes after its last user unmounts. Every pager starts with
+    the same pagination id, so going back to a folder finds its pages there. Only a pager that hit an
+    ordinary cursor error takes a new id. The folder view reads its own queries (sort, README, drafts,
+    write permission, selected node) through the cached `useQuery` too. Per-row queries stay on the
+    plain `useQuery`: the cache keeps at most 250 idle queries, and the rows of a big folder would push
+    out the folder's own queries.
 - How the server answers: one clause plus an optional folder, one `.paginate()` per call, saved and active rows only, each row `{ kind, nodeId, path }`. `name` reads the `files_nodes.search_name` text index; a folder adds one `ancestor<folder depth>` equality from the folder's saved row, so it must be 12 levels deep or less. `content` reads committed chunks only and takes no folder. `metadata` reads one plan on the committed value indexes. `path` is an exact, case-sensitive path or a node id. `link` pages `files_share_links` (at most 500 per workspace). The folder is resolved from its exact path on the server and checked with `files_tree_db_get_readable_node` in `files_tree_db.ts`; a missing or unreadable folder, or one deeper than 12 levels, comes back as the only row of a done page: `{ kind: "problem", message }`. A text search page that grew past 100 rows throws `convex_invalid_cursor_error`, and the hook starts again from page 1.
 - While the first page loads, the list shows "Searching…". A finished empty list shows "No files match your search." in the sidebar and "No matching files" in the palette. An archived node never matches.
 - The free text loses its quotes before `detect_search_query_mode`, and a text of quotes alone matches nothing.
