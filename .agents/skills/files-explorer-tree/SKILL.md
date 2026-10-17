@@ -364,10 +364,8 @@ and `find` also keep raw name order.
 - `get_folder_sort` reads the saved sort as it is and throws "Invalid saved sort." on a doc with
   more than one clause. Only `set_folder_sort` writes these docs, and it refuses more than one.
 - A filter never writes the saved sort. Removing the filter brings the saved sort back.
-- The table shows rows only in the saved sort, so it never shows them by name and then sorts again.
-  Most folders have no saved sort, so while the saved sort loads, the table already loads rows in
-  file.name, A to Z. This saves one server round trip. If the saved sort is another one, those rows
-  stay hidden until the rows of the saved sort load.
+- The table waits for the saved sort before it loads rows, so it never loads by name and then sorts
+  again.
 - A sort in the URL (a `sort_by:` token) wins over the saved sort. With no sort token the table uses
   the saved sort. A writer (`canSave: true`) sees "Save sort for everyone" while the URL has a sort.
   It calls `set_folder_sort` with the URL sort and shows the toast "Sort saved for everyone." The

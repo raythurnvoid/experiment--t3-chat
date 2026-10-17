@@ -1872,38 +1872,6 @@ describe("FileNodeView folder sort", () => {
 		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("applying");
 	});
 
-	test("loads rows in the default sort while the saved sort loads, and never shows them in another saved sort", async () => {
-		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
-		treeNodes = [node, { ...NODE, parentId: node._id }];
-		folderSort = undefined;
-		renderFileView({ nodeId: node._id });
-		await screen.findByRole("table", { name: "Folder contents" });
-		expect(
-			queryMock.mock.calls.some(
-				([reference, args]) =>
-					getFunctionName(reference) === "files_tree:list_tree_children_sorted" &&
-					args !== "skip" &&
-					JSON.stringify(args.sort) === JSON.stringify([{ field: "name", direction: "asc" }]),
-			),
-		).toBe(true);
-		expect(screen.queryByRole("link", { name: "Open page.html" })).toBeNull();
-		expect(screen.getByText("Loading folder contents…")).toBeTruthy();
-
-		// The saved sort is not the default, and its rows are still loading.
-		const sort: files_sort_Sort = [{ field: "updated", direction: "desc" }];
-		const query = queryMock.getMockImplementation()!;
-		queryMock.mockImplementation((reference, args) =>
-			getFunctionName(reference) === "files_tree:list_tree_children_sorted" &&
-			JSON.stringify((args as { sort: files_sort_Sort }).sort) === JSON.stringify(sort)
-				? { results: [], status: "LoadingFirstPage" }
-				: query(reference, args),
-		);
-		folderSort = { sort, canSave: false };
-		pushQueryChanges();
-		expect(screen.queryByRole("link", { name: "Open page.html" }), "default-sort rows must stay hidden").toBeNull();
-		expect(screen.getByText("Loading folder contents…")).toBeTruthy();
-	});
-
 	test("a header click writes sort tokens to the URL and saves nothing", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id }];

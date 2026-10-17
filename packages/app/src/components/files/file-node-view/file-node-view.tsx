@@ -2926,8 +2926,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const convex = useConvex();
 	const { move } = FilesClipboardProvider.useContext();
 
-	// The table shows rows only in the folder's saved sort, so it never shows them by name first and then
-	// sorts again.
+	// The table waits for the folder's saved sort, so it never loads by name first and then sorts again.
 	// The folder's own queries use the query cache, so going back to a folder shows it at once. Row
 	// queries stay uncached. The cache keeps at most 250 idle queries, and the rows of a big folder would
 	// push out the folder's own queries.
@@ -2962,14 +2961,11 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					},
 				]
 			: (urlSort ?? folderSort?.sort ?? null);
-	// Most folders have no saved sort. So while the saved sort loads, start loading the rows in the default
-	// sort, to save one server round trip. The rows stay hidden until the saved sort answers.
-	const requestedSort = sort ?? (folderSort === undefined ? files_sort_DEFAULT : null);
 	const isOwner = FilesTreeProvider.useIsOwner();
 	const sortedChildren = useFilesSortedChildren({
 		membershipId,
 		folderId: folderItemId,
-		sort: requestedSort,
+		sort,
 		filter,
 		namePrefix,
 		isOwner,
@@ -2979,16 +2975,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		sortedChildren.rows !== undefined &&
 		(JSON.stringify(sortedChildren.rowsFilter) !== JSON.stringify(filter) ||
 			sortedChildren.rowsNamePrefix !== namePrefix ||
-			JSON.stringify(sortedChildren.rowsSort) !== JSON.stringify(requestedSort));
-	// If the saved sort is not the default, the held rows are the early default-sort rows the user never
-	// saw. Hide them until the rows of the saved sort settle once. Later held rows, such as during a sort
-	// change, still show.
-	const [settledFolderScope, setSettledFolderScope] = useState<string | null>(null);
-	if (sort !== null && !sortedChildren.isBusy && settledFolderScope !== folderScope) {
-		setSettledFolderScope(folderScope);
-	}
-	const isHidingRows = sort === null || (isShowingHeldRows && settledFolderScope !== folderScope);
-	const shownRows = isHidingRows ? undefined : sortedChildren.rows;
+			JSON.stringify(sortedChildren.rowsSort) !== JSON.stringify(sort));
 	// A table row can be on a page the tree store has not loaded, so the move checks read both lists.
 	// A set keeps this linear: both lists can hold thousands of rows.
 	const treeNodeIds = new Set(fileNodesList?.map((node) => node._id));
@@ -3056,7 +3043,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
 
 	// The hook already sorts folders first, in the folder's sort. Pages that load later add rows at the end.
-	const childItems = shownRows ?? [];
+	const childItems = sortedChildren.rows ?? [];
 	const visibleChildItems = showAllItems
 		? childItems
 		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
@@ -3265,8 +3252,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				<FileNodeViewFolderExplorer
 					key={folderScope}
 					visibleChildItems={visibleChildItems}
-					hasMoreChildItems={hiddenChildItemsCount > 0 || (shownRows !== undefined && !sortedChildren.isDone)}
-					isDone={!isHidingRows && sortedChildren.isDone}
+					hasMoreChildItems={hiddenChildItemsCount > 0 || (sortedChildren.rows !== undefined && !sortedChildren.isDone)}
+					isDone={sortedChildren.isDone}
 					folderId={folderItemId}
 					columns={columns}
 					columnsOpen={columnsOpen.scope === folderScope && columnsOpen.open}
@@ -3276,17 +3263,17 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					rowsFilter={sortedChildren.rowsFilter}
 					namePrefix={namePrefix}
 					rowsNamePrefix={sortedChildren.rowsNamePrefix}
-					isShowingHeldRows={!isHidingRows && isShowingHeldRows}
+					isShowingHeldRows={isShowingHeldRows}
 					isFilterFailed={sortedChildren.isFailed}
 					columnValues={columnValues.values}
 					activeValueTargetCount={valueTargets.length}
 					valueQueryCount={columnValues.queryCount}
 					sort={sort ?? files_sort_DEFAULT}
-					rowsSort={isHidingRows ? null : sortedChildren.rowsSort}
+					rowsSort={sortedChildren.rowsSort}
 					// A filter fixes the order, so the URL sort is not the order on screen. So Save sort shows only when no filter is on.
 					canSaveSort={folderSort?.canSave === true && urlSort !== null && filter === null}
 					isSavingSort={isSavingSort}
-					isSortBusy={isHidingRows || sortedChildren.isBusy}
+					isSortBusy={sortedChildren.isBusy}
 					hiddenSharedKey={sortedChildren.hiddenSharedKey}
 					hasDrafts={hasDrafts === true}
 					organizationName={organizationName}
