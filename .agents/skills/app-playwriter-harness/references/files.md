@@ -1004,7 +1004,8 @@ accounts, and their own keys. Keep the existing signed-in identity.
    Confirm new accounts have no grants. Scope repeated row actions with `data-service-account-id`.
 2. On account A, choose `Manage grants`. In `Access for <name>`, select Resource `File or folder`,
    enter `File or folder path`, and choose Access level `Can manage`. Confirm `This restricted scope`
-   before `Save grant`. A normal folder's `This item only` grant does not grant its descendants access.
+   before `Save grant`. On a normal folder the label is `This item and what is inside it`: the grant
+   reaches the open items inside, at view or edit only.
 3. Use A's `Create API key` link. It preselects Identity. Bound accounts offer only `List files`,
    `Read file content`, `Download files`, `Write files`, and `Manage file policies`. Click checkbox
    labels, not their covered 1px inputs. After creation or rotation, keep the revealed key only in

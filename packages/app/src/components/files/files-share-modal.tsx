@@ -376,6 +376,16 @@ function read_display_name(
 	return value == null || value instanceof Error ? "Unknown" : value.displayName;
 }
 
+/**
+ * The list the dialog shows: the restricted folder's people, on that folder or on an item inside it.
+ * Added people on the item itself are not listed yet.
+ */
+function list_entries(
+	shareState: NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_sharing.get_node_share_state>>,
+) {
+	return shareState.scope?.isSelf ? shareState.entries : (shareState.inheritedFrom.restricted?.entries ?? []);
+}
+
 export const FilesShareModal = memo(function FilesShareModal(props: FilesShareModal_Props) {
 	const { nodeId, onClose } = props;
 
@@ -425,7 +435,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		const userIds = new Set<app_convex_Id<"users">>(workspaceUserIds ?? []);
 		if (shareState) {
 			userIds.add(shareState.organizationOwnerUserId);
-			for (const entry of shareState.entries) {
+			for (const entry of list_entries(shareState)) {
 				if (entry.principal.kind === "user") {
 					userIds.add(entry.principal.userId);
 				}
@@ -659,7 +669,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			? access_control_SYSTEM_ROLE_MATRIX[role].label
 			: (customRoles?.find((candidate) => candidate._id === role)?.name ?? "Deleted role");
 
-	const entries = (shareState?.entries ?? [])
+	const entries = (shareState ? list_entries(shareState) : [])
 		.map((entry) => ({
 			principal: entry.principal as FilesSharePrincipal,
 			level: entry.level,

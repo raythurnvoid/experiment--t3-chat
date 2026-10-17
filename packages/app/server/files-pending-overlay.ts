@@ -124,6 +124,9 @@ const SOURCE_FIELDS: Record<string, string[]> = {
 		"workspaceId",
 		"treePath",
 		"restrictedScopeNodeId",
+		// Share rows read both: an extended root has rows, and a Move-held node has rows in both views.
+		"extendedScopeNodeId",
+		"moveCohortId",
 		"contentType",
 		"contentTypeEssence",
 		"contentTypeFamily",

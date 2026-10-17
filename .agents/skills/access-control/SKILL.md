@@ -1048,10 +1048,57 @@ The model:
   the stored pointer uses this one helper: the permission check, the list filter,
   `access_control_db_can_act_on_file_node`, the service account grant state, and
   `get_node_share_state`.
-- Grants are always written on the **scope node**, never on the node being opened. Sending a child's
-  id to `set_node_share_grant` is refused; the dialog sends the folder's id for exactly this reason.
+- Grants are always written on a **scope root**: a restricted root, or an extended root (see "Add
+  people" below). A grant on any other item makes that item an extended root first.
 - Three levels — `read`, `write`, `manage` — each a superset of the last, saved as one grant doc per
   permission. `access_control_FILE_SHARE_LEVELS` is the source of truth.
+
+### Add people
+
+Any file or folder can get added people, open or inside a restricted folder. The item becomes an
+**extended root**. Its added people get the item and everything inside it, except restricted items
+inside it. Everybody who had access before keeps it: added people only add access.
+
+- Fields on `files_nodes` (and on Move places): `extendedScopeNodeId` is the nearest extended root at
+  or above the node, below its restricted root, or `null`. A restricted root has `null`. An extended
+  root points at itself and also stores `parentExtendedScopeNodeId`, its parent's
+  `extendedScopeNodeId`. The field exists only on extended roots, so "is an extended root" is
+  `parentExtendedScopeNodeId !== undefined`. Every writer uses one rule: `extended = restricted ===
+  self ? null : isExtendedRoot ? self : parent.extendedScopeNodeId`.
+- Writers: `set_node_share_grant` (people and roles) and `access_control_db_set_service_account_grant`
+  (accounts) make the item an extended root, then start a scope job (`files_subtree_ops_db_start_rebuild`,
+  kind `scope`) for the items inside. Both check every refusal before any write, so a refused share
+  leaves no extended root. `remove_node_share_grant` makes the item plain again when its last grant
+  goes, and starts the job. The account writer is used inside `access_control.ts`, a light module, so
+  it extends through `ctx.runMutation(internal.files_subtree_ops.extend_node)` (same transaction).
+- The check (`access_control_db_extended_chain_allows`): when the restricted or workspace check
+  fails, follow `extendedScopeNodeId`, then each root's `parentExtendedScopeNodeId`, and ask each
+  root for a grant. A pointer at a node that is no longer an extended root (its job still runs)
+  follows that node's own pointer, at most 8 dead hops in a row. The chain stops closed at a missing
+  node, another tenant, a root not above the node, or a root in another restricted area. There is no
+  depth cap: the 500-level cost test in `files_sharing.extended.test.ts` stays under the limits. The
+  checker caches each root's answer per request.
+- Levels: added people get **Can view** or **Can edit** only. `manage` is only on a restricted root
+  or from the workspace, so `content.permissions.manage` never comes from the chain. Message:
+  `access_control_ADDED_PEOPLE_LEVEL_MESSAGE`.
+- **Restrict starts alone.** `restrict_node` on an extended root deletes its grants first (accounts
+  through the account writer with `level: null`, so plugin folders stay in sync), then gives the
+  caller `manage`. The plugin binding restrict does the same for accounts.
+- **Unrestrict keeps accounts.** `unrestrict_node` deletes people and role grants. Account grants stay,
+  so the item becomes an extended root, and a kept `manage` is lowered to `write`.
+- A Move keeps an item's added people: an extended root moved into a restricted folder still gives
+  its people that item. Items inside it take the chain of their new place.
+- `get_node_share_state` returns `access` (`restricted_root`, `extended_root` or `inherits`),
+  `canAddPeople`, `entries` (the grants on this node only), and `inheritedFrom`: the restricted root
+  (`null` means everyone in the workspace) and the extended roots above, nearest first. Inherited
+  names are sent only to a caller who manages the node or reads the whole area (its restricted root,
+  or the workspace when it is open). A person who gets in only through added people must not learn
+  who reads the folders above. Until the dialog shows added people, it lists the restricted root's
+  names on an item inside it.
+- History: one-time migrations moved every old file grant onto a scope root. A
+  grant on an open item made it an extended root; a grant on a plain item inside a restricted folder
+  gave nothing (a dormant grant) and was deleted; a `manage` grant on an extended root was lowered to
+  `write`.
 
 Five rules that look like details and are not:
 
@@ -1083,9 +1130,10 @@ the folder table, and a reader can list the restricted folders it may read in pa
 "Readable scopes" below). Code: `packages/app/server/files-share-rows.ts`.
 
 - A share is a file `content.read` grant to a user, a role or a service account. Its row lives while
-  the grant lives and its node is a restricted scope root in the grant's organization and workspace,
-  active or archived. A service account grant also has a row while its node is open, because an
-  account reads one open node through its own grant. A public grant has no row.
+  the grant lives and its node is a scope root (restricted or extended) in the grant's organization
+  and workspace, active or archived. A public grant has no row. "Shared with you"
+  (`list_tree_shared_roots`) lists both kinds; the folder streams (`list_tree_children_shared`) list
+  restricted roots only.
 - `principalKey` is `user:<userId>`, `role:<role>` or `service_account:<serviceAccountId>`. A role
   share is one row, not one row per member.
 - A row copies the node's list fields (parent, kind, archive, names, `treePath`, `updatedAt`,
@@ -1093,9 +1141,9 @@ the folder table, and a reader can list the restricted folders it may read in pa
   missing).
 - Nothing writes rows by hand. The pending overlay flush keeps them true in the writer's transaction
   (grants are one of its source tables): a file grant insert, patch or delete syncs that grant's row,
-  and a write to a node that is or was a restricted root syncs the node's rows. Another node syncs
-  when it opens or closes, or when it has rows and a copied field changed (one `by_node` range,
-  skipped for a node that stays inside a restricted folder outside a Move). A restore or scope job
+  and a write to a node that is or was a scope root syncs the node's rows. Outside a Move another
+  node has no rows. A node a Move holds can be a root in one view only, so it syncs when it has rows
+  and a copied field changed (one `by_node` range). A restore or scope job
   writes a new `treePath` through the flush. A move or rename of an ancestor changes `treePath`, and its Move cohort syncs each node it writes.
 - A node sync reads the node's `content.read` grants in the node's own workspace with one range
   (`by_resource_permission`). The share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people and roles, in

@@ -2695,7 +2695,7 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 			[key]:
 				grantManagement.resource.kind === "workspace"
 					? "Workspace"
-					: `${grantManagement.file?.path ?? "Protected item"} — ${grantManagement.file?.scope === "restricted_scope" ? "This restricted scope" : "This item only"}`,
+					: `${grantManagement.file?.path ?? "Protected item"} — ${grantManagement.file?.scope === "restricted_scope" ? "This restricted scope" : "This item and what is inside it"}`,
 		});
 		onChange([
 			...grants.filter((grant) => get_resource_key(grant.resource) !== key),
@@ -2754,7 +2754,7 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 						? "Unrestricted workspace content"
 						: grantManagement.file?.scope === "restricted_scope"
 							? "This restricted scope"
-							: "This item only"}
+							: "This item and what is inside it"}
 				</p>
 			) : null}
 			<MySelect

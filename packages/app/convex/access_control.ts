@@ -615,19 +615,15 @@ export async function access_control_db_set_service_account_grant(
 		if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
 			return Result({ _nay: { message: "File is unavailable" } });
 		}
-		// Inside a restricted folder, only its root or an item with added people holds grants.
-		if (
-			args.level !== null &&
-			node.restrictedScopeNodeId !== null &&
-			node.restrictedScopeNodeId !== node._id &&
-			node.parentExtendedScopeNodeId === undefined
-		) {
-			return Result({ _nay: { message: "Set access on the restricted scope" } });
-		}
 		if (args.level === "manage" && node.restrictedScopeNodeId !== node._id) {
 			return Result({ _nay: { message: access_control_ADDED_PEOPLE_LEVEL_MESSAGE } });
 		}
-		if (args.level !== null && node.restrictedScopeNodeId === null && node.parentExtendedScopeNodeId === undefined) {
+		// Grants sit only on scope roots, so a grant on any other item makes it an extended root.
+		if (
+			args.level !== null &&
+			node.restrictedScopeNodeId !== node._id &&
+			node.parentExtendedScopeNodeId === undefined
+		) {
 			extendNode = node;
 		}
 		resourceId = node._id;
@@ -900,7 +896,8 @@ async function db_set_role_assignment(
  * with workspace-wide `content.read` is locked out unless a grant names them. Only the owner is let
  * through, earlier, in `access_control_db_has_permission`.
  *
- * The caller returns this answer as-is and never falls back to the role check below it.
+ * The caller never falls back to the role check. It also asks this for each extended root ("Add
+ * people") at or above the node, where the same rule holds.
  */
 async function has_restricted_file_permission(
 	ctx: QueryCtx | MutationCtx,
@@ -912,6 +909,8 @@ async function has_restricted_file_permission(
 		permission: access_control_GrantPermission;
 		userId?: Id<"users">;
 		allowPublic?: boolean;
+		/** Shares one role lookup across the roots of one chain walk. */
+		get_role_refs?: () => Promise<access_control_RoleRef[]>;
 	},
 ) {
 	const grantKey = {
@@ -934,12 +933,14 @@ async function has_restricted_file_permission(
 		return false;
 	}
 
-	const refs = await access_control_db_resolve_role_refs(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		defaultWorkspaceId: args.defaultWorkspaceId,
-		userId: args.userId,
-	});
+	const refs = args.get_role_refs
+		? await args.get_role_refs()
+		: await access_control_db_resolve_role_refs(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				defaultWorkspaceId: args.defaultWorkspaceId,
+				userId: args.userId,
+			});
 
 	const roleGrants = await Promise.all(refs.map((role) => db_get_role_permission_grant(ctx, { ...grantKey, role })));
 	return roleGrants.some(Boolean);
@@ -1005,6 +1006,133 @@ export async function access_control_db_resolve_live_restricted_scope(
 }
 
 /**
+ * Whether an "Add people" grant reaches a node: a grant on an extended root at or above it, in the
+ * same restricted area. Follow `extendedScopeNodeId` to the nearest root, then each root's
+ * `parentExtendedScopeNodeId`. A pointer at a node that is no longer an extended root (its job still
+ * runs) follows that node's own pointer, at most `DEAD_SCOPE_MAX_HOPS` times in a row.
+ *
+ * The chain stops, closed, at anything that does not fit: a missing node, another tenant, a root that
+ * is not above the node (a Move job has not reached the node yet), or a root in another restricted
+ * area. The node's normal access still works then. Only its added people wait for the job. Each hop
+ * must go up, so a bad pointer can never loop.
+ */
+export async function access_control_db_extended_chain_allows(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		node: Pick<Doc<"files_nodes">, "_id" | "treePath" | "restrictedScopeNodeId" | "extendedScopeNodeId">;
+		get_node: (nodeId: Id<"files_nodes">) => Promise<Doc<"files_nodes"> | null>;
+		root_allows: (rootId: Id<"files_nodes">) => Promise<boolean>;
+	},
+) {
+	let pointer = args.node.extendedScopeNodeId ?? null;
+	let lastPathLength = Infinity;
+	for (let deadHops = 0; pointer && deadHops <= DEAD_SCOPE_MAX_HOPS;) {
+		const root = await args.get_node(pointer);
+		if (
+			!root ||
+			root.organizationId !== args.organizationId ||
+			root.workspaceId !== args.workspaceId ||
+			// A file's `treePath` has no trailing `/`, so only a folder can be above the node.
+			!(root._id === args.node._id || (root.kind === "folder" && args.node.treePath.startsWith(root.treePath))) ||
+			root.treePath.length >= lastPathLength ||
+			root.restrictedScopeNodeId !== args.node.restrictedScopeNodeId
+		) {
+			return false;
+		}
+		lastPathLength = root.treePath.length;
+		if (root.parentExtendedScopeNodeId === undefined) {
+			deadHops += 1;
+			pointer = root.extendedScopeNodeId ?? null;
+			continue;
+		}
+		if (await args.root_allows(root._id)) {
+			return true;
+		}
+		deadHops = 0;
+		pointer = root.parentExtendedScopeNodeId;
+	}
+	return false;
+}
+
+/**
+ * The permissions an extended root can give. Added people get view or edit only, so a check for any
+ * other permission skips the chain: on a deep path each walk costs a few reads per level.
+ */
+const EXTENDED_ROOT_PERMISSIONS: ReadonlySet<access_control_GrantPermission> = new Set(
+	access_control_FILE_SHARE_LEVELS.write.permissions,
+);
+
+/**
+ * `access_control_db_extended_chain_allows` for a file resource. It reads the node and its roots as
+ * a Move shows them, so a moved item does not keep the added people of its old place.
+ */
+async function db_file_resource_chain_allows(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		resource: Extract<access_control_Resource, { kind: "file" }>;
+		permission: access_control_GrantPermission;
+		root_allows: (rootId: Id<"files_nodes">) => Promise<boolean>;
+	},
+) {
+	if (!EXTENDED_ROOT_PERMISSIONS.has(args.permission)) {
+		return false;
+	}
+	const nodeId = ctx.db.normalizeId("files_nodes", args.resource.id);
+	const node = nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
+	if (!node) {
+		return false;
+	}
+	return await access_control_db_extended_chain_allows(ctx, {
+		...args,
+		node,
+		get_node: (rootId) => files_saved_placement_db_get_node(ctx.db, rootId),
+	});
+}
+
+/** A service account's grant on one scope root, or a grant to the account's role there. */
+async function db_has_account_scope_grant(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		account: Doc<"access_control_service_accounts">;
+		scopeNodeId: Id<"files_nodes">;
+		permission: access_control_GrantPermission;
+	},
+) {
+	const grant = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("resourceKind", "file")
+				.eq("resourceId", args.scopeNodeId)
+				.eq("principalKind", "service_account")
+				.eq("serviceAccountId", args.account._id)
+				.eq("permission", args.permission),
+		)
+		.first();
+	// The account's role gives the shares that name it, as it does for a member.
+	return (
+		grant !== null ||
+		(args.account.role !== undefined &&
+			(await db_get_role_permission_grant(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				resourceKind: "file",
+				resourceId: String(args.scopeNodeId),
+				role: args.account.role,
+				permission: args.permission,
+			})) !== null)
+	);
+}
+
+/**
  * Who one request acts as. Every file check takes one subject: a person, a person acting through a
  * plugin, or a service account alone. A check never asks about a user and an account together.
  */
@@ -1044,8 +1172,10 @@ type SubjectPlugin = NonNullable<Extract<access_control_Subject, { kind: "user" 
 type FileNodeRef = {
 	_id: Id<"files_nodes">;
 	restrictedScopeNodeId: Id<"files_nodes"> | null;
-	/** Read from the node when missing. Only plugin subjects need it. */
+	/** Read from the node when missing. Plugin subjects and the "Add people" chain need it. */
 	treePath?: string;
+	/** Read from the node when missing, for the "Add people" chain. */
+	extendedScopeNodeId?: Id<"files_nodes"> | null;
 };
 
 /**
@@ -1105,34 +1235,85 @@ function create_file_checker(
 			return binding?.detachedAt === null ? binding : null;
 		});
 
+	// As a Move shows it, so a moved item does not keep the added people of its old place.
+	const get_node = (nodeId: Id<"files_nodes">) =>
+		once(`node:${nodeId}`, () => files_saved_placement_db_get_node(ctx.db, nodeId));
+
+	/** "Add people": a grant on an extended root at or above the node. Each root's answer is shared. */
+	const chain_allows = async (
+		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
+		node: FileNodeRef,
+		permission: access_control_Permission,
+	) => {
+		if (!EXTENDED_ROOT_PERMISSIONS.has(permission)) {
+			return false;
+		}
+		const full =
+			node.treePath !== undefined && node.extendedScopeNodeId !== undefined
+				? { ...node, treePath: node.treePath }
+				: await get_node(node._id);
+		if (!full) {
+			return false;
+		}
+		return await access_control_db_extended_chain_allows(ctx, {
+			...tenant,
+			node: { ...full, restrictedScopeNodeId: node.restrictedScopeNodeId },
+			get_node,
+			root_allows: (rootId) =>
+				once(`root:${rootId}:${permission}`, async () => {
+					if (subject.kind === "user") {
+						const userId = subject.userId;
+						return await has_restricted_file_permission(ctx, {
+							...tenant,
+							scopeNodeId: rootId,
+							permission,
+							userId,
+							get_role_refs: () =>
+								once("role_refs", () => access_control_db_resolve_role_refs(ctx, { ...tenant, userId })),
+						});
+					}
+					const account = await once("account", () =>
+						ctx.db.get("access_control_service_accounts", subject.serviceAccountId),
+					);
+					return (
+						account !== null &&
+						account.revokedAt === null &&
+						account.organizationId === tenant.organizationId &&
+						account.workspaceId === tenant.workspaceId &&
+						(await db_has_account_scope_grant(ctx, { ...tenant, account, scopeNodeId: rootId, permission }))
+					);
+				}),
+		});
+	};
+
 	/** The subject's own access on a live scope (null = open), before any sandbox limit. */
-	const scope_allows = (
+	const scope_allows = async (
 		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
 		node: FileNodeRef | null,
 		scopeNodeId: Id<"files_nodes"> | null,
 		permission: access_control_Permission,
 	) => {
 		if (subject.kind === "service_account") {
-			// An account may hold an exact grant on an open node, so open nodes are checked one by one.
-			return once(`account:${scopeNodeId ?? node?._id ?? "root"}:${permission}`, async () => {
-				// A plugin output folder belongs to its plugin. Only that installation's own requests reach it,
-				// so a key bound to the plugin's account cannot read it.
-				const binding = scopeNodeId ? await output_folder(scopeNodeId) : null;
-				if (binding && binding.installationId !== subject.installationId) {
-					return false;
-				}
-				return await access_control_db_has_permission(ctx, {
+			// A plugin output folder belongs to its plugin. Only that installation's own requests reach it,
+			// so a key bound to the plugin's account cannot read it.
+			const binding = scopeNodeId ? await output_folder(scopeNodeId) : null;
+			if (binding && binding.installationId !== subject.installationId) {
+				return false;
+			}
+			const base = await once(`account:${scopeNodeId}:${permission}`, () =>
+				access_control_db_has_permission(ctx, {
 					...tenant,
 					serviceAccountId: subject.serviceAccountId,
-					resource: node
-						? { kind: "file", id: node._id, restrictedScopeNodeId: scopeNodeId }
+					resource: scopeNodeId
+						? { kind: "file", id: scopeNodeId, restrictedScopeNodeId: scopeNodeId }
 						: { kind: "workspace", id: tenant.workspaceId },
 					permission,
-				});
-			});
+				}),
+			);
+			return base || (node !== null && (await chain_allows(tenant, node, permission)));
 		}
 
-		return once(`user:${scopeNodeId}:${permission}`, async () => {
+		const base = await once(`user:${scopeNodeId}:${permission}`, async () => {
 			if (subject.userId === tenant.organizationOwnerUserId) {
 				return true;
 			}
@@ -1153,6 +1334,7 @@ function create_file_checker(
 				permission,
 			});
 		});
+		return base || (node !== null && (await chain_allows(tenant, node, permission)));
 	};
 
 	const load_sandbox_roots = (
@@ -1185,9 +1367,9 @@ function create_file_checker(
 					continue;
 				}
 				const area = await live_scope(tenant, node.restrictedScopeNodeId);
-				// A root on a node inside a restricted area that is not its own restricted folder gives
-				// nothing, the same as its account grant.
-				if (area !== null && area !== node._id) {
+				// A root on a node inside a restricted area gives nothing unless the node is that restricted
+				// folder or an item with added people, the same as its account grant.
+				if (area !== null && area !== node._id && node.parentExtendedScopeNodeId === undefined) {
 					continue;
 				}
 				loaded.push({ kind: "folder", node, area, level: root.level });
@@ -1385,49 +1567,7 @@ export async function access_control_db_has_permission(
 			return false;
 		}
 
-		const scopeNodeId =
-			args.resource.kind === "file"
-				? await access_control_db_resolve_live_restricted_scope(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						restrictedScopeNodeId: args.resource.restrictedScopeNodeId,
-					})
-				: null;
-		const grant = await ctx.db
-			.query("access_control_permission_grants")
-			.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("resourceKind", args.resource.kind)
-					.eq("resourceId", scopeNodeId ?? args.resource.id)
-					.eq("principalKind", "service_account")
-					.eq("serviceAccountId", args.serviceAccountId)
-					.eq("permission", args.permission),
-			)
-			.first();
-		if (grant) {
-			return true;
-		}
-		if (scopeNodeId) {
-			// The account's role gives the restricted-folder shares that name it, as it does for a member.
-			return (
-				account.role !== undefined &&
-				(await db_get_role_permission_grant(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					resourceKind: "file",
-					resourceId: String(scopeNodeId),
-					role: account.role,
-					permission: args.permission,
-				})) !== null
-			);
-		}
-		if (args.resource.kind !== "file") {
-			return false;
-		}
-
-		return (
+		const has_workspace_grant = async (workspaceId: string) =>
 			(await ctx.db
 				.query("access_control_permission_grants")
 				.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
@@ -1435,13 +1575,37 @@ export async function access_control_db_has_permission(
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("resourceKind", "workspace")
-						.eq("resourceId", args.workspaceId)
+						.eq("resourceId", workspaceId)
 						.eq("principalKind", "service_account")
 						.eq("serviceAccountId", args.serviceAccountId)
 						.eq("permission", args.permission),
 				)
-				.first()) !== null
-		);
+				.first()) !== null;
+		if (args.resource.kind === "workspace") {
+			return await has_workspace_grant(args.resource.id);
+		}
+
+		// Every file grant sits on a restricted or an extended root, so no grant on the node itself is
+		// read here: an extended root is the first link of its own chain.
+		const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			restrictedScopeNodeId: args.resource.restrictedScopeNodeId,
+		});
+		const scopeArgs = { organizationId: args.organizationId, workspaceId: args.workspaceId, account };
+		if (
+			scopeNodeId
+				? await db_has_account_scope_grant(ctx, { ...scopeArgs, scopeNodeId, permission: args.permission })
+				: await has_workspace_grant(args.workspaceId)
+		) {
+			return true;
+		}
+		return await db_file_resource_chain_allows(ctx, {
+			...args,
+			resource: args.resource,
+			root_allows: (rootId) =>
+				db_has_account_scope_grant(ctx, { ...scopeArgs, scopeNodeId: rootId, permission: args.permission }),
+		});
 	}
 
 	const userId = args.userId;
@@ -1514,17 +1678,47 @@ export async function access_control_db_has_permission(
 			workspaceId: args.workspaceId,
 			restrictedScopeNodeId: resource.restrictedScopeNodeId,
 		});
+		const scopeArgs = {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			defaultWorkspaceId: args.defaultWorkspaceId,
+			permission: args.permission,
+			userId,
+			allowPublic: args.allowPublic,
+		};
 		if (scopeNodeId) {
-			return await has_restricted_file_permission(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				defaultWorkspaceId: args.defaultWorkspaceId,
-				scopeNodeId,
-				permission: args.permission,
-				userId,
-				allowPublic: args.allowPublic,
-			});
+			if (await has_restricted_file_permission(ctx, { ...scopeArgs, scopeNodeId })) {
+				return true;
+			}
+		} else if (
+			(args.allowPublic &&
+				(await db_get_public_permission_grant(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					resourceKind: "file",
+					resourceId: resource.id,
+					permission: args.permission,
+				}))) ||
+			// An open node uses workspace access. Every user grant on a file sits on a scope root, so no
+			// grant on the node itself is read here.
+			(await access_control_db_has_permission(ctx, {
+				...args,
+				allowPublic: undefined,
+				resource: { kind: "workspace", id: args.workspaceId },
+			}))
+		) {
+			return true;
 		}
+		// "Add people": a grant on an extended root at or above the node.
+		let roleRefs: Promise<access_control_RoleRef[]> | undefined;
+		const get_role_refs = () =>
+			(roleRefs ??= userId ? access_control_db_resolve_role_refs(ctx, { ...args, userId }) : Promise.resolve([]));
+		return await db_file_resource_chain_allows(ctx, {
+			...args,
+			resource,
+			root_allows: (rootId) =>
+				has_restricted_file_permission(ctx, { ...scopeArgs, scopeNodeId: rootId, get_role_refs }),
+		});
 	}
 
 	// A plugin scope closes a door instead of opening one, so this branch answers on its own and
@@ -2019,7 +2213,8 @@ const service_account_grant_validator = v.object({
 		v.object({
 			name: v.union(v.string(), v.null()),
 			path: v.union(v.string(), v.null()),
-			scope: v.union(v.literal("exact_node"), v.literal("restricted_scope")),
+			/** `extended_root`: the grant reaches this item and the open items inside it ("Add people"). */
+			scope: v.union(v.literal("extended_root"), v.literal("restricted_scope")),
 		}),
 	),
 	canManage: v.boolean(),
@@ -2101,9 +2296,6 @@ export async function access_control_db_authorize_service_account_grant(
 			node.workspaceId !== args.membership.workspaceId)
 	) {
 		return Result({ _nay: { message: "Not found" } });
-	}
-	if (node && args.level !== null && node.restrictedScopeNodeId !== null && node.restrictedScopeNodeId !== node._id) {
-		return Result({ _nay: { message: "Set access on the restricted scope" } });
 	}
 
 	const resource: access_control_Resource = node
@@ -2196,14 +2388,12 @@ async function db_get_service_account_grant_entry(
 			? {
 					name: callerPermissions.has("content.read") ? node.name : null,
 					path: callerPermissions.has("content.read") ? node.path : null,
-					scope: node.restrictedScopeNodeId === node._id ? ("restricted_scope" as const) : ("exact_node" as const),
+					scope: node.restrictedScopeNodeId === node._id ? ("restricted_scope" as const) : ("extended_root" as const),
 				}
 			: null,
 		canManage,
 		grantableLevels:
-			canManage &&
-			args.account.revokedAt === null &&
-			(!node || node.restrictedScopeNodeId === null || node.restrictedScopeNodeId === node._id)
+			canManage && args.account.revokedAt === null
 				? access_control_FILE_SHARE_LEVEL_KEYS.filter(
 						(level) =>
 							// An account can manage only the workspace or a restricted root.

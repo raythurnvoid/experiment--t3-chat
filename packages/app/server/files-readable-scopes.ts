@@ -7,7 +7,8 @@
 // `by_org_ws_principal_archive_treePath`, in path order. Nested folders use the nearest scope only: a
 // readable folder inside a hidden one is its own partition. A service account also reads single open
 // nodes through its own grants, and its share rows give those nodes too. A plugin is limited by its
-// sandbox roots, which have no share rows, so a plugin list checks every row.
+// sandbox roots, which have no share rows, so a plugin list checks every row. A row on an item with
+// added people (an extended root) opens no partition: the items inside it are not listed through it.
 //
 // Only the transitional partitions have a cap (`TRANSITIONAL_MAX_SCOPE_OPS`). Past it the plan hides
 // more, never less, and says so with `truncated`, so a reader that needs a whole folder can stop.
@@ -115,8 +116,8 @@ export async function files_readable_scopes_db_reader(
 
 /**
  * Whether the rows that store `storedScopeNodeId` are readable. A dead pointer follows its live scope.
- * Without one the rows are open content, even when an account holds an exact grant on the dead node:
- * that grant reads the node only.
+ * Without one the rows are open content, even when an account holds a grant on the dead node: that
+ * grant opens no partition.
  */
 async function db_can_read_partition(ctx: QueryCtx, reader: Reader, storedScopeNodeId: Id<"files_nodes">) {
 	const scopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {

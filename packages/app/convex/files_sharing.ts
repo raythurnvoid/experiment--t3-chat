@@ -24,6 +24,7 @@ import {
 	access_control_db_authorize_node,
 	access_control_db_authorize_service_account_grant,
 	access_control_db_caller_cannot_share_with_role,
+	access_control_db_extended_chain_allows,
 	access_control_db_has_permission,
 	access_control_db_resolve_effective_permissions,
 	access_control_db_resolve_live_restricted_scope,
@@ -51,6 +52,7 @@ import { files_saved_placement_db_get_node } from "../server/files-saved-placeme
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
+	access_control_ADDED_PEOPLE_LEVEL_MESSAGE,
 	access_control_FILE_SHARE_LEVEL_KEYS,
 	access_control_FILE_SHARE_LEVELS,
 	access_control_PERMISSION_CATALOG,
@@ -299,6 +301,22 @@ const share_principal_validator = v.union(
 	}),
 );
 
+const share_entry_validator = v.object({
+	principal: share_principal_validator,
+	level: share_level_validator,
+	serviceAccountName: v.union(v.string(), v.null()),
+	/** The plugin this account serves here, if any. Its grants are also that plugin's folders. */
+	servicePluginName: v.union(v.string(), v.null()),
+});
+
+/** A folder above the node whose people also reach it. `entries` is null when the caller may not see them. */
+const share_inherited_validator = v.object({
+	nodeId: v.id("files_nodes"),
+	name: v.string(),
+	path: v.string(),
+	entries: v.union(v.array(share_entry_validator), v.null()),
+});
+
 type FileSharePrincipal =
 	| { kind: "user"; userId: Id<"users"> }
 	| { kind: "role"; role: access_control_RoleRef }
@@ -317,7 +335,7 @@ function share_principal_key(principal: FileSharePrincipal) {
 }
 
 /**
- * Every grant doc saved on one restricted node, whatever the principal.
+ * Every grant doc saved on one scope root (restricted or extended), whatever the principal.
  *
  * The index starts with organization, workspace, resource kind and resource id, and `principalKind`
  * only comes after those, so this query returns user, role, and service-account grants together.
@@ -613,15 +631,23 @@ export const get_node_share_state = query({
 			canShareWithRoles: v.boolean(),
 			canShareWithServiceAccounts: v.boolean(),
 			serviceGrantableLevels: v.array(share_level_validator),
-			entries: v.array(
-				v.object({
-					principal: share_principal_validator,
-					level: share_level_validator,
-					serviceAccountName: v.union(v.string(), v.null()),
-					/** The plugin this account serves here, if any. Its grants are also that plugin's folders. */
-					servicePluginName: v.union(v.string(), v.null()),
-				}),
-			),
+			/**
+			 * What this node is: a restricted root, an item with added people, or an item that only takes
+			 * the access of the folders above it.
+			 */
+			access: v.union(v.literal("restricted_root"), v.literal("extended_root"), v.literal("inherits")),
+			/** Whether the caller may add people here. Any item can get added people. */
+			canAddPeople: v.boolean(),
+			/** The people on this node itself. Empty for an item that only inherits. */
+			entries: v.array(share_entry_validator),
+			/**
+			 * Where the rest of the access comes from. `restricted` null means everyone in the workspace.
+			 * `extended` lists the folders with added people above the node, nearest first.
+			 */
+			inheritedFrom: v.object({
+				restricted: v.union(share_inherited_validator, v.null()),
+				extended: v.array(share_inherited_validator),
+			}),
 			/** The owner always gets in, and holds no grant, so the dialog shows them as a fixed row. */
 			organizationOwnerUserId: v.id("users"),
 			/**
@@ -670,17 +696,19 @@ export const get_node_share_state = query({
 
 		// Restricting writes the caller a `manage` grant, so it answers to the same ceiling
 		// `restrict_node` applies. Asked here so the dialog does not offer a button that always fails.
-		// The owner holds no grants and passes every check earlier than this one.
+		// The owner holds no grants and passes every check earlier than this one. Without manage the
+		// answer is no, so skip the check: on a deep path each permission costs a walk of the chain.
 		const canRestrict =
 			userAuth.id === organization.ownerUserId ||
-			(await caller_can_hand_out_level(ctx, {
-				organization,
-				defaultWorkspaceId,
-				workspaceId: membership.workspaceId,
-				node,
-				userId: userAuth.id,
-				level: "manage",
-			})) === null;
+			(canManage &&
+				(await caller_can_hand_out_level(ctx, {
+					organization,
+					defaultWorkspaceId,
+					workspaceId: membership.workspaceId,
+					node,
+					userId: userAuth.id,
+					level: "manage",
+				})) === null);
 
 		// Same reason as `canRestrict`: do not offer a choice that always fails. Read at the default
 		// workspace, like the ceiling itself, because the question is what the caller's organization
@@ -758,33 +786,85 @@ export const get_node_share_state = query({
 		});
 		const scopeNode = scopeNodeId ? await ctx.db.get("files_nodes", scopeNodeId) : null;
 		const scopeIsLive = scopeNode !== null && scopeNode.restrictedScopeNodeId === scopeNode._id;
-		const grants = await db_list_scope_grants(ctx, {
+		const access =
+			scopeIsLive && scopeNode._id === node._id
+				? ("restricted_root" as const)
+				: node.parentExtendedScopeNodeId !== undefined
+					? ("extended_root" as const)
+					: ("inherits" as const);
+		const entries_on = async (scopeNodeId: Id<"files_nodes">) =>
+			await Promise.all(
+				group_grants_into_entries(
+					await db_list_scope_grants(ctx, {
+						organizationId: organization._id,
+						workspaceId: membership.workspaceId,
+						scopeNodeId,
+					}),
+				).map(async (entry) => {
+					const account =
+						entry.principal.kind === "service_account"
+							? await ctx.db.get("access_control_service_accounts", entry.principal.serviceAccountId)
+							: null;
+					const installation = account
+						? await ctx.db
+								.query("plugins_workspace_installations")
+								.withIndex("by_serviceAccount", (q) => q.eq("serviceAccountId", account._id))
+								.first()
+						: null;
+					const version = installation ? await ctx.db.get("plugins_versions", installation.pluginVersionId) : null;
+					return {
+						...entry,
+						serviceAccountName: account?.name ?? null,
+						servicePluginName: version?.displayName ?? null,
+					};
+				}),
+			);
+		const entries = access === "inherits" ? [] : await entries_on(node._id);
+
+		// Inherited names only for somebody who reads the whole area: every folder here is in the node's
+		// own restricted area (or all open). A person who gets in only through added people must not learn
+		// who else reads the folders above. Managing the node is enough too: added people never manage.
+		const seesInheritedNames =
+			canManage ||
+			(await access_control_db_has_permission(ctx, {
+				organizationId: organization._id,
+				workspaceId: membership.workspaceId,
+				defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+				resource:
+					scopeNode && scopeIsLive
+						? { kind: "file", id: String(scopeNode._id), restrictedScopeNodeId: scopeNode._id }
+						: { kind: "workspace", id: membership.workspaceId },
+				permission: "content.read",
+				userId: userAuth.id,
+			}));
+		const inherited = async (folder: Doc<"files_nodes">) => ({
+			nodeId: folder._id,
+			name: folder.name,
+			path: folder.path,
+			entries: seesInheritedNames ? await entries_on(folder._id) : null,
+		});
+		const chainNodes = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
+		const extendedFolders: Doc<"files_nodes">[] = [];
+		await access_control_db_extended_chain_allows(ctx, {
 			organizationId: organization._id,
 			workspaceId: membership.workspaceId,
-			scopeNodeId: scopeIsLive ? scopeNode._id : node._id,
+			node,
+			get_node: async (nodeId) => {
+				const chainNode = await files_saved_placement_db_get_node(ctx.db, nodeId);
+				if (chainNode) chainNodes.set(nodeId, chainNode);
+				return chainNode;
+			},
+			// Never stop early: collect every live root above the node.
+			root_allows: async (rootId) => {
+				if (rootId !== node._id) extendedFolders.push(chainNodes.get(rootId)!);
+				return false;
+			},
 		});
-		const entries = await Promise.all(
-			group_grants_into_entries(
-				scopeIsLive ? grants : grants.filter((grant) => grant.principalKind === "service_account"),
-			).map(async (entry) => {
-				const account =
-					entry.principal.kind === "service_account"
-						? await ctx.db.get("access_control_service_accounts", entry.principal.serviceAccountId)
-						: null;
-				const installation = account
-					? await ctx.db
-							.query("plugins_workspace_installations")
-							.withIndex("by_serviceAccount", (q) => q.eq("serviceAccountId", account._id))
-							.first()
-					: null;
-				const version = installation ? await ctx.db.get("plugins_versions", installation.pluginVersionId) : null;
-				return {
-					...entry,
-					serviceAccountName: account?.name ?? null,
-					servicePluginName: version?.displayName ?? null,
-				};
-			}),
-		);
+		const inheritedFrom = {
+			restricted: scopeNode && scopeIsLive && access !== "restricted_root" ? await inherited(scopeNode) : null,
+			extended: await Promise.all(extendedFolders.map(inherited)),
+		};
 
 		if (!scopeNode || !scopeIsLive) {
 			return {
@@ -797,7 +877,10 @@ export const get_node_share_state = query({
 				canShareWithRoles,
 				canShareWithServiceAccounts,
 				serviceGrantableLevels,
+				access,
+				canAddPeople: canManage,
 				entries,
+				inheritedFrom,
 				organizationOwnerUserId: organization.ownerUserId,
 				link,
 			};
@@ -818,7 +901,10 @@ export const get_node_share_state = query({
 			canShareWithRoles,
 			canShareWithServiceAccounts,
 			serviceGrantableLevels,
+			access,
+			canAddPeople: canManage,
 			entries,
+			inheritedFrom,
 			organizationOwnerUserId: organization.ownerUserId,
 			link,
 		};
@@ -826,10 +912,11 @@ export const get_node_share_state = query({
 });
 
 /**
- * Add a person or a role to a restricted node's share list, or change the level they already have.
+ * Add a person or a role to a node's share list, or change the level they already have.
  *
- * The node has to be the restricted one. Something inside a restricted folder is shared through that
- * folder, and the dialog sends the folder's id for exactly that reason.
+ * On a restricted node this edits who may open it. On any other node it adds people ("Add people"):
+ * the node becomes an extended root, and its added people also get everything inside it, except
+ * restricted items inside it. Everybody who had access before keeps it.
  */
 export const set_node_share_grant = mutation({
 	args: {
@@ -880,8 +967,8 @@ export const set_node_share_grant = mutation({
 			});
 			return result._nay ? result : Result({ _yay: null });
 		}
-		if (node.restrictedScopeNodeId !== node._id) {
-			return Result({ _nay: { message: "Restrict this first, then choose who gets access" } });
+		if (args.level === "manage" && node.restrictedScopeNodeId !== node._id) {
+			return Result({ _nay: { message: access_control_ADDED_PEOPLE_LEVEL_MESSAGE } });
 		}
 
 		// The owner is not in the list and cannot be put in it: they already pass every check, so a row
@@ -995,6 +1082,23 @@ export const set_node_share_grant = mutation({
 			});
 		}
 
+		// Every refusal is above this line, so a refused share leaves no extended root behind.
+		const now = Date.now();
+		if (node.restrictedScopeNodeId !== node._id && node.parentExtendedScopeNodeId === undefined) {
+			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
+			// An op gives the items inside the new chain. Its first step runs here, so a small folder is done now.
+			await files_subtree_ops_db_start_rebuild(ctx, {
+				kind: "scope",
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				membership,
+				roots: [{ node, oldTreePath: node.treePath }],
+				budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
+				now,
+			});
+		}
+
 		const changed = await db_set_principal_level(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1002,7 +1106,7 @@ export const set_node_share_grant = mutation({
 			principal: args.principal,
 			level: args.level,
 			grants,
-			now: Date.now(),
+			now,
 		});
 		if (changed) {
 			await db_detach_file_access_binding({ ctx, node, shareLinkCleanup: files_share_links_create_cleanup_state() });
@@ -1012,7 +1116,11 @@ export const set_node_share_grant = mutation({
 	},
 });
 
-/** Take a person or a role off a restricted node's share list. */
+/**
+ * Take a person, a role or an account off a node's share list.
+ *
+ * When the last one leaves an extended root, the item stops being one and inherits again.
+ */
 export const remove_node_share_grant = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -1059,48 +1167,69 @@ export const remove_node_share_grant = mutation({
 				resource,
 				level: null,
 			});
-			return result._nay ? result : Result({ _yay: null });
-		}
-		if (node.restrictedScopeNodeId !== node._id) {
-			return Result({ _nay: { message: "This is not restricted" } });
-		}
+			if (result._nay) {
+				return result;
+			}
+		} else {
+			const grants = await db_list_scope_grants(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				scopeNodeId: node._id,
+			});
+			const entries = group_grants_into_entries(grants);
 
-		const grants = await db_list_scope_grants(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			scopeNodeId: node._id,
-		});
-		const entries = group_grants_into_entries(grants);
+			// Removing gives nothing away, so it needs no ceiling check, the same way `set_user_role` takes
+			// no ceiling when it revokes. It still needs the manager check below, which is about leaving the
+			// node repairable, not about how much power the caller has.
+			if (
+				would_leave_no_manager({
+					entries,
+					principal: args.principal,
+					level: null,
+					callerIsOwner: userAuth.id === organization.ownerUserId,
+				})
+			) {
+				return Result({
+					_nay: {
+						message: "Somebody has to be able to manage this. Give another person or role Can manage first.",
+					},
+				});
+			}
 
-		// Removing gives nothing away, so it needs no ceiling check, the same way `set_user_role` takes
-		// no ceiling when it revokes. It still needs the manager check below, which is about leaving the
-		// node repairable, not about how much power the caller has.
-		if (
-			would_leave_no_manager({
-				entries,
+			const changed = await db_set_principal_level(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				scopeNodeId: node._id,
 				principal: args.principal,
 				level: null,
-				callerIsOwner: userAuth.id === organization.ownerUserId,
-			})
-		) {
-			return Result({
-				_nay: {
-					message: "Somebody has to be able to manage this. Give another person or role Can manage first.",
-				},
+				grants,
+				now: Date.now(),
 			});
+			if (changed) {
+				await db_detach_file_access_binding({ ctx, node, shareLinkCleanup: files_share_links_create_cleanup_state() });
+			}
 		}
 
-		const changed = await db_set_principal_level(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			scopeNodeId: node._id,
-			principal: args.principal,
-			level: null,
-			grants,
-			now: Date.now(),
-		});
-		if (changed) {
-			await db_detach_file_access_binding({ ctx, node, shareLinkCleanup: files_share_links_create_cleanup_state() });
+		if (node.parentExtendedScopeNodeId !== undefined) {
+			// Read after the delete above. A mutation sees its own writes.
+			const left = await db_list_scope_grants(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				scopeNodeId: node._id,
+			});
+			if (left.length === 0) {
+				await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: false });
+				await files_subtree_ops_db_start_rebuild(ctx, {
+					kind: "scope",
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					membership,
+					roots: [{ node, oldTreePath: node.treePath }],
+					budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
+					now: Date.now(),
+				});
+			}
 		}
 
 		return Result({ _yay: null });
@@ -1166,6 +1295,34 @@ export const restrict_node = mutation({
 						message: `You cannot give "${access_control_FILE_SHARE_LEVELS["manage"].label}" here: you do not have "${access_control_PERMISSION_CATALOG[missing].label}" on it`,
 					},
 				});
+			}
+		}
+
+		// Restricting starts with only the person restricting it, so people added here lose access.
+		// Account grants go through the account writer, so the plugin folders stay in sync.
+		if (node.parentExtendedScopeNodeId !== undefined) {
+			const grants = await db_list_scope_grants(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				scopeNodeId: node._id,
+			});
+			const accountIds = new Set<Id<"access_control_service_accounts">>();
+			for (const grant of grants) {
+				if (grant.principalKind === "service_account" && grant.serviceAccountId) {
+					accountIds.add(grant.serviceAccountId);
+				} else {
+					await ctx.db.delete("access_control_permission_grants", grant._id);
+				}
+			}
+			for (const serviceAccountId of accountIds) {
+				const removed = await access_control_db_set_service_account_grant(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					serviceAccountId,
+					resource: { kind: "file", nodeId: node._id },
+					level: null,
+				});
+				if (removed._nay) throw convex_error(removed._nay);
 			}
 		}
 

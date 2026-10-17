@@ -310,7 +310,7 @@ describe("plugin sandbox roots", () => {
 		});
 	});
 
-	test("detaching an output folder makes its account grant a root", async () => {
+	test("detaching an output folder makes its account grant a root, and restricting it removes the account", async () => {
 		const f = await fixture();
 		const installation = await f.install([]);
 		const output = await f.folder("transcripts");
@@ -319,19 +319,32 @@ describe("plugin sandbox roots", () => {
 		expect((await f.sandbox(installation._id))?.roots).toEqual([]);
 
 		vi.advanceTimersByTime(60_000);
+		// Adding people is a manual sharing change, so it detaches the folder.
 		expect(
-			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+			await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 				membershipId: f.membership.membershipId,
 				nodeId: output,
+				principal: { kind: "role", role: "member" },
+				level: "read",
 			}),
 		).toEqual({ _yay: null });
 
 		expect((await f.sandbox(installation._id))?.roots).toEqual([
 			{ target: { kind: "folder", nodeId: output }, level: "write" },
 		]);
+
+		// A restrict starts with only the person restricting it.
+		vi.advanceTimersByTime(60_000);
+		expect(
+			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.membership.membershipId,
+				nodeId: output,
+			}),
+		).toEqual({ _yay: null });
+		expect((await f.sandbox(installation._id))?.roots).toEqual([]);
 	});
 
-	test("detaching an output folder when the plugin has 20 folders keeps the restrict and skips the root", async () => {
+	test("detaching an output folder when the plugin has 20 folders keeps the share and skips the root", async () => {
 		const f = await fixture();
 		const installation = await f.install([]);
 		for (let index = 0; index < 20; index += 1) {
@@ -343,10 +356,13 @@ describe("plugin sandbox roots", () => {
 		const warn = vi.spyOn(console, "warn");
 
 		vi.advanceTimersByTime(60_000);
+		// Adding people is a manual sharing change, so it detaches the folder.
 		expect(
-			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+			await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 				membershipId: f.membership.membershipId,
 				nodeId: output,
+				principal: { kind: "role", role: "member" },
+				level: "read",
 			}),
 		).toEqual({ _yay: null });
 

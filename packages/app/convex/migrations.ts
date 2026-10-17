@@ -9,6 +9,10 @@ import app_convex_schema from "./schema.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
+import {
+	files_share_rows_db_compute_all_for_grant,
+	files_share_rows_db_sync_grant,
+} from "../server/files-share-rows.ts";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
 import { files_nodes_db_set_extended_scope } from "./files_nodes.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
@@ -211,7 +215,8 @@ export const run_backfill_files_nodes_extended_scope = app_migrations.runner(
  * - on an item inside a restricted folder: it gave nothing, so delete it;
  * - on an open item: make the item an extended root, so the grant now reaches the items inside.
  * An extended root holds view and edit only, so a manage grant there is lowered to edit.
- * The old exact-grant check still answers during the run, so nobody loses view or edit.
+ * It ran before the permission check followed extended roots, while that check still read the grant
+ * on the item itself, so nobody lost view or edit during the run.
  */
 export const migrate_file_grants_to_scope_roots = app_migrations.define({
 	table: "access_control_permission_grants",
@@ -353,6 +358,7 @@ const extended_scope_audit_problem_validator = v.object({
 		v.literal("grant_not_on_root"),
 		v.literal("dormant_grant"),
 		v.literal("manage_on_extended_root"),
+		v.literal("missing_share_rows"),
 	),
 	scopeStatus: v.union(v.literal("allowed"), v.literal("protected"), v.literal("invalid_tenant")),
 	// Grant problems only. A manage grant is lowered, and a dormant grant is deleted.
@@ -426,6 +432,70 @@ export const audit_file_grants_on_scope_roots = internalQuery({
 				return problem
 					? { id: grant._id, problem, scopeStatus: await db_scope_status(ctx.db, grant), permission: grant.permission }
 					: null;
+			}),
+		);
+		return { ...page, page: checked.filter((problem) => problem !== null) };
+	},
+});
+
+/**
+ * Give the grants on extended roots their share rows. Share rows used to exist only on restricted
+ * roots, so the grants the move above kept on open items have none, and "Shared with you" missed them.
+ */
+export const resync_extended_root_share_rows = app_migrations.define({
+	table: "access_control_permission_grants",
+	// A grant has at most two rows: one per view while a Move holds its node.
+	batchSize: 50,
+	migrateOne: async (ctx, grant) => {
+		if (grant.resourceKind !== "file" || grant.permission !== "content.read") return;
+		const node = await ctx.db.get("files_nodes", grant.resourceId as Id<"files_nodes">);
+		if (!node || node.extendedScopeNodeId !== node._id) return;
+		await files_share_rows_db_sync_grant(ctx.db, grant._id);
+	},
+});
+
+export const run_resync_extended_root_share_rows = app_migrations.runner(
+	internal.migrations.resync_extended_root_share_rows,
+);
+
+/** Every `content.read` grant on an extended root has its share rows, with the right values. */
+export const audit_extended_root_share_rows = internalQuery({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: paginationResultValidator(extended_scope_audit_problem_validator),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_creation_time")
+			.paginate({ cursor: args.cursor, numItems: 200 });
+		const checked = await Promise.all(
+			page.page.map(async (grant) => {
+				if (grant.resourceKind !== "file" || grant.permission !== "content.read") return null;
+				const node = await ctx.db.get("files_nodes", grant.resourceId as Id<"files_nodes">);
+				if (!node || node.extendedScopeNodeId !== node._id) return null;
+				const [desired, stored] = await Promise.all([
+					files_share_rows_db_compute_all_for_grant(ctx.db, grant),
+					ctx.db
+						.query("files_share_rows")
+						.withIndex("by_grant", (q) => q.eq("grantId", grant._id))
+						.collect(),
+				]);
+				// Each desired row must be stored with the same values, not only the same count.
+				const matches =
+					desired.length === stored.length &&
+					desired.every((row) =>
+						stored.some((storedRow) =>
+							Object.entries(row).every(
+								([key, value]) => JSON.stringify(storedRow[key as keyof typeof storedRow]) === JSON.stringify(value),
+							),
+						),
+					);
+				return matches
+					? null
+					: {
+							id: grant._id,
+							problem: "missing_share_rows" as const,
+							scopeStatus: await db_scope_status(ctx.db, grant),
+						};
 			}),
 		);
 		return { ...page, page: checked.filter((problem) => problem !== null) };

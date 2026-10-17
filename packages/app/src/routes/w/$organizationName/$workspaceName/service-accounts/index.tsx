@@ -260,7 +260,7 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 													? "Unrestricted workspace content"
 													: grant.file?.scope === "restricted_scope"
 														? "This restricted scope"
-														: "This item only"}
+														: "This item and what is inside it"}
 											</p>
 										</div>
 										<div className={"RouteServiceAccounts-actions" satisfies RouteServiceAccounts_ClassNames}>
@@ -379,7 +379,7 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 									<p>
 										{grantManagement.resource.kind === "workspace"
 											? "Unrestricted workspace content"
-											: `${grantManagement.file?.path ?? "Protected item"} — ${grantManagement.file?.scope === "restricted_scope" ? "This restricted scope" : "This item only"}`}
+											: `${grantManagement.file?.path ?? "Protected item"} — ${grantManagement.file?.scope === "restricted_scope" ? "This restricted scope" : "This item and what is inside it"}`}
 									</p>
 								) : null}
 								<MySelect

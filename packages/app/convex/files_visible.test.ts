@@ -1044,18 +1044,18 @@ describe("internal_list_children_saved", () => {
 		});
 		if (created._nay) throw new Error(created._nay.message);
 		const { serviceAccountId } = created._yay;
+		const big = await create_saved(f, "big");
 		const grant = await f.asUser.mutation(api.access_control.set_service_account_grant, {
 			membershipId: f.db.membershipId,
 			serviceAccountId,
-			resource: { kind: "workspace" },
+			resource: { kind: "file", nodeId: big.id },
 			level: "read",
 		});
 		if (grant._nay) throw new Error(grant._nay.message);
-		const big = await create_saved(f, "big");
 		const names = Array.from({ length: 1_100 }, (_, index) => `f-${String(index).padStart(4, "0")}.md`);
 		await f.t.run(async (ctx) => {
-			for (const name of names)
-				await ctx.db.insert("files_nodes", {
+			for (const name of names) {
+				const nodeId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,
@@ -1069,12 +1069,18 @@ describe("internal_list_children_saved", () => {
 					treePath: `/big/${name}`,
 					pathDepth: 2,
 					lowercaseExtension: "md",
+					parentExtendedScopeNodeId: big.id,
 				});
+				// Each file is its own extended root inside /big, so each row checks its own grants first.
+				await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId });
+			}
+			// With a role, each of those checks also reads the role's grant.
+			await ctx.db.patch("access_control_service_accounts", serviceAccountId, { role: "member" });
 		});
 
-		// Outside the owner's overlay every open row costs its own access check, so 1,050 rows do
-		// not fit the 3,000 range budget of one call. Measured: 976 rows, then the other 74 of that
-		// page (read again and skipped up to `lastKey`), then the last 50.
+		// Outside the owner's overlay every extended root row costs its own access check,
+		// so 1,050 rows do not fit the 3,000 range budget of one call. The rest of that page is read
+		// again and skipped up to `lastKey`.
 		let position: { rangeStart: string | null; cursor: string | null; lastKey: unknown[] | null } = {
 			rangeStart: null,
 			cursor: null,

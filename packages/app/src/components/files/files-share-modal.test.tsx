@@ -63,6 +63,9 @@ const SHARE = {
 		serviceAccountName: string | null;
 		servicePluginName: string | null;
 	}[],
+	access: "restricted_root",
+	canAddPeople: true,
+	inheritedFrom: { restricted: null, extended: [] },
 	link: null as { token: string; createdBy: string; createdAt: number } | null,
 };
 
@@ -200,6 +203,29 @@ describe("FilesShareModal", () => {
 		renderModal();
 		const row = document.querySelector('[data-share-principal="service_account:account_1"]') as HTMLElement;
 		expect(row.textContent).toContain("Used by plugin chitchat: this also changes the folders the plugin can use.");
+	});
+
+	test("lists the restricted folder's people on an item inside it", () => {
+		const entry = {
+			principal: { kind: "service_account", serviceAccountId: "account_1" },
+			level: "read",
+			serviceAccountName: "Report bot",
+			servicePluginName: null,
+		};
+		mockShareState({
+			...SHARE,
+			scope: { nodeId: "node_0", name: "Reports", path: "/Reports", isSelf: false },
+			access: "inherits",
+			entries: [],
+			inheritedFrom: {
+				restricted: { nodeId: "node_0", name: "Reports", path: "/Reports", entries: [entry] },
+				extended: [],
+			},
+		});
+
+		renderModal();
+		const row = document.querySelector('[data-share-principal="service_account:account_1"]') as HTMLElement;
+		expect(row.textContent).toContain("Report bot");
 	});
 
 	test("hides service choices when the caller cannot manage service accounts", async () => {

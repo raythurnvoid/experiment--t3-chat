@@ -1154,7 +1154,8 @@ export const list_workspace_links = query({
 		).filter((link) => link !== null);
 
 		// The link doc keeps the file's restricted scope. The hooks that change a file's scope delete its
-		// link in the same write, so the nodes do not need to be loaded here.
+		// link in the same write, so the scope is current. The check still reads each node for its added
+		// people.
 		const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,

@@ -1,9 +1,8 @@
 // Share rows (`files_share_rows`): one copy of a node per file `content.read` grant, so a member's
 // shared items can be paged with indexes like the folder table, and a reader can list the restricted
-// folders it may read in path order (`server/files-readable-scopes.ts`). A user or role grant has a
-// copy while its node is a restricted scope root in the grant's workspace, active or archived. A
-// service account grant has one on a restricted scope root too, and also on an open node: an account
-// may read one open node through its own grant.
+// folders it may read in path order (`server/files-readable-scopes.ts`). A user, role or service
+// account grant has a copy while its node is a scope root in the grant's workspace, active or
+// archived: a restricted root, or an extended root (an item with added people).
 //
 // The overlay flush (`server/files-pending-overlay.ts`) keeps them true in the writer's transaction: a
 // grant write syncs its row, and a write to a node that has or may get a row syncs the node's rows.
@@ -68,13 +67,8 @@ function share_row_of(
 	if (!principalKey) return null;
 	// A grant may name a node id of another workspace. Never copy such a node.
 	if (node.organizationId !== grant.organizationId || node.workspaceId !== grant.workspaceId) return null;
-	// A grant reads a restricted node only on its scope root. A service account grant on an open node
-	// reads that one node (`access_control_db_has_permission`).
-	if (
-		node.restrictedScopeNodeId !== node._id &&
-		(grant.principalKind !== "service_account" || node.restrictedScopeNodeId !== null)
-	)
-		return null;
+	// Grants sit only on scope roots. One left on another node gives no access, so it is not a share.
+	if (node.restrictedScopeNodeId !== node._id && node.extendedScopeNodeId !== node._id) return null;
 
 	return {
 		moveView,
@@ -207,10 +201,8 @@ export async function files_share_rows_db_sync_grant(
  * Whether a node write changes its share rows. `old` holds the node's fields before the write (null
  * for an insert) and `node` the doc after it (null for a delete).
  *
- * A node that is or was a restricted scope root changes when a copied field, its workspace or its
- * scope changed. Another node has rows only from service account grants, and only while it is open.
- * So it changes when it opens or closes, or when it has rows and a copied field changed: one range,
- * skipped for a node that stays inside a restricted folder outside a Move.
+ * A node that is or was a scope root (restricted or extended) changes when a copied field, its
+ * workspace or its scope changed. Outside a Move, another node has no rows.
  */
 export async function files_share_rows_db_node_changed(
 	db: QueryCtx["db"],
@@ -218,8 +210,8 @@ export async function files_share_rows_db_node_changed(
 	old: Record<string, unknown> | null,
 	node: Doc<"files_nodes"> | null,
 ) {
-	const wasRoot = old?.restrictedScopeNodeId === nodeId;
-	const isRoot = node?.restrictedScopeNodeId === nodeId;
+	const wasRoot = old?.restrictedScopeNodeId === nodeId || old?.extendedScopeNodeId === nodeId;
+	const isRoot = node?.restrictedScopeNodeId === nodeId || node?.extendedScopeNodeId === nodeId;
 	if ((wasRoot || isRoot) && (!old || !node || wasRoot !== isRoot)) return true;
 	const fieldsChanged =
 		!old ||
@@ -232,9 +224,8 @@ export async function files_share_rows_db_node_changed(
 
 	// A new node has no grant yet.
 	if (!old) return false;
-	if (node && (old.restrictedScopeNodeId === null) !== (node.restrictedScopeNodeId === null)) return true;
-	// Inside a restricted folder only a scope root (above) or a node a Move holds has rows.
-	if (node && old.restrictedScopeNodeId !== null && !old.moveCohortId && !node.moveCohortId) return false;
+	// A node a Move holds can be a root in one view only, so it may have rows.
+	if (node && !old.moveCohortId && !node.moveCohortId) return false;
 	return (
 		fieldsChanged &&
 		(await db
@@ -261,7 +252,7 @@ export async function files_share_rows_db_sync_node(
 	const desiredByGrant = new Map<string, ShareRow>();
 	if (
 		node &&
-		(node.restrictedScopeNodeId === node._id || node.restrictedScopeNodeId === null || node.moveCohortId)
+		(node.restrictedScopeNodeId === node._id || node.extendedScopeNodeId === node._id || node.moveCohortId)
 	) {
 		// Public `content.read` grants are in this range too, but have no row.
 		const grants = await db

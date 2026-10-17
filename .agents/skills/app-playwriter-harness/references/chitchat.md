@@ -823,10 +823,11 @@ Keep this check on a unique private channel. Do not unlock a shared transcript r
 - Read the installed version on the detail page. The catalog version may be newer.
 - Read `projection/__root__` through the frame's plugin client before finding files. The saved
   `rootPath` may be `/chitchat-<digest>`, while an unrelated `/chitchat` folder also exists.
-- A selected service account in a file policy still needs access grants. An exact grant on an
-  unrestricted folder covers that item only. It does not grant manage access on a new child.
-  Creating the private parent can succeed, then creating the channel folder can return 403 because
-  that parent has no manage grant. This is a setup refusal, not a failed schema migration.
+- A selected service account in a file policy still needs access grants. A grant on an
+  unrestricted folder (added people) covers that folder and what is inside it, at view or edit only.
+  It never grants manage access. Creating the private parent can succeed, then creating the channel
+  folder can return 403 because that parent has no manage grant. This is a setup refusal, not a
+  failed schema migration.
 - If scoped setup is authorized, use the Service accounts grant dialog to add temporary Can manage
   access on the exact private parent. After the unique channel folder exists, add its own account
   grant on that restricted scope. Remove the temporary parent grant. Record the original grants and

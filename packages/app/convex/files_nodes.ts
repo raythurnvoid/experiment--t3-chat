@@ -773,8 +773,8 @@ export async function files_nodes_db_require_swept_nodes_writable(
 		nodes: readonly Doc<"files_nodes">[];
 	},
 ) {
-	// Check each restricted folder once.
-	const readableByScopeNodeId = new Map<Id<"files_nodes">, boolean>();
+	// Check each restricted folder once, per extended scope: added people change access inside it.
+	const readableByScope = new Map<string, boolean>();
 	let hasHiddenRefusal = false;
 
 	for (const node of args.nodes) {
@@ -789,7 +789,8 @@ export async function files_nodes_db_require_swept_nodes_writable(
 			return writable;
 		}
 
-		let readable = readableByScopeNodeId.get(scopeNodeId);
+		const scopeKey = `${scopeNodeId}:${node.extendedScopeNodeId ?? ""}`;
+		let readable = readableByScope.get(scopeKey);
 		if (readable === undefined) {
 			readable = await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
@@ -798,7 +799,7 @@ export async function files_nodes_db_require_swept_nodes_writable(
 				fileNode: node,
 				permission: "content.read",
 			});
-			readableByScopeNodeId.set(scopeNodeId, readable);
+			readableByScope.set(scopeKey, readable);
 		}
 
 		if (readable) {

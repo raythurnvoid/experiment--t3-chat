@@ -62,9 +62,9 @@ const TREE_CHILDREN_MAX_ITEMS = 200;
 // The page cap and the split guard of the share pages. Each share row is its own scope, so each one
 // reads its node and checks its access. The worst row is shared with the member's second role and
 // also has an old plugin grant to the member, so the check also reads that grant and the live
-// membership lifetime: 16 index ranges (measured in the cost test under `list_tree_children_shared`),
-// floor(3,000 / 16) = 187.
-const TREE_SHARE_PAGE_MAX_ITEMS = 187;
+// membership lifetime, and its write check reads the node again for added people: 17 index ranges
+// (measured in the cost test under `list_tree_children_shared`), floor(3,000 / 17) = 176.
+const TREE_SHARE_PAGE_MAX_ITEMS = 176;
 
 // The split guard of an owner's restricted rows in the tree and the folder table. An open row needs
 // no read: the open children of a folder share one access scope, and the rows check each scope once.
@@ -490,7 +490,8 @@ async function db_get_share_principal_keys(
 
 /**
  * The tree rows of one page of share rows. A share row is a copy, so each row keeps a full access
- * check: its node must be a restricted root of the reader's workspace and readable by the reader.
+ * check: its node must be a restricted root of the reader's workspace (or an extended root, with
+ * `extendedRoots`) and readable by the reader.
  * Its copied fields must match the node, so the node is still where the index range read it: under
  * the read's folder, and active or archived, as the read asks. A row of a plugin grant must also
  * carry the member's live membership lifetime: after a re-invite the old grant reads nothing, even
@@ -505,6 +506,8 @@ async function db_get_share_tree_rows(
 			hasWorkspaceRead: boolean;
 		};
 		shareRows: Doc<"files_share_rows">[];
+		/** Also keep rows of items with added people. The folder streams list only restricted children. */
+		extendedRoots: boolean;
 	},
 ) {
 	const { userAuth, membership } = args.reader;
@@ -536,7 +539,7 @@ async function db_get_share_tree_rows(
 		return (
 			node.organizationId === membership.organizationId &&
 			node.workspaceId === membership.workspaceId &&
-			node.restrictedScopeNodeId === node._id &&
+			(node.restrictedScopeNodeId === node._id || (args.extendedRoots && node.extendedScopeNodeId === node._id)) &&
 			(shareRow.externalPluginMembershipLifetime === null ||
 				(liveLifetime?.active === true && liveLifetime.lifetime === shareRow.externalPluginMembershipLifetime))
 		);
@@ -1426,7 +1429,7 @@ export const list_tree_children_shared = query({
 			return files_tree_db_page_split_required(stream.result);
 		}
 
-		const rows = await db_get_share_tree_rows(ctx, { reader, shareRows: stream.result.page });
+		const rows = await db_get_share_tree_rows(ctx, { reader, shareRows: stream.result.page, extendedRoots: false });
 		return {
 			...stream.result,
 			page: rows.map(({ shareRow, treeRow }) => {
@@ -1654,7 +1657,7 @@ export const list_tree_shared_roots = query({
 			return files_tree_db_page_split_required(result);
 		}
 
-		const rows = await db_get_share_tree_rows(ctx, { reader, shareRows: result.page });
+		const rows = await db_get_share_tree_rows(ctx, { reader, shareRows: result.page, extendedRoots: true });
 		return { ...result, page: rows.map((row) => row.treeRow) };
 	},
 });

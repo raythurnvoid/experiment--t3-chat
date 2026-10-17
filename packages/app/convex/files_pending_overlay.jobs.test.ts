@@ -1528,7 +1528,7 @@ describe("files_share_rows", () => {
 		await f.expect_share_rows_true(secondWorkspaceId);
 	});
 
-	test("a service account grant gets a row on a shared folder and on an open node, a public grant none", async () => {
+	test("a service account grant gets a row on a shared folder and on an extended node, a public grant none", async () => {
 		const f = await fixture();
 		const s = await f.saved(null, "s", "folder");
 		const o = await f.saved(null, "o", "folder");
@@ -1559,7 +1559,7 @@ describe("files_share_rows", () => {
 					createdAt: Date.now(),
 					updatedAt: Date.now(),
 				});
-			// An account may read one open node through its own grant.
+			// An account grant makes the open node an extended root, which has share rows.
 			const granted = await access_control_db_set_service_account_grant(ctx, {
 				...f.u,
 				serviceAccountId,
@@ -1573,8 +1573,8 @@ describe("files_share_rows", () => {
 		expect(await share_keys(f, s._id)).toEqual([accountKey, `user:${f.v.userId}`]);
 		expect(await share_rows(f, x._id)).toMatchObject([{ principalKey: accountKey, treePath: "/o/x.md" }]);
 
-		// The open node's row follows a rename of the node and above it and an archive, and goes when the
-		// node moves into a restricted folder, where only a grant on the folder reads it.
+		// The open node's row follows a rename of the node and above it and an archive. It stays when the
+		// node moves into a restricted folder: an item keeps its added people there.
 		await f.as_u(() => test_rename_node(f.t, f.asU, { membershipId: f.db.membershipId, nodeId: x._id, path: "y.md" }));
 		expect(await share_rows(f, x._id)).toMatchObject([{ principalKey: accountKey, treePath: "/o/y.md" }]);
 		await f.as_u(() => test_rename_node(f.t, f.asU, { membershipId: f.db.membershipId, nodeId: o._id, path: "o2" }));
@@ -1590,7 +1590,7 @@ describe("files_share_rows", () => {
 		await f.as_u(() =>
 			test_move_nodes(f.t, f.asU, { membershipId: f.db.membershipId, itemIds: [x._id], targetParentId: s._id }),
 		);
-		expect(await share_keys(f, x._id)).toEqual([]);
+		expect(await share_keys(f, x._id)).toEqual([accountKey]);
 		await f.expect_share_rows_true();
 	});
 

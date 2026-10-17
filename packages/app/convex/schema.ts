@@ -8987,8 +8987,9 @@ const app_convex_schema = defineSchema({
 		/**
 		 * The id of the thing this grant is about, written as a string.
 		 *
-		 * Restricted files use their nearest restricted scope's id. Service accounts may also hold
-		 * an exact grant on an unrestricted node; that grant does not cover its descendants.
+		 * A file grant sits on a scope root: a restricted folder, or an item with added people (an
+		 * extended root). A grant on an extended root also covers the items inside it, up to the next
+		 * restricted folder.
 		 */
 		resourceId: v.string(),
 		principalKind: v.union(v.literal("role"), v.literal("user"), v.literal("public"), v.literal("service_account")),

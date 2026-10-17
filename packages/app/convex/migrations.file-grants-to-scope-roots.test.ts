@@ -202,6 +202,38 @@ test("a grant whose scope is still changing is skipped", async () => {
 	expect(await permissions_on(f, inner.folderId, "user")).toEqual(["content.read"]);
 });
 
+test("converted role grants get share rows after the resync", async () => {
+	const f = await fixture();
+	const { folderId } = await seed_folder(f, "/shared");
+	await insert_grants(f, folderId, { principalKind: "role", role: "member" }, ["content.read"]);
+	await run_migrations(f);
+	// The old share-row rule wrote no row for a grant on an open item. Drop the one the test flush wrote.
+	await f.t.run(async (ctx) => {
+		for (const row of await ctx.db.query("files_share_rows").collect())
+			await ctx.db.delete("files_share_rows", row._id);
+	});
+	const share_audit = async () =>
+		(await f.t.query(internal.migrations.audit_extended_root_share_rows, { cursor: null })).page;
+	expect((await share_audit()).map((problem) => problem.problem)).toEqual(["missing_share_rows"]);
+
+	const status = await f.t.action((ctx) =>
+		runToCompletion(ctx, components.migrations, internal.migrations.resync_extended_root_share_rows),
+	);
+
+	expect(status.state).toBe("success");
+	expect(await share_audit()).toEqual([]);
+	expect(
+		(await f.t.run((ctx) => ctx.db.query("files_share_rows").collect())).map((row) => [row.nodeId, row.principalKey]),
+	).toEqual([[folderId, "role:member"]]);
+
+	// A stored row with an old value is a problem too.
+	await f.t.run(async (ctx) => {
+		const row = (await ctx.db.query("files_share_rows").first())!;
+		await ctx.db.patch("files_share_rows", row._id, { name: "old name" });
+	});
+	expect((await share_audit()).map((problem) => problem.problem)).toEqual(["missing_share_rows"]);
+});
+
 test("a manage grant on an open node is lowered to write", async () => {
 	const f = await fixture();
 	const serviceAccountId = await create_account(f);

@@ -594,7 +594,7 @@ describe("access_control_db_set_service_account_grant", () => {
 		});
 	});
 
-	test("refuses foreign accounts, foreign resources, inherited scopes, and revoked additions", async () => {
+	test("refuses foreign accounts, foreign resources, and revoked additions", async () => {
 		const t = test_convex();
 		await t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "service-grant-bounds" });
@@ -616,22 +616,6 @@ describe("access_control_db_set_service_account_grant", () => {
 				createdAt: 10,
 				updatedAt: 10,
 				revokedAt: null,
-			});
-			const parentId = await ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				organizationId,
-				workspaceId,
-				createdBy: userId,
-				updatedBy: userId,
-			});
-			const childId = await ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				organizationId,
-				workspaceId,
-				parentId,
-				restrictedScopeNodeId: parentId,
-				createdBy: userId,
-				updatedBy: userId,
 			});
 			const foreignId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
@@ -659,14 +643,6 @@ describe("access_control_db_set_service_account_grant", () => {
 					})
 				)._nay?.message,
 			).toBe("File is unavailable");
-			expect(
-				(
-					await access_control_db_set_service_account_grant(ctx, {
-						...args,
-						resource: { kind: "file", nodeId: childId },
-					})
-				)._nay?.message,
-			).toBe("Set access on the restricted scope");
 
 			await ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: 30 });
 			expect(
@@ -966,8 +942,10 @@ describe("access_control_db_has_permission service accounts", () => {
 				resource: { kind: "file", nodeId },
 				level: "read",
 			});
-			expect(await readable([node, other])).toEqual([nodeId]);
-			expect(await can_write(node)).toBe(false);
+			// The grant made the folder an extended root, so read it again.
+			const extended = (await ctx.db.get("files_nodes", nodeId))!;
+			expect(await readable([extended, other])).toEqual([nodeId]);
+			expect(await can_write(extended)).toBe(false);
 
 			await access_control_db_set_service_account_grant(ctx, {
 				...common,
@@ -8924,7 +8902,7 @@ describe("file sharing", () => {
 		expect(addedRole._nay?.message).toBe("This role does not exist");
 	});
 
-	test("a grant can only be given on the node that carries the restriction", async () => {
+	test("a grant on an item inside a restricted folder adds people there", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "scope-node-org",
@@ -8932,15 +8910,14 @@ describe("file sharing", () => {
 		});
 		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "scope-space" });
 
-		// The dialog sends the folder's id for anything inside it. Sending the child's id instead is
-		// refused, because a grant on the child would be a list nothing ever reads.
+		// The child becomes an item with added people. Its grants also reach what is inside it.
 		const onChild = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: childId,
 			principal: { kind: "user", userId: fixture.memberId },
 			level: "read",
 		});
-		expect(onChild._nay?.message).toBe("Restrict this first, then choose who gets access");
+		expect(onChild._nay).toBeUndefined();
 
 		// The child still reports the folder above as the thing that decides, and says it is not the
 		// restricted node itself. That pair is what the dialog uses to offer "Manage <folder>".
@@ -8950,6 +8927,7 @@ describe("file sharing", () => {
 		});
 		expect(childState?.scope?.nodeId).toBe(folderId);
 		expect(childState?.scope?.isSelf).toBe(false);
+		expect(childState?.access).toBe("extended_root");
 
 		const folderState = await fixture.asOwner.query(api.files_sharing.get_node_share_state, {
 			membershipId: fixture.ownerMembershipId,

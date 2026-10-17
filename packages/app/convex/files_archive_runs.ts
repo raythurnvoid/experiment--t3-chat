@@ -267,7 +267,8 @@ async function db_check_writable_nodes(
 	if (!membership) return MEMBERSHIP_LOST;
 
 	for (const node of nodes) {
-		const scopeKey = node.restrictedScopeNodeId ?? "";
+		// Added people change access inside a scope, so the key is the pair.
+		const scopeKey = `${node.restrictedScopeNodeId ?? ""}:${node.extendedScopeNodeId ?? ""}`;
 		let allowed = args.checkedScopes.get(scopeKey);
 		if (allowed === undefined) {
 			const authorized = await access_control_db_authorize_membership(ctx, {

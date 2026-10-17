@@ -10,7 +10,7 @@ import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_genera
 import { internalMutation, mutation } from "./functions.ts";
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { access_control_db_has_permission } from "./access_control.ts";
+import { access_control_db_has_permission, access_control_db_set_service_account_grant } from "./access_control.ts";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { plugins_db_get_live_service_account, plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
@@ -4102,6 +4102,26 @@ export async function plugins_data_db_apply_file_access_binding(
 	let accessChanged = false;
 	// Restrict the node on itself and start a scope op for the items inside, like the member share door does.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
+		// Restricting starts with only its readers, so accounts added here lose access, like `restrict_node`.
+		// The account writer keeps the plugin folders in sync. Added people go in the reader loop below.
+		if (args.node.parentExtendedScopeNodeId !== undefined) {
+			const grants = await db_binding_file_grants(ctx, {
+				organizationId: args.installation.organizationId,
+				workspaceId: args.installation.workspaceId,
+				nodeId: args.node._id,
+			});
+			const accountIds = new Set(grants.flatMap((grant) => grant.serviceAccountId ?? []));
+			for (const serviceAccountId of accountIds) {
+				const removed = await access_control_db_set_service_account_grant(ctx, {
+					organizationId: args.installation.organizationId,
+					workspaceId: args.installation.workspaceId,
+					serviceAccountId,
+					resource: { kind: "file", nodeId: args.node._id },
+					level: null,
+				});
+				if (removed._nay) throw convex_error(removed._nay);
+			}
+		}
 		await files_nodes_db_set_restricted_scope({
 			ctx,
 			organizationId: args.node.organizationId,

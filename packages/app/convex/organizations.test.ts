@@ -4596,8 +4596,9 @@ describe("access_control", () => {
 				}),
 			]);
 
-			// File sharing does not write these grants yet, so the test inserts the docs straight into the
-			// table. `resourceId` is the restricted scope node, never the file that was opened.
+			// The test inserts the docs straight into the table. A grant sits on a scope root, so the file
+			// gets added people (an extended root) first.
+			await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId, parentExtendedScopeNodeId: null });
 			await Promise.all([
 				ctx.db.insert("access_control_permission_grants", {
 					organizationId: organization.organizationId,

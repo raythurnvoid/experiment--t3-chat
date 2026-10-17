@@ -224,10 +224,11 @@ export async function files_tree_db_get_rows(
 		userAuth: { id: Id<"users"> };
 		membership: Doc<"organizations_workspaces_users">;
 		fileNodes: Doc<"files_nodes">[];
-		canWriteContentByScope?: Map<Id<"files_nodes"> | null, Promise<boolean>>;
+		/** Keyed by the restricted and extended scope pair: added people change access inside a scope. */
+		canWriteContentByScope?: Map<string, Promise<boolean>>;
 	},
 ) {
-	const canWriteContentByScope = args.canWriteContentByScope ?? new Map<Id<"files_nodes"> | null, Promise<boolean>>();
+	const canWriteContentByScope = args.canWriteContentByScope ?? new Map<string, Promise<boolean>>();
 	return await Promise.all(
 		args.fileNodes.map(async (fileNode) => {
 			if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
@@ -241,7 +242,8 @@ export async function files_tree_db_get_rows(
 				throw should_never_happen(errorMessage, errorData);
 			}
 
-			let canWriteContent = canWriteContentByScope.get(fileNode.restrictedScopeNodeId);
+			const scopeKey = `${fileNode.restrictedScopeNodeId ?? ""}:${fileNode.extendedScopeNodeId ?? ""}`;
+			let canWriteContent = canWriteContentByScope.get(scopeKey);
 			if (!canWriteContent) {
 				canWriteContent = access_control_db_authorize_membership(ctx, {
 					userAuth: args.userAuth,
@@ -249,7 +251,7 @@ export async function files_tree_db_get_rows(
 					permission: "content.write",
 					fileNode,
 				}).then((result) => !result._nay);
-				canWriteContentByScope.set(fileNode.restrictedScopeNodeId, canWriteContent);
+				canWriteContentByScope.set(scopeKey, canWriteContent);
 			}
 
 			// Each node's rule is local, so each row needs its own answer. The check reads

@@ -33,6 +33,7 @@ import { files_db_insert_pending_update, files_ROOT_ID } from "../server/files.t
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
+import { files_share_rows_db_sync_grant } from "../server/files-share-rows.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -6316,6 +6317,61 @@ describe("process_workspace_deletion_request", () => {
 		);
 		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
 		expect(await count_rows()).toBe(0);
+	});
+
+	test("purging a workspace with an extended folder leaves no grants, share rows or nodes", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-extended-folder",
+				displayName: "Extended Folder Workspace",
+			}),
+		);
+		const scope = {
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			userId: user.userId,
+		};
+		const folder = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/added" });
+		if (folder._nay) throw new Error(folder._nay.message);
+		// An item with added people: an extended root with one user grant and its share row.
+		await t.run(async (ctx) => {
+			const nodeId = (await ctx.db
+				.query("files_nodes")
+				.filter((q) => q.eq(q.field("path"), "/added"))
+				.unique())!._id;
+			await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId, parentExtendedScopeNodeId: null });
+			const grantId = await ctx.db.insert("access_control_permission_grants", {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				resourceKind: "file",
+				resourceId: String(nodeId),
+				principalKind: "user",
+				userId: user.userId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			await files_share_rows_db_sync_grant(ctx.db, grantId);
+		});
+		const count_docs = () =>
+			t.run(async (ctx) =>
+				Promise.all(
+					(["access_control_permission_grants", "files_share_rows", "files_nodes"] as const).map(
+						async (table) =>
+							(await ctx.db.query(table).collect()).filter(
+								(doc) => doc.workspaceId === scope.workspaceId && (table !== "access_control_permission_grants" || doc.resourceKind === "file"),
+							).length,
+					),
+				),
+			);
+		expect(await count_docs()).toEqual([1, 1, 1]);
+
+		const requestId = await t.run((ctx) =>
+			data_deletion_db_request(ctx, { ...scope, scope: "workspace", eligibleAt: 0 }),
+		);
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
+		expect(await count_docs()).toEqual([0, 0, 0]);
 	});
 
 	test("deletes the metadata catalog, and a compactor run of its old marker does nothing", async () => {

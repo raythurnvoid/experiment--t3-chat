@@ -428,7 +428,7 @@ describe("list_tree_children_shared", () => {
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
-	// runs before any row read, not the 187 guard. The cost test below checks the guard number.
+	// runs before any row read, not the 176 guard. The cost test below checks the guard number.
 	test("a page whose end cursor holds more rows than it asks for asks for a split and reads no row", async () => {
 		const { t, insert_children, add_member, grant_read, read_page } = await seed_folder_table();
 		const names = Array.from({ length: 103 }, (_, index) => `n-${String(index).padStart(4, "0")}.md`);
@@ -547,7 +547,7 @@ describe("list_tree_children_shared", () => {
 				expect([one.rows, six.rows]).toEqual([1, 6]);
 				const perRow = (six.ranges - one.ranges) / 5;
 				expect(perRow).toBeGreaterThan(0);
-				expect(187).toBeLessThanOrEqual(Math.floor(3000 / perRow));
+				expect(176).toBeLessThanOrEqual(Math.floor(3000 / perRow));
 			}
 		},
 	);

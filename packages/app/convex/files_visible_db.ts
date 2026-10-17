@@ -47,7 +47,8 @@ export async function files_visible_db_create_reader(
 	const readableByScope = new Map<string, Promise<boolean>>();
 	async function can_read(node: Doc<"files_nodes"> | null) {
 		if (!membership) return false;
-		const key = node?.restrictedScopeNodeId ?? "workspace";
+		// Added people change access inside a scope, so the key is the pair.
+		const key = node ? `${node.restrictedScopeNodeId ?? ""}:${node.extendedScopeNodeId ?? ""}` : "workspace";
 		let readable = readableByScope.get(key);
 		if (!readable) {
 			readable = access_control_db_authorize_membership(ctx, {

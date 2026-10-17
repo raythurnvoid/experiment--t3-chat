@@ -1109,14 +1109,20 @@ describe("scheduled Files response authority", () => {
 				nodeId: file.nodeId,
 			}),
 		).toEqual({ _yay: null });
-		expect(
-			await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-				membershipId: f.owner.membershipId,
-				nodeId: file.nodeId,
-				principal: { kind: "user", userId: member.userId },
-				level: "read",
-			}),
-		).toEqual({ _yay: null });
+		// A restrict starts with only the person restricting it, so the plugin account is added back.
+		for (const principal of [
+			{ kind: "user" as const, userId: member.userId },
+			{ kind: "service_account" as const, serviceAccountId: f.installation.serviceAccountId },
+		]) {
+			expect(
+				await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: f.owner.membershipId,
+					nodeId: file.nodeId,
+					principal,
+					level: "read",
+				}),
+			).toEqual({ _yay: null });
+		}
 		await assign_scheduled_user({
 			f,
 			member,
