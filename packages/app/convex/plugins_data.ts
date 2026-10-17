@@ -3963,8 +3963,9 @@ async function db_sync_file_access_bindings(args: {
 				(grant.principalKind === "user" && grant.userId !== undefined && args.removeUserIds.includes(grant.userId));
 			if (remove) {
 				await ctx.db.delete("access_control_permission_grants", grant._id);
-				if (grant.principalKind !== "service_account") readersChanged = true;
-				else if (grant.serviceAccountId) {
+				if (grant.principalKind !== "service_account") {
+					readersChanged = true;
+				} else if (grant.serviceAccountId) {
 					await plugins_db_sync_sandbox_root(ctx, {
 						organizationId: binding.organizationId,
 						workspaceId: binding.workspaceId,

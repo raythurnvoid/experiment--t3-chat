@@ -258,7 +258,7 @@ describe("plugin sandbox roots", () => {
 			}),
 		);
 
-		await f.t.mutation(internal.plugins.recover_sandbox_rebuilds, {});
+		await f.t.mutation(internal.plugins_service_accounts.recover_sandbox_rebuilds, {});
 		await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
 
 		expect(await f.sandbox(installation._id)).toEqual({
@@ -278,7 +278,7 @@ describe("plugin sandbox roots", () => {
 		);
 		const before = await f.sandbox(installation._id);
 
-		await f.t.mutation(internal.plugins.sandbox_rebuild_step, {
+		await f.t.mutation(internal.plugins_service_accounts.sandbox_rebuild_step, {
 			installationId: installation._id,
 			leaseUntil: Date.now() + 1,
 			cursor: null,

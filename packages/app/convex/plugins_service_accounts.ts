@@ -1,8 +1,9 @@
-import type { Infer } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { Result } from "common/errors-as-values-utils.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { plugins_sandbox_root_validator } from "./schema.ts";
 import {
 	access_control_FILE_SHARE_PERMISSIONS,
@@ -60,10 +61,10 @@ export async function plugins_db_get_live_service_account(
 export type plugins_SandboxRoot = Infer<typeof plugins_sandbox_root_validator>;
 
 /** Same cap as the grants a plugin can get at install. */
-export const plugins_SANDBOX_ROOTS_MAX = 20;
+const SANDBOX_ROOTS_MAX = 20;
 
 /** A rebuild step runs right away, so a lease this old means the chain stopped. */
-export const plugins_SANDBOX_REBUILD_LEASE_MS = 10 * 60 * 1000;
+const SANDBOX_REBUILD_LEASE_MS = 10 * 60 * 1000;
 
 /** Grants read per rebuild step. Each one costs two reads (binding, node). */
 const SANDBOX_REBUILD_PAGE_SIZE = 100;
@@ -148,17 +149,17 @@ export async function plugins_db_schedule_sandbox_rebuild(
 	ctx: MutationCtx,
 	args: { installationId: Id<"plugins_workspace_installations"> },
 ) {
-	// A new token must differ from the old one even within the same millisecond.
 	const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
 	const old = installation?.sandbox?.rebuild;
+	// A new token must differ from the old one even within the same millisecond.
 	const leaseUntil = Math.max(
-		Date.now() + plugins_SANDBOX_REBUILD_LEASE_MS,
+		Date.now() + SANDBOX_REBUILD_LEASE_MS,
 		old?.status === "running" ? old.leaseUntil + 1 : 0,
 	);
 	await ctx.db.patch("plugins_workspace_installations", args.installationId, {
 		sandbox: { roots: [], rebuild: { status: "running", leaseUntil } },
 	});
-	await ctx.scheduler.runAfter(0, internal.plugins.sandbox_rebuild_step, {
+	await ctx.scheduler.runAfter(0, internal.plugins_service_accounts.sandbox_rebuild_step, {
 		installationId: args.installationId,
 		leaseUntil,
 		cursor: null,
@@ -208,7 +209,7 @@ export async function plugins_db_sync_sandbox_root(
 		if (target && args.level) {
 			roots.push({ target, level: args.level });
 		}
-		if (roots.length > plugins_SANDBOX_ROOTS_MAX) {
+		if (roots.length > SANDBOX_ROOTS_MAX) {
 			return Result({ _nay: { message: "A plugin can use at most 20 folders. Remove one on the plugin page first." } });
 		}
 		patches.push({ installationId: installation._id, roots });
@@ -232,7 +233,7 @@ export async function plugins_db_sync_sandbox_root(
  * root to the current grant, and each page reads the current grants, so the two agree at the end.
  * Answers `roots: null` past 20 roots.
  */
-export async function plugins_db_sandbox_rebuild_page(
+async function db_sandbox_rebuild_page(
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
@@ -276,11 +277,80 @@ export async function plugins_db_sandbox_rebuild_page(
 		} else {
 			roots[index] = { target, level };
 		}
-		if (roots.length > plugins_SANDBOX_ROOTS_MAX) {
+		if (roots.length > SANDBOX_ROOTS_MAX) {
 			return { roots: null, isDone: true, continueCursor: page.continueCursor };
 		}
 	}
 	return { roots, isDone: page.isDone, continueCursor: page.continueCursor };
 }
+
+/**
+ * One page of a sandbox rebuild (`plugins_db_schedule_sandbox_rebuild`).
+ */
+export const sandbox_rebuild_step = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		leaseUntil: v.number(),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const rebuild = installation?.sandbox?.rebuild;
+		// A newer rebuild or the end of this one stops this chain.
+		if (!installation?.sandbox || rebuild?.status !== "running" || rebuild.leaseUntil !== args.leaseUntil) {
+			return null;
+		}
+
+		const page = await db_sandbox_rebuild_page(ctx, {
+			installation,
+			roots: installation.sandbox.roots,
+			cursor: args.cursor,
+		});
+		if (!page.roots) {
+			console.warn("A plugin sandbox rebuild found more than 20 folders", { installationId: installation._id });
+			await ctx.db.patch("plugins_workspace_installations", installation._id, {
+				sandbox: { roots: [], rebuild: { status: "too_many_folders" } },
+			});
+			return null;
+		}
+		if (page.isDone) {
+			await ctx.db.patch("plugins_workspace_installations", installation._id, {
+				sandbox: { roots: page.roots, rebuild: null },
+			});
+			return null;
+		}
+
+		const leaseUntil = Date.now() + SANDBOX_REBUILD_LEASE_MS;
+		await ctx.db.patch("plugins_workspace_installations", installation._id, {
+			sandbox: { roots: page.roots, rebuild: { status: "running", leaseUntil } },
+		});
+		await ctx.scheduler.runAfter(0, internal.plugins_service_accounts.sandbox_rebuild_step, {
+			installationId: installation._id,
+			leaseUntil,
+			cursor: page.continueCursor,
+		});
+		return null;
+	},
+});
+
+// The rebuild runs its own next steps. The cron only restarts a chain whose lease expired.
+export const recover_sandbox_rebuilds = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		const stuck = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_sandboxRebuildLeaseUntil", (q) =>
+				// Installations with no running rebuild have no lease and sort before 0.
+				q.gte("sandbox.rebuild.leaseUntil", 0).lte("sandbox.rebuild.leaseUntil", Date.now()),
+			)
+			.take(20);
+		for (const installation of stuck) {
+			await plugins_db_schedule_sandbox_rebuild(ctx, { installationId: installation._id });
+		}
+		return null;
+	},
+});
 
 // #endregion Sandbox roots

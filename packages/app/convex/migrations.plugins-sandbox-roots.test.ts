@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { runToCompletion } from "@convex-dev/migrations";
 import migrations_test from "@convex-dev/migrations/test";
+import type { FunctionReturnType } from "convex/server";
 import { ConvexError } from "convex/values";
 import { api, components, internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import {
@@ -86,7 +86,7 @@ async function fixture() {
 async function audit(t: ReturnType<typeof test_convex>) {
 	const installations = [];
 	for (let cursor: string | null = null, done = false; !done;) {
-		const page: { page: unknown[]; continueCursor: string; isDone: boolean } = await t.query(
+		const page: FunctionReturnType<typeof internal.migrations.audit_plugins_sandbox_roots_page> = await t.query(
 			internal.migrations.audit_plugins_sandbox_roots_page,
 			{ cursor },
 		);
@@ -94,13 +94,12 @@ async function audit(t: ReturnType<typeof test_convex>) {
 		cursor = page.continueCursor;
 		done = page.isDone;
 	}
-	const grants: Array<{ missingIn: Array<Id<"plugins_workspace_installations">> }> = [];
+	const grants = [];
 	for (let cursor: string | null = null, done = false; !done;) {
-		const page: {
-			page: Array<{ missingIn: Array<Id<"plugins_workspace_installations">> }>;
-			continueCursor: string;
-			isDone: boolean;
-		} = await t.query(internal.migrations.audit_plugins_sandbox_grants_page, { cursor });
+		const page: FunctionReturnType<typeof internal.migrations.audit_plugins_sandbox_grants_page> = await t.query(
+			internal.migrations.audit_plugins_sandbox_grants_page,
+			{ cursor },
+		);
 		grants.push(...page.page);
 		cursor = page.continueCursor;
 		done = page.isDone;
@@ -125,7 +124,7 @@ test("the backfill builds roots from account grants and skips the plugin output 
 		rebuild: null,
 	});
 	expect(await audit(t)).toEqual({
-		installations: [expect.objectContaining({ installationId, state: "ready", rootCount: 2, wrongRoots: [] })],
+		installations: [expect.objectContaining({ installationId, rebuildStatus: "ready", rootCount: 2, wrongRoots: [] })],
 		missing: [],
 	});
 });
@@ -140,7 +139,7 @@ test("the audit reports a missing root and a root with the wrong level", async (
 
 	const result = await audit(t);
 
-	expect(result.installations).toEqual([expect.objectContaining({ state: "ready", wrongRoots: [reports] })]);
+	expect(result.installations).toEqual([expect.objectContaining({ rebuildStatus: "ready", wrongRoots: [reports] })]);
 	// The workspace grant has no root (two permission docs), and the folder root has the wrong level.
 	expect(result.missing).toEqual([installationId, installationId, installationId]);
 });
@@ -148,7 +147,7 @@ test("the audit reports a missing root and a root with the wrong level", async (
 test("the audit shows an installation that is not backfilled", async () => {
 	const { t, installationId } = await fixture();
 	expect((await audit(t)).installations).toEqual([
-		expect.objectContaining({ installationId, state: "missing", rootCount: 0 }),
+		expect.objectContaining({ installationId, rebuildStatus: "missing", rootCount: 0 }),
 	]);
 });
 

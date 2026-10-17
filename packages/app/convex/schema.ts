@@ -7006,15 +7006,15 @@ const app_convex_schema = defineSchema({
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
 	})
-		// Grant writes keep `sandbox` in sync.
-		.index("by_serviceAccount", ["serviceAccountId"])
-		// Finds sandbox rebuilds whose chain stopped.
-		.index("by_sandboxRebuildLeaseUntil", ["sandbox.rebuild.leaseUntil"])
 		.index("by_organization_workspace_status_updatedAt", ["organizationId", "workspaceId", "status", "updatedAt"])
 		.index("by_organization_workspace_status_pluginName", ["organizationId", "workspaceId", "status", "pluginName"])
 		.index("by_organization_workspace_pluginName", ["organizationId", "workspaceId", "pluginName"])
 		.index("by_organization_workspace_pluginVersion", ["organizationId", "workspaceId", "pluginVersionId"])
 		.index("by_pluginVersion", ["pluginVersionId"])
+		// Grant writes keep `sandbox` in sync.
+		.index("by_serviceAccount", ["serviceAccountId"])
+		// Finds sandbox rebuilds whose chain stopped.
+		.index("by_sandboxRebuildLeaseUntil", ["sandbox.rebuild.leaseUntil"])
 		.index("by_pluginName_status", ["pluginName", "status"])
 		.index("by_pluginName", ["pluginName"]),
 

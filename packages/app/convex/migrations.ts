@@ -9,10 +9,10 @@ import app_convex_schema from "./schema.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import {
+	plugins_db_account_grant_level,
 	plugins_db_sandbox_root_target,
 	plugins_db_schedule_sandbox_rebuild,
 	plugins_sandbox_root_key,
-	plugins_db_account_grant_level,
 } from "./plugins_service_accounts.ts";
 
 // The schema lets a migration read through an index with `customRange`.
@@ -192,6 +192,9 @@ export const audit_review_fact_job_count = internalQuery({
 
 // Every installation gets its sandbox roots from a background rebuild job. Remove these
 // temporary tools and tests after the audit passes and `sandbox` is required.
+//
+// Unlike the review fact repair, this skips no scope: `sandbox` becomes required, so every
+// installation needs it, protected ones too. The audits still show each scope.
 export const backfill_plugins_sandbox_roots = app_migrations.define({
 	table: "plugins_workspace_installations",
 	// Each one schedules its own job, which reads the account grants page by page.
@@ -225,12 +228,6 @@ export const preview_plugins_sandbox_roots = internalMutation({
 	},
 });
 
-const sandbox_audit_scope_status_validator = v.union(
-	v.literal("allowed"),
-	v.literal("protected"),
-	v.literal("invalid_tenant"),
-);
-
 /**
  * Pass 1 of the sandbox roots audit: one installation per page. Each root must still be a root of a
  * live account grant with the same level. At most 20 roots, so one page has a small fixed cost.
@@ -241,8 +238,13 @@ export const audit_plugins_sandbox_roots_page = internalQuery({
 		v.object({
 			installationId: v.id("plugins_workspace_installations"),
 			workspaceId: v.id("organizations_workspaces"),
-			scopeStatus: sandbox_audit_scope_status_validator,
-			state: v.union(v.literal("missing"), v.literal("running"), v.literal("too_many_folders"), v.literal("ready")),
+			scopeStatus: v.union(v.literal("allowed"), v.literal("protected"), v.literal("invalid_tenant")),
+			rebuildStatus: v.union(
+				v.literal("missing"),
+				v.literal("running"),
+				v.literal("too_many_folders"),
+				v.literal("ready"),
+			),
 			rootCount: v.number(),
 			wrongRoots: v.array(v.string()),
 		}),
@@ -275,7 +277,7 @@ export const audit_plugins_sandbox_roots_page = internalQuery({
 						installationId: installation._id,
 						workspaceId: installation.workspaceId,
 						scopeStatus: await db_scope_status(ctx.db, installation),
-						state: !sandbox ? ("missing" as const) : (sandbox.rebuild?.status ?? ("ready" as const)),
+						rebuildStatus: !sandbox ? ("missing" as const) : (sandbox.rebuild?.status ?? ("ready" as const)),
 						rootCount: sandbox?.roots.length ?? 0,
 						wrongRoots,
 					};
@@ -304,7 +306,7 @@ export const audit_plugins_sandbox_grants_page = internalQuery({
 			.query("access_control_permission_grants")
 			.withIndex("by_creation_time")
 			.paginate({ cursor: args.cursor, numItems: 50 });
-		const rows = [];
+		const checks = [];
 		for (const grant of page.page) {
 			if (
 				grant.principalKind !== "service_account" ||
@@ -338,9 +340,9 @@ export const audit_plugins_sandbox_grants_page = internalQuery({
 						),
 				)
 				.map((installation) => installation._id);
-			rows.push({ grantId: grant._id, workspaceId: grant.workspaceId, missingIn });
+			checks.push({ grantId: grant._id, workspaceId: grant.workspaceId, missingIn });
 		}
-		return { ...page, page: rows };
+		return { ...page, page: checks };
 	},
 });
 
