@@ -4738,7 +4738,11 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer-column-header-actions"
 	| "FileNodeViewFolderExplorer-sort-button"
 	| "FileNodeViewFolderExplorer-sort-indicator"
+	| "FileNodeViewFolderExplorer-skeleton-row"
+	| "FileNodeViewFolderExplorer-skeleton-icon"
+	| "FileNodeViewFolderExplorer-skeleton"
 	| "FileNodeViewFolderExplorer-show-more"
+	| "FileNodeViewFolderExplorer-show-more-skeleton"
 	| "FileNodeViewFolderExplorer-show-less"
 	| "FileNodeViewFolderExplorer-show-less-cover";
 
@@ -4883,16 +4887,16 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const isApplyingSort = rowsSort === null || JSON.stringify(sort) !== JSON.stringify(rowsSort);
 	const sortState = isFilterFailed ? "failed" : isApplyingSort ? "applying" : "ready";
 	const filterState = isFilterFailed ? "failed" : isShowingHeldRows || (isSortBusy && hasFilter) ? "applying" : "ready";
+	// No rows to keep on screen while rows load, so the table shows skeleton rows in their place.
+	const isLoadingRows = visibleChildItems.length === 0 && isSortBusy && !isFilterFailed;
 	const emptyMessage =
-		visibleChildItems.length > 0 || filterState === "failed" || filterState === "applying"
+		visibleChildItems.length > 0 || isLoadingRows || filterState === "failed" || filterState === "applying"
 			? null
 			: !isDone
-				? isSortBusy
-					? "Loading folder contents…"
-					: // A stream has more pages, but the loaded ones hold no row to show yet.
-						hasFilter
-						? "No matches loaded yet. Show more to keep looking."
-						: "No items on the loaded pages. Show more to keep looking."
+				? // A stream has more pages, but the loaded ones hold no row to show yet.
+					hasFilter
+					? "No matches loaded yet. Show more to keep looking."
+					: "No items on the loaded pages. Show more to keep looking."
 				: hasFilter
 					? "No rows match this filter"
 					: files_sort_field_is_built_in(displayedSort[0]!.field)
@@ -5126,7 +5130,12 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					</span>
 				)}
 			</p>
-			<div className={"FileNodeViewFolderExplorer-table-scroll" satisfies FileNodeViewFolderExplorer_ClassNames}>
+			<div
+				className={cn(
+					"FileNodeViewFolderExplorer-table-scroll" satisfies FileNodeViewFolderExplorer_ClassNames,
+					"app-scrollable" satisfies AppClassName,
+				)}
+			>
 				<MyGridTable
 					ref={setTableElement}
 					aria-label="Folder contents"
@@ -5146,7 +5155,9 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 						>
 							{columns.map((field) => {
 								// The header shows the sort the user asked for right away, even while the old rows stay.
-								const direction = sortField === field ? sort[0]!.direction : null;
+								// Before the first rows, `sort` can still be the default while the saved sort loads, so
+								// show no arrow yet. Otherwise the arrow could jump to another column.
+								const direction = sortField === field && rowsSort !== null ? sort[0]!.direction : null;
 								const sortDisabledReason =
 									filterOrderField !== null && field !== filterOrderField
 										? `Remove the filter to sort by ${files_folder_table_query_field_text(field)}`
@@ -5234,6 +5245,48 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 								/>
 							);
 						})}
+						{/* Show as many rows as the table shows at first, in the same columns, so the real rows
+						    replace them without moving the page. The table's aria-busy tells that rows load. */}
+						{isLoadingRows &&
+							Array.from({ length: FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT }, (_, index) => (
+								<MyGridTableRow
+									key={index}
+									className={"FileNodeViewFolderExplorer-skeleton-row" satisfies FileNodeViewFolderExplorer_ClassNames}
+									aria-hidden="true"
+								>
+									<MyGridTableCell
+										className={cn(
+											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+											"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+										)}
+									>
+										<MySkeleton
+											className={"FileNodeViewFolderExplorer-skeleton-icon" satisfies FileNodeViewFolderExplorer_ClassNames}
+										/>
+										<MySkeleton
+											className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
+										/>
+									</MyGridTableCell>
+									{columns
+										.filter((field) => field !== "name")
+										.map((field) => (
+											<MyGridTableCell
+												key={field}
+												className={"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+											>
+												<MySkeleton
+													className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
+												/>
+											</MyGridTableCell>
+										))}
+									<MyGridTableCell
+										className={cn(
+											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+											"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+										)}
+									/>
+								</MyGridTableRow>
+							))}
 					</MyGridTableBody>
 				</MyGridTable>
 			</div>
@@ -5254,6 +5307,16 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				>
 					Show more
 				</MyButton>
+			)}
+			{/* Keep the Show more row's space while rows load. Then a folder with more rows than the table
+			    shows at first does not push the page down when the button appears. */}
+			{isLoadingRows && (
+				<div
+					className={"FileNodeViewFolderExplorer-show-more-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
+					aria-hidden="true"
+				>
+					<MySkeleton className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames} />
+				</div>
 			)}
 			{canShowLess && (
 				<>
@@ -5298,6 +5361,12 @@ type FileNodeViewFolderReadme_Props = {
 const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: FileNodeViewFolderReadme_Props) {
 	const { readmeNodeId, isReadmeLoading, canWrite, isCreatingReadme, onCreateReadmeClick } = props;
 
+	// Show nothing until we know if the folder has a README. A skeleton would have to guess between the
+	// README and the "No README.md" box, and a wrong guess changes shape twice.
+	if (isReadmeLoading) {
+		return null;
+	}
+
 	return (
 		<section className={"FileNodeViewFolderReadme" satisfies FileNodeViewFolderReadme_ClassNames}>
 			{readmeNodeId ? (
@@ -5307,8 +5376,6 @@ const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: F
 					</MyIcon>
 					<h2 className={"FileNodeViewFolderReadme-title" satisfies FileNodeViewFolderReadme_ClassNames}>README.md</h2>
 				</div>
-			) : isReadmeLoading ? (
-				<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
 			) : (
 				<div className={"FileNodeViewFolderReadme-empty" satisfies FileNodeViewFolderReadme_ClassNames}>
 					<h2 className={"FileNodeViewFolderReadme-empty-title" satisfies FileNodeViewFolderReadme_ClassNames}>

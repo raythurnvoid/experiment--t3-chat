@@ -474,7 +474,9 @@ and `find` also keep raw name order.
     became restricted) shows once.
   - While a new sort or a page loads, the last settled rows stay, with `aria-busy="true"` on the
     table. `rowsSort` and `rowsFilter` keep the sort and filter of the shown rows; the header
-    arrows already show the requested sort. `hiddenSharedKey` is the metadata key when the member has shares here and a
+    arrows already show the requested sort. With no rows to keep (the first load of a folder), the
+    table shows five skeleton rows at once, with no delay, and no header arrow until the first rows
+    answer, because the saved sort may still be loading. `hiddenSharedKey` is the metadata key when the member has shares here and a
     metadata sort or filter hides them.
   - No draft enters the table: no private rows.
 
@@ -525,7 +527,14 @@ and `find` also keep raw name order.
 - An empty readable folder keeps its toolbar and header. "This folder is empty" shows only after
   every stream is done without an error. With a filter, an empty done table says "No rows match
   this filter". While a stream has more pages but no row to show yet: "No matches loaded yet. Show
-  more to keep looking." Wide tables scroll horizontally inside the table region.
+  more to keep looking." Wide tables scroll horizontally inside the table region. The space for that
+  scrollbar is always kept, and the editor area always keeps its vertical scrollbar gutter, so
+  a scrollbar that appears never moves the table or the README. The first load also keeps a Show
+  more slot. The README area shows nothing until `get_folder_readme` answers: a skeleton would have
+  to guess between the README and the "No README.md" box. The files route starts that query on
+  the router's `onBeforeNavigate`, about 200ms before the new view mounts, so a cold folder waits
+  only a few frames and then shows the README header with its editor skeleton, or the empty box. A folder with fewer than five rows still shrinks
+  when its rows arrive; its size is not known before then.
 - The table carries `data-sort-fields` for the sort of the shown rows (`rowsSort`, held while a new
   sort loads). Headers follow the requested sort at once: the sorted header carries
   `data-sort-direction`, the arrow, and `aria-sort` for the new sort before its rows arrive. A sort

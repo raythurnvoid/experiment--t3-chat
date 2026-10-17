@@ -1,10 +1,12 @@
 import { FileNodeView, type FileNodeView_Props } from "@/components/files/file-node-view/file-node-view.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import { app_convex_api, type app_convex_Doc } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_editor_view_values } from "@/lib/files.ts";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
-import { memo } from "react";
+import { useConvex } from "convex/react";
+import { memo, useEffect } from "react";
 import { z } from "zod";
 import {
 	files_folder_table_query_clean,
@@ -12,9 +14,11 @@ import {
 } from "../../../../../../shared/files-folder-table-query.ts";
 
 const RouteFiles = memo(function RouteFiles() {
+	const router = useRouter();
+	const convex = useConvex();
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
-	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const handleNavigateSearch = useFn<FileNodeView_Props["onNavigateSearch"]>((search, options) => {
 		navigate({
@@ -26,6 +30,31 @@ const RouteFiles = memo(function RouteFiles() {
 			console.error("[RouteFiles.handleNavigateSearch] Error navigating to files search", { error, search });
 		});
 	});
+
+	// Start the README query of the opened node as soon as the navigation starts. The new folder view
+	// takes about 200ms to render before its own queries start. So the README answer comes only a few
+	// frames after the view mounts, and the README area then shows the README or the "No README.md"
+	// box directly. For a file the query just answers null.
+	useEffect(() => {
+		return router.subscribe("onBeforeNavigate", (event) => {
+			// The router has not validated this search yet, so read it as unknown.
+			const search: Partial<Record<string, unknown>> = event.toLocation.search;
+			const nodeId = search.nodeId;
+			if (event.pathChanged || typeof nodeId !== "string" || search.pendingNodeId !== undefined) {
+				return;
+			}
+
+			// Keep the same arg order as the folder view, so both share one subscription.
+			const unsubscribe = convex
+				.watchQuery(app_convex_api.files_tree.get_folder_readme, {
+					membershipId,
+					folderId: nodeId as app_convex_Doc<"files_nodes">["parentId"],
+				})
+				.onUpdate(() => {});
+			// The folder view holds its own subscription once it mounts, so this one can end.
+			setTimeout(unsubscribe, 10_000);
+		});
+	}, [router, convex, membershipId]);
 
 	return <FileNodeView searchParams={searchParams} onNavigateSearch={handleNavigateSearch} />;
 });

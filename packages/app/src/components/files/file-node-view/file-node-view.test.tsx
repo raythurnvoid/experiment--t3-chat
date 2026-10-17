@@ -1868,7 +1868,7 @@ describe("FileNodeView folder sort", () => {
 			).toBe(true),
 		);
 		expect(table.getAttribute("aria-busy")).toBe("true");
-		expect(screen.getByText("Loading folder contents…")).toBeTruthy();
+		expect(table.querySelectorAll(".FileNodeViewFolderExplorer-skeleton-row")).toHaveLength(5);
 		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("applying");
 	});
 
