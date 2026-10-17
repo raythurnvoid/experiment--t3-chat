@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import {
 	mock_plugins_review,
@@ -75,10 +76,37 @@ async function fixture() {
 				});
 	}
 
+	async function bind_output_folder(installationId: Id<"plugins_workspace_installations">, nodeId: Id<"files_nodes">) {
+		await t.run(async (ctx) => {
+			const writerId = await ctx.db.insert("plugins_external_file_writers", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId,
+				resourceKey: String(nodeId),
+				rootNodeId: nodeId,
+				folderNodeId: nodeId,
+				rootPath: "/out",
+				path: "/out",
+				generation: 1,
+				updatedAt: Date.now(),
+			});
+			await ctx.db.insert("plugins_external_file_bindings", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId,
+				writerId,
+				nodeId,
+				revision: 1,
+				detachedAt: null,
+				updatedAt: Date.now(),
+			});
+		});
+	}
+
 	const sandbox = async (installationId: Id<"plugins_workspace_installations">) =>
 		(await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installationId)))!.sandbox;
 
-	return { t, membership, asOwner, folder, install, set_grant, sandbox };
+	return { t, membership, asOwner, folder, install, set_grant, bind_output_folder, sandbox };
 }
 
 describe("plugin sandbox roots", () => {
@@ -125,31 +153,7 @@ describe("plugin sandbox roots", () => {
 		const f = await fixture();
 		const installation = await f.install([]);
 		const output = await f.folder("transcripts");
-		await f.t.run(async (ctx) => {
-			const writerId = await ctx.db.insert("plugins_external_file_writers", {
-				organizationId: f.membership.organizationId,
-				workspaceId: f.membership.workspaceId,
-				installationId: installation._id,
-				resourceKey: "transcripts",
-				rootNodeId: output,
-				folderNodeId: output,
-				rootPath: "/transcripts",
-				path: "/transcripts",
-				generation: 1,
-				updatedAt: Date.now(),
-			});
-			await ctx.db.insert("plugins_external_file_bindings", {
-				organizationId: f.membership.organizationId,
-				workspaceId: f.membership.workspaceId,
-				installationId: installation._id,
-				writerId,
-				nodeId: output,
-				revision: 1,
-				detachedAt: null,
-				updatedAt: Date.now(),
-			});
-		});
-
+		await f.bind_output_folder(installation._id, output);
 		expect(await f.set_grant(installation.serviceAccountId, output, "manage")).toEqual({ _yay: null });
 		expect((await f.sandbox(installation._id))?.roots).toEqual([]);
 	});
@@ -266,14 +270,157 @@ describe("plugin sandbox roots", () => {
 	test("a rebuild step with an old lease does nothing", async () => {
 		const f = await fixture();
 		const installation = await f.install([]);
+		await f.set_grant(installation.serviceAccountId, await f.folder("reports"), "read");
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", installation._id, {
+				sandbox: { roots: [], rebuild: { status: "running", leaseUntil: Date.now() + 60_000 } },
+			}),
+		);
 		const before = await f.sandbox(installation._id);
 
 		await f.t.mutation(internal.plugins.sandbox_rebuild_step, {
 			installationId: installation._id,
-			leaseUntil: 1,
+			leaseUntil: Date.now() + 1,
 			cursor: null,
 		});
 
 		expect(await f.sandbox(installation._id)).toEqual(before);
+	});
+
+	test("a grant change while a rebuild runs ends with the current grant", async () => {
+		const f = await fixture();
+		const installation = await f.install([]);
+		const reports = await f.folder("reports");
+		await f.set_grant(installation.serviceAccountId, reports, "manage");
+		await f.t.run((ctx) => plugins_db_schedule_sandbox_rebuild(ctx, { installationId: installation._id }));
+
+		// The sync writes into the running rebuild before its first page.
+		await f.set_grant(installation.serviceAccountId, reports, "read");
+		expect((await f.sandbox(installation._id))?.roots).toEqual([
+			{ target: { kind: "folder", nodeId: reports }, level: "read" },
+		]);
+		await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+
+		expect(await f.sandbox(installation._id)).toEqual({
+			roots: [{ target: { kind: "folder", nodeId: reports }, level: "read" }],
+			rebuild: null,
+		});
+	});
+
+	test("detaching an output folder makes its account grant a root", async () => {
+		const f = await fixture();
+		const installation = await f.install([]);
+		const output = await f.folder("transcripts");
+		await f.bind_output_folder(installation._id, output);
+		await f.set_grant(installation.serviceAccountId, output, "manage");
+		expect((await f.sandbox(installation._id))?.roots).toEqual([]);
+
+		vi.advanceTimersByTime(60_000);
+		expect(
+			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.membership.membershipId,
+				nodeId: output,
+			}),
+		).toEqual({ _yay: null });
+
+		expect((await f.sandbox(installation._id))?.roots).toEqual([
+			{ target: { kind: "folder", nodeId: output }, level: "manage" },
+		]);
+	});
+
+	test("detaching an output folder when the plugin has 20 folders keeps the restrict and skips the root", async () => {
+		const f = await fixture();
+		const installation = await f.install([]);
+		for (let index = 0; index < 20; index += 1) {
+			await f.set_grant(installation.serviceAccountId, await f.folder(`f${index}`), "read");
+		}
+		const output = await f.folder("transcripts");
+		await f.bind_output_folder(installation._id, output);
+		await f.set_grant(installation.serviceAccountId, output, "manage");
+		const warn = vi.spyOn(console, "warn");
+
+		vi.advanceTimersByTime(60_000);
+		expect(
+			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.membership.membershipId,
+				nodeId: output,
+			}),
+		).toEqual({ _yay: null });
+
+		expect((await f.sandbox(installation._id))?.roots).toHaveLength(20);
+		expect(warn).toHaveBeenCalledWith("Skipped a sandbox root past the plugin folder cap", {
+			nodeId: output,
+			serviceAccountId: installation.serviceAccountId,
+		});
+	});
+
+	test("deleting a node frees its root slot", async () => {
+		const f = await fixture();
+		const installation = await f.install([]);
+		const fileId = await test_create_saved_text_file(f.t, { membershipId: f.membership.membershipId, path: "/a.md" });
+		await f.set_grant(installation.serviceAccountId, fileId, "read");
+		expect((await f.sandbox(installation._id))?.roots).toHaveLength(1);
+
+		await f.t.run((ctx) =>
+			files_nodes_db_hard_delete_node(ctx, {
+				organizationId: f.membership.organizationId,
+				workspaceId: f.membership.workspaceId,
+				nodeId: fileId,
+			}),
+		);
+
+		expect((await f.sandbox(installation._id))?.roots).toEqual([]);
+	});
+
+	test("an upgrade that changes the account rebuilds the roots", async () => {
+		const f = await fixture();
+		const installation = await f.install([]);
+		const created = await f.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: f.membership.membershipId,
+			name: "Other",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const reports = await f.folder("reports");
+		await f.set_grant(created._yay.serviceAccountId, reports, "write");
+		const next = await register_media_plugin({ t: f.t, userId: f.membership.userId, version: "0.2.0", events: [] });
+
+		vi.advanceTimersByTime(60_000);
+		const upgraded = await f.asOwner.mutation(api.plugins.install_version, {
+			membershipId: f.membership.membershipId,
+			pluginVersionId: next.pluginVersionId,
+			...media_plugin_consent,
+			serviceAccountId: created._yay.serviceAccountId,
+			serviceAccountGrants: [],
+		});
+		expect(upgraded).toEqual({ _yay: { installationId: installation._id } });
+		await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+
+		expect(await f.sandbox(installation._id)).toEqual({
+			roots: [{ target: { kind: "folder", nodeId: reports }, level: "write" }],
+			rebuild: null,
+		});
+	});
+
+	test("a reinstall that reuses the old account rebuilds its roots", async () => {
+		const f = await fixture();
+		const installation = await f.install([]);
+		const reports = await f.folder("reports");
+		await f.set_grant(installation.serviceAccountId, reports, "read");
+		vi.advanceTimersByTime(60_000);
+		await f.asOwner.mutation(api.plugins.uninstall_version, {
+			membershipId: f.membership.membershipId,
+			installationId: installation._id,
+		});
+		await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+
+		vi.advanceTimersByTime(60_000);
+		const reinstalled = await f.install([]);
+		expect(reinstalled.serviceAccountId).toBe(installation.serviceAccountId);
+		await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+
+		expect(await f.sandbox(reinstalled._id)).toEqual({
+			roots: [{ target: { kind: "folder", nodeId: reports }, level: "read" }],
+			rebuild: null,
+		});
 	});
 });

@@ -813,7 +813,8 @@ so at the top.
   `EACCES` ("Permission denied"); `find` prints `find: '<path>': Permission denied` and goes on. Samba
   has `hide unreadable`, off by default.
 - Linux Landlock: a sandboxed process gets a set of allowed folders (roots) on top of its user's
-  rights. Plugin runs work this way here (sandbox roots on the installation).
+  rights. Plugin runs will work this way here: the installation stores its sandbox roots now, and
+  the reads start to use them in a later change.
 - Do not add a hide switch (access-based enumeration) to Files. It brings back every problem above.
 
 **The leak rule.** A locked row is visible; its content, custom fields and members are not. Any output

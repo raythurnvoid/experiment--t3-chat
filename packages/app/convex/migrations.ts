@@ -12,9 +12,8 @@ import {
 	plugins_db_sandbox_root_target,
 	plugins_db_schedule_sandbox_rebuild,
 	plugins_sandbox_root_key,
-	plugins_SANDBOX_LEVEL_BY_PERMISSION,
+	plugins_db_account_grant_level,
 } from "./plugins_service_accounts.ts";
-import { access_control_file_share_level_from_permissions } from "../shared/access-control.ts";
 
 // The schema lets a migration read through an index with `customRange`.
 const app_migrations = new Migrations(components.migrations, {
@@ -262,29 +261,14 @@ export const audit_plugins_sandbox_roots_page = internalQuery({
 					for (const root of sandbox?.rebuild === null ? sandbox.roots : []) {
 						const resource =
 							root.target.kind === "open"
-								? ({ kind: "workspace", id: installation.workspaceId } as const)
-								: ({ kind: "file", id: root.target.nodeId } as const);
-						const grants = await ctx.db
-							.query("access_control_permission_grants")
-							.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
-								q
-									.eq("organizationId", installation.organizationId)
-									.eq("workspaceId", installation.workspaceId)
-									.eq("resourceKind", resource.kind)
-									.eq("resourceId", resource.id)
-									.eq("principalKind", "service_account")
-									.eq("serviceAccountId", installation.serviceAccountId),
-							)
-							.take(3);
-						const level = access_control_file_share_level_from_permissions(
-							new Set(grants.map((grant) => grant.permission)),
-						);
-						const target = await plugins_db_sandbox_root_target(ctx, {
-							organizationId: installation.organizationId,
-							workspaceId: installation.workspaceId,
-							resource:
-								root.target.kind === "open" ? { kind: "workspace" } : { kind: "file", nodeId: root.target.nodeId },
+								? ({ kind: "workspace" } as const)
+								: ({ kind: "file", nodeId: root.target.nodeId } as const);
+						const level = await plugins_db_account_grant_level(ctx, {
+							...installation,
+							serviceAccountId: installation.serviceAccountId,
+							resource,
 						});
+						const target = await plugins_db_sandbox_root_target(ctx, { ...installation, resource });
 						if (level !== root.level || !target) wrongRoots.push(plugins_sandbox_root_key(root.target));
 					}
 					return {
@@ -303,7 +287,7 @@ export const audit_plugins_sandbox_roots_page = internalQuery({
 
 /**
  * Pass 2 of the sandbox roots audit: every account grant that gives a root must have that root, at
- * least at that permission's level, in each ready installation of the account. Operator check, no
+ * the grant's level, in each ready installation of the account. Operator check, no
  * user waits on it, so it pages the whole grants table.
  */
 export const audit_plugins_sandbox_grants_page = internalQuery({
@@ -322,37 +306,35 @@ export const audit_plugins_sandbox_grants_page = internalQuery({
 			.paginate({ cursor: args.cursor, numItems: 50 });
 		const rows = [];
 		for (const grant of page.page) {
-			const level = plugins_SANDBOX_LEVEL_BY_PERMISSION[grant.permission];
 			if (
 				grant.principalKind !== "service_account" ||
 				!grant.serviceAccountId ||
-				!level ||
 				(grant.resourceKind !== "workspace" && grant.resourceKind !== "file")
 			)
 				continue;
-			const target = await plugins_db_sandbox_root_target(ctx, {
-				organizationId: grant.organizationId,
-				workspaceId: grant.workspaceId,
-				resource:
-					grant.resourceKind === "workspace"
-						? { kind: "workspace" }
-						: { kind: "file", nodeId: grant.resourceId as Id<"files_nodes"> },
+			const resource =
+				grant.resourceKind === "workspace"
+					? ({ kind: "workspace" } as const)
+					: ({ kind: "file", nodeId: grant.resourceId as Id<"files_nodes"> } as const);
+			const target = await plugins_db_sandbox_root_target(ctx, { ...grant, resource });
+			const level = await plugins_db_account_grant_level(ctx, {
+				...grant,
+				serviceAccountId: grant.serviceAccountId,
+				resource,
 			});
-			if (!target) continue;
+			if (!target || !level) continue;
 			const serviceAccountId = grant.serviceAccountId;
 			const installations = await ctx.db
 				.query("plugins_workspace_installations")
 				.withIndex("by_serviceAccount", (q) => q.eq("serviceAccountId", serviceAccountId))
 				.collect();
-			const rank = { read: 0, write: 1, manage: 2 };
 			const missingIn = installations
 				.filter(
 					(installation) =>
 						installation.sandbox?.rebuild === null &&
 						!installation.sandbox.roots.some(
 							(root) =>
-								plugins_sandbox_root_key(root.target) === plugins_sandbox_root_key(target) &&
-								rank[root.level] >= rank[level],
+								plugins_sandbox_root_key(root.target) === plugins_sandbox_root_key(target) && root.level === level,
 						),
 				)
 				.map((installation) => installation._id);

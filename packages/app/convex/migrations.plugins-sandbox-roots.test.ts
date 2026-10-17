@@ -141,8 +141,8 @@ test("the audit reports a missing root and a root with the wrong level", async (
 	const result = await audit(t);
 
 	expect(result.installations).toEqual([expect.objectContaining({ state: "ready", wrongRoots: [reports] })]);
-	// The workspace grant has no root. The folder root exists at a higher level, which pass 2 accepts.
-	expect(result.missing).toEqual([installationId, installationId]);
+	// The workspace grant has no root (two permission docs), and the folder root has the wrong level.
+	expect(result.missing).toEqual([installationId, installationId, installationId]);
 });
 
 test("the audit shows an installation that is not backfilled", async () => {

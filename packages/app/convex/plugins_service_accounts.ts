@@ -4,7 +4,11 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import type { plugins_sandbox_root_validator } from "./schema.ts";
-import type { access_control_FileShareLevel, access_control_GrantPermission } from "../shared/access-control.ts";
+import {
+	access_control_FILE_SHARE_PERMISSIONS,
+	access_control_file_share_level_from_permissions,
+	type access_control_FileShareLevel,
+} from "../shared/access-control.ts";
 
 /**
  * A saved pin must still match the installation's current trusted binding.
@@ -64,20 +68,6 @@ export const plugins_SANDBOX_REBUILD_LEASE_MS = 10 * 60 * 1000;
 /** Grants read per rebuild step. Each one costs two reads (binding, node). */
 const SANDBOX_REBUILD_PAGE_SIZE = 100;
 
-export const plugins_SANDBOX_LEVEL_BY_PERMISSION: Partial<
-	Record<access_control_GrantPermission, access_control_FileShareLevel>
-> = {
-	"content.read": "read",
-	"content.write": "write",
-	"content.permissions.manage": "manage",
-};
-
-export const plugins_SANDBOX_LEVEL_RANK: Record<access_control_FileShareLevel, number> = {
-	read: 0,
-	write: 1,
-	manage: 2,
-};
-
 export function plugins_sandbox_root_key(target: plugins_SandboxRoot["target"]) {
 	return target.kind === "open" ? "open" : target.nodeId;
 }
@@ -120,6 +110,34 @@ export async function plugins_db_sandbox_root_target(
 }
 
 /**
+ * The level of an account's grant on one resource, read from its permission docs like the share
+ * dialog does, or null when it adds up to no level. At most three docs.
+ */
+export async function plugins_db_account_grant_level(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		serviceAccountId: Id<"access_control_service_accounts">;
+		resource: { kind: "workspace" } | { kind: "file"; nodeId: Id<"files_nodes"> };
+	},
+) {
+	const grants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("resourceKind", args.resource.kind)
+				.eq("resourceId", args.resource.kind === "workspace" ? args.workspaceId : args.resource.nodeId)
+				.eq("principalKind", "service_account")
+				.eq("serviceAccountId", args.serviceAccountId),
+		)
+		.take(access_control_FILE_SHARE_PERMISSIONS.length);
+	return access_control_file_share_level_from_permissions(new Set(grants.map((grant) => grant.permission)));
+}
+
+/**
  * Start building the installation's roots from all its account's grants, in a background job.
  *
  * An account can hold one grant per plugin output folder, so "all grants" has no bound inside one
@@ -130,7 +148,13 @@ export async function plugins_db_schedule_sandbox_rebuild(
 	ctx: MutationCtx,
 	args: { installationId: Id<"plugins_workspace_installations"> },
 ) {
-	const leaseUntil = Date.now() + plugins_SANDBOX_REBUILD_LEASE_MS;
+	// A new token must differ from the old one even within the same millisecond.
+	const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+	const old = installation?.sandbox?.rebuild;
+	const leaseUntil = Math.max(
+		Date.now() + plugins_SANDBOX_REBUILD_LEASE_MS,
+		old?.status === "running" ? old.leaseUntil + 1 : 0,
+	);
 	await ctx.db.patch("plugins_workspace_installations", args.installationId, {
 		sandbox: { roots: [], rebuild: { status: "running", leaseUntil } },
 	});
@@ -173,10 +197,13 @@ export async function plugins_db_sync_sandbox_root(
 		// The backfill builds roots for older installations.
 		if (!installation.sandbox) continue;
 		if (installation.sandbox.rebuild?.status === "too_many_folders") {
-			rebuilds.push(installation._id);
+			// Only a removed grant can bring the account back under the cap.
+			if (args.level === null) rebuilds.push(installation._id);
 			continue;
 		}
 
+		const old = installation.sandbox.roots.find((root) => plugins_sandbox_root_key(root.target) === key);
+		if (old?.level === (target ? args.level : undefined)) continue;
 		const roots = installation.sandbox.roots.filter((root) => plugins_sandbox_root_key(root.target) !== key);
 		if (target && args.level) {
 			roots.push({ target, level: args.level });
@@ -227,23 +254,26 @@ export async function plugins_db_sandbox_rebuild_page(
 
 	const roots = [...args.roots];
 	for (const grant of page.page) {
-		// One grant doc per permission, so a resource's level is the highest permission seen.
-		const level = plugins_SANDBOX_LEVEL_BY_PERMISSION[grant.permission];
-		if (!level || (grant.resourceKind !== "workspace" && grant.resourceKind !== "file")) continue;
-		const target = await plugins_db_sandbox_root_target(ctx, {
-			organizationId: installation.organizationId,
-			workspaceId: installation.workspaceId,
-			resource:
-				grant.resourceKind === "workspace"
-					? { kind: "workspace" }
-					: { kind: "file", nodeId: grant.resourceId as Id<"files_nodes"> },
-		});
-		if (!target) continue;
+		if (grant.resourceKind !== "workspace" && grant.resourceKind !== "file") continue;
+		// One grant doc per permission, so the same resource can show up to three times.
+		const resource =
+			grant.resourceKind === "workspace"
+				? ({ kind: "workspace" } as const)
+				: ({ kind: "file", nodeId: grant.resourceId as Id<"files_nodes"> } as const);
+		const target = await plugins_db_sandbox_root_target(ctx, { ...installation, resource });
+		const level = target
+			? await plugins_db_account_grant_level(ctx, {
+					...installation,
+					serviceAccountId: installation.serviceAccountId,
+					resource,
+				})
+			: null;
+		if (!target || !level) continue;
 
 		const index = roots.findIndex((root) => plugins_sandbox_root_key(root.target) === plugins_sandbox_root_key(target));
 		if (index === -1) {
 			roots.push({ target, level });
-		} else if (plugins_SANDBOX_LEVEL_RANK[level] > plugins_SANDBOX_LEVEL_RANK[roots[index].level]) {
+		} else {
 			roots[index] = { target, level };
 		}
 		if (roots.length > plugins_SANDBOX_ROOTS_MAX) {
