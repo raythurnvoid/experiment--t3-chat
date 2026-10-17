@@ -93,6 +93,7 @@ async function setup(options?: { publicWriter: true; privateRoot?: boolean }) {
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
+			sandbox: { roots: [], rebuild: null },
 			installedBy: membership.userId,
 			updatedBy: membership.userId,
 			updatedAt: now,

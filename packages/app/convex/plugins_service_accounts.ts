@@ -150,7 +150,7 @@ export async function plugins_db_schedule_sandbox_rebuild(
 	args: { installationId: Id<"plugins_workspace_installations"> },
 ) {
 	const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
-	const old = installation?.sandbox?.rebuild;
+	const old = installation?.sandbox.rebuild;
 	// A new token must differ from the old one even within the same millisecond.
 	const leaseUntil = Math.max(
 		Date.now() + SANDBOX_REBUILD_LEASE_MS,
@@ -195,8 +195,6 @@ export async function plugins_db_sync_sandbox_root(
 	const patches: Array<{ installationId: Id<"plugins_workspace_installations">; roots: plugins_SandboxRoot[] }> = [];
 	const rebuilds: Array<Id<"plugins_workspace_installations">> = [];
 	for (const installation of installations) {
-		// The backfill builds roots for older installations.
-		if (!installation.sandbox) continue;
 		if (installation.sandbox.rebuild?.status === "too_many_folders") {
 			// Only a removed grant can bring the account back under the cap.
 			if (args.level === null) rebuilds.push(installation._id);
@@ -218,7 +216,7 @@ export async function plugins_db_sync_sandbox_root(
 	for (const patch of patches) {
 		const installation = installations.find((item) => item._id === patch.installationId)!;
 		await ctx.db.patch("plugins_workspace_installations", patch.installationId, {
-			sandbox: { roots: patch.roots, rebuild: installation.sandbox!.rebuild },
+			sandbox: { roots: patch.roots, rebuild: installation.sandbox.rebuild },
 		});
 	}
 	// A grant change may bring the account back under the cap.
@@ -296,9 +294,9 @@ export const sandbox_rebuild_step = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
-		const rebuild = installation?.sandbox?.rebuild;
+		const rebuild = installation?.sandbox.rebuild;
 		// A newer rebuild or the end of this one stops this chain.
-		if (!installation?.sandbox || rebuild?.status !== "running" || rebuild.leaseUntil !== args.leaseUntil) {
+		if (!installation || rebuild?.status !== "running" || rebuild.leaseUntil !== args.leaseUntil) {
 			return null;
 		}
 

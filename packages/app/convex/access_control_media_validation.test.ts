@@ -373,6 +373,7 @@ describe("media sharing clocks", () => {
 				acceptedMcpServersFingerprint: "mcp-servers-hash",
 				acceptedSkillNames: [],
 				outboundOriginsAcceptedAt: Date.now(),
+				sandbox: { roots: [], rebuild: null },
 				installedBy: f.owner.userId,
 				updatedBy: f.owner.userId,
 				updatedAt: Date.now(),

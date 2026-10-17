@@ -226,6 +226,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		acceptedMcpServersFingerprint: "mcp-servers-hash",
 		acceptedSkillNames: [],
 		outboundOriginsAcceptedAt: now,
+		sandbox: { roots: [], rebuild: null },
 		installedBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: now,

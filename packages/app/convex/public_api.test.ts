@@ -8407,6 +8407,7 @@ describe("service file writes", () => {
 				acceptedMcpServersFingerprint: "mcp-servers-hash",
 				acceptedSkillNames: [],
 				outboundOriginsAcceptedAt: now,
+				sandbox: { roots: [], rebuild: null },
 				installedBy: args.db.userId,
 				updatedBy: args.db.userId,
 				updatedAt: now,

@@ -124,6 +124,7 @@ async function create_volume_fixture() {
 			acceptedUiOutboundOrigins: [],
 			acceptedMcpServersFingerprint: "volume-test-mcp",
 			acceptedSkillNames: [],
+			sandbox: { roots: [], rebuild: null },
 			installedBy: owner.userId,
 			updatedBy: owner.userId,
 			updatedAt: now,

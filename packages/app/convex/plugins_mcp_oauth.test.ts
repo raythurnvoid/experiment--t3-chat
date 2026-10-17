@@ -191,6 +191,7 @@ async function install_oauth_plugin(t: TestConvex, member: Pick<Member, "organiz
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
+			sandbox: { roots: [], rebuild: null },
 			installedBy: member.userId,
 			updatedBy: member.userId,
 			updatedAt: now,

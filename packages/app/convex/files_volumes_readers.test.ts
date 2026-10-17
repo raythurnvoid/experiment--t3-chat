@@ -90,6 +90,7 @@ async function fixture() {
 			acceptedUiOutboundOrigins: [],
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
+			sandbox: { roots: [], rebuild: null },
 			installedBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: now,

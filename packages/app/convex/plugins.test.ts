@@ -10932,6 +10932,7 @@ describe("plugins admin hard delete", () => {
 						acceptedMcpServersFingerprint: "mcp-servers-hash",
 						acceptedSkillNames: [],
 						outboundOriginsAcceptedAt: Date.now(),
+						sandbox: { roots: [], rebuild: null },
 						installedBy: membership.userId,
 						updatedBy: membership.userId,
 						updatedAt: Date.now(),

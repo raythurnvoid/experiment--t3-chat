@@ -6986,22 +6986,18 @@ const app_convex_schema = defineSchema({
 		 * The folders this plugin's credentials may reach: a copy of its service account's grants, at
 		 * most 20. Every account grant write keeps it in sync. Plugin output folders are never roots.
 		 * See "Sandbox roots" in the `plugin-system` skill.
-		 *
-		 * Missing = not backfilled yet. Required after the backfill.
 		 */
-		sandbox: v.optional(
-			v.object({
-				roots: v.array(plugins_sandbox_root_validator),
-				// Not null while a background job builds `roots` from all the account's grants. Plugin
-				// requests reach no folder until it ends. `leaseUntil` is the job's token; a cron restarts an
-				// expired one. `too_many_folders` waits for a grant change of the account.
-				rebuild: v.union(
-					v.null(),
-					v.object({ status: v.literal("running"), leaseUntil: v.number() }),
-					v.object({ status: v.literal("too_many_folders") }),
-				),
-			}),
-		),
+		sandbox: v.object({
+			roots: v.array(plugins_sandbox_root_validator),
+			// Not null while a background job builds `roots` from all the account's grants. Plugin
+			// requests reach no folder until it ends. `leaseUntil` is the job's token; a cron restarts an
+			// expired one. `too_many_folders` waits for a grant change of the account.
+			rebuild: v.union(
+				v.null(),
+				v.object({ status: v.literal("running"), leaseUntil: v.number() }),
+				v.object({ status: v.literal("too_many_folders") }),
+			),
+		}),
 		installedBy: v.id("users"),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),

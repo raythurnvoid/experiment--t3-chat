@@ -2,18 +2,12 @@ import { Migrations, type MigrationResult } from "@convex-dev/migrations";
 import { paginationResultValidator } from "convex/server";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api.js";
-import type { Doc, Id } from "./_generated/dataModel.js";
+import type { Doc } from "./_generated/dataModel.js";
 import { internalQuery, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { convex_error } from "../server/convex-utils.ts";
-import {
-	plugins_db_account_grant_level,
-	plugins_db_sandbox_root_target,
-	plugins_db_schedule_sandbox_rebuild,
-	plugins_sandbox_root_key,
-} from "./plugins_service_accounts.ts";
 
 // The schema lets a migration read through an index with `customRange`.
 const app_migrations = new Migrations(components.migrations, {
@@ -187,162 +181,6 @@ export const audit_review_fact_job_count = internalQuery({
 			countedJobs: scopeStatus === "allowed" ? await db_count_review_fact_jobs(ctx.db, args) : null,
 			scopeStatus,
 		};
-	},
-});
-
-// Every installation gets its sandbox roots from a background rebuild job. Remove these
-// temporary tools and tests after the audit passes and `sandbox` is required.
-//
-// Unlike the review fact repair, this skips no scope: `sandbox` becomes required, so every
-// installation needs it, protected ones too. The audits still show each scope.
-export const backfill_plugins_sandbox_roots = app_migrations.define({
-	table: "plugins_workspace_installations",
-	// Each one schedules its own job, which reads the account grants page by page.
-	batchSize: 50,
-	migrateOne: async (ctx, installation) => {
-		if (installation.sandbox) return;
-		console.info("Starting a sandbox root rebuild", { id: installation._id, workspaceId: installation.workspaceId });
-		await plugins_db_schedule_sandbox_rebuild(ctx, { installationId: installation._id });
-	},
-});
-
-export const run_backfill_plugins_sandbox_roots = app_migrations.runner(
-	internal.migrations.backfill_plugins_sandbox_roots,
-);
-
-export const preview_plugins_sandbox_roots = internalMutation({
-	args: { cursor: v.union(v.string(), v.null()) },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const result: MigrationResult = await ctx.runMutation(internal.migrations.backfill_plugins_sandbox_roots, {
-			cursor: args.cursor,
-			batchSize: 50,
-			dryRun: false,
-			oneBatchOnly: true,
-		});
-		// Throw to roll back the patches and the scheduled jobs.
-		throw convex_error({
-			message: "Sandbox roots preview rolled back.",
-			data: { processed: result.processed, continueCursor: result.continueCursor, isDone: result.isDone },
-		});
-	},
-});
-
-/**
- * Pass 1 of the sandbox roots audit: one installation per page. Each root must still be a root of a
- * live account grant with the same level. At most 20 roots, so one page has a small fixed cost.
- */
-export const audit_plugins_sandbox_roots_page = internalQuery({
-	args: { cursor: v.union(v.string(), v.null()) },
-	returns: paginationResultValidator(
-		v.object({
-			installationId: v.id("plugins_workspace_installations"),
-			workspaceId: v.id("organizations_workspaces"),
-			scopeStatus: v.union(v.literal("allowed"), v.literal("protected"), v.literal("invalid_tenant")),
-			rebuildStatus: v.union(
-				v.literal("missing"),
-				v.literal("running"),
-				v.literal("too_many_folders"),
-				v.literal("ready"),
-			),
-			rootCount: v.number(),
-			wrongRoots: v.array(v.string()),
-		}),
-	),
-	handler: async (ctx, args) => {
-		const page = await ctx.db
-			.query("plugins_workspace_installations")
-			.withIndex("by_creation_time")
-			.paginate({ cursor: args.cursor, numItems: 1 });
-		return {
-			...page,
-			page: await Promise.all(
-				page.page.map(async (installation) => {
-					const sandbox = installation.sandbox;
-					const wrongRoots: string[] = [];
-					for (const root of sandbox?.rebuild === null ? sandbox.roots : []) {
-						const resource =
-							root.target.kind === "open"
-								? ({ kind: "workspace" } as const)
-								: ({ kind: "file", nodeId: root.target.nodeId } as const);
-						const level = await plugins_db_account_grant_level(ctx, {
-							...installation,
-							serviceAccountId: installation.serviceAccountId,
-							resource,
-						});
-						const target = await plugins_db_sandbox_root_target(ctx, { ...installation, resource });
-						if (level !== root.level || !target) wrongRoots.push(plugins_sandbox_root_key(root.target));
-					}
-					return {
-						installationId: installation._id,
-						workspaceId: installation.workspaceId,
-						scopeStatus: await db_scope_status(ctx.db, installation),
-						rebuildStatus: !sandbox ? ("missing" as const) : (sandbox.rebuild?.status ?? ("ready" as const)),
-						rootCount: sandbox?.roots.length ?? 0,
-						wrongRoots,
-					};
-				}),
-			),
-		};
-	},
-});
-
-/**
- * Pass 2 of the sandbox roots audit: every account grant that gives a root must have that root, at
- * the grant's level, in each ready installation of the account. Operator check, no
- * user waits on it, so it pages the whole grants table.
- */
-export const audit_plugins_sandbox_grants_page = internalQuery({
-	args: { cursor: v.union(v.string(), v.null()) },
-	returns: paginationResultValidator(
-		v.object({
-			grantId: v.id("access_control_permission_grants"),
-			workspaceId: v.id("organizations_workspaces"),
-			missingIn: v.array(v.id("plugins_workspace_installations")),
-		}),
-	),
-	handler: async (ctx, args) => {
-		const page = await ctx.db
-			.query("access_control_permission_grants")
-			.withIndex("by_creation_time")
-			.paginate({ cursor: args.cursor, numItems: 50 });
-		const checks = [];
-		for (const grant of page.page) {
-			if (
-				grant.principalKind !== "service_account" ||
-				!grant.serviceAccountId ||
-				(grant.resourceKind !== "workspace" && grant.resourceKind !== "file")
-			)
-				continue;
-			const resource =
-				grant.resourceKind === "workspace"
-					? ({ kind: "workspace" } as const)
-					: ({ kind: "file", nodeId: grant.resourceId as Id<"files_nodes"> } as const);
-			const target = await plugins_db_sandbox_root_target(ctx, { ...grant, resource });
-			const level = await plugins_db_account_grant_level(ctx, {
-				...grant,
-				serviceAccountId: grant.serviceAccountId,
-				resource,
-			});
-			if (!target || !level) continue;
-			const serviceAccountId = grant.serviceAccountId;
-			const installations = await ctx.db
-				.query("plugins_workspace_installations")
-				.withIndex("by_serviceAccount", (q) => q.eq("serviceAccountId", serviceAccountId))
-				.collect();
-			const missingIn = installations
-				.filter(
-					(installation) =>
-						installation.sandbox?.rebuild === null &&
-						!installation.sandbox.roots.some(
-							(root) =>
-								plugins_sandbox_root_key(root.target) === plugins_sandbox_root_key(target) && root.level === level,
-						),
-				)
-				.map((installation) => installation._id);
-			checks.push({ grantId: grant._id, workspaceId: grant.workspaceId, missingIn });
-		}
-		return { ...page, page: checks };
 	},
 });
 

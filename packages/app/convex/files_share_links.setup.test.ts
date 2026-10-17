@@ -155,6 +155,7 @@ export async function insert_installation(f: Fixture) {
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: Date.now(),
+			sandbox: { roots: [], rebuild: null },
 			installedBy: f.db.userId,
 			updatedBy: f.db.userId,
 			updatedAt: Date.now(),
