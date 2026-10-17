@@ -595,7 +595,9 @@ async function db_get_share_principal_keys(
  * Its copied fields must match the node, so the node is still where the index range read it: under
  * the read's folder, and active or archived, as the read asks. A row of a plugin grant must also
  * carry the member's live membership lifetime: after a re-invite the old grant reads nothing, even
- * while another grant keeps the node readable. Rows that fail are dropped, so a page can be short.
+ * while another grant keeps the node readable. A re-invite schedules
+ * `plugins_external_files.delete_old_reader_grants`, so this check only guards the short time
+ * before that job ends. Rows that fail are dropped, so a page can be short.
  */
 async function db_get_share_tree_rows(
 	ctx: QueryCtx,

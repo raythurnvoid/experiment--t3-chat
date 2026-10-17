@@ -1,5 +1,6 @@
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { internal } from "./_generated/api.js";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
@@ -147,6 +148,15 @@ export async function organizations_membership_lifetimes_db_record(
 		// Local jobs also use this lifetime, before an external service starts the change feed.
 		if (!active)
 			await plugins_schedules_db_cancel(ctx, { workspaceId: membership.workspaceId, userId: membership.userId });
+		// A re-invite leaves plugin reader grants of older lifetimes. They read nothing, so delete them.
+		if (active && lifetime > 1)
+			await ctx.scheduler.runAfter(0, internal.plugins_external_files.delete_old_reader_grants, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				lifetime,
+				cursor: null,
+			});
 		if (!state) continue;
 		const organization = active ? await ctx.db.get("organizations", membership.organizationId) : null;
 		const member = organization?.defaultWorkspaceId

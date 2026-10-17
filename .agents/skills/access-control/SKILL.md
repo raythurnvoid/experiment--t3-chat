@@ -1152,6 +1152,9 @@ the folder table, and a reader can list the restricted folders it may read in pa
 - A row copies the node's list fields (parent, kind, archive, names, `treePath`, `updatedAt`,
   extension, size, creation time) and the grant's `externalPluginMembershipLifetime` (`null` when
   missing).
+- A re-invite schedules `plugins_external_files.delete_old_reader_grants`, which deletes the member's
+  plugin reader grants of older lifetimes in that workspace (100 a page), so their rows go too. Until it
+  ends, the share readers drop those rows.
 - Nothing writes rows by hand. The pending overlay flush keeps them true in the writer's transaction
   (grants are one of its source tables): a file grant insert, patch or delete syncs that grant's row,
   and a write to a node that is or was a scope root syncs the node's rows. Outside a Move another

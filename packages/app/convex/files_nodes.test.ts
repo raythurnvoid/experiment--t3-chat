@@ -10,6 +10,7 @@ import { api, internal } from "./_generated/api.js";
 import { files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import {
 	test_convex,
 	test_rename_node,
@@ -783,6 +784,84 @@ describe("list_tree_shared_roots", () => {
 			"/top/hidden/plugin",
 			"/shared",
 		]);
+	});
+
+	/**
+	 * Remove the admin and invite them again. Their lifetime goes from 2 to 3, and the old grant on
+	 * `plugin` (lifetime 1) stays until the scheduled job runs.
+	 */
+	const reinvite_admin = (t: ReturnType<typeof test_convex>, f: Awaited<ReturnType<typeof seed_tree_access_fixture>>) =>
+		t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", f.admin.membershipId))!;
+			await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: false }]);
+			await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: true }]);
+		});
+
+	test("re-inviting a member deletes their old plugin-reader grants", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		await reinvite_admin(t, f);
+		// A grant of the new lifetime and another member's old grant must stay.
+		await test_run_with_flush(t, async (ctx) => {
+			const now = Date.now();
+			for (const [nodeId, userId, lifetime] of [
+				[f.nodes.teamId, f.admin.userId, 3],
+				[f.nodes.pluginId, f.grantOnly.userId, 1],
+			] as const) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: f.owner.organizationId,
+					workspaceId: f.owner.workspaceId,
+					resourceKind: "file",
+					resourceId: String(nodeId),
+					principalKind: "user",
+					userId,
+					externalPluginMembershipLifetime: lifetime,
+					permission: "content.read",
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+		});
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+		const tagged = await t.run(async (ctx) => ({
+			grants: (await ctx.db.query("access_control_permission_grants").collect())
+				.filter((grant) => grant.externalPluginMembershipLifetime !== undefined)
+				.map((grant) => [grant.resourceId, grant.userId, grant.externalPluginMembershipLifetime]),
+			shareRows: (await ctx.db.query("files_share_rows").collect())
+				.filter((row) => row.externalPluginMembershipLifetime !== null)
+				.map((row) => [row.nodeId, row.principalKey, row.externalPluginMembershipLifetime]),
+		}));
+		expect(tagged).toEqual({
+			grants: [
+				[String(f.nodes.teamId), f.admin.userId, 3],
+				[String(f.nodes.pluginId), f.grantOnly.userId, 1],
+			],
+			shareRows: expect.arrayContaining([
+				[f.nodes.teamId, `user:${f.admin.userId}`, 3],
+				[f.nodes.pluginId, `user:${f.grantOnly.userId}`, 1],
+			]),
+		});
+		expect(tagged.shareRows).toHaveLength(2);
+	});
+
+	test("Shared with you is full after a re-invite", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		await reinvite_admin(t, f);
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+		// The old `plugin` share sorts inside this page. With its grant gone, the page has 3 rows.
+		const page = await f.asAdmin.query(api.files_tree.list_tree_shared_roots, {
+			membershipId: f.admin.membershipId,
+			archived: false,
+			principalIndex: 0,
+			paginationOpts: { numItems: 3, cursor: null },
+		});
+		expect(page.page).toHaveLength(3);
+		expect(page.page.map((row) => row.path)).toEqual(["/top/hidden/granted", "/top/hidden/granted/inner", "/shared"]);
 	});
 
 	test("a share row whose node was archived, made open or unshared shows nothing", async () => {

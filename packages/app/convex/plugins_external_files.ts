@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { internalQuery, type MutationCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
+import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import app_convex_schema from "./schema.ts";
 import {
@@ -82,6 +83,47 @@ export async function plugins_external_files_db_replace_readers(
 			: [],
 	);
 }
+
+/**
+ * Deletes one page of a member's plugin reader grants from older membership lifetimes, then runs
+ * again until the index range ends. A re-invite schedules it: an old grant reads nothing, and its
+ * share row would make "Shared with you" pages short. The flush deletes each grant's share row.
+ */
+export const delete_old_reader_grants = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		lifetime: v.number(),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const grants = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_user_organization_workspace_resource_permission", (q) =>
+				q
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("resourceKind", "file"),
+			)
+			.paginate({ cursor: args.cursor, numItems: 100 });
+		// Lifetimes only grow, so a smaller tag never becomes live again.
+		const old = grants.page.filter(
+			(grant) =>
+				grant.externalPluginMembershipLifetime !== undefined && grant.externalPluginMembershipLifetime < args.lifetime,
+		);
+		for (const grant of old) await ctx.db.delete("access_control_permission_grants", grant._id);
+		if (old.length > 0) await files_media_validation_db_advance_version(ctx, args);
+		if (!grants.isDone)
+			await ctx.scheduler.runAfter(0, internal.plugins_external_files.delete_old_reader_grants, {
+				...args,
+				cursor: grants.continueCursor,
+			});
+		return null;
+	},
+});
 
 export const check_public_request = internalQuery({
 	args: {
