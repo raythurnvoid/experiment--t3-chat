@@ -1093,8 +1093,9 @@ inside it. Everybody who had access before keeps it: added people only add acces
   (`null` means everyone in the workspace) and the extended roots above, nearest first. Inherited
   names are sent only to a caller who manages the node or reads the whole area (its restricted root,
   or the workspace when it is open). A person who gets in only through added people must not learn
-  who reads the folders above. Until the dialog shows added people, it lists the restricted root's
-  names on an item inside it.
+  who reads the folders above. The dialog shows one line per folder above (with its names and
+  "Manage on <name>" only when they were sent), then "Added here" with this node's entries. It offers
+  "Can manage" only on a restricted root, and Restrict asks first, with the count of people added here.
 - History: one-time migrations moved every old file grant onto a scope root. A
   grant on an open item made it an extended root; a grant on a plain item inside a restricted folder
   gave nothing (a dormant grant) and was deleted; a `manage` grant on an extended root was lowered to

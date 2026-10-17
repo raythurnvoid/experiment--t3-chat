@@ -110,6 +110,34 @@
 		max-width: 100%;
 		flex: none;
 	}
+
+	/* The yes or no before a restrict, under the button that asked for it. */
+	.FilesShareModal-confirm {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		padding: 12px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 10px;
+	}
+
+	.FilesShareModal-subheading {
+		margin: 0;
+
+		font-size: 16px;
+		font-weight: 600;
+		color: var(--color-fg-11);
+
+		overflow-wrap: anywhere;
+	}
+
+	/* One folder above that gives access here: its line, and its people when the server sent them. */
+	.FilesShareModal-inherited {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
 	/* #endregion section */
 
 	/* #region link */

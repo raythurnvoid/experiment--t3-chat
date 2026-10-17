@@ -72,7 +72,34 @@ const SHARE = {
 /**
  * A manager's view of a file, not a folder, so the public link section shows.
  */
-const FILE_SHARE = { ...SHARE, nodeName: "notes.md", nodeKind: "file", scope: null };
+const FILE_SHARE = { ...SHARE, nodeName: "notes.md", nodeKind: "file", scope: null, access: "inherits" };
+
+/**
+ * A folder in the open part of the workspace, with nobody added yet.
+ */
+const OPEN_SHARE = { ...SHARE, scope: null, access: "inherits" };
+
+/**
+ * A file inside the restricted folder Team.
+ */
+const INSIDE_SHARE = {
+	...SHARE,
+	nodeName: "notes.md",
+	nodeKind: "file",
+	scope: { nodeId: "node_0", name: "Team", path: "/Team", isSelf: false },
+	access: "inherits",
+	inheritedFrom: {
+		restricted: {
+			nodeId: "node_0",
+			name: "Team",
+			path: "/Team",
+			entries: [
+				{ principal: { kind: "user", userId: "user_1" }, level: "read", serviceAccountName: null, servicePluginName: null },
+			],
+		},
+		extended: [],
+	},
+};
 
 // Midday UTC, so the date reads the same in every time zone the tests may run in.
 const LINK = { token: "token_1", createdBy: "user_1", createdAt: Date.UTC(2026, 8, 27, 12) };
@@ -226,6 +253,91 @@ describe("FilesShareModal", () => {
 		renderModal();
 		const row = document.querySelector('[data-share-principal="service_account:account_1"]') as HTMLElement;
 		expect(row.textContent).toContain("Report bot");
+	});
+
+	test("add people is available on an open folder", () => {
+		mockShareState(OPEN_SHARE);
+		renderModal();
+
+		expect(screen.getByRole("button", { name: "Add" })).toBeTruthy();
+		expect(screen.getByText("They also get everything inside this folder, except restricted items inside it.")).toBeTruthy();
+		expect(screen.getByText("Everyone in this workspace can open this.")).toBeTruthy();
+		expect(screen.getByText("Nobody yet.")).toBeTruthy();
+	});
+
+	test("add people is available on a file inside a restricted folder", () => {
+		mockShareState(INSIDE_SHARE);
+		renderModal();
+
+		expect(screen.getByRole("button", { name: "Add" })).toBeTruthy();
+		// The help text is about what is inside a folder, so a file does not show it.
+		expect(screen.queryByText("They also get everything inside this folder, except restricted items inside it.")).toBeNull();
+	});
+
+	test("restrict asks before removing people added here", async () => {
+		mockShareState({
+			...OPEN_SHARE,
+			access: "extended_root",
+			entries: [
+				{ principal: { kind: "user", userId: "user_1" }, level: "read", serviceAccountName: null, servicePluginName: null },
+			],
+		});
+		renderModal();
+		fireEvent.click(screen.getByRole("button", { name: "Restrict access" }));
+
+		expect(screen.getByRole("alert").textContent).toBe(
+			"Only you will have access. People added here (1) will lose access. You can add people again after.",
+		);
+		expect(mutationMock).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole("button", { name: "Restrict" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("restrict_node", { membershipId: "membership_1", nodeId: "node_1" }),
+		);
+	});
+
+	test("inherited access names the folder it comes from", async () => {
+		mockShareState(INSIDE_SHARE);
+		renderModal();
+
+		const line = document.querySelector('[data-share-inherited="node_0"]') as HTMLElement;
+		expect(within(line).getByRole("heading", { name: 'From "Team" (restricted)' })).toBeTruthy();
+		const row = line.querySelector('[data-share-principal="user:user_1"]') as HTMLElement;
+		expect(row.textContent).toContain("Ada");
+		// A row from the folder above is read-only here.
+		expect(within(row).queryByRole("combobox")).toBeNull();
+
+		fireEvent.click(within(line).getByRole("button", { name: "Manage on Team" }));
+		await waitFor(() =>
+			expect(queryMock).toHaveBeenCalledWith("sharing", { membershipId: "membership_1", nodeId: "node_0" }),
+		);
+	});
+
+	test("inherited names are hidden from a viewer who cannot manage that folder", () => {
+		mockShareState({
+			...INSIDE_SHARE,
+			canManage: false,
+			canAddPeople: false,
+			inheritedFrom: { restricted: { ...INSIDE_SHARE.inheritedFrom.restricted, entries: null }, extended: [] },
+		});
+		renderModal();
+
+		const line = document.querySelector('[data-share-inherited="node_0"]') as HTMLElement;
+		expect(within(line).getByRole("heading", { name: 'From "Team" (restricted)' })).toBeTruthy();
+		expect(line.querySelector("[data-share-principal]")).toBeNull();
+		expect(screen.queryByRole("button", { name: "Manage on Team" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
+	});
+
+	test("the level select has no manage on an Add-people item", async () => {
+		mockShareState(OPEN_SHARE);
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Access level for the new person, role, or account" }));
+
+		expect(await screen.findByRole("option", { name: "Can edit" })).toBeTruthy();
+		expect(screen.getByRole("option", { name: "Can view" })).toBeTruthy();
+		expect(screen.queryByRole("option", { name: "Can manage" })).toBeNull();
 	});
 
 	test("hides service choices when the caller cannot manage service accounts", async () => {
