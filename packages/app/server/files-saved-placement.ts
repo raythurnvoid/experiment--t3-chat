@@ -123,6 +123,8 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		restrictedScopeNodeId: place.restrictedScopeNodeId,
 		isRestrictedScopeRoot: place.isRestrictedScopeRoot,
 		parentScopeNodeId: place.parentScopeNodeId,
+		extendedScopeNodeId: place.extendedScopeNodeId,
+		parentExtendedScopeNodeId: place.parentExtendedScopeNodeId,
 		updatedAt: place.updatedAt,
 		updatedBy: place.updatedBy,
 		ancestor1: place.ancestor1,

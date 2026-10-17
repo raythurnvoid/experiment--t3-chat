@@ -9526,7 +9526,11 @@ describe("plugins metadata file doors", () => {
 						.collect()
 						.then((grants) => grants.filter((grant) => grant.resourceId === nested._id)),
 				})),
-			).toEqual(nestedBefore);
+			).toEqual({
+				...nestedBefore,
+				// The binding restricts /probe/sub, so the nested root now points at it as its parent area.
+				node: { ...nestedBefore.node, parentScopeNodeId: change === "binding" ? sub._id : root._id },
+			});
 		},
 	);
 

@@ -70,8 +70,9 @@ export const files_node_public_doc_fields = {
 		.contentFrontmatterTooLargeIndexDocumentCount,
 	restrictedScopeNodeId: doc(app_convex_schema, "files_nodes").fields.restrictedScopeNodeId,
 	// Leave writePolicy and newChildWritePolicy out. They name accounts a reader may not see.
-	// Leave sortName, isRestrictedScopeRoot, parentScopeNodeId, scopeOpId, contentTypeEssence,
-	// contentTypeFamily and ancestor1..12 out too. Only the server reads them.
+	// Leave sortName, isRestrictedScopeRoot, parentScopeNodeId, scopeOpId, extendedScopeNodeId,
+	// parentExtendedScopeNodeId, contentTypeEssence, contentTypeFamily and ancestor1..12 out too. Only
+	// the server reads them.
 	archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
 	createdBy: doc(app_convex_schema, "files_nodes").fields.createdBy,
 	updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
@@ -98,6 +99,8 @@ export function files_tree_db_get_public_node_fields(
 		isRestrictedScopeRoot: _isRestrictedScopeRoot,
 		parentScopeNodeId: _parentScopeNodeId,
 		scopeOpId: _scopeOpId,
+		extendedScopeNodeId: _extendedScopeNodeId,
+		parentExtendedScopeNodeId: _parentExtendedScopeNodeId,
 		moveCohortId: _moveCohortId,
 		contentTypeEssence: _contentTypeEssence,
 		contentTypeFamily: _contentTypeFamily,

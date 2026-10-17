@@ -2482,7 +2482,7 @@ describe("r2 asset content", () => {
 				membershipId: db.membershipId,
 				serviceAccountId: installation.serviceAccountId,
 				resource: { kind: "file", nodeId: existingGeneratedId },
-				level: "manage",
+				level: "write",
 			}),
 		).toEqual({ _yay: null });
 

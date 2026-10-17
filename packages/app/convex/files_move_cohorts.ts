@@ -144,6 +144,8 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 		...header,
 		archivedPathLength: place.archivedPathLength,
 		parentScopeNodeId: place.parentScopeNodeId,
+		extendedScopeNodeId: place.extendedScopeNodeId,
+		parentExtendedScopeNodeId: place.parentExtendedScopeNodeId,
 		...files_ancestor_fields(files_ancestor_ids(place)),
 	};
 }
@@ -724,6 +726,7 @@ async function db_allocate_private(
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
+		extendedScopeNodeId: null,
 		archiveOperationId: null,
 		writePolicy: proposal.copiedFrom?.sourceWritePolicy ?? null,
 		newChildWritePolicy: proposal.copiedFrom?.sourceNewChildWritePolicy ?? null,
@@ -1036,6 +1039,7 @@ async function db_rename_parents(
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
 			isRestrictedScopeRoot: false,
+			extendedScopeNodeId: parent?.extendedScopeNodeId ?? null,
 			archiveOperationId: cursor.parentArchiveOperationId,
 			writePolicy: parent?.newChildWritePolicy ?? null,
 			newChildWritePolicy: parent?.newChildWritePolicy ?? null,
@@ -1506,6 +1510,18 @@ async function db_headers(
 				: record.role === "anchor"
 					? old?.parentScopeNodeId
 					: undefined,
+		// An extended root keeps its added people and links to the chain where it lands. Any other item
+		// takes the chain of its new parent, so people added to the old folder lose it.
+		extendedScopeNodeId:
+			scope === physical._id
+				? null
+				: physical.parentExtendedScopeNodeId !== undefined
+					? physical._id
+					: (parent?.extendedScopeNodeId ?? null),
+		parentExtendedScopeNodeId:
+			scope !== physical._id && physical.parentExtendedScopeNodeId !== undefined
+				? (parent?.extendedScopeNodeId ?? null)
+				: undefined,
 		archiveOperationId: afterArchive,
 		// Already archived nodes keep their allowance even if the path changes.
 		archivedPathLength:

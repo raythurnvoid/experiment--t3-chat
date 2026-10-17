@@ -74,6 +74,32 @@ describe("Files access versions", () => {
 		expect(pins.map((pin) => pin?.revision)).toEqual([1, 1]);
 	});
 
+	test("a change of extendedScopeNodeId moves the clock", async () => {
+		const t = test_convex();
+		const scope = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const nodeId = await t.run((ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				createdBy: scope.userId,
+				updatedBy: scope.userId,
+			}),
+		);
+		const patch = (fields: { name?: string; extendedScopeNodeId?: typeof nodeId }) =>
+			t.run(async (ctx) => {
+				const writes = files_access_version_db_wrap(ctx);
+				await writes.db.patch("files_nodes", nodeId, fields);
+				await writes.flush();
+			});
+		const before = await t.run((ctx) => files_access_version_db_get(ctx.db, scope));
+		await patch({ name: "renamed" });
+		expect(await t.run((ctx) => files_access_version_db_get(ctx.db, scope))).toEqual(before);
+		await patch({ extendedScopeNodeId: nodeId });
+		const after = await t.run((ctx) => files_access_version_db_get(ctx.db, scope));
+		expect(after[1]?.revision).toBe((before[1]?.revision ?? 0) + 1);
+	});
+
 	test("does not recreate a tenant clock after deletion", async () => {
 		const t = test_convex();
 		const scope = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));

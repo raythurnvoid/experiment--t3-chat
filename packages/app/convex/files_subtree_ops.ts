@@ -35,7 +35,7 @@ import { internalMutation } from "./functions.ts";
 import { activities_db_finish, activities_db_start } from "./activities_db.ts";
 import { files_archive_runs_db_advance, files_archive_runs_db_promote } from "./files_archive_runs.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import { files_nodes_db_rebuild_node } from "./files_nodes.ts";
+import { files_nodes_db_rebuild_node, files_nodes_db_set_extended_scope } from "./files_nodes.ts";
 import { files_transfer_db_promote } from "./files_transfer.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
@@ -337,7 +337,9 @@ async function db_rebuild_walk(args: {
 				passWrote = true;
 				isWritten = true;
 			}
-			if (child.kind === "folder") {
+			// A scope change stops at a restricted folder: the scopes inside it depend only on that folder.
+			// The rebuild above still gives the folder its new parent scope.
+			if (child.kind === "folder" && !(op.kind === "scope" && child.isRestrictedScopeRoot)) {
 				folderIds.push(child._id);
 			}
 		}
@@ -460,6 +462,39 @@ export async function files_subtree_ops_db_pause_for_move(ctx: MutationCtx, op: 
 		check: { wholeWorkspace: { organizationId: op.organizationId, workspaceId: op.workspaceId } },
 	});
 }
+
+/**
+ * Make a plain open item an extended root and start the job that gives the items inside the new
+ * chain. The account grant writer calls this with `ctx.runMutation`, in the same transaction, so its
+ * light module does not load the file engine.
+ */
+export const extend_node = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await files_nodes_db_set_extended_scope(ctx, { nodeId: args.nodeId, extended: true });
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		if (!node) throw should_never_happen("Extended node is missing", args);
+		const organization = await ctx.db.get("organizations", args.organizationId);
+		if (!organization) throw should_never_happen("Extended node has no organization", args);
+		// Some callers (an install, a plugin setup) have no person, so the job runs as the organization owner.
+		await files_subtree_ops_db_start_rebuild(ctx, {
+			kind: "scope",
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: organization.ownerUserId,
+			membership: null,
+			roots: [{ node, oldTreePath: node.treePath }],
+			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
+			now: Date.now(),
+		});
+		return null;
+	},
+});
 
 export const advance = internalMutation({
 	args: { opId: v.id("files_subtree_ops"), step: v.number() },

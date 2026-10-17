@@ -236,6 +236,13 @@ export const access_control_FILE_SHARE_LEVEL_KEYS = Object.keys(
 	access_control_FILE_SHARE_LEVELS,
 ) as access_control_FileShareLevel[];
 
+/**
+ * People added to an item that is not restricted ("Add people") can only view or edit. Only a
+ * restricted item, or the workspace, has a list of people who manage it.
+ */
+export const access_control_ADDED_PEOPLE_LEVEL_MESSAGE =
+	"Added people can view or edit. To let someone manage, restrict the item first.";
+
 /** Every permission any share level can hand out, so a caller can check them in one pass. */
 export const access_control_FILE_SHARE_PERMISSIONS = access_control_FILE_SHARE_LEVELS.manage.permissions;
 

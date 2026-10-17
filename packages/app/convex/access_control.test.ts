@@ -1730,17 +1730,18 @@ describe("set_node_share_grant service accounts", () => {
 		};
 
 		expect(
-			(await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "manage" }))._nay,
+			(await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "write" }))._nay,
 		).toBeUndefined();
+		// An account can manage only a restricted root, so an open item offers view and edit.
 		expect(
 			await fixture.asOwner.query(api.files_sharing.get_node_share_state, {
 				membershipId: fixture.ownerMembershipId,
 				nodeId,
 			}),
 		).toMatchObject({
-			entries: [{ principal: args.principal, level: "manage", serviceAccountName: "Writer", servicePluginName: null }],
+			entries: [{ principal: args.principal, level: "write", serviceAccountName: "Writer", servicePluginName: null }],
 			canShareWithServiceAccounts: true,
-			serviceGrantableLevels: ["read", "write", "manage"],
+			serviceGrantableLevels: ["read", "write"],
 		});
 
 		await t.run(async (ctx) => {

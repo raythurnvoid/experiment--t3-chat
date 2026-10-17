@@ -579,6 +579,8 @@ describe("reviewed Move graph", () => {
 					...before.find((node) => node._id === child._id),
 					path,
 					treePath: path + "/",
+					// The mock node has no field yet. A rebuild that writes the node also writes it.
+					extendedScopeNodeId: null,
 				});
 			} else {
 				if (result._yay) {

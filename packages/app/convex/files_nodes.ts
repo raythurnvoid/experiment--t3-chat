@@ -562,6 +562,12 @@ export async function files_nodes_db_set_restricted_scope(args: {
 	// reached. A file has no op, so it stops being one at once.
 	const boundary = (parentScopeNodeId: Id<"files_nodes"> | null) =>
 		isRestrictedScopeRoot ? { parentScopeNodeId } : node?.kind === "file" ? { parentScopeNodeId: undefined } : {};
+	// A restricted root starts with no added people from above, and it is never an extended root. An
+	// item that stops being restricted takes the added people of its parent.
+	const extended = (parentExtendedScopeNodeId: Id<"files_nodes"> | null) =>
+		isRestrictedScopeRoot
+			? { extendedScopeNodeId: null, parentExtendedScopeNodeId: undefined }
+			: { extendedScopeNodeId: parentExtendedScopeNodeId };
 	if (
 		node &&
 		(node.moveCohortId ||
@@ -580,10 +586,12 @@ export async function files_nodes_db_set_restricted_scope(args: {
 				.unique();
 			if (!place) continue;
 			let parentScopeNodeId: Id<"files_nodes"> | null = null;
+			let parentExtendedScopeNodeId: Id<"files_nodes"> | null = null;
 			let parentId = place.parentId;
 			while (!parentScopeNodeId && parentId !== files_ROOT_ID) {
 				const parent = await files_saved_placement_db_get_node(ctx.db, parentId, fixedView);
 				if (!parent) break;
+				if (parent._id === place.parentId) parentExtendedScopeNodeId = parent.extendedScopeNodeId ?? null;
 				if (parent.isRestrictedScopeRoot) parentScopeNodeId = parent._id;
 				parentId = parent.parentId;
 			}
@@ -591,19 +599,19 @@ export async function files_nodes_db_set_restricted_scope(args: {
 				restrictedScopeNodeId: isRestrictedScopeRoot ? node._id : parentScopeNodeId,
 				isRestrictedScopeRoot,
 				...boundary(parentScopeNodeId),
+				...extended(parentExtendedScopeNodeId),
 			});
 			await files_metadata_db_patch_file_scope(ctx, { ...args, isRestrictedScopeRoot, fixedView });
 		}
 	}
 	const physical = await ctx.db.get("files_nodes", args.nodeId);
+	const physicalParent =
+		physical && physical.parentId !== files_ROOT_ID ? await ctx.db.get("files_nodes", physical.parentId) : null;
 	await ctx.db.patch("files_nodes", args.nodeId, {
 		restrictedScopeNodeId: args.restrictedScopeNodeId,
 		isRestrictedScopeRoot,
-		...boundary(
-			isRestrictedScopeRoot && physical
-				? await files_nodes_db_resolve_parent_restricted_scope(ctx, { parentId: physical.parentId })
-				: null,
-		),
+		...boundary(physicalParent?.restrictedScopeNodeId ?? null),
+		...extended(physicalParent?.extendedScopeNodeId ?? null),
 	});
 	await files_metadata_db_patch_file_scope(ctx, {
 		organizationId: args.organizationId,
@@ -612,6 +620,55 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		isRestrictedScopeRoot,
 	});
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
+}
+
+/**
+ * Make an open item an extended root ("Add people": its own grants add people to it) or stop it
+ * being one. Start a scope op with `files_subtree_ops_db_start_rebuild` after this for the items
+ * inside a folder. The caller checks that the item is not a restricted root.
+ *
+ * It does not touch metadata docs or public links: an extended item stays in the open area, and
+ * links depend only on the restricted scope.
+ */
+export async function files_nodes_db_set_extended_scope(
+	ctx: MutationCtx,
+	args: { nodeId: Id<"files_nodes">; extended: boolean },
+) {
+	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+	if (!node) return;
+	// An extended root starts a new link in its parent's chain. An item that stops being one takes
+	// its parent's chain.
+	const fields = (parent: Doc<"files_nodes"> | null) =>
+		args.extended
+			? { extendedScopeNodeId: node._id, parentExtendedScopeNodeId: parent?.extendedScopeNodeId ?? null }
+			: { extendedScopeNodeId: parent?.extendedScopeNodeId ?? null, parentExtendedScopeNodeId: undefined };
+	if (
+		node.moveCohortId ||
+		(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: node._id } }))
+	)
+		files_move_reservations_db_enter_security(ctx, { nodeId: node._id });
+	if (node.moveCohortId) {
+		// Each placement takes the chain of its own parent in that view.
+		for (const view of ["before", "after"] as const) {
+			const fixedView = { cohortId: node.moveCohortId, view };
+			const place = await ctx.db
+				.query("files_saved_places")
+				.withIndex("by_cohort_view_node", (q) =>
+					q.eq("cohortId", fixedView.cohortId).eq("view", view).eq("nodeId", node._id),
+				)
+				.unique();
+			if (!place) continue;
+			const parent =
+				place.parentId === files_ROOT_ID
+					? null
+					: await files_saved_placement_db_get_node(ctx.db, place.parentId, fixedView);
+			await ctx.db.patch("files_saved_places", place._id, fields(parent));
+		}
+	}
+	const physical = await ctx.db.get("files_nodes", args.nodeId);
+	const physicalParent =
+		physical && physical.parentId !== files_ROOT_ID ? await ctx.db.get("files_nodes", physical.parentId) : null;
+	await ctx.db.patch("files_nodes", args.nodeId, fields(physicalParent));
 }
 
 // #region write-policy
@@ -3440,20 +3497,30 @@ export async function files_nodes_db_rebuild_node(
 	const path = path_join(parent.path, node.name);
 	// A boundary, live or former, points at its parent's area.
 	const isBoundary = node.isRestrictedScopeRoot || node.parentScopeNodeId !== undefined;
+	const isExtendedRoot = node.parentExtendedScopeNodeId !== undefined;
+	const restrictedScopeNodeId = node.restrictedScopeNodeId === node._id ? node._id : parent.restrictedScopeNodeId;
 	const fields = {
 		path,
 		treePath: files_derive_tree_path_for_file_node(path, node.kind),
 		pathDepth: files_path_depth(path),
 		// A child that is its own restricted folder keeps its scope.
-		restrictedScopeNodeId: node.restrictedScopeNodeId === node._id ? node._id : parent.restrictedScopeNodeId,
+		restrictedScopeNodeId,
 		...(isBoundary ? { parentScopeNodeId: parent.restrictedScopeNodeId } : {}),
+		// A restricted root starts with no added people from above. An extended root keeps its own and
+		// links to its parent's chain. Any other child takes its parent's chain.
+		extendedScopeNodeId:
+			restrictedScopeNodeId === node._id ? null : isExtendedRoot ? node._id : (parent.extendedScopeNodeId ?? null),
+		...(isExtendedRoot ? { parentExtendedScopeNodeId: parent.extendedScopeNodeId ?? null } : {}),
 	};
 	if (
 		node.path === fields.path &&
 		node.treePath === fields.treePath &&
 		node.pathDepth === fields.pathDepth &&
 		node.restrictedScopeNodeId === fields.restrictedScopeNodeId &&
-		(!isBoundary || node.parentScopeNodeId === parent.restrictedScopeNodeId)
+		(!isBoundary || node.parentScopeNodeId === parent.restrictedScopeNodeId) &&
+		// A node from before the backfill has no field yet. The backfill writes it, not the job.
+		(node.extendedScopeNodeId ?? null) === fields.extendedScopeNodeId &&
+		(!isExtendedRoot || node.parentExtendedScopeNodeId === (parent.extendedScopeNodeId ?? null))
 	) {
 		return false;
 	}
@@ -3558,6 +3625,16 @@ export async function files_nodes_db_restore_node(
 		// A boundary, live or former, points at the area where it lands.
 		...(args.node.isRestrictedScopeRoot || args.node.parentScopeNodeId !== undefined
 			? { parentScopeNodeId: args.parent?.restrictedScopeNodeId ?? null }
+			: {}),
+		// The added people of the old place stay there. It takes the chain of where it lands.
+		extendedScopeNodeId:
+			restrictedScopeNodeId === args.node._id
+				? null
+				: args.node.parentExtendedScopeNodeId !== undefined
+					? args.node._id
+					: (args.parent?.extendedScopeNodeId ?? null),
+		...(args.node.parentExtendedScopeNodeId !== undefined
+			? { parentExtendedScopeNodeId: args.parent?.extendedScopeNodeId ?? null }
 			: {}),
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,

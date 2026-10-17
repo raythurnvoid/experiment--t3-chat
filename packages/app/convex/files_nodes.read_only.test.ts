@@ -2356,6 +2356,15 @@ describe("selected file writers", () => {
 		return { ...fixture, serviceAccountId, writeContext };
 	}
 
+	// An account can manage only a restricted root.
+	async function restrict_outer(fixture: Awaited<ReturnType<typeof seed_account>>) {
+		const restricted = await fixture.asUser.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.db.membershipId,
+			nodeId: fixture.outerId,
+		});
+		expect(restricted._nay).toBeUndefined();
+	}
+
 	test("a selected human needs ACL permission and only this node's writer rule", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId } = await seed_read_only_lock_tree(t);
@@ -2481,6 +2490,7 @@ describe("selected file writers", () => {
 	test("direct account reach cannot match a parent rule during creation", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
+		await restrict_outer(fixture);
 
 		expect(
 			(
@@ -2539,6 +2549,7 @@ describe("selected file writers", () => {
 	test("exact folder management changes the folder even with a nested restricted scope", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
+		await restrict_outer(fixture);
 		const policy = { mode: "writer" as const, writers: [fixture.writeContext.writer] };
 
 		expect(
@@ -2582,6 +2593,7 @@ describe("selected file writers", () => {
 	test("exact folder management ignores a restricted scope two levels down", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
+		await restrict_outer(fixture);
 		const policy = { mode: "writer" as const, writers: [fixture.writeContext.writer] };
 
 		expect(
@@ -2623,6 +2635,7 @@ describe("selected file writers", () => {
 	test("creating a local policy uses parent management and adds no child grant", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
+		await restrict_outer(fixture);
 
 		expect(
 			(
@@ -2696,12 +2709,14 @@ describe("selected file writers", () => {
 			writePolicy: { mode: "writer", writers: [fixture.writeContext.writer] },
 		});
 		expect(result.grants.every((grant) => grant.resourceId === fixture.outerId)).toBe(true);
-		expect(result.state).toMatchObject({ canWrite: false, canManage: false, writeBlockedReason: "permission" });
+		// The grant on the restricted root reaches the new child, and the child names the account as writer.
+		expect(result.state).toMatchObject({ canWrite: true, canManage: true, writeBlockedReason: null });
 	});
 
 	test("creating a folder default checks the named writer", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
+		await restrict_outer(fixture);
 		const strangerId = await t.run(async (ctx) => ctx.db.insert("users", { clerkUserId: "stranger-default-writer" }));
 
 		expect(

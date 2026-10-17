@@ -551,8 +551,10 @@ const files_saved_placement_fields = {
 	archivedPathLength: v.optional(v.number()),
 	restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	isRestrictedScopeRoot: v.boolean(),
-	// Same as the `files_nodes` field.
+	// Same as the `files_nodes` fields.
 	parentScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+	extendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+	parentExtendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 	updatedAt: v.number(),
 	updatedBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 	ancestor1: v.optional(v.id("files_nodes")),
@@ -4946,6 +4948,17 @@ const app_convex_schema = defineSchema({
 		 * removes `parentScopeNodeId` from a former root only while this still names that op.
 		 */
 		scopeOpId: v.optional(v.id("files_subtree_ops")),
+		/**
+		 * The nearest extended root at or above this node, below its restricted root, or null. An
+		 * extended root is an open item that has its own added people ("Add people"). A restricted root
+		 * always has null. Missing only until the backfill sets null.
+		 */
+		extendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+		/**
+		 * Set only on an extended root: the parent's `extendedScopeNodeId`, so a permission check can
+		 * follow the chain of extended roots up. Missing means the node is not an extended root.
+		 */
+		parentExtendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 		writePolicy: files_nodes_write_policy_validator,
 		/**
 		 * Starting protection copied once to brand-new files and subfolders.

@@ -5,7 +5,9 @@ import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel";
 import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { mutation } from "./functions.ts";
+import { internal } from "./_generated/api.js";
 import {
+	access_control_ADDED_PEOPLE_LEVEL_MESSAGE,
 	access_control_ENFORCED_PERMISSIONS,
 	access_control_FILE_SHARE_LEVELS,
 	access_control_FILE_SHARE_LEVEL_KEYS,
@@ -576,6 +578,10 @@ function db_get_role_permission_grant(
 
 /**
  * Callers check their own manage permission and grant ceiling before using this writer.
+ *
+ * A grant on an open item that is not a root first makes it an extended root ("Add people"), so a
+ * file grant always sits on a restricted or extended root. On such an item an account can only view
+ * or edit. Every refusal comes before the first write.
  */
 export async function access_control_db_set_service_account_grant(
 	ctx: MutationCtx,
@@ -603,13 +609,26 @@ export async function access_control_db_set_service_account_grant(
 	}
 
 	let resourceId: string = args.workspaceId;
+	let extendNode: Doc<"files_nodes"> | null = null;
 	if (args.resource.kind === "file") {
 		const node = await ctx.db.get("files_nodes", args.resource.nodeId);
 		if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
 			return Result({ _nay: { message: "File is unavailable" } });
 		}
-		if (args.level !== null && node.restrictedScopeNodeId !== null && node.restrictedScopeNodeId !== node._id) {
+		// Inside a restricted folder, only its root or an item with added people holds grants.
+		if (
+			args.level !== null &&
+			node.restrictedScopeNodeId !== null &&
+			node.restrictedScopeNodeId !== node._id &&
+			node.parentExtendedScopeNodeId === undefined
+		) {
 			return Result({ _nay: { message: "Set access on the restricted scope" } });
+		}
+		if (args.level === "manage" && node.restrictedScopeNodeId !== node._id) {
+			return Result({ _nay: { message: access_control_ADDED_PEOPLE_LEVEL_MESSAGE } });
+		}
+		if (args.level !== null && node.restrictedScopeNodeId === null && node.parentExtendedScopeNodeId === undefined) {
+			extendNode = node;
 		}
 		resourceId = node._id;
 
@@ -669,6 +688,15 @@ export async function access_control_db_set_service_account_grant(
 	const synced = await plugins_db_sync_sandbox_root(ctx, args);
 	if (synced._nay) {
 		return synced;
+	}
+
+	if (extendNode) {
+		// Same transaction. A direct call would load the file engine into this light module.
+		await ctx.runMutation(internal.files_subtree_ops.extend_node, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: extendNode._id,
+		});
 	}
 
 	const wanted = new Set<access_control_GrantPermission>(
@@ -2176,10 +2204,13 @@ async function db_get_service_account_grant_entry(
 			canManage &&
 			args.account.revokedAt === null &&
 			(!node || node.restrictedScopeNodeId === null || node.restrictedScopeNodeId === node._id)
-				? access_control_FILE_SHARE_LEVEL_KEYS.filter((level) =>
-						access_control_FILE_SHARE_LEVELS[level].permissions.every((permission) =>
-							callerPermissions.has(permission),
-						),
+				? access_control_FILE_SHARE_LEVEL_KEYS.filter(
+						(level) =>
+							// An account can manage only the workspace or a restricted root.
+							(level !== "manage" || !node || node.restrictedScopeNodeId === node._id) &&
+							access_control_FILE_SHARE_LEVELS[level].permissions.every((permission) =>
+								callerPermissions.has(permission),
+							),
 					)
 				: [],
 	};

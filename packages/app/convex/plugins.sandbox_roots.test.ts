@@ -154,7 +154,7 @@ describe("plugin sandbox roots", () => {
 		const installation = await f.install([]);
 		const output = await f.folder("transcripts");
 		await f.bind_output_folder(installation._id, output);
-		expect(await f.set_grant(installation.serviceAccountId, output, "manage")).toEqual({ _yay: null });
+		expect(await f.set_grant(installation.serviceAccountId, output, "write")).toEqual({ _yay: null });
 		expect((await f.sandbox(installation._id))?.roots).toEqual([]);
 	});
 
@@ -170,15 +170,18 @@ describe("plugin sandbox roots", () => {
 		const before = await f.t.run(async (ctx) => ({
 			installation: await ctx.db.get("plugins_workspace_installations", installation._id),
 			grants: await ctx.db.query("access_control_permission_grants").collect(),
+			extra: await ctx.db.get("files_nodes", extra),
 		}));
 
 		expect((await f.set_grant(installation.serviceAccountId, extra, "read"))._nay?.message).toBe(
 			"A plugin can use at most 20 folders. Remove one on the plugin page first.",
 		);
+		// The open folder would become an extended root, so the refusal must come first.
 		expect(
 			await f.t.run(async (ctx) => ({
 				installation: await ctx.db.get("plugins_workspace_installations", installation._id),
 				grants: await ctx.db.query("access_control_permission_grants").collect(),
+				extra: await ctx.db.get("files_nodes", extra),
 			})),
 		).toEqual(before);
 	});
@@ -193,7 +196,7 @@ describe("plugin sandbox roots", () => {
 		if (created._nay) throw new Error(created._nay.message);
 		const other = created._yay.serviceAccountId;
 		const reports = await f.folder("reports");
-		await f.set_grant(other, reports, "manage");
+		await f.set_grant(other, reports, "write");
 
 		vi.advanceTimersByTime(60_000);
 		expect(
@@ -210,7 +213,7 @@ describe("plugin sandbox roots", () => {
 
 		await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
 		expect(await f.sandbox(installation._id)).toEqual({
-			roots: [{ target: { kind: "folder", nodeId: reports }, level: "manage" }],
+			roots: [{ target: { kind: "folder", nodeId: reports }, level: "write" }],
 			rebuild: null,
 		});
 	});
@@ -291,7 +294,7 @@ describe("plugin sandbox roots", () => {
 		const f = await fixture();
 		const installation = await f.install([]);
 		const reports = await f.folder("reports");
-		await f.set_grant(installation.serviceAccountId, reports, "manage");
+		expect(await f.set_grant(installation.serviceAccountId, reports, "write")).toEqual({ _yay: null });
 		await f.t.run((ctx) => plugins_db_schedule_sandbox_rebuild(ctx, { installationId: installation._id }));
 
 		// The sync writes into the running rebuild before its first page.
@@ -312,7 +315,7 @@ describe("plugin sandbox roots", () => {
 		const installation = await f.install([]);
 		const output = await f.folder("transcripts");
 		await f.bind_output_folder(installation._id, output);
-		await f.set_grant(installation.serviceAccountId, output, "manage");
+		await f.set_grant(installation.serviceAccountId, output, "write");
 		expect((await f.sandbox(installation._id))?.roots).toEqual([]);
 
 		vi.advanceTimersByTime(60_000);
@@ -324,7 +327,7 @@ describe("plugin sandbox roots", () => {
 		).toEqual({ _yay: null });
 
 		expect((await f.sandbox(installation._id))?.roots).toEqual([
-			{ target: { kind: "folder", nodeId: output }, level: "manage" },
+			{ target: { kind: "folder", nodeId: output }, level: "write" },
 		]);
 	});
 
@@ -336,7 +339,7 @@ describe("plugin sandbox roots", () => {
 		}
 		const output = await f.folder("transcripts");
 		await f.bind_output_folder(installation._id, output);
-		await f.set_grant(installation.serviceAccountId, output, "manage");
+		await f.set_grant(installation.serviceAccountId, output, "write");
 		const warn = vi.spyOn(console, "warn");
 
 		vi.advanceTimersByTime(60_000);

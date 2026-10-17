@@ -514,6 +514,8 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 								"isRestrictedScopeRoot",
 								"parentScopeNodeId",
 								"scopeOpId",
+								"extendedScopeNodeId",
+								"parentExtendedScopeNodeId",
 							]
 						: table === "files_metadata_docs"
 							? ["isRestrictedScopeRoot"]

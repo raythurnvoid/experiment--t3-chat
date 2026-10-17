@@ -29,7 +29,7 @@ import {
 	access_control_db_resolve_live_restricted_scope,
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
-import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { files_nodes_db_set_extended_scope, files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_policy_db.ts";
 import { files_share_links_db_check_live_file, files_share_links_db_resolve_live_scope } from "./files_share_links.ts";
 import {
@@ -44,7 +44,7 @@ import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
-import { v_result } from "../server/convex-utils.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
@@ -708,6 +708,8 @@ export const get_node_share_state = query({
 		const serviceGrantableLevels: access_control_FileShareLevel[] = [];
 		if (canShareWithServiceAccounts) {
 			for (const level of access_control_FILE_SHARE_LEVEL_KEYS) {
+				// An account can manage only a restricted root. The writer refuses it anywhere else.
+				if (level === "manage" && node.restrictedScopeNodeId !== node._id) continue;
 				if (
 					(await caller_can_hand_out_level(ctx, {
 						organization,
@@ -1269,16 +1271,6 @@ export const unrestrict_node = mutation({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 		});
-		await files_subtree_ops_db_start_rebuild(ctx, {
-			kind: "scope",
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			membership,
-			roots: [{ node, oldTreePath: node.treePath }],
-			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
-			now: Date.now(),
-		});
 
 		const grants = await db_list_scope_grants(ctx, {
 			organizationId: membership.organizationId,
@@ -1290,6 +1282,37 @@ export const unrestrict_node = mutation({
 				await ctx.db.delete("access_control_permission_grants", grant._id);
 			}
 		}
+		// Account grants stay, so the item keeps its accounts as added people: it becomes an extended
+		// root. Added people can view or edit only, so a kept manage becomes edit. A revoked account
+		// cannot get a new level, so its grant goes.
+		const accountGrants = grants.filter((grant) => grant.principalKind === "service_account");
+		if (accountGrants.length > 0) {
+			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
+		}
+		for (const grant of accountGrants) {
+			if (grant.permission !== "content.permissions.manage" || !grant.serviceAccountId) continue;
+			const account = await ctx.db.get("access_control_service_accounts", grant.serviceAccountId);
+			const lowered = await access_control_db_set_service_account_grant(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				serviceAccountId: grant.serviceAccountId,
+				resource: { kind: "file", nodeId: node._id },
+				level: account?.revokedAt === null ? "write" : null,
+			});
+			if (lowered._nay) throw convex_error(lowered._nay);
+		}
+
+		// One op gives the items inside both the new scope and the new chain.
+		await files_subtree_ops_db_start_rebuild(ctx, {
+			kind: "scope",
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			membership,
+			roots: [{ node, oldTreePath: node.treePath }],
+			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
+			now: Date.now(),
+		});
 
 		return Result({ _yay: null });
 	},

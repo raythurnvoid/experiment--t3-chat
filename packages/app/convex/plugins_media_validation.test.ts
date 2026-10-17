@@ -218,7 +218,8 @@ function file_grants(records: Awaited<ReturnType<typeof snapshot>>, nodeId: Id<"
 	return records.grants.filter((grant) => grant.resourceKind === "file" && grant.resourceId === String(nodeId));
 }
 
-async function store_fixture() {
+/** With `open`, the folder stays open and the account manages the whole workspace. */
+async function store_fixture(args: { open?: boolean } = {}) {
 	const f = await fixture();
 	const runToken = `plr_${"d".repeat(64)}`;
 	const started = await f.t.mutation(internal.plugins_runtime.start_invoke_run, {
@@ -247,11 +248,17 @@ async function store_fixture() {
 		if (created._nay) throw new Error(created._nay.message);
 		return created._yay;
 	});
+	// An account can manage only the workspace or a restricted root.
+	if (!args.open) {
+		expect(
+			await f.owner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId }),
+		).toEqual({ _yay: null });
+	}
 	expect(
 		await f.owner.mutation(api.access_control.set_service_account_grant, {
 			membershipId: f.db.membershipId,
 			serviceAccountId: f.db.serviceAccountId,
-			resource: { kind: "file", nodeId },
+			resource: args.open ? { kind: "workspace" } : { kind: "file", nodeId },
 			level: "manage",
 		}),
 	).toEqual({ _yay: null });
@@ -291,7 +298,7 @@ async function external_writer(
 
 describe("plugin file media validation clocks", () => {
 	test("advances the workspace clock for a leaf restriction with no new reader grant", async () => {
-		const f = await store_fixture();
+		const f = await store_fixture({ open: true });
 		// Member cleanup removes scope grants before its queued stranded-scope cleanup.
 		await f.t.run(async (ctx) => {
 			await ctx.db.patch("organizations_workspaces_users", f.db.readerMembershipId, { active: false });

@@ -15,7 +15,6 @@ import { files_content_type_index_fields, files_derive_tree_path_for_file_node, 
 import { files_metadata_db_write_entries } from "./files_metadata.ts";
 import { type files_nodes_WriteContext, files_nodes_db_require_writable, files_nodes_db_resolve_parent_new_child_policy } from "../server/files-write-policy.ts";
 import {
-	files_nodes_db_resolve_parent_restricted_scope,
 	files_write_policy_db_has_write_context_permission as db_has_write_context_permission,
 	files_nodes_db_require_copiable_write_policy,
 	files_nodes_db_require_write_policy_management,
@@ -315,6 +314,7 @@ function node_insert_fields(args: {
 	contentByteSize?: number;
 	archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	restrictedScopeNodeId: Doc<"files_nodes">["restrictedScopeNodeId"];
+	extendedScopeNodeId: Id<"files_nodes"> | null;
 	writePolicy?: Doc<"files_nodes">["writePolicy"];
 	newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
 	now: number;
@@ -347,6 +347,7 @@ function node_insert_fields(args: {
 		restrictedScopeNodeId: args.restrictedScopeNodeId,
 		// A new node inherits its parent's scope, so it is never its own restricted root.
 		isRestrictedScopeRoot: false,
+		extendedScopeNodeId: args.extendedScopeNodeId,
 		writePolicy: args.writePolicy ?? null,
 		newChildWritePolicy: args.newChildWritePolicy ?? null,
 		archiveOperationId: args.archiveOperationId ?? null,
@@ -394,12 +395,12 @@ async function db_insert_node(
 	// A new node sits inside its parent, so it starts with the parent's restricted scope. Without
 	// this, a file created inside a restricted folder would be open to the whole workspace, which is
 	// the one thing the person who restricted that folder asked us not to do.
-	const restrictedScopeNodeId = args.parent
-		? args.parent.restrictedScopeNodeId
-		: await files_nodes_db_resolve_parent_restricted_scope(ctx, {
-				parentId: args.parentId,
-			});
-	// A new node is never a restricted root, so it gets no `parentScopeNodeId` or `scopeOpId`.
+	const parent =
+		args.parent ?? (args.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.parentId));
+	const restrictedScopeNodeId = parent?.restrictedScopeNodeId ?? null;
+	// A new node is never a restricted or extended root, so it gets no `parentScopeNodeId`, `scopeOpId`
+	// or `parentExtendedScopeNodeId`. It gets the people added to the items above it.
+	const extendedScopeNodeId = parent?.extendedScopeNodeId ?? null;
 
 	// Copying the default is an ordinary creation step. It needs no policy-management right.
 	const parentDefault = args.parent
@@ -417,6 +418,7 @@ async function db_insert_node(
 			...args,
 			contentByteSize: asset?.size,
 			restrictedScopeNodeId,
+			extendedScopeNodeId,
 			writePolicy: args.writePolicy !== undefined ? args.writePolicy : parentDefault,
 			newChildWritePolicy:
 				args.kind === "folder"

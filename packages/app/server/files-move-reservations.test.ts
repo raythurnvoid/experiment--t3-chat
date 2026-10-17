@@ -590,6 +590,39 @@ describe("Move write reservations", () => {
 		expect(node?.scopeOpId).toBeDefined();
 	});
 
+	test("adding people to a folder that a Move holds stores the pointers in both views", async () => {
+		const f = await fixture();
+		await f.stageNode(f.parentId);
+		const created = await f.asUser.mutation(api.access_control.create_service_account, {
+			membershipId: f.db.membershipId,
+			name: "Writer",
+		});
+		expect(
+			await f.asUser.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: f.db.membershipId,
+				nodeId: f.parentId,
+				principal: { kind: "service_account", serviceAccountId: created._yay!.serviceAccountId },
+				level: "write",
+			}),
+		).toEqual({ _yay: null });
+		const places = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_saved_places")
+				.withIndex("by_cohort_view_node", (q) => q.eq("cohortId", f.cohortId))
+				.filter((q) => q.eq(q.field("nodeId"), f.parentId))
+				.collect(),
+		);
+		expect(
+			places.map((place) => [place.view, place.extendedScopeNodeId, place.parentExtendedScopeNodeId]).sort(),
+		).toEqual([
+			["after", f.parentId, null],
+			["before", f.parentId, null],
+		]);
+		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", f.parentId));
+		expect(node?.extendedScopeNodeId).toBe(f.parentId);
+		expect(node?.parentExtendedScopeNodeId).toBe(null);
+	});
+
 	test("restricting a file that a Move moves stores each view's parent scope", async () => {
 		const f = await fixture();
 		for (const nodeId of [f.parentId, f.nodeId])
