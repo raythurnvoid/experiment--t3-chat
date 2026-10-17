@@ -824,6 +824,8 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   Unchanged saved plain-text chunks stay keyed by file ID. Text search resolves the selected
   node for its path and access. Their stored path is a cache, repaired after publication.
   Metadata still stages its path and sort fields before the switch.
+  Like `mv`, a Move or Rename keeps each item's modified time (`updatedAt`, `updatedBy`). Only an
+  Archive or Restore through the group, or new content from a reviewed Save, sets the group's time.
 - Cut/Paste and drag/drop use `FilesClipboardProvider.move` or `paste`, then the paged
   `files_transfer` job. Each selected root uses a `files_move_cohorts` worker. It stages the root,
   descendants and side docs in small transactions. Normal names keep the old saved IDs until one

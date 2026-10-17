@@ -297,6 +297,23 @@ test("staging preserves saved content, then publishes exact partial content and 
 	).toHaveLength(1);
 });
 
+test.each([
+	["changed", undefined],
+	["unchanged", { staged: "unselected edit", unstaged: "old text", selected: "unstaged" as const }],
+] as const)("a moved file with %s content gets the right modified time", async (kind, args) => {
+	const f = await fixture(args);
+	await f.stage();
+	const { cohort, after } = await f.t.run(async (ctx) => {
+		const record = (await ctx.db.get("files_move_cohort_nodes", f.recordId))!;
+		return {
+			cohort: (await ctx.db.get("files_move_cohorts", f.cohortId))!,
+			after: (await ctx.db.get("files_saved_places", record.afterPlaceId!))!,
+		};
+	});
+	expect(cohort.operationTime, "the two times differ, so the check can tell them apart").not.toBe(f.after.updatedAt);
+	expect(after.updatedAt).toBe(kind === "changed" ? cohort.operationTime : f.after.updatedAt);
+});
+
 test.each(["finish", "abort"] as const)(
 	"a no-publication review preserves its saved content head after %s",
 	async (mode) => {

@@ -952,6 +952,19 @@ describe("Move cohort and folder-wide jobs", () => {
 		expect(files_ancestor_ids(child), "the child keeps only its current ancestor").toEqual([x]);
 	});
 
+	test("a moved folder keeps its modified time", async () => {
+		const w = await transfer_workspace();
+		await w.folder("/P");
+		const x = await w.folder("/P/x");
+		await w.t.run((ctx) => ctx.db.patch("files_nodes", x, { updatedAt: 1_000 }));
+		await w.move(x, "root", async () => {
+			const moved = await w.node(x);
+			return moved?.path === "/x" && moved.moveCohortId === undefined;
+		});
+		await w.finish();
+		expect((await w.node(x))?.updatedAt, "like mv, a Move keeps the item's modified time").toBe(1_000);
+	});
+
 	test("Restrict reaches the items an unpublished Move holds", async () => {
 		const w = await transfer_workspace();
 		const P = await w.folder("/P");

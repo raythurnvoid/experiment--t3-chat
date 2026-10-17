@@ -787,14 +787,8 @@ async function db_seal(
 		contentYjsStateTooLargeByteSize: original?.contentYjsStateTooLargeByteSize ?? null,
 		contentFrontmatterTooLargeFieldCount: original?.contentFrontmatterTooLargeFieldCount ?? null,
 		contentFrontmatterTooLargeIndexDocumentCount: original?.contentFrontmatterTooLargeIndexDocumentCount ?? null,
-		...(original &&
-		original.path === node.path &&
-		original.parentId === node.parentId &&
-		original.name === node.name &&
-		original.archiveOperationId === node.archiveOperationId &&
-		original.restrictedScopeNodeId === node.restrictedScopeNodeId
-			? { updatedAt: original.updatedAt, updatedBy: original.updatedBy }
-			: {}),
+		// Only new content changes the modified time. A Move of the same file keeps it.
+		...(changed ? { updatedAt: cohort.operationTime, updatedBy: cohort.userId } : {}),
 	});
 	await ctx.db.patch("files_move_cohort_content", content._id, {
 		phase: "sealed",

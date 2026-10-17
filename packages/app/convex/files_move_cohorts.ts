@@ -1503,7 +1503,9 @@ async function db_headers(
 						? path.length
 						: undefined,
 		...files_ancestor_fields(parent ? [...files_ancestor_ids(parent), parent._id] : []),
-		...(selected || (old && old.archiveOperationId !== afterArchive)
+		// Like `mv`, a Move or Rename keeps the item's modified time. An Archive or Restore here is a real
+		// change. A content change sets its own time when its content is sealed.
+		...(old && old.archiveOperationId !== afterArchive
 			? { updatedAt: cohort.operationTime, updatedBy: cohort.userId }
 			: {}),
 	});
