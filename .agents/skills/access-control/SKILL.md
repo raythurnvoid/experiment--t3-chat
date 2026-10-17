@@ -112,6 +112,8 @@ Copy, pending Save, folder Move check, and Move cohort. See the pending and tran
 
 ## Service accounts
 
+Changes in C2 (slices S2, S3), see "Locked, not hidden".
+
 Service accounts are workspace identities for software. They are not users and have no roles,
 owner rights, billing rights, public fallback, or private plugin-data scope rights. Their
 `createdBy` field is audit data, not authority.
@@ -656,6 +658,8 @@ of a restricted folder has to be able to share what the grant gave them and noth
 
 ## Known gaps
 
+Changes in C2 (slices S3, S12), see "Locked, not hidden".
+
 These are real and confirmed against the code. None is an oversight to patch quietly: each needs a
 product decision, so record the answer here before changing the behaviour. An entry that starts with
 **Decided** already has its answer. Do not report it again as a finding.
@@ -776,7 +780,69 @@ product decision, so record the answer here before changing the behaviour. An en
   proves both people are active members of that workspace before it returns the address. The Users
   page is the current caller.
 
+## Locked, not hidden (decided 2026-10-17)
+
+Files work like a file system. Everyone who can open a folder sees all of its items. An item they
+cannot open is a **locked row**: name, type, size and created/updated dates only. Opening it answers
+403 / "Permission denied". Inside a locked folder every path answers the same 403, whether it exists
+or not. Recursive reads (`ls -R`, `find`, `tree`, API `recursive: true`) stop at locked folders and
+say "Permission denied". One subject per request: a user or a service account, never both checked per
+row. The code moves to this rule slice by slice (C2); sections below that still describe hiding say
+so at the top.
+
+**Why hiding was removed. Do not bring it back.**
+
+- A full page under hiding needs rows per reader: the list can only skip what the reader cannot see if
+  an index already holds "what this reader can see". That multiplies by files × readers, and every
+  share change rewrites it. Reading a page and dropping rows instead gives short or empty pages and
+  cursors that show where hidden rows are.
+- A plugin run under hiding needs "the user AND the account can read it" per row. No index serves an
+  intersection of two principals, so every list paid a per-row filter (the "Known gap" in
+  `server/files-readable-scopes.ts`).
+- With locked rows, a folder list reads one index range for everyone. A recursive read only has to
+  check the restricted folders on its way, not every row.
+
+**What other systems do.**
+
+- Windows: with "bypass traverse checking" (on by default) you can open a path below a folder you
+  cannot list. A folder list shows all names; "access-based enumeration" (hiding) is an opt-in server
+  feature that Microsoft documents as costly for large folders.
+- POSIX / GNU: `ls` on a folder shows every name; opening an item you cannot read fails with
+  `EACCES` ("Permission denied"); `find` prints `find: '<path>': Permission denied` and goes on. Samba
+  has `hide unreadable`, off by default.
+- Linux Landlock: a sandboxed process gets a set of allowed folders (roots) on top of its user's
+  rights. Plugin runs work this way here (sandbox roots on the installation).
+- Do not add a hide switch (access-based enumeration) to Files. It brings back every problem above.
+
+**The leak rule.** A locked row is visible; its content, custom fields and members are not. Any output
+that changes with a locked row's custom field or content leaks it, including which rows show, page
+size, empty pages, cursors and reactive reruns.
+
+**The search rule.** Search returns a locked item only for a name or path match. Custom-field
+searches read by restricted area. Accepted exception: content (text) search filters after the search
+index; its page shape can show only that some unreadable file matches, never which one.
+
+Sources:
+
+- NTFS rights: https://learn.microsoft.com/en-us/windows/win32/fileio/file-access-rights-constants
+- Folder rights, traverse, list: https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc787794(v=ws.10)
+- File security: https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights
+- Bypass traverse checking: https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/bypass-traverse-checking
+- Raymond Chen on bypass traverse: https://devblogs.microsoft.com/oldnewthing/20200113-00/?p=103322
+- ABE concepts and cost: https://learn.microsoft.com/en-us/archive/blogs/askds/access-based-enumeration-abe-concepts-part-1-of-2 ,
+  https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc784710(v=ws.10) ,
+  https://support.microsoft.com/kb/2732618
+- Samba `hide unreadable`: https://www.samba.org/samba/docs/current/man-html/smb.conf.5.html
+- POSIX / GNU: https://www.gnu.org/software/coreutils/manual/html_node/Mode-Structure.html ,
+  https://man7.org/linux/man-pages/man7/path_resolution.7.html ,
+  https://pubs.opengroup.org/onlinepubs/9799919799/functions/open.html ,
+  https://man7.org/linux/man-pages/man1/ls.1.html , https://man7.org/linux/man-pages/man1/find.1.html
+- Linux Landlock: https://docs.kernel.org/userspace-api/landlock.html
+- Google Drive limited access: https://developers.google.com/workspace/drive/api/guides/limited-expansive-access
+
 ## Files tree reads
+
+Changes in C2 (slices S8, S9), see "Locked, not hidden".
 
 The sidebar loads the tree one open folder at a time through the `files_nodes` queries below. All of
 them resolve the reader with `files_nodes_db_get_tree_reader` and never show a node the caller cannot
@@ -966,6 +1032,8 @@ Five rules that look like details and are not:
 
 ### Share rows
 
+Changes in C2 (slices S5, S8, S8b), see "Locked, not hidden".
+
 `files_share_rows` holds one row per share, so a member's shared items can be paged with indexes like
 the folder table, and a reader can list the restricted folders it may read in path order (see
 "Readable scopes" below). Code: `packages/app/server/files-share-rows.ts`.
@@ -1000,6 +1068,8 @@ the folder table, and a reader can list the restricted folders it may read in pa
 - Data deletion: see `../data-deletion/SKILL.md`.
 
 ### Readable scopes
+
+Changes in C2 (slice S9: replaced by the walk), see "Locked, not hidden".
 
 `server/files-readable-scopes.ts` tells a file list which rows it may read, so a list never reads a
 hidden row only to drop it. Rows are split by their stored `restrictedScopeNodeId`: open content
