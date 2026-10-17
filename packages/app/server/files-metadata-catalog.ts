@@ -6,23 +6,29 @@
 // Families:
 // - `key`: one row per field path. `count` is its field docs, `kindCounts` its value docs by kind.
 // - `value`: one row per field path and string value of at most 1,024 encoded bytes.
+// - `area_key` and `area_value`: the same as `key` and `value`, per area. `parentId` holds the area:
+//   the doc's `restrictedScopeNodeId`, or `"root"` for the open area. A doc without the field counts
+//   in no area row, so a missing area hides a key instead of showing it.
 // - `parent`: one row per folder (or `"root"`) and field path of its open children's field docs.
 // - `parent_restricted`: the same for the children that are their own restricted root
 //   (`isRestrictedScopeRoot`). A field doc without the flag counts here too, so a missing flag hides
 //   a key instead of showing it.
 // Only saved, active (not archived) docs of real workspaces count, and only fields the search grammar
 // can name in at most 160 characters. A restrict or an unrestrict patches the flag on the node's
-// field docs, so their keys move between `parent` and `parent_restricted`. A doc of a Move cohort
-// counts in the rows of its own view (`moveView`), like share rows (`server/files-share-rows.ts`), and
-// readers merge the normal rows with the visible view's rows.
+// field docs, so their keys move between `parent` and `parent_restricted`. It also patches the area
+// on the node's docs, and the saved scope job patches it on the docs of the items inside. A doc of a
+// Move cohort counts in the rows of its own view (`moveView`), like share rows
+// (`server/files-share-rows.ts`), and readers merge the normal rows with the visible view's rows.
 //
-// Rows carry no access data. So only a member who reads the whole workspace reads the `key` and
-// `value` rows, only a member who reads a folder reads its `parent` rows, and only the owner reads
-// `parent_restricted` rows, like the folder table's restricted twin. Accepted leak (user, 2026-10-08):
-// a workspace reader still sees the keys and values of restricted files in the `key` and `value`
-// rows. Search results and opening a file stay access-checked. A search engine must fix this: it
-// counts keys and values over only the files the caller can read. Then delete the three catalog
-// tables, this module, the overlay hook, the compactor, its cron and the data deletion pass.
+// Rows carry no access data, so each reader reads only rows it may see: the owner reads `key`,
+// `value` and `parent_restricted` (like the folder table's restricted twin), a member reads the
+// `area_*` rows of one area they can open, and a member who reads a folder reads its `parent` rows.
+// Until the member suggestion doors switch to the `area_*` rows, they still read `key` and `value`.
+//
+// Late is fine: after a restrict, an item inside keeps its old access until the scope job reaches it
+// (`AGENTS.md`: a file is restricted once the background job has reached it). Its docs, and so its
+// area rows, follow a few seconds later: the saved scope job, then the compactor. The catalog has
+// counts, not rows, so it cannot check each doc's node like a search can.
 //
 // Writes: the overlay wrapper (`server/files-pending-overlay.ts`) adds each metadata doc write to a
 // change map, and every flush inserts one delta per changed row and clears the map. Savers never
@@ -63,6 +69,7 @@ export const files_metadata_catalog_SOURCE_FIELDS = [
 	"archiveOperationId",
 	"parentId",
 	"isRestrictedScopeRoot",
+	"restrictedScopeNodeId",
 	"docKind",
 	"fieldPath",
 	"valueKind",
@@ -112,18 +119,22 @@ const SEED_PAGE_BYTES = 1024 * 1024;
 const CHECK_PAGE_SIZE = 100;
 
 /**
- * Each family with its shadow, then each shadow with its family. A rebuild in `check` mode writes
- * the shadows.
+ * Each family with its shadow, then each shadow with its family, in the same order. A rebuild in
+ * `check` mode writes the shadows, and its clear reads the shadows from the first half.
  */
 const CHECK_PAIRS = [
 	["key", "check_key"],
 	["value", "check_value"],
 	["parent", "check_parent"],
 	["parent_restricted", "check_parent_restricted"],
+	["area_key", "check_area_key"],
+	["area_value", "check_area_value"],
 	["check_key", "key"],
 	["check_value", "value"],
 	["check_parent", "parent"],
 	["check_parent_restricted", "parent_restricted"],
+	["check_area_key", "area_key"],
+	["check_area_value", "area_value"],
 ] as const;
 
 /**
@@ -177,8 +188,12 @@ function add_doc(changes: files_metadata_catalog_Changes, doc: Source | null, si
 		fieldPath: doc.fieldPath,
 	};
 	const kindCounts: KindCounts = { string: 0, number: 0, boolean: 0, maybe_date: 0 };
+	// Fail closed: a doc with no area yet counts in no area row.
+	const area =
+		doc.restrictedScopeNodeId === undefined ? null : { parentId: doc.restrictedScopeNodeId ?? ("root" as const) };
 	if (doc.docKind === "field") {
 		add_change(changes, { ...base, family: "key", count: sign, kindCounts });
+		if (area) add_change(changes, { ...base, ...area, family: "area_key", count: sign, kindCounts });
 		// Fail closed: only a doc that says it is open counts in the `parent` rows every folder reader sees.
 		if (doc.parentId !== undefined)
 			add_change(changes, {
@@ -191,9 +206,18 @@ function add_doc(changes: files_metadata_catalog_Changes, doc: Source | null, si
 	}
 	if (!doc.valueKind) return;
 	// `count` counts field docs, so a value doc adds to its key's kinds only.
-	add_change(changes, { ...base, family: "key", count: 0, kindCounts: { ...kindCounts, [doc.valueKind]: sign } });
-	if (doc.valueKind === "string" && doc.stringValue !== undefined && files_metadata_catalog_value_is_short(doc.stringValue))
+	const valueKinds = { ...kindCounts, [doc.valueKind]: sign };
+	add_change(changes, { ...base, family: "key", count: 0, kindCounts: valueKinds });
+	if (area) add_change(changes, { ...base, ...area, family: "area_key", count: 0, kindCounts: valueKinds });
+	if (
+		doc.valueKind === "string" &&
+		doc.stringValue !== undefined &&
+		files_metadata_catalog_value_is_short(doc.stringValue)
+	) {
 		add_change(changes, { ...base, family: "value", stringValue: doc.stringValue, count: sign });
+		if (area)
+			add_change(changes, { ...base, ...area, family: "area_value", stringValue: doc.stringValue, count: sign });
+	}
 }
 
 /**
@@ -412,9 +436,9 @@ export async function files_metadata_catalog_db_rebuild(
  * compactor applies them meanwhile. The last page sets the marker to `draining`, so the compactor
  * deletes it when no delta is left. A missing marker, or one in another phase, ends the chain.
  *
- * A file's key deltas wait until its last doc is read (`keys` carries them to the next job), so no key
- * row shows value kinds without its field count between two pages. Value and parent deltas go out at
- * once. A file has a few hundred key rows at most, of at most 160-character paths.
+ * A file's `key` and `area_key` deltas wait until its last doc is read (`keys` carries them to the next
+ * job), so no key row shows value kinds without its field count between two pages. Value and parent
+ * deltas go out at once. A file has a few hundred key rows at most, of at most 160-character paths.
  */
 export async function files_metadata_catalog_db_rebuild_step(
 	ctx: MutationCtx,
@@ -496,9 +520,12 @@ export async function files_metadata_catalog_db_rebuild_step(
 		files_metadata_catalog_add_write(contribution, null, doc);
 		for (const row of contribution.values())
 			add_change(
-				row.family === "key" ? keys : changes,
+				row.family === "key" || row.family === "area_key" ? keys : changes,
 				args.mode === "check"
-					? { ...row, family: `check_${row.family as "key" | "value" | "parent" | "parent_restricted"}` }
+					? {
+							...row,
+							family: `check_${row.family as "key" | "value" | "parent" | "parent_restricted" | "area_key" | "area_value"}`,
+						}
 					: row,
 			);
 	}

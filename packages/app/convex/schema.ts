@@ -881,24 +881,29 @@ const files_metadata_catalog_row_fields = {
 		v.literal("value"),
 		v.literal("parent"),
 		v.literal("parent_restricted"),
+		v.literal("area_key"),
+		v.literal("area_value"),
 		v.literal("check_key"),
 		v.literal("check_value"),
 		v.literal("check_parent"),
 		v.literal("check_parent_restricted"),
+		v.literal("check_area_key"),
+		v.literal("check_area_value"),
 	),
 	/**
-	 * Families `parent` and `parent_restricted` only: the folder whose children have the key. `parent`
+	 * Families `parent` and `parent_restricted`: the folder whose children have the key. `parent`
 	 * counts the open children, `parent_restricted` the children that are their own restricted root.
+	 * Families `area_key` and `area_value`: the area, a restricted root, or `"root"` for the open area.
 	 */
 	parentId: v.optional(v.union(v.id("files_nodes"), v.literal("root"))),
 	/** `fieldPath` lowered one character at a time (`files_metadata_catalog_lower`), so a key prefix matches without case. */
 	fieldPathLower: v.string(),
 	fieldPath: v.string(),
-	/** Family `value` (and `check_value`) only. */
+	/** Families `value` and `area_value` (and their `check_*`) only. */
 	stringValue: v.optional(v.string()),
-	/** Field docs (`key`, `parent`, `parent_restricted`) or string value docs (`value`). */
+	/** Field docs (`key`, `parent`, `parent_restricted`, `area_key`) or string value docs (`value`, `area_value`). */
 	count: v.number(),
-	/** Family `key` (and `check_key`) only: value docs of each kind. */
+	/** Families `key` and `area_key` (and their `check_*`) only: value docs of each kind. */
 	kindCounts: v.optional(
 		v.object({ string: v.number(), number: v.number(), boolean: v.number(), maybe_date: v.number() }),
 	),
@@ -4508,14 +4513,15 @@ const app_convex_schema = defineSchema({
 	/**
 	 * The metadata catalog: saved metadata keys and short string values of one workspace, counted, so
 	 * suggestion reads are one index range. Families: `key` (one row per key, with its kinds), `value`
-	 * (one row per key and string value), `parent` (one row per folder and key of its open children)
-	 * and `parent_restricted` (the same for its restricted children). Rows of a Move cohort's view
-	 * carry its `moveView`, like share rows.
+	 * (one row per key and string value), `area_key` and `area_value` (the same, per area: the open
+	 * area or one restricted root), `parent` (one row per folder and key of its open children) and
+	 * `parent_restricted` (the same for its restricted children). Rows of a Move cohort's view carry
+	 * its `moveView`, like share rows.
 	 *
 	 * Derived docs: only the compactor writes them. Savers insert deltas instead. Rows carry no
-	 * access data, so only a member who reads the whole workspace reads the `key` and `value` rows,
-	 * and only the owner reads `parent_restricted` rows. Workspace readers still see keys and values
-	 * of restricted files they cannot open: an accepted leak until a search engine arrives. See
+	 * access data, so the reader picks the family: the owner reads `key`, `value` and
+	 * `parent_restricted`, a member reads `area_*` rows of one area they can open, and a folder reader
+	 * reads its `parent` rows. Until the member doors switch, they still read `key` and `value`. See
 	 * `server/files-metadata-catalog.ts`.
 	 */
 	files_metadata_catalog: defineTable(files_metadata_catalog_row_fields).index(
@@ -4593,6 +4599,12 @@ const app_convex_schema = defineSchema({
 				...files_committed_index_fields,
 				...files_metadata_index_fields,
 				...files_metadata_committed_sort_fields,
+				/**
+				 * Copy of the node's `restrictedScopeNodeId` (its area), on field and value docs. The
+				 * metadata catalog counts each doc in its area's rows. Optional until the backfill
+				 * (`migrate_metadata_doc_area`) has run.
+				 */
+				restrictedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 			}),
 			v.object({ ...files_pending_index_fields, ...files_metadata_index_fields }),
 		),

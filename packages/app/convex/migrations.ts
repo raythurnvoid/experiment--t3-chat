@@ -8,6 +8,7 @@ import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { convex_error } from "../server/convex-utils.ts";
+import { files_move_reservations_db_find_blocker } from "../server/files-move-reservations.ts";
 
 // The schema lets a migration read through an index with `customRange`.
 const app_migrations = new Migrations(components.migrations, {
@@ -181,6 +182,126 @@ export const audit_review_fact_job_count = internalQuery({
 			countedJobs: scopeStatus === "allowed" ? await db_count_review_fact_jobs(ctx.db, args) : null,
 			scopeStatus,
 		};
+	},
+});
+
+// One-time backfill of the area on committed metadata docs, for the catalog's area rows. Remove these
+// temporary tools and tests after the run, a complete audit and a catalog rebuild of each workspace.
+export const migrate_metadata_doc_area = app_migrations.define({
+	table: "files_metadata_docs",
+	// Creation order, not a file index: the migration paginator cannot read the nested `moveView`
+	// index fields of a doc without them. Each doc then reads its node, a small doc.
+	// Measured in its test: 100 of the largest docs read about 0.9 MiB and write 0.5 MiB, about 5% of
+	// the 16 MiB limits.
+	batchSize: 100,
+	migrateOne: async (ctx, doc) => {
+		if (doc.sourceKind !== "committed" || doc.restrictedScopeNodeId !== undefined) return;
+		const node = await ctx.db.get("files_nodes", doc.fileNodeId);
+		if (!node) {
+			console.warn("Skipped a metadata doc without its node", { id: doc._id, fileNodeId: doc.fileNodeId });
+			return;
+		}
+		// The Move guard refuses this patch while a Move holds or reserves the node or a folder above
+		// it. Run again after the Move.
+		if (
+			doc.moveView ||
+			node.moveCohortId ||
+			(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: node._id } }))
+		) {
+			console.warn("Skipped a metadata doc that a Move holds", { id: doc._id, fileNodeId: doc.fileNodeId });
+			return;
+		}
+		return { restrictedScopeNodeId: node.restrictedScopeNodeId };
+	},
+});
+
+export const run_migrate_metadata_doc_area = app_migrations.runner(internal.migrations.migrate_metadata_doc_area);
+
+export const preview_migrate_metadata_doc_area = internalMutation({
+	args: { cursor: v.union(v.string(), v.null()), batchSize: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		// Call the definition directly. A runner can schedule more batches and log full dry-run docs.
+		const result: MigrationResult = await ctx.runMutation(internal.migrations.migrate_metadata_doc_area, {
+			cursor: args.cursor,
+			batchSize: args.batchSize,
+			dryRun: false,
+			oneBatchOnly: true,
+		});
+		// Throw to roll back the nested writes.
+		throw convex_error({
+			message: "Metadata doc area preview rolled back.",
+			data: { processed: result.processed, continueCursor: result.continueCursor, isDone: result.isDone },
+		});
+	},
+});
+
+/**
+ * Before the run and before each catalog rebuild, for each workspace: no live Move and no subtree op.
+ * A Move holds docs the run skips, and an op changes areas while the rebuild counts. Both reads use
+ * the workspace index, so an empty answer covers the whole workspace.
+ */
+export const audit_metadata_doc_area_precheck = internalQuery({
+	args: { organizationId: v.id("organizations"), workspaceId: v.id("organizations_workspaces") },
+	returns: v.object({
+		liveMoveCohortId: v.union(v.id("files_move_cohorts"), v.null()),
+		// The first few ops, enough to name them.
+		subtreeOpIds: v.array(v.id("files_subtree_ops")),
+	}),
+	handler: async (ctx, args) => {
+		const [slot, ops] = await Promise.all([
+			ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+				)
+				.unique(),
+			ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_organization_workspace_kind", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+				)
+				.take(10),
+		]);
+		return { liveMoveCohortId: slot?.cohortId ?? null, subtreeOpIds: ops.map((op) => op._id) };
+	},
+});
+
+/**
+ * Every committed metadata doc has the area of its node. A page lists only problems, so an empty
+ * page can still continue. A `wrong_area` right after a restrict can be a saved scope job that has
+ * not run yet: check again when the jobs are done.
+ */
+export const audit_metadata_doc_area = internalQuery({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: paginationResultValidator(
+		v.object({
+			id: v.id("files_metadata_docs"),
+			fileNodeId: v.id("files_nodes"),
+			problem: v.union(v.literal("missing_node"), v.literal("missing_field"), v.literal("wrong_area")),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_source_fileNode")
+			.paginate({ cursor: args.cursor, numItems: 200 });
+		const checked = await Promise.all(
+			page.page.map(async (doc) => {
+				if (doc.sourceKind !== "committed") return null;
+				const node = await ctx.db.get("files_nodes", doc.fileNodeId);
+				const problem = !node
+					? ("missing_node" as const)
+					: doc.restrictedScopeNodeId === undefined
+						? ("missing_field" as const)
+						: // A Move copy has the area of its own view.
+							!doc.moveView && doc.restrictedScopeNodeId !== node.restrictedScopeNodeId
+							? ("wrong_area" as const)
+							: null;
+				return problem ? { id: doc._id, fileNodeId: doc.fileNodeId, problem } : null;
+			}),
+		);
+		return { ...page, page: checked.filter((problem) => problem !== null) };
 	},
 });
 

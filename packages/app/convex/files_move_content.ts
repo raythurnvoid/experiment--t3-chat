@@ -452,6 +452,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 					path: node.path,
 					treePath: node.treePath,
 					archiveOperationId: node.archiveOperationId ?? undefined,
+					restrictedScopeNodeId: node.restrictedScopeNodeId,
 					...(row.docKind === "field"
 						? {
 								parentId: node.parentId,

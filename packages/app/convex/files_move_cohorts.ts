@@ -1678,6 +1678,8 @@ async function db_sides(
 						path: after.path,
 						treePath: after.treePath,
 						archiveOperationId: after.archiveOperationId ?? undefined,
+						// The page holds committed docs only; the check narrows the type.
+						...(row.sourceKind === "committed" ? { restrictedScopeNodeId: after.restrictedScopeNodeId } : {}),
 						...(row.docKind === "field"
 							? {
 									parentId: after.parentId,

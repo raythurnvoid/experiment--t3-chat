@@ -679,6 +679,48 @@ describe("catalog rebuild and check", () => {
 		expect(await check(t, scope)).toEqual([]);
 	});
 
+	test("restrict moves a subtree's values out of the open area after the scope jobs, and unrestrict brings them back", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const team = await create_folder(t, scope, "/Team");
+		const plan = await create_folder(t, scope, "/Team/plan");
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
+		expect(
+			await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: plan,
+				metadataYaml: "level: secret\n",
+			}),
+		).toEqual({ _yay: null });
+		// Each area's string values, after the scope op, the saved scope jobs and the compactor.
+		const areaValues = async () => {
+			await t.finishAllScheduledFunctions(vi.runAllTimers);
+			await test_finish_saved_scope_jobs(t);
+			await test_compact_metadata_catalog(t);
+			return (await list_rows(t))
+				.filter((row) => row.family === "area_value")
+				.map((row) => `${row.parentId}:${row.stringValue}`);
+		};
+		expect(await areaValues()).toEqual(["root:secret"]);
+
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: team }))._nay,
+		).toBeUndefined();
+		const restricted = await areaValues();
+		expect(restricted, "the open area no longer has the value").not.toContain("root:secret");
+		expect(restricted, "the restricted area has it").toEqual([`${team}:secret`]);
+		await rebuild(t, scope, "check");
+		expect(await check(t, scope)).toEqual([]);
+		await rebuild(t, scope, "clear_check");
+
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
+		expect(
+			(await asOwner.mutation(api.files_sharing.unrestrict_node, { membershipId: db.membershipId, nodeId: team }))._nay,
+		).toBeUndefined();
+		expect(await areaValues()).toEqual(["root:secret"]);
+		await rebuild(t, scope, "check");
+		expect(await check(t, scope)).toEqual([]);
+	});
+
 	test("the check finds wrong counts, lost rows and extra rows, and names no value", async () => {
 		const { t, scope } = await seed();
 		const { a } = await seed_catalog(t, scope);
@@ -890,11 +932,20 @@ describe("catalog lifecycle", () => {
 		for (const nodeId of [a, b]) await set_status(t, db, nodeId);
 		const before = await visible_rows(t, scope);
 		expect(before).toEqual([
+			"area_key:root:metadata.status:=2",
+			"area_value:root:metadata.status:open=2",
 			"key::metadata.status:=2",
 			`parent:${src}:metadata.status:=2`,
 			"value::metadata.status:open=2",
 		]);
-		const after = ["key::metadata.status:=2", `parent:${dst}:metadata.status:=1`, `parent:${src}:metadata.status:=1`, "value::metadata.status:open=2"].sort();
+		const after = [
+			"area_key:root:metadata.status:=2",
+			"area_value:root:metadata.status:open=2",
+			"key::metadata.status:=2",
+			`parent:${dst}:metadata.status:=1`,
+			`parent:${src}:metadata.status:=1`,
+			"value::metadata.status:open=2",
+		].sort();
 		// The doors through both streams: a key, its kinds and its value never vanish while the Move runs.
 		const doorsBefore = await door_rows(asOwner, db.membershipId, [src, dst]);
 		expect(doorsBefore).toEqual(
@@ -995,7 +1046,10 @@ describe("catalog lifecycle", () => {
 		const dst = await create_folder(t, scope, "/dst");
 		await set_status(t, db, a);
 		expect((await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: a }))._nay).toBeUndefined();
+		// The area rows stay: the folder is its own area.
 		const rows = (parentId: Id<"files_nodes">) => [
+			`area_key:${a}:metadata.status:=1`,
+			`area_value:${a}:metadata.status:open=1`,
 			"key::metadata.status:=1",
 			`parent_restricted:${parentId}:metadata.status:=1`,
 			"value::metadata.status:open=1",
@@ -1044,6 +1098,8 @@ describe("catalog lifecycle", () => {
 		await test_finish_transfer_run(asOwner, started._yay.runId);
 		expect(await visible_rows(t, scope)).toEqual(
 			[
+				"area_key:root:metadata.status:=2",
+				"area_value:root:metadata.status:open=2",
 				"key::metadata.status:=2",
 				`parent:${dst}:metadata.status:=1`,
 				`parent:${src}:metadata.status:=1`,
@@ -1185,6 +1241,14 @@ describe("catalog lifecycle", () => {
 		}
 		await test_compact_metadata_catalog(t);
 		expect(await list_rows(t)).toEqual([
+			{
+				family: "area_key",
+				fieldPath: "metadata.status",
+				parentId: "root",
+				count: 6,
+				kindCounts: { ...NO_KINDS, string: 6 },
+			},
+			{ family: "area_value", fieldPath: "metadata.status", parentId: "root", stringValue: "open", count: 6 },
 			{ family: "key", fieldPath: "metadata.status", count: 6, kindCounts: { ...NO_KINDS, string: 6 } },
 			{ family: "parent", fieldPath: "metadata.status", parentId: shared, count: 5 },
 			{ family: "parent", fieldPath: "metadata.status", parentId: "root", count: 1 },
@@ -1202,6 +1266,14 @@ describe("catalog lifecycle", () => {
 		expect(keyDeltas.reduce((sum, delta) => sum + delta.count, 0)).toBe(-5);
 		await test_compact_metadata_catalog(t);
 		expect(await list_rows(t)).toEqual([
+			{
+				family: "area_key",
+				fieldPath: "metadata.status",
+				parentId: "root",
+				count: 1,
+				kindCounts: { ...NO_KINDS, string: 1 },
+			},
+			{ family: "area_value", fieldPath: "metadata.status", parentId: "root", stringValue: "open", count: 1 },
 			{ family: "key", fieldPath: "metadata.status", count: 1, kindCounts: { ...NO_KINDS, string: 1 } },
 			{ family: "parent", fieldPath: "metadata.status", parentId: "root", count: 1 },
 			{ family: "value", fieldPath: "metadata.status", stringValue: "open", count: 1 },
@@ -1216,7 +1288,7 @@ describe("catalog lifecycle", () => {
 		expect(restored._nay).toBeUndefined();
 		await test_finish_saved_scope_jobs(t);
 		await test_compact_metadata_catalog(t);
-		expect((await list_rows(t)).map((row) => row.count)).toEqual([6, 5, 1, 6]);
+		expect((await list_rows(t)).map((row) => row.count)).toEqual([6, 6, 6, 5, 1, 6]);
 	});
 });
 

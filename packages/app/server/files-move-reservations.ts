@@ -518,7 +518,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 								"parentExtendedScopeNodeId",
 							]
 						: table === "files_metadata_docs"
-							? ["isRestrictedScopeRoot"]
+							? ["isRestrictedScopeRoot", "restrictedScopeNodeId"]
 							: [];
 				if (Object.keys(patch).every((field) => fields.includes(field))) continue;
 			}

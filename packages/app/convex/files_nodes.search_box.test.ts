@@ -244,6 +244,41 @@ describe("search box doors", () => {
 		expect(await search("/")).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]));
 	});
 
+	test("a metadata search during the doc job never returns a locked node", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "lag" });
+		await t.run(async (ctx) =>
+			access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				userId: member.userId,
+				role: "member",
+				now: Date.now(),
+			}),
+		);
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+		// The scope op moved the file into the folder's area. Its docs wait for the saved scope job.
+		const lag = await t.run(async (ctx) => ({
+			node: (await ctx.db.get("files_nodes", seeded.openTaskId))!.restrictedScopeNodeId,
+			docs: (await ctx.db.query("files_metadata_docs").collect()).flatMap((doc) =>
+				doc.sourceKind === "committed" && doc.fileNodeId === seeded.openTaskId ? [doc.restrictedScopeNodeId] : [],
+			),
+		}));
+		expect(lag.node).toBe(seeded.tasksFolderId);
+		expect(lag.docs.length).toBeGreaterThan(0);
+		expect(lag.docs).not.toContain(seeded.tasksFolderId);
+
+		expect(
+			await search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans: statusOpenPlans }),
+		).toEqual(new Set([seeded.archivedTaskId]));
+	});
+
 	test("search_saved answers a prefix value of any length", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);

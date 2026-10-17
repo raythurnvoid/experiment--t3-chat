@@ -157,6 +157,7 @@ const SOURCE_FIELDS: Record<string, string[]> = {
 		"archiveOperationId",
 		"parentId",
 		"isRestrictedScopeRoot",
+		"restrictedScopeNodeId",
 		"docKind",
 		"fieldPath",
 		"valueKind",
@@ -2420,24 +2421,37 @@ export async function files_pending_overlay_db_schedule_repair(ctx: MutationCtx,
 }
 
 /**
- * Make a saved node's chunks and metadata docs follow its new path or archive state, in a
+ * Make a saved node's chunks and metadata docs follow its new path, archive state or area, in a
  * job. A job that has not started reads the node when it runs. One in the middle of a pass walks
  * once more when the pass ends, so steady writes cannot keep it from ending. One whose run failed
  * starts again. Callers must not schedule the same node twice in parallel: both calls would insert
  * a job doc.
+ *
+ * `metadataOnly`: only the area changed. Text chunks have no area, so the job skips them. A later
+ * call without it makes the job walk the chunks too.
  */
 export async function files_pending_overlay_db_schedule_saved_scope(
 	ctx: MutationCtx,
 	node: Pick<Doc<"files_nodes">, "_id" | "organizationId" | "workspaceId">,
+	args: { metadataOnly?: boolean } = {},
 ) {
 	const job = await ctx.db
 		.query("files_pending_overlay_jobs")
 		.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope").eq("key", node._id))
 		.unique();
 	if (job) {
-		const cursor = job.cursor && (JSON.parse(job.cursor) as { rerun?: boolean });
-		if (cursor && !cursor.rerun)
-			await ctx.db.patch("files_pending_overlay_jobs", job._id, { cursor: JSON.stringify({ ...cursor, rerun: true }) });
+		const cursor = job.cursor
+			? (JSON.parse(job.cursor) as { phase: number; page: string | null; rerun?: boolean; metadataOnly?: boolean })
+			: null;
+		// A job at its first page reads the node when it runs, so it needs no extra pass.
+		const started = cursor !== null && (cursor.phase !== 0 || cursor.page !== null);
+		const widen = !args.metadataOnly && cursor?.metadataOnly === true;
+		if (!started) {
+			if (widen) await ctx.db.patch("files_pending_overlay_jobs", job._id, { cursor: null });
+		} else if (!cursor.rerun || widen)
+			await ctx.db.patch("files_pending_overlay_jobs", job._id, {
+				cursor: JSON.stringify({ ...cursor, rerun: true, metadataOnly: !widen && cursor.metadataOnly }),
+			});
 		// A failed or lost run leaves the job idle until `recover_jobs`, so start it again now. A Move
 		// wakes a parked job, and a pending run reads this write when it runs.
 		const run = await ctx.db.system.get("_scheduled_functions", job.scheduledFunctionId);
@@ -2459,7 +2473,7 @@ export async function files_pending_overlay_db_schedule_saved_scope(
 		kind: "saved_scope",
 		savedNodeId: node._id,
 		key: node._id,
-		cursor: null,
+		cursor: args.metadataOnly ? JSON.stringify({ phase: 0, page: null, metadataOnly: true }) : null,
 		nextAttemptAt: now,
 		scheduledFunctionId,
 		attempts: 0,

@@ -639,8 +639,8 @@ export const resolve_new_node_path = internalQuery({
  * for the descendants.
  *
  * The folder table indexes split rows by `isRestrictedScopeRoot`, so the node and its committed
- * metadata field docs get the new flag in the same transaction. Archived docs too, because a restore
- * does not rewrite the flag.
+ * metadata field docs get the new flag in the same transaction, and all its committed docs get the
+ * new area. Archived docs too, because a restore does not rewrite the flag.
  *
  * A scope change also deletes the public links on this node and below it, now. The scope op reaches
  * the items inside later, and a restrict then unrestrict before it gets there must not bring an old
@@ -709,13 +709,19 @@ export async function files_nodes_db_set_restricted_scope(args: {
 				if (parent.isRestrictedScopeRoot) parentScopeNodeId = parent._id;
 				parentId = parent.parentId;
 			}
+			const restrictedScopeNodeId = isRestrictedScopeRoot ? node._id : parentScopeNodeId;
 			await ctx.db.patch("files_saved_places", place._id, {
-				restrictedScopeNodeId: isRestrictedScopeRoot ? node._id : parentScopeNodeId,
+				restrictedScopeNodeId,
 				isRestrictedScopeRoot,
 				...boundary(parentScopeNodeId),
 				...extended(parentExtendedScopeNodeId),
 			});
-			await files_metadata_db_patch_file_scope(ctx, { ...args, isRestrictedScopeRoot, fixedView });
+			await files_metadata_db_patch_file_scope(ctx, {
+				...args,
+				isRestrictedScopeRoot,
+				restrictedScopeNodeId,
+				fixedView,
+			});
 		}
 	}
 	const physical = await ctx.db.get("files_nodes", args.nodeId);
@@ -732,6 +738,7 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
 		isRestrictedScopeRoot,
+		restrictedScopeNodeId: args.restrictedScopeNodeId,
 	});
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
 }
@@ -3651,6 +3658,22 @@ export async function files_nodes_db_rebuild_node(
 
 	await ctx.db.patch("files_nodes", node._id, fields);
 	if (node.path !== path) await files_pending_overlay_db_schedule_saved_scope(ctx, node);
+	// Only the area changed. Metadata docs copy it for the catalog's area rows; text chunks have no
+	// area. A node without metadata needs no job.
+	else if (
+		node.restrictedScopeNodeId !== fields.restrictedScopeNodeId &&
+		(await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_source_fileNode", (q) =>
+				q
+					.eq("organizationId", node.organizationId)
+					.eq("workspaceId", node.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", node._id),
+			)
+			.first())
+	)
+		await files_pending_overlay_db_schedule_saved_scope(ctx, node, { metadataOnly: true });
 	return true;
 }
 

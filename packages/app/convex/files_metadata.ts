@@ -256,6 +256,7 @@ export async function files_metadata_db_insert_committed(
 		path: fileNode.path,
 		treePath: fileNode.treePath,
 		archiveOperationId: fileNode.archiveOperationId ?? undefined,
+		restrictedScopeNodeId: fileNode.restrictedScopeNodeId,
 	};
 	await Promise.all([
 		...metadata.fields.map((fieldPath) =>
@@ -321,6 +322,7 @@ export function files_metadata_content_stage_docs(args: {
 		path: args.node.path,
 		treePath: args.node.treePath,
 		archiveOperationId: args.node.archiveOperationId ?? undefined,
+		restrictedScopeNodeId: args.node.restrictedScopeNodeId,
 	};
 	for (const fieldPath of committed.metadata.fields)
 		docs.push({
@@ -447,10 +449,13 @@ export async function files_metadata_db_patch_file_scope(
 		fixedView?: files_saved_placement_FixedView;
 		/** Written to committed field docs only, like every folder table sort field. */
 		isRestrictedScopeRoot: boolean;
+		/** The node's area, written to every committed doc. */
+		restrictedScopeNodeId: Id<"files_nodes"> | null;
 	},
 ) {
 	// Committed metadata is bounded by its write caps. Path and archive scope follow the node in the
-	// saved scope job (`files_pending_overlay_db_schedule_saved_scope`).
+	// saved scope job (`files_pending_overlay_db_schedule_saved_scope`), and so does the area of the
+	// items inside.
 	const docs = await ctx.db
 		.query("files_metadata_docs")
 		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
@@ -464,8 +469,13 @@ export async function files_metadata_db_patch_file_scope(
 		.collect();
 	await Promise.all(
 		docs.flatMap((doc) =>
-			doc.sourceKind === "committed" && doc.docKind === "field"
-				? [ctx.db.patch("files_metadata_docs", doc._id, { isRestrictedScopeRoot: args.isRestrictedScopeRoot })]
+			doc.sourceKind === "committed"
+				? [
+						ctx.db.patch("files_metadata_docs", doc._id, {
+							restrictedScopeNodeId: args.restrictedScopeNodeId,
+							...(doc.docKind === "field" ? { isRestrictedScopeRoot: args.isRestrictedScopeRoot } : {}),
+						}),
+					]
 				: [],
 		),
 	);
@@ -1686,6 +1696,7 @@ export async function files_metadata_db_write_entries(
 					path: args.fileNode.path,
 					treePath: args.fileNode.treePath,
 					archiveOperationId: args.fileNode.archiveOperationId ?? undefined,
+					restrictedScopeNodeId: args.fileNode.restrictedScopeNodeId,
 				}
 			: {
 					organizationId: args.privateEntry.node.organizationId,

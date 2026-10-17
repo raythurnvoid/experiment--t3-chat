@@ -10,7 +10,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { archive_nodes, files_nodes_db_rebuild_node, unarchive_nodes } from "./files_nodes.ts";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
-import { files_metadata_committed_field_sort_fields } from "./files_metadata.ts";
+import { files_metadata_committed_field_sort_fields, files_metadata_db_patch_file_scope } from "./files_metadata.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
 import * as resolver from "../server/files-visible-resolve.ts";
 import {
@@ -664,8 +664,9 @@ describe("saved scope job", () => {
 describe("metadata catalog", () => {
 	// The most catalog work one node can cause: 896 committed metadata docs (128 frontmatter keys with
 	// 3 values, 128 metadata keys with 2 values), each key 160 characters and each value 1,024 bytes,
-	// the longest that still count. Every doc makes its own delta, so this is also the byte peak.
-	test("measures create, full replacement, archive, restore and the compactor at maximum delta sizes", async () => {
+	// the longest that still count. Every doc makes its own delta, so this is also the byte peak. Each
+	// key and value also counts in its area's rows.
+	test("measures create, full replacement, archive, restore, restrict and the compactor at maximum delta sizes", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const node = await t.run((ctx) => insert_saved_node(ctx, db, { parent: null, name: "max", kind: "folder" }));
@@ -682,9 +683,10 @@ describe("metadata catalog", () => {
 						path: node.path,
 						treePath: node.treePath,
 						fieldPath,
+						restrictedScopeNodeId: null,
 					};
 					return [
-						{ ...base, docKind: "field" as const, parentId: files_ROOT_ID },
+						{ ...base, docKind: "field" as const, parentId: files_ROOT_ID, isRestrictedScopeRoot: false },
 						...Array.from({ length: namespace === "frontmatter" ? 3 : 2 }, (_, value) => {
 							const head = `r${round}k${key}v${value}-`;
 							return {
@@ -738,14 +740,14 @@ describe("metadata catalog", () => {
 		await measure("catalog/create", async (ctx) => {
 			for (const doc of docs(0)) await ctx.db.insert("files_metadata_docs", doc);
 		});
-		expect(await count("files_metadata_catalog_deltas")).toBe(1152);
+		expect(await count("files_metadata_catalog_deltas")).toBe(2048);
 		await compact();
-		expect(await count("files_metadata_catalog")).toBe(1152);
+		expect(await count("files_metadata_catalog")).toBe(2048);
 		await measure("catalog/replace", async (ctx) => {
 			for (const doc of await all_docs(ctx)) await ctx.db.delete("files_metadata_docs", doc._id);
 			for (const doc of docs(1)) await ctx.db.insert("files_metadata_docs", doc);
 		});
-		expect(await count("files_metadata_catalog_deltas")).toBe(2304);
+		expect(await count("files_metadata_catalog_deltas")).toBe(4096);
 		await compact();
 		// Each archive or restore patch reads its doc first, like the scope helper's own query.
 		await measure("catalog/archive", async (ctx) => {
@@ -759,7 +761,21 @@ describe("metadata catalog", () => {
 				await ctx.db.patch("files_metadata_docs", doc._id, { archiveOperationId: undefined });
 		});
 		await compact();
-		expect(await count("files_metadata_catalog")).toBe(1152);
+		expect(await count("files_metadata_catalog")).toBe(2048);
+		// A restrict of the node itself: every doc moves to the node's area, and its keys to
+		// `parent_restricted`.
+		await measure("catalog/restrict", async (ctx) => {
+			await files_metadata_db_patch_file_scope(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId: node._id,
+				isRestrictedScopeRoot: true,
+				restrictedScopeNodeId: node._id,
+			});
+		});
+		expect(await count("files_metadata_catalog_deltas")).toBe(2304);
+		await compact();
+		expect(await count("files_metadata_catalog")).toBe(2048);
 		console.info("metadata catalog peaks at maximum delta sizes", JSON.stringify(Object.fromEntries(peaks)));
 		expect(peaks.get("catalog/compactor")?.measured.documentsRead).toBeGreaterThan(1000);
 	}, 600_000);

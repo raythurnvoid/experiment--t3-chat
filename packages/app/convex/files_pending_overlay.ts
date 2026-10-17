@@ -597,7 +597,8 @@ async function db_continue_job(
  * One page of a saved scope job: copy the saved node's current scope onto its saved metadata docs
  * (phase 0), then onto its saved plain text chunks (phase 1). Metadata goes first: it is at most a
  * few runs, and folder tables skip a row whose docs lag. Each run reads the node again, so a page
- * done twice changes nothing, and the last pass ends with the docs equal to the node.
+ * done twice changes nothing, and the last pass ends with the docs equal to the node. A
+ * `metadataOnly` job (only the area changed) ends after phase 0.
  */
 async function db_run_saved_scope_job(
 	ctx: MutationCtx,
@@ -619,7 +620,7 @@ async function db_run_saved_scope_job(
 	}
 
 	const cursor = job.cursor
-		? (JSON.parse(job.cursor) as { phase: number; page: string | null; rerun?: boolean })
+		? (JSON.parse(job.cursor) as { phase: number; page: string | null; rerun?: boolean; metadataOnly?: boolean })
 		: { phase: 0, page: null };
 	const archiveOperationId = node.archiveOperationId ?? undefined;
 	const paginationOpts = {
@@ -668,6 +669,7 @@ async function db_run_saved_scope_job(
 				path: node.path,
 				treePath: node.treePath,
 				archiveOperationId,
+				restrictedScopeNodeId: node.restrictedScopeNodeId,
 				// Field docs also copy the folder table sort fields, built like
 				// `files_metadata_committed_field_sort_fields`.
 				...(doc.docKind === "field"
@@ -689,10 +691,13 @@ async function db_run_saved_scope_job(
 	}
 
 	if (!isDone) await db_continue_job(ctx, job, { cursor: JSON.stringify(cursor) });
-	else if (cursor.phase === 0)
+	else if (cursor.phase === 0 && !cursor.metadataOnly)
 		await db_continue_job(ctx, job, { cursor: JSON.stringify({ ...cursor, phase: 1, page: null }) });
 	// The node changed during the pass: one fresh pass now.
-	else if (cursor.rerun) await db_continue_job(ctx, job, { cursor: null });
+	else if (cursor.rerun)
+		await db_continue_job(ctx, job, {
+			cursor: cursor.metadataOnly ? JSON.stringify({ phase: 0, page: null, metadataOnly: true }) : null,
+		});
 	else await files_pending_overlay_db_delete_job(ctx, job);
 }
 

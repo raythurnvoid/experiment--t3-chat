@@ -6,6 +6,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { pending_chunks, pending_metadata } from "./files_move_pages.ts";
 import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
+import { run_job } from "./files_pending_overlay.ts";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { accept_input, advance as advance_transfer } from "./files_transfer.ts";
@@ -555,4 +556,49 @@ test("a Restore starts a saved scope job again when its run was lost", async () 
 	const restored = await read_saved_docs(t, nodeId);
 	expect(restored.job).toBeNull();
 	expect(stale_docs(restored)).toEqual([]);
+}, 60_000);
+
+test("an area change walks only the metadata docs, and starts no job for a file without them", async () => {
+	const t = test_convex({ transactionLimits: true });
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const plainId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
+		path: "/team/plain.txt",
+		textContent: "Saved text.\n",
+	});
+	const noteId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
+		path: "/team/note.md",
+		textContent: "---\ntitle: Note\n---\nSaved text.\n",
+	});
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	expect((await read_saved_docs(t, plainId)).metadata).toEqual([]);
+	const note = await read_saved_docs(t, noteId);
+	expect(note.metadata.length).toBeGreaterThan(0);
+	// Only a walk of the chunks would fix this stale chunk.
+	const chunkId = note.chunks[0]!._id;
+	await t.run((ctx) => ctx.db.patch("files_plain_text_chunks", chunkId, { path: "/stale" }));
+	const jobKeys: string[] = [];
+	test_spy_handler(run_job, async (handler, ctx, args) => {
+		const { kind, key } = args as { kind: string; key: string };
+		if (kind === "saved_scope") jobKeys.push(key);
+		return await handler(ctx, args);
+	});
+
+	const folderId = note.node.parentId as Id<"files_nodes">;
+	expect(
+		(await asUser.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: folderId }))._nay,
+	).toBeUndefined();
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	expect(new Set(jobKeys), "only the file with metadata gets a job").toEqual(new Set([noteId]));
+	const restricted = await read_saved_docs(t, noteId);
+	expect(restricted.job).toBeNull();
+	expect(
+		restricted.metadata.map((doc) => doc.sourceKind === "committed" && doc.restrictedScopeNodeId),
+		"the metadata docs follow the area",
+	).toEqual(restricted.metadata.map(() => folderId));
+	expect(restricted.chunks.find((chunk) => chunk._id === chunkId)?.path, "the job skips the text chunks").toBe(
+		"/stale",
+	);
 }, 60_000);

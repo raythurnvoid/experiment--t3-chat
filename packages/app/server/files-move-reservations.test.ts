@@ -646,6 +646,52 @@ describe("Move write reservations", () => {
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.parentScopeNodeId).toBe(null);
 	});
 
+	test("restricting a node that a Move holds tags its metadata docs", async () => {
+		const f = await fixture();
+		await f.t.run(async (ctx) => {
+			await ctx.db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source: { kind: "saved", id: f.nodeId },
+				mode: "placement",
+				userId: null,
+				generation: 1,
+			});
+			for (const moveView of [undefined, { cohortId: f.cohortId, view: "after" as const }]) {
+				const base = {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					sourceKind: "committed" as const,
+					fileNodeId: f.nodeId,
+					path: "/old.txt",
+					treePath: "/old.txt",
+					fieldPath: "metadata.level",
+					restrictedScopeNodeId: null,
+					moveView,
+				};
+				await ctx.db.insert("files_metadata_docs", { ...base, docKind: "field", isRestrictedScopeRoot: false });
+				await ctx.db.insert("files_metadata_docs", {
+					...base,
+					docKind: "value",
+					valueKind: "string",
+					stringValue: "secret",
+				});
+			}
+		});
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: f.nodeId }),
+		).toEqual({ _yay: null });
+		const docs = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.filter((q) => q.eq(q.field("fileNodeId"), f.nodeId))
+				.collect(),
+		);
+		expect(docs).toHaveLength(4);
+		expect(docs.map((doc) => doc.sourceKind === "committed" && doc.restrictedScopeNodeId)).toEqual(
+			Array(4).fill(f.nodeId),
+		);
+	});
+
 	test("a native accepted content job pauses before a failure marker and keeps its author", async () => {
 		const f = await fixture();
 		const slot = await f.t.run((ctx) =>
