@@ -5320,7 +5320,7 @@ export async function files_pending_updates_db_apply_archive(
 		membership,
 		archiveOperationId: crypto.randomUUID(),
 		rootNodeIds: [node._id],
-		notFoundNodeIds: [],
+		refusedNodes: [],
 		treePaths: [node.treePath],
 		pendingUpdateCleanup: {
 			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds ? [...args.reviewedPendingUpdateIds] : null,

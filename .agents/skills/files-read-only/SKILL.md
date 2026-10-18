@@ -240,8 +240,8 @@ of not counting locked items.
   a new write: it always completes, even after a later lock.
 - Rename and move check the named item and its immediate parent before any write. Archive, unarchive,
   replace, and delete check every removed or replaced item. Archived descendants use their real parent
-  links. Equal paths in separate archived and active trees are not the same node. Hidden refusals
-  reveal no hidden node name, ID, or path. Cleanup of an upload that never landed deletes its
+  links. Equal paths in separate archived and active trees are not the same node. A refusal about a
+  locked node reveals no name, ID, or path the person cannot already see. Cleanup of an upload that never landed deletes its
   placeholder even when locked. Cancel (discard) does the same for the creator.
 - The up-front check of a folder's contents (`files_nodes_db_require_subtree_writable`) reads at most
   2,000 items, archived ones too. Above that it returns `subtree_too_large`, never a thrown limit
@@ -282,7 +282,7 @@ of not counting locked items.
     apply never starts for somebody who left. Once the apply has started, the stamp walk finishes
     even without the person: stopping it would leave active items inside an archived folder. An
     agent's delete names one item, so the same rule refuses the whole delete.
-    `archive_nodes` answers the named ids not found and the named ids refused so far as
+    `archive_nodes` answers the named ids refused before the job and the named ids refused so far as
     `notArchivedNodeIds`, with the named ids inside the refused ones. `get` lists them as
     `notArchived`. It names only items of the run's workspace that the person can still read. An
     archive that refused a named item keeps its job and Activity, even when it finished inside the
@@ -352,11 +352,12 @@ of not counting locked items.
     failed Activity. A restore refusal before any write makes no job. An archive makes no job only
     when the request's own check refuses every named item. When it refuses only some, it keeps the job,
     so the Activity can list them. In `archive_nodes`, a named id that is
-    missing, in another workspace, or hidden from the person is "Not found" for that item alone. The
-    job lists it and archives the others. The three cases get the same answer, so the answer never
-    confirms that a hidden file exists. When nothing else is left to archive, the request answers "Not
-    found". A malformed id still refuses the whole request. A named item the person can read but not
-    change goes to the job, which refuses it and archives the others.
+    missing or in another workspace is "Not found" for that item alone, and one the person cannot open
+    (a locked item, archived or not) is "Permission denied". The job lists it and archives the others.
+    When nothing else is left to archive, the request answers with the first of these refusals. A
+    malformed id still refuses the whole request. A named item the person can read but not change goes
+    to the job, which refuses it and archives the others. `unarchive_nodes` answers "Permission denied"
+    for an item the person cannot change, locked or not.
   - Reviewed agent delete (`pendingArchive`) uses the Save cohort worker. It checks all descendants
     in pages, then switches the whole group and removes its proposals. Stop before the switch keeps
     the saved tree and proposals. Stop after the switch lets required repair finish. Direct Archive
@@ -407,7 +408,7 @@ of not counting locked items.
 - Discard and expiry retire owned private work without deleting saved nodes. A private replacement
   keeps its saved occupant until Save. Discard, expiry, and moving the draft elsewhere leave that
   occupant unchanged, including after a policy refusal. Bash `/tmp` and readable copy-out stay usable.
-- Raw path/overlay resolution remains unfiltered so hidden occupied paths still conflict. Authorized
+- Raw path/overlay resolution remains unfiltered so locked occupied paths still conflict. Authorized
   read entrypoints apply the request subject's visibility after lookup. Lists never expose raw
   policy fields or hidden writer/source identity.
 
@@ -498,7 +499,7 @@ Public node queries return `canWrite`, `writeBlockedReason` (`null`, `permission
 Lists do not join account names or expose raw authority fields.
 
 Operation capabilities use actual `canWrite` plus the immediate parent write for rename and move.
-Delete and archive also look at visible protected descendants. The server checks hidden descendants
+Delete and archive also look at visible protected descendants. The server checks locked descendants
 again. Rows stay readable, selectable, searchable, and expandable. A folder that only holds protected
 children has no lock. Policy and restricted-sharing indicators stay separate.
 
@@ -536,7 +537,7 @@ control only because its save is running. Folder radio groups use unique names.
 | ID | Requirement |
 | --- | --- |
 | RO-01 | Every content write passes ACL and the named node's current local policy |
-| RO-02 | Rename and move check the named item and its immediate parent, hidden restricted children included; delete checks every removed item |
+| RO-02 | Rename and move check the named item and its immediate parent, locked restricted children included; delete checks every removed item |
 | RO-03 | Owners/admins do not bypass policies; selecting a writer grants no access |
 | RO-04 | Policy configuration requires actual target/creation-scope management |
 | RO-05 | A folder default is copied once onto brand-new children; later default changes do not rewrite them |
@@ -555,7 +556,7 @@ control only because its save is running. Folder radio groups use unique names.
 - `convex/files_nodes.read_only.test.ts`: selected writers, ACL independence, local create defaults, folder-only
   management, creation management, unlock one child, redaction, and writes. The service-account writer
   policy check is in `convex/files_nodes.move_nodes.test.ts`.
-- `convex/files_write_policy_runs.test.ts`: Apply to contents steps, blocked and hidden items, rechecks,
+- `convex/files_write_policy_runs.test.ts`: Apply to contents steps, blocked and locked items, rechecks,
   Stop, deadline, and history cleanup.
 - `convex/files_pending_updates.structural.test.ts`: current-policy proposal, commit, and private discard checks.
 - `convex/files_nodes_content*.test.ts`: replacement, collaboration, snapshots, and materialization.

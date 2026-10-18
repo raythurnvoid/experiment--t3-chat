@@ -230,7 +230,8 @@ export async function files_saved_list_page(
 	const page: Doc<"files_nodes">[] = [];
 	const lockedIds = new Set<Id<"files_nodes">>();
 	let isDone = false;
-	// Rows the caller cannot open can drop out, so a page can be short with a cursor.
+	// A page can be short with a cursor: rows past the first unfinished source wait for the next
+	// round, and a folder whose access changed after the check above lists only rows the caller can open.
 	for (let round = 0; round < 8 && page.length < numItems; round++) {
 		const batches: Array<{ rows: Doc<"files_nodes">[]; frontier: Key | null; done: boolean }> = [];
 		// One stream per source and per type value. Each reads one index range of matching rows only.

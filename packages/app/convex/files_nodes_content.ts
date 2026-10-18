@@ -733,7 +733,7 @@ export const get_create_file_node_write_preflight = internalQuery({
 		}
 
 		// Check access on the parent before reading deeper path data.
-		// Do not reveal a hidden child or its lock.
+		// Do not reveal the read-only state of a child the caller cannot open.
 		const authorized = await access_control_db_authorize_file_write(ctx, {
 			userAuth: { id: args.userId },
 			membership,
@@ -914,7 +914,7 @@ export const create_file_node = internalMutation({
 			}
 
 			// Check access on every existing path part again.
-			// A path part may have become restricted during the upload. Keep it hidden.
+			// A path part may have become restricted during the upload. Refuse with "Permission denied".
 			if (!authorUserId || !authorMembership) {
 				return await refuse({ message: "Permission denied" });
 			}

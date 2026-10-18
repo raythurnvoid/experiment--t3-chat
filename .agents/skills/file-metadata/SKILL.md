@@ -551,8 +551,8 @@ The doors sit in the search box region of `convex/files_metadata.ts`, except `se
 - `list_search_fields`, `get_search_field` and `list_search_values` are the suggestion doors. They
   read the catalog, not the source docs. See "Suggestions".
 - A member whose role has no workspace-wide `content.read` still finds files in folders shared with
-  them: `search_saved` passes the tree reader's `hasWorkspaceRead` to the readable-nodes filter
-  instead of refusing. The other way round holds too: a member whose role reads the workspace never gets a
+  them: `search_saved` checks each hit with the readable-nodes filter for the caller instead of
+  refusing. The other way round holds too: a member whose role reads the workspace never gets a
   file of a restricted folder from `search_saved` or `search_saved_metadata` until it is shared with them. The suggestion
   doors follow the same rule by area: a member reads the keys and values of one area they can open
   (the area rule in "Suggestions"), so a value of a file they cannot open is never suggested.

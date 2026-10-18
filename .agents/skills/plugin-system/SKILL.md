@@ -169,7 +169,7 @@ Only an exact string `plugin-name` metadata value equal to the installation's pl
 
 An existing target checks its own label. A missing target checks the deepest existing folder before creating the rest of the path; workspace-root creation keeps its current create rules. Invoke ensure, write, touch, access, and archive keep their capability, actor ACL, and lock checks. Archive checks every affected node before changing any of them. Upload-triggered runs retain their sibling write/touch rule and cannot use invoke-only ensure, archive, or access. See `../public-api/SKILL.md#plugin-file-doors`.
 
-Invoke ensure starts at that checked folder and adds only the missing path parts. Its stored scope controls access for the actor inside the sandbox roots. Hidden folders above it add no permission check. The response keeps the full requested path. Live-run, label, capability, write-policy, and reader-binding checks still apply.
+Invoke ensure starts at that checked folder and adds only the missing path parts. Its stored scope controls access for the actor inside the sandbox roots. Locked folders above it add no permission check. The response keeps the full requested path. Live-run, label, capability, write-policy, and reader-binding checks still apply.
 
 Every newly created plugin file and folder gets `source: plugin` and `plugin-name: <name>` in the creation transaction. Extra import metadata such as `original-name` stays on the leaf. Reused ancestors and existing files keep their maps. In-place updates, retries, touch, access changes, and repeated ensure never restore a removed label. Final write publication reads the current label, including when the bytes have not changed.
 

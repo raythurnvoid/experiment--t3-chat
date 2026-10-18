@@ -312,26 +312,26 @@ describe("archive_nodes", () => {
 		expect((await archive(f, [missingId, kept.topId]))._nay?.message).toBe("Not found");
 	});
 
-	test("a named item a member cannot read gets the same answer as a missing id", async () => {
+	test("a named item a member cannot open is listed as Permission denied", async () => {
 		const f = await fixture();
 		const member = await add_member(f);
 		const kept = await seed_tree(f, { name: "member-kept", folderCount: 1, filesPerFolder: 1 });
-		const hidden = await seed_tree(f, { name: "member-hidden", folderCount: 1, filesPerFolder: 1 });
+		const locked = await seed_tree(f, { name: "member-locked", folderCount: 1, filesPerFolder: 1 });
 		expect(
 			(
 				await f.asOwner.mutation(api.files_sharing.restrict_node, {
 					membershipId: f.db.membershipId,
-					nodeId: hidden.topId,
+					nodeId: locked.topId,
 				})
 			)._nay,
 		).toBeUndefined();
 
 		const archived = await member.asUser.mutation(api.files_nodes.archive_nodes, {
 			membershipId: member.membershipId,
-			nodeIds: [hidden.topId, kept.topId],
+			nodeIds: [locked.topId, kept.topId],
 		});
-		expect(archived._yay).toMatchObject({ isDone: true, notArchivedNodeIds: [hidden.topId] });
-		expect((await read_node(f, hidden.topId)).archiveOperationId).toBeNull();
+		expect(archived._yay).toMatchObject({ isDone: true, notArchivedNodeIds: [locked.topId] });
+		expect((await read_node(f, locked.topId)).archiveOperationId).toBeNull();
 		const activity = await read_activity(f, archived._yay!.activityId);
 		expect(activity).toMatchObject({ status: "partial", errorMessage: null });
 		expect(activity.progress).toMatchObject({ total: 4, completed: 3, blocked: 1 });
@@ -339,7 +339,7 @@ describe("archive_nodes", () => {
 			membershipId: member.membershipId,
 			runId: archived._yay!.runId,
 		});
-		expect(run?.notArchived).toEqual([{ nodeId: hidden.topId, name: null, message: "Not found" }]);
+		expect(run?.notArchived).toEqual([{ nodeId: locked.topId, name: null, message: "Permission denied" }]);
 	});
 
 	test("a page never splits archived items that share a name", async () => {

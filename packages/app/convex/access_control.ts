@@ -973,7 +973,7 @@ const DEAD_SCOPE_MAX_HOPS = 8;
  *
  * Every reader of `restrictedScopeNodeId` goes through here, so the rule for "is this pointer real"
  * exists once. A second copy of it would let the permission check and the list filter drift apart,
- * and then a file would be hidden from a list but still open by id, or the other way round.
+ * and then a file would be locked in a list but still open by id, or the other way round.
  */
 export async function access_control_db_resolve_live_restricted_scope(
 	ctx: QueryCtx | MutationCtx,

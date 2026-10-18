@@ -2928,7 +2928,7 @@ function file_write_stale_refusal() {
 }
 
 /**
- * Check the target before creating temporary docs. Check access before policy so a hidden node's
+ * Check the target before creating temporary docs. Check access before policy so a locked node's
  * policy stays private. Remember the target so publish cannot change a different file.
  */
 async function db_preflight_file_write_target(
@@ -3018,7 +3018,7 @@ async function db_preflight_file_write_target(
 
 /**
  * Pin the folder ID: a private folder can be replaced at the same path during a write.
- * Run after normal target access checks so a refusal cannot reveal a hidden parent.
+ * Run after normal target access checks so a refusal cannot reveal more about a locked parent.
  */
 async function db_require_file_write_parent(
 	ctx: QueryCtx,
@@ -4061,7 +4061,7 @@ export const publish_file_touch = internalMutation({
 		const found = await lookups.find_existing_parent(stage.path);
 		const ancestor = found.node;
 
-		// Check access first. A hidden restricted folder must not reveal its read-only state.
+		// Check access first. A locked folder must not reveal its read-only state.
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
@@ -4184,8 +4184,8 @@ type publish_file_touch_Result =
 
 /**
  * Check the same access and read-only rules as `publish_file_touch`. The touch route uses this when
- * the file already exists and it does not call the publish mutation. Check access first so a hidden
- * node returns `permission_denied` without revealing its lock.
+ * the file already exists and it does not call the publish mutation. Check access first so a locked
+ * node returns `permission_denied` without revealing its read-only state.
  */
 export const can_write_file_node = internalQuery({
 	args: {

@@ -41,18 +41,18 @@ export const experimental_reuseContext = true;
 
 /**
  * A step ends after this many counted items. The requester sees progress live, so every step must
- * count the same number of items whatever is hidden. Otherwise the gaps would count hidden items.
+ * count the same number of items whatever is locked. Otherwise the gaps would count locked items.
  */
 const STEP_MAX_COUNTED = 50;
 
 /**
- * A step also ends after this many checked items, so a long run of hidden items stays inside one
+ * A step also ends after this many checked items, so a long run of locked items stays inside one
  * mutation's read limits.
  */
 const STEP_MAX_CHECKED = 200;
 
 /**
- * A step also ends after reading this many nodes. The contents of a hidden folder are read but not
+ * A step also ends after reading this many nodes. The contents of a locked folder are read but not
  * checked, so the check limit alone does not limit the reads.
  */
 const STEP_MAX_READ = 1_000;
@@ -396,10 +396,10 @@ export const advance = internalMutation({
 			readCount += page.length;
 			isFolderDone = page.length === 0;
 
-			// The hidden folder whose contents the rest of this page skips.
-			let hiddenFolderTreePath: string | null = null;
+			// The locked folder whose contents the rest of this page skips.
+			let lockedFolderTreePath: string | null = null;
 			for (const node of page) {
-				if (hiddenFolderTreePath !== null && node.treePath.startsWith(hiddenFolderTreePath)) continue;
+				if (lockedFolderTreePath !== null && node.treePath.startsWith(lockedFolderTreePath)) continue;
 				if (countedCount >= STEP_MAX_COUNTED || checkedCount >= STEP_MAX_CHECKED) break;
 				checkedCount += 1;
 				cursor = { treePath: node.treePath, inclusive: false };
@@ -442,12 +442,12 @@ export const advance = internalMutation({
 					continue;
 				}
 
-				// Never count or name a hidden item. Skip a hidden folder with everything inside it, like
+				// Never count or name a locked item. Skip a locked folder with everything inside it, like
 				// `chmod -R` skips a folder it cannot read. Its contents come right after it in path order.
 				// So skip them in this page, and let the next page start at the first path after them.
-				// Only a folder's `treePath` ends with "/", so this never skips the siblings of a hidden file.
+				// Only a folder's `treePath` ends with "/", so this never skips the siblings of a locked file.
 				if (node.kind === "folder") {
-					hiddenFolderTreePath = node.treePath;
+					lockedFolderTreePath = node.treePath;
 					cursor = { treePath: path_tree_prefix_upper_bound(node.treePath), inclusive: true };
 				}
 			}
@@ -468,9 +468,9 @@ export const advance = internalMutation({
 			return null;
 		}
 
-		// A step that ended before 50 counted items stopped at the check or read limit, so it passed hidden
+		// A step that ended before 50 counted items stopped at the check or read limit, so it passed locked
 		// items. Keep its counts on the run and leave the Activity as it is. Otherwise the progress or
-		// the times would show how many hidden items the step passed.
+		// the times would show how many locked items the step passed.
 		if (countedCount < STEP_MAX_COUNTED) {
 			await ctx.db.patch("files_write_policy_runs", run._id, {
 				cursor,

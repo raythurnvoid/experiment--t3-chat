@@ -730,7 +730,7 @@ and `find` also keep raw name order.
   editable controls keep normal text shortcuts. Copy and Cut also leave selected text alone.
 - Cut requires source move access, including visible protected descendants. Copy only needs read
   access. Paste requires destination write access. The backend checks the full operation again.
-  A move also checks hidden and archived restricted descendants before changing any paths.
+  A move also checks locked and archived restricted descendants before changing any paths.
   Cut rows are muted and their accessible names say `ready to move`. Escape clears only an idle
   cut while file navigation has focus. Copy stays until the next Cut or Copy, or until the
   workspace changes. There is no Clear button.
@@ -839,7 +839,7 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   the bottom up without a Move, one walk from the root during a Move that the call shares). The doors
   check access on that folder first, then call its `check_folder_counts`, which counts the new folders
   plus the parents found (`files_check_request_folder_count`), so folders above a found parent never
-  count and a hidden folder does not reveal its names. All refuse the whole call with name `too_many_folders`. Batch doors
+  count and a locked folder does not reveal its names. All refuse the whole call with name `too_many_folders`. Batch doors
   look up and check each folder once per call, start the create helper at the found parent, and pass
   one `folders` map to every `files_nodes_db_create_node_recursively_at_path` call so later items
   reuse found and new folders. Single doors map the helper's `too_many_folders` to 400 (`write`,
@@ -1035,7 +1035,7 @@ the tree. The link rules live in the "Public file links" section of `../access-c
 - A bundle containing `SKILL.md` has stricter path preflight in `build_import_plan`. Conventional SKILL.md and `.agents` casing is allowed, but resource paths must survive normalization unchanged. A changed, invalid, or colliding bundle path stops the whole import before upload and lists the paths to fix. The user must rename resources and update their references first. Ordinary uploads keep the normalization and dedupe behavior above. See the [workspace skills spec](../ai-chat-skills/SKILL.md).
 - Caps: 1,000 files per import; 50 items and 1 GiB declared bytes per `create_upload_nodes` call; path depth 32; path length 1,024 characters; names 255 characters (a longer one is skipped as `invalid_name`, because the server refuses the whole call).
 - `create_upload_nodes` charges `files_tree_write` once per call and the `files_bulk_import` bucket once per item; the client waits `_nay.data.retryAfterMs` and retries the chunk on "Rate limit exceeded".
-- Server-side per-item skip reasons are only `conflict` (an existing file was kept, or a permission check refused — deliberately indistinguishable so the payload does not reveal restricted paths), `path_blocked` (a folder holds the target path, a file holds an ancestor segment, or another batch item collided), and `storage_full` (the file does not fit the `stored_file_bytes` left after the earlier files; a replaced file keeps its old version). `path_blocked` names the blocking node's kind, so it is only used when the caller can `content.read` that node; a hidden blocker answers `conflict` instead.
+- Server-side per-item skip reasons are only `conflict` (an existing file was kept, or a permission check refused — deliberately indistinguishable so the payload does not reveal restricted paths), `path_blocked` (a folder holds the target path, a file holds an ancestor segment, or another batch item collided), and `storage_full` (the file does not fit the `stored_file_bytes` left after the earlier files; a replaced file keeps its old version). `path_blocked` names the blocking node's kind, so it is only used when the caller can `content.read` that node; a locked blocker answers `conflict` instead.
 - Storage works like Google Drive: the files that fit import, and each other file is listed as skipped with "Not enough storage". After each call the client keeps the answer's `freeBytes` and skips every later file over it without a call, in the same list and with the same words as the server's skips. The smaller files are still sent. When `freeBytes` is 0, every later file is skipped, so the import stops. The API doors stay all-or-nothing; see `../quotas/SKILL.md`.
 - Before any write, the client asks `files_nodes.get_upload_conflicts` which target paths already exist and confirms replace/skip once in `FilesSidebarImportConflictModal`. The query filters by per-node `content.read`, so it reveals nothing the tree pages (`list_tree_children` and the share streams) would not show.
 - Replace mode archives an existing file only after every existing folder on the item's path passed `content.write` (the pre-walk), so a refused item can never archive a file without importing its replacement.

@@ -1011,7 +1011,7 @@ async function fits_table_read_budget(args: { ctx: QueryCtx; budget: { readBytes
 /**
  * Load the saved node of one folder table row. Return null when the target is a private draft, or
  * when the node is missing, in another workspace, archived, or not readable by the caller. Every
- * failure gives the same null, so a caller cannot learn that a hidden node exists.
+ * failure gives the same null, so the answer tells nothing more about a locked node.
  */
 export async function files_metadata_db_get_table_node(
 	ctx: QueryCtx,
@@ -1125,7 +1125,7 @@ export const list_folder_fields = query({
 	returns: paginationResultValidator(v.string()),
 	handler: async (ctx, args) => {
 		// Every refusal gives this one answer, like `list_tree_children`. A different answer for a
-		// missing, foreign, or hidden folder would tell the caller that a hidden folder exists.
+		// missing, foreign, or locked folder would tell the caller which one it is.
 		const refused = { page: [], isDone: true, continueCursor: "" };
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
 		// No key is longer than this, so a longer prefix matches nothing.

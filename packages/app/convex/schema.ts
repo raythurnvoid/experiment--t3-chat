@@ -2936,14 +2936,6 @@ const app_convex_schema = defineSchema({
 			"nodeCreationTime",
 			"nodeId",
 		])
-		.index("by_view_restricted_tree", [
-			"cohortId",
-			"view",
-			"isRestrictedScopeRoot",
-			"treePath",
-			"nodeCreationTime",
-			"nodeId",
-		])
 		// The Move view of `files_nodes.by_org_ws_parentScope_archive_treePath`.
 		.index("by_view_parentScope_archive_tree", [
 			"cohortId",
@@ -4459,8 +4451,8 @@ const app_convex_schema = defineSchema({
 
 	/**
 	 * One doc per share: a file `content.read` grant to a user, a role or a service account, while its
-	 * node is a restricted scope root in the grant's workspace, active or archived. A service account
-	 * grant also has a doc while its node is open. The other fields copy the node, so an index can list
+	 * node is a scope root (restricted, or extended by added people) in the grant's workspace, active or
+	 * archived. The other fields copy the node, so an index can list
 	 * one principal's shares in a folder table order. A role share is one doc, not one per member, so a
 	 * role membership change writes nothing.
 	 *
@@ -6453,13 +6445,13 @@ const app_convex_schema = defineSchema({
 		writePolicy: files_nodes_write_policy_validator,
 		/**
 		 * Where the next step starts. null means just after the folder itself. `inclusive` is true only
-		 * after a skipped hidden folder, when the bound is the first path after its contents.
+		 * after a skipped locked folder, when the bound is the first path after its contents.
 		 */
 		cursor: v.union(v.object({ treePath: v.string(), inclusive: v.boolean() }), v.null()),
 		/**
 		 * Counts from steps that ended at the check limit, not shown in the Activity yet. They are shown
 		 * with the next full 50 or at the end. Otherwise a step that counted fewer than 50 would show
-		 * exactly how many hidden items it passed. Absent until the first such step.
+		 * exactly how many locked items it passed. Absent until the first such step.
 		 */
 		unpublishedProgress: v.optional(v.object({ completed: v.number(), skipped: v.number(), blocked: v.number() })),
 	})

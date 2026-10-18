@@ -510,7 +510,7 @@ export const get_visible_target_by_path = query({
 		if (!membership) return null;
 		const path = server_path_normalize(args.path);
 		// Look up the saved row first, with its access check. An unreadable saved row counts as not
-		// found, so the answer never depends on a hidden row. Only then look for the caller's own
+		// found, so the answer never depends on a locked row. Only then look for the caller's own
 		// drafts at this path, so a link to a draft still opens.
 		const savedEntry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
 			organizationId: membership.organizationId,
@@ -626,7 +626,7 @@ export const resolve_new_node_path = internalQuery({
 	handler: async (ctx, args) => {
 		if (args.path === args.normalizedPath) return args.path;
 		const scope = files_db_resolve_scope(ctx, args.workspaceId);
-		// Hidden targets still occupy their names. Write doors check access after choosing the path.
+		// Locked targets still occupy their names. Write doors check access after choosing the path.
 		if (
 			args.overlayUserId &&
 			!organizations_is_global_organization_id(args.organizationId) &&
@@ -2487,7 +2487,7 @@ export const create_upload_node = mutation({
 		if (existingNode) {
 			// Answer before the permission check below, so a caller that may write the parent
 			// folder gets the same reply whether or not it may write the file holding the path.
-			// `create_upload_nodes` hides restricted paths the same way.
+			// `create_upload_nodes` answers a locked path the same way.
 			if (args.onConflict === "fail") {
 				return Result({ _nay: { message: files_UPLOAD_PATH_TAKEN_MESSAGE } });
 			}
@@ -2881,8 +2881,8 @@ export const create_upload_nodes = mutation({
 						.first();
 					walked = { node: intermediate, skipReason: null };
 					// "path_blocked" says a file sits on this path. Report it only when the caller can
-					// read that node; otherwise the reason would reveal the kind of a hidden node, which
-					// the conflict pre-check and the tree (`list_tree_children`) both hide.
+					// read that node. A locked node answers the generic "conflict", and the conflict
+					// pre-check (`get_upload_conflicts`) does not list it either.
 					if (intermediate && intermediate.kind !== "folder") {
 						walked.skipReason = (await access_control_db_can_act_on_file_node(ctx, {
 							organizationId: membership.organizationId,
@@ -2902,7 +2902,7 @@ export const create_upload_nodes = mutation({
 							fileNode: intermediate,
 							permission: "content.write",
 						})) ||
-							// Report a general conflict. Do not reveal that a hidden folder is read-only.
+							// Report a general conflict. Do not reveal that a locked folder is read-only.
 							(await files_nodes_db_require_user_writable(ctx, { node: intermediate, userId: userAuth.id }))._nay)
 					) {
 						walked.skipReason = "conflict";
@@ -2938,7 +2938,7 @@ export const create_upload_nodes = mutation({
 				.first();
 			if (existingNode) {
 				// Same rule as the walk above: only a readable folder may report "path_blocked",
-				// a hidden one must stay indistinguishable from a plain conflict.
+				// a locked one answers a plain conflict.
 				if (existingNode.kind !== "file") {
 					const canReadBlockingNode = await access_control_db_can_act_on_file_node(ctx, {
 						organizationId: membership.organizationId,
@@ -3065,7 +3065,7 @@ export const create_upload_nodes = mutation({
 			});
 			// The checks above should make this branch unreachable.
 			// Keep it so a future change cannot leave an asset doc without a node.
-			// Use "conflict" for permission and read-only errors so hidden paths stay private.
+			// Use "conflict" for permission and read-only errors, like the checks above.
 			if (nodeIdResult._nay) {
 				await ctx.db.delete("files_r2_assets", assetId);
 				skipped.push({
@@ -3871,7 +3871,7 @@ export const archive_nodes = mutation({
 				 */
 				isDone: v.boolean(),
 				/**
-				 * The named ids that were not found, and the named ids the job refused so far with the named ids
+				 * The named ids that were missing or locked, and the named ids the job refused so far with the named ids
 				 * inside them. The refused ones stay active.
 				 */
 				notArchivedNodeIds: v.array(v.id("files_nodes")),
@@ -3911,13 +3911,13 @@ export const archive_nodes = mutation({
 			nodeIds.push(nodeId);
 		}
 
-		// Like `rm` with several files, a named item that is missing is "Not found" for that item alone.
-		// The job lists it and archives the others.
-		const notFoundNodeIds = new Set<Id<"files_nodes">>();
+		// Like `rm` with several files, a named item that is missing is "Not found" for that item alone,
+		// and one the person cannot open is "Permission denied". The job lists it and archives the others.
+		const refusedNodes = new Map<Id<"files_nodes">, "Not found" | "Permission denied">();
 		const fileNodes: Doc<"files_nodes">[] = [];
 		const loadedNodes = await Promise.all(nodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
 		// Per node, not per workspace, because a grant on one restricted folder has to be enough to
-		// archive what is inside it. This loop only turns a node the person cannot read into "Not found".
+		// archive what is inside it. This loop only refuses a node the person cannot read.
 		// A node they can read but not change goes on to the job, which refuses it and archives the other
 		// named items. The write check costs no extra read for an unrestricted tree, and the read check
 		// runs only when the write check fails.
@@ -3927,7 +3927,7 @@ export const archive_nodes = mutation({
 				fileNode.organizationId !== membership.organizationId ||
 				fileNode.workspaceId !== membership.workspaceId
 			) {
-				notFoundNodeIds.add(nodeIds[index]!);
+				refusedNodes.set(nodeIds[index]!, "Not found");
 				continue;
 			}
 
@@ -3938,9 +3938,9 @@ export const archive_nodes = mutation({
 				fileNode,
 			});
 			if (authorized._nay) {
-				// Somebody who cannot even see this node hears the same answer as somebody who named an id
-				// that is not there. Two different refusals would confirm the file exists. A member with only
-				// folder grants has no workspace read, so an open node is hidden from them too.
+				// A node the person cannot open is locked. It is refused here, whether it is archived or
+				// not, so the answer tells nothing more about it. A member with only folder grants has no
+				// workspace read, so an open node is locked for them too.
 				const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
@@ -3948,7 +3948,7 @@ export const archive_nodes = mutation({
 					nodes: [fileNode],
 				});
 				if (!readable) {
-					notFoundNodeIds.add(fileNode._id);
+					refusedNodes.set(fileNode._id, "Permission denied");
 					continue;
 				}
 			}
@@ -3967,9 +3967,9 @@ export const archive_nodes = mutation({
 				),
 		);
 		if (rootFileNodes.length === 0) {
-			const [notFoundNodeId] = notFoundNodeIds;
-			return notFoundNodeId
-				? Result({ _nay: { name: "nay", message: "Not found", data: { nodeId: notFoundNodeId } } })
+			const [refused] = refusedNodes;
+			return refused
+				? Result({ _nay: { name: "nay", message: refused[1], data: { nodeId: refused[0] } } })
 				: Result({ _yay: null });
 		}
 
@@ -3980,7 +3980,7 @@ export const archive_nodes = mutation({
 			membership,
 			archiveOperationId: crypto.randomUUID(),
 			rootNodeIds: rootFileNodes.map((node) => node._id),
-			notFoundNodeIds: [...notFoundNodeIds],
+			refusedNodes: [...refusedNodes].map(([nodeId, message]) => ({ nodeId, message })),
 			treePaths: rootFileNodes.map((node) => node.treePath),
 			pendingUpdateCleanup: null,
 			budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
@@ -3995,7 +3995,7 @@ export const archive_nodes = mutation({
 			(node) => node.kind === "folder" && job.notArchivedNodeIds.includes(node._id),
 		);
 		const notArchivedNodeIds = [
-			...notFoundNodeIds,
+			...refusedNodes.keys(),
 			...activeFileNodes
 				.filter(
 					(node) =>
@@ -4083,19 +4083,8 @@ export const unarchive_nodes = mutation({
 				permission: "content.write",
 				fileNode,
 			});
-			if (authorized._nay) {
-				// Same as `archive_nodes`: a node the caller cannot see answers "Not found", so the refusal
-				// does not tell them it is in the archive.
-				const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					subject: { kind: "user", userId: userAuth.id, plugin: null },
-					nodes: [fileNode],
-				});
-				return readable
-					? authorized
-					: Result({ _nay: { name: "nay", message: "Not found", data: { nodeId: fileNode._id } } });
-			}
+			// "Permission denied" also for a node the caller cannot open (a locked node), like `archive_nodes`.
+			if (authorized._nay) return authorized;
 		}
 
 		// Restore brings back every item archived together with a named item. Take the operations
@@ -4135,7 +4124,7 @@ export const unarchive_nodes = mutation({
 				membership,
 				archiveOperationId,
 				rootNodeIds: [],
-				notFoundNodeIds: [],
+				refusedNodes: [],
 				treePaths: [topTreePath],
 				pendingUpdateCleanup: null,
 				budget,

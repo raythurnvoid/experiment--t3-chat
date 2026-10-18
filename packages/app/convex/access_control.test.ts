@@ -11056,7 +11056,7 @@ describe("file sharing", () => {
 		expect(withRead?.conflict).toMatchObject({ name: "same", path: "/same", occupantPath: "/same" });
 	});
 
-	test("archiving a node the caller cannot see answers the same as a missing one", async () => {
+	test("archiving a node the caller cannot open answers Permission denied", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "archive-oracle-org",
@@ -11064,13 +11064,12 @@ describe("file sharing", () => {
 		});
 		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
-		// "Permission denied" would confirm the folder is there. Somebody who cannot see it hears what
-		// they would hear for an id that is not in this workspace at all.
+		// The folder is locked for the member, like in a folder list: it exists, but they cannot open it.
 		const archived = await fixture.asMember.mutation(api.files_nodes.archive_nodes, {
 			membershipId: fixture.memberMembershipId,
 			nodeIds: [String(folderId)],
 		});
-		expect(archived._nay?.message).toBe("Not found");
+		expect(archived._nay?.message).toBe("Permission denied");
 	});
 
 	test("a folder given to somebody with no workspace read still shows in their tree", async () => {

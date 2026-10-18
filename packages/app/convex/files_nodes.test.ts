@@ -956,7 +956,7 @@ describe("list_tree_shared_roots", () => {
 });
 
 describe("archive_nodes", () => {
-	test("a grant-only member hears Not found for an open node, like for a missing id", async () => {
+	test("a grant-only member hears Permission denied for an open node and Not found for a missing id", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const archive = (nodeId: Id<"files_nodes">) =>
@@ -967,11 +967,22 @@ describe("archive_nodes", () => {
 
 		// The member reads `/shared/note.md` through a grant but cannot change it, so the job refuses it.
 		expect((await archive(f.nodes.sharedFileId))._nay?.message).not.toBe("Not found");
-		// An open node needs workspace read, which this member lacks, so it must answer like a missing id.
-		expect((await archive(f.nodes.openFileId))._nay?.message).toBe("Not found");
+		// An open node needs workspace read, which this member lacks, so it is locked for them.
+		expect((await archive(f.nodes.openFileId))._nay?.message).toBe("Permission denied");
 		expect((await archive(f.nodes.missingNodeId))._nay?.message).toBe("Not found");
 		const openFile = await t.run(async (ctx) => await ctx.db.get("files_nodes", f.nodes.openFileId));
 		expect(openFile?.archiveOperationId).toBeNull();
+
+		// An archived locked node gets the same answer, also from Restore, so it does not tell that it is archived.
+		await test_run_with_flush(t, async (ctx) => {
+			await ctx.db.patch("files_nodes", f.nodes.openFileId, { archiveOperationId: "archive-op-locked" });
+		});
+		expect((await archive(f.nodes.openFileId))._nay?.message).toBe("Permission denied");
+		const restored = await f.asGrantOnly.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: f.grantOnly.membershipId,
+			nodeIds: [f.nodes.openFileId],
+		});
+		expect(restored._nay?.message).toBe("Permission denied");
 	});
 });
 

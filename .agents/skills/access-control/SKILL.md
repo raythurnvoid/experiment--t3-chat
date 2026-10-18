@@ -26,7 +26,7 @@ Membership says where you are. Access control says what you may do there.
 - A file's write policy is separate from ACL. Check the request's subject first.
   Then apply that node's own `writePolicy`. Owners do not bypass a
   read-only or named-writer policy. See `../files-read-only/SKILL.md` for the policy rules.
-- Changing a folder's write policy needs `content.permissions.manage` on that folder only. A hidden
+- Changing a folder's write policy needs `content.permissions.manage` on that folder only. A locked
   restricted child keeps its own rule, but the folder's rule still blocks its rename and move-out.
 - Human/role sharing changes detach the node's `plugins_file_access_bindings` only when they
   change sharing. Service-account grant edits preserve that reader binding. Unrestricting clears
@@ -111,8 +111,6 @@ Advance only for a change that can turn a passing proof into a failing one. Chec
 Copy, pending Save, folder Move check, and Move cohort. See the pending and transfer specs.
 
 ## Service accounts
-
-Changes in C2 (slices S2, S3), see "Locked, not hidden".
 
 Service accounts are workspace identities for software. They are not users and have no roles,
 owner rights, billing rights, public fallback, or private plugin-data scope rights. Their
@@ -502,7 +500,7 @@ Rules that are easy to miss, all of which were real holes:
   yet the workspace is the only thing left to ask.
 - **A cascade is not covered by the node you named.** Archive checks every removed descendant.
   A Move group walks exact saved child ranges in background transactions. Reparenting checks each
-  nested restricted root, including archived roots. A hidden root can refuse the group without
+  nested restricted root, including archived roots. A locked root can refuse the group without
   exposing its name. Ordinary protected descendants travel with their rules unchanged.
   Replacement checks every descendant it hides. Existing Move and scope repairs finish before
   new planning uses stored scopes. Access changes advance the clocks that each group checks.
@@ -704,8 +702,6 @@ of a restricted folder has to be able to share what the grant gave them and noth
 
 ## Known gaps
 
-Changes in C2 (slices S3, S12), see "Locked, not hidden".
-
 These are real and confirmed against the code. None is an oversight to patch quietly: each needs a
 product decision, so record the answer here before changing the behaviour. An entry that starts with
 **Decided** already has its answer. Do not report it again as a finding.
@@ -758,12 +754,14 @@ product decision, so record the answer here before changing the behaviour. An en
   token happens to be scoped. `upsert_mount` is an internal mutation reached by `convex run`, so no
   user can trigger it and this is not a user-reachable hole. Whether to refuse a `private` repo
   outright is undecided.
-- **Decided: the search box pages can tell that hidden files match.** `files_nodes.search_saved`
-  drops rows the caller cannot read after the search reads its page. So a member who calls it with a
-  small page size and gets an empty page with `isDone: false` learns that some hidden file matches a
-  name word, a content word, or a metadata value. They never learn which file, its path, or its text.
-  This is accepted: a full answer would need access filters inside the search index. The tree pages
-  do not give this signal (see "Files tree reads").
+- **Decided: the search box pages can tell that a file you cannot open matches.**
+  `files_nodes.search_saved` drops rows the caller cannot read after the search reads its page. A
+  name or path hit whose folder the caller can open stays, as a locked row. So a member who calls it
+  with a small page size and gets an empty page with `isDone: false` learns that some file they
+  cannot open matches a content word, a public link, or a name word inside a locked folder. They
+  never learn which file, its path, or its text. This is accepted: a full answer would need access
+  filters inside the search index. Custom-field search (`search_saved_metadata`, through the walk)
+  and the tree pages do not give this signal (see "Files tree reads").
 
 # Endpoints
 
@@ -834,8 +832,7 @@ cannot open is a **locked row**: name, type, size and created/updated dates only
 403 / "Permission denied". Inside a locked folder every path answers the same 403, whether it exists
 or not. Recursive reads (`ls -R`, `find`, `tree`, API `recursive: true`) stop at locked folders and
 say "Permission denied". One subject per request: a user or a service account, never both checked per
-row. The code moves to this rule slice by slice (C2); sections below that still describe hiding say
-so at the top.
+row.
 
 **Why hiding was removed. Do not bring it back.**
 
@@ -911,11 +908,9 @@ Sources:
 
 ## Files tree reads
 
-Changes in C2 (slices S8, S9), see "Locked, not hidden".
-
 The sidebar loads the tree one open folder at a time through the `files_nodes` queries below. All of
-them resolve the reader with `files_nodes_db_get_tree_reader` and never show a node the caller cannot
-`content.read`. `files_share_links.list_workspace_links` resolves its reader with the same helper.
+them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller cannot
+`content.read` shows only as a locked row (see below). `files_share_links.list_workspace_links` resolves its reader with the same helper.
 
 - `files_nodes_db_get_tree_reader` requires a live `users` doc before reading membership. Missing auth or a
   missing user throws `Unauthenticated`. An anonymous user with `deletedAt` does too, even when
@@ -927,15 +922,15 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
   restricted twin as `list_tree_children_sorted` below. A missing or foreign parent, or one the
   caller cannot open, gets the same empty, done page as any other refusal. That page only means
   "cannot open": a locked folder still shows as a locked row in its parent. A grant-only member gets
-  nothing for the root: their root rows come from `list_tree_shared_roots`. The public `files/list` route keeps the
-  same rule with a different answer: a missing, archived, or hidden folder gets one 404 `Folder not
-  found: <path>` (see the public-api skill). A member who can read only `/Clients/Acme` gets that 404
-  for `/Clients` too.
+  nothing for the root: their root rows come from `list_tree_shared_roots`. The public `files/list` route answers
+  instead: a missing or archived folder gets 404 `Folder not found: <path>`, and a locked folder gets
+  403 `Permission denied: <path>` (see the public-api skill). A member who can read only
+  `/Clients/Acme` gets that 403 for `/Clients`.
 - `get_tree_ancestors` takes a raw id string, so a bad `?nodeId=` returns `null` instead of an argument
   error. It walks up from the node and stops at the first folder the caller cannot read, because the
-  tree cannot show a row under a hidden folder. This hides no names: every tree row carries its
+  tree cannot open a locked folder. This hides no names: every tree row carries its
   `path`, `parentId`, and `restrictedScopeNodeId`, the same as `list_tree_children` rows, so a shared node's
-  path still names the hidden folders above it.
+  path still names the locked folders above it.
 - `list_tree_shared_roots` pages every share of the member for the "Shared with you" group, one
   principal at a time (see "Share rows" under "File sharing"). It has no cap: it reads the share
   rows with one index range per page and checks each row like `list_tree_children_shared`. The owner
@@ -1151,8 +1146,6 @@ Five rules that look like details and are not:
 
 ### Share rows
 
-Changes in C2 (slices S5, S8, S8b), see "Locked, not hidden".
-
 `files_share_rows` holds one row per share, so a member's shared items can be paged with indexes like
 the folder table. Code: `packages/app/server/files-share-rows.ts`.
 
@@ -1191,8 +1184,6 @@ the folder table. Code: `packages/app/server/files-share-rows.ts`.
 - Data deletion: see `../data-deletion/SKILL.md`.
 
 ### The walk
-
-Changes in C2 (slice S9), see "Locked, not hidden".
 
 Recursive reads (`ls -R`, `find`, `tree`, `meta search` `eq` / `exists`, the API's `recursive: true`
 and the search box's custom-field search) walk the tree one restricted area at a time, so they never
@@ -1612,7 +1603,7 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   read — it must never reveal more than the tree pages (`list_tree_children` and the share streams)
   do. The other skip reason, `"path_blocked"`,
   says what kind of node blocks the path, so the mutation only answers it when the caller can
-  `content.read` the blocking node; a hidden folder at the target and a hidden file at an ancestor
+  `content.read` the blocking node; a locked folder at the target and a locked file at an ancestor
   both fall back to `"conflict"`.
 - **The public API batch writes widen it again, faster.** `/api/v1/files/write-many` answers the same
   literal `"Permission denied"` per item, charged up front on `public_api_files_write_bulk` (rate

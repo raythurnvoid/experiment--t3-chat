@@ -1635,11 +1635,11 @@ export async function files_archive_runs_db_start(
 		 */
 		rootNodeIds: Array<Id<"files_nodes">>;
 		/**
-		 * Archive: named ids that are missing, in another workspace, or that the person cannot read. The
-		 * job lists each one as "Not found", like `rm` does for a missing file, and archives the rest.
-		 * Restore: empty.
+		 * Archive: named ids refused before the job: "Not found" for a missing id or one in another
+		 * workspace, "Permission denied" for one the person cannot open. The job lists each one, like
+		 * `rm` does, and archives the rest. Restore: empty.
 		 */
-		notFoundNodeIds: Array<Id<"files_nodes">>;
+		refusedNodes: Array<{ nodeId: Id<"files_nodes">; message: "Not found" | "Permission denied" }>;
 		/**
 		 * Where readers see the items now. Restore passes its top item, because it has no named items yet.
 		 */
@@ -1718,16 +1718,16 @@ export async function files_archive_runs_db_start(
 		// Cancel on a clash wait ends every job of the request, so each job names the first one.
 		requestFirstRunId: previousRun ? (previousRun.requestFirstRunId ?? previousRun._id) : null,
 		checkNamedItem: null,
-		refusedItems: args.notFoundNodeIds.map((nodeId) => ({ nodeId, refusal: { name: null, message: "Not found" } })),
+		refusedItems: args.refusedNodes.map(({ nodeId, message }) => ({ nodeId, refusal: { name: null, message } })),
 	};
 	const progress: RunProgress = {
 		unit: "items",
-		discovered: args.notFoundNodeIds.length,
+		discovered: args.refusedNodes.length,
 		total: null,
 		completed: 0,
 		skipped: 0,
 		failed: 0,
-		blocked: args.notFoundNodeIds.length,
+		blocked: args.refusedNodes.length,
 		canceled: 0,
 	};
 

@@ -198,7 +198,7 @@ export function files_get_read_only_row_labels(args: {
  * Rename and move need both the named item and its immediate parent. A folder with a
  * protected child can still be renamed or moved; the children keep their rules. Delete
  * and archive need every removed item, so a visible protected descendant only warns: the
- * server still checks hidden descendants and refuses there.
+ * server still checks locked descendants and refuses there.
  */
 export function files_get_read_only_capabilities(args: {
 	canWrite: boolean;
