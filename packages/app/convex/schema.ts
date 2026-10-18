@@ -2232,8 +2232,11 @@ const app_convex_schema = defineSchema({
 		metadataId: v.union(v.id("value_store_metadata"), v.null()),
 		/**
 		 * The owner. Values can hold private data, like file paths, so account deletion removes them.
+		 * `put` always sets it. Only rows written before this field have no owner. Every value has a
+		 * TTL (24 hours for Bash cursors, `SEARCH_SAVED_CURSOR_TTL_MS` for the search box), so those
+		 * rows expire on their own. Make it required once rows older than the longest TTL are gone.
 		 */
-		userId: v.id("users"),
+		userId: v.optional(v.id("users")),
 	}).index("by_user", ["userId"]),
 	/**
 	 * Only expiring values have metadata, so cleanup scans small docs.
