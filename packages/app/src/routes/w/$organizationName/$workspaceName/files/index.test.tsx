@@ -1,6 +1,6 @@
 import { act, render } from "@testing-library/react";
 import { ConvexProvider, ConvexReactClient } from "convex/react";
-import { StrictMode, createElement, type ComponentType } from "react";
+import { createElement, type ComponentType } from "react";
 import { describe, expect, test, vi } from "vitest";
 
 const { routerListeners, routerLocation, loadedNodes, preloadSnapshot } = vi.hoisted(() => ({
@@ -20,7 +20,7 @@ vi.mock("@tanstack/react-router", () => ({
 		state: { location: routerLocation },
 		subscribe: (_name: string, listener: (event: unknown) => void) => {
 			routerListeners.push(listener);
-			// StrictMode subscribes twice, so the first listener must really go away.
+			// Remove the listener, so an unmounted route no longer hears navigations.
 			return () => {
 				routerListeners.splice(routerListeners.indexOf(listener), 1);
 			};
@@ -103,7 +103,6 @@ describe("README preload", () => {
 
 describe("snapshot preload", () => {
 	test("preloads a page load once and a clicked rich text file, but not a known folder or the open file", () => {
-		vi.useFakeTimers();
 		routerListeners.length = 0;
 		preloadSnapshot.mockClear();
 		routerLocation.search = { nodeId: "unknown" };
@@ -114,12 +113,9 @@ describe("snapshot preload", () => {
 		const client = new ConvexReactClient("https://files-route-test.convex.cloud", {
 			webSocketConstructor: class {} as unknown as typeof WebSocket,
 		});
-		// Render the way the app does. StrictMode runs the mount effect twice in development.
 		const view = render(
 			createElement(ConvexProvider, { client }, createElement(Route.options.component as ComponentType)),
-			{ wrapper: StrictMode },
 		);
-		act(() => vi.advanceTimersByTime(0));
 
 		// A page load does not know the node's type yet.
 		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "m1", nodeId: "unknown" });
@@ -143,6 +139,5 @@ describe("snapshot preload", () => {
 		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "m1", nodeId: "file" });
 
 		view.unmount();
-		vi.useRealTimers();
 	});
 });

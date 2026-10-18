@@ -1396,8 +1396,8 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 
 			// This is the server's own rendering of the draft this section just sent, and nothing was typed
 			// since. Adopt it so the editor shows the stored map and Save goes back to disabled. Never write
-			// `sentDraftRef` here: StrictMode runs this updater twice, and the second run would take the
-			// conflict branch below.
+			// `sentDraftRef` here: React can run an updater more than once, and the second run would take
+			// the conflict branch below.
 			if (current.draftYaml === sentDraftRef.current) {
 				return { draftYaml: serverYaml, serverYaml, loaded: true, feedback: current.feedback };
 			}

@@ -249,8 +249,8 @@ function mockQueries(args: {
 	});
 }
 
-// Render the way the app does. StrictMode runs every state updater twice, which is what catches an
-// updater that is not pure. In the sidebar panel this modal replaced, one updater wrote a ref, and
+// Render under StrictMode. It runs every state updater twice, which is what catches an updater that
+// is not pure (React can also run an updater again outside StrictMode). In the sidebar panel this modal replaced, one updater wrote a ref, and
 // the second run then reported a conflict that was not there.
 function renderModal(overrides?: Partial<Parameters<typeof FilesPropertiesModal>[0]>) {
 	return render(

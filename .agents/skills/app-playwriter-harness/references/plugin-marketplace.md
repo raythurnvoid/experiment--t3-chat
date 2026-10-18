@@ -1332,9 +1332,11 @@ const out = await frame.evaluate(async () => {
 ```
 
 Read the host side with the Convex call recorder from `snippets.md` ("Watch Convex Mutations On The
-Wire"). On a page, two tokens are already gone to StrictMode's double mint (see `known-hazards.md`),
-so the bucket is usually empty from the start. A file view's double mint spends the other bucket, so
-its first rotations still find tokens here.
+Wire"). On a page, one token is already gone to the page's mint (see `known-hazards.md`), so the
+first refusal comes one rotation sooner than the bucket size suggests. A file view's mint spends the
+other bucket, so its first rotations still find tokens here. The attempt numbers below were measured
+when the app still ran in `StrictMode` and each page minted twice, so expect the refusals one attempt
+later now.
 
 - Before the retry fix, at commit `c8bc76f3`: attempts 3-5 returned `Rate limit exceeded` in about
   330 ms each, the recorder showed `refresh_ui_session -> _nay "Rate limit exceeded"` with no
@@ -1350,10 +1352,10 @@ tree: it cannot appear in a recorded `_nay` unless the watcher pushed your `plug
 ## A file view is keyed by node id, so switching files swaps the session (verified 2026-09-04)
 
 Open one file a plugin file view renders, then click a second file of the same kind, clicking the
-plugin's tab each time. With the recorder installed the calls read, in order: `mint_file_view_session`
-twice and one `revoke_ui_session` for the first file (the double mint is StrictMode), then one
-`revoke_ui_session` when the first file's frame unmounts, then the same mint/mint/revoke for the
-second file. The table then holds no row at all for the first file's `fileNodeId`.
+plugin's tab each time. With the recorder installed the calls read, in order: one `mint_file_view_session`
+for the first file, then one `revoke_ui_session` when the first file's frame unmounts, then one
+mint for the second file. (Before the app dropped `StrictMode`, each mount minted twice and revoked
+one at once.) The table then holds no row at all for the first file's `fileNodeId`.
 
 Two traps cost a run each on 2026-09-04:
 

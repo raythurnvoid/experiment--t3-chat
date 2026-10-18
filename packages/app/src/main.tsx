@@ -1,5 +1,4 @@
 import "./app.css";
-import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";
 import { app_convex } from "./lib/app-convex-client.ts";
@@ -37,6 +36,8 @@ declare module "@tanstack/react-router" {
 const CLERK_JS_VERSION = "5.127.2";
 
 const router = app_router();
+// Do not wrap the app in `StrictMode`. In development it runs every mount effect twice, so the dev app
+// sent server work twice (preloads, plugin session mints) and needed workarounds that production never runs.
 const root_element = document.getElementById("root" satisfies AppElementId)!;
 
 // The public share page loads without sign-in. Skip Clerk, app auth, and hotkeys there, so a visitor
@@ -52,16 +53,14 @@ if (url_is_share_path(router.state.location.pathname)) {
 		onRecoverableError: logShareError,
 	});
 	root.render(
-		<StrictMode>
-			<ThemeProvider>
-				<ConvexProvider client={app_convex}>
-					<ConvexQueryCacheProvider>
-						<RouterProvider router={router} />
-					</ConvexQueryCacheProvider>
-				</ConvexProvider>
-				<AppToaster />
-			</ThemeProvider>
-		</StrictMode>,
+		<ThemeProvider>
+			<ConvexProvider client={app_convex}>
+				<ConvexQueryCacheProvider>
+					<RouterProvider router={router} />
+				</ConvexQueryCacheProvider>
+			</ConvexProvider>
+			<AppToaster />
+		</ThemeProvider>,
 	);
 } else {
 	const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -85,23 +84,21 @@ if (url_is_share_path(router.state.location.pathname)) {
 
 	const root = createRoot(root_element);
 	root.render(
-		<StrictMode>
-			<ThemeProvider>
-				<AppHotkeysProvider>
-					<ClerkProvider publishableKey={publishableKey} clerkJSVersion={CLERK_JS_VERSION} afterSignOutUrl="/">
-						<AppAuthProvider>
-							<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useConvexAuth}>
-								{/* Keep a query subscribed for 5 minutes after its last user unmounts, so going back to a
-								    folder shows its rows at once. Only hooks imported from `convex-helpers/react/cache` use it. */}
-								<ConvexQueryCacheProvider>
-									<RouterProvider router={router} />
-								</ConvexQueryCacheProvider>
-							</ConvexProviderWithAuth>
-						</AppAuthProvider>
-					</ClerkProvider>
-				</AppHotkeysProvider>
-				<AppToaster />
-			</ThemeProvider>
-		</StrictMode>,
+		<ThemeProvider>
+			<AppHotkeysProvider>
+				<ClerkProvider publishableKey={publishableKey} clerkJSVersion={CLERK_JS_VERSION} afterSignOutUrl="/">
+					<AppAuthProvider>
+						<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useConvexAuth}>
+							{/* Keep a query subscribed for 5 minutes after its last user unmounts, so going back to a
+							    folder shows its rows at once. Only hooks imported from `convex-helpers/react/cache` use it. */}
+							<ConvexQueryCacheProvider>
+								<RouterProvider router={router} />
+							</ConvexQueryCacheProvider>
+						</ConvexProviderWithAuth>
+					</AppAuthProvider>
+				</ClerkProvider>
+			</AppHotkeysProvider>
+			<AppToaster />
+		</ThemeProvider>,
 	);
 }

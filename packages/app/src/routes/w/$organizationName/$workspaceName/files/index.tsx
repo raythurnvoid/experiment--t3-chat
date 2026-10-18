@@ -104,9 +104,7 @@ const RouteFiles = memo(function RouteFiles() {
 		};
 
 		const initialSearch: Partial<Record<string, unknown>> = router.state.location.search;
-		// Wait one task. In development, React runs this effect twice and cleans up
-		// the first run, so the page load would send the preload twice.
-		const reactStrictWorkaroundTimer = setTimeout(() => preload_snapshot(initialSearch));
+		preload_snapshot(initialSearch);
 		// Compare with the last navigation, not with `event.fromLocation`. That is the last finished
 		// navigation, and the view writes its `view` param before the click's navigation finishes.
 		let lastNodeId = initialSearch.nodeId;
@@ -121,7 +119,6 @@ const RouteFiles = memo(function RouteFiles() {
 		});
 
 		return () => {
-			clearTimeout(reactStrictWorkaroundTimer);
 			unsubscribe();
 			cancelSnapshotPreload?.();
 		};

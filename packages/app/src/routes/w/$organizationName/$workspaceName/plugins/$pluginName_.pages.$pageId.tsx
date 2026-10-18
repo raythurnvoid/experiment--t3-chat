@@ -100,8 +100,8 @@ function RoutePluginsPluginPage() {
 
 		// Only a frame that replaced another frame. A first load leaves focus on the body too, and
 		// pulling the member into the region there would be a new annoyance instead of a fix. The two
-		// identities are equal too when StrictMode runs this effect a second time on mount, which it
-		// does in a development build.
+		// identities are equal too when React runs this effect a second time for the same frame, which
+		// Fast Refresh does in a development build.
 		if (previousFrameIdentity === null || renderedFrameIdentity === null) return;
 		if (previousFrameIdentity === renderedFrameIdentity) return;
 		// The upgrade is somebody else's action arriving on a live query, so the member may be typing

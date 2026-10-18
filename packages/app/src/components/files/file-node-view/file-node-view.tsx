@@ -2516,9 +2516,9 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 	// frame and dies with it, so the child never has to ask which frame a message came from.
 	const frameKey = `${membershipId}:${pluginVersionId}:${fileViewId}:${node._id}:${attempt}`;
 	// The frame key the effect below has already handled. It is how that effect tells the first frame
-	// apart from a frame that replaced a running one. A plain "first run" flag would not do: React
-	// StrictMode runs a mount effect twice in development, so the second run would read the flag as a
-	// replacement and steal focus the first time the member opens this view.
+	// apart from a frame that replaced a running one. A plain "first run" flag would not do: React can
+	// run the effect again for the same frame (Fast Refresh does in development), so the second run would
+	// read the flag as a replacement and steal focus the first time the member opens this view.
 	const handledFrameKeyRef = useRef(frameKey);
 
 	const handleRetry = useFn(() => {

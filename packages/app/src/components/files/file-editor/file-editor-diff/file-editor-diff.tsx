@@ -2322,7 +2322,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
 
 	useEffect(() => {
-		// In dev, React StrictMode may mount/unmount/mount to detect side effects.
+		// React can clean up and run this effect again on the same component (Fast Refresh does in dev).
 		// Ensure we don't permanently disable host registration after the first cleanup.
 		isUnmountingRef.current = false;
 
