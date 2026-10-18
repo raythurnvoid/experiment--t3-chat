@@ -38,7 +38,7 @@ type FilesArchiveModal_ClassNames =
 /**
  * What the dialog needs to name a row. Hosts already hold these on the tree node they act on.
  */
-export type FilesArchiveModal_Node = Pick<files_VisibleTreeNode, "_id" | "name" | "kind">;
+export type FilesArchiveModal_Node = Pick<files_VisibleTreeNode, "_id" | "name" | "path" | "kind">;
 
 export type FilesArchiveModal_Props = {
 	/** The nodes to archive. `null` keeps the dialog closed. */
@@ -154,13 +154,13 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 				{hasList || error ? (
 					<MyModalScrollableArea>
 						<div className={"FilesArchiveModal-content" satisfies FilesArchiveModal_ClassNames}>
-							{/* One name per line in a read-only text block, so Ctrl+A selects only the names to copy
+							{/* One path per line in a read-only text block, so Ctrl+A selects only the paths to copy
 							    them. It grows only from Show more: growing on click would move the text under a
 							    selection the person is making. */}
 							{hasList ? (
 								<TextMonospaceBlock
 									aria-label="Items to archive"
-									text={nodes.map((node) => node.name).join("\n")}
+									text={nodes.map((node) => node.path).join("\n")}
 									maxHeight={isListExpanded ? "16lh" : "6lh"}
 								/>
 							) : null}

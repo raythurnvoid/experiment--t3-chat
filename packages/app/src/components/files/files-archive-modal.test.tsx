@@ -39,10 +39,16 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 
 import { FilesArchiveModal, FilesArchiveRunModal, type FilesArchiveModal_Node } from "./files-archive-modal.tsx";
 
-const NOTE: FilesArchiveModal_Node = { _id: "node_1" as app_convex_Id<"files_nodes">, name: "note.md", kind: "file" };
+const NOTE: FilesArchiveModal_Node = {
+	_id: "node_1" as app_convex_Id<"files_nodes">,
+	name: "note.md",
+	path: "/note.md",
+	kind: "file",
+};
 const REPORTS: FilesArchiveModal_Node = {
 	_id: "node_2" as app_convex_Id<"files_nodes">,
 	name: "Reports",
+	path: "/Reports",
 	kind: "folder",
 };
 
@@ -66,7 +72,7 @@ describe("FilesArchiveModal", () => {
 	test("archives the given nodes and reports them", async () => {
 		const { onClose, onArchived } = renderModal([NOTE, REPORTS]);
 		const dialog = await screen.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("note.md\nReports");
+		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("/note.md\n/Reports");
 
 		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
 
@@ -142,6 +148,7 @@ describe("FilesArchiveModal", () => {
 			...NOTE,
 			_id: `node_${index}` as app_convex_Id<"files_nodes">,
 			name: `note-${index}.md`,
+			path: `/note-${index}.md`,
 		}));
 		renderModal(nodes);
 		const dialog = await screen.findByRole("dialog", { name: "Archive 7 items?" });

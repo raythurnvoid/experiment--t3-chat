@@ -6947,7 +6947,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			}
 			// Do not check the other selected rows here. The archive refuses each item it cannot change and
 			// lists it on its Activity, so one read-only row does not stop a big selection.
-			nodes.push({ _id: item._id, name: item.name, kind: item.kind });
+			nodes.push({ _id: item._id, name: item.name, path: item.path, kind: item.kind });
 		}
 		archiveGroupRowRef.current = null;
 		setArchiveNodes(nodes);
@@ -6956,13 +6956,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	// A row of the "Shared with you" group is not in the tree selection, so it archives itself only.
 	const handleSharedGroupArchive = useFn<FilesSidebarSharedGroup_Props["onArchive"]>((row, rowElement) => {
 		archiveGroupRowRef.current = rowElement;
-		setArchiveNodes([{ _id: row._id, name: row.name, kind: row.kind }]);
+		setArchiveNodes([{ _id: row._id, name: row.name, path: row.path, kind: row.kind }]);
 	});
 
 	// A search match is not in the tree selection either, so it archives itself only.
 	const handleSearchResultArchive = useFn<FilesSidebarSearchResults_Props["onArchive"]>((row, rowElement) => {
 		archiveGroupRowRef.current = rowElement;
-		setArchiveNodes([{ _id: row.nodeId, name: path_name_of(row.path), kind: row.kind }]);
+		setArchiveNodes([{ _id: row.nodeId, name: path_name_of(row.path), path: row.path, kind: row.kind }]);
 	});
 
 	const handleArchiveModalClose = useFn(() => {
