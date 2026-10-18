@@ -3,6 +3,14 @@
 		width: min(560px, calc(100vw - 32px));
 	}
 
+	.FilesPendingReviewModal-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		--ActivityStatusIcon-size: 20px;
+	}
+
 	.FilesPendingReviewModal .MyModalFooter {
 		flex-wrap: wrap;
 	}

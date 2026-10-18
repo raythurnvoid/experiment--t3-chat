@@ -1,0 +1,52 @@
+@layer components {
+	.ActivityStatusIcon {
+		display: inline-flex;
+		flex: 0 0 auto;
+
+		/* A bigger heading, like a job dialog title, sets `--ActivityStatusIcon-size` on itself. */
+		& > svg {
+			width: var(--ActivityStatusIcon-size, 16px);
+			height: var(--ActivityStatusIcon-size, 16px);
+		}
+	}
+
+	.ActivityStatusIcon-kind-running {
+		color: var(--color-accent-08);
+	}
+
+	.ActivityStatusIcon-kind-action_needed {
+		color: var(--app-status-warning);
+	}
+
+	.ActivityStatusIcon-kind-succeeded {
+		color: var(--color-green-09);
+	}
+
+	.ActivityStatusIcon-kind-partial {
+		color: var(--app-status-partial);
+	}
+
+	.ActivityStatusIcon-kind-failed {
+		color: var(--color-red-10);
+	}
+
+	.ActivityStatusIcon-kind-canceled {
+		color: var(--color-fg-08);
+	}
+
+	.ActivityStatusIcon-spinning > svg {
+		animation: ActivityStatusIcon-spin 1s linear infinite;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.ActivityStatusIcon-spinning > svg {
+			animation: none;
+		}
+	}
+
+	@keyframes ActivityStatusIcon-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+}

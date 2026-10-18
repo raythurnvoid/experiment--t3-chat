@@ -123,10 +123,16 @@ progress (transfer, review, protection, archive, and restore) the same way:
 - When it ends: one line, `Copied 12 files.`. Failed and blocked items make it `Copied 10 of 12 files.`.
   Skipped items are left out: they were already in place, or the person chose Skip. The meta line says
   `Completed`, `Partly completed`, `Failed`, `Stopped`, or `Timed out`.
+- One status icon, [activity-status-icon.tsx](../../../packages/app/src/components/activity-status-icon.tsx),
+  shows on the card and in the job dialog heading. It reads `data-activity-status-icon`: `running` (accent
+  circle, it spins only while the status is `running`), `action_needed` (yellow warning triangle),
+  `succeeded` (green check), `partial` (lime dashed circle with a check), `failed` (red x, also timed
+  out), `canceled` (gray minus). Icons never have a background. An invitation card shows a gray mail
+  icon in the same column.
 - A refused item, like a read-only file, is expected. So an archive (not a restore) or a protection
   job that is `partial` only because of blocked items shows as `Completed` with a green icon. The
   "N of M" count still includes the refused items, and the archive job dialog lists them under
-  `Not archived (N)`. The job dialog also lists the named items it archived (`files_archive_runs.get`
+  `Not archived (N)`, grouped by their reason. Items the person cannot open are only counted. The job dialog also lists the named items it archived (`files_archive_runs.get`
   returns `archived`).
 - `awaiting_input` (only a transfer or a restore name clash) shows `Action needed`, the line
   `N name conflicts need your choice.`, and a `Resolve` button. It shows no bar.

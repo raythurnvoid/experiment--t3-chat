@@ -2,6 +2,7 @@ import "./files-pending-review.css";
 
 import { memo, useState } from "react";
 import { useQuery } from "convex/react";
+import { ActivityStatusIcon } from "@/components/activity-status-icon.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import {
@@ -24,6 +25,7 @@ import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 
 type FilesPendingReviewModal_ClassNames =
 	| "FilesPendingReviewModal"
+	| "FilesPendingReviewModal-title"
 	| "FilesPendingReviewModal-items"
 	| "FilesPendingReviewModal-item"
 	| "FilesPendingReviewModal-pages"
@@ -180,7 +182,8 @@ export const FilesPendingReviewModal = memo(function FilesPendingReviewModal(pro
 				}}
 			>
 				<MyModalHeader>
-					<MyModalHeading>
+					<MyModalHeading className={"FilesPendingReviewModal-title" satisfies FilesPendingReviewModal_ClassNames}>
+						{run ? <ActivityStatusIcon activity={run.activity} isRefusalOnly={false} /> : null}
 						{(run?.run.kind ?? props.kind) === "discard" ? "Discard reviewed changes" : "Save reviewed changes"}
 					</MyModalHeading>
 					<MyModalDescription role="status">{statusLabel}</MyModalDescription>

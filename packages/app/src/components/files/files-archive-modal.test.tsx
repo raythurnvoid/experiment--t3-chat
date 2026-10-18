@@ -274,25 +274,27 @@ describe("FilesArchiveRunModal", () => {
 				{ nodeId: "node_5", path: "/Plans" },
 			],
 			notArchived: [
-				{ nodeId: "node_2", path: "/Reports", message: '"/Reports/plan.md" is read-only. Unlock it, then try again.' },
+				{ nodeId: "node_2", path: "/Reports", message: "This item is read-only. Unlock it, then try again." },
 				{ nodeId: "node_3", path: null, message: "Permission denied" },
+				{ nodeId: "node_6", path: "/Drafts", message: "This item is read-only. Unlock it, then try again." },
 			],
 		});
 		renderRunModal();
 		const dialog = await screen.findByRole("dialog", { name: "Archive files" });
 		// A refused read-only item is expected, so the job reads as completed, not partly completed.
 		expect(within(dialog).getByText("Completed.")).toBeTruthy();
+		expect(dialog.querySelector("[data-activity-status-icon]")?.getAttribute("data-activity-status-icon")).toBe(
+			"succeeded",
+		);
 		expect(within(dialog).getByText("Archived 4 of 6 items.")).toBeTruthy();
 		// A path the person can no longer read is left out.
 		expect(within(dialog).getByRole("textbox", { name: "Archived items" }).textContent).toBe("/note.md\n/Plans");
-		const list = within(dialog).getByRole("region", { name: "Not archived (2)" });
+		const list = within(dialog).getByRole("region", { name: "Not archived (3)" });
+		// One reason is written once, above all the paths it refused.
 		expect(
-			within(list)
-				.getAllByRole("listitem")
-				.map((item) => item.textContent),
-		).toEqual([
-			'/Reports: "/Reports/plan.md" is read-only. Unlock it, then try again.',
-			"An item you cannot open: Permission denied",
-		]);
+			within(list).getByRole("textbox", { name: "Not archived: This item is read-only. Unlock it, then try again." })
+				.textContent,
+		).toBe("/Reports\n/Drafts");
+		expect(within(list).getByText("1 item you cannot open")).toBeTruthy();
 	});
 });

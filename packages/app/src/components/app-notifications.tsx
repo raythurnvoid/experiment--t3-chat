@@ -2,10 +2,11 @@ import "./app-notifications.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
-import { Bell, CircleAlert, CircleCheck, FileText, LoaderCircle, X } from "lucide-react";
+import { Bell, FileText, Mail, X } from "lucide-react";
 import { memo, useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { ActivityStatusIcon } from "@/components/activity-status-icon.tsx";
 import { FilesClipboardProvider } from "@/components/files/files-clipboard.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -33,6 +34,7 @@ import { app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
 // #region list item
 type AppNotificationsListItem_ClassNames =
 	| "AppNotificationsListItem"
+	| "AppNotificationsListItem-icon"
 	| "AppNotificationsListItem-title"
 	| "AppNotificationsListItem-meta"
 	| "AppNotificationsListItem-actions";
@@ -67,6 +69,10 @@ const AppNotificationsListItem = memo(function AppNotificationsListItem(props: A
 
 	return (
 		<article className={"AppNotificationsListItem" satisfies AppNotificationsListItem_ClassNames}>
+			{/* A neutral icon, so invitations line up with the status icons of the job cards. */}
+			<span className={"AppNotificationsListItem-icon" satisfies AppNotificationsListItem_ClassNames} aria-hidden>
+				<Mail />
+			</span>
 			<h3 className={"AppNotificationsListItem-title" satisfies AppNotificationsListItem_ClassNames}>{title}</h3>
 			<p className={"AppNotificationsListItem-meta" satisfies AppNotificationsListItem_ClassNames}>
 				{format_relative_time(notification._creationTime)}
@@ -232,16 +238,6 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 type AppNotificationsActivityItem_ClassNames =
 	| "AppNotificationsActivityItem"
 	| "AppNotificationsActivityItem-header"
-	| "AppNotificationsActivityItem-icon"
-	| "AppNotificationsActivityItem-icon-status-running"
-	| "AppNotificationsActivityItem-icon-status-queued"
-	| "AppNotificationsActivityItem-icon-status-awaiting_input"
-	| "AppNotificationsActivityItem-icon-status-stopping"
-	| "AppNotificationsActivityItem-icon-status-partial"
-	| "AppNotificationsActivityItem-icon-status-succeeded"
-	| "AppNotificationsActivityItem-icon-status-failed"
-	| "AppNotificationsActivityItem-icon-status-timed_out"
-	| "AppNotificationsActivityItem-icon-status-canceled"
 	| "AppNotificationsActivityItem-title-group"
 	| "AppNotificationsActivityItem-title"
 	| "AppNotificationsActivityItem-meta"
@@ -402,25 +398,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	return (
 		<article className={"AppNotificationsActivityItem" satisfies AppNotificationsActivityItem_ClassNames}>
 			<div className={"AppNotificationsActivityItem-header" satisfies AppNotificationsActivityItem_ClassNames}>
-				<span
-					className={cn(
-						"AppNotificationsActivityItem-icon" satisfies AppNotificationsActivityItem_ClassNames,
-						`AppNotificationsActivityItem-icon-status-${displayStatus}` satisfies AppNotificationsActivityItem_ClassNames,
-					)}
-					aria-hidden
-				>
-					{isAwaitingInput || isRepairStuck ? (
-						<CircleAlert />
-					) : isActive ? (
-						<LoaderCircle />
-					) : displayStatus === "succeeded" ? (
-						<CircleCheck />
-					) : activity.status === "canceled" ? (
-						<X />
-					) : (
-						<CircleAlert />
-					)}
-				</span>
+				<ActivityStatusIcon activity={activity} isRefusalOnly={isRefusalOnly} />
 				<div className={"AppNotificationsActivityItem-title-group" satisfies AppNotificationsActivityItem_ClassNames}>
 					<h3
 						className={"AppNotificationsActivityItem-title" satisfies AppNotificationsActivityItem_ClassNames}
