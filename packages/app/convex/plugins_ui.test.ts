@@ -703,7 +703,7 @@ describe("plugin ui sessions", () => {
 		const fixture = await install_gallery_plugin(t);
 		const member = await seed_reader_member(t, fixture);
 		const asMember = t.withIdentity(user_identity(member.userId));
-		const list = () => asMember.query(api.plugins_ui.list_ui_pages, { membershipId: member.membershipId });
+		const list = () => asMember.query(api.plugins_ui_installed.list_ui_pages, { membershipId: member.membershipId });
 		// The same member with workspace read sees the page, so the refusals below come from the guest.
 		expect(await list()).toHaveLength(1);
 
