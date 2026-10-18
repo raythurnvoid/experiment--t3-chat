@@ -2,8 +2,9 @@
 //
 // Lives outside `r2.ts` because that module also imports `plugins_runtime.ts`, `organizations.ts`,
 // and `files_nodes.ts` for its upload pipeline routes. Modules that only need to sign, read, write,
-// or delete an R2 object (file-tree mutations, pending updates, snapshots) import this lean module
-// so a cold Convex call does not pay the whole upload-pipeline module evaluation.
+// or delete an R2 object (file-tree mutations, pending updates) import this lean module so a cold
+// Convex call does not pay the whole upload-pipeline module evaluation. A module that only needs a
+// read URL imports `r2_get_url.ts` instead, which does not load the AWS SDK.
 
 import { R2 } from "@convex-dev/r2";
 import type { RegisteredQuery } from "convex/server";

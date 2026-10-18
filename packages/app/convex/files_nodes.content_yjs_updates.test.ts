@@ -3796,9 +3796,6 @@ describe("files_yjs_load.yjs_prepare_doc_last_snapshot", () => {
 	test("returns the textKind beside the snapshot", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
-			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
-		);
 		const createdId = await test_create_saved_text_file(t, {
 			membershipId: db.membershipId,
 			path: "/prepare-root-kind.md",

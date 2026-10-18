@@ -158,6 +158,7 @@ import type * as public_api_volumes_http_routes from "../public_api_volumes_http
 import type * as quotas from "../quotas.js";
 import type * as r2 from "../r2.js";
 import type * as r2_client from "../r2_client.js";
+import type * as r2_get_url from "../r2_get_url.js";
 import type * as r2_http_routes from "../r2_http_routes.js";
 import type * as rate_limiter from "../rate_limiter.js";
 import type * as users from "../users.js";
@@ -321,6 +322,7 @@ declare const fullApi: ApiFromModules<{
   quotas: typeof quotas;
   r2: typeof r2;
   r2_client: typeof r2_client;
+  r2_get_url: typeof r2_get_url;
   r2_http_routes: typeof r2_http_routes;
   rate_limiter: typeof rate_limiter;
   users: typeof users;

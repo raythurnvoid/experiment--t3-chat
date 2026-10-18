@@ -4,7 +4,8 @@
 //
 // Keep the imports of this module small. On a cold call, and on every action call, Convex loads
 // every file that this module imports, even the unused ones. files_nodes.ts loads about 5 MB, which
-// adds about 200ms to each cold file open.
+// adds about 200ms to each cold file open. For the same reason, sign the snapshot URL with
+// r2_get_url.ts, not r2_client.ts, which loads the AWS SDK.
 
 import { v } from "convex/values";
 import type { RegisteredQuery } from "convex/server";
@@ -15,7 +16,7 @@ import app_convex_schema, { file_content_materialization_state_validator } from 
 import { access_control_db_authorize_membership, access_control_db_authorize_node } from "./access_control.ts";
 import { db_get_file_content_materialization_db_state } from "./files_nodes_db.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { r2 } from "./r2_client.ts";
+import { r2_get_url } from "./r2_get_url.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { files_node_has_editable_yjs_state } from "../server/files.ts";
 import { files_saved_content_collect, files_saved_content_db_yjs_updates } from "../server/files-saved-content.ts";
@@ -245,7 +246,7 @@ export const yjs_prepare_doc_last_snapshot = action({
 
 		return {
 			snapshot: data.yjsSnapshotDoc,
-			snapshotUrl: await r2.getUrl(data.yjsSnapshotAsset.r2Key, {
+			snapshotUrl: await r2_get_url(data.yjsSnapshotAsset.r2Key, {
 				expiresIn: 15 * 60,
 			}),
 			yjsLastSequenceId: data.yjsLastSequenceDoc._id,
