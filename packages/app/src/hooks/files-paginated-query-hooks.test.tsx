@@ -40,12 +40,19 @@ const listeners = new Map<string, Set<() => void>>();
 const watches = new Map<string, Watch>();
 let client: ConvexReactClient;
 
-// The cache keeps no idle query here, so a test can check that a pager stops listening. While a pager
-// listens, the cache adds one more listener to the same query.
+// Most tests keep no idle queries. Cache lifetime tests below use the app's default provider.
 function Wrapper(props: { children: ReactNode }) {
 	return (
 		<ConvexProvider client={client}>
 			<ConvexQueryCacheProvider maxIdleEntries={0}>{props.children}</ConvexQueryCacheProvider>
+		</ConvexProvider>
+	);
+}
+
+function CachingWrapper(props: { children: ReactNode }) {
+	return (
+		<ConvexProvider client={client}>
+			<ConvexQueryCacheProvider>{props.children}</ConvexQueryCacheProvider>
 		</ConvexProvider>
 	);
 }
@@ -506,18 +513,125 @@ describe("useFilesPaginatedQuery", () => {
 		expect(ids.filter((id) => id >= 0)).toHaveLength(1);
 	});
 
-	test("a pager that mounts again shows its cached first page at once", () => {
-		function CachingWrapper(props: { children: ReactNode }) {
-			return (
-				<ConvexProvider client={client}>
-					<ConvexQueryCacheProvider>{props.children}</ConvexQueryCacheProvider>
-				</ConvexProvider>
-			);
+	test("releases old Move generations before the default cache timeout", () => {
+		const hook = renderHook(
+			(props: { args: Args }) => useFilesPaginatedQuery(query, props.args, { initialNumItems: 2 }),
+			{ wrapper: CachingWrapper, initialProps: { args } },
+		);
+		let previous = activeWatches()[0]!;
+		answer(previous, page(["generation-0"], true, ""));
+		for (const generation of [1, 2]) {
+			answer(previous, changedView());
+			hook.rerender({ args: { ...args, savedStream: { kind: "normal", generation } } });
+			expect(listeners.get(previous.key)?.size, "an old Move generation has no listener before the cache timeout").toBe(0);
+			previous = activeWatches()[0]!;
+			answer(previous, page([`generation-${generation}`], true, ""));
+			expect(hook.result.current.results).toEqual([{ name: `generation-${generation}` }]);
 		}
+		hook.unmount();
+		expect(listeners.get(previous.key)?.size, "the last fixed-view page ends on unmount").toBe(0);
+	});
+
+	test.each(["skip", "unmount"] as const)("releases fixed-view pages on %s with the default cache", (change) => {
+		const hook = renderHook(
+			(props: { args: Args | "skip" }) => useFilesPaginatedQuery(query, props.args, { initialNumItems: 2 }),
+			{ wrapper: CachingWrapper, initialProps: { args: args as Args | "skip" } },
+		);
+		const first = activeWatches()[0]!;
+		answer(first, page(["a"], true, ""));
+		if (change === "skip") {
+			hook.rerender({ args: "skip" });
+			expect(hook.result.current.results).toEqual([]);
+		} else hook.unmount();
+		expect(listeners.get(first.key)?.size, "a fixed-view page has no idle cache listener").toBe(0);
+	});
+
+	test("releases an initial page pinned to a null directory view", () => {
+		const hook = renderHook(
+			() => useFilesPaginatedQuery(directoryQuery, { ...directoryArgs, pageView: null }, { initialNumItems: 2 }),
+			{ wrapper: CachingWrapper },
+		);
+		const first = activeWatches()[0]!;
+		answer(first, { ...page(["a"], true, ""), directoryView: null });
+		expect(hook.result.current.results).toEqual([{ name: "a" }]);
+		hook.unmount();
+		expect(listeners.get(first.key)?.size, "pageView null still binds the page's lifetime").toBe(0);
+	});
+
+	test("releases a directory continuation when its folder changes", () => {
+		const hook = renderHook(
+			(props: DirectoryArgs) => useFilesPaginatedQuery(directoryQuery, props, { initialNumItems: 2 }),
+			{ wrapper: CachingWrapper, initialProps: directoryArgs },
+		);
+		const first = activeWatches()[0]!;
+		answer(first, { ...page(["a", "b"], false, "tail"), directoryView: null });
+		act(() => hook.result.current.loadMore(2));
+		const later = activeWatches().find((watch) => watch.args.paginationOpts.cursor === "tail")!;
+		expect(later.args).toHaveProperty("pageView", null);
+		answer(later, { ...page(["c"], true, ""), directoryView: null });
+		expect(hook.result.current.results.map((row) => row.name)).toEqual(["a", "b", "c"]);
+		hook.rerender({ ...directoryArgs, folder: "other" });
+		expect(hook.result.current.results, "old-folder rows do not enter the next folder").toEqual([]);
+		expect(listeners.get(later.key)?.size, "a retired continuation has no cache listener").toBe(0);
+	});
+
+	test("releases both null-view split children after their pager unmounts", () => {
+		const hook = renderHook(
+			() => useFilesPaginatedQuery(directoryQuery, directoryArgs, { initialNumItems: 2 }),
+			{ wrapper: CachingWrapper },
+		);
+		const first = activeWatches()[0]!;
+		answer(first, { ...page(["a", "z"]), directoryView: null, pageStatus: "SplitRequired", splitCursor: "m" });
+		const left = activeWatches().find((watch) => watch.args.paginationOpts.endCursor === "m")!;
+		const right = activeWatches().find((watch) => watch.args.paginationOpts.cursor === "m")!;
+		expect(left.args).toHaveProperty("pageView", null);
+		expect(right.args).toHaveProperty("pageView", null);
+		answer(left, { ...page(["a"], false, "m"), directoryView: null });
+		answer(right, { ...page(["z"], true, ""), directoryView: null });
+		expect(hook.result.current.results.map((row) => row.name)).toEqual(["a", "z"]);
+		hook.unmount();
+		for (const child of [left, right])
+			expect(listeners.get(child.key)?.size, "a retired split child has no cache listener").toBe(0);
+	});
+
+	test("releases reset first pages instead of caching each new native session", () => {
+		const hook = renderHook(
+			() => useFilesPaginatedQuery(directoryQuery, directoryArgs, { initialNumItems: 2 }),
+			{ wrapper: CachingWrapper },
+		);
+		const first = activeWatches()[0]!;
+		answer(first, new Error("InvalidCursor: Native first-page journal changed."));
+		const reset = activeWatches().find((watch) => watch.args.paginationOpts.id !== first.args.paginationOpts.id)!;
+		expect(reset.args.paginationOpts.cursor).toBeNull();
+		expect(reset.args).not.toHaveProperty("pageView");
+		answer(reset, { ...page(["a"], true, ""), directoryView: null });
+		answer(reset, new Error("InvalidCursor: Native first-page journal changed again."));
+		expect(listeners.get(reset.key)?.size, "a retired reset session has no cache listener").toBe(0);
+		const latest = activeWatches().find((watch) => watch.key !== first.key && watch.key !== reset.key)!;
+		answer(latest, { ...page(["current"], true, ""), directoryView: null });
+		expect(hook.result.current.results).toEqual([{ name: "current" }]);
+		hook.unmount();
+		expect(listeners.get(latest.key)?.size, "the current reset session ends on unmount").toBe(0);
+	});
+
+	test("keeps a fixed page live until its last consumer leaves", () => {
 		const usePager = () => useFilesPaginatedQuery(query, args, { initialNumItems: 2 });
 		const first = renderHook(usePager, { wrapper: CachingWrapper });
+		const second = renderHook(usePager, { wrapper: CachingWrapper });
 		const watch = activeWatches()[0]!;
 		answer(watch, page(["a"], true, ""));
+		first.unmount();
+		expect(listeners.get(watch.key)?.size, "another active consumer keeps its listener").toBeGreaterThan(0);
+		expect(second.result.current.results).toEqual([{ name: "a" }]);
+		second.unmount();
+		expect(listeners.get(watch.key)?.size, "the last consumer leaves no fixed-view cache listener").toBe(0);
+	});
+
+	test("a pager that mounts again shows its cached first page at once", () => {
+		const usePager = () => useFilesPaginatedQuery(directoryQuery, directoryArgs, { initialNumItems: 2 });
+		const first = renderHook(usePager, { wrapper: CachingWrapper });
+		const watch = activeWatches()[0]!;
+		answer(watch, { ...page(["a"], true, ""), directoryView: null });
 		first.unmount();
 		expect(listeners.get(watch.key)?.size, "the cache keeps the query subscribed").toBe(1);
 

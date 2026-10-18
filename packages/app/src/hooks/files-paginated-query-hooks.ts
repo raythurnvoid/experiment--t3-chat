@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { useQueries } from "convex-helpers/react/cache";
+import { useQueries as useCachedQueries } from "convex-helpers/react/cache";
 import {
+	useQueries,
 	type PaginatedQueryArgs,
 	type PaginatedQueryItem,
 	type PaginatedQueryReference,
@@ -39,7 +40,7 @@ type PageState = {
 };
 
 // SDK pagers use nonnegative IDs, so Files pagers use negative ones. The ID is part of the query args.
-// Every pager starts with the same ID, so a pager that mounts again finds its pages in the query cache.
+// Every pager starts with the same ID, so an unbound first page can use the query cache on a revisit.
 // Cursor errors and mixed directory views need a new ID, or the cache returns the same broken page.
 const FIRST_PAGINATION_ID = -1;
 let paginationId = FIRST_PAGINATION_ID;
@@ -153,7 +154,27 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 		current = createInitialState(FIRST_PAGINATION_ID);
 		setState(current);
 	}
-	const resultsObject = useQueries(current.queries) as Record<
+	// Keep reusable first pages in the idle cache. Old view and cursor queries must stop with their pager.
+	const [cachedQueries, liveQueries] = useMemo(() => {
+		const cached: Record<number, PageQuery> = {};
+		const live: Record<number, PageQuery> = {};
+		for (const [key, page] of Object.entries(current.queries)) {
+			const paginationOpts = page.args.paginationOpts;
+			const queries =
+				"savedStream" in page.args ||
+				"pageView" in page.args ||
+				paginationOpts.cursor !== null ||
+				paginationOpts.endCursor != null ||
+				paginationOpts.id !== FIRST_PAGINATION_ID
+					? live
+					: cached;
+			queries[Number(key)] = page;
+		}
+		return [cached, live];
+	}, [current.queries]);
+	const cachedResults = useCachedQueries(cachedQueries);
+	const liveResults = useQueries(liveQueries);
+	const resultsObject = useMemo(() => ({ ...cachedResults, ...liveResults }), [cachedResults, liveResults]) as Record<
 		number,
 		(PaginationResult<PaginatedQueryItem<Query>> & { directoryView?: files_DirectoryView }) | Error | undefined
 	>;

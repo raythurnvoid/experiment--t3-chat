@@ -256,10 +256,14 @@ Tree-item components:
     `saved_search_view_changed` errors wait for new view args. They do not retry the same old
     view. Other cursor errors restart normally.
     Native page splits and end cursors stay supported. A waiting pager cannot load another page.
-    The pagers read through the query cache (`convex-helpers/react/cache`, provider in `main.tsx`).
-    It keeps a query subscribed for 5 minutes after its last user unmounts. Every pager starts with
-    the same pagination id, so going back to a folder finds its pages there. Only a pager that hit an
-    ordinary cursor error takes a new id. The folder view reads its own queries (sort, README, drafts,
+    Only a first page with no fixed view or cursor and the initial pagination ID uses the query cache
+    (`convex-helpers/react/cache`, provider in `main.tsx`). It keeps that query subscribed for
+    5 minutes after its last user unmounts, so a folder revisit can use its first page at once.
+    A fixed `savedStream`, `pageView` (including null), continuation, end cursor or reset ID uses
+    the plain live queries. Dropping that request releases its subscription after React commits.
+    Old Move views must not keep adding idle subscriptions. A first page already in the cache
+    can still stay there if it later fails or becomes a split parent. This is not general cache eviction.
+    An ordinary cursor error takes a new ID. The folder view reads its own queries (sort, README, drafts,
     write permission, selected node) through the cached `useQuery` too. Per-row queries stay on the
     plain `useQuery`: the cache keeps at most 250 idle queries, and the rows of a big folder would push
     out the folder's own queries.
