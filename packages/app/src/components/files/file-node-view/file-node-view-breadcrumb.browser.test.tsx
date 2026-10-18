@@ -57,7 +57,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			case "files_tree:get_file_node_for_membership":
 				return FILE;
 			case "files_transfer_queries:list_current":
-			case "plugins_ui:list_file_views":
+			case "plugins_ui_installed:list_file_views":
 				return [];
 			case "files_visible:get_path":
 				return FILE.path;

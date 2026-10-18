@@ -208,7 +208,7 @@ const membership = await app_convex.query(app_convex_api.organizations.get_membe
 	organizationName: "personal",
 	workspaceName: "home",
 });
-const views = await app_convex.query(app_convex_api.plugins_ui.list_file_views, {
+const views = await app_convex.query(app_convex_api.plugins_ui_installed.list_file_views, {
 	membershipId: membership._id,
 });
 // An action since 2026-09-02: the mint signs the plugin-session JWT, which a mutation cannot do.

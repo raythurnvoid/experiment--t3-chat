@@ -139,6 +139,7 @@ import type * as plugins_service_grant_requests from "../plugins_service_grant_r
 import type * as plugins_service_http_routes from "../plugins_service_http_routes.js";
 import type * as plugins_ui from "../plugins_ui.js";
 import type * as plugins_ui_http_routes from "../plugins_ui_http_routes.js";
+import type * as plugins_ui_installed from "../plugins_ui_installed.js";
 import type * as plugins_volumes from "../plugins_volumes.js";
 import type * as presence from "../presence.js";
 import type * as public_api from "../public_api.js";
@@ -301,6 +302,7 @@ declare const fullApi: ApiFromModules<{
   plugins_service_http_routes: typeof plugins_service_http_routes;
   plugins_ui: typeof plugins_ui;
   plugins_ui_http_routes: typeof plugins_ui_http_routes;
+  plugins_ui_installed: typeof plugins_ui_installed;
   plugins_volumes: typeof plugins_volumes;
   presence: typeof presence;
   public_api: typeof public_api;

@@ -36,7 +36,7 @@ function can_take_focus(region: HTMLElement | null) {
 function RoutePluginsPluginPage() {
 	const { pluginName, pageId } = Route.useParams();
 	const { membershipId } = AppTenantProvider.useContext();
-	const uiPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
+	const uiPages = useQuery(app_convex_api.plugins_ui_installed.list_ui_pages, { membershipId });
 	const mainRef = useRef<HTMLElement | null>(null);
 	// The frame the member was looking at before this render. Null means there was no frame yet.
 	const previousFrameIdentityRef = useRef<string | null>(null);

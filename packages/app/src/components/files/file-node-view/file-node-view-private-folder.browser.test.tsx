@@ -64,7 +64,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			case "files_visible:get_path":
 				return VIEW.entry.path;
 			case "files_transfer_queries:list_current":
-			case "plugins_ui:list_file_views":
+			case "plugins_ui_installed:list_file_views":
 				return [];
 			case "files_pending_target:get_file_pending_update":
 			case "files_tree:get_folder_readme":

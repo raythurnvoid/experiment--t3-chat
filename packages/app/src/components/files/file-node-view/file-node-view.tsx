@@ -1414,7 +1414,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		membershipId,
 		fileNodeId: node._id,
 	});
-	const fileViewPlugins = useQuery(app_convex_api.plugins_ui.list_file_views, { membershipId });
+	const fileViewPlugins = useQuery(app_convex_api.plugins_ui_installed.list_file_views, { membershipId });
 	const isEditable = files_node_has_editable_text_content(node);
 	const hasHtmlPreview =
 		isEditable && files_editable_text_content_type_of(node.contentType) === "text/html;charset=utf-8";

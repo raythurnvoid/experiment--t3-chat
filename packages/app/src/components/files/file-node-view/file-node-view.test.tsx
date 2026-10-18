@@ -675,7 +675,7 @@ beforeEach(() => {
 				return null;
 			case "users:get_anagraphic":
 				return anagraphic;
-			case "plugins_ui:list_file_views":
+			case "plugins_ui_installed:list_file_views":
 				return plugins;
 			case "files_node_asset:get_asset_by_file_node_id":
 				return null;
