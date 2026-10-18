@@ -622,6 +622,8 @@ export const get_media_by_reference = query({
 				v.null(),
 			),
 		}),
+		// A saved file in this workspace that the user cannot open. It is not missing.
+		v.object({ status: v.literal("locked") }),
 		v.null(),
 	),
 	handler: async (ctx, args) => {
@@ -651,9 +653,7 @@ export const get_media_by_reference = query({
 				!node ||
 				node.organizationId !== membership.organizationId ||
 				node.workspaceId !== membership.workspaceId ||
-				node.archiveOperationId !== null ||
-				!node.assetId ||
-				!node.contentType
+				node.archiveOperationId !== null
 			)
 				return null;
 			const authorized = await access_control_db_authorize_membership(ctx, {
@@ -662,7 +662,8 @@ export const get_media_by_reference = query({
 				permission: "content.read",
 				fileNode: node,
 			});
-			if (authorized._nay) return null;
+			if (authorized._nay) return { status: "locked" as const };
+			if (!node.assetId || !node.contentType) return null;
 			const asset = await ctx.db.get("files_r2_assets", node.assetId);
 			if (!asset || asset.organizationId !== node.organizationId || asset.workspaceId !== node.workspaceId) return null;
 			return { target, contentType: node.contentType, asset, privateVersion: null };

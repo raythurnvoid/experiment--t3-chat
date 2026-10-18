@@ -131,13 +131,15 @@ describe("same-workspace document Copy", () => {
 				});
 			}
 			const unreadable = fault === "hidden" || fault === "other user's private" || fault === "wrong workspace";
+			// A restricted saved file is locked, not missing.
+			const locked = fault === "hidden" ? { status: "locked" } : null;
 			if (unreadable)
 				expect(
 					await f.asUser.query(api.r2.get_media_by_reference, {
 						membershipId: f.current.membershipId,
 						src,
 					}),
-				).toBeNull();
+				).toEqual(locked);
 			const callsBefore = vi.mocked(globalThis.fetch).mock.calls.length;
 			const copiesBefore = vi.mocked(r2_server_side_copy.copy_object).mock.calls.length;
 			const items = await copy_files(f, {
@@ -168,7 +170,7 @@ describe("same-workspace document Copy", () => {
 						membershipId: f.current.membershipId,
 						src,
 					}),
-				).toBeNull();
+				).toEqual(locked);
 		},
 	);
 

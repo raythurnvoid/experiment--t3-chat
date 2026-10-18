@@ -1266,7 +1266,8 @@ describe("move_nodes", () => {
 			itemIds: [db.files.file_root_1_child_1._id, unavailable._id],
 			targetParentId: db.files.file_root_2._id,
 		});
-		expect(result._nay?.message).toBe("Permission denied");
+		// The source is gone, not locked, like `mv` on Linux.
+		expect(result._nay?.message).toBe("Not found");
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", db.files.file_root_1_child_1._id))).toEqual(
 			db.files.file_root_1_child_1,
 		);

@@ -124,7 +124,10 @@ describe("files_transfer_media_db_map_refs", () => {
 				nodeId: f.media.target.id as Id<"files_nodes">,
 			}),
 		).toEqual({ _yay: null });
-		expect(await map_refs(f)).toEqual({ _nay: { message: "A linked media file is not available" } });
+		// A locked linked file is not missing: say why, still with no name.
+		expect(await map_refs(f)).toEqual({
+			_nay: { message: "Permission denied: a linked image or video is locked" },
+		});
 	});
 
 	test("transfer history does not retain a linked media path after access is revoked", async () => {

@@ -127,7 +127,10 @@ export async function files_transfer_media_db_map_refs(
 		if (!fileId && !privateId) return Result({ _nay: { message: "A linked media file is not available" } });
 		const original: files_PendingTarget = fileId ? { kind: "saved", id: fileId } : { kind: "private", id: privateId! };
 		const target = await files_pending_nodes_db_resolve_read_target(ctx, { ...run.sourceScope, target: original });
-		const source = target ? await sourceReader.resolveTarget(target) : null;
+		const access = target ? await sourceReader.resolveTargetAccess(target) : null;
+		if (access?.status === "locked")
+			return Result({ _nay: { message: "Permission denied: a linked image or video is locked" } });
+		const source = access?.status === "found" ? access.entry : null;
 		// Never consult selected names or explain a missing selection before source access succeeds.
 		if (!source || source.node.kind !== "file")
 			return Result({ _nay: { message: "A linked media file is not available" } });

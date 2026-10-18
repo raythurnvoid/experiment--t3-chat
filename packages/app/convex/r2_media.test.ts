@@ -168,12 +168,13 @@ describe("get_media_by_reference", () => {
 			}),
 		).toEqual({ _yay: null });
 		for (const src of [f.src, `bonobo-file://${target.id}`]) {
+			// The file still exists, so it is locked, not missing.
 			expect(
 				await f.asUser.query(api.r2.get_media_by_reference, {
 					membershipId: f.scope.membershipId,
 					src,
 				}),
-			).toBeNull();
+			).toEqual({ status: "locked" });
 			expect(
 				await f.asOwner.query(api.r2.get_media_by_reference, {
 					membershipId: f.owner.membershipId,

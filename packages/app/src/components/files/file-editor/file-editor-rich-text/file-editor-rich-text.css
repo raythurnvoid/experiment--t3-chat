@@ -526,6 +526,7 @@
 		.FileEditorRichTextMedia-state-processing,
 		.FileEditorRichTextMedia-state-failed,
 		.FileEditorRichTextMedia-state-missing,
+		.FileEditorRichTextMedia-state-locked,
 		.FileEditorRichTextMedia-state-broken,
 		.FileEditorRichTextMedia-state-incompatible {
 			.FileEditorRichTextMedia-image,

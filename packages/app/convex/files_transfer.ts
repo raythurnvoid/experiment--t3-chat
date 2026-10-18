@@ -2743,10 +2743,17 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 		const entry = await files_transfer_queries_db_get_entry({ ctx, run: scope, target: item.source, reader });
 		if (reader.exhausted && cursor !== selection.cursor) break;
 		if (!entry || (run.step === "normalize" && entry.path !== item.path)) {
+			// A source deleted after it was picked is not found, like `mv` on Linux. A locked one is denied.
+			const missing =
+				!entry && reader.active && (await reader.resolveTargetAccess(item.source)).status === "missing";
 			await db_stop_run({
 				ctx,
 				run,
-				errorMessage: reader.exhausted ? "The source path needs too many reads" : "Permission denied",
+				errorMessage: reader.exhausted
+					? "The source path needs too many reads"
+					: missing
+						? "Not found"
+						: "Permission denied",
 			});
 			return false;
 		}

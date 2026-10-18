@@ -37,7 +37,7 @@ const editors: Editor[] = [];
 let membershipId: app_convex_Id<"organizations_workspaces_users">;
 let testId = 0;
 
-function media_result(kind: "saved" | "private", id = "1"): NonNullable<MediaResult> {
+function media_result(kind: "saved" | "private", id = "1"): Exclude<MediaResult, null | { status: "locked" }> {
 	return {
 		contentType: "image/png",
 		asset: {
@@ -194,6 +194,20 @@ describe("file_editor_rich_text_MediaExtension", () => {
 			expect(dom.textContent).toContain("File not available");
 		},
 	);
+
+	test("says the reader has no access when the file is locked", async () => {
+		const src = "bonobo-file://saved_1";
+		emit_result(src, media_result("saved"));
+		const { media, dom } = create_editor({ src });
+		await flush_microtasks();
+		expect(media.hasAttribute("src")).toBe(true);
+
+		emit_result(src, { status: "locked" });
+		await flush_microtasks();
+		expect(media.hasAttribute("src")).toBe(false);
+		expect(dom.textContent).toContain("You don't have access to this file");
+		expect(dom.classList.contains("FileEditorRichTextMedia-state-locked")).toBe(true);
+	});
 
 	test("does not restore a URL after access is lost during signing", async () => {
 		const src = "bonobo-file://saved_1";

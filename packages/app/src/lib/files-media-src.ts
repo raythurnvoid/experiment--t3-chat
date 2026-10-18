@@ -53,7 +53,10 @@ function remember_signed_url(args: { cacheKey: string; url: string; now: number 
 
 export async function files_media_get_signed_url(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	media: NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.r2.get_media_by_reference>>;
+	media: Exclude<
+		app_convex_FunctionReturnType<typeof app_convex_api.r2.get_media_by_reference>,
+		null | { status: "locked" }
+	>;
 }) {
 	// The query pairs each private target with its exact version. Private URLs are never cached.
 	if (args.media.target.kind === "private") {

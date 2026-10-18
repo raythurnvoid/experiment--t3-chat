@@ -3032,6 +3032,30 @@ describe("move", () => {
 			parentId: folders.get("/shared")!, restrictedScopeNodeId: folders.get("/shared")!,
 		});
 	});
+
+	test("says Not found for a source deleted after it was picked", async () => {
+		const fixture = await create_folder_fixture(["/gone", "/other"]);
+		const { t, db, asUser, folders } = fixture;
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: db.membershipId,
+			requestId: "copy-deleted-source",
+			kind: "copy",
+			expectedSourceCount: 1,
+			sourceIds: [folders.get("/gone")!],
+			targetParentId: folders.get("/other")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		// An Archive would wait for this transfer, so remove the node directly.
+		await t.run((ctx) => ctx.db.delete("files_nodes", folders.get("/gone")!));
+		expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
+			_yay: null,
+		});
+		await test_finish_transfer_run(asUser, runId);
+		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
+			activity: { status: "failed", errorMessage: "Not found" },
+		});
+	});
 });
 
 describe("seal", () => {

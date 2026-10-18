@@ -46,6 +46,7 @@ export type FileEditorRichTextMedia_ClassNames =
 	| "FileEditorRichTextMedia-state-processing"
 	| "FileEditorRichTextMedia-state-failed"
 	| "FileEditorRichTextMedia-state-missing"
+	| "FileEditorRichTextMedia-state-locked"
 	| "FileEditorRichTextMedia-state-broken"
 	| "FileEditorRichTextMedia-state-incompatible";
 
@@ -57,9 +58,18 @@ export type FileEditorRichTextMedia_ClassNames =
  * never arrived. The cron sweeper deliberately leaves an unfinalized asset alone while a node
  * still points at it, so nothing else will ever clean it up and the reader has to be told.
  * `incompatible` is a file that is not an image or video anymore: a whole-file copy or a
- * restored version replaced its content, and the file kept its id.
+ * restored version replaced its content, and the file kept its id. `locked` is a file that exists but
+ * the reader cannot open.
  */
-type MediaState = "ready" | "uploading" | "processing" | "failed" | "missing" | "broken" | "incompatible";
+type MediaState =
+	| "ready"
+	| "uploading"
+	| "processing"
+	| "failed"
+	| "missing"
+	| "locked"
+	| "broken"
+	| "incompatible";
 
 /** Every state that shows a text placeholder instead of the media itself. */
 type MediaPlaceholderState = Exclude<MediaState, "ready">;
@@ -69,6 +79,7 @@ const MEDIA_STATE_CLASS_NAMES = {
 	processing: "FileEditorRichTextMedia-state-processing",
 	failed: "FileEditorRichTextMedia-state-failed",
 	missing: "FileEditorRichTextMedia-state-missing",
+	locked: "FileEditorRichTextMedia-state-locked",
 	broken: "FileEditorRichTextMedia-state-broken",
 	incompatible: "FileEditorRichTextMedia-state-incompatible",
 } satisfies Record<MediaPlaceholderState, FileEditorRichTextMedia_ClassNames>;
@@ -78,6 +89,7 @@ const MEDIA_STATE_LABELS = {
 	processing: "Processing…",
 	failed: "Upload failed",
 	missing: "File not available",
+	locked: "You don't have access to this file",
 	broken: "Could not load media",
 	incompatible: "File is not an image or video anymore",
 } satisfies Record<MediaPlaceholderState, string>;
@@ -736,10 +748,14 @@ class MediaNodeView implements NodeView {
 
 			try {
 				const media = watch.localQueryResult();
-				// An unanswered watch is still loading. Null is a confirmed missing or unreadable file.
+				// An unanswered watch is still loading. Null is a confirmed missing file.
 				if (media === undefined) return;
 				if (media === null) {
 					this.renderState("missing");
+					return;
+				}
+				if ("status" in media) {
+					this.renderState("locked");
 					return;
 				}
 

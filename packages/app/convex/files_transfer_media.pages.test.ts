@@ -88,7 +88,7 @@ describe("copy_transfer_file media", () => {
 		});
 		expect(
 			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 0 }),
-		).toMatchObject({ _nay: { message: "A linked media file is not available" } });
+		).toMatchObject({ _nay: { message: "Permission denied: a linked image or video is locked" } });
 		for (const media of f.selectedMediaItems)
 			expect(await f.t.run((ctx) => ctx.db.get("files_r2_assets", media.outputMediaAssetId!))).not.toBeNull();
 	}, 120_000);
