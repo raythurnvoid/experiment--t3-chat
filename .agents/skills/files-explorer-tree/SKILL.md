@@ -579,7 +579,12 @@ and `find` also keep raw name order.
   more slot. The README area shows nothing until `get_folder_readme` answers: a skeleton would have
   to guess between the README and the "No README.md" box. The files route starts that query on
   the router's `onBeforeNavigate`, about 200ms before the new view mounts, so a cold folder waits
-  only a few frames and then shows the README header with its editor skeleton, or the empty box. A folder with fewer than five rows still shrinks
+  only a few frames and then shows the README header with its editor skeleton, or the empty box.
+  It starts the view's other first queries there too, with the view's exact args so they share one
+  subscription: the node, its pending target, the breadcrumb ancestors, the write permission, and for
+  a folder the saved sort and the drafts hint. A left mouse press on a folder table link or a
+  sidebar row starts them before the click. A cold folder then shows its rows about 160ms sooner
+  (median 630ms to 468ms on dev, 2026-10-18). The sorted list still waits for the saved sort. A folder with fewer than five rows still shrinks
   when its rows arrive; its size is not known before then.
 - The table carries `data-sort-fields` for the sort of the shown rows (`rowsSort`, held while a new
   sort loads). Headers follow the requested sort at once: the sorted header carries
