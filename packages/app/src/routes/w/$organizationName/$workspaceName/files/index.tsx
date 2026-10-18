@@ -1,9 +1,10 @@
 import { FileNodeView, type FileNodeView_Props } from "@/components/files/file-node-view/file-node-view.tsx";
+import type { FilesSidebarTreeItem_CustomAttributes } from "@/components/files/files-sidebar.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
-import { files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
+import { files_yjs_has_preloaded_snapshot, files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
 import { files_editor_view_values, files_ROOT_ID } from "@/lib/files.ts";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
@@ -93,6 +94,11 @@ const RouteFiles = memo(function RouteFiles() {
 			}
 
 			const args = { membershipId, nodeId: nodeId as app_convex_Id<"files_nodes"> };
+			// The press already started the reads. Starting them again would cancel them.
+			if (files_yjs_has_preloaded_snapshot(args)) {
+				return;
+			}
+
 			cancelSnapshotPreload = files_yjs_preload_snapshot(args);
 			// The editor also waits for the update log. Keep the editor's arg order, so its subscription
 			// joins this one.
@@ -118,8 +124,53 @@ const RouteFiles = memo(function RouteFiles() {
 			preload_snapshot(search);
 		});
 
+		// Also start the reads when the mouse button goes down. The click comes only when it goes up,
+		// often 80-150ms later. Read the node from a link to this page (the folder table) or from a
+		// sidebar row. A press that turns into a drag wastes one preload. Skip touch, because a touch
+		// that scrolls the list also starts with a press.
+		const handlePointerDown = (event: PointerEvent) => {
+			if (
+				event.pointerType !== "mouse" ||
+				event.button !== 0 ||
+				event.shiftKey ||
+				event.ctrlKey ||
+				event.metaKey ||
+				event.altKey ||
+				!(event.target instanceof Element) ||
+				// Row buttons and the rename input do not open the row.
+				event.target.closest("button, input, textarea")
+			) {
+				return;
+			}
+
+			const link = event.target.closest("a[href]");
+			const sidebarRow = event.target.closest(
+				`[${"data-file-id" satisfies keyof FilesSidebarTreeItem_CustomAttributes}]`,
+			);
+			let search: Partial<Record<string, unknown>> | null = null;
+			if (link instanceof HTMLAnchorElement) {
+				const url = new URL(link.href);
+				if (url.origin === window.location.origin && url.pathname === window.location.pathname) {
+					search = router.options.parseSearch(url.search);
+				}
+			} else if (sidebarRow) {
+				search = {
+					nodeId: sidebarRow.getAttribute("data-file-id" satisfies keyof FilesSidebarTreeItem_CustomAttributes),
+				};
+			}
+
+			// The open file keeps its editor, so it would never take the read.
+			if (!search || search.nodeId === lastNodeId) {
+				return;
+			}
+
+			preload_snapshot(search);
+		};
+		document.addEventListener("pointerdown", handlePointerDown, { capture: true });
+
 		return () => {
 			unsubscribe();
+			document.removeEventListener("pointerdown", handlePointerDown, { capture: true });
 			cancelSnapshotPreload?.();
 		};
 	}, [router, convex, membershipId, getLoadedNode]);

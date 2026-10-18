@@ -214,7 +214,7 @@ type CustomAttributes = {
 	"data-files-sidebar-tree-context": "";
 };
 
-type FilesSidebarTreeItem_CustomAttributes = {
+export type FilesSidebarTreeItem_CustomAttributes = {
 	"data-file-id": string;
 };
 
