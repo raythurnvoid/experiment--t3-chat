@@ -94,7 +94,7 @@
 		"@tiptap/react": "workspace:*",
 		"@tiptap/starter-kit": "workspace:*",
 		"@tiptap/suggestion": "workspace:*",
-		"@tiptap/y-tiptap": "3.0.9",
+		"@tiptap/y-tiptap": "workspace:*",
 		"ai": "6.0.297",
 		"bonobo-file-preview": "workspace:*",
 		"class-variance-authority": "^0.7.1",

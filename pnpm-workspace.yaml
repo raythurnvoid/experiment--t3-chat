@@ -21,12 +21,15 @@ packages:
   - "packages/app/vendor/convex-test"
   - "packages/app/vendor/just-bash/packages/just-bash"
 
+catalog:
+  vite-plus: "0.3.0"
+
 overrides:
   "@aws-sdk/client-s3": "3.1144.0"
   "@aws-sdk/s3-request-presigner": "3.1144.0"
   "@floating-ui/dom": "1.8.0"
   "@polar-sh/sdk": "0.49.0"
-  "@tiptap/y-tiptap": "3.0.9"
+  "@tiptap/y-tiptap": "workspace:*"
   convex: "1.46.0"
   marked: "17.0.6"
   react: "19.3.0"

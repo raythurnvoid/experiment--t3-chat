@@ -102,7 +102,9 @@ function create_editor(args: { src: string; kind?: "image" | "video"; uploadId?:
 	editors.push(editor);
 	return {
 		editor,
-		media: element.querySelector<HTMLImageElement | HTMLVideoElement>("img, video")!,
+		media: element.querySelector<HTMLImageElement | HTMLVideoElement>(
+			".FileEditorRichTextMedia img, .FileEditorRichTextMedia video",
+		)!,
 		dom: element.querySelector<HTMLElement>(".FileEditorRichTextMedia")!,
 	};
 }

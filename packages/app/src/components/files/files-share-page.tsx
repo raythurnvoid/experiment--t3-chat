@@ -578,10 +578,16 @@ const FilesSharePageRichText = memo(function FilesSharePageRichText(props: Files
 	);
 
 	useLayoutEffect(() => {
-		// Put in the server's checked document as it is. Autolink is off, so nothing adds marks to it.
-		editor?.commands.setContent(doc.toJSON(), { emitUpdate: false });
+		let cancelled = false;
+		// React node views flush on creation. Wait until React has finished this commit.
+		queueMicrotask(() => {
+			if (cancelled || !editor || editor.isDestroyed) return;
+			// Autolink is off, so the server's checked document keeps its exact marks.
+			editor.commands.setContent(doc.toJSON(), { emitUpdate: false });
+		});
 
 		return () => {
+			cancelled = true;
 			// Before replacement or unmount, keep focus on the stable page content.
 			if (editor?.view.dom.contains(document.activeElement)) {
 				editor.view.dom.closest<HTMLElement>("main")?.focus({ preventScroll: true });

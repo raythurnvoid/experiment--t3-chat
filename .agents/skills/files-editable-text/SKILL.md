@@ -45,9 +45,11 @@ Every standalone parse runs through faster copies of some Marked and Tiptap step
 `shared/files-tiptap.ts`. `PARAGRAPH_REGEX` is Marked's paragraph rule with a shorter table check.
 `bound_tiptap_tokenizers` wraps Tiptap's list tokenizers with `cut_list_block`, and its highlight
 and underline `start` with `find_marker_starts`. These copies were tuned against Marked 17.0.6 and the
-vendored Tiptap 3.8.0. Guards check the patterns they copy, at module load and on the first parse, and
-throw `should_never_happen` when a new version changes them. So re-check these copies on every Marked
-or Tiptap upgrade.
+vendored Tiptap 3.32.0. The standalone parser skips Tiptap's extra table tokenizer and keeps Marked's
+GFM table parser. Tiptap's pipe scan reads the whole remaining document at each line, outside our
+work counter. The shared serializer already escapes pipes. Guards check the patterns they copy,
+at module load and on the first parse, and throw `should_never_happen` when a new version changes
+them. So re-check these copies on every Marked or Tiptap upgrade.
 
 Rich text documents support GFM tables. The shared extension set in `packages/app/shared/files-tiptap.ts` (`#region tables`) registers the four table nodes for both the browser and the server, so the two schemas stay identical. The serializer writes GFM pipe tables: no column padding, alignment colons read from the first row, `\|` escaping with the backslash run in front of a pipe doubled, `<br>` for newlines inside a cell, and an empty header row when the document's first row holds body cells. Merged cells, column widths, and multiple blocks inside a cell are not representable in GFM: they are flattened once on the first save and are stable afterwards. One special spelling: a code span in a cell that holds a backslash right before a pipe is written as an HTML `<code>` element with numeric character references (`&#92;`, `&#124;`), because the backtick form would grow its backslash run on every save. Cells accept `paragraph+` only, so members cannot create lists, headings, or code blocks inside a cell.
 

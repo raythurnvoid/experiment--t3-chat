@@ -487,6 +487,36 @@ describe("FileEditorRichTextNonCollab", () => {
 		expect(editor.state.plugins.length).toBe(pluginCount);
 	});
 
+	test("shows the bubble when a pointer selection ends without another selection change", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha beta\n");
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+			const editor = editorHarness.editor;
+			if (!editor) throw new Error("Expected the mounted editor to be captured");
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(0);
+				editor.commands.focus();
+				await vi.advanceTimersByTimeAsync(50);
+			});
+			fireEvent.pointerDown(editor.view.dom, { isPrimary: true, pointerType: "mouse", button: 0 });
+			await act(async () => {
+				editor.commands.setTextSelection({ from: 1, to: 6 });
+				await vi.advanceTimersByTimeAsync(400);
+			});
+			expect(document.querySelector(".FileEditorRichTextBubble-rendered")).toBeNull();
+
+			fireEvent.pointerUp(editor.view.dom, { isPrimary: true, pointerType: "mouse", button: 0 });
+			await act(async () => {});
+			const bubble = document.querySelector<HTMLElement>(".FileEditorRichTextBubble-rendered");
+			expect(bubble?.style.visibility).toBe("visible");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("Escape on a bubble button hides the bubble and puts the focus back in the text", async () => {
 		vi.useFakeTimers();
 		try {

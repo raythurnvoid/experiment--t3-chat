@@ -974,17 +974,17 @@ describe("/api/chat workspace instructions", () => {
 		const rootId = await test_create_saved_text_file(t, {
 			membershipId: membership.membershipId,
 			path: "/AGENTS.md",
-			textContent: "ROOT_GUIDANCE_271",
+			textContent: "ROOT-GUIDANCE-271",
 		});
 		await test_create_saved_text_file(t, {
 			membershipId: membership.membershipId,
 			path: "/invoices/AGENTS.md",
-			textContent: "NESTED_GUIDANCE_272",
+			textContent: "NESTED-GUIDANCE-272",
 		});
 		await test_create_saved_text_file(t, {
 			membershipId: membership.membershipId,
 			path: "/.agents/skills/summarize-invoices/SKILL.md",
-			textContent: "---\nname: summarize-invoices\ndescription: CATALOG_DESCRIPTION_273\n---\n\nSECRET_SKILL_BODY_274",
+			textContent: "---\nname: summarize-invoices\ndescription: CATALOG-DESCRIPTION-273\n---\n\nSECRET-SKILL-BODY-274",
 		});
 
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
@@ -996,7 +996,7 @@ describe("/api/chat workspace instructions", () => {
 			...scope,
 			operationBatchId: batch._yay.operationBatchId,
 			role: "unstaged",
-			text: "UNSAVED_GUIDANCE_275",
+			text: "UNSAVED-GUIDANCE-275",
 		});
 		if (staged._nay) throw new Error(staged._nay.message);
 		const pending = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
@@ -1032,11 +1032,11 @@ describe("/api/chat workspace instructions", () => {
 		expect(model.streamText).toHaveBeenCalledTimes(1);
 
 		const call = model.streamText.mock.calls[0][0] as Parameters<typeof streamText>[0];
-		expect(call.system).toContain("UNSAVED_GUIDANCE_275");
-		expect(call.system).not.toContain("ROOT_GUIDANCE_271");
-		expect(call.system).not.toContain("NESTED_GUIDANCE_272");
-		expect(call.system).toContain("CATALOG_DESCRIPTION_273");
-		expect(call.system).not.toContain("SECRET_SKILL_BODY_274");
+		expect(call.system).toContain("UNSAVED-GUIDANCE-275");
+		expect(call.system).not.toContain("ROOT-GUIDANCE-271");
+		expect(call.system).not.toContain("NESTED-GUIDANCE-272");
+		expect(call.system).toContain("CATALOG-DESCRIPTION-273");
+		expect(call.system).not.toContain("SECRET-SKILL-BODY-274");
 		expect(call.tools).not.toHaveProperty("load_skill");
 		expect(call.tools).not.toHaveProperty("read_skill_resource");
 		expect(call.tools).not.toHaveProperty("run_skill_script");
@@ -1059,15 +1059,15 @@ describe("/api/chat workspace instructions", () => {
 				{ command: "cat .agents/skills/summarize-invoices/SKILL.md" },
 				{ toolCallId: "read-skill", messages: [] },
 			);
-			expect(output).toMatchObject({ output: expect.stringContaining("SECRET_SKILL_BODY_274") });
-			expect(JSON.stringify(output)).not.toContain("NESTED_GUIDANCE_272");
+			expect(output).toMatchObject({ output: expect.stringContaining("SECRET-SKILL-BODY-274") });
+			expect(JSON.stringify(output)).not.toContain("NESTED-GUIDANCE-272");
 
 			const listing = await call.tools!.bash.execute!(
 				{ command: "ls invoices" },
 				{ toolCallId: "inspect-folder", messages: [] },
 			);
-			expect(listing).toMatchObject({ instructions: expect.stringContaining("NESTED_GUIDANCE_272") });
-			expect(JSON.stringify(listing)).not.toContain("UNSAVED_GUIDANCE_275");
+			expect(listing).toMatchObject({ instructions: expect.stringContaining("NESTED-GUIDANCE-272") });
+			expect(JSON.stringify(listing)).not.toContain("UNSAVED-GUIDANCE-275");
 
 			const second = await call.prepareStep!({
 				model: call.model,

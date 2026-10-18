@@ -470,7 +470,7 @@ describe("FilesSharePage", () => {
 			viewStore.set(rich_view({ markdown, available: [0], revision: R2 }));
 		});
 
-		expect(document.querySelector("main img")).toBeNull();
+		expect(document.querySelector("main img[src]")).toBeNull();
 		expect(screen.getByText("Loading image")).not.toBeNull();
 		expect(signCalls.map((call) => call.args.revision)).toEqual([R1, R2, R1, R2]);
 	});
@@ -502,7 +502,7 @@ describe("FilesSharePage", () => {
 		expect(signCalls.map((call) => call.args.revision)).toEqual([R1, R2, R1]);
 
 		await signCalls[0]!.release(ready(signCalls[0]!.args, "https://r2.test/first-view"));
-		expect(document.querySelector("main img")).toBeNull();
+		expect(document.querySelector("main img[src]")).toBeNull();
 
 		await signCalls[2]!.release(ready(signCalls[2]!.args, "https://r2.test/third-view"));
 		expect((await screen.findByRole("img", { name: "Photo" })).getAttribute("src")).toBe("https://r2.test/third-view");

@@ -582,7 +582,11 @@ function find_marker_starts(src: string) {
 function bound_tiptap_tokenizers(extension: MarkedExtension): MarkedExtension {
 	return {
 		...extension,
-		extensions: extension.extensions?.map((tokenizerExtension) => {
+		extensions: extension.extensions?.flatMap((tokenizerExtension) => {
+			// Keep Marked's GFM table parser. Tiptap's extra pipe scan reads the whole remaining
+			// document at every line, outside our work budget. Our serializer already escapes pipes.
+			if (tokenizerExtension.name === "table") return [];
+
 			const marker =
 				tokenizerExtension.name === "highlight"
 					? "highlight"
@@ -1393,69 +1397,57 @@ const files_table_header_node = TableHeader.extend({
 const BACKSLASH_BEFORE_PIPE_REGEX = /\\\|/;
 
 /**
- * Rewrite a code-marked text node that holds a backslash right before a pipe into an HTML
- * `<code>` element with numeric character references.
- *
- * The backtick spelling cannot store that content in a table cell: marked's row splitter removes
- * one backslash of the escaped pipe while the code span keeps the rest literally, so the escape
- * run would grow on every save. The entity form never shows the row splitter a pipe, so nothing
- * is escaped and nothing grows. Only the copy handed to the serializer changes; the editor
- * document keeps the member's exact text.
- */
-function files_table_code_mark_to_html(node: TiptapJSONContent): TiptapJSONContent {
-	if (
-		node.type === "text" &&
-		typeof node.text === "string" &&
-		BACKSLASH_BEFORE_PIPE_REGEX.test(node.text) &&
-		node.marks?.some((mark) => mark.type === "code")
-	) {
-		// Escape every character except letters, digits, and spaces. Between the written code tags
-		// the text is ordinary inline markdown to marked, so a bare backtick, `**`, `~~`, or a URL
-		// would be re-parsed on the next open and the member's code characters would change.
-		const escaped = node.text.replace(/[^A-Za-z0-9 ]/gu, (char) => `&#${char.codePointAt(0)};`);
-
-		return {
-			...node,
-			text: `<code>${escaped}</code>`,
-			marks: node.marks.filter((mark) => mark.type !== "code"),
-		};
-	}
-
-	return node.content ? { ...node, content: node.content.map(files_table_code_mark_to_html) } : node;
-}
-
-/**
  * Turn one table cell into the text between two pipes.
  */
 function files_render_table_cell_markdown(cell: TiptapJSONContent, helpers: MarkdownRendererHelpers) {
 	// Markdown has no way to put a second block inside a table cell, so the blocks are joined
 	// with `<br>`. A real newline would end the row and destroy the whole table.
-	const rendered = helpers.renderChildren((cell.content ?? []).map(files_table_code_mark_to_html), "<br>");
+	const rendered = (cell.content ?? [])
+		.map((paragraph) => {
+			const parts: string[] = [];
+			let inline: TiptapJSONContent[] = [];
+			for (const node of paragraph.content ?? []) {
+				if (
+					node.type === "text" &&
+					typeof node.text === "string" &&
+					BACKSLASH_BEFORE_PIPE_REGEX.test(node.text) &&
+					node.marks?.some((mark) => mark.type === "code")
+				) {
+					parts.push(helpers.renderChildren(inline));
+					inline = [];
+					// Backtick code would grow its backslashes on every save. Write HTML directly:
+					// Tiptap now escapes HTML in text nodes. Entities also disarm inline Markdown.
+					const escaped = node.text.replace(/[^A-Za-z0-9 ]/gu, (char) => `&#${char.codePointAt(0)};`);
+					parts.push(`<code>${escaped}</code>`);
+				} else {
+					inline.push(node);
+				}
+			}
+			parts.push(helpers.renderChildren(inline));
+			return parts.join("");
+		})
+		.join("<br>");
 
 	// A hard break serializes as spaces plus a newline, never as a backslash. Turn every newline,
 	// with the spaces around it, into `<br>` for the same reason.
 	const singleLine = rendered.replace(/[ \t]*\n[ \t]*/g, "<br>").trim();
 
 	// A backslash right before an inserted `<br>` would escape the `<` on the next parse and turn
-	// the break into literal text. Write those backslashes as numeric references instead.
-	const brSafe = singleLine.replace(/\\+(?=<br>)/g, (run) => "&#92;".repeat(run.length));
+	// the break into literal text. Tiptap doubled them; write one reference per original backslash.
+	const brSafe = singleLine.replace(/\\+(?=<br>)/g, (run) => "&#92;".repeat(run.length / 2));
 
 	// GFM drops the spaces around cell text when it parses, so trim here too, or the next parse
 	// would not give the same text back.
 	//
-	// A `|` must be written as `\|`. The backslashes right in front of it must be doubled too.
-	// Without that, cell text `a\|b` would be written as `a\\|b`, and marked would then read one
-	// real backslash plus one real pipe, give the row an extra cell, and drop the whole table
-	// back to a paragraph.
-	return brSafe.replace(/(\\*)\|/g, (_match, backslashes: string) => backslashes + backslashes + "\\|");
+	// Tiptap already doubles literal backslashes. Only the table's pipe escape remains.
+	return brSafe.replace(/\|/g, "\\|");
 }
 
 /**
  * Write a table as a GFM pipe table.
  *
- * The vendored `renderTableToMarkdown` cannot be used: it wraps its output in newlines, pads
- * every column to its widest cell, never escapes `|`, drops the alignment colons, and joins a
- * multi-block cell with a U+001F control character that would end up in the saved file.
+ * Keep compact rows without column padding. Lay out merged cells and keep code backslashes
+ * stable across saves; the upstream renderer does not handle those cases.
  */
 function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownRendererHelpers) {
 	const rows = node.content ?? [];
@@ -1595,6 +1587,8 @@ export function files_yjs_doc_get_text(args: { yjsDoc: YDoc; rootKind: files_Yjs
 
 	const yjsDoc = args.yjsDoc;
 	const fragment = yjsDoc.getXmlFragment(files_YJS_DOC_KEYS.richText);
+	// A new Yjs document has no blocks yet. The schema requires at least one block.
+	if (fragment.length === 0) return Result({ _yay: "" });
 
 	const editor = files_headless_tiptap_editor_create();
 

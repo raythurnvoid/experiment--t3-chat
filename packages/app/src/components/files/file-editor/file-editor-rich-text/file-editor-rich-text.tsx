@@ -806,6 +806,8 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 	return hoistingContainer ? (
 		<EditorBubble
 			ref={bubbleSurfaceRef}
+			// Match the key used by visibility and position requests above.
+			pluginKey="bubbleMenu"
 			className={cn(
 				"FileEditorRichTextBubble" satisfies FileEditorRichTextBubble_ClassNames,
 				rendered && ("FileEditorRichTextBubble-rendered" satisfies FileEditorRichTextBubble_ClassNames),
