@@ -39,6 +39,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			return {
 				results: nodes ?? [],
 				status: nodes === undefined ? "LoadingFirstPage" : "Exhausted",
+				directoryView: args !== "skip" && args.stream !== undefined && nodes !== undefined ? null : undefined,
 				loadMore: vi.fn(),
 			};
 		},
@@ -70,7 +71,7 @@ const mentionTreeNodes = [
  */
 function mention_pages(query: unknown, args: Record<string, unknown>) {
 	return getFunctionName(query as FunctionReference<"query">) ===
-		getFunctionName(app_convex_api.files_tree.list_tree_children) && args.restricted === false
+		getFunctionName(app_convex_api.files_tree.list_tree_children) && args.stream === "normal" && args.restricted === false
 		? mentionTreeNodes.filter((node) => node.parentId === args.parentId && node.kind === args.kind)
 		: [];
 }
@@ -705,7 +706,7 @@ describe("AiChatComposer", () => {
 				kind: "file",
 				archived: false,
 				restricted: false,
-				savedStream: { kind: "normal", generation: 0 },
+				stream: "normal",
 			},
 			{ initialNumItems: 50 },
 		);

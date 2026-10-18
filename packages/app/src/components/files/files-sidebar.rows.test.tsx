@@ -758,11 +758,17 @@ describe("FilesSidebar", () => {
 		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
 		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("alpha\nbravo");
+		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("/alpha\n/bravo");
 
 		// The request had 2 items, so the selection clears even though only bravo was archived.
 		vi.spyOn(app_convex, "mutation").mockResolvedValue({
-			_yay: { runId: "run", activityId: "activity", isDone: true, notArchivedNodeIds: ["alpha"] },
+			_yay: {
+				runId: "run",
+				activityId: "activity",
+				isDone: true,
+				notArchivedNodeIds: ["alpha"],
+				refusedItems: [{ nodeId: "alpha", message: '"/alpha/locked.md" is read-only. Unlock it, then try again.' }],
+			},
 		});
 		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
 		await waitFor(() => expect(view.queryByRole("dialog", { name: "Archive 2 items?" })).toBeNull());
@@ -796,7 +802,7 @@ describe("FilesSidebar", () => {
 		fireEvent.click(view.getByRole("button", { name: "More options" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: /^Archive 2 selected/ }));
 		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("bravo\nlocked.md");
+		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("/bravo\n/locked.md");
 	});
 
 	test("the menu of a read-only row in a selection still archives the selection", async () => {
@@ -826,7 +832,7 @@ describe("FilesSidebar", () => {
 		fireEvent.click(view.getByRole("button", { name: /^More actions for locked\.md/ }));
 		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
 		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("bravo\nlocked.md");
+		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("/bravo\n/locked.md");
 	});
 
 	test("a reveal event during a search keeps the folder expanded once the search closes", async () => {
