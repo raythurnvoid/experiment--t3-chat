@@ -3067,6 +3067,49 @@ describe("move", () => {
 		});
 	});
 
+	test("moves an item whose stored scope still names a folder that a running scope op has unrestricted", async () => {
+		const paths = Array.from({ length: 100 }, (_entry, index) => `/shared/item-${index.toString().padStart(2, "0")}`);
+		const fixture = await create_folder_fixture(["/shared", "/other", ...paths]);
+		const { t, db, asUser, folders } = fixture;
+		const member = await add_member(fixture);
+		const sharedId = folders.get("/shared")!;
+		const itemId = folders.get(paths.at(-1)!)!;
+		expect(await asUser.mutation(api.files_sharing.restrict_node, {
+			membershipId: db.membershipId, nodeId: sharedId,
+		})).toEqual({ _yay: null });
+		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({ restrictedScopeNodeId: sharedId });
+		expect(await asUser.mutation(api.files_sharing.unrestrict_node, {
+			membershipId: db.membershipId, nodeId: sharedId,
+		})).toEqual({ _yay: null });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId)), "Unrestrict leaves the selected child's stored scope for its next step").toMatchObject({
+			restrictedScopeNodeId: sharedId,
+		});
+
+		const started = await member.asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: member.membershipId,
+			requestId: "move-during-unrestrict-repair",
+			kind: "move",
+			expectedSourceCount: 1,
+			sourceIds: [itemId],
+			targetParentId: folders.get("/other")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		expect(await member.asUser.mutation(api.files_transfer.seal, {
+			membershipId: member.membershipId, runId,
+		})).toEqual({ _yay: null });
+		await t.mutation(internal.files_transfer.advance, { runId });
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)), "Move waits for the native scope repair before reading its source").toMatchObject({ step: "select" });
+		await test_finish_transfer_run(member.asUser, runId);
+		expect(await member.asUser.query(api.files_transfer_queries.get, {
+			membershipId: member.membershipId, runId,
+		})).toMatchObject({ activity: { status: "succeeded" } });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({
+			parentId: folders.get("/other")!, restrictedScopeNodeId: null,
+		});
+	});
+
 	test("says Not found for a source deleted after it was picked", async () => {
 		const fixture = await create_folder_fixture(["/gone", "/other"]);
 		const { t, db, asUser, folders } = fixture;
