@@ -136,23 +136,13 @@ The `recover` cron starts each group again within about 7 minutes (2 minutes idl
 5-minute run), so users see a pause, not an error. Act only when a group stays idle longer.
 
 A Save that keeps waiting on overlay facts can have a wrong `pendingJobCount`. A counter-only wait
-can expire. Move and subtree waits renew the deadline, so do not promise a fixed timeout. Before an approved repair, use
-`migrations:audit_review_fact_state_page` with `{ cursor: null }`, then follow every returned cursor
-until `isDone: true`. Include zero counts. For each allowed scope, `migrations:audit_review_fact_job_count`
-with `{ organizationId, workspaceId }` returns `pendingJobCount`, `countedJobs` and `scopeStatus`.
-Missing states, invalid tenants, query failures and allowed null counts are unresolved. Null counts
-mean the scope has more than 64 jobs of any kind. Protected scopes are excluded before any job read
-or patch: fixed protected IDs and the case-insensitive `personal/sybill` pair.
-
-Use `migrations:preview_review_fact_job_counts` with its own `{ cursor: null }` before an approved
-repair. It runs one batch and throws `Review fact job count preview rolled back.` with safe batch
-fields. The throw rolls back the patch. `processed` counts visited states, including skips. Follow
-only its own cursor; stop at its own `isDone: true`. A full last page may need an empty final batch.
-Attempt logs can survive rollback. Do not use the component's built-in full-doc `dryRun` logs.
-The real runner is `migrations:run_repair_review_fact_job_counts`. Its `isDone` only ends traversal.
-Success needs a fresh complete audit with equal numeric counts for every allowed state and no
-unresolved result. Report protected exclusions separately. Remove the temporary tools and tests
-only after that check. Separate audit calls are not one atomic deployment snapshot.
+can expire. Move and subtree waits renew the deadline, so do not promise a fixed timeout.
+The stored count must equal the workspace's overlay jobs with `reviewFactsPending: true`.
+Read the stored count and its jobs in the same query, so changing jobs cannot give a false match.
+A table-wide check must include zero counts and reach the final page. Missing states, invalid
+tenants, read limits and query failures leave the check unresolved. Separate calls are not one
+snapshot of the whole deployment. Use `files_pending_overlay_db_delete_job` when deleting jobs;
+it also lowers the count.
 
 A failed function, including one that hits a Convex limit, also shows on the dashboard Logs page. In production the client sees only "Server Error", but the log keeps the details. Convex adds warning lines with a `system_code` field when a function gets close to a limit. No log stream or alert is set up yet; that needs the Convex Pro plan.
 
