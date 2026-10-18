@@ -1207,6 +1207,14 @@ Verified 2026-09-07 with rich and plain text in both collaboration modes, plus P
 - Restoring text onto an editable destination keeps its current mode. Restoring text onto a stored destination uses the saved mode. For both shapes, save an ON and an OFF version, restore each into the opposite current mode, and compare text and Yjs pointer behavior. For saved MIME, copy JSON over a plain text node, then restore its older TXT version: the MIME returns to TXT while its current ON mode and live Yjs pointers stay unchanged.
 - Audit the visible list and preview separately using their class selectors without `:visible` in `auditAccessibility` (that helper uses native CSS). Preview controls passed at desktop and 512×384; narrow content scrolls while Cancel and Confirm remain visible. The timestamp button's 21px height is a quick-screen warning; also inspect the larger clickable row before reporting a target-size failure. Follow the viewport-cache and hidden-radio recipes in `known-hazards.md`.
 
+### Yjs Snapshot Load Paths
+
+Verified 2026-10-18 on `personal/home:/about.md`, a collaborative Markdown file. All three paths call `files_yjs_fetch_snapshot` in `src/lib/files-yjs-snapshot-preload.ts`.
+
+- Rich text: click the sidebar row. The click starts the preload, and the Yjs provider takes it. Check that `.ProseMirror` holds the file text.
+- Plain text: open the same node with `view=plain_text_editor`. A collaborative file loads through `files_fetch_file_yjs_state_and_text` in `src/lib/files.ts`. Check `.monaco-editor .view-lines`.
+- To count the R2 snapshot reads, add a named `page.on("response", handler)` before a `reload()` that you do not await. Keep only URLs that contain `r2.cloudflarestorage.com`, then remove the handler with `page.off`. Do not use `performance.getEntriesByType("resource")` after a reload: Vite modules fill the buffer, so the R2 entry is missing.
+
 ### File Agent Corpus Generation
 
 Use this when creating many QA files through the app agent.
