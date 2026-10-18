@@ -39,6 +39,8 @@
 		"**/*": "docs-assets/${documentRelativeDirName}${fileName}"
 	},
 	"tailwindCSS.experimental.configFile": "packages/app/src/app.css",
+	// Keep the extension defaults, and skip the read-only reference repos.
+	"vitest.configSearchPatternExclude": "{**/node_modules/**,**/vendor/**,**/.*/**,**/*.d.ts,**/references-submodules/**,**/native-popovers/references/**}",
 	"[json]": {
 		"editor.defaultFormatter": "oxc.oxc-vscode"
 	},
