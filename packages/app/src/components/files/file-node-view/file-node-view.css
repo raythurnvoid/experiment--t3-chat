@@ -919,6 +919,17 @@
 		width: 100%;
 		overflow: scroll hidden;
 
+		/* An empty table keeps the scrollbar space, so the first rows do not move the page, but paints
+		   it invisible. This rule is in a later layer than the shared `app-scrollable` rules in app.css,
+		   so repeat their hover and focus rules here. Columns that overflow still show the thumb then. */
+		&:has(.FileNodeViewFolderExplorer-empty-row) {
+			scrollbar-color: transparent transparent;
+
+			&:is(:hover, :focus-within):not(.app-scrollable-fits) {
+				scrollbar-color: var(--app-scrollbar-thumb-active) transparent;
+			}
+		}
+
 		border: 1px solid var(--color-fg-03);
 		border-radius: 8px;
 		background: var(--color-base-1-04);
@@ -1097,6 +1108,25 @@
 		&:not(:last-child) {
 			border-bottom: 1px solid var(--color-fg-03);
 		}
+	}
+
+	/* The empty message is static text, not an item. So it has no hover color and no grab cursor. */
+	.FileNodeViewFolderExplorer-empty-cell {
+		grid-column: 1 / -1;
+
+		display: flex;
+		align-items: center;
+
+		min-height: 44px;
+		padding: 8px 12px;
+
+		font-size: 0.875rem;
+		color: var(--color-fg-07);
+		overflow-wrap: anywhere;
+
+		/* The table is as wide as its content. Without this, a long message such as a long metadata key
+		   would make the table wider than the box and bring back the scrollbar. The text wraps instead. */
+		contain: inline-size;
 	}
 
 	.FileNodeViewFolderExplorer-skeleton-icon {

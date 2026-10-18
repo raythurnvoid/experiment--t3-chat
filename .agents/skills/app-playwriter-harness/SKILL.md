@@ -40,7 +40,7 @@ For this project, use the Edge install whose profile the user reserved for QA. T
 vp env exec pnpx playwriter -s $session --timeout 5000 -f "C:/workspace/rt0/experiment--t3-chat/.agents/skills/app-playwriter-harness/scripts/install-harness.js"
 ```
 
-4. Bind to the target app tab before acting. Use PowerShell single quotes around `-e` with double quotes inside the JavaScript — the `--%` stop-parsing token does not survive `vp env exec`, and the CLI then misreads the JavaScript as a command name:
+4. Bind to the target app tab before acting. Use PowerShell single quotes around `-e` with double quotes inside the JavaScript — the `--%` stop-parsing token does not survive `vp env exec`, and the CLI then misreads the JavaScript as a command name. Windows PowerShell 5.1 (`powershell.exe`) strips those inner double quotes, so there put the snippet in a `-f` file instead (see `references/known-hazards.md`):
 
 ```powershell
 vp env exec pnpx playwriter -s $session --timeout 5000 -e 'await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/w/personal/home/files" });'

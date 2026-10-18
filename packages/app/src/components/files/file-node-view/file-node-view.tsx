@@ -4820,6 +4820,8 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer-skeleton-row"
 	| "FileNodeViewFolderExplorer-skeleton-icon"
 	| "FileNodeViewFolderExplorer-skeleton"
+	| "FileNodeViewFolderExplorer-empty-row"
+	| "FileNodeViewFolderExplorer-empty-cell"
 	| "FileNodeViewFolderExplorer-show-more"
 	| "FileNodeViewFolderExplorer-show-more-skeleton"
 	| "FileNodeViewFolderExplorer-show-less"
@@ -5375,17 +5377,23 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 									/>
 								</MyGridTableRow>
 							))}
+						{/* Show the empty message as a static row under the headers, like Windows Explorer does.
+						    It is not an item, so it has no link, no hover and no drag. */}
+						{emptyMessage !== null && (
+							<MyGridTableRow
+								className={"FileNodeViewFolderExplorer-empty-row" satisfies FileNodeViewFolderExplorer_ClassNames}
+							>
+								<MyGridTableCell
+									className={"FileNodeViewFolderExplorer-empty-cell" satisfies FileNodeViewFolderExplorer_ClassNames}
+									aria-colspan={columns.length + 1}
+								>
+									<span role="status">{emptyMessage}</span>
+								</MyGridTableCell>
+							</MyGridTableRow>
+						)}
 					</MyGridTableBody>
 				</MyGridTable>
 			</div>
-			{emptyMessage !== null && (
-				<p
-					role="status"
-					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
-				>
-					{emptyMessage}
-				</p>
-			)}
 			{hasMoreChildItems && (
 				<MyButton
 					className={"FileNodeViewFolderExplorer-show-more" satisfies FileNodeViewFolderExplorer_ClassNames}
