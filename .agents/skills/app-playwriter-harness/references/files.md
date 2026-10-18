@@ -1364,7 +1364,11 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   it to the items inside first.
   `archive_nodes` refuses a folder with a read-only item inside with `"<locked path>" is read-only.
   Unlock it, then try again.`, and a read-only named item with `This item is read-only. Unlock it, then
-  try again.`
+  try again.` To see it live, archive `/aaa-closing-qa-dest-mu6ynzn5` alone in `personal/home` from
+  the row menu. The dialog stays open and shows the message in a `role="alert"`. Nothing is archived,
+  and the console logs `[FilesArchiveModal.handleConfirm] Failed to archive nodes` (expected). A
+  stalled `Archive` menu-item click may still have opened the dialog, so read the visible dialogs
+  before you click again. Verified 2026-10-18.
 - Archive and restore jobs (verified 2026-09-25). Call `archive_nodes` / `unarchive_nodes` through the
   page-context `app_convex` client, or use the Archive dialog and the sidebar row menu `Restore` (turn on
   `Show archived items` in the top More options menu first). With several rows selected, the row menu's
