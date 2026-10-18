@@ -42,3 +42,7 @@ onlyBuiltDependencies:
   - core-js-pure
   - esbuild
   - msw
+
+# Backport the posted-log shutdown fix: https://github.com/vitest-dev/vitest/pull/11619
+patchedDependencies:
+  vitest@4.1.10: patches/vitest@4.1.10.patch

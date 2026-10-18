@@ -1,0 +1,23 @@
+diff --git a/dist/chunks/console.3WNpx0tS.js b/dist/chunks/console.3WNpx0tS.js
+index b3e71e4b1cd2cdc7c2e13c73c5e3dab86412eb67..74ccc5e7ce80466db3552837c75d39d7ac0272d8 100644
+--- a/dist/chunks/console.3WNpx0tS.js
++++ b/dist/chunks/console.3WNpx0tS.js
+@@ -4,7 +4,7 @@ import { Writable } from 'node:stream';
+ import { getSafeTimers } from '@vitest/utils/timers';
+ import c from 'tinyrainbow';
+ import { R as RealDate } from './rpc.MzXet3jl.js';
+-import { g as getWorkerState } from './utils.BX5Fg8C4.js';
++import { g as getWorkerState, E as EnvironmentTeardownError } from './utils.BX5Fg8C4.js';
+ import './index.Chj8NDwU.js';
+ 
+ const UNKNOWN_TEST_ID = "__vitest__unknown_test__";
+@@ -77,6 +77,9 @@ function createCustomConsole(defaultState) {
+ 			time: time || RealDate.now(),
+ 			size,
+ 			origin
++		}).catch((error) => {
++			// The log is already sent. The worker closed before its reply.
++			if (!(error instanceof EnvironmentTeardownError)) throw error;
+ 		});
+ 	}
+ 	return new Console({
