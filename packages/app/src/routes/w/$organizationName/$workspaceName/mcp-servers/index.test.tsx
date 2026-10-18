@@ -3,7 +3,7 @@
  */
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { editor as monaco_editor } from "monaco-editor";
-import type { ReactNode } from "react";
+import type { JSX, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const { tenantContextMock, useQueryMock, actionMock, mutationMock } = vi.hoisted(() => ({

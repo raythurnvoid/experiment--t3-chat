@@ -9,7 +9,7 @@
 import { act, cleanup, fireEvent, render as testingRender, screen, waitFor, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { useSyncExternalStore, type ComponentProps, type ReactElement, type ReactNode, type Ref } from "react";
+import { useSyncExternalStore, type ComponentProps, type JSX, type ReactElement, type ReactNode, type Ref } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const {

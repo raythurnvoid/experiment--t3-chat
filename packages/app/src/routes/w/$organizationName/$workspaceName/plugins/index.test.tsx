@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, render, screen } from "@testing-library/react";
-import type { ComponentProps, ReactNode } from "react";
+import type { ComponentProps, JSX, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const { managementAccessMock, tenantContextMock, useQueryMock } = vi.hoisted(() => ({

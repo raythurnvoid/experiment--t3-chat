@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import type { JSX, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 

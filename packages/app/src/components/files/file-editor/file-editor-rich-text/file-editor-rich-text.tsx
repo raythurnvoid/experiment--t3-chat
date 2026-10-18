@@ -1185,6 +1185,10 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 								"app-doc" satisfies AppClassName,
 								"FileEditorRichText-editor-content" satisfies FileEditorRichText_ClassNames,
 							),
+							role: "textbox",
+							"aria-multiline": "true",
+							"aria-label": "File text",
+							"aria-readonly": String(!editable),
 						},
 						handleDOMEvents: {
 							keydown: (_view, event) => handleCommandNavigation(event),

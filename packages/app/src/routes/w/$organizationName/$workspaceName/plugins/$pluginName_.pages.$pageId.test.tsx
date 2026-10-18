@@ -16,7 +16,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { StrictMode, useRef, useState } from "react";
-import type { ComponentProps, ComponentPropsWithRef } from "react";
+import type { ComponentProps, ComponentPropsWithRef, JSX } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const { paramsMock, tenantContextMock, useQueryMock, mutationMock } = vi.hoisted(() => ({
