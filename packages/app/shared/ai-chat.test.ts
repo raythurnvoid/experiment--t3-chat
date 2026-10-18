@@ -5,9 +5,9 @@ import {
 	ai_chat_get_message_draft,
 	ai_chat_get_message_text,
 	ai_chat_is_model_id,
-	ai_chat_MODEL_IDS,
 	ai_chat_MODELS,
 } from "./ai-chat.ts";
+import { ai_chat_MODEL_IDS } from "./ai-chat-ids.ts";
 import { file_quotes_parse_draft } from "./file-quotes.ts";
 
 describe("ai_chat model catalog", () => {

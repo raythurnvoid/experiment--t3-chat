@@ -72,14 +72,13 @@ import {
 	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
 	ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS,
 	ai_chat_MESSAGE_IMAGE_MEDIA_TYPES,
-	ai_chat_MODEL_IDS,
 	ai_chat_MODELS,
-	ai_chat_MODE_IDS,
 	ai_chat_MODE_METADATA,
 	ai_chat_is_message_image_media_type,
 	type ai_chat_ModelId,
 	type ai_chat_ModeId,
 } from "@/lib/ai-chat.ts";
+import { ai_chat_MODE_IDS, ai_chat_MODEL_IDS } from "../../../shared/ai-chat-ids.ts";
 
 export type AiChatComposer_ClassNames =
 	| "AiChatComposer"

@@ -42,7 +42,7 @@
 		gap: 8px;
 
 		padding: 4px 4px 8px;
-		border-bottom: 1px solid var(--color-base-1-07);
+		border-bottom: 1px solid var(--color-base-alt-1-08);
 	}
 
 	.AppNotifications-title {
@@ -82,17 +82,22 @@
 	/* #endregion list */
 
 	/* #region activity item */
+	/* The cards sit on top of the cool popover surface. So they use the cool alt grays, one step
+	   brighter than the popover, with their own gradient and shadow. */
 	.AppNotificationsActivityItem {
 		display: flex;
 		flex-direction: column;
 		/* Let the list scroll instead of shrinking its cards. */
 		flex: 0 0 auto;
 
-		border: 1px solid var(--color-fg-03);
+		border: 1px solid var(--color-base-alt-1-08);
 		border-radius: 8px;
 		overflow: hidden;
 
-		background: var(--color-base-1-04);
+		background: linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04));
+		box-shadow:
+			inset 0 1px 2px oklch(1 0 0 / 0.16),
+			0 2px 4px oklch(0 0 0 / 0.28);
 	}
 
 	.AppNotificationsActivityItem-header {
@@ -238,7 +243,7 @@
 		min-width: 0;
 		padding: 8px 12px;
 		border: none;
-		border-top: 1px solid var(--color-fg-03);
+		border-top: 1px solid var(--color-base-alt-1-07);
 		border-radius: 0;
 
 		background: transparent;
@@ -251,13 +256,13 @@
 	}
 
 	.AppNotificationsActivityItem-target:hover {
-		background: var(--color-base-1-05);
+		background: var(--color-base-alt-1-06);
 	}
 
 	.AppNotificationsActivityItem-target:focus-visible {
 		outline: 2px solid var(--color-fg-12);
 		outline-offset: -2px;
-		background: var(--color-base-1-05);
+		background: var(--color-base-alt-1-06);
 	}
 
 	.AppNotificationsActivityItem-target-icon {
@@ -291,10 +296,14 @@
 		row-gap: 4px;
 
 		padding: 10px 12px;
-		border: 1px solid var(--color-fg-03);
+		border: 1px solid var(--color-base-alt-1-08);
 		border-radius: 8px;
 
-		background: var(--color-base-1-04);
+		/* Match the activity cards: one step brighter than the popover. */
+		background: linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04));
+		box-shadow:
+			inset 0 1px 2px oklch(1 0 0 / 0.16),
+			0 2px 4px oklch(0 0 0 / 0.28);
 	}
 
 	.AppNotificationsListItem-title {

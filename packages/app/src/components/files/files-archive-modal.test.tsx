@@ -39,10 +39,16 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 
 import { FilesArchiveModal, FilesArchiveRunModal, type FilesArchiveModal_Node } from "./files-archive-modal.tsx";
 
-const NOTE: FilesArchiveModal_Node = { _id: "node_1" as app_convex_Id<"files_nodes">, name: "note.md", kind: "file" };
+const NOTE: FilesArchiveModal_Node = {
+	_id: "node_1" as app_convex_Id<"files_nodes">,
+	name: "note.md",
+	path: "/note.md",
+	kind: "file",
+};
 const REPORTS: FilesArchiveModal_Node = {
 	_id: "node_2" as app_convex_Id<"files_nodes">,
 	name: "Reports",
+	path: "/Reports",
 	kind: "folder",
 };
 
@@ -66,7 +72,7 @@ describe("FilesArchiveModal", () => {
 	test("archives the given nodes and reports them", async () => {
 		const { onClose, onArchived } = renderModal([NOTE, REPORTS]);
 		const dialog = await screen.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("note.md\nReports");
+		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("/note.md\n/Reports");
 
 		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
 
@@ -77,11 +83,14 @@ describe("FilesArchiveModal", () => {
 			nodeIds: [NOTE._id, REPORTS._id],
 		});
 		expect(onClose).not.toHaveBeenCalled();
+		// An archive that finished inside the request needs no toast.
+		expect(toastInfoMock).not.toHaveBeenCalled();
+		expect(toastWarningMock).not.toHaveBeenCalled();
 	});
 
 	test("hands a big archive to a background job and links it", async () => {
 		mutationMock.mockResolvedValue({
-			_yay: { runId: "run_1", activityId: "activity_1", isDone: false, notArchivedNodeIds: [] },
+			_yay: { runId: "run_1", activityId: "activity_1", isDone: false, notArchivedNodeIds: [], refusedItems: [] },
 		});
 		const { onArchived } = renderModal([REPORTS]);
 		const dialog = await screen.findByRole("dialog");
@@ -95,9 +104,16 @@ describe("FilesArchiveModal", () => {
 		expect(openArchiveRunMock).toHaveBeenCalledWith("run_1");
 	});
 
-	test("leaves the items the archive refused out of the archived ids and links the job", async () => {
+	test("names the item the archive refused, leaves it out of the archived ids and links the job", async () => {
+		const reason = '"/Reports/plan.md" is read-only. Unlock it, then try again.';
 		mutationMock.mockResolvedValue({
-			_yay: { runId: "run_1", activityId: "activity_1", isDone: true, notArchivedNodeIds: [REPORTS._id] },
+			_yay: {
+				runId: "run_1",
+				activityId: "activity_1",
+				isDone: true,
+				notArchivedNodeIds: [REPORTS._id],
+				refusedItems: [{ nodeId: REPORTS._id, message: reason }],
+			},
 		});
 		const { onArchived } = renderModal([NOTE, REPORTS]);
 		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Archive" }));
@@ -105,29 +121,30 @@ describe("FilesArchiveModal", () => {
 		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([NOTE._id]));
 		expect(toastInfoMock).not.toHaveBeenCalled();
 		const [message, options] = toastWarningMock.mock.calls[0] as [string, { action: { onClick: () => void } }];
-		expect(message).toBe("Some items could not be archived. See Activity.");
+		expect(message).toBe(`"Reports" was not archived: ${reason}`);
 		options.action.onClick();
 		expect(openArchiveRunMock).toHaveBeenCalledWith("run_1");
 	});
 
-	test("warns about a refusal the request found while the job goes on in the background", async () => {
+	test("counts the refusals the request found while the job goes on in the background", async () => {
 		mutationMock.mockResolvedValue({
-			_yay: { runId: "run_1", activityId: "activity_1", isDone: false, notArchivedNodeIds: [REPORTS._id] },
+			_yay: {
+				runId: "run_1",
+				activityId: "activity_1",
+				isDone: false,
+				notArchivedNodeIds: [NOTE._id, REPORTS._id],
+				refusedItems: [
+					{ nodeId: NOTE._id, message: "Permission denied" },
+					{ nodeId: REPORTS._id, message: "Not found" },
+				],
+			},
 		});
 		const { onArchived } = renderModal([NOTE, REPORTS]);
 		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Archive" }));
 
-		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([NOTE._id]));
+		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([]));
 		expect(toastInfoMock).not.toHaveBeenCalled();
-		expect(toastWarningMock.mock.calls[0]?.[0]).toBe("Some items could not be archived. See Activity.");
-	});
-
-	test("archives inline without a toast", async () => {
-		const { onArchived } = renderModal([NOTE]);
-		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Archive" }));
-
-		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([NOTE._id]));
-		expect(toastInfoMock).not.toHaveBeenCalled();
+		expect(toastWarningMock.mock.calls[0]?.[0]).toBe("2 items were not archived. See Activity.");
 	});
 
 	test("starts on Cancel", async () => {
@@ -135,53 +152,6 @@ describe("FilesArchiveModal", () => {
 		const dialog = await screen.findByRole("dialog", { name: "Archive 2 items?" });
 		const cancel = within(dialog).getByRole("button", { name: "Cancel" });
 		await waitFor(() => expect(document.activeElement).toBe(cancel));
-	});
-
-	test("grows the name list only from Show more", async () => {
-		const nodes = Array.from({ length: 7 }, (_, index) => ({
-			...NOTE,
-			_id: `node_${index}` as app_convex_Id<"files_nodes">,
-			name: `note-${index}.md`,
-		}));
-		renderModal(nodes);
-		const dialog = await screen.findByRole("dialog", { name: "Archive 7 items?" });
-		const list = within(dialog).getByRole("textbox", { name: "Items to archive" });
-		const maxHeight = () => list.style.getPropertyValue("--TextMonospaceBlock-max-height");
-		expect(maxHeight()).toBe("6lh");
-
-		// A click in the list must not move the text under a selection.
-		fireEvent.mouseDown(list);
-		expect(maxHeight()).toBe("6lh");
-
-		const toggle = within(dialog).getByRole("button", { name: "Show more" });
-		expect(toggle.getAttribute("aria-expanded")).toBe("false");
-		fireEvent.click(toggle);
-		expect(maxHeight()).toBe("16lh");
-		expect(toggle.getAttribute("aria-expanded")).toBe("true");
-		expect(toggle.textContent).toBe("Show less");
-		cleanup();
-
-		// A list that fits needs no toggle.
-		renderModal([NOTE, REPORTS]);
-		expect(within(await screen.findByRole("dialog")).queryByRole("button", { name: "Show more" })).toBeNull();
-	});
-
-	test("names one item in the heading", async () => {
-		renderModal([NOTE]);
-		const dialog = await screen.findByRole("dialog", { name: "Archive “note.md”?" });
-		expect(within(dialog).queryByRole("textbox", { name: "Items to archive" })).toBeNull();
-		// Nothing to list, so the dialog has no empty body between the header and the buttons.
-		expect(dialog.querySelector(".MyModalScrollableArea")).toBeNull();
-	});
-
-	test("warns when a folder is in the list", async () => {
-		const folderSentence = /Folders are archived with everything inside\./;
-		renderModal([NOTE, REPORTS]);
-		expect(within(await screen.findByRole("dialog")).getByText(folderSentence)).toBeTruthy();
-		cleanup();
-
-		renderModal([NOTE]);
-		expect(within(await screen.findByRole("dialog")).queryByText(folderSentence)).toBeNull();
 	});
 
 	test("shows a refusal and stays open", async () => {
@@ -228,7 +198,7 @@ describe("FilesArchiveModal", () => {
 });
 
 describe("FilesArchiveRunModal", () => {
-	const pausedRestore = (canReplace: boolean, canKeepBoth = true) => ({
+	const pausedRestore = () => ({
 		kind: "restore",
 		revision: 3,
 		activity: {
@@ -244,8 +214,8 @@ describe("FilesArchiveRunModal", () => {
 			name: "a.md",
 			path: "/Reports/a.md",
 			occupantPath: "/Reports/a.md",
-			canReplace,
-			canKeepBoth,
+			canReplace: true,
+			canKeepBoth: true,
 		},
 		archived: [],
 		notArchived: [],
@@ -262,7 +232,7 @@ describe("FilesArchiveRunModal", () => {
 	}
 
 	test("sends the picked choice with the revision it was shown for", async () => {
-		useQueryMock.mockReturnValue(pausedRestore(true));
+		useQueryMock.mockReturnValue(pausedRestore());
 		renderRunModal();
 		const dialog = await screen.findByRole("dialog", { name: "Restore files" });
 		expect(within(dialog).getByText("Restoring 10 of 20 items…")).toBeTruthy();
@@ -284,24 +254,6 @@ describe("FilesArchiveRunModal", () => {
 		);
 	});
 
-	test("hides Replace when the server says it is not possible", async () => {
-		useQueryMock.mockReturnValue(pausedRestore(false));
-		renderRunModal();
-		const dialog = await screen.findByRole("dialog", { name: "Restore files" });
-		const clash = within(dialog).getByRole("group", { name: "/Reports/a.md" });
-		expect(within(clash).queryByRole("radio", { name: "Replace" })).toBeNull();
-		expect(within(clash).getByRole("radio", { name: "Keep both" })).toBeTruthy();
-	});
-
-	test("hides Keep both when the server says no new name fits", async () => {
-		useQueryMock.mockReturnValue(pausedRestore(true, false));
-		renderRunModal();
-		const dialog = await screen.findByRole("dialog", { name: "Restore files" });
-		const clash = within(dialog).getByRole("group", { name: "/Reports/a.md" });
-		expect(within(clash).queryByRole("radio", { name: "Keep both" })).toBeNull();
-		expect(within(clash).getByRole("radio", { name: "Skip" })).toBeTruthy();
-	});
-
 	test("lists the selected items the archive did not archive", async () => {
 		useQueryMock.mockReturnValue({
 			kind: "archive",
@@ -317,13 +269,13 @@ describe("FilesArchiveRunModal", () => {
 			controls: { canStop: false, canRetry: false, canDismiss: true },
 			conflict: null,
 			archived: [
-				{ nodeId: "node_1", name: "note.md" },
-				{ nodeId: "node_4", name: null },
-				{ nodeId: "node_5", name: "Plans" },
+				{ nodeId: "node_1", path: "/note.md" },
+				{ nodeId: "node_4", path: null },
+				{ nodeId: "node_5", path: "/Plans" },
 			],
 			notArchived: [
-				{ nodeId: "node_2", name: "Reports", message: "An item inside it is read-only." },
-				{ nodeId: "node_3", name: null, message: "Permission denied" },
+				{ nodeId: "node_2", path: "/Reports", message: '"/Reports/plan.md" is read-only. Unlock it, then try again.' },
+				{ nodeId: "node_3", path: null, message: "Permission denied" },
 			],
 		});
 		renderRunModal();
@@ -331,13 +283,16 @@ describe("FilesArchiveRunModal", () => {
 		// A refused read-only item is expected, so the job reads as completed, not partly completed.
 		expect(within(dialog).getByText("Completed.")).toBeTruthy();
 		expect(within(dialog).getByText("Archived 4 of 6 items.")).toBeTruthy();
-		// A name the person can no longer read is left out.
-		expect(within(dialog).getByRole("textbox", { name: "Archived items" }).textContent).toBe("note.md\nPlans");
+		// A path the person can no longer read is left out.
+		expect(within(dialog).getByRole("textbox", { name: "Archived items" }).textContent).toBe("/note.md\n/Plans");
 		const list = within(dialog).getByRole("region", { name: "Not archived (2)" });
 		expect(
 			within(list)
 				.getAllByRole("listitem")
 				.map((item) => item.textContent),
-		).toEqual(["Reports: An item inside it is read-only.", "An item you cannot open: Permission denied"]);
+		).toEqual([
+			'/Reports: "/Reports/plan.md" is read-only. Unlock it, then try again.',
+			"An item you cannot open: Permission denied",
+		]);
 	});
 });

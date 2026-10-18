@@ -15,9 +15,9 @@
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`).
 
-import { compareValues, ConvexError, type Infer, type Value } from "convex/values";
+import { compareValues, ConvexError, v, type Infer, type Value } from "convex/values";
+import { validate } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
-import { z } from "zod";
 import type { PaginationResult, TransactionMetrics, WithoutSystemFields } from "convex/server";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
@@ -84,7 +84,7 @@ import {
 	files_move_reservations_db_is_rename_allocation,
 } from "./files-move-reservations.ts";
 import {
-	files_tree_walk_cursor_schema,
+	files_tree_walk_cursor_validator,
 	files_tree_walk_MAX_CALLS,
 	files_tree_walk_page,
 	type files_tree_walk_stack_validator,
@@ -3189,45 +3189,51 @@ export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx, l
 	return Object.values(metrics).every((metric) => metric.used * limitFactor < metric.used + metric.remaining);
 }
 
-const saved_source_schema = z.discriminatedUnion("kind", [
-	z.object({ kind: z.literal("normal"), generation: z.number() }),
-	z.object({
-		kind: z.literal("cohort"),
-		cohortId: z.string(),
-		view: z.enum(["before", "after"]),
-		generation: z.number(),
+// The cursors below use Convex validators, not zod. This module is on the file open path, and
+// loading zod there made each file open slower. See "External data validation" in AGENTS.md.
+const saved_source_validator = v.union(
+	v.object({ kind: v.literal("normal"), generation: v.number() }),
+	v.object({
+		kind: v.literal("cohort"),
+		cohortId: v.string(),
+		view: v.union(v.literal("before"), v.literal("after")),
+		generation: v.number(),
 	}),
-]);
+);
 
-const list_cursor_schema = z.object({
-	scope: z.string(),
-	root: z.string(),
-	streams: z
-		.array(
-			z.object({
-				kind: z.enum(["saved", "places", "moved_in", "nested", "pending"]),
-				movedIn: z.object({ savedNodeId: z.string(), ownerTreePath: z.string() }).nullable(),
-				numItems: z.number().int().positive(),
-				position: z.object({
-					rangeStart: z.string().nullable(),
-					cursor: z.string().nullable(),
-					lastKey: z.array(z.any()).nullable(),
-				}),
-				savedStream: saved_source_schema,
-				seek: z
-					.object({ key: z.array(z.any()), inclusive: z.boolean() })
-					.nullable()
-					.optional(),
-				parentAlias: z
-					.union([
-						z.object({ kind: z.literal("root") }),
-						z.object({ kind: z.enum(["saved", "private"]), id: z.string() }),
-					])
-					.nullable()
-					.optional(),
+const moved_in_validator = v.union(v.object({ savedNodeId: v.string(), ownerTreePath: v.string() }), v.null());
+
+const list_cursor_validator = v.object({
+	scope: v.string(),
+	root: v.string(),
+	/** At most 256 streams, each with a positive integer `numItems`. The parse checks it by hand. */
+	streams: v.array(
+		v.object({
+			kind: v.union(
+				v.literal("saved"),
+				v.literal("places"),
+				v.literal("moved_in"),
+				v.literal("nested"),
+				v.literal("pending"),
+			),
+			movedIn: moved_in_validator,
+			numItems: v.number(),
+			position: v.object({
+				rangeStart: v.union(v.string(), v.null()),
+				cursor: v.union(v.string(), v.null()),
+				lastKey: v.union(v.array(v.any()), v.null()),
 			}),
-		)
-		.max(256),
+			savedStream: saved_source_validator,
+			seek: v.optional(v.union(v.object({ key: v.array(v.any()), inclusive: v.boolean() }), v.null())),
+			parentAlias: v.optional(
+				v.union(
+					v.object({ kind: v.literal("root") }),
+					v.object({ kind: v.union(v.literal("saved"), v.literal("private")), id: v.string() }),
+					v.null(),
+				),
+			),
+		}),
+	),
 });
 
 /**
@@ -3377,7 +3383,7 @@ export async function files_pending_overlay_list(
 	if (startOpened?._nay) return startOpened;
 	const startByTime = by_time(startOpened?._yay.areaTop ?? false);
 
-	type CursorStream = z.infer<typeof list_cursor_schema>["streams"][number];
+	type CursorStream = Infer<typeof list_cursor_validator>["streams"][number];
 	type StreamResult = files_visible_stream_Result | { _nay: { message: string; name?: string }; _yay?: undefined };
 	type Row = NonNullable<files_visible_stream_Result["_yay"]>["rows"][number] & {
 		/**
@@ -3465,15 +3471,19 @@ export async function files_pending_overlay_list(
 				_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
 			});
 		}
-		const parsed = list_cursor_schema.safeParse(raw);
-		if (!parsed.success || parsed.data.scope !== scope)
+		if (
+			!validate(list_cursor_validator, raw) ||
+			raw.scope !== scope ||
+			raw.streams.length > 256 ||
+			!raw.streams.every((stream) => Number.isInteger(stream.numItems) && stream.numItems > 0)
+		)
 			return Result({
 				_nay: {
 					message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
 				},
 			});
-		root = parsed.data.root;
-		cursorStreams = parsed.data.streams;
+		root = raw.root;
+		cursorStreams = raw.streams;
 	}
 	const is_walk = (stream: Pick<CursorStream, "kind">) => walk && (stream.kind === "saved" || stream.kind === "nested");
 	const streams: Stream[] = cursorStreams.map((stream) => ({
@@ -3494,12 +3504,12 @@ export async function files_pending_overlay_list(
 		const movedIn = moved_in_args(stream.movedIn);
 		let cursor = null;
 		if (stream.position.cursor !== null) {
-			const parsed = files_tree_walk_cursor_schema.safeParse(JSON.parse(stream.position.cursor));
-			if (!parsed.success)
+			const parsed: unknown = JSON.parse(stream.position.cursor);
+			if (!validate(files_tree_walk_cursor_validator, parsed))
 				return Result({
 					_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
 				});
-			cursor = parsed.data;
+			cursor = parsed;
 		}
 		if (!stream.walk) {
 			const opened = stream.movedIn === null && startOpened ? startOpened : await open_walk(movedIn);
@@ -3865,7 +3875,7 @@ export async function files_pending_overlay_list(
 								seek: stream.seek,
 								parentAlias: stream.parentAlias,
 							})),
-						} satisfies z.infer<typeof list_cursor_schema>),
+						} satisfies Infer<typeof list_cursor_validator>),
 			isDone: left.length === 0,
 		},
 	});
@@ -3881,25 +3891,24 @@ const SEARCH_NAME_MAX_CALLS = 40;
  */
 const SEARCH_NAME_MAX_NESTED = 20;
 
-const search_name_cursor_schema = z.object({
-	scope: z.string(),
-	streams: z
-		.array(
-			z.object({
-				kind: z.enum(["saved", "moved_in", "nested", "places"]),
-				movedIn: z.object({ savedNodeId: z.string(), ownerTreePath: z.string() }).nullable(),
-				/**
-				 * The search cursor, or for `moved_in` the JSON of its key-skip position.
-				 */
-				cursor: z.string().nullable(),
-				/**
-				 * The search rows read so far, to tell when the search hit 1,024.
-				 */
-				read: z.number().int().nonnegative(),
-				savedStream: saved_source_schema,
-			}),
-		)
-		.max(64),
+const search_name_cursor_validator = v.object({
+	scope: v.string(),
+	/** At most 64 streams, each with a whole `read` of 0 or more. The parse checks it by hand. */
+	streams: v.array(
+		v.object({
+			kind: v.union(v.literal("saved"), v.literal("moved_in"), v.literal("nested"), v.literal("places")),
+			movedIn: moved_in_validator,
+			/**
+			 * The search cursor, or for `moved_in` the JSON of its key-skip position.
+			 */
+			cursor: v.union(v.string(), v.null()),
+			/**
+			 * The search rows read so far, to tell when the search hit 1,024.
+			 */
+			read: v.number(),
+			savedStream: saved_source_validator,
+		}),
+	),
 });
 
 /**
@@ -3957,7 +3966,7 @@ export async function files_pending_overlay_search_name(
 	]);
 	const pageSize = Math.max(1, Math.floor(args.numItems));
 
-	type CursorStream = z.infer<typeof search_name_cursor_schema>["streams"][number];
+	type CursorStream = Infer<typeof search_name_cursor_validator>["streams"][number];
 	let streams: CursorStream[];
 	if (args.cursor === null) {
 		streams = savedSources.flatMap((savedStream) => [
@@ -3977,14 +3986,18 @@ export async function files_pending_overlay_search_name(
 				_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
 			});
 		}
-		const parsed = search_name_cursor_schema.safeParse(raw);
-		if (!parsed.success || parsed.data.scope !== scope)
+		if (
+			!validate(search_name_cursor_validator, raw) ||
+			raw.scope !== scope ||
+			raw.streams.length > 64 ||
+			!raw.streams.every((stream) => Number.isInteger(stream.read) && stream.read >= 0)
+		)
 			return Result({
 				_nay: {
 					message: "cursor does not match this search; rerun the original command to get a fresh Next page cursor.",
 				},
 			});
-		streams = parsed.data.streams;
+		streams = raw.streams;
 	}
 
 	const items: NonNullable<files_visible_search_name_Result["_yay"]>["items"] = [];
@@ -4085,7 +4098,7 @@ export async function files_pending_overlay_search_name(
 			continueCursor:
 				streams.length === 0
 					? null
-					: JSON.stringify({ scope, streams } satisfies z.infer<typeof search_name_cursor_schema>),
+					: JSON.stringify({ scope, streams } satisfies Infer<typeof search_name_cursor_validator>),
 			isDone: streams.length === 0,
 			notes: [...notes],
 		},

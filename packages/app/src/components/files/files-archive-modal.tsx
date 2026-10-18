@@ -38,7 +38,7 @@ type FilesArchiveModal_ClassNames =
 /**
  * What the dialog needs to name a row. Hosts already hold these on the tree node they act on.
  */
-export type FilesArchiveModal_Node = Pick<files_VisibleTreeNode, "_id" | "name" | "kind">;
+export type FilesArchiveModal_Node = Pick<files_VisibleTreeNode, "_id" | "name" | "path" | "kind">;
 
 export type FilesArchiveModal_Props = {
 	/** The nodes to archive. `null` keeps the dialog closed. */
@@ -115,12 +115,17 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 				}
 
 				// A big archive continues as a background job. Its items leave the tree as the job runs.
-				const { runId, isDone, notArchivedNodeIds } = result._yay;
+				const { runId, notArchivedNodeIds, refusedItems } = result._yay;
 				const action = { label: "View", onClick: () => openArchiveRun(runId) };
 				// Warn as soon as a refusal is known. A job that ended in the request is kept only because it
 				// refused items, and a job still running can already have refused some.
-				if (isDone || notArchivedNodeIds.length > 0) {
-					toast.warning("Some items could not be archived. See Activity.", { action });
+				// Name the item and the reason when one item was refused. Activity lists each refused item.
+				const refusedNode =
+					refusedItems.length === 1 ? nodes.find((node) => node._id === refusedItems[0]!.nodeId) : undefined;
+				if (refusedNode) {
+					toast.warning(`"${refusedNode.name}" was not archived: ${refusedItems[0]!.message}`, { action });
+				} else if (refusedItems.length > 0) {
+					toast.warning(`${refusedItems.length} items were not archived. See Activity.`, { action });
 				} else {
 					toast.info("Archiving in the background. See Activity.", { action });
 				}
@@ -154,13 +159,13 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 				{hasList || error ? (
 					<MyModalScrollableArea>
 						<div className={"FilesArchiveModal-content" satisfies FilesArchiveModal_ClassNames}>
-							{/* One name per line in a read-only text block, so Ctrl+A selects only the names to copy
+							{/* One path per line in a read-only text block, so Ctrl+A selects only the paths to copy
 							    them. It grows only from Show more: growing on click would move the text under a
 							    selection the person is making. */}
 							{hasList ? (
 								<TextMonospaceBlock
 									aria-label="Items to archive"
-									text={nodes.map((node) => node.name).join("\n")}
+									text={nodes.map((node) => node.path).join("\n")}
 									maxHeight={isListExpanded ? "16lh" : "6lh"}
 								/>
 							) : null}
@@ -249,7 +254,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 	const isActive = run?.activity.finishedAt === undefined;
 	const isStopPending = pendingStopSourceIds.has(runId);
 	const conflict = run?.conflict ?? null;
-	const archivedNames = (run?.archived ?? []).flatMap((item) => (item.name === null ? [] : [item.name]));
+	const archivedPaths = (run?.archived ?? []).flatMap((item) => (item.path === null ? [] : [item.path]));
 	// Match the Activity card: a refused item, like a read-only file, is expected and does not make the
 	// archive look partly failed. The "Not archived" section below names each refused item.
 	const isRefusalOnly =
@@ -346,12 +351,12 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 										: `${verbs[1]} ${progress.completed} ${progress.completed === 1 ? "item" : "items"}.`}
 							</p>
 						) : null}
-						{/* The names the person picked. A folder counts with everything inside, so the line above can
-						    count more items than this list names. */}
-						{archivedNames.length > 0 ? (
+						{/* The paths the person picked. A folder counts with everything inside, so the line above can
+						    count more items than this list shows. */}
+						{archivedPaths.length > 0 ? (
 							<TextMonospaceBlock
 								aria-label={isActive ? "Items to archive" : "Archived items"}
-								text={archivedNames.join("\n")}
+								text={archivedPaths.join("\n")}
 								maxHeight="8lh"
 							/>
 						) : null}
@@ -368,7 +373,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 									{run.notArchived.map((item) => (
 										<li key={item.nodeId}>
 											<span className={"FilesArchiveRunModal-path" satisfies FilesArchiveRunModal_ClassNames}>
-												{item.name ?? "An item you cannot open"}
+												{item.path ?? "An item you cannot open"}
 											</span>
 											: {item.message}
 										</li>

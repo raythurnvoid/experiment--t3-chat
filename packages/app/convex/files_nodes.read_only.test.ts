@@ -3748,7 +3748,8 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 			nodeIds: [arch2Id],
 		});
 		expect(refusedVisible._nay?.name).toBe("read_only");
-		expect(refusedVisible._nay?.message).toBe("An item inside it is read-only.");
+		// The message names the locked archived child, because the member may read it.
+		expect(refusedVisible._nay?.message).toBe('"/arch2/c2" is read-only. Unlock it, then try again.');
 		expect((await read_lock_node(t, arch2Id))?.archiveOperationId).toBeNull();
 
 		// Hidden and locked: a generic refusal that is not `read_only` and never names the node (RO-10).

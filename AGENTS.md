@@ -362,6 +362,7 @@ Use `export` only when a symbol is intentionally part of the module's public API
 Treat data from outside the application process as `unknown`. Runtime-validate every consumed field before use; a TypeScript cast is not validation.
 
 - Prefer Zod for structured HTTP responses, third-party callbacks, reused schemas, and shapes with several fields.
+- Exception: code that `convex/files_yjs_load.ts` imports, which includes `convex/schema.ts` and `convex/functions.ts`, must not import Zod. That is the file open path. Removing Zod there cut the snapshot action from about 58ms to 27ms. Use a Convex validator with `validate` from `convex-helpers/validators` there. `scripts/convex-open-path-imports.test.ts` checks it. See "keep hot function modules' import graphs small" in the Convex guidelines.
 - A small explicit local check is acceptable for a simple shape with one or two primitive fields.
 - Validate that every field the application uses is present and has the expected runtime type.
 - For verified vendor webhooks in Convex, keep the boundary validator loose as described in the Convex skill. Then validate every consumed field with Zod or a focused local check.

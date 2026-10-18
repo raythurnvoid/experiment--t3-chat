@@ -107,7 +107,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Folder table sorts and columns | `qa-browser/home:/qa-sort-0924` has 58 files and three folders; one child is restricted. Six rows have `metadata.rank`, and 55 lack it. All Updated values tie; Created values are unique. Neither the root nor the restricted child has grants. `/qa-sort-0924-r` is a separate restricted root with three files. It keeps one user read grant to `qa.perm.viewer`, who still has an active membership and the `member` role. After array-sort QA on 2026-09-29, both roots and all 61 + 3 children are archived again, with no saved-sort docs and unchanged ids, parents, paths and grants. Restore through normal Files doors before reuse, then archive again. |
 | More than 200 restricted children | `qa-browser/home:/qa-cap-0924` is archived with 203 archived restricted child folders. The root and every child have no grants. Checked 2026-09-29. Reuse this fixture for the shared-row cap instead of creating another large set. |
 | Agent skills folder | `personal/home:/.agents/skills/meeting-brief` |
-| Bash agent eval fixture | `personal/home:/bash-eval-smoothness-fixture-2026-07-25-a` ([bash-tool-agent-eval.md](../../app-playwriter-harness/references/bash-tool-agent-eval.md)) |
+| Bash agent eval fixture | `personal/home:/bash-eval-smoothness-fixture-2026-07-25-a` ([bash-tool-agent-eval.md](../../app-playwriter-harness/references/bash-tool-agent-eval.md)). Archived on 2026-10-18 by another task: the folder shows "This folder is archived" and lists no files. Restore it before you use it. For file open timing, `personal/home:/documents` has three Markdown files with text. |
 | Browser downloads | `personal/home:/.system/downloads`, `personal/home:/tmp/browser` |
 
 ### Write rules and shares

@@ -262,9 +262,15 @@ of not counting locked items.
     The archive check walks each named item by `parentId`. It follows `rm` with several files: a
     refusal leaves out only the named item it is in, with everything inside it, and the other named
     items are still archived. The run keeps the named item the check is on in `checkNamedItem`, and
-    each refused named item with its reason in `refusedItems`. A refusal on an item inside says "An
-    item inside it is read-only." or "You cannot change an item inside it.", so it does not blame the
-    named folder. A `needs_review` refusal keeps its own message.
+    each refused named item with its reason in `refusedItems`. Every read-only reason names the item
+    to unlock and the fix, because a refusal must name the item and say how to fix it. A read-only
+    named item says "This item is read-only. Unlock it, then try again." A lock on an item inside
+    names that item: `"/Reports/plan.md" is read-only. Unlock it, then try again.`, so it does not
+    blame the named folder. The check says read-only only for a node the person may read, so the path
+    is safe to save. Another refusal inside says "You cannot change an item inside it." and names
+    nothing. A `needs_review` refusal keeps its own message. `archive_nodes` returns these reasons as
+    `refusedItems`. The Archive dialog's toast names the item and its reason when one named item was
+    refused, and gives the count when several were.
     A named item that is gone when the check reaches it is refused as "Not found". A named item that
     somebody archived meanwhile keeps that archive and is no error, like `rm -f`. It counts once and
     ends as `skipped`.
@@ -284,7 +290,7 @@ of not counting locked items.
     agent's delete names one item, so the same rule refuses the whole delete.
     `archive_nodes` answers the named ids refused before the job and the named ids refused so far as
     `notArchivedNodeIds`, with the named ids inside the refused ones. `get` lists them as
-    `notArchived`. It names only items of the run's workspace that the person can still read. An
+    `notArchived`, each with its full `path`. It shows only items of the run's workspace that the person can still read. An
     archive that refused a named item keeps its job and Activity, even when it finished inside the
     request.
     The restore check pages the operation's items by `treePath`. Archived items can share one path. When a restore check page ends inside such

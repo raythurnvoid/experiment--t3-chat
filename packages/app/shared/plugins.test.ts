@@ -4,8 +4,8 @@ import { describe, expect, test } from "vitest";
 
 import app_convex_schema from "../convex/schema.ts";
 import type { plugins_Capability } from "./plugins.ts";
+import { plugins_CAPABILITIES } from "./plugins-capabilities.ts";
 import {
-	plugins_CAPABILITIES,
 	plugins_consent_diff,
 	plugins_dist_review_advisories,
 	plugins_event_matches_configuration,

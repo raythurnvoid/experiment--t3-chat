@@ -100,6 +100,10 @@ describe("archive_nodes", () => {
 				activityId: expect.any(String),
 				isDone: true,
 				notArchivedNodeIds: [refused.topId, refused.fileIds[0]],
+				// The reason names the locked file, so the toast can say what to unlock.
+				refusedItems: [
+					{ nodeId: refused.topId, message: '"/refused/d0/f001.md" is read-only. Unlock it, then try again.' },
+				],
 			},
 		});
 		const job = archived._yay!;
@@ -117,10 +121,14 @@ describe("archive_nodes", () => {
 			runId: job.runId,
 		});
 		expect(run?.notArchived).toEqual([
-			{ nodeId: refused.topId, name: "refused", message: "An item inside it is read-only." },
+			{
+				nodeId: refused.topId,
+				path: "/refused",
+				message: '"/refused/d0/f001.md" is read-only. Unlock it, then try again.',
+			},
 		]);
 		// The job dialog lists the named items that were archived. The file inside the refused folder is not one.
-		expect(run?.archived).toEqual([{ nodeId: kept.topId, name: "kept" }]);
+		expect(run?.archived).toEqual([{ nodeId: kept.topId, path: "/kept" }]);
 	});
 
 	test("a refusal found in a later check step counts the refused item once", async () => {
@@ -181,7 +189,11 @@ describe("archive_nodes", () => {
 			runId: archived._yay!.runId,
 		});
 		expect(run?.notArchived).toEqual([
-			{ nodeId: big.topId, name: "big-alone", message: "An item inside it is read-only." },
+			{
+				nodeId: big.topId,
+				path: "/big-alone",
+				message: '"/big-alone/d5/f019.md" is read-only. Unlock it, then try again.',
+			},
 		]);
 	});
 
@@ -203,7 +215,7 @@ describe("archive_nodes", () => {
 			membershipId: f.db.membershipId,
 			runId: archived._yay!.runId,
 		});
-		expect(run?.notArchived).toEqual([{ nodeId: small.topId, name: null, message: "Not found" }]);
+		expect(run?.notArchived).toEqual([{ nodeId: small.topId, path: null, message: "Not found" }]);
 	});
 
 	test("the job archives nothing when the person is removed during the check", async () => {
@@ -304,8 +316,8 @@ describe("archive_nodes", () => {
 			runId: archived._yay!.runId,
 		});
 		expect(run?.notArchived).toEqual([
-			{ nodeId: missingId, name: null, message: "Not found" },
-			{ nodeId: foreignId, name: null, message: "Not found" },
+			{ nodeId: missingId, path: null, message: "Not found" },
+			{ nodeId: foreignId, path: null, message: "Not found" },
 		]);
 
 		// With nothing else left to archive, a missing id refuses the request, like `rm` of one missing file.
@@ -339,7 +351,7 @@ describe("archive_nodes", () => {
 			membershipId: member.membershipId,
 			runId: archived._yay!.runId,
 		});
-		expect(run?.notArchived).toEqual([{ nodeId: locked.topId, name: null, message: "Permission denied" }]);
+		expect(run?.notArchived).toEqual([{ nodeId: locked.topId, path: null, message: "Permission denied" }]);
 	});
 
 	test("a page never splits archived items that share a name", async () => {

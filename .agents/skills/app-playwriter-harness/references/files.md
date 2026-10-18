@@ -1362,7 +1362,9 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   `Stop Apply protection to folder contents` within about 2 s of `Save and apply`.
   To clean up a Read-only fixture, set "Rule for items inside" to `Everyone with access` and apply
   it to the items inside first.
-  `archive_nodes` refuses a read-only subtree with `This item is read-only.`
+  `archive_nodes` refuses a folder with a read-only item inside with `"<locked path>" is read-only.
+  Unlock it, then try again.`, and a read-only named item with `This item is read-only. Unlock it, then
+  try again.`
 - Archive and restore jobs (verified 2026-09-25). Call `archive_nodes` / `unarchive_nodes` through the
   page-context `app_convex` client, or use the Archive dialog and the sidebar row menu `Restore` (turn on
   `Show archived items` in the top More options menu first). With several rows selected, the row menu's
@@ -1370,7 +1372,9 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   on the row `More actions for <name>` button, its items, and the top `More options` button hung or did
   not land. `page.mouse.click` at the button's bounding-box center opened the menu, and `End` + `Enter`
   picked `Restore`. `Show archived items` is React state, so closing the tab resets it. An archive job
-  returns `{ runId, activityId, isDone, notArchivedNodeIds }` (a restore returns `{ runId, activityId }`).
+  returns `{ runId, activityId, isDone, notArchivedNodeIds, refusedItems }` (a restore returns
+  `{ runId, activityId }`). With one refused item the toast reads `"<name>" was not archived: <reason>`,
+  with more it reads `N items were not archived. See Activity.`
   The Activity card shows a bar and `Archiving 12 of 46 items…` while it runs, then one line:
   `Archived 46 items.`, or `Archived 45 of 46 items.` when the archive refused named items. A
   refusal alone still reads `Completed`. The button is `View progress` while it runs and `Open` after.

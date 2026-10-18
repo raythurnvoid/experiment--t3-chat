@@ -1,9 +1,9 @@
 // Exact write reservations. Callers still prove current access before asking whether a file is busy.
 
 import { Result } from "common/errors-as-values-utils.ts";
-import { ConvexError } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { WithoutSystemFields } from "convex/server";
-import { z } from "zod";
+import { validate } from "convex-helpers/validators";
 import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import type { files_PendingParent } from "../shared/files.ts";
@@ -333,22 +333,26 @@ export async function files_move_reservations_db_is_rename_allocation(
 		item.attempt !== cohort.attemptFence
 	)
 		return false;
-	let parsed: unknown;
+	let cursor: unknown;
 	try {
-		parsed = JSON.parse(cohort.planningCursor);
+		cursor = JSON.parse(cohort.planningCursor);
 	} catch {
 		return false;
 	}
-	const checked = z
-		.object({
-			segmentIndex: z.number().int().min(0),
-			parentId: z.string(),
-			parentPath: z.string(),
-			parentArchiveOperationId: z.string().nullable(),
-		})
-		.safeParse(parsed);
-	if (!checked.success) return false;
-	const cursor = checked.data;
+	if (
+		!validate(
+			v.object({
+				segmentIndex: v.number(),
+				parentId: v.string(),
+				parentPath: v.string(),
+				parentArchiveOperationId: v.union(v.string(), v.null()),
+			}),
+			cursor,
+		) ||
+		!Number.isInteger(cursor.segmentIndex) ||
+		cursor.segmentIndex < 0
+	)
+		return false;
 	const segments = path_extract_segments_from(run.rename.inputPath);
 	if (cursor.segmentIndex >= segments.length - 1) return false;
 	const parentId = cursor.parentId === "root" ? "root" : db.normalizeId("files_nodes", cursor.parentId);

@@ -20,12 +20,12 @@ import type { GeneratedIdPrefix } from "./generated-ids.ts";
 import type { ai_chat_McpAuthNeededData } from "./ai-chat-files.ts";
 import type { browser_Intent } from "./browser-intent.ts";
 import { file_quotes_part_schema, file_quotes_serialize_draft, type file_quotes_Quote } from "./file-quotes.ts";
+import { ai_chat_MODE_IDS, ai_chat_MODEL_IDS } from "./ai-chat-ids.ts";
 
 export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
 export type ai_chat_Thread = Doc<"ai_chat_threads">;
 
-export const ai_chat_MODEL_IDS = ["gpt-6-luna", "deepseek-v4.1-flash"] as const;
 export type ai_chat_ModelId = (typeof ai_chat_MODEL_IDS)[number];
 
 type AiChatModelMetadata = {
@@ -84,7 +84,6 @@ export const ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS = 700 * 1024;
 export const ai_chat_GENERATED_IMAGE_FORMAT = "webp" as const;
 export const ai_chat_GENERATED_IMAGE_MEDIA_TYPE = `image/${ai_chat_GENERATED_IMAGE_FORMAT}` as const;
 
-export const ai_chat_MODE_IDS = ["agent", "ask"] as const;
 export type ai_chat_ModeId = (typeof ai_chat_MODE_IDS)[number];
 
 export const ai_chat_DEFAULT_MODE_ID = "agent" as const satisfies ai_chat_ModeId;

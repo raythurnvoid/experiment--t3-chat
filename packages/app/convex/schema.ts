@@ -3,14 +3,14 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { vWorkId } from "@convex-dev/workpool";
 import type { ai_chat_UiMessage } from "../src/lib/ai-chat.ts";
-import { ai_chat_MODE_IDS, ai_chat_MODEL_IDS } from "../shared/ai-chat.ts";
+import { ai_chat_MODE_IDS, ai_chat_MODEL_IDS } from "../shared/ai-chat-ids.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import { plugins_CAPABILITIES } from "../shared/plugins.ts";
+import { plugins_CAPABILITIES } from "../shared/plugins-capabilities.ts";
 
 const plugins_capability_validator = v.union(...plugins_CAPABILITIES.map((capability) => v.literal(capability)));
 

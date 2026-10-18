@@ -3826,6 +3826,11 @@ export const archive_nodes = mutation({
 				 * inside them. The refused ones stay active.
 				 */
 				notArchivedNodeIds: v.array(v.id("files_nodes")),
+				/**
+				 * The named items refused so far, each with the reason and how to fix it. A named item inside a
+				 * refused folder is not listed here.
+				 */
+				refusedItems: v.array(v.object({ nodeId: v.id("files_nodes"), message: v.string() })),
 			}),
 		),
 		_nay: { data: v.any() },

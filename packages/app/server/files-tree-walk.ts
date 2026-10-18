@@ -23,7 +23,6 @@
 // `server/files-visible-resolve.ts`).
 
 import { compareValues, v, type Infer, type Value } from "convex/values";
-import { z } from "zod";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import { convex_invalid_cursor_error } from "./convex-utils.ts";
 import { files_index_range_apply, files_index_range_phases } from "./files-index-range.ts";
@@ -94,16 +93,16 @@ function native_lower(lower: Bound, rank: number): Bound {
 	return { key: [lower.key[0]], inclusive: rank === ROW };
 }
 
-export const files_tree_walk_cursor_schema = z.object({
+export const files_tree_walk_cursor_validator = v.object({
 	/** The start's `treePath`. A rename of the start ends the cursor. */
-	start: z.string(),
+	start: v.string(),
 	/** The top frame's root, or null for the start frame. Its `treePath` catches a rename. */
-	top: z.object({ nodeId: z.string(), treePath: z.string() }).nullable(),
+	top: v.union(v.object({ nodeId: v.string(), treePath: v.string() }), v.null()),
 	/** Where the top frame goes on, as a walk key. */
-	after: z.object({ key: z.array(z.any()), inclusive: z.boolean() }),
+	after: bound_validator,
 });
 
-export type files_tree_walk_Cursor = z.infer<typeof files_tree_walk_cursor_schema>;
+export type files_tree_walk_Cursor = Infer<typeof files_tree_walk_cursor_validator>;
 
 type Frame = {
 	scopeNodeId: Id<"files_nodes"> | null;

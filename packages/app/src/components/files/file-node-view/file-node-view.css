@@ -426,9 +426,9 @@
 	.FileNodeViewViewSelect-popover {
 		width: min(240px, calc(100vw - 16px));
 		min-width: 0;
-		border: 1px solid #3c4451;
+		border: 1px solid var(--color-base-alt-1-10);
 		border-radius: 6px;
-		background: linear-gradient(#282d35, #1f2329);
+		background: linear-gradient(var(--color-base-alt-1-03), var(--color-base-alt-1-02));
 		color: var(--color-fg-11);
 		box-shadow:
 			inset 0 1px 2px oklch(1 0 0 / 0.2),
@@ -437,8 +437,8 @@
 	}
 
 	.FileNodeViewViewSelect-search {
-		background: #282d35;
-		border-bottom-color: #3c4451;
+		background: var(--color-base-alt-1-03);
+		border-bottom-color: var(--color-base-alt-1-10);
 	}
 
 	.FileNodeViewViewSelect-item {

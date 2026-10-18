@@ -17,11 +17,19 @@ export function AppToaster() {
 			// Sonner injects its own styles outside the app CSS layers, so a layered rule cannot change them.
 			// It reads these variables, so set them inline with the floating-surface colors of menus.
 			style={sx({
-				"--normal-bg": "linear-gradient(var(--color-base-alt-1-06), var(--color-base-alt-1-05))",
+				"--normal-bg": "linear-gradient(var(--color-base-alt-1-03), var(--color-base-alt-1-02))",
 				"--normal-border": "var(--color-base-alt-1-10)",
 				"--normal-text": "var(--color-fg-11)",
 				"--border-radius": "6px",
 			})}
+			// Sonner paints its action button with `color: var(--normal-bg)`. Our background is a gradient, which is
+			// not a valid text color, so the label became invisible. Use the colors of the secondary button.
+			toastOptions={{
+				actionButtonStyle: {
+					background: "var(--color-base-1-08)",
+					color: "var(--color-fg-10)",
+				},
+			}}
 		/>
 	);
 }

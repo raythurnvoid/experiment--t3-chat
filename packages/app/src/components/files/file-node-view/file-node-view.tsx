@@ -747,7 +747,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 
 	const handleArchive = useFn(() => {
 		if (!currentNode || !canArchive) return;
-		setArchiveNode({ _id: currentNode._id, name: currentNode.name, kind: currentNode.kind });
+		setArchiveNode({ _id: currentNode._id, name: currentNode.name, path: currentNode.path, kind: currentNode.kind });
 	});
 
 	const handleArchiveModalClose = useFn(() => {
@@ -3191,7 +3191,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const handleArchiveNode = useFn<FileNodeViewFolderExplorer_Props["onArchiveNode"]>((node, returnFocusElement) => {
 		archiveReturnFocusRef.current = returnFocusElement;
-		setArchiveNode({ _id: node._id, name: node.name, kind: node.kind });
+		setArchiveNode({ _id: node._id, name: node.name, path: node.path, kind: node.kind });
 	});
 
 	const handleArchiveModalClose = useFn(() => {
