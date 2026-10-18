@@ -138,7 +138,11 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 	return (
 		<MyModal open={nodes !== null} setOpen={handleOpenChange}>
 			{/* Start on Cancel, the safe choice. Otherwise the name list would take focus first. */}
-			<MyModalPopover className={"FilesArchiveModal" satisfies FilesArchiveModal_ClassNames} initialFocus={cancelRef}>
+			<MyModalPopover
+				className={"FilesArchiveModal" satisfies FilesArchiveModal_ClassNames}
+				initialFocus={cancelRef}
+				unmountOnHide
+			>
 				<MyModalHeader>
 					<MyModalHeading>{heading}</MyModalHeading>
 					<MyModalDescription>

@@ -228,6 +228,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 		<MyModal open={kind !== null} setOpen={handleOpenChange}>
 			<MyModalPopover
 				className={"FileNodeViewFolderCreateNodeModal" satisfies FileNodeViewFolderCreateNodeModal_ClassNames}
+				unmountOnHide
 			>
 				<form
 					className={"FileNodeViewFolderCreateNodeModal-form" satisfies FileNodeViewFolderCreateNodeModal_ClassNames}
