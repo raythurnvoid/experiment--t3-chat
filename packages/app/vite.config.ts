@@ -256,6 +256,7 @@ export default defineConfig({
 			"@tiptap/extension-table-header",
 			"@tiptap/extension-table-row",
 			"@tiptap/suggestion",
+			"@tiptap/y-tiptap",
 		],
 	},
 });

@@ -216,11 +216,11 @@ describe("discover_sources", () => {
 	test("scans personal home once when it is also current", async () => {
 		const f = await fixture(true);
 		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
-		await f.create({ path: "/AGENTS.md", textContent: "ONE_HOME_RULE" });
+		await f.create({ path: "/AGENTS.md", textContent: "ONE-HOME-RULE" });
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
 		expect(found._yay?.workspaces).toHaveLength(1);
 		expect(found._yay?.skills).toEqual([{ workspace: "current", path: "/.agents/skills/example/SKILL.md" }]);
-		expect((await f.system()).match(/ONE_HOME_RULE/gu)).toHaveLength(1);
+		expect((await f.system()).match(/ONE-HOME-RULE/gu)).toHaveLength(1);
 	});
 
 	test("refuses old source access to home after removal and re-invitation", async () => {
@@ -635,7 +635,7 @@ describe("ai_chat_context_create", () => {
 		const f = await fixture();
 		for (const [path, unstagedText] of [
 			["/.agents/skills/example/SKILL.md", skillText],
-			["/AGENTS.md", "PRIVATE_ROOT_RULE"],
+			["/AGENTS.md", "PRIVATE-ROOT-RULE"],
 		]) {
 			const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
 				agentSource: f.agentSource,
@@ -661,15 +661,15 @@ describe("ai_chat_context_create", () => {
 		}
 		const system = await f.system();
 		expect(system).toContain("Saved description");
-		expect(system).toContain("PRIVATE_ROOT_RULE");
+		expect(system).toContain("PRIVATE-ROOT-RULE");
 		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 	});
 
 	test("loads pending root instructions and only current visible ancestors", async () => {
 		const f = await fixture();
-		const rootId = await f.create({ path: "/AGENTS.md", textContent: "SAVED_ROOT\n" });
-		const nestedId = await f.create({ path: "/old/AGENTS.md", textContent: "NESTED_RULE\n" });
-		await f.create({ path: "/invoices/AGENTS.md", textContent: "SIBLING_RULE\n" });
+		const rootId = await f.create({ path: "/AGENTS.md", textContent: "SAVED-ROOT\n" });
+		const nestedId = await f.create({ path: "/old/AGENTS.md", textContent: "NESTED-RULE\n" });
+		await f.create({ path: "/invoices/AGENTS.md", textContent: "SIBLING-RULE\n" });
 		const written = await f.t.action((ctx) =>
 			files_agent_write_file_text(ctx, {
 				agentSource: f.agentSource,
@@ -677,7 +677,7 @@ describe("ai_chat_context_create", () => {
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
 				target: { kind: "saved", id: rootId },
-				unstagedText: "PENDING_ROOT\n",
+				unstagedText: "PENDING-ROOT\n",
 			}),
 		);
 		expect(written._nay).toBeUndefined();
@@ -700,11 +700,11 @@ describe("ai_chat_context_create", () => {
 				}),
 			};
 		});
-		expect(result.system).toContain("PENDING_ROOT");
-		expect(result.system).not.toMatch(/SAVED_ROOT|NESTED_RULE|SIBLING_RULE/u);
+		expect(result.system).toContain("PENDING-ROOT");
+		expect(result.system).not.toMatch(/SAVED-ROOT|NESTED-RULE|SIBLING-RULE/u);
 		expect(result.old).toBe("");
-		expect(result.current).toContain("NESTED_RULE");
+		expect(result.current).toContain("NESTED-RULE");
 		expect(result.current).toContain("/new/AGENTS.md");
-		expect(result.current).not.toContain("SIBLING_RULE");
+		expect(result.current).not.toContain("SIBLING-RULE");
 	});
 });

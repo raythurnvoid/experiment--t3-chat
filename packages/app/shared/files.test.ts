@@ -1492,7 +1492,7 @@ describe("files_parse_markdown_to_html", () => {
 	});
 
 	test("keeps the text of a paragraph inside an ordered list item", () => {
-		const html = files_parse_markdown_to_html("1. a\n   para text here\n");
+		const html = files_parse_markdown_to_html("1. a\n\n   para text here\n");
 		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
 
 		expect(html._yay).toContain("<p>para text here</p>");
@@ -1517,7 +1517,7 @@ describe("files_parse_markdown_to_html", () => {
 	});
 
 	test("reads more text of an ordered item in a bullet item as a paragraph", () => {
-		const html = files_parse_markdown_to_html("- outer\n  1. inner one\n    inner more\n");
+		const html = files_parse_markdown_to_html("- outer\n  1. inner one\n\n    inner more\n");
 		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
 
 		expect(html._yay).toContain("<p>inner more</p>");

@@ -43,6 +43,7 @@ import {
 import { MyButtonIcon, type MyButton_ClassNames, type MyButtonIcon_ClassNames } from "@/components/my-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import type {
 	FileEditorRichText_FgColorCssVarKeys,
 	FileEditorRichText_BgColorCssVarKeys,
@@ -699,9 +700,8 @@ const FileEditorRichTextDragHandleMenuPopover = memo(function FileEditorRichText
 		editor.chain().focus().deleteRange({ from: start, to: end }).run();
 	});
 
-	// Render the menu next to the editor, outside the drag handle. The handle is a draggable `.MyButton`, so
-	// inside it the menu would get its grab cursor and turn on its hover and active styles.
-	const portalElement = editor.view.dom.parentElement;
+	// EditorContent moves its children on unmount. Keep React's menu in the stable app container.
+	const portalElement = document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId);
 	if (!portalElement) {
 		return null;
 	}

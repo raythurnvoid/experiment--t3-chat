@@ -31,6 +31,16 @@ Read the existing specs when the task touches their rules:
 - [Convex](../convex/SKILL.md): backend changes.
 - [Browser QA](../app-playwriter-harness/SKILL.md): live editor checks. Its [file view notes](../app-playwriter-harness/references/file-node-view.md) cover selectors and sidebar flows.
 
+# Tiptap Fork
+
+The fork uses stable v3.32.0. Its packages export source files, and `@tiptap/y-tiptap`
+comes from the same workspace (3.0.10). Keep the fork's worker HTML parser, bubble visibility
+request, block-lexer state, emphasis spacing around marked atoms, and EditorContent unmount
+patches. Upstream now owns the drag-handle portal fix. The rich editor sets `pluginKey="bubbleMenu"`
+to match its visibility and position requests; upstream otherwise creates a key per instance.
+React node views flush when they are created. Shared-page content updates run in a cancellable
+microtask after React commits, so an effect does not call `flushSync` during React's own work.
+
 # Keep Editor View And File Mode Separate
 
 `textKind` chooses the document shape. Markdown uses rich text; other editable text uses `Y.Text`. `collaborationEnabled` separately decides whether the file has a live Yjs document. Both node fields are null for stored blobs and folders. See the editable-text spec for the full mode rules.
@@ -158,6 +168,8 @@ Check the thread list, document marks, scroll container, and CSS transform toget
 Diff hunk controls are Monaco content widgets. The editor CSS sets `anchor-name` from `--FileEditorDiff-anchor-name`; each widget sets `position-anchor` and uses `anchor(left)`. Monaco's EXACT overflow position is relative to the editor, so `afterRender` adds `anchor(top)` to `coordinate.top`. This follows the toolbar and status rows above the editor without a fixed header offset. Hidden editors remove the portalled hunk buttons through `isActive`. For misplaced controls, check both ends of that anchor link, the widget's current hunk position, and browser support before changing offsets.
 
 `packages/app/src/routes/__root.tsx` owns `app_tiptap_hoisting_container` and `app_monaco_hoisting_container`. Editors use these DOM containers for menus and overflow widgets. For focus or outside-click bugs, trace the portal target and event handling as well as the visible editor.
+
+Keep the drag-handle menu in `app_tiptap_hoisting_container`. `EditorContent` moves its children on unmount, so using the editor's parent as a portal target can break React's menu cleanup.
 
 Mounted Tiptap editors use `injectCSS: false`. Keep their styles in app-owned CSS layers. Headless conversion editors keep `element: null`. Follow the editor CSS rules in `AGENTS.md`.
 

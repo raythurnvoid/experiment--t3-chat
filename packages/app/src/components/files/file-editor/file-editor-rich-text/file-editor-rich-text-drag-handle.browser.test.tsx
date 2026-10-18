@@ -1,7 +1,7 @@
 import "@/app.css";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { EditorContent, useEditor } from "@tiptap/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { userEvent } from "vitest/browser";
 import { nonCollaborativeExtensions } from "./extensions.ts";
 import { FileEditorRichTextDragHandle } from "./file-editor-rich-text-drag-handle.tsx";
@@ -30,8 +30,15 @@ async function openSubmenu(name: string) {
 	return await screen.findByRole("menu", { name });
 }
 
+beforeEach(() => {
+	const container = document.createElement("div");
+	container.id = "app_tiptap_hoisting_container";
+	document.body.append(container);
+});
+
 afterEach(() => {
 	cleanup();
+	document.getElementById("app_tiptap_hoisting_container")?.remove();
 });
 
 describe("FileEditorRichTextDragHandle", () => {
