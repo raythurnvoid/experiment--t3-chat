@@ -1,4 +1,6 @@
-import { decodeJwt } from "jose";
+// Import the subpath, not "jose". Convex loads every file a module imports, and the "jose" root
+// re-exports the whole library. Almost every Convex module imports this file.
+import { decodeJwt } from "jose/jwt/decode";
 import { should_never_happen } from "./shared-utils.ts";
 
 /**

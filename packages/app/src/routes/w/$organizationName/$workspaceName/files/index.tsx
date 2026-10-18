@@ -1,8 +1,10 @@
 import { FileNodeView, type FileNodeView_Props } from "@/components/files/file-node-view/file-node-view.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { app_convex_api, type app_convex_Doc } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { files_editor_view_values } from "@/lib/files.ts";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
+import { files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
+import { files_editor_view_values, files_ROOT_ID } from "@/lib/files.ts";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { useConvex } from "convex/react";
@@ -12,6 +14,7 @@ import {
 	files_folder_table_query_clean,
 	files_folder_table_query_MAX_LENGTH,
 } from "../../../../../../shared/files-folder-table-query.ts";
+import { files_node_has_editable_text_content } from "../../../../../../shared/files.ts";
 
 const RouteFiles = memo(function RouteFiles() {
 	const router = useRouter();
@@ -19,6 +22,7 @@ const RouteFiles = memo(function RouteFiles() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const getLoadedNode = FilesTreeProvider.useGetLoadedNode();
 
 	const handleNavigateSearch = useFn<FileNodeView_Props["onNavigateSearch"]>((search, options) => {
 		navigate({
@@ -56,6 +60,69 @@ const RouteFiles = memo(function RouteFiles() {
 			});
 		});
 	}, [router, convex, membershipId]);
+
+	// Start the Yjs reads of the opened file as soon as the navigation starts, so they run while the
+	// view loads the file's queries. The rich text editor takes them when it mounts.
+	// A click on a loaded row tells the node's type, so preload only a file that the rich text editor
+	// opens. A page load or a link from elsewhere does not tell it, so preload anyway. A folder then
+	// costs one wasted action and one wasted query, which both answer null.
+	useEffect(() => {
+		let cancelSnapshotPreload: (() => void) | null = null;
+		// The router has not validated this search yet, so read it as unknown.
+		const preload_snapshot = (search: Partial<Record<string, unknown>>) => {
+			const nodeId = search.nodeId;
+			if (
+				typeof nodeId !== "string" ||
+				nodeId === files_ROOT_ID ||
+				search.pendingNodeId !== undefined ||
+				search.fileView !== undefined ||
+				(search.view !== undefined && search.view !== "rich_text_editor")
+			) {
+				return;
+			}
+
+			const node = getLoadedNode(nodeId);
+			if (
+				node &&
+				(node.locked ||
+					!files_node_has_editable_text_content(node) ||
+					node.textKind !== "rich_text" ||
+					!node.collaborationEnabled)
+			) {
+				return;
+			}
+
+			const args = { membershipId, nodeId: nodeId as app_convex_Id<"files_nodes"> };
+			cancelSnapshotPreload = files_yjs_preload_snapshot(args);
+			// The editor also waits for the update log. Keep the editor's arg order, so its subscription
+			// joins this one.
+			convex.prewarmQuery({
+				query: app_convex_api.files_yjs_load.yjs_get_incremental_updates,
+				args,
+				extendSubscriptionFor: 10_000,
+			});
+		};
+
+		const initialSearch: Partial<Record<string, unknown>> = router.state.location.search;
+		preload_snapshot(initialSearch);
+		// Compare with the last navigation, not with `event.fromLocation`. That is the last finished
+		// navigation, and the view writes its `view` param before the click's navigation finishes.
+		let lastNodeId = initialSearch.nodeId;
+		const unsubscribe = router.subscribe("onBeforeNavigate", (event) => {
+			const search: Partial<Record<string, unknown>> = event.toLocation.search;
+			// A new view or filter of the open file keeps its editor, so it would never take a new read.
+			if (event.pathChanged || search.nodeId === lastNodeId) {
+				return;
+			}
+			lastNodeId = search.nodeId;
+			preload_snapshot(search);
+		});
+
+		return () => {
+			unsubscribe();
+			cancelSnapshotPreload?.();
+		};
+	}, [router, convex, membershipId, getLoadedNode]);
 
 	return <FileNodeView searchParams={searchParams} onNavigateSearch={handleNavigateSearch} />;
 });

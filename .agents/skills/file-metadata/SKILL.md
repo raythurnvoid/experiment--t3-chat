@@ -733,10 +733,10 @@ quoted, and the render always ends with a newline. The dialog remembers the exac
 
 Three rules the tests pin but cannot explain. Read them before you change the effect:
 
-- **Never write a ref inside a `setState` updater here.** The app runs in `StrictMode`, which invokes
-  the updater twice, and the second pass would see the cleared ref and fall into the conflict branch.
-  This shipped as a false "Metadata changed elsewhere" on every save until live QA found it. The
-  dialog's tests render under `StrictMode` for exactly this reason.
+- **Never write a ref inside a `setState` updater here.** React can run an updater more than once,
+  and the second pass would see the cleared ref and fall into the conflict branch. This shipped as a
+  false "Metadata changed elsewhere" on every save until live QA found it, back when the app ran in
+  `StrictMode`. The dialog's tests still render under `StrictMode` so they run each updater twice.
 - **Report the save result through the updater form**, never by writing a whole state object read
   from a ref. The reactive query push and the mutation promise can land in the same tick, and a whole
   object write would undo the adoption.

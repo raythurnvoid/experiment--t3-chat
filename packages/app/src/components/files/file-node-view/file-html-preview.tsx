@@ -98,7 +98,7 @@ async function read_preview_source(args: {
 	entry: FileHtmlPreview_Entry;
 	source: FileHtmlPreview_Source;
 	draft: FileEditor_PreviewSnapshot | null;
-	pendingUpdate: FunctionReturnType<typeof app_convex_api.files_pending_updates.get_file_pending_update>;
+	pendingUpdate: FunctionReturnType<typeof app_convex_api.files_pending_target.get_file_pending_update>;
 }) {
 	const { membershipId, entry, source, draft, pendingUpdate } = args;
 
@@ -219,7 +219,7 @@ async function read_preview_source(args: {
 			}
 		}
 
-		const currentPending = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_update, {
+		const currentPending = await app_convex.query(app_convex_api.files_pending_target.get_file_pending_update, {
 			membershipId,
 			target: { kind: "saved", id: node._id },
 		});
@@ -288,12 +288,12 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 	const rootKind = savedNode?.textKind ?? privateTextIntent?.textKind;
 	const yjsLastSequenceId = savedNode?.yjsLastSequenceId ?? null;
 
-	const pendingUpdate = useQuery(app_convex_api.files_pending_updates.get_file_pending_update, {
+	const pendingUpdate = useQuery(app_convex_api.files_pending_target.get_file_pending_update, {
 		membershipId,
 		target,
 	});
 	const lastSequence = useQuery(
-		app_convex_api.files_nodes.get_file_last_yjs_sequence,
+		app_convex_api.files_yjs_load.get_file_last_yjs_sequence,
 		savedNode?.collaborationEnabled ? { membershipId, nodeId: savedNode._id } : "skip",
 	);
 

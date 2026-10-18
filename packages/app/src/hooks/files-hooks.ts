@@ -30,7 +30,6 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 
 	// Keep a save warning while this file gets a new provider.
 	const persistentPushRefusalReasonRef = useRef<files_yjs_PushRefusalReason | null>(null);
-	const onDestroyRef = useRef<() => void>(null);
 
 	// This cleanup closes the provider created by the previous effect.
 	// Read the latest access before deciding whether to drop its edits.
@@ -51,72 +50,63 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 		setSyncChanged(false);
 		lastStatusRef.current = "loading";
 
-		// Wait one task. In development, React runs this effect twice and cleans up
-		// the first run.
-		const reactStrictWorkaroundTimer = setTimeout(() => {
-			const yjsProvider = new files_yjs_Provider({
-				nodeId: nodeId,
-				expectedYjsLastSequenceId: yjsLastSequenceId,
-				membershipId: membershipId,
-				presenceStore: presenceStore,
-				editable,
-			});
-
-			setYjsProvider(yjsProvider);
-			setProviderNodeId(nodeId);
-
-			function handleStatus() {
-				const status = yjsProvider.getStatus();
-				setSyncStatus(status);
-				if (lastStatusRef.current !== status) {
-					setSyncChanged(true);
-					lastStatusRef.current = status;
-				}
-			}
-
-			handleStatus();
-			yjsProvider.on("status", handleStatus);
-
-			function handleLoadFailed(failed: boolean) {
-				setLoadFailed(failed);
-			}
-
-			setLoadFailed(yjsProvider.loadFailed);
-			yjsProvider.on("loadFailed", handleLoadFailed);
-
-			function handlePushRefused(reason: files_yjs_PushRefusalReason | null, persistent = false) {
-				// Keep access warnings while this hook replaces the provider.
-				if (persistent && reason) {
-					persistentPushRefusalReasonRef.current = reason;
-				}
-				setPushRefusedReason(persistentPushRefusalReasonRef.current ?? reason);
-			}
-
-			// The event may fire before this listener is ready. Read the current reason too.
-			setPushRefusedReason(persistentPushRefusalReasonRef.current ?? yjsProvider.pushRefusedReason);
-			yjsProvider.on("pushRefused", handlePushRefused);
-
-			const unregisterQaProvider = app_qa_register_files_yjs_provider(yjsProvider);
-
-			onDestroyRef.current = () => {
-				const latestAccess = getLatestAccess();
-				if (latestAccess.nodeId === nodeId && latestAccess.editable !== editable) {
-					// Clear queued edits before `destroy()` can send them after the file locks or
-					// the user loses write permission.
-					yjsProvider.dropPendingUpdatesForAccessChange(latestAccess);
-				}
-
-				yjsProvider.off("status", handleStatus);
-				yjsProvider.off("loadFailed", handleLoadFailed);
-				yjsProvider.off("pushRefused", handlePushRefused);
-				unregisterQaProvider();
-				yjsProvider.destroy();
-			};
+		const yjsProvider = new files_yjs_Provider({
+			nodeId: nodeId,
+			expectedYjsLastSequenceId: yjsLastSequenceId,
+			membershipId: membershipId,
+			presenceStore: presenceStore,
+			editable,
 		});
 
+		setYjsProvider(yjsProvider);
+		setProviderNodeId(nodeId);
+
+		function handleStatus() {
+			const status = yjsProvider.getStatus();
+			setSyncStatus(status);
+			if (lastStatusRef.current !== status) {
+				setSyncChanged(true);
+				lastStatusRef.current = status;
+			}
+		}
+
+		handleStatus();
+		yjsProvider.on("status", handleStatus);
+
+		function handleLoadFailed(failed: boolean) {
+			setLoadFailed(failed);
+		}
+
+		setLoadFailed(yjsProvider.loadFailed);
+		yjsProvider.on("loadFailed", handleLoadFailed);
+
+		function handlePushRefused(reason: files_yjs_PushRefusalReason | null, persistent = false) {
+			// Keep access warnings while this hook replaces the provider.
+			if (persistent && reason) {
+				persistentPushRefusalReasonRef.current = reason;
+			}
+			setPushRefusedReason(persistentPushRefusalReasonRef.current ?? reason);
+		}
+
+		// The event may fire before this listener is ready. Read the current reason too.
+		setPushRefusedReason(persistentPushRefusalReasonRef.current ?? yjsProvider.pushRefusedReason);
+		yjsProvider.on("pushRefused", handlePushRefused);
+
+		const unregisterQaProvider = app_qa_register_files_yjs_provider(yjsProvider);
+
 		return () => {
-			clearTimeout(reactStrictWorkaroundTimer);
-			onDestroyRef.current?.();
+			const latestAccess = getLatestAccess();
+			if (latestAccess.nodeId === nodeId && latestAccess.editable !== editable) {
+				// Clear queued edits before `destroy()` can send them after the file locks or
+				// the user loses write permission.
+				yjsProvider.dropPendingUpdatesForAccessChange(latestAccess);
+			}
+
+			yjsProvider.off("status", handleStatus);
+			yjsProvider.off("loadFailed", handleLoadFailed);
+			yjsProvider.off("pushRefused", handlePushRefused);
+			unregisterQaProvider();
+			yjsProvider.destroy();
 		};
 	}, [editable, membershipId, nodeId, presenceStore, yjsLastSequenceId]);
 

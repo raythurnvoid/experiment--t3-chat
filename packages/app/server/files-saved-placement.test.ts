@@ -332,7 +332,7 @@ describe("saved placement foundation", () => {
 			unmaterializedUpdateCount: 1,
 			unmaterializedUpdateBytes: 20,
 		});
-		expect(await f.asUser.query(api.files_nodes.get_file_last_yjs_sequence, {
+		expect(await f.asUser.query(api.files_yjs_load.get_file_last_yjs_sequence, {
 			membershipId: f.db.membershipId, nodeId: f.nodeId,
 		}), "the editor sees the selected sequence head").toEqual({ yjsLastSequenceId: sequence._id, lastSequence: 7 });
 		expect((await f.t.run((ctx) => ctx.db.get("files_yjs_docs_last_sequences", sequence._id)))?.lastSequence).toBe(

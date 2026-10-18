@@ -790,8 +790,8 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
   descriptors and settled responses with `watchQuery(...).localQueryResult()`; do not add subscriptions
   just to count them. A file.extension or file.size sort with no filter also reads a `missing` segment,
   only after the value segment is done. A page too big for its per-row reads comes back empty with
-  `pageStatus: "SplitRequired"` (the split guard), and the hook splits it. Dev StrictMode can leave
-  duplicate subscriptions with the same args, so group descriptors by exact args first.
+  `pageStatus: "SplitRequired"` (the split guard), and the hook splits it. Two components or a Fast
+  Refresh can leave duplicate subscriptions with the same args, so group descriptors by exact args first.
   `useFilesSortedChildren` shows a node held by two streams once, so check raw page responses too.
 - **Filter and preview.** Combine a file.name filter with its sort. Check preview five, Show more, Show
   less and exact ordered ids. The first Show more reveals all loaded rows; once all show, Show more asks

@@ -34,7 +34,7 @@ export const FileEditorSidebarDetails = memo(function FileEditorSidebarDetails(p
 
 	// A converted upload keeps its stored blob asset, so its size is still the asset size. A file
 	// created in-app has no asset; the size then reads "Unknown" instead of hiding the row.
-	const asset = useQuery(app_convex_api.r2.get_asset_by_file_node_id, {
+	const asset = useQuery(app_convex_api.files_node_asset.get_asset_by_file_node_id, {
 		membershipId,
 		fileNodeId: node._id,
 	});

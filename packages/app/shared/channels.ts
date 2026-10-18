@@ -1,6 +1,7 @@
+// Do not import the Markdown editor code (`files-tiptap.ts`) here. `convex/channels.ts` imports this
+// file, and Convex loads every file a module imports, even unused ones. That code is about 2 MB.
 import { Result } from "common/errors-as-values-utils.ts";
 import { z } from "zod";
-import { files_tiptap_markdown_to_plain_text } from "./files-tiptap.ts";
 import { file_quotes_serialize_draft, type file_quotes_Quote } from "./file-quotes.ts";
 
 // Starting values, not product rules. They protect the system. Raise them step by step as needed.
@@ -42,13 +43,6 @@ export function channels_is_emoji(emoji: string) {
 	return /^(?:\p{Regional_Indicator}{2}|[0-9#*]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?)*)$/u.test(
 		emoji,
 	);
-}
-
-/**
- * Replies and the editor must read Markdown in the same way.
- */
-export function channels_markdown_to_plain_text(markdown: string) {
-	return files_tiptap_markdown_to_plain_text({ markdown });
 }
 
 export function channels_render_people_mentions(markdown: string, names: readonly string[]) {

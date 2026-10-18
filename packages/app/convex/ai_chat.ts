@@ -123,10 +123,10 @@ export const experimental_reuseContext = true;
 export {
 	upsert_file_pending_update,
 	persist_file_pending_update_rebased_state,
-	get_file_pending_update,
 	get_file_pending_update_last_sequence_saved,
 	save_file_pending_update,
 } from "./files_pending_updates.ts";
+export { get_file_pending_update } from "./files_pending_target.ts";
 
 /**
  * `thread_delete` aborts at most this many branch copies of the chat at once. A copy it misses

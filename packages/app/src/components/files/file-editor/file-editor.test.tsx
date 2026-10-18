@@ -26,10 +26,12 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	},
 	app_convex_api: {
 		files_tree: { get_current_user_file_write_permission: "get_current_user_file_write_permission" },
-		files_nodes: {
+		files_yjs_load: {
 			get_file_last_yjs_sequence: "get_file_last_yjs_sequence",
 			yjs_prepare_doc_last_snapshot: "yjs_prepare_doc_last_snapshot",
 			yjs_get_incremental_updates: "yjs_get_incremental_updates",
+		},
+		files_nodes: {
 			yjs_push_update: "yjs_push_update",
 		},
 	},

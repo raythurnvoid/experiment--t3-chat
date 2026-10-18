@@ -1410,11 +1410,11 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	const primaryPanelRef = useRef<HTMLDivElement>(null);
 	const [previewRevision, setPreviewRevision] = useState(0);
 	const [previewSource, setPreviewSource] = useState<FileHtmlPreview_Source>();
-	const asset = useQuery(app_convex_api.r2.get_asset_by_file_node_id, {
+	const asset = useQuery(app_convex_api.files_node_asset.get_asset_by_file_node_id, {
 		membershipId,
 		fileNodeId: node._id,
 	});
-	const fileViewPlugins = useQuery(app_convex_api.plugins_ui.list_file_views, { membershipId });
+	const fileViewPlugins = useQuery(app_convex_api.plugins_ui_installed.list_file_views, { membershipId });
 	const isEditable = files_node_has_editable_text_content(node);
 	const hasHtmlPreview =
 		isEditable && files_editable_text_content_type_of(node.contentType) === "text/html;charset=utf-8";
@@ -2293,7 +2293,7 @@ const STORED_FILE_METADATA_SKELETON_ROW_COUNT = 8;
 
 type FileNodeViewStoredFile_Props = {
 	node: FileNodeViewResolvedNode;
-	asset: FunctionReturnType<typeof app_convex_api.r2.get_asset_by_file_node_id> | undefined;
+	asset: FunctionReturnType<typeof app_convex_api.files_node_asset.get_asset_by_file_node_id> | undefined;
 };
 
 const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileNodeViewStoredFile_Props) {
@@ -2516,9 +2516,9 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 	// frame and dies with it, so the child never has to ask which frame a message came from.
 	const frameKey = `${membershipId}:${pluginVersionId}:${fileViewId}:${node._id}:${attempt}`;
 	// The frame key the effect below has already handled. It is how that effect tells the first frame
-	// apart from a frame that replaced a running one. A plain "first run" flag would not do: React
-	// StrictMode runs a mount effect twice in development, so the second run would read the flag as a
-	// replacement and steal focus the first time the member opens this view.
+	// apart from a frame that replaced a running one. A plain "first run" flag would not do: React can
+	// run the effect again for the same frame (Fast Refresh does in development), so the second run would
+	// read the flag as a replacement and steal focus the first time the member opens this view.
 	const handledFrameKeyRef = useRef(frameKey);
 
 	const handleRetry = useFn(() => {
@@ -6042,14 +6042,14 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		loadMore: loadMorePendingUpdates,
 	} = useFilesPendingUpdates({ membershipId, listKey: "all" });
 	const savedEditorPendingUpdate = useQuery(
-		app_convex_api.files_pending_updates.get_file_pending_update,
+		app_convex_api.files_pending_target.get_file_pending_update,
 		activeEditorTarget?.kind === "saved" ? { membershipId, target: activeEditorTarget } : "skip",
 	);
 	// The open editor does not depend on which review pages have loaded.
 	const editorPendingUpdate =
 		activeEditorTarget?.kind === "private" ? privateTargetView?.entry.pendingUpdate : savedEditorPendingUpdate;
 	const activeEditorServerSequenceData = useQuery(
-		app_convex_api.files_nodes.get_file_last_yjs_sequence,
+		app_convex_api.files_yjs_load.get_file_last_yjs_sequence,
 		activeEditorNodeId && activeEditorNodeIsCollaborative
 			? {
 					membershipId,

@@ -9,6 +9,7 @@ import { files_sort_text_key } from "../../shared/files-sort.ts";
 import type { files_SavedStream } from "../../shared/files.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useFilesPaginatedQuery } from "@/hooks/files-paginated-query-hooks.ts";
+import { useFn } from "@/hooks/utils-hooks.ts";
 
 /**
  * One tree row. A row with `locked: true` is a child the user cannot open: it has only its name,
@@ -41,6 +42,7 @@ type FilesTreeFoldersRequest = {
 
 const FILES_TREE_PAGE_SIZE = 200;
 const FILES_TREE_SHARED_ROOTS_PAGE_SIZE = 50;
+const FILES_TREE_NO_HOISTED_IDS: ReadonlySet<string> = new Set();
 
 function folder_key(folderId: FilesTreeFolderId, archived: boolean) {
 	return `${folderId}:${archived ? "archived" : "active"}`;
@@ -69,6 +71,16 @@ function next_results(
 		return current;
 	}
 	return next;
+}
+
+function find_loaded_node(folderResults: Map<string, FilesTreeFolderResult>, nodeId: string) {
+	for (const result of folderResults.values()) {
+		const row = result.rows.find((item) => item._id === nodeId);
+		if (row) {
+			return row;
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -447,19 +459,28 @@ const FilesTreeProvider = Object.assign(
 				[value.registerFolders, ownerId, requestKey],
 			);
 
-			// Keep this manual memo. Callers rebuild their whole tree when these rows change identity, and a
-			// new array on every render would rebuild it on every render.
+			// Use manual memos here, not the React Compiler. Callers rebuild their whole tree when `rows` or
+			// `hoistedIds` change identity. Callers also pass new `folderIds` and `pinnedNodeIds` arrays on
+			// every render, and the compiler compares inputs by identity, so its cache would miss on every
+			// render. These memos depend on the JSON text of the request instead.
+			// The loaded rows do not read the pins. Opening a row of the tree pins a node that is already
+			// loaded, so the rows keep their identity and the tree rows do not render again.
 			const { folderResults, pinResults, sharedRoots } = value;
-			const folders = useMemo(() => {
-				const { folderIds, archived, pinnedNodeIds } = JSON.parse(requestKey) as FilesTreeFoldersRequest;
+			const foldersKey = JSON.stringify({ folderIds: request.folderIds, archived: request.archived });
+			const pinnedKey = JSON.stringify(request.pinnedNodeIds);
+			const loaded = useMemo(() => {
+				const { folderIds, archived } = JSON.parse(foldersKey) as Omit<FilesTreeFoldersRequest, "pinnedNodeIds">;
 				const statusByFolderId = new Map<string, FilesTreeFolderResult["status"]>();
 				const rowById = new Map<string, FilesTreeRow>();
-				// Rows shown at the top because the user cannot read their parent.
-				const hoistedIds = new Set<string>();
 
 				const rootResult = folderResults.get(folder_key(files_ROOT_ID, false));
 				if (!rootResult || rootResult.status === "loading") {
-					return { rows: undefined, statusByFolderId, hoistedIds, loadMore: (_folderId: FilesTreeFolderId) => {} };
+					return {
+						rowById: undefined,
+						rows: undefined,
+						statusByFolderId,
+						loadMore: (_folderId: FilesTreeFolderId) => {},
+					};
 				}
 
 				for (const folderId of [files_ROOT_ID, ...folderIds]) {
@@ -482,8 +503,25 @@ const FilesTreeProvider = Object.assign(
 					}
 				}
 
+				const loadMore = (folderId: FilesTreeFolderId) => {
+					folderResults.get(folder_key(folderId, false))?.loadMore();
+					if (archived) {
+						folderResults.get(folder_key(folderId, true))?.loadMore();
+					}
+				};
+
+				return { rowById, rows: [...rowById.values()], statusByFolderId, loadMore };
+			}, [folderResults, foldersKey]);
+
+			const folders = useMemo(() => {
+				const pinnedNodeIds = JSON.parse(pinnedKey) as string[];
+				const { rowById, rows, statusByFolderId, loadMore } = loaded;
+				// Rows shown at the top because the user cannot read their parent.
+				const hoistedIds = new Set<string>();
+				const pinnedRowById = new Map<string, FilesTreeRow>();
+
 				// A pinned node shows even when its page is not loaded yet. A loaded row always wins over the pinned copy.
-				for (const nodeId of pinnedNodeIds) {
+				for (const nodeId of rowById ? pinnedNodeIds : []) {
 					const pin = pinResults.get(nodeId);
 					if (!pin) {
 						continue;
@@ -495,21 +533,20 @@ const FilesTreeProvider = Object.assign(
 					}
 					// The server gives a pinned node and its ancestors only when the user can open them.
 					for (const row of chain) {
-						if (!rowById.has(row._id)) {
-							rowById.set(row._id, { ...row, locked: false });
+						if (!rowById?.has(row._id) && !pinnedRowById.has(row._id)) {
+							pinnedRowById.set(row._id, { ...row, locked: false });
 						}
 					}
 				}
 
-				const loadMore = (folderId: FilesTreeFolderId) => {
-					folderResults.get(folder_key(folderId, false))?.loadMore();
-					if (archived) {
-						folderResults.get(folder_key(folderId, true))?.loadMore();
-					}
+				return {
+					rows: rows && pinnedRowById.size > 0 ? [...rows, ...pinnedRowById.values()] : rows,
+					statusByFolderId,
+					// Share one empty set, so a pin with nothing to hoist keeps the same set.
+					hoistedIds: hoistedIds.size > 0 ? hoistedIds : FILES_TREE_NO_HOISTED_IDS,
+					loadMore,
 				};
-
-				return { rows: [...rowById.values()], statusByFolderId, hoistedIds, loadMore };
-			}, [folderResults, pinResults, requestKey]);
+			}, [loaded, pinResults, pinnedKey]);
 
 			// Active shares first, then archived ones while the archived items show.
 			const sharedRootsResult: FilesTreeFolderResult = request.archived
@@ -541,13 +578,21 @@ const FilesTreeProvider = Object.assign(
 			if (nodeId === undefined) {
 				return undefined;
 			}
-			for (const result of value.folderResults.values()) {
-				const row = result.rows.find((item) => item._id === nodeId);
-				if (row) {
-					return row;
-				}
+			return find_loaded_node(value.folderResults, nodeId);
+		},
+
+		/**
+		 * Like `useLoadedNode`, as a function for event handlers such as a navigation listener.
+		 * The function keeps one identity and always reads the latest rows.
+		 */
+		useGetLoadedNode: function useGetLoadedNode() {
+			const value = use(FilesTreeContext);
+			if (!value) {
+				throw new Error("FilesTreeProvider.useGetLoadedNode must be used within FilesTreeProvider");
 			}
-			return undefined;
+
+			const { folderResults } = value;
+			return useFn((nodeId: string) => find_loaded_node(folderResults, nodeId));
 		},
 
 		/**

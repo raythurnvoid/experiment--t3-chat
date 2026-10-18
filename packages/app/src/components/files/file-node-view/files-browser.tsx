@@ -401,7 +401,7 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 			: null;
 	const sessionFileName = session?.mode === "file" ? session.path.split("/").at(-1) : null;
 	const sessionId = mine?.sessionId;
-	const pendingUpdate = useQuery(app_convex_api.files_pending_updates.get_file_pending_update, {
+	const pendingUpdate = useQuery(app_convex_api.files_pending_target.get_file_pending_update, {
 		membershipId,
 		target:
 			targetKind === "saved"

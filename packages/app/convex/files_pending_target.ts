@@ -6,7 +6,7 @@ import type { RegisteredQuery } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { access_control_db_authorize_membership, access_control_db_authorize_node } from "./access_control.ts";
@@ -488,3 +488,69 @@ export type files_pending_target_get_file_pending_target_Result =
 	typeof get_file_pending_target extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+// Keep this read here, not in files_pending_updates.ts. Opening a file waits on it, and that module
+// loads about 5 MB of code on a cold call.
+export const get_file_pending_update = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		target: files_pending_target_validator,
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({
+			...doc(app_convex_schema, "files_pending_updates").fields,
+			currentYjsLastSequenceId: v.union(v.id("files_yjs_docs_last_sequences"), v.null()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		if (args.target.kind === "private") {
+			const data = await files_pending_target_db_get_private(ctx, {
+				membership,
+				privateNodeId: args.target.id,
+				pendingUpdateId: args.pendingUpdateId,
+				recoveryRead: true,
+			});
+			return data._nay
+				? null
+				: { ...(await files_pending_target_db_redact_copy_source(ctx, data._yay.pendingUpdate)), currentYjsLastSequenceId: null };
+		}
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: args.target.id,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
+		const pendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			target: args.target,
+			pendingUpdateId: args.pendingUpdateId,
+		});
+		if (!pendingUpdate) {
+			return null;
+		}
+		return {
+			...(await files_pending_target_db_redact_copy_source(ctx, pendingUpdate)),
+			currentYjsLastSequenceId: authorized._yay.fileNode.yjsLastSequenceId ?? null,
+		};
+	},
+});

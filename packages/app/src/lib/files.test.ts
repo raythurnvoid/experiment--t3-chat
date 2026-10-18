@@ -13,20 +13,22 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		mutation: (...args: unknown[]) => convexMutationMock(...args),
 	},
 	app_convex_api: {
-		files_nodes: {
+		files_yjs_load: {
 			get_file_last_yjs_sequence: "get_file_last_yjs_sequence",
-			yjs_get_incremental_updates: "yjs_get_incremental_updates",
 			yjs_prepare_doc_last_snapshot: "yjs_prepare_doc_last_snapshot",
+			yjs_get_incremental_updates: "yjs_get_incremental_updates",
 		},
 		files_pending_updates: {
-			get_file_pending_update: "get_file_pending_update",
 			get_file_pending_update_state_page: "get_file_pending_update_state_page",
 			create_file_pending_update_operation_batch: "create_file_pending_update_operation_batch",
 			stage_file_pending_update_text_input: "stage_file_pending_update_text_input",
 			upsert_file_pending_update: "upsert_file_pending_update",
 			save_file_pending_update: "save_file_pending_update",
 		},
-		files_pending_target: { get_file_pending_target: "get_file_pending_target" },
+		files_pending_target: {
+			get_file_pending_target: "get_file_pending_target",
+			get_file_pending_update: "get_file_pending_update",
+		},
 	},
 }));
 

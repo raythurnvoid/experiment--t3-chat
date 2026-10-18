@@ -160,7 +160,7 @@ describe("public Move scale", () => {
 			const peaks = measure_move(0.75, hasDraft ? { userId: db.userId, nodeId: item.nodeId, fieldPages } : undefined);
 			await finish_move(fixture, await start_move(fixture, [item.nodeId], target._id), 1);
 			if (pendingUpdate) {
-				const afterDraft = await asUser.query(api.files_pending_updates.get_file_pending_update, {
+				const afterDraft = await asUser.query(api.files_pending_target.get_file_pending_update, {
 					membershipId: db.membershipId,
 						target: { kind: "saved", id: item.nodeId },
 				});

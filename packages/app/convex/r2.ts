@@ -68,7 +68,8 @@ import {
 	files_metadata_preflight_frontmatter,
 } from "../shared/files-metadata.ts";
 import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
-import { db_get_file_content_materialization_db_state, files_nodes_db_hard_delete_node } from "./files_nodes.ts";
+import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
+import { db_get_file_content_materialization_db_state } from "./files_nodes_db.ts";
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
 import {
 	files_saved_placement_db_get_node,
@@ -599,56 +600,6 @@ export const create_signed_download_url = action({
 		if (signed._nay) return signed;
 
 		return Result({ _yay: { url: signed._yay.url } });
-	},
-});
-
-export const get_asset_by_file_node_id = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		fileNodeId: v.id("files_nodes"),
-	},
-	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return null;
-		}
-
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.fileNodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== membership.organizationId ||
-			fileNode.workspaceId !== membership.workspaceId ||
-			fileNode.archiveOperationId !== null ||
-			!fileNode.assetId
-		) {
-			return null;
-		}
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-			fileNode,
-		});
-		if (authorized._nay) {
-			return null;
-		}
-
-		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
-		if (!asset || asset.organizationId !== fileNode.organizationId || asset.workspaceId !== fileNode.workspaceId) {
-			return null;
-		}
-
-		return asset;
 	},
 });
 

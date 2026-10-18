@@ -2322,7 +2322,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
 
 	useEffect(() => {
-		// In dev, React StrictMode may mount/unmount/mount to detect side effects.
+		// React can clean up and run this effect again on the same component (Fast Refresh does in dev).
 		// Ensure we don't permanently disable host registration after the first cleanup.
 		isUnmountingRef.current = false;
 
@@ -2502,7 +2502,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 
 	const convex = useConvex();
 	const { openReviewRun } = AppActivitiesProvider.useContext();
-	const pendingUpdateResult = useStableQuery(api.files_pending_updates.get_file_pending_update, {
+	const pendingUpdateResult = useStableQuery(api.files_pending_target.get_file_pending_update, {
 		membershipId,
 		target,
 		pendingUpdateId,
@@ -2682,7 +2682,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				// would reload them as soon as `isSaving` flips. So keep `isSaving` until the cache shows
 				// what this save left behind: no doc, the doc rewritten by the save, or a newer doc.
 				const savedRevision = savePendingResult._yay.pendingUpdateRevision;
-				const pendingUpdateWatch = convex.watchQuery(api.files_pending_updates.get_file_pending_update, {
+				const pendingUpdateWatch = convex.watchQuery(api.files_pending_target.get_file_pending_update, {
 					membershipId,
 					target,
 					pendingUpdateId,
@@ -2695,7 +2695,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				};
 				while (!cacheShowsSave()) {
 					await app_convex_wait_new_query_value({
-						query: api.files_pending_updates.get_file_pending_update,
+						query: api.files_pending_target.get_file_pending_update,
 						queryArgs: {
 							membershipId,
 							target,
@@ -2714,7 +2714,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				// Fetch also the pending updates query to ensure we perform
 				// the state cleanups only after we are sure the data is available
 				// in the local convex cache.
-				convex.query(api.files_pending_updates.get_file_pending_update, {
+				convex.query(api.files_pending_target.get_file_pending_update, {
 					membershipId,
 					target,
 					pendingUpdateId: currentPendingUpdateId,
@@ -2865,7 +2865,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			// Fetch the pending updates query before publishing the refreshed file content so
 			// sync cleanup waits for the authoritative pending-edit cache state to converge.
 			await Promise.allSettled([
-				convex.query(api.files_pending_updates.get_file_pending_update, {
+				convex.query(api.files_pending_target.get_file_pending_update, {
 					membershipId,
 					target,
 					pendingUpdateId: currentPendingUpdateId,

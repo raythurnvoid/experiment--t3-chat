@@ -56,6 +56,7 @@ import type * as files_move_media_db from "../files_move_media_db.js";
 import type * as files_move_owner_work from "../files_move_owner_work.js";
 import type * as files_move_pages from "../files_move_pages.js";
 import type * as files_move_run from "../files_move_run.js";
+import type * as files_node_asset from "../files_node_asset.js";
 import type * as files_nodes from "../files_nodes.js";
 import type * as files_nodes_ai from "../files_nodes_ai.js";
 import type * as files_nodes_ai_http_routes from "../files_nodes_ai_http_routes.js";
@@ -97,6 +98,7 @@ import type * as files_visible_db from "../files_visible_db.js";
 import type * as files_volume_access from "../files_volume_access.js";
 import type * as files_write_policy_db from "../files_write_policy_db.js";
 import type * as files_write_policy_runs from "../files_write_policy_runs.js";
+import type * as files_yjs_load from "../files_yjs_load.js";
 import type * as functions from "../functions.js";
 import type * as github_mounts from "../github_mounts.js";
 import type * as github_mounts_inventory from "../github_mounts_inventory.js";
@@ -137,6 +139,7 @@ import type * as plugins_service_grant_requests from "../plugins_service_grant_r
 import type * as plugins_service_http_routes from "../plugins_service_http_routes.js";
 import type * as plugins_ui from "../plugins_ui.js";
 import type * as plugins_ui_http_routes from "../plugins_ui_http_routes.js";
+import type * as plugins_ui_installed from "../plugins_ui_installed.js";
 import type * as plugins_volumes from "../plugins_volumes.js";
 import type * as presence from "../presence.js";
 import type * as public_api from "../public_api.js";
@@ -216,6 +219,7 @@ declare const fullApi: ApiFromModules<{
   files_move_owner_work: typeof files_move_owner_work;
   files_move_pages: typeof files_move_pages;
   files_move_run: typeof files_move_run;
+  files_node_asset: typeof files_node_asset;
   files_nodes: typeof files_nodes;
   files_nodes_ai: typeof files_nodes_ai;
   files_nodes_ai_http_routes: typeof files_nodes_ai_http_routes;
@@ -257,6 +261,7 @@ declare const fullApi: ApiFromModules<{
   files_volume_access: typeof files_volume_access;
   files_write_policy_db: typeof files_write_policy_db;
   files_write_policy_runs: typeof files_write_policy_runs;
+  files_yjs_load: typeof files_yjs_load;
   functions: typeof functions;
   github_mounts: typeof github_mounts;
   github_mounts_inventory: typeof github_mounts_inventory;
@@ -297,6 +302,7 @@ declare const fullApi: ApiFromModules<{
   plugins_service_http_routes: typeof plugins_service_http_routes;
   plugins_ui: typeof plugins_ui;
   plugins_ui_http_routes: typeof plugins_ui_http_routes;
+  plugins_ui_installed: typeof plugins_ui_installed;
   plugins_volumes: typeof plugins_volumes;
   presence: typeof presence;
   public_api: typeof public_api;

@@ -559,7 +559,7 @@ beforeEach(() => {
 				return { count: pendingUpdates.length, truncated: false };
 			case "files_pending_updates:get_pending_move_occupant":
 				return null;
-			case "files_pending_updates:get_file_pending_update": {
+			case "files_pending_target:get_file_pending_update": {
 				if (savedPendingUpdate !== undefined) return savedPendingUpdate;
 				const target = (args as { target: { kind: string; id: string } }).target;
 				const views = pendingUpdates as Array<{
@@ -678,9 +678,9 @@ beforeEach(() => {
 				return null;
 			case "users:get_anagraphic":
 				return anagraphic;
-			case "plugins_ui:list_file_views":
+			case "plugins_ui_installed:list_file_views":
 				return plugins;
-			case "r2:get_asset_by_file_node_id":
+			case "files_node_asset:get_asset_by_file_node_id":
 				return null;
 			case "files_browser:current_browser_session": {
 				const { mode } = args as { mode: "file" | "web" };

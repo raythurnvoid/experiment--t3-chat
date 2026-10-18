@@ -19,8 +19,8 @@ import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 const CALLBACK_STORAGE_KEY = "app::mcp_oauth::callback";
 
 /**
- * Send the sign-in answer to Convex once per page load. A second effect run (Strict Mode) reuses the
- * same call, because the answer works only once.
+ * Send the sign-in answer to Convex once per page load. A second effect run (Fast Refresh in
+ * development runs effects again) reuses the same call, because the answer works only once.
  */
 const finish_sign_in = ((/* iife */) => {
 	function value() {

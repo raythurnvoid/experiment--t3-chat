@@ -74,10 +74,12 @@ const appConvexMock = vi.hoisted(() => {
 	return {
 		app_convex,
 		app_convex_api: {
-			files_nodes: {
+			files_yjs_load: {
 				yjs_prepare_doc_last_snapshot: "yjs_prepare_doc_last_snapshot",
-				yjs_get_incremental_updates: "yjs_get_incremental_updates",
 				get_file_last_yjs_sequence: "get_file_last_yjs_sequence",
+				yjs_get_incremental_updates: "yjs_get_incremental_updates",
+			},
+			files_nodes: {
 				yjs_push_update: "yjs_push_update",
 			},
 		},
@@ -246,6 +248,32 @@ afterAll(() => {
 });
 
 describe("files_yjs_Provider snapshot sync", () => {
+	test("syncs with an update log that was loaded before it subscribed", async () => {
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(createEmptySnapshotUpdate())),
+		);
+		// The files route warmed up the query, so no later update comes.
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+
+		const provider = new files_yjs_Provider({
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		await flushMicrotasks();
+
+		expect(provider.getStatus()).toBe("synchronized");
+		provider.destroy();
+	});
+
 	test("starts snapshot loading before mount and uses that one read in the provider", async () => {
 		const snapshotDoc = new Y.Doc();
 		snapshotDoc.getText("content").insert(0, "Welcome");

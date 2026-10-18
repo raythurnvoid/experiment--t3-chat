@@ -165,7 +165,7 @@ describe("pending source summaries", () => {
 			}
 			const args = { membershipId: f.home.membershipId, target: proposal.target };
 			const detail = await f.asUser.query(api.files_pending_target.get_file_pending_target, args);
-			const pending = await f.asUser.query(api.files_pending_updates.get_file_pending_update, args);
+			const pending = await f.asUser.query(api.files_pending_target.get_file_pending_update, args);
 			const page = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 				membershipId: f.home.membershipId,
 				listKey: "all",

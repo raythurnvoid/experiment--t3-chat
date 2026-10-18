@@ -9,7 +9,7 @@ type SnapshotPreload = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	nodeId: app_convex_Id<"files_nodes">;
 	abortController: AbortController;
-	snapshot: Promise<app_convex_FunctionReturnType<typeof app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot>>;
+	snapshot: Promise<app_convex_FunctionReturnType<typeof app_convex_api.files_yjs_load.yjs_prepare_doc_last_snapshot>>;
 	update: Promise<ArrayBuffer | null>;
 };
 
@@ -19,7 +19,7 @@ let pendingSnapshot: SnapshotPreload | null = null;
 export function files_yjs_preload_snapshot(args: Pick<SnapshotPreload, "membershipId" | "nodeId">) {
 	pendingSnapshot?.abortController.abort();
 	const abortController = new AbortController();
-	const snapshot = app_convex.action(app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot, args);
+	const snapshot = app_convex.action(app_convex_api.files_yjs_load.yjs_prepare_doc_last_snapshot, args);
 	const update = snapshot.then(async (result) => {
 		abortController.signal.throwIfAborted();
 		if (!result) return null;

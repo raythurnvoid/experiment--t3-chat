@@ -1779,7 +1779,7 @@ describe("folder metadata", () => {
 			}),
 		).toMatchObject({ _nay: { message: "Not found" } });
 
-		const pendingMove = await asOwner.query(api.files_pending_updates.get_file_pending_update, {
+		const pendingMove = await asOwner.query(api.files_pending_target.get_file_pending_update, {
 			membershipId: db.membershipId,
 			target: { kind: "saved", id: folderId },
 		});

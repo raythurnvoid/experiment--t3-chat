@@ -128,7 +128,7 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 	// A converted upload keeps its stored blob asset, so its size is still the asset size. A file
 	// created in-app has no asset, and a folder never has one.
 	const asset = useQuery(
-		app_convex_api.r2.get_asset_by_file_node_id,
+		app_convex_api.files_node_asset.get_asset_by_file_node_id,
 		nodeKind === "file" ? { membershipId, fileNodeId: nodeId } : "skip",
 	);
 
@@ -1396,8 +1396,8 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 
 			// This is the server's own rendering of the draft this section just sent, and nothing was typed
 			// since. Adopt it so the editor shows the stored map and Save goes back to disabled. Never write
-			// `sentDraftRef` here: StrictMode runs this updater twice, and the second run would take the
-			// conflict branch below.
+			// `sentDraftRef` here: React can run an updater more than once, and the second run would take
+			// the conflict branch below.
 			if (current.draftYaml === sentDraftRef.current) {
 				return { draftYaml: serverYaml, serverYaml, loaded: true, feedback: current.feedback };
 			}

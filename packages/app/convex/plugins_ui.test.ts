@@ -668,7 +668,7 @@ describe("plugin ui sessions", () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 
-		const pages = await fixture.asOwner.query(api.plugins_ui.list_ui_pages, {
+		const pages = await fixture.asOwner.query(api.plugins_ui_installed.list_ui_pages, {
 			membershipId: fixture.membership.membershipId,
 		});
 		// Assert the exact id: the host route builds the iframe URL from pluginVersionId, so a
@@ -692,7 +692,7 @@ describe("plugin ui sessions", () => {
 		await t.run((ctx) =>
 			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" }),
 		);
-		const afterDisable = await fixture.asOwner.query(api.plugins_ui.list_ui_pages, {
+		const afterDisable = await fixture.asOwner.query(api.plugins_ui_installed.list_ui_pages, {
 			membershipId: fixture.membership.membershipId,
 		});
 		expect(afterDisable).toEqual([]);
@@ -741,7 +741,7 @@ describe("plugin ui sessions", () => {
 		});
 		expect(remint).toMatchObject({ _nay: { message: "Unauthenticated" } });
 
-		const pages = await asPluginSession.query(api.plugins_ui.list_ui_pages, {
+		const pages = await asPluginSession.query(api.plugins_ui_installed.list_ui_pages, {
 			membershipId: fixture.membership.membershipId,
 		});
 		expect(pages).toEqual([]);
@@ -763,7 +763,7 @@ describe("plugin ui sessions", () => {
 		});
 		expect(installed._nay).toBeUndefined();
 
-		const pages = await asOwner.query(api.plugins_ui.list_ui_pages, {
+		const pages = await asOwner.query(api.plugins_ui_installed.list_ui_pages, {
 			membershipId: membership.membershipId,
 		});
 		expect(pages).toEqual([]);
@@ -782,7 +782,7 @@ describe("plugin ui sessions", () => {
 		for (const sourceStatus of ["preparing", "failed"] as const) {
 			await t.run((ctx) => ctx.db.patch("plugins_versions", fixture.pluginVersionId, { sourceStatus }));
 			expect(
-				await fixture.asOwner.query(api.plugins_ui.list_ui_pages, {
+				await fixture.asOwner.query(api.plugins_ui_installed.list_ui_pages, {
 					membershipId: fixture.membership.membershipId,
 				}),
 			).toEqual([]);
@@ -1820,7 +1820,7 @@ describe("plugin ui file view sessions", () => {
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
 		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 
-		const listed = await fixture.asOwner.query(api.plugins_ui.list_file_views, {
+		const listed = await fixture.asOwner.query(api.plugins_ui_installed.list_file_views, {
 			membershipId: fixture.membership.membershipId,
 		});
 		// Pin the exact installation creation time: the files UI orders view tabs by this value,
@@ -1861,7 +1861,7 @@ describe("plugin ui file view sessions", () => {
 		const fixture = await install_gallery_plugin(t);
 		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 
-		const listed = await fixture.asOwner.query(api.plugins_ui.list_file_views, {
+		const listed = await fixture.asOwner.query(api.plugins_ui_installed.list_file_views, {
 			membershipId: fixture.membership.membershipId,
 		});
 		expect(listed).toEqual([]);
@@ -1899,7 +1899,7 @@ describe("plugin ui file view sessions", () => {
 		for (const patch of [{ reviewStatus: "pending" as const }, { sourceStatus: "preparing" as const }]) {
 			await t.run((ctx) => ctx.db.patch("plugins_versions", fixture.pluginVersionId, patch));
 			expect(
-				await fixture.asOwner.query(api.plugins_ui.list_file_views, {
+				await fixture.asOwner.query(api.plugins_ui_installed.list_file_views, {
 					membershipId: fixture.membership.membershipId,
 				}),
 			).toEqual([]);

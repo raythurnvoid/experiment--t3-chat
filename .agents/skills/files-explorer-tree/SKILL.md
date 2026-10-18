@@ -141,6 +141,7 @@ Tree-item components:
     folder view passes the open folder. It returns `rows`
     (`undefined` until the root's pages answer), `statusByFolderId` (`loading`, `more`, `done`),
     `hoistedIds`, `loadMore(folderId)`, and `sharedRoots` (the "Shared with you" group below).
+    The loaded rows are built apart from the pins, so a pin that adds no row keeps the same `rows`.
   - `usePickerFolder({ membershipId, folderId, withFiles, pageSize })` loads one folder for
     `FilesNodePicker` (`components/files/files-node-picker.tsx`) with the same streams, folders
     first, then files. At the root, a reader who is not the owner also gets the "Shared with you"
@@ -1098,6 +1099,11 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 - `FilesSidebarTreeItem` reads the current tree values on every tree update. `FilesSidebarTreeRow`
   compares those snapshots before rendering the row UI. Compare every new render prop, callback,
   ARIA value, and guide-line set. Never compare old and new values by reading the same mutable tree.
+- Opening a file must render only the rows whose look changes. A set shared by every row is compared
+  by the ids that row reads: `trackActiveFileIds` by the row's own track ids, `protectedDescendantIds`
+  by value. `useFolders` keeps the same `rows` and `hoistedIds` when a new pin is already loaded, so
+  pinning the opened row does not rebuild the tree. Count row renders after a change here: one click
+  should render about the two rows that change, not every row.
 - Only the active rename row receives rename input props. Idle titles must not receive the global
   rename value or a fresh rename props object on every keystroke.
 - Global `isBusy` reaches only the row element, pointer hit-area, and native fieldsets through

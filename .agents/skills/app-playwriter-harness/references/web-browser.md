@@ -176,8 +176,8 @@ click. Verified on runner `8bb9bb1a`: 5.7 min of control with one mouse move, re
 no `4408`.
 
 To prove "no reconnect" from the tail, count `POST /internal/browser/viewer-grant`, not
-`viewer_attach`. In dev each viewer mount sends two grants in the same millisecond (React
-StrictMode), so expect them in pairs. A viewer socket that stays open for many minutes may never
+`viewer_attach`. Each viewer mount sends one grant (the app does not use React `StrictMode`, so
+dev no longer sends them in pairs). A viewer socket that stays open for many minutes may never
 show its `GET /viewer/stream` event (and so its `viewer_attach`) in the tail, even after it closes;
 a short-lived socket does show it.
 

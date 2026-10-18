@@ -43,8 +43,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		organizations: {
 			list: "organizations.list",
 		},
-		plugins_ui: {
-			list_ui_pages: "plugins_ui.list_ui_pages",
+		plugins_ui_installed: {
+			list_ui_pages: "plugins_ui_installed.list_ui_pages",
 		},
 		files_browser: {
 			web_browser_available: "files_browser.web_browser_available",
@@ -282,7 +282,7 @@ function mockQueries(args: {
 				canUseBrowser: args.canUseBrowser ?? false,
 			});
 		}
-		if (query === "plugins_ui.list_ui_pages") {
+		if (query === "plugins_ui_installed.list_ui_pages") {
 			return args.pluginPages ?? [];
 		}
 		if (query === "files_browser.web_browser_available" && queryArgs !== "skip") {

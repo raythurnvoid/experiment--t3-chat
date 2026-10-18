@@ -614,9 +614,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				.then(async (first) => {
 					let result = first;
 					// Every rotation, page or file view, charges `plugins_ui_session_mint`, and that bucket
-					// holds two tokens. A page also mints on that same bucket, so for a page a Retry, a
-					// second plugin tab, or StrictMode's double mint in development can leave it empty for
-					// a few seconds. A file view mints on its own larger bucket
+					// holds two tokens. A page also mints on that same bucket, so for a page a Retry or a
+					// second plugin tab can leave it empty for a few seconds. A file view mints on its own larger bucket
 					// (`plugins_ui_file_view_session_mint`, eight tokens), so only its rotations reach this
 					// bucket and it sees this refusal far less often. Answering token-error here used to
 					// end the page: the SDK's auth callback tries the refresh three times in all, waiting
@@ -837,8 +836,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		iframeNode.addEventListener("load", handle_load);
 		// src is assigned last, after every guard above is active.
 		//
-		// Under StrictMode the effect runs twice on mount. Setting the same src again would reload the
-		// frame, so skip it when it is already set.
+		// The effect can run again on the same frame (Fast Refresh does in development). Setting the same
+		// src again would reload the frame, so skip it when it is already set.
 		//
 		// What decides whether that skip is safe is timing, not whether the frame remounts. A re-run
 		// before the frame has loaded is harmless: the SDK has not sent ready yet, so the new run tears

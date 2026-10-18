@@ -51,8 +51,10 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		mutation: (...args: unknown[]) => mutationMock(...args),
 	},
 	app_convex_api: {
+		plugins_ui_installed: {
+			list_ui_pages: "plugins_ui_installed.list_ui_pages",
+		},
 		plugins_ui: {
-			list_ui_pages: "plugins_ui.list_ui_pages",
 			mint_page_session: "plugins_ui.mint_page_session",
 			refresh_ui_session: "plugins_ui.refresh_ui_session",
 			revoke_ui_session: "plugins_ui.revoke_ui_session",

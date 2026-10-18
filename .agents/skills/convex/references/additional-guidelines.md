@@ -576,6 +576,16 @@ This reduces repeated queries for the same key and keeps read patterns predictab
 - Keep the typed `*_http_routes` builder as the schema source. Call the exported plain implementation after the dynamic import. Do not add a route map, a custom dispatcher, or use Convex function internals such as `_handler`.
 - Update `convex/http.test.ts` when routes change. It pins the complete root route inventory, including CORS `OPTIONS` routes.
 
+## Performance: keep hot function modules' import graphs small
+
+On a cold call, Convex loads the module of the called function and every file that module imports, statically and transitively. Unused imports count too: the bundle splits shared code into chunks by file, so tree shaking does not remove a file that another module uses. Actions pay it more often, because `experimental_reuseContext` does not apply to them. Measured on the dev deployment: about 40ms per MB of bundle. A 5 MB module adds about 200ms to each cold call. A/B on 2026-10-18, with `import "./files_nodes.ts"` added to `files_yjs_load.ts` (2.1 MB to 5.3 MB): the snapshot action went from about 73ms to about 110ms (median), and a cold `get_file_last_yjs_sequence` from 83ms to 197ms of user time.
+
+- Put reads that a user waits on often, such as the queries and the snapshot action of a file open, in a small module next to their owner. Examples: `files_yjs_load.ts`, `files_node_asset.ts`. Keep edits, uploads and content work in the big owner module.
+- Name a split module by its topic, such as `files_yjs_load.ts` (load a file's live document). Do not name it by a technical layer such as `_queries`. A layer name does not tell the reader what the module is for, and it invites unrelated reads to pile up there.
+- Do not import heavy code into shared files that most modules import (`schema.ts`, `functions.ts`, `server/server-utils.ts`, `shared/users.ts`, `shared/channels.ts`). The heavy parts today are the Markdown editor code in `shared/files-tiptap.ts` (linkedom, yjs, tiptap, prosemirror: about 2 MB) and the AWS S3 client in `r2_client.ts`.
+- Import a package by its narrow subpath when its root re-exports the whole library. For example, use `jose/jwt/decode`, not `jose`.
+- To check a change, bundle `convex/` with Convex's own esbuild settings (`innerEsbuild` from `convex/dist/cjs/bundler/debugBundle.js`) and sum the bytes of each entry's output plus every chunk it imports. Building one module alone gives a smaller, wrong number. Build every entry together.
+
 ## Performance: prefer `ctx.db.get` over `ctx.db.query` when you have ids
 
 When the user requests fetching documents by id, you should prefer `ctx.db.get(...)` because it is an **\(O(1)\)** lookup by primary key.

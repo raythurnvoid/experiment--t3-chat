@@ -2611,7 +2611,7 @@ describe("enforcement", () => {
 			destName: "moved-notes",
 		});
 		expect(moved._nay).toBeUndefined();
-		const pending = await fixture.asMember.query(api.files_pending_updates.get_file_pending_update, {
+		const pending = await fixture.asMember.query(api.files_pending_target.get_file_pending_update, {
 			membershipId: fixture.memberMembershipId,
 			target,
 		});
@@ -2662,7 +2662,7 @@ describe("enforcement", () => {
 			destName: "moved-notes",
 		});
 		expect(moved._nay).toBeUndefined();
-		const pending = await fixture.asMember.query(api.files_pending_updates.get_file_pending_update, {
+		const pending = await fixture.asMember.query(api.files_pending_target.get_file_pending_update, {
 			membershipId: fixture.memberMembershipId,
 			target,
 		});

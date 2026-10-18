@@ -262,8 +262,9 @@ function useFilesSharePageSignedUrls(props: { token: string; view: FilesSharePag
 			return;
 		}
 
-		// A new revision starts a new generation. Strict Mode runs this effect twice for one revision, so
-		// keep the generation then, and the in-flight check stops the second request.
+		// A new revision starts a new generation. React can run this effect twice for one revision (Fast
+		// Refresh does in development), so keep the generation then, and the in-flight check stops the
+		// second request.
 		if (currentRef.current?.revision === revision) {
 			currentRef.current.active = true;
 		} else {

@@ -36,7 +36,7 @@ function can_take_focus(region: HTMLElement | null) {
 function RoutePluginsPluginPage() {
 	const { pluginName, pageId } = Route.useParams();
 	const { membershipId } = AppTenantProvider.useContext();
-	const uiPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
+	const uiPages = useQuery(app_convex_api.plugins_ui_installed.list_ui_pages, { membershipId });
 	const mainRef = useRef<HTMLElement | null>(null);
 	// The frame the member was looking at before this render. Null means there was no frame yet.
 	const previousFrameIdentityRef = useRef<string | null>(null);
@@ -100,8 +100,8 @@ function RoutePluginsPluginPage() {
 
 		// Only a frame that replaced another frame. A first load leaves focus on the body too, and
 		// pulling the member into the region there would be a new annoyance instead of a fix. The two
-		// identities are equal too when StrictMode runs this effect a second time on mount, which it
-		// does in a development build.
+		// identities are equal too when React runs this effect a second time for the same frame, which
+		// Fast Refresh does in a development build.
 		if (previousFrameIdentity === null || renderedFrameIdentity === null) return;
 		if (previousFrameIdentity === renderedFrameIdentity) return;
 		// The upgrade is somebody else's action arriving on a live query, so the member may be typing

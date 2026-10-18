@@ -64,13 +64,13 @@ vi.mock("convex/react", async (importOriginal) => {
 			case "files_visible:get_path":
 				return VIEW.entry.path;
 			case "files_transfer_queries:list_current":
-			case "plugins_ui:list_file_views":
+			case "plugins_ui_installed:list_file_views":
 				return [];
-			case "files_pending_updates:get_file_pending_update":
+			case "files_pending_target:get_file_pending_update":
 			case "files_tree:get_folder_readme":
 			case "files_transfer_queries:get":
 			case "files_pending_update_runs:get":
-			case "r2:get_asset_by_file_node_id":
+			case "files_node_asset:get_asset_by_file_node_id":
 			case "files_browser:current_browser_session":
 				return null;
 			default:
@@ -101,6 +101,15 @@ vi.mock("convex/react", async (importOriginal) => {
 			),
 		useQuery: (reference: never, args: unknown) => (args === "skip" ? undefined : answer(reference)),
 	};
+});
+// The cached hooks use the `convex/react` mock above.
+vi.mock("convex-helpers/react/cache", async (importOriginal) => {
+	const { useQueries, useQuery } = await import("convex/react");
+	return { ...(await importOriginal<typeof import("convex-helpers/react/cache")>()), useQueries, useQuery };
+});
+vi.mock("@/hooks/files-paginated-query-hooks.ts", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return { useFilesPaginatedQuery: usePaginatedQuery };
 });
 vi.mock("@/lib/app-convex-client.ts", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/app-convex-client.ts")>()),

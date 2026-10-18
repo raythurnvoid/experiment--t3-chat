@@ -34,8 +34,8 @@ import app_convex_schema, {
 import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
 import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 import { api, internal } from "./_generated/api.js";
-import { db_get_file_content_materialization_db_state, files_db_yjs_push_update, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, files_nodes_db_require_subtree_writable, files_nodes_db_validate_pending_move_target_for_proposal, files_nodes_db_validate_occupant_replace, files_yjs_NODE_NEEDS_REPAIR_MESSAGE, type get_file_content_materialization_header_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
-import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
+import { files_db_yjs_push_update, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, files_nodes_db_require_subtree_writable, files_nodes_db_validate_pending_move_target_for_proposal, files_nodes_db_validate_occupant_replace, files_yjs_NODE_NEEDS_REPAIR_MESSAGE, type get_file_content_materialization_header_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
+import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import {
@@ -49,7 +49,6 @@ import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import {
 	files_pending_target_db_get_private,
 	files_pending_target_db_get_view,
-	files_pending_target_db_redact_copy_source,
 	type files_pending_target_get_file_pending_target_Result,
 } from "./files_pending_target.ts";
 import { files_share_links_create_cleanup_state, type files_share_links_CleanupState } from "./files_share_links_db.ts";
@@ -7226,70 +7225,6 @@ type get_private_pending_target_internal_Result =
 	typeof get_private_pending_target_internal extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
-
-export const get_file_pending_update = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		target: files_pending_target_validator,
-		pendingUpdateId: v.optional(v.id("files_pending_updates")),
-	},
-	returns: v.union(
-		v.object({
-			...doc(app_convex_schema, "files_pending_updates").fields,
-			currentYjsLastSequenceId: v.union(v.id("files_yjs_docs_last_sequences"), v.null()),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		if (args.target.kind === "private") {
-			const data = await files_pending_target_db_get_private(ctx, {
-				membership,
-				privateNodeId: args.target.id,
-				pendingUpdateId: args.pendingUpdateId,
-				recoveryRead: true,
-			});
-			return data._nay
-				? null
-				: { ...(await files_pending_target_db_redact_copy_source(ctx, data._yay.pendingUpdate)), currentYjsLastSequenceId: null };
-		}
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth,
-			membership,
-			nodeId: args.target.id,
-			permission: "content.read",
-		});
-		if (authorized._nay) {
-			return null;
-		}
-
-		const pendingUpdate = await files_db_get_pending_update(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			target: args.target,
-			pendingUpdateId: args.pendingUpdateId,
-		});
-		if (!pendingUpdate) {
-			return null;
-		}
-		return {
-			...(await files_pending_target_db_redact_copy_source(ctx, pendingUpdate)),
-			currentYjsLastSequenceId: authorized._yay.fileNode.yjsLastSequenceId ?? null,
-		};
-	},
-});
 
 export const normalize_file_pending_update_id = internalQuery({
 	args: {

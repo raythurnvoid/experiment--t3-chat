@@ -27,7 +27,7 @@ function files_convex_stream_key(guid: string | undefined): StreamStateKey {
 }
 
 type FilesConvexIncrementalUpdates = NonNullable<
-	app_convex_FunctionReturnType<typeof app_convex_api.files_nodes.yjs_get_incremental_updates>
+	app_convex_FunctionReturnType<typeof app_convex_api.files_yjs_load.yjs_get_incremental_updates>
 >;
 
 export type files_yjs_EditBlockReason = "read_only" | "permission";
@@ -73,7 +73,7 @@ class FilesConvexYjsStream {
 	private onPushRefusedChange: FilesConvexYjsStream_Args["onPushRefusedChange"];
 
 	private watcher: app_convex_Watch<
-		app_convex_FunctionReturnType<typeof app_convex_api.files_nodes.yjs_get_incremental_updates>
+		app_convex_FunctionReturnType<typeof app_convex_api.files_yjs_load.yjs_get_incremental_updates>
 	>;
 	private unsubscribe: () => void;
 	private disposed = false;
@@ -104,12 +104,12 @@ class FilesConvexYjsStream {
 		this.onLoadFailedChange = args.onLoadFailedChange;
 		this.onPushRefusedChange = args.onPushRefusedChange;
 
-		this.watcher = app_convex.watchQuery(app_convex_api.files_nodes.yjs_get_incremental_updates, {
+		this.watcher = app_convex.watchQuery(app_convex_api.files_yjs_load.yjs_get_incremental_updates, {
 			membershipId: args.membershipId,
 			nodeId: args.nodeId,
 		});
 
-		this.unsubscribe = this.watcher.onUpdate(() => {
+		const handleWatcherUpdate = () => {
 			if (this.disposed) return;
 			const updateData = this.watcher.localQueryResult();
 			if (!updateData) return;
@@ -118,7 +118,11 @@ class FilesConvexYjsStream {
 				this.expectedLineageUpdatesReceived.resolve();
 			}
 			this.handleIncrementalUpdates(updateData);
-		});
+		};
+		this.unsubscribe = this.watcher.onUpdate(handleWatcherUpdate);
+		// `onUpdate` runs only for later changes. The files route can load this query before the
+		// editor mounts, so read the answer that is already here too.
+		handleWatcherUpdate();
 	}
 
 	private handleIncrementalUpdates(incrementalUpdates: FilesConvexIncrementalUpdates) {
@@ -358,13 +362,13 @@ class FilesConvexYjsStream {
 				const preload = iteration === 1 ? this.snapshotPreload : null;
 
 				let result: app_convex_FunctionReturnType<
-					typeof app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot
+					typeof app_convex_api.files_yjs_load.yjs_prepare_doc_last_snapshot
 				> | null = null;
 
 				try {
 					[result] = await Promise.all([
 						preload?.snapshot ??
-							app_convex.action(app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot, {
+							app_convex.action(app_convex_api.files_yjs_load.yjs_prepare_doc_last_snapshot, {
 								membershipId: this.args.membershipId,
 								nodeId: this.args.nodeId,
 							}),
@@ -399,7 +403,7 @@ class FilesConvexYjsStream {
 
 				let resultSnapshotUpdate: ArrayBuffer;
 				let preloadLastSequence:
-					| app_convex_FunctionReturnType<typeof app_convex_api.files_nodes.get_file_last_yjs_sequence>
+					| app_convex_FunctionReturnType<typeof app_convex_api.files_yjs_load.get_file_last_yjs_sequence>
 					| undefined;
 				try {
 					if (!result.snapshotUrl) {
@@ -421,7 +425,7 @@ class FilesConvexYjsStream {
 					// Materialization can delete updates without changing the document id. Reuse the
 					// route's current sequence query before trusting an earlier snapshot.
 					if (preload) {
-						preloadLastSequence = await app_convex.query(app_convex_api.files_nodes.get_file_last_yjs_sequence, {
+						preloadLastSequence = await app_convex.query(app_convex_api.files_yjs_load.get_file_last_yjs_sequence, {
 							membershipId: this.args.membershipId,
 							nodeId: this.args.nodeId,
 						});

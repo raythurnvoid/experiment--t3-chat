@@ -28,7 +28,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_file_channel: "get_file_channel",
 			get_channel_state: "get_channel_state",
 		},
-		r2: {
+		files_node_asset: {
 			get_asset_by_file_node_id: "get_asset_by_file_node_id",
 		},
 		users: {

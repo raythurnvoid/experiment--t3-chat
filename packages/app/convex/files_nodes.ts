@@ -4,7 +4,12 @@
 // listing folder children and reading file content (`/docs/README.md`).
 
 import { action, internalAction, internalQuery, query, type QueryCtx, type MutationCtx } from "./_generated/server.js";
-import { files_content_materialization_workpool, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
+import {
+	db_get_file_content_materialization_db_state,
+	db_get_file_content_materialization_header,
+	files_content_materialization_workpool,
+	files_nodes_db_get_content_version,
+} from "./files_nodes_db.ts";
 import {
 	files_nodes_db_resolve_parent_restricted_scope,
 	files_nodes_db_authorize_write_policy_management,
@@ -4734,137 +4739,6 @@ export type files_nodes_search_paths_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export async function db_get_file_content_materialization_db_state(
-	ctx: QueryCtx,
-	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
-) {
-	const header = await db_get_file_content_materialization_header(ctx, args);
-	if (!header) {
-		return null;
-	}
-
-	const yjsUpdatesDocs: Doc<"files_yjs_updates">[] = [];
-	for await (const update of files_saved_content_db_yjs_updates(ctx.db, {
-		...args,
-		throughSequence: header.yjsLastSequenceDoc.lastSequence,
-	}))
-		yjsUpdatesDocs.push(update);
-
-	return {
-		fileNode: header.fileNode,
-		yjsSnapshotDoc: header.yjsSnapshotDoc,
-		yjsLastSequenceDoc: header.yjsLastSequenceDoc,
-		yjsUpdatesDocs,
-		asset: header.asset,
-		yjsSnapshotAsset: header.yjsSnapshotAsset,
-	};
-}
-
-/**
- * The header half of the materialization state: every doc except the update log. The
- * materialization action reads the log one update doc at a time through
- * `get_file_next_yjs_update` instead of collecting it, because one allowed doc may itself be
- * 930,000 bytes.
- */
-async function db_get_file_content_materialization_header(
-	ctx: QueryCtx,
-	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
-) {
-	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
-		return null;
-	}
-
-	if (!files_node_has_editable_yjs_state(fileNode)) {
-		return null;
-	}
-
-	const [asset, yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
-		ctx.db.get("files_r2_assets", fileNode.assetId),
-		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
-		files_saved_placement_db_get_sequence(ctx.db, fileNode),
-	]);
-
-	// Do not check the asset kind here. node.assetId always holds the file's current bytes, but
-	// the kind can vary: usually the newest version snapshot, or an old content row without an
-	// r2Key (old data) until a materialization points the node at a fresh snapshot.
-	if (!asset || asset.organizationId !== args.organizationId || asset.workspaceId !== args.workspaceId) {
-		const errorMessage = "fileNode.assetId points to a missing or mismatched files_r2_assets doc";
-		const errorData = {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-			assetId: fileNode.assetId,
-			asset,
-		};
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	if (
-		!yjsSnapshotDoc ||
-		yjsSnapshotDoc.organizationId !== args.organizationId ||
-		yjsSnapshotDoc.workspaceId !== args.workspaceId ||
-		yjsSnapshotDoc.fileNodeId !== args.nodeId
-	) {
-		const errorMessage = "fileNode.yjsSnapshotId points to a missing or mismatched files_yjs_snapshots doc";
-		const errorData = {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-			yjsSnapshotId: fileNode.yjsSnapshotId,
-			yjsSnapshotDoc,
-		};
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	if (
-		!yjsLastSequenceDoc ||
-		yjsLastSequenceDoc.organizationId !== args.organizationId ||
-		yjsLastSequenceDoc.workspaceId !== args.workspaceId ||
-		yjsLastSequenceDoc.fileNodeId !== args.nodeId
-	) {
-		const errorMessage =
-			"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
-		const errorData = {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-			yjsLastSequenceId: fileNode.yjsLastSequenceId,
-			yjsLastSequenceDoc,
-		};
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	const yjsSnapshotAsset = await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId);
-	if (
-		!yjsSnapshotAsset ||
-		yjsSnapshotAsset.organizationId !== args.organizationId ||
-		yjsSnapshotAsset.workspaceId !== args.workspaceId ||
-		yjsSnapshotAsset.kind !== "yjs_snapshot"
-	) {
-		const errorMessage = "yjsSnapshotDoc.assetId points to a missing or mismatched files_r2_assets doc";
-		const errorData = {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-			assetId: yjsSnapshotDoc.assetId,
-		};
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	return {
-		fileNode,
-		yjsSnapshotDoc,
-		yjsLastSequenceDoc,
-		asset,
-		yjsSnapshotAsset,
-	};
-}
-
 export const get_file_content_materialization_state = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
@@ -6689,73 +6563,6 @@ export type files_nodes_match_plain_text_file_lines_Result =
 
 // #endregion match
 
-export const get_file_last_yjs_sequence = query({
-	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
-	returns: v.union(
-		v.object({
-			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-			lastSequence: v.number(),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-		if (
-			!files_node_has_editable_yjs_state(fileNode) ||
-			fileNode.organizationId !== membership.organizationId ||
-			fileNode.workspaceId !== membership.workspaceId
-		) {
-			return null;
-		}
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-			fileNode,
-		});
-		if (authorized._nay) {
-			return null;
-		}
-
-		const lastYjsSequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode).then((doc) => {
-			if (!doc || doc.organizationId !== fileNode.organizationId || doc.workspaceId !== fileNode.workspaceId)
-				return null;
-			return doc;
-		});
-
-		if (!lastYjsSequenceDoc) {
-			const errorMessage =
-				"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
-			const errorData = {
-				organizationId: fileNode.organizationId,
-				workspaceId: fileNode.workspaceId,
-				nodeId: args.nodeId,
-				yjsLastSequenceId: fileNode.yjsLastSequenceId,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-
-		return {
-			yjsLastSequenceId: lastYjsSequenceDoc._id,
-			lastSequence: lastYjsSequenceDoc.lastSequence,
-		};
-	},
-});
-
 function db_text_search_filtered_query(
 	ctx: QueryCtx,
 	args: {
@@ -7933,100 +7740,6 @@ export const unarchive_snapshot = mutation({
 	},
 });
 
-export const get_data_for_yjs_prepare_doc_last_snapshot = internalQuery({
-	args: {
-		userId: v.id("users"),
-		membershipId: v.id("organizations_workspaces_users"),
-		nodeId: v.id("files_nodes"),
-	},
-	returns: v.union(file_content_materialization_state_validator, v.null()),
-	handler: async (ctx, args) => {
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: args.userId,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth: { id: args.userId },
-			membership,
-			nodeId: args.nodeId,
-			permission: "content.read",
-		});
-		if (authorized._nay) {
-			return null;
-		}
-
-		return await db_get_file_content_materialization_db_state(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId: args.nodeId,
-		});
-	},
-});
-
-type get_data_for_yjs_prepare_doc_last_snapshot_Result =
-	typeof get_data_for_yjs_prepare_doc_last_snapshot extends RegisteredQuery<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
-		? Awaited<ReturnValue>
-		: never;
-
-export const yjs_prepare_doc_last_snapshot = action({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		nodeId: v.id("files_nodes"),
-	},
-	returns: v.union(
-		v.object({
-			snapshot: doc(app_convex_schema, "files_yjs_snapshots"),
-			snapshotUrl: v.string(),
-			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-			// A live document always has an editable text shape.
-			textKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-
-		const data = (await ctx.runQuery(internal.files_nodes.get_data_for_yjs_prepare_doc_last_snapshot, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-			nodeId: args.nodeId,
-		})) as get_data_for_yjs_prepare_doc_last_snapshot_Result;
-		if (!data) {
-			return null;
-		}
-
-		if (!data.yjsSnapshotAsset.r2Key) {
-			const errorMessage = "yjsSnapshotAsset.r2Key is not set";
-			const errorData = {
-				nodeId: args.nodeId,
-				assetId: data.yjsSnapshotAsset._id,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-
-		return {
-			snapshot: data.yjsSnapshotDoc,
-			snapshotUrl: await r2.getUrl(data.yjsSnapshotAsset.r2Key, {
-				expiresIn: 15 * 60,
-			}),
-			yjsLastSequenceId: data.yjsLastSequenceDoc._id,
-			textKind: data.fileNode.textKind,
-		};
-	},
-});
-
 /**
  * Refusal message returned while a durable shape/state marker is set on the node. All three
  * update writers refuse new edits until the operator repair clears the marker.
@@ -8420,73 +8133,6 @@ export const yjs_push_update = mutation({
 		});
 
 		return pushResult;
-	},
-});
-
-export const yjs_get_incremental_updates = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		nodeId: v.id("files_nodes"),
-	},
-	returns: v.union(
-		v.object({
-			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-			updates: v.array(doc(app_convex_schema, "files_yjs_updates")),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== membership.organizationId ||
-			fileNode.workspaceId !== membership.workspaceId ||
-			fileNode.kind !== "file"
-		) {
-			return null;
-		}
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-			fileNode,
-		});
-		if (authorized._nay) {
-			return null;
-		}
-
-		if (!fileNode.yjsLastSequenceId) {
-			return null;
-		}
-
-		const sequence = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
-		if (!sequence) return null;
-		const updates = await files_saved_content_collect(
-			files_saved_content_db_yjs_updates(ctx.db, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: args.nodeId,
-				order: "desc",
-				throughSequence: sequence.lastSequence,
-			}),
-		);
-
-		// Return the exact lineage even when the log is empty. Clients fetch the snapshot and update
-		// log separately, so they need this token to refuse a mixed-lineage read.
-		return { yjsLastSequenceId: fileNode.yjsLastSequenceId, updates };
 	},
 });
 

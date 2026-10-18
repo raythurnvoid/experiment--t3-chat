@@ -446,7 +446,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const { membershipId, organizationId, organizationName, workspaceId, workspaceName } = AppTenantProvider.useContext();
 	const { unreadMentions } = AppChannelsProvider.useContext();
 	const organizationList = useQuery(app_convex_api.organizations.list);
-	const pluginPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
+	const pluginPages = useQuery(app_convex_api.plugins_ui_installed.list_ui_pages, { membershipId });
 	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
 	const showUsersNavigation = organization?.default === false;
 	const workspacePermissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];

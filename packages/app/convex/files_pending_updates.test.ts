@@ -3039,7 +3039,7 @@ describe("get_file_pending_update", () => {
 				target: { kind: "saved" as const, id: seeded.nodeId },
 				pendingUpdateId: original._id,
 			};
-			expect(await asUser.query(api.files_pending_updates.get_file_pending_update, queryArgs)).toEqual({
+			expect(await asUser.query(api.files_pending_target.get_file_pending_update, queryArgs)).toEqual({
 				...original,
 				currentYjsLastSequenceId: null,
 			});
@@ -3062,7 +3062,7 @@ describe("get_file_pending_update", () => {
 				else expect(currentYjsLastSequenceId).toBeNull();
 				const marked = await t.run((ctx) => ctx.db.get("files_pending_updates", original._id));
 				expect(marked?.contentNeedsRebase).toBe(true);
-				expect(await asUser.query(api.files_pending_updates.get_file_pending_update, queryArgs)).toEqual({
+				expect(await asUser.query(api.files_pending_target.get_file_pending_update, queryArgs)).toEqual({
 					...marked,
 					currentYjsLastSequenceId,
 				});
@@ -3072,7 +3072,7 @@ describe("get_file_pending_update", () => {
 				);
 				expect(prepared._nay).toBeUndefined();
 				expect(prepared._yay?.pendingUpdate?.contentNeedsRebase).toBeUndefined();
-				expect(await asUser.query(api.files_pending_updates.get_file_pending_update, queryArgs)).toEqual({
+				expect(await asUser.query(api.files_pending_target.get_file_pending_update, queryArgs)).toEqual({
 					...prepared._yay?.pendingUpdate,
 					currentYjsLastSequenceId,
 				});
@@ -3099,7 +3099,7 @@ describe("get_file_pending_update", () => {
 			});
 			const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId, name: "Other Member" });
 			expect(
-				await asOther.query(api.files_pending_updates.get_file_pending_update, {
+				await asOther.query(api.files_pending_target.get_file_pending_update, {
 					...queryArgs,
 					membershipId: other.membershipId,
 				}),
