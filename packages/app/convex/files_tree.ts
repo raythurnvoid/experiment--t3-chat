@@ -5,7 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { paginationOptsValidator, paginationResultValidator, type PaginationResult } from "convex/server";
 import { server_convex_get_user_fallback_to_anonymous, string_prefix_upper_bound } from "../server/server-utils.ts";
 import { compareValues, v, type Infer } from "convex/values";
-import { files_ROOT_ID } from "../shared/files.ts";
+import { files_ROOT_ID, type files_DirectoryView } from "../shared/files.ts";
 import {
 	files_sort_is_valid,
 	files_sort_text_key,
@@ -24,9 +24,10 @@ import app_convex_schema, {
 	files_sort_validator,
 	files_table_filter_validator,
 	files_saved_stream_validator,
+	files_directory_view_validator,
 } from "./schema.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
-import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import { files_saved_stream_db_create, files_saved_stream_db_create_directory } from "../server/files-saved-stream.ts";
 import {
 	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_view,
@@ -678,7 +679,8 @@ async function db_get_share_tree_rows(
 export const list_tree_children = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		savedStream: v.optional(files_saved_stream_validator),
+		stream: v.union(v.literal("normal"), v.literal("cohort")),
+		pageView: v.optional(files_directory_view_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		archived: v.boolean(),
@@ -688,11 +690,15 @@ export const list_tree_children = query({
 		restricted: v.boolean(),
 		paginationOpts: paginationOptsValidator,
 	},
-	returns: paginationResultValidator(v.union(v.object(tree_open_row_fields), v.object(files_tree_locked_row_fields))),
+	returns: v.object({
+		...paginationResultValidator(v.union(v.object(tree_open_row_fields), v.object(files_tree_locked_row_fields)))
+			.fields,
+		directoryView: files_directory_view_validator,
+	}),
 	handler: async (ctx, args) => {
 		// Every refusal gives this one answer: the caller cannot open this folder. The path door tells a
 		// locked folder from a missing one.
-		const refused = { page: [], isDone: true, continueCursor: "" };
+		const refused = { page: [], isDone: true, continueCursor: "", directoryView: null };
 
 		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
@@ -714,9 +720,12 @@ export const list_tree_children = query({
 			}
 		}
 
+		const saved = await files_saved_stream_db_create_directory(ctx.db, membership, args);
+		if (saved.empty) return { ...refused, directoryView: saved.directoryView };
+
 		// Selected rows also read their saved node, cohort and place before checking access.
 		const guard = Math.min(
-			args.savedStream?.kind === "cohort" ? 500 : Infinity,
+			args.stream === "cohort" ? 500 : Infinity,
 			!args.restricted
 				? await db_open_split_guard(ctx, { checker: reader.checker, folder, guard: TREE_OPEN_SPLIT_GUARD })
 				: await db_shrink_split_guard(
@@ -728,7 +737,6 @@ export const list_tree_children = query({
 			...args.paginationOpts,
 			numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS, guard),
 		};
-		const saved = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
 		const rawResult = args.archived
 			? await saved.queries
 					.by_parent_kind_restricted_archive_sort_name((q) =>
@@ -749,9 +757,9 @@ export const list_tree_children = query({
 					)
 					.paginate(paginationOpts);
 		if (files_tree_db_page_needs_split(rawResult, guard)) {
-			return files_tree_db_page_split_required(rawResult);
+			return { ...files_tree_db_page_split_required(rawResult), directoryView: saved.directoryView };
 		}
-		const result = { ...rawResult, page: await saved.read_nodes(rawResult.page) };
+		const result = { ...rawResult, directoryView: saved.directoryView, page: await saved.read_nodes(rawResult.page) };
 		for (const node of result.page) {
 			check_tree_stream_row(node, {
 				membership,
@@ -794,7 +802,8 @@ export const list_tree_children = query({
 export const list_tree_children_sorted = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		savedStream: v.optional(files_saved_stream_validator),
+		stream: v.union(v.literal("normal"), v.literal("cohort")),
+		pageView: v.optional(files_directory_view_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		/**
@@ -816,30 +825,35 @@ export const list_tree_children_sorted = query({
 		segment: v.union(v.literal("value"), v.literal("missing")),
 		paginationOpts: paginationOptsValidator,
 	},
-	returns: paginationResultValidator(
-		v.union(
-			v.object({
-				...tree_open_row_fields,
-				/**
-				 * The row's index key in the table order. Compare it with `files_sort_compare`.
-				 */
-				sortKey: files_sort_row_key_validator,
-			}),
-			// Built only from the fields a locked row shows.
-			v.object({ ...files_tree_locked_row_fields, sortKey: files_sort_row_key_validator }),
-		),
-	),
+	returns: v.object({
+		...paginationResultValidator(
+			v.union(
+				v.object({
+					...tree_open_row_fields,
+					/**
+					 * The row's index key in the table order. Compare it with `files_sort_compare`.
+					 */
+					sortKey: files_sort_row_key_validator,
+				}),
+				// Built only from the fields a locked row shows.
+				v.object({ ...files_tree_locked_row_fields, sortKey: files_sort_row_key_validator }),
+			),
+		).fields,
+		directoryView: files_directory_view_validator,
+	}),
 	handler: async (
 		ctx,
 		args,
 	): Promise<
-		PaginationResult<Awaited<ReturnType<typeof files_tree_db_get_list_rows>>[number] & { sortKey: files_sort_RowKey }>
+		PaginationResult<
+			Awaited<ReturnType<typeof files_tree_db_get_list_rows>>[number] & { sortKey: files_sort_RowKey }
+		> & { directoryView: files_DirectoryView }
 	> => {
 		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
 		// (files-explorer-tree skill, "Saved-only lists").
 
 		// Every refusal gives this one answer, like `list_tree_children`.
-		const refused = { page: [], isDone: true, continueCursor: "" };
+		const refused = { page: [], isDone: true, continueCursor: "", directoryView: null };
 
 		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
@@ -860,9 +874,12 @@ export const list_tree_children_sorted = query({
 			}
 		}
 
+		const saved = await files_saved_stream_db_create_directory(ctx.db, membership, args);
+		const empty = { ...refused, directoryView: saved.directoryView };
+		if (saved.empty) return empty;
 		const table = get_table_read_args(args);
 		if (!table) {
-			return refused;
+			return empty;
 		}
 		const { sort, filter, namePrefix, metadataField } = table;
 
@@ -871,11 +888,10 @@ export const list_tree_children_sorted = query({
 		// from `list_tree_children_shared`, and those of a custom-field sort by name, below.
 		const ownerOrOpen = !args.restricted || reader.isOwner;
 		if (metadataField !== null && !ownerOrOpen && filter !== null) {
-			return refused;
+			return empty;
 		}
 
 		const direction = sort.direction;
-		const saved = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
 
 		const table_page = async (
 			result: PaginationResult<unknown>,
@@ -898,6 +914,7 @@ export const list_tree_children_sorted = query({
 			});
 			return {
 				...result,
+				directoryView: saved.directoryView,
 				page: listRows.map((listRow, index) => {
 					const row = rows[index]!;
 					// Name, size, dates and extension are fields a locked row shows, so its key may use them.
@@ -951,7 +968,7 @@ export const list_tree_children_sorted = query({
 				});
 
 			if (files_tree_db_page_needs_split(result, guard)) {
-				return files_tree_db_page_split_required(result);
+				return { ...files_tree_db_page_split_required(result), directoryView: saved.directoryView };
 			}
 
 			const rows = await Promise.all(
@@ -1016,7 +1033,7 @@ export const list_tree_children_sorted = query({
 
 		// Selected rows also read their saved node, cohort and place before checking access.
 		const guard = Math.min(
-			args.savedStream?.kind === "cohort" ? 500 : Infinity,
+			args.stream === "cohort" ? 500 : Infinity,
 			!args.restricted
 				? await db_open_split_guard(ctx, { checker: reader.checker, folder, guard: TREE_OPEN_SPLIT_GUARD })
 				: await db_shrink_split_guard(
@@ -1200,7 +1217,7 @@ export const list_tree_children_sorted = query({
 		})();
 
 		if (files_tree_db_page_needs_split(stream.result, guard)) {
-			return files_tree_db_page_split_required(stream.result);
+			return { ...files_tree_db_page_split_required(stream.result), directoryView: saved.directoryView };
 		}
 
 		return await table_page(
@@ -1231,7 +1248,8 @@ export const list_tree_children_sorted = query({
 export const list_tree_children_shared = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		savedStream: v.optional(files_saved_stream_validator),
+		stream: v.union(v.literal("normal"), v.literal("cohort")),
+		pageView: v.optional(files_directory_view_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		/**
@@ -1244,47 +1262,37 @@ export const list_tree_children_shared = query({
 		segment: v.union(v.literal("value"), v.literal("missing")),
 		paginationOpts: paginationOptsValidator,
 	},
-	returns: paginationResultValidator(
-		v.object({
-			...tree_open_row_fields,
-			/**
-			 * The row's index key in the table order. Compare it with `files_sort_compare`.
-			 */
-			sortKey: files_sort_row_key_validator,
-		}),
-	),
+	returns: v.object({
+		...paginationResultValidator(
+			v.object({
+				...tree_open_row_fields,
+				/**
+				 * The row's index key in the table order. Compare it with `files_sort_compare`.
+				 */
+				sortKey: files_sort_row_key_validator,
+			}),
+		).fields,
+		directoryView: files_directory_view_validator,
+	}),
 	handler: async (
 		ctx,
 		args,
 	): Promise<
 		PaginationResult<
 			Awaited<ReturnType<typeof files_tree_db_get_rows>>[number] & { locked: false; sortKey: files_sort_RowKey }
-		>
+		> & { directoryView: files_DirectoryView }
 	> => {
 		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
 		// (files-explorer-tree skill, "Saved-only lists").
 
 		// Every refusal gives this one answer, like `list_tree_children`.
-		const refused = { page: [], isDone: true, continueCursor: "" };
+		const refused = { page: [], isDone: true, continueCursor: "", directoryView: null };
 
 		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
 			return refused;
 		}
 		const { membership } = reader;
-
-		// Do the refusals that need no folder read first, so they cost nothing.
-		const table = get_table_read_args(args);
-		if (!table || reader.isOwner || table.metadataField === null || table.filter?.kind !== "text") {
-			return refused;
-		}
-		const { sort, filter, namePrefix, metadataField } = table;
-
-		// The server builds the key from the caller only, never from the client.
-		const principalKey = (await db_get_share_principal_keys(ctx, reader))[args.principalIndex];
-		if (!principalKey) {
-			return refused;
-		}
 
 		if (
 			args.parentId === files_ROOT_ID
@@ -1293,10 +1301,25 @@ export const list_tree_children_shared = query({
 		) {
 			return refused;
 		}
+		const saved = await files_saved_stream_db_create_directory(ctx.db, membership, args);
+		const empty = { ...refused, directoryView: saved.directoryView };
+		if (saved.empty) return empty;
+
+		const table = get_table_read_args(args);
+		if (!table || reader.isOwner || table.metadataField === null || table.filter?.kind !== "text") {
+			return empty;
+		}
+		const { sort, filter, namePrefix, metadataField } = table;
+
+		// The server builds the key from the caller only, never from the client.
+		const principalKey = (await db_get_share_principal_keys(ctx, reader))[args.principalIndex];
+		if (!principalKey) {
+			return empty;
+		}
 
 		// Each share row reads its node, checks its access and reads its field doc.
 		const guard = await db_shrink_split_guard(ctx, TREE_SHARE_FILTER_PAGE_MAX_ITEMS);
-		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const { tag } = saved;
 		const result = await ctx.db
 			.query("files_share_rows")
 			.withIndex("by_org_ws_principal_parent_kind_archive_sortName_name", (q) => {
@@ -1318,7 +1341,7 @@ export const list_tree_children_shared = query({
 			.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, guard) });
 
 		if (files_tree_db_page_needs_split(result, guard)) {
-			return files_tree_db_page_split_required(result);
+			return { ...files_tree_db_page_split_required(result), directoryView: saved.directoryView };
 		}
 
 		const rows = await db_get_share_tree_rows(ctx, { reader, shareRows: result.page, extendedRoots: false });
@@ -1355,6 +1378,7 @@ export const list_tree_children_shared = query({
 					: compareValues(sortValue, start!) >= 0 && (end === null || compareValues(sortValue, end) < 0)));
 		return {
 			...result,
+			directoryView: saved.directoryView,
 			page: rows.flatMap(({ shareRow, treeRow }, index) => {
 				const fieldDoc = fieldDocs[index];
 				if (fieldDoc?.sourceKind !== "committed" || !matches(fieldDoc.sortValue)) return [];

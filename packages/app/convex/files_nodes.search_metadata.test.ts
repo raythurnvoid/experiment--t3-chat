@@ -2281,7 +2281,7 @@ describe("list_tree_children_sorted", () => {
 				segment: "missing",
 				paginationOpts: { numItems: 10, cursor: null },
 			}),
-		).toEqual({ page: [], isDone: true, continueCursor: "" });
+		).toEqual({ page: [], isDone: true, continueCursor: "", directoryView: null });
 
 		const first = await read_page({
 			kind: "file",
@@ -2593,6 +2593,7 @@ describe("list_tree_children_sorted", () => {
 			expect(
 				await read_page({ kind: "file", sort, restricted, paginationOpts: { numItems: 100, cursor: null, endCursor } }),
 			).toEqual({
+				directoryView: null,
 				page: [],
 				isDone: false,
 				continueCursor: endCursor,
@@ -2710,10 +2711,11 @@ describe("list_tree_children_sorted", () => {
 			segment: "value" as const,
 			paginationOpts: { numItems: 10, cursor: null },
 		};
-		const refused = { page: [], isDone: true, continueCursor: "" };
+		const refused = { page: [], isDone: true, continueCursor: "", directoryView: null };
 
 		expect(
 			await asOwner.query(api.files_tree.list_tree_children_sorted, {
+				stream: "normal" as const,
 				...args,
 				sort: [{ field: "metadata.bad key", direction: "asc" }],
 			}),
@@ -2722,7 +2724,11 @@ describe("list_tree_children_sorted", () => {
 		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
 		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
 		expect(
-			await asOther.query(api.files_tree.list_tree_children_sorted, { ...args, membershipId: other.membershipId }),
+			await asOther.query(api.files_tree.list_tree_children_sorted, {
+				stream: "normal" as const,
+				...args,
+				membershipId: other.membershipId,
+			}),
 		).toEqual(refused);
 	});
 
@@ -2740,6 +2746,7 @@ describe("list_tree_children_sorted", () => {
 		});
 		const read_tree = (archived: boolean) =>
 			asOwner.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
@@ -2975,6 +2982,7 @@ describe("list_tree_children_sorted filter", () => {
 		for (const { filter, sort = "name", namePrefix = null, numItems = 50 } of cases)
 			await expect(
 				asOwner.query(api.files_tree.list_tree_children_sorted, {
+					stream: "normal" as const,
 					membershipId: db.membershipId,
 					parentId,
 					kind: "file",
@@ -3029,6 +3037,7 @@ describe("table filter caller", () => {
 			for (const as of [asOwner, asAnonymous]) {
 				await expect(
 					as.query(api.files_tree.list_tree_children_sorted, {
+						stream: "normal" as const,
 						membershipId: db.membershipId,
 						parentId,
 						kind: "file",
@@ -3042,6 +3051,7 @@ describe("table filter caller", () => {
 				).rejects.toThrow("Unauthenticated");
 				await expect(
 					as.query(api.files_tree.list_tree_children_shared, {
+						stream: "normal" as const,
 						membershipId: db.membershipId,
 						parentId,
 						kind: "file",
@@ -3068,6 +3078,7 @@ describe("table filter caller", () => {
 			const as = t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: db.userId });
 			await expect(
 				as.query(api.files_tree.list_tree_children_sorted, {
+					stream: "normal" as const,
 					membershipId: db.membershipId,
 					parentId,
 					kind: "file",
@@ -3081,6 +3092,7 @@ describe("table filter caller", () => {
 			).rejects.toThrow("Unauthenticated");
 			await expect(
 				as.query(api.files_tree.list_tree_children_shared, {
+					stream: "normal" as const,
 					membershipId: db.membershipId,
 					parentId,
 					kind: "file",

@@ -3,6 +3,7 @@
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import type { files_DirectoryView } from "../shared/files.ts";
 
 export type files_saved_placement_FixedView = {
 	cohortId: Id<"files_move_cohorts">;
@@ -54,6 +55,27 @@ export async function files_saved_placement_db_get_view(
 }
 
 export type files_saved_placement_View = Awaited<ReturnType<typeof files_saved_placement_db_get_view>>;
+
+/**
+ * Only a folder with staged places depends on the workspace's selected Move view.
+ */
+export async function files_saved_placement_db_get_directory_view(
+	db: QueryCtx["db"],
+	args: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId"> & { parentId: Doc<"files_nodes">["parentId"] },
+): Promise<files_DirectoryView> {
+	const anchor = await db
+		.query("files_saved_places")
+		.withIndex("by_organization_workspace_parent", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", args.parentId),
+		)
+		.first();
+	if (!anchor) return null;
+	// The one workspace cohort keeps its slot until all its places have been removed.
+	const view = await files_saved_placement_db_get_view(db, args);
+	if (view.cohortId !== anchor.cohortId || view.view === null)
+		throw should_never_happen("Saved directory place lost its Move slot", { placeId: anchor._id, view });
+	return { cohortId: anchor.cohortId, view: view.view };
+}
 
 /**
  * Saved search pages check this number. Only search reads it, so its changes do not run tree pages again.

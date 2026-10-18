@@ -513,6 +513,8 @@ export const files_saved_stream_validator = v.union(
 	}),
 );
 
+export const files_directory_view_validator = v.union(v.null(), files_move_view_tag_validator);
+
 const files_pending_update_plan_relation_kind_validator = v.union(
 	...(
 		["structure", "ordinary_parent", "copy_parent", "ordinary_media", "copy_media", "replacement", "archive"] as const
@@ -2739,6 +2741,7 @@ const app_convex_schema = defineSchema({
 		...files_saved_placement_fields,
 		contentId: v.union(v.id("files_move_cohort_content"), v.null()),
 	})
+		.index("by_organization_workspace_parent", ["organizationId", "workspaceId", "parentId"])
 		.index("by_cohort_view_node", ["cohortId", "view", "nodeId"])
 		.index("by_view_parent_name_archive", [
 			"cohortId",

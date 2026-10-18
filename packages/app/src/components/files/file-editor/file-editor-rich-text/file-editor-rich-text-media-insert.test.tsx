@@ -60,19 +60,22 @@ function set_root_files() {
 		locked: false,
 	}));
 	for (const kind of ["folder", "file"] as const) {
-		const streamArgs = files_tree_stream_args({
-			membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
-			folderId: "root" as app_convex_Id<"files_nodes">,
-			kind,
-			archived: false,
-			savedStream: { kind: "normal", generation: 0 },
-		});
 		const children = getFunctionName(app_convex_api.files_tree.list_tree_children);
-		results.set(watch_key(children, { ...streamArgs.children(false), paginationOpts: { cursor: null } }), {
-			...EMPTY_PAGE,
-			page: kind === "file" ? files : [],
-		});
-		results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), EMPTY_PAGE);
+		for (const stream of ["normal", "cohort"] as const) {
+			const streamArgs = files_tree_stream_args({
+				membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
+				folderId: "root" as app_convex_Id<"files_nodes">,
+				kind,
+				archived: false,
+				stream,
+			});
+			results.set(watch_key(children, { ...streamArgs.children(false), paginationOpts: { cursor: null } }), {
+				...EMPTY_PAGE,
+				directoryView: null,
+				page: stream === "normal" && kind === "file" ? files : [],
+			});
+			results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), { ...EMPTY_PAGE, directoryView: null });
+		}
 		for (const principalIndex of [0, 1, 2] as const) {
 			results.set(
 				watch_key(getFunctionName(app_convex_api.files_tree.list_tree_shared_roots), {

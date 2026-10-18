@@ -38,13 +38,8 @@ afterEach(() => {
 test("saved tree sources keep the normal names until publication", async () => {
 	const f = await test_create_saved_placement_fixture({ normalPaths: ["/normal.txt"] });
 	const read = async () => {
-		const view = await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
-		if (!view?.cohortId || !view.view) throw new Error("Expected the fixture Move view");
 		const pages = await Promise.all(
-			([
-				{ kind: "normal", generation: view.generation },
-				{ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation },
-			] as const).flatMap((savedStream) =>
+			(["normal", "cohort"] as const).flatMap((stream) =>
 				(["root", f.parentId] as const).flatMap((parentId) =>
 					(["folder", "file"] as const).map((kind) =>
 						f.asUser.query(api.files_tree.list_tree_children, {
@@ -53,7 +48,7 @@ test("saved tree sources keep the normal names until publication", async () => {
 							kind,
 							archived: false,
 							restricted: false,
-							savedStream,
+							stream,
 							paginationOpts: { cursor: null, numItems: 20 },
 						}),
 					),

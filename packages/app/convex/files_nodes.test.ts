@@ -286,7 +286,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 }
 
 describe("list_tree_children", () => {
-	const REFUSED = { page: [], isDone: true, continueCursor: "" };
+	const REFUSED = { page: [], isDone: true, continueCursor: "", directoryView: null };
 
 	test("pages folders then files in the folder table name order, capped at 200 per page", async () => {
 		const t = test_convex();
@@ -308,6 +308,8 @@ describe("list_tree_children", () => {
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		const list_page = (kind: "folder" | "file", cursor: string | null) =>
 			asOwner.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
+				pageView: null,
 				membershipId: db.membershipId,
 				parentId: db.bigId,
 				kind,
@@ -338,6 +340,7 @@ describe("list_tree_children", () => {
 		const f = await seed_tree_access_fixture(t);
 		const list = (kind: "folder" | "file", archived: boolean) =>
 			f.asOwner.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId: f.owner.membershipId,
 				parentId: f.nodes.openId,
 				kind,
@@ -390,6 +393,7 @@ describe("list_tree_children", () => {
 		const folders = await t
 			.withIdentity({ issuer: "https://clerk.test", external_id: db.userId })
 			.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId: db.membershipId,
 				parentId: db.binId,
 				kind: "folder",
@@ -407,6 +411,7 @@ describe("list_tree_children", () => {
 		const f = await seed_tree_access_fixture(t);
 		const list = (as: typeof f.asAdmin, membershipId: Id<"organizations_workspaces_users">, restricted: boolean) =>
 			as.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId,
 				parentId: f.nodes.boxId,
 				kind: "folder",
@@ -433,6 +438,7 @@ describe("list_tree_children", () => {
 		await t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { archiveOperationId: "archive-1" }));
 		const list = (archived: boolean, restricted: boolean) =>
 			asOwner.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
@@ -460,6 +466,8 @@ describe("list_tree_children", () => {
 		);
 		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
 			asOwner.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
+				pageView: null,
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
@@ -475,6 +483,7 @@ describe("list_tree_children", () => {
 		// A SYSTEM author makes the tree rows throw, so this page proves the guard runs before any row read.
 		await t.run((ctx) => ctx.db.patch("files_nodes", ids[101]!, { createdBy: users_SYSTEM_AUTHOR }));
 		expect(await read({ numItems: 100, cursor: null, endCursor })).toEqual({
+			directoryView: null,
 			page: [],
 			isDone: false,
 			continueCursor: endCursor,
@@ -491,6 +500,7 @@ describe("list_tree_children", () => {
 		const f = await seed_tree_access_fixture(t);
 		const list = (parentId: Id<"files_nodes">) =>
 			f.asAdmin.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId: f.admin.membershipId,
 				parentId,
 				kind: "folder",
@@ -514,6 +524,7 @@ describe("list_tree_children", () => {
 		const f = await seed_tree_access_fixture(t);
 		const list = (parentId: Id<"files_nodes"> | typeof files_ROOT_ID, kind: "folder" | "file") =>
 			f.asGrantOnly.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId: f.grantOnly.membershipId,
 				parentId,
 				kind,
@@ -535,6 +546,7 @@ describe("list_tree_children", () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const args = {
+			stream: "normal" as const,
 			membershipId: f.grantOnly.membershipId,
 			parentId: f.nodes.sharedId,
 			kind: "file" as const,
@@ -1768,6 +1780,7 @@ test("generated sibling file is visible in the tree query", async () => {
 	});
 
 	const { page: treeNodesList } = await asUser.query(api.files_tree.list_tree_children, {
+		stream: "normal" as const,
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		kind: "file",

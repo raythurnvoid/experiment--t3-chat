@@ -1,13 +1,13 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ConvexProvider, ConvexReactClient } from "convex/react";
-import { getFunctionName } from "convex/server";
-import { convexToJson } from "convex/values";
+import { getFunctionName, type FunctionArgs } from "convex/server";
+import { ConvexError, convexToJson } from "convex/values";
 import { useRef, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_tree_stream_args } from "@/lib/files-tree-context.tsx";
-import type { files_SavedStream } from "../../../shared/files.ts";
+import type { files_DirectoryView, files_SavedStream } from "../../../shared/files.ts";
 import {
 	FilesNodePicker,
 	type FilesNodePicker_Pickable,
@@ -37,6 +37,8 @@ const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
 const NORMAL_STREAM: files_SavedStream = { kind: "normal", generation: 1 };
 
 const results = new Map<string, unknown>();
+const listeners = new Map<string, Set<() => void>>();
+const subscriptions: Array<{ name: string; args: Record<string, unknown> }> = [];
 let client: ConvexReactClient;
 
 /**
@@ -65,13 +67,15 @@ function tree_row(args: { id: string; parentId: string; kind: "file" | "folder";
 }
 
 /**
- * Answer both streams of one folder: the open streams with the given pages, and the restricted twins
- * with `lockedFolders` or an empty, done page.
+ * Answer normal and cohort streams of one folder, with their restricted twins.
  */
 function set_folder(args: {
 	parentId: string;
 	folders?: Array<ReturnType<typeof tree_row>>;
 	files?: Array<ReturnType<typeof tree_row>>;
+	cohortFolders?: Array<ReturnType<typeof tree_row>>;
+	cohortFiles?: Array<ReturnType<typeof tree_row>>;
+	directoryView?: files_DirectoryView;
 	/**
 	 * Folders the user cannot open, in the twin of the folders stream.
 	 */
@@ -81,34 +85,56 @@ function set_folder(args: {
 	 */
 	nextFiles?: Array<ReturnType<typeof tree_row>>;
 }) {
-	const { parentId, folders = [], files = [], lockedFolders = [], nextFiles } = args;
-	for (const kind of ["folder", "file"] as const) {
-		const streamArgs = files_tree_stream_args({
-			membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
-			folderId: parentId as app_convex_Id<"files_nodes">,
-			kind,
-			archived: false,
-			savedStream: NORMAL_STREAM,
-		});
-		const children = getFunctionName(app_convex_api.files_tree.list_tree_children);
-		const page = kind === "folder" ? folders : files;
-		const hasNext = kind === "file" && nextFiles !== undefined;
-		results.set(watch_key(children, { ...streamArgs.children(false), paginationOpts: { cursor: null } }), {
-			page,
-			isDone: !hasNext,
-			continueCursor: hasNext ? "next" : "",
-		});
-		if (hasNext) {
-			results.set(watch_key(children, { ...streamArgs.children(false), paginationOpts: { cursor: "next" } }), {
+	const {
+		parentId,
+		folders = [],
+		files = [],
+		cohortFolders = [],
+		cohortFiles = [],
+		directoryView = null,
+		lockedFolders = [],
+		nextFiles,
+	} = args;
+	for (const stream of ["normal", "cohort"] as const)
+		for (const kind of ["folder", "file"] as const) {
+			const streamArgs = files_tree_stream_args({
+				membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
+				folderId: parentId as app_convex_Id<"files_nodes">,
+				kind,
+				archived: false,
+				stream,
+			});
+			const children = getFunctionName(app_convex_api.files_tree.list_tree_children);
+			const rows =
+				stream === "normal" ? { folder: folders, file: files } : { folder: cohortFolders, file: cohortFiles };
+			const page = rows[kind];
+			const hasNext = stream === "normal" && kind === "file" && nextFiles !== undefined;
+			results.set(watch_key(children, { ...streamArgs.children(false), paginationOpts: { cursor: null } }), {
+				page,
+				isDone: !hasNext,
+				continueCursor: hasNext ? "next" : "",
+				directoryView,
+			});
+			if (hasNext) {
+				results.set(
+					watch_key(children, {
+						...streamArgs.children(false),
+						pageView: directoryView,
+						paginationOpts: { cursor: "next" },
+					}),
+					{
+						...EMPTY_PAGE,
+						page: nextFiles,
+						directoryView,
+					},
+				);
+			}
+			results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), {
 				...EMPTY_PAGE,
-				page: nextFiles,
+				page: stream === "normal" && kind === "folder" ? lockedFolders.map((row) => ({ ...row, locked: true })) : [],
+				directoryView,
 			});
 		}
-		results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), {
-			...EMPTY_PAGE,
-			page: kind === "folder" ? lockedFolders.map((row) => ({ ...row, locked: true })) : [],
-		});
-	}
 }
 
 /**
@@ -209,6 +235,8 @@ function option_names() {
 
 beforeEach(() => {
 	results.clear();
+	listeners.clear();
+	subscriptions.length = 0;
 	set_move_view(null);
 	onPick.mockReset();
 	client = new ConvexReactClient("https://picker-test.convex.cloud");
@@ -216,7 +244,15 @@ beforeEach(() => {
 	vi.spyOn(client, "watchQuery").mockImplementation((query, args?, _options?) => {
 		const key = watch_key(getFunctionName(query), args as Record<string, unknown>);
 		return {
-			onUpdate: () => () => {},
+			onUpdate: (notify) => {
+				subscriptions.push({ name: getFunctionName(query), args: args as Record<string, unknown> });
+				const callbacks = listeners.get(key) ?? new Set<() => void>();
+				callbacks.add(notify);
+				listeners.set(key, callbacks);
+				return () => {
+					callbacks.delete(notify);
+				};
+			},
 			localQueryResult: () => results.get(key) as never,
 			localQueryLogs: () => undefined,
 			journal: () => undefined,
@@ -532,6 +568,180 @@ describe("FilesNodePicker", () => {
 		).toEqual(["team"]);
 		expect(option_names()).toEqual(["team"]);
 		expect(screen.queryByText("This folder is empty")).toBeNull();
+	});
+
+	test.each(["before", "after"] as const)(
+		"browses matching normal and cohort directory streams in the %s view",
+		async (view) => {
+			const directoryView = { cohortId: "cohort_1" as app_convex_Id<"files_move_cohorts">, view };
+			set_folder({
+				parentId: "root",
+				directoryView,
+				files: [tree_row({ id: "a.md", parentId: "root", kind: "file" })],
+				cohortFiles: [tree_row({ id: "b.md", parentId: "root", kind: "file" })],
+			});
+			results.delete(
+				watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+			);
+			render(<PickerHarness initialQuery="" />);
+
+			await waitFor(() =>
+				expect(option_names(), "matching directory streams show without a workspace view answer").toEqual([
+					"a.md",
+					"b.md",
+				]),
+			);
+		},
+	);
+
+	test("keeps the requested pages and displayed rows through a local directory reset", async () => {
+		const before: files_DirectoryView = { cohortId: "cohort_1" as app_convex_Id<"files_move_cohorts">, view: "before" };
+		const after: files_DirectoryView = { ...before, view: "after" };
+		const files = Array.from({ length: 100 }, (_, index) =>
+			tree_row({ id: `${String(index).padStart(3, "0")}.md`, parentId: "root", kind: "file" }),
+		);
+		const afterFiles = [...files.slice(0, 99), tree_row({ id: "099-moved.md", parentId: "root", kind: "file" })];
+		set_folder({ parentId: "root", directoryView: before, files: files.slice(0, 50), nextFiles: files.slice(50) });
+		results.delete(
+			watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+		);
+		render(<PickerHarness initialQuery="" />);
+		await screen.findByRole("option", { name: "Show more" });
+		fireEvent.click(screen.getByRole("option", { name: "Show more" }));
+		await waitFor(() => expect(option_names()).toEqual(files.map((file) => file.name)));
+		const children = getFunctionName(app_convex_api.files_tree.list_tree_children);
+		const directoryCalls = () =>
+			vi
+				.mocked(client)
+				.watchQuery.mock.calls.filter(([query]) => getFunctionName(query) === children)
+				.map(([, args]) => args as FunctionArgs<typeof app_convex_api.files_tree.list_tree_children>);
+		const oldFirst = directoryCalls().find(
+			(args) =>
+				args.stream === "normal" && args.kind === "file" && !args.restricted && args.paginationOpts.cursor === null,
+		)!;
+		const streamArgs = files_tree_stream_args({
+			membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
+			folderId: "root",
+			kind: "file",
+			archived: false,
+			stream: "normal",
+		});
+		const refillKey = watch_key(children, {
+			...streamArgs.children(false),
+			pageView: after,
+			paginationOpts: { cursor: "next" },
+		});
+		act(() => {
+			set_folder({
+				parentId: "root",
+				directoryView: after,
+				files: afterFiles.slice(0, 50),
+				nextFiles: afterFiles.slice(50),
+			});
+			results.delete(refillKey);
+			for (const callbacks of listeners.values()) for (const notify of [...callbacks]) notify();
+		});
+		await waitFor(() =>
+			expect(
+				directoryCalls().some(
+					(args) =>
+						args.stream === "normal" &&
+						args.kind === "file" &&
+						!args.restricted &&
+						args.paginationOpts.cursor === null &&
+						args.paginationOpts.id !== oldFirst.paginationOpts.id,
+				),
+				"mismatched directory pages start a new picker pagination session",
+			).toBe(true),
+		);
+		expect(option_names(), "the picker keeps every displayed row while its requested extent refills").toEqual(
+			files.map((file) => file.name),
+		);
+		expect(
+			screen.queryByRole("option", { name: "Show more" }),
+			"a reset does not settle with only its first page",
+		).toBeNull();
+		expect(
+			directoryCalls().some(
+				(args) =>
+					args.stream === "normal" &&
+					args.kind === "file" &&
+					args.paginationOpts.cursor === "next" &&
+					JSON.stringify(args.pageView) === JSON.stringify(after),
+			),
+			"the picker refills the requested next page with the new directory tag",
+		).toBe(true);
+		act(() => {
+			results.set(refillKey, { ...EMPTY_PAGE, page: afterFiles.slice(50), directoryView: after });
+			listeners.get(refillKey)?.forEach((notify) => notify());
+		});
+		await waitFor(() =>
+			expect(option_names(), "the complete new view replaces the held rows").toEqual(
+				afterFiles.map((file) => file.name),
+			),
+		);
+		expect(screen.queryByRole("option", { name: "Show more" })).toBeNull();
+	});
+
+	test("keeps Show more rows when a Move puts them in an earlier cohort stream", async () => {
+		const files = Array.from({ length: 100 }, (_, index) =>
+			tree_row({ id: `b-${String(index).padStart(3, "0")}.md`, parentId: "root", kind: "file" }),
+		);
+		const afterFiles = [{ ...files[99]!, name: "a-moved.md", path: "/a-moved.md" }, ...files.slice(0, 99)];
+		set_folder({ parentId: "root", files: files.slice(0, 50), nextFiles: files.slice(50) });
+		render(<PickerHarness initialQuery="" />);
+		await screen.findByRole("option", { name: "Show more" });
+		fireEvent.click(screen.getByRole("option", { name: "Show more" }));
+		await waitFor(() => expect(option_names()).toEqual(files.map((file) => file.name)));
+
+		const directoryView: files_DirectoryView = {
+			cohortId: "cohort_1" as app_convex_Id<"files_move_cohorts">,
+			view: "after",
+		};
+		const children = getFunctionName(app_convex_api.files_tree.list_tree_children);
+		const normalArgs = files_tree_stream_args({
+			membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
+			folderId: "root", kind: "file", archived: false, stream: "normal",
+		}).children(false);
+		const cohortArgs = { ...normalArgs, stream: "cohort" };
+		const oldNextKey = watch_key(children, { ...normalArgs, pageView: null, paginationOpts: { cursor: "next" } });
+		const refillKey = watch_key(children, {
+			...cohortArgs, pageView: directoryView, paginationOpts: { cursor: "cohort-next" },
+		});
+		const subscriptionCount = subscriptions.length;
+		act(() => {
+			set_folder({ parentId: "root", directoryView });
+			// The old normal continuation still pins the idle directory view.
+			results.set(oldNextKey, new ConvexError({
+				message: "InvalidCursor: The saved directory Move view changed.",
+				isConvexSystemError: true, paginationError: "InvalidCursor", reason: "saved_directory_view_changed",
+			}));
+			results.set(watch_key(children, { ...cohortArgs, paginationOpts: { cursor: null } }), {
+				page: afterFiles.slice(0, 50), isDone: false, continueCursor: "cohort-next", directoryView,
+			});
+			for (const callbacks of listeners.values()) for (const notify of [...callbacks]) notify();
+		});
+		expect(
+			option_names(),
+			"the picker keeps its displayed extent while rows move into the cohort stream",
+		).toEqual(files.map((file) => file.name));
+		await waitFor(() => expect(
+			listeners.get(refillKey)?.size,
+			"the picker refills the stream that now holds its requested rows",
+		).toBe(1));
+		const nextPages = subscriptions.slice(subscriptionCount).flatMap(({ name, args: queryArgs }) => {
+			const args = queryArgs as FunctionArgs<typeof app_convex_api.files_tree.list_tree_children>;
+			return name === children && args.paginationOpts.cursor !== null ? [watch_key(children, args)] : [];
+		});
+		expect([...new Set(nextPages)], "only the blocking cohort stream asks for another picker page").toEqual([refillKey]);
+		act(() => {
+			results.set(refillKey, { ...EMPTY_PAGE, page: afterFiles.slice(50), directoryView });
+			listeners.get(refillKey)?.forEach((notify) => notify());
+		});
+		await waitFor(() => expect(
+			option_names(),
+			"the matching refill shows every final picker name without losing the requested extent",
+		).toEqual(afterFiles.map((file) => file.name)));
 	});
 
 	test("Show more loads the next page of the folder", async () => {
