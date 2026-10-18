@@ -22,6 +22,14 @@ export function AppToaster() {
 				"--normal-text": "var(--color-fg-11)",
 				"--border-radius": "6px",
 			})}
+			// Sonner paints its action button with `color: var(--normal-bg)`. Our background is a gradient, which is
+			// not a valid text color, so the label became invisible. Use the colors of the secondary button.
+			toastOptions={{
+				actionButtonStyle: {
+					background: "var(--color-base-1-08)",
+					color: "var(--color-fg-10)",
+				},
+			}}
 		/>
 	);
 }

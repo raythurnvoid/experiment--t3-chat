@@ -471,6 +471,21 @@
 			color: var(--color-fg-04);
 			box-shadow: none;
 		}
+
+		/* Popovers and their cards use the cool alt grays. Use them here too, at the top of the scale,
+		   so the hover stays brighter than the surface under the button. */
+		:is(.MyFloatingSurface, .MyMenuPopover, .MySelectPopover) & {
+			&:not(:is(:disabled, .MyButton-state-disabled)) {
+				&:is(:hover, :focus-visible):not(:active),
+				&[aria-expanded="true"] {
+					background: linear-gradient(var(--color-base-alt-1-12), var(--color-base-alt-1-11));
+				}
+
+				&:active {
+					background: var(--color-base-alt-1-12);
+				}
+			}
+		}
 	}
 
 	.MyButton-variant-ghost-highlightable-alt {
