@@ -133,6 +133,15 @@ const rate_limiter_CONFIG = {
 		capacity: 300,
 	},
 	files_pending_update_write: BULK_FILES_WRITE,
+	// One page of the search box's custom-field search. Each page walks many folders, so it is not
+	// free like a query read. A chip can make two calls per page, and the box searches again 300 ms
+	// after typing stops, so the capacity covers a few quick edits and "Show more" clicks.
+	files_search_metadata: {
+		kind: "token bucket",
+		rate: 60,
+		period: MINUTE,
+		capacity: 20,
+	},
 	// Signed URLs for one public link, charged per target and keyed by the link doc, never by its
 	// token. Every visitor of the link shares it, so one page can load its file, or up to 50 images
 	// and videos, a few times in a row. A popular link waits for the refill while its text stays on screen.

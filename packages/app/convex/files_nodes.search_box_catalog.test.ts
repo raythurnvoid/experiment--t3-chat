@@ -6,6 +6,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE } from "./rate_limiter.ts";
 import {
 	test_compact_metadata_catalog,
 	test_convex,
@@ -121,6 +122,24 @@ describe("search box doors", () => {
 				}),
 			).toEqual({ _nay: { message: "This search cursor is not valid. Search again." } });
 		}
+	});
+
+	test("the custom-field search refuses a user past the rate limit", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const search = () =>
+			seeded.asOwner.action(api.files_nodes.search_saved_metadata, {
+				membershipId: seeded.db.membershipId,
+				plan: statusOpenPlans[0]!,
+				numItems: 50,
+				cursor: null,
+			});
+
+		// The bucket holds 20 calls.
+		for (let call = 0; call < 20; call += 1) {
+			expect((await search())._yay).toBeTruthy();
+		}
+		expect(await search()).toEqual({ _nay: { message: rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE } });
 	});
 
 	test("folder maps follow read and write grants in every metadata door", async () => {
