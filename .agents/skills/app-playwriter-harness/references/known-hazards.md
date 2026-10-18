@@ -1137,6 +1137,7 @@ curl -s 'http://localhost:5173/src/main.tsx' | grep -o '_jsxFileName = "[^"]*"'
 
 - A second checkout is a normal thing to find on this machine — a release or maintenance copy under `+ai/` is a working pattern, not a mistake. Do not delete it, do not restart the server, and do not assume it is stale. Just prove which root you are looking at before trusting a browser result, and say which server you used when you report evidence.
 - Combine this with the React Compiler probe above. `grep -c '_c('` tells you whether the compiler is live; `_jsxFileName` tells you whose files it compiled. A run can pass the first check and fail the second.
+- To serve your own checkout next to the shared one, use port 4173: `vp env exec pnpm exec vite --port 4173 --strictPort` from its `packages/app`. The dev deployment's `ALLOWED_ORIGINS` lists only `http://localhost:5173` and `http://localhost:4173` (plus the hosted sites). On any other port the anonymous token call fails with `Failed to fetch` and the app never leaves the loading screen. Seen 2026-10-18, when the shared checkout's front end sent an argument the deployment did not know yet and `/files` crashed.
 
 ## The Playwriter CLI's default `--timeout` is 10 s, and it kills a runner mid-wait
 
