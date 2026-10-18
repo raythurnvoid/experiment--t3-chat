@@ -3792,7 +3792,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 });
 // #endregion yjs repair
 
-describe("files_nodes.yjs_prepare_doc_last_snapshot", () => {
+describe("files_yjs_load.yjs_prepare_doc_last_snapshot", () => {
 	test("returns the textKind beside the snapshot", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -3810,7 +3810,7 @@ describe("files_nodes.yjs_prepare_doc_last_snapshot", () => {
 			name: "Prepare Root Kind User",
 			email: "prepare-root-kind@example.com",
 		});
-		const prepared = await asUser.action(api.files_nodes.yjs_prepare_doc_last_snapshot, {
+		const prepared = await asUser.action(api.files_yjs_load.yjs_prepare_doc_last_snapshot, {
 			membershipId: db.membershipId,
 			nodeId: createdId,
 		});

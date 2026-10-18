@@ -522,7 +522,7 @@ export async function files_fetch_private_file_pending_text(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	target: Extract<files_PendingTarget, { kind: "private" }>;
 }) {
-	const pendingUpdate = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_update, args);
+	const pendingUpdate = await app_convex.query(app_convex_api.files_pending_target.get_file_pending_update, args);
 	if (
 		!files_pending_update_has_content(pendingUpdate) ||
 		pendingUpdate.preparation ||
@@ -539,7 +539,7 @@ export async function files_fetch_private_file_pending_text(args: {
 	const text = files_yjs_doc_get_text({ yjsDoc, rootKind: pendingUpdate.createIntent.textKind });
 	yjsDoc.destroy();
 	if (text._nay) return text;
-	const current = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_update, args);
+	const current = await app_convex.query(app_convex_api.files_pending_target.get_file_pending_update, args);
 	if (current?._id !== pendingUpdate._id || current.revision !== pendingUpdate.revision) {
 		return Result({ _nay: { message: "The proposed changes changed while loading. Reopen the file and try again." } });
 	}
@@ -739,9 +739,9 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 	// all three again until they agree. Three tries cover one toggle landing in the middle.
 	for (let attempt = 0; attempt < 3; attempt++) {
 		const [yjsSnapshotTarget, yjsUpdatesData, yjsLastSequenceDoc] = await Promise.all([
-			app_convex.action(app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot, args),
-			app_convex.query(app_convex_api.files_nodes.yjs_get_incremental_updates, args),
-			app_convex.query(app_convex_api.files_nodes.get_file_last_yjs_sequence, args),
+			app_convex.action(app_convex_api.files_yjs_load.yjs_prepare_doc_last_snapshot, args),
+			app_convex.query(app_convex_api.files_yjs_load.yjs_get_incremental_updates, args),
+			app_convex.query(app_convex_api.files_yjs_load.get_file_last_yjs_sequence, args),
 		]);
 
 		if (yjsSnapshotTarget == null) return null;

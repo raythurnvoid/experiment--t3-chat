@@ -22,7 +22,6 @@ import {
 import {
 	channels_LIMITS,
 	channels_is_emoji,
-	channels_markdown_to_plain_text,
 	channels_render_people_mentions,
 	channels_render_file_mentions,
 	channels_render_file_quotes,
@@ -33,6 +32,7 @@ import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_tiptap_markdown_to_plain_text } from "../shared/files-tiptap.ts";
 
 // Make Convex reuse the loaded module between calls. No mutable module state is allowed here.
 export const experimental_reuseContext = true;
@@ -130,15 +130,16 @@ async function get_plain_text(
 ) {
 	const names = await Promise.all(message.mentionUserIds.map((userId) => get_name(ctx, userId)));
 	const files = await shape_file_mentions(ctx, { membership, fileMentionIds: message.fileMentionIds });
-	return channels_markdown_to_plain_text(
-		channels_render_file_quotes(
+	// Replies and the editor must read Markdown in the same way.
+	return files_tiptap_markdown_to_plain_text({
+		markdown: channels_render_file_quotes(
 			channels_render_file_mentions(
 				channels_render_people_mentions(message.body, names),
 				files.map((file) => (file.kind === "file" ? { name: file.name } : null)),
 			),
 			message.fileQuotes,
 		),
-	);
+	});
 }
 
 export async function channels_messages_db_is_visible(

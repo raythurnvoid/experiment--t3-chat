@@ -146,6 +146,21 @@ Throttling the CPU over CDP does not help. `page.routeWebSocket` fails over the 
 before the click, install a `MutationObserver` that copies the editor area's `outerHTML` and its
 rect when the first skeleton row appears. After the load, put that copy in a fixed overlay at the
 same rect, take the screenshot, then remove the overlay and the observer.
+Before any timing run, count animation frames in the tab for 500 ms. Fewer than about 20 means
+the browser window is covered by another window. Chrome then slows frames and React rendering
+too, even though `document.visibilityState` says `visible`, so every number is too high.
+The R2 snapshot host sends no `Timing-Allow-Origin`, so resource timing shows zeros for its
+DNS, connect and wait. Time it with fresh signed URLs fetched back to back instead.
+To check that the page runs an edited route module, fetch the module URL with a new query value.
+The page loads the component from the `tsr-split=component` chunk, so an older plain URL can
+look stale.
+For a Markdown file open, the browser waits about 400ms for the snapshot action while the server
+runs it in about 70ms. Read server times from `convex logs --history 5000 --jsonl` (skip
+`cachedResult` rows), not from WebSocket round trips. Since the files route preloads the snapshot
+and the update log at the click (2026-10-18), the dev build's critical path is the main thread: the
+click starts a 600–700ms render task, and every answer waits for it. A/B in dev: the preload saves
+about 200ms on a cold open and about 80ms on a warm one. Use `README.md` only as its own case,
+because the folder view has that document open already.
 To time a click on `link "Open <name>"`, use `page.mouse.click` on its box. `locator.click` waits for
 the navigation, and while a big folder renders it can time out after the click already worked.
 The Root preview shows five rows. Use Show more before timing a source outside that preview.

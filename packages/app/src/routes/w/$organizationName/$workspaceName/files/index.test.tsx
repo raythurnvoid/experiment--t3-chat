@@ -3,7 +3,12 @@ import { ConvexProvider, ConvexReactClient } from "convex/react";
 import { createElement, type ComponentType } from "react";
 import { describe, expect, test, vi } from "vitest";
 
-const routerListeners = vi.hoisted(() => [] as Array<(event: unknown) => void>);
+const { routerListeners, routerLocation, loadedNodes, preloadSnapshot } = vi.hoisted(() => ({
+	routerListeners: [] as Array<(event: unknown) => void>,
+	routerLocation: { search: {} as Record<string, unknown> },
+	loadedNodes: new Map<string, unknown>(),
+	preloadSnapshot: vi.fn(() => () => {}),
+}));
 
 vi.mock("@tanstack/react-router", () => ({
 	createFileRoute: (_path: string) => (options: unknown) => ({
@@ -12,12 +17,19 @@ vi.mock("@tanstack/react-router", () => ({
 		useSearch: () => ({}),
 	}),
 	useRouter: () => ({
+		state: { location: routerLocation },
 		subscribe: (_name: string, listener: (event: unknown) => void) => {
 			routerListeners.push(listener);
 			return () => {};
 		},
 	}),
 }));
+
+vi.mock("@/lib/files-tree-context.tsx", () => ({
+	FilesTreeProvider: { useGetLoadedNode: () => (nodeId: string) => loadedNodes.get(nodeId) },
+}));
+
+vi.mock("@/lib/files-yjs-snapshot-preload.ts", () => ({ files_yjs_preload_snapshot: preloadSnapshot }));
 
 vi.mock("@/components/files/file-node-view/file-node-view.tsx", () => ({
 	FileNodeView: () => null,
@@ -83,5 +95,45 @@ describe("README preload", () => {
 		expect(() => act(() => vi.advanceTimersByTime(10_000))).not.toThrow();
 		view.unmount();
 		vi.useRealTimers();
+	});
+});
+
+describe("snapshot preload", () => {
+	test("preloads a page load and a clicked rich text file, but not a known folder or the open file", () => {
+		routerListeners.length = 0;
+		routerLocation.search = { nodeId: "unknown" };
+		const richText = { kind: "file", locked: false, assetId: "a1", textKind: "rich_text", collaborationEnabled: true };
+		loadedNodes.set("folder", { kind: "folder", locked: false, assetId: null, textKind: null });
+		loadedNodes.set("text", { ...richText, textKind: "plain_text" });
+		loadedNodes.set("file", richText);
+		const client = new ConvexReactClient("https://files-route-test.convex.cloud", {
+			webSocketConstructor: class {} as unknown as typeof WebSocket,
+		});
+		const view = render(
+			createElement(ConvexProvider, { client }, createElement(Route.options.component as ComponentType)),
+		);
+
+		// A page load does not know the node's type yet.
+		expect(preloadSnapshot).toHaveBeenLastCalledWith({ membershipId: "m1", nodeId: "unknown" });
+		preloadSnapshot.mockClear();
+
+		// The router's `fromLocation` is the last finished navigation, so it can stay old.
+		const navigate = (to: string) => {
+			const event = {
+				pathChanged: false,
+				fromLocation: { search: { nodeId: "unknown" } },
+				toLocation: { search: { nodeId: to } },
+			};
+			for (const listener of routerListeners) listener(event);
+		};
+		navigate("folder");
+		navigate("text");
+		expect(preloadSnapshot).not.toHaveBeenCalled();
+		navigate("file");
+		// The view writes its `view` param before the click's navigation finishes.
+		navigate("file");
+		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "m1", nodeId: "file" });
+
+		view.unmount();
 	});
 });

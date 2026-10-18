@@ -100,7 +100,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			set_file_collaborative: "set_file_collaborative",
 			set_file_non_collaborative: "set_file_non_collaborative",
 		},
-		r2: {
+		files_node_asset: {
 			get_asset_by_file_node_id: "get_asset_by_file_node_id",
 		},
 		users: {

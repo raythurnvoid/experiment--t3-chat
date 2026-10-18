@@ -44,7 +44,9 @@ message without another counter or inbox write. Threads use their root message i
 URLs, and document marks. A reply cannot start another thread.
 
 Inline replies target the same channel. A stored quote must be a substring of the target's plain
-text. `channels_markdown_to_plain_text` uses the editor's shared Markdown reader. On read, drop a
+text. `channels_messages.ts` reads it with the editor's shared Markdown reader,
+`files_tiptap_markdown_to_plain_text`. Keep that import out of `shared/channels.ts`: `channels.ts`
+imports that file, and the reader adds about 2 MB to its cold load. On read, drop a
 quote that an edit removed. Deleted targets show a deleted notice. File attachments are shaped per
 viewer; an unreadable file returns no file id, name, or path. Do not return raw attachment ids beside
 the safe fields.

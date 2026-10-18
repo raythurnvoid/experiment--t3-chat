@@ -46,7 +46,7 @@ export const FileDraftRecovery = memo(function FileDraftRecovery(props: FileDraf
 				texts.push(text._yay);
 			}
 			// Access or the proposal may change between page reads.
-			const current = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_update, {
+			const current = await app_convex.query(app_convex_api.files_pending_target.get_file_pending_update, {
 				membershipId,
 				target: pending.target,
 				pendingUpdateId: pending._id,

@@ -137,7 +137,7 @@ must build a new provider, and every push must name the document it was built fo
 
 1. Install the page-side Convex call recorder (`snippets.md`, "Watch Convex Mutations On The Wire",
    page-side alternative). Read the file's current document id from page context:
-   `app_convex.query(app_convex_api.files_nodes.yjs_get_incremental_updates, { membershipId, nodeId })`
+   `app_convex.query(app_convex_api.files_yjs_load.yjs_get_incremental_updates, { membershipId, nodeId })`
    answers `{ yjsLastSequenceId, updates }`. Keep that id as **A**.
 2. Type a marker in the rich editor. Poll `window.__pwCalls` for `files_nodes:yjs_push_update`
    (one debounced push per burst): its `expectedYjsLastSequenceId` must equal **A** and its `result`

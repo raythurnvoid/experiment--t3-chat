@@ -6,7 +6,9 @@ import { Workpool } from "@convex-dev/workpool";
 import type { Infer } from "convex/values";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_content_version_validator } from "./schema.ts";
-import { files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
+import { files_saved_placement_db_get_node, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
+import { files_saved_content_db_yjs_updates } from "../server/files-saved-content.ts";
+import { files_node_has_editable_yjs_state } from "../server/files.ts";
 import { components, internal } from "./_generated/api.js";
 
 export const files_content_materialization_workpool = new Workpool(components.files_content_materialization_workpool, {
@@ -96,5 +98,136 @@ export async function files_nodes_db_get_content_version(
 		contentType: fileNode.contentType,
 		textKind: fileNode.textKind,
 		collaborationEnabled: true,
+	};
+}
+
+export async function db_get_file_content_materialization_db_state(
+	ctx: QueryCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
+) {
+	const header = await db_get_file_content_materialization_header(ctx, args);
+	if (!header) {
+		return null;
+	}
+
+	const yjsUpdatesDocs: Doc<"files_yjs_updates">[] = [];
+	for await (const update of files_saved_content_db_yjs_updates(ctx.db, {
+		...args,
+		throughSequence: header.yjsLastSequenceDoc.lastSequence,
+	}))
+		yjsUpdatesDocs.push(update);
+
+	return {
+		fileNode: header.fileNode,
+		yjsSnapshotDoc: header.yjsSnapshotDoc,
+		yjsLastSequenceDoc: header.yjsLastSequenceDoc,
+		yjsUpdatesDocs,
+		asset: header.asset,
+		yjsSnapshotAsset: header.yjsSnapshotAsset,
+	};
+}
+
+/**
+ * The header half of the materialization state: every doc except the update log. The
+ * materialization action reads the log one update doc at a time through
+ * `get_file_next_yjs_update` instead of collecting it, because one allowed doc may itself be
+ * 930,000 bytes.
+ */
+export async function db_get_file_content_materialization_header(
+	ctx: QueryCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
+) {
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
+		return null;
+	}
+
+	if (!files_node_has_editable_yjs_state(fileNode)) {
+		return null;
+	}
+
+	const [asset, yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
+		ctx.db.get("files_r2_assets", fileNode.assetId),
+		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
+		files_saved_placement_db_get_sequence(ctx.db, fileNode),
+	]);
+
+	// Do not check the asset kind here. node.assetId always holds the file's current bytes, but
+	// the kind can vary: usually the newest version snapshot, or an old content row without an
+	// r2Key (old data) until a materialization points the node at a fresh snapshot.
+	if (!asset || asset.organizationId !== args.organizationId || asset.workspaceId !== args.workspaceId) {
+		const errorMessage = "fileNode.assetId points to a missing or mismatched files_r2_assets doc";
+		const errorData = {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			assetId: fileNode.assetId,
+			asset,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	if (
+		!yjsSnapshotDoc ||
+		yjsSnapshotDoc.organizationId !== args.organizationId ||
+		yjsSnapshotDoc.workspaceId !== args.workspaceId ||
+		yjsSnapshotDoc.fileNodeId !== args.nodeId
+	) {
+		const errorMessage = "fileNode.yjsSnapshotId points to a missing or mismatched files_yjs_snapshots doc";
+		const errorData = {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			yjsSnapshotId: fileNode.yjsSnapshotId,
+			yjsSnapshotDoc,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	if (
+		!yjsLastSequenceDoc ||
+		yjsLastSequenceDoc.organizationId !== args.organizationId ||
+		yjsLastSequenceDoc.workspaceId !== args.workspaceId ||
+		yjsLastSequenceDoc.fileNodeId !== args.nodeId
+	) {
+		const errorMessage =
+			"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
+		const errorData = {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			yjsLastSequenceId: fileNode.yjsLastSequenceId,
+			yjsLastSequenceDoc,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	const yjsSnapshotAsset = await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId);
+	if (
+		!yjsSnapshotAsset ||
+		yjsSnapshotAsset.organizationId !== args.organizationId ||
+		yjsSnapshotAsset.workspaceId !== args.workspaceId ||
+		yjsSnapshotAsset.kind !== "yjs_snapshot"
+	) {
+		const errorMessage = "yjsSnapshotDoc.assetId points to a missing or mismatched files_r2_assets doc";
+		const errorData = {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			assetId: yjsSnapshotDoc.assetId,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	return {
+		fileNode,
+		yjsSnapshotDoc,
+		yjsLastSequenceDoc,
+		asset,
+		yjsSnapshotAsset,
 	};
 }

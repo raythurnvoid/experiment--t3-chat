@@ -1315,7 +1315,7 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 	});
 	expect(snapshotsResult.snapshots).toEqual([]);
 
-	const unauthorizedYjsUpdates = await asOtherUser.query(api.files_nodes.yjs_get_incremental_updates, {
+	const unauthorizedYjsUpdates = await asOtherUser.query(api.files_yjs_load.yjs_get_incremental_updates, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
 	});

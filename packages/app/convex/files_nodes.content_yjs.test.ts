@@ -2311,7 +2311,7 @@ describe("non-collaborative files", () => {
 
 		// This one answers `null` rather than a refusal: it is a read the editor polls, and a file
 		// with no document has no sequence to report.
-		const sequence = await asUser.query(api.files_nodes.get_file_last_yjs_sequence, {
+		const sequence = await asUser.query(api.files_yjs_load.get_file_last_yjs_sequence, {
 			membershipId: db.membershipId,
 			nodeId,
 		});

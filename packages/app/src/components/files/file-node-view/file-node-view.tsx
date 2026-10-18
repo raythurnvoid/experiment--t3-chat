@@ -1410,7 +1410,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	const primaryPanelRef = useRef<HTMLDivElement>(null);
 	const [previewRevision, setPreviewRevision] = useState(0);
 	const [previewSource, setPreviewSource] = useState<FileHtmlPreview_Source>();
-	const asset = useQuery(app_convex_api.r2.get_asset_by_file_node_id, {
+	const asset = useQuery(app_convex_api.files_node_asset.get_asset_by_file_node_id, {
 		membershipId,
 		fileNodeId: node._id,
 	});
@@ -2293,7 +2293,7 @@ const STORED_FILE_METADATA_SKELETON_ROW_COUNT = 8;
 
 type FileNodeViewStoredFile_Props = {
 	node: FileNodeViewResolvedNode;
-	asset: FunctionReturnType<typeof app_convex_api.r2.get_asset_by_file_node_id> | undefined;
+	asset: FunctionReturnType<typeof app_convex_api.files_node_asset.get_asset_by_file_node_id> | undefined;
 };
 
 const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileNodeViewStoredFile_Props) {
@@ -6028,14 +6028,14 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		loadMore: loadMorePendingUpdates,
 	} = useFilesPendingUpdates({ membershipId, listKey: "all" });
 	const savedEditorPendingUpdate = useQuery(
-		app_convex_api.files_pending_updates.get_file_pending_update,
+		app_convex_api.files_pending_target.get_file_pending_update,
 		activeEditorTarget?.kind === "saved" ? { membershipId, target: activeEditorTarget } : "skip",
 	);
 	// The open editor does not depend on which review pages have loaded.
 	const editorPendingUpdate =
 		activeEditorTarget?.kind === "private" ? privateTargetView?.entry.pendingUpdate : savedEditorPendingUpdate;
 	const activeEditorServerSequenceData = useQuery(
-		app_convex_api.files_nodes.get_file_last_yjs_sequence,
+		app_convex_api.files_yjs_load.get_file_last_yjs_sequence,
 		activeEditorNodeId && activeEditorNodeIsCollaborative
 			? {
 					membershipId,

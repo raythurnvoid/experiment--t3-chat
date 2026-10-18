@@ -128,7 +128,7 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 	// A converted upload keeps its stored blob asset, so its size is still the asset size. A file
 	// created in-app has no asset, and a folder never has one.
 	const asset = useQuery(
-		app_convex_api.r2.get_asset_by_file_node_id,
+		app_convex_api.files_node_asset.get_asset_by_file_node_id,
 		nodeKind === "file" ? { membershipId, fileNodeId: nodeId } : "skip",
 	);
 

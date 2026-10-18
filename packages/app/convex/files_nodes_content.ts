@@ -148,12 +148,12 @@ import {
 	r2_fetch_object_range_from_bucket,
 	r2_put_object,
 } from "./r2_client.ts";
-import { cancel_file_content_materialization, db_get_file_content_materialization_db_state, db_get_file_snapshot_content, enqueue_file_content_materialization, files_READ_RANGE_MAX_LINES, files_line_range_from_text, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, type files_nodes_get_visible_entry_by_path_Result, files_tail_lines_from_text, yjs_reserve_and_increment_last_sequence, type files_nodes_read_committed_file_chunk_stats_Result, type files_nodes_read_committed_file_chunks_line_range_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_header_Result, type get_file_content_materialization_state_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
+import { cancel_file_content_materialization, db_get_file_snapshot_content, enqueue_file_content_materialization, files_READ_RANGE_MAX_LINES, files_line_range_from_text, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, type files_nodes_get_visible_entry_by_path_Result, files_tail_lines_from_text, yjs_reserve_and_increment_last_sequence, type files_nodes_read_committed_file_chunk_stats_Result, type files_nodes_read_committed_file_chunks_line_range_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_header_Result, type get_file_content_materialization_state_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
 import {
 	files_nodes_db_upsert_file_stats as db_upsert_file_stats,
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes_create_db.ts";
-import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
+import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_nodes_db_copied_from_policy_fields } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {

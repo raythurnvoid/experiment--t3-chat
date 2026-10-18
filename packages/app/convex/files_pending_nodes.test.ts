@@ -384,7 +384,7 @@ describe("cleanup_published_nodes", () => {
 			});
 			if (completed._nay || completed._yay.target.kind !== "private") throw new Error("Expected a private image");
 			const target = completed._yay.target;
-			const proposal = await asUser.query(api.files_pending_updates.get_file_pending_update, {
+			const proposal = await asUser.query(api.files_pending_target.get_file_pending_update, {
 				membershipId: db.membershipId,
 				target,
 			});

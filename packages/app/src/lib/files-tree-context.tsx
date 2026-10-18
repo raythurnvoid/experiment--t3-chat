@@ -9,6 +9,7 @@ import { files_sort_text_key } from "../../shared/files-sort.ts";
 import type { files_SavedStream } from "../../shared/files.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useFilesPaginatedQuery } from "@/hooks/files-paginated-query-hooks.ts";
+import { useFn } from "@/hooks/utils-hooks.ts";
 
 /**
  * One tree row. A row with `locked: true` is a child the user cannot open: it has only its name,
@@ -69,6 +70,16 @@ function next_results(
 		return current;
 	}
 	return next;
+}
+
+function find_loaded_node(folderResults: Map<string, FilesTreeFolderResult>, nodeId: string) {
+	for (const result of folderResults.values()) {
+		const row = result.rows.find((item) => item._id === nodeId);
+		if (row) {
+			return row;
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -541,13 +552,21 @@ const FilesTreeProvider = Object.assign(
 			if (nodeId === undefined) {
 				return undefined;
 			}
-			for (const result of value.folderResults.values()) {
-				const row = result.rows.find((item) => item._id === nodeId);
-				if (row) {
-					return row;
-				}
+			return find_loaded_node(value.folderResults, nodeId);
+		},
+
+		/**
+		 * Like `useLoadedNode`, as a function for event handlers such as a navigation listener.
+		 * The function keeps one identity and always reads the latest rows.
+		 */
+		useGetLoadedNode: function useGetLoadedNode() {
+			const value = use(FilesTreeContext);
+			if (!value) {
+				throw new Error("FilesTreeProvider.useGetLoadedNode must be used within FilesTreeProvider");
 			}
-			return undefined;
+
+			const { folderResults } = value;
+			return useFn((nodeId: string) => find_loaded_node(folderResults, nodeId));
 		},
 
 		/**

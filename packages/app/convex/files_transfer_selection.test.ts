@@ -355,7 +355,7 @@ describe("Transfer selection pages", () => {
 					outputName: name,
 					outputPath: `${targetPath}/${name}`,
 				});
-				const pending = await f.asUser.query(api.files_pending_updates.get_file_pending_update, {
+				const pending = await f.asUser.query(api.files_pending_target.get_file_pending_update, {
 					membershipId: f.scope.membershipId,
 					target: source,
 				});

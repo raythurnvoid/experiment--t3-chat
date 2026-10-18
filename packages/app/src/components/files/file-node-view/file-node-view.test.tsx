@@ -562,7 +562,7 @@ beforeEach(() => {
 				return { count: pendingUpdates.length, truncated: false };
 			case "files_pending_updates:get_pending_move_occupant":
 				return null;
-			case "files_pending_updates:get_file_pending_update": {
+			case "files_pending_target:get_file_pending_update": {
 				if (savedPendingUpdate !== undefined) return savedPendingUpdate;
 				const target = (args as { target: { kind: string; id: string } }).target;
 				const views = pendingUpdates as Array<{
@@ -677,7 +677,7 @@ beforeEach(() => {
 				return anagraphic;
 			case "plugins_ui:list_file_views":
 				return plugins;
-			case "r2:get_asset_by_file_node_id":
+			case "files_node_asset:get_asset_by_file_node_id":
 				return null;
 			case "files_browser:current_browser_session": {
 				const { mode } = args as { mode: "file" | "web" };
@@ -1164,7 +1164,7 @@ describe("FileNodeView private targets", () => {
 				doc.destroy();
 				return { bytes, pageCount: 1, totalBytes: bytes.byteLength, digest: "test" };
 			}
-			if (getFunctionName(reference) === "files_pending_updates:get_file_pending_update")
+			if (getFunctionName(reference) === "files_pending_target:get_file_pending_update")
 				return revoked ? null : PRIVATE_ENTRY.pendingUpdate;
 			return previousQuery(reference, args);
 		});
@@ -1238,8 +1238,8 @@ describe("FileNodeView private targets", () => {
 					args !== "skip" &&
 					[
 						"files_tree:get_file_node_for_membership",
-						"files_nodes:get_file_last_yjs_sequence",
-						"r2:get_asset_by_file_node_id",
+						"files_yjs_load:get_file_last_yjs_sequence",
+						"files_node_asset:get_asset_by_file_node_id",
 					].includes(getFunctionName(reference)),
 			),
 		).toEqual([]);
@@ -1642,7 +1642,7 @@ describe("FileNodeView private targets", () => {
 
 		const query = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference: never, args: unknown) =>
-			getFunctionName(reference) === "r2:get_asset_by_file_node_id"
+			getFunctionName(reference) === "files_node_asset:get_asset_by_file_node_id"
 				? { r2Key: "capture.png", size: 18 }
 				: query(reference, args),
 		);

@@ -168,12 +168,14 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			list_files_pending_sources: "list_files_pending_sources",
 			get_files_pending_updates_summary: "get_files_pending_updates_summary",
 		},
-		files_pending_target: { get_file_pending_target: "get_file_pending_target" },
+		files_pending_target: {
+			get_file_pending_target: "get_file_pending_target",
+			get_file_pending_update: "get_file_pending_update",
+		},
 		files_pending_updates: {
 			get_pending_source_summary: "get_pending_source_summary",
 			create_private_pending_download_url: "create_private_pending_download_url",
 			get_pending_move_occupant: "get_pending_move_occupant",
-			get_file_pending_update: "get_file_pending_update",
 			discard_file_pending_content: "discard_file_pending_content",
 			discard_file_pending_update: "discard_file_pending_update",
 			upsert_file_pending_update: "upsert_file_pending_update",
@@ -188,7 +190,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_file_node_for_membership: "get_file_node_for_membership",
 			get_current_user_file_write_permission: "get_current_user_file_write_permission",
 		},
-		r2: {
+		files_node_asset: {
 			get_asset_by_file_node_id: "get_asset_by_file_node_id",
 		},
 	},

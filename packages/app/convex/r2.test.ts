@@ -917,7 +917,7 @@ describe("r2 asset content", () => {
 		});
 		expect(signedDownload._nay).toMatchObject({ message: "Not found" });
 
-		const asset = await asUser.query(api.r2.get_asset_by_file_node_id, {
+		const asset = await asUser.query(api.files_node_asset.get_asset_by_file_node_id, {
 			membershipId: db.membershipId,
 			fileNodeId: created._yay.nodeId,
 		});
@@ -5636,7 +5636,7 @@ describe("get_asset", () => {
 
 		// The file view sees the normal published asset. The node remains locked separately.
 		const [asset, node] = await Promise.all([
-			asUser.query(api.r2.get_asset_by_file_node_id, { membershipId: db.membershipId, fileNodeId: upload.nodeId }),
+			asUser.query(api.files_node_asset.get_asset_by_file_node_id, { membershipId: db.membershipId, fileNodeId: upload.nodeId }),
 			t.run(async (ctx) => ctx.db.get("files_nodes", upload.nodeId)),
 		]);
 		expect(asset?.r2Key).toBe(upload.key);

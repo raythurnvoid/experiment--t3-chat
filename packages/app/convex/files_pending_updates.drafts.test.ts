@@ -196,7 +196,7 @@ describe.each(["saved", "private"] as const)("%s Copy action replies", (kind) =>
 				if (copied._nay) throw new Error(copied._nay.message);
 			}
 			const args = { membershipId: source.membershipId, target };
-			const visible = await asUser.query(api.files_pending_updates.get_file_pending_update, args);
+			const visible = await asUser.query(api.files_pending_target.get_file_pending_update, args);
 			if (!visible?.content) throw new Error("Expected copied text");
 			expect(visible.copiedFrom?.path).toBe("/source.md");
 			const before = await t.run((ctx) => ctx.db.get("files_pending_updates", visible._id));
@@ -490,7 +490,7 @@ describe("archived-parent draft recovery", () => {
 		});
 		expect(page.page).toContainEqual(expect.objectContaining({ pendingUpdateId }));
 		expect(
-			await asUser.query(api.files_pending_updates.get_file_pending_update, { membershipId, target }),
+			await asUser.query(api.files_pending_target.get_file_pending_update, { membershipId, target }),
 		).toMatchObject({ _id: pendingUpdateId, content: proposal.content });
 		for (const [stateId, text] of [
 			[proposal.content!.stagedStateId, "accepted text\n"],
@@ -653,7 +653,7 @@ describe("archived-parent draft recovery", () => {
 			userId: f.userId,
 		});
 		expect(await f.asUser.query(api.files_pending_target.get_file_pending_target, args)).toBeNull();
-		expect(await f.asUser.query(api.files_pending_updates.get_file_pending_update, args)).toBeNull();
+		expect(await f.asUser.query(api.files_pending_target.get_file_pending_update, args)).toBeNull();
 		expect(
 			await f.asUser.query(api.files_pending_updates.get_file_pending_update_state_page, {
 				...args,

@@ -2854,7 +2854,7 @@ describe("FileEditorDiff with collaboration off", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Save staged changes" }));
 		await act(async () => {});
 		const [watchReference, watchArgs] = convexWatchQueryMock.mock.calls[0] ?? [];
-		expect(getFunctionName(watchReference as never)).toBe("files_pending_updates:get_file_pending_update");
+		expect(getFunctionName(watchReference as never)).toBe("files_pending_target:get_file_pending_update");
 		expect(watchArgs).toEqual({
 			membershipId: MEMBERSHIP_ID,
 			target: { kind: "saved", id: NODE_ID },

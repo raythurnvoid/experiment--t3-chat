@@ -124,10 +124,10 @@ export const experimental_reuseContext = true;
 export {
 	upsert_file_pending_update,
 	persist_file_pending_update_rebased_state,
-	get_file_pending_update,
 	get_file_pending_update_last_sequence_saved,
 	save_file_pending_update,
 } from "./files_pending_updates.ts";
+export { get_file_pending_update } from "./files_pending_target.ts";
 
 /**
  * Chats are private to their creator. Workspace read access is also required, so leaving the
