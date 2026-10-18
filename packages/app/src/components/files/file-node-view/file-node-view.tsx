@@ -4087,13 +4087,9 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		onArchiveNode,
 		onMoveFileNodesToParent,
 	} = props;
-	const { membershipId } = AppTenantProvider.useContext();
-	const canWrite = useQuery(app_convex_api.files_tree.get_current_user_file_write_permission, {
-		membershipId,
-		nodeId: child._id,
-	});
+	// The list row carries a live `canWrite`, so the actions are ready with the row.
 	const capabilities = files_get_read_only_capabilities({
-		canWrite: canWrite === true,
+		canWrite: child.canWrite,
 		parentCanWrite: canPasteIntoFolder,
 		hasVisibleProtectedDescendant,
 	});

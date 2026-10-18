@@ -2937,3 +2937,15 @@ times out. The app keeps some disabled controls focusable on purpose, so they ca
 disabled (for example a folder table header while a filter fixes the order). To test what a user
 gets, focus the control and press Enter: `await button.focus(); await page.keyboard.press("Enter")`.
 Do not use `{ force: true }`. Hit 2026-10-06.
+
+## A second `WebSocket.prototype.send` patch looks like a subscription storm
+
+A hand-written rig that saves the original as `window.__orig = WebSocket.prototype.send` and runs
+twice in one page load saves its own patch the second time. `send` then calls itself until
+`RangeError: Maximum call stack size exceeded`. The Convex client logs "Failed to send message on
+WebSocket, reconnecting" and subscribes to every query again on each reconnect. So the rig counts
+thousands of `ModifyQuerySet` adds and the page shows no rows, which looks like an app loop. Restoring
+`send` from the saved value then leaves the patch in place, and the tab fails with `Cannot read
+properties of undefined (reading 'call')` until a reload. Install the patch only once (return early
+when the saved original already exists), and only after the step that can fail, such as finding the
+row to click. Hit 2026-10-18.
