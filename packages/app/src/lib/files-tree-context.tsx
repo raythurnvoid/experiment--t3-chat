@@ -459,8 +459,10 @@ const FilesTreeProvider = Object.assign(
 				[value.registerFolders, ownerId, requestKey],
 			);
 
-			// Keep these manual memos. Callers rebuild their whole tree when these rows or the hoisted ids
-			// change identity, and a new array on every render would rebuild it on every render.
+			// Use manual memos here, not the React Compiler. Callers rebuild their whole tree when `rows` or
+			// `hoistedIds` change identity. Callers also pass new `folderIds` and `pinnedNodeIds` arrays on
+			// every render, and the compiler compares inputs by identity, so its cache would miss on every
+			// render. These memos depend on the JSON text of the request instead.
 			// The loaded rows do not read the pins. Opening a row of the tree pins a node that is already
 			// loaded, so the rows keep their identity and the tree rows do not render again.
 			const { folderResults, pinResults, sharedRoots } = value;
