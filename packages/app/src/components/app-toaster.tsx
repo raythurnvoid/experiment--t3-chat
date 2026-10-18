@@ -17,7 +17,7 @@ export function AppToaster() {
 			// Sonner injects its own styles outside the app CSS layers, so a layered rule cannot change them.
 			// It reads these variables, so set them inline with the floating-surface colors of menus.
 			style={sx({
-				"--normal-bg": "linear-gradient(var(--color-base-alt-1-06), var(--color-base-alt-1-05))",
+				"--normal-bg": "linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04))",
 				"--normal-border": "var(--color-base-alt-1-10)",
 				"--normal-text": "var(--color-fg-11)",
 				"--border-radius": "6px",
