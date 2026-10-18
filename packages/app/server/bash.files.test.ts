@@ -2661,13 +2661,12 @@ describe("locked paths", () => {
 		expect(result.stderr).toBe(`ls: cannot open directory '${mount}/Team': Permission denied\n`);
 	});
 
-	test("cd below a locked folder still says No such file", async () => {
+	test("cd below a locked folder says Permission denied", async () => {
 		const runner = await create_locked_runner();
 
 		const result = await runner.run({ command: `cd ${mount}/Team/nope` });
 
-		// just-bash's built-in cd prints this text for every error. "Permission denied" needs a vendor patch.
-		expect(result.stderr).toBe(`bash: cd: ${mount}/Team/nope: No such file or directory\n`);
+		expect(result.stderr).toBe(`bash: cd: ${mount}/Team/nope: Permission denied\n`);
 	});
 
 	test("a nested shell stat says Permission denied", async () => {
