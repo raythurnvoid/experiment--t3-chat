@@ -3,12 +3,20 @@ import { ConvexProvider, ConvexReactClient } from "convex/react";
 import { createElement, type ComponentType } from "react";
 import { describe, expect, test, vi } from "vitest";
 
-const { routerListeners, routerLocation, loadedNodes, preloadSnapshot } = vi.hoisted(() => ({
-	routerListeners: [] as Array<(event: unknown) => void>,
-	routerLocation: { search: {} as Record<string, unknown> },
-	loadedNodes: new Map<string, unknown>(),
-	preloadSnapshot: vi.fn(() => () => {}),
-}));
+const { routerListeners, routerLocation, loadedNodes, preloaded, preloadSnapshot } = vi.hoisted(() => {
+	// Keep the last started read like the real module does, so a second start for the same node shows.
+	const preloaded = { nodeId: null as string | null };
+	return {
+		routerListeners: [] as Array<(event: unknown) => void>,
+		routerLocation: { search: {} as Record<string, unknown> },
+		loadedNodes: new Map<string, unknown>(),
+		preloaded,
+		preloadSnapshot: vi.fn((args: { nodeId: string }) => {
+			preloaded.nodeId = args.nodeId;
+			return () => {};
+		}),
+	};
+});
 
 vi.mock("@tanstack/react-router", () => ({
 	createFileRoute: (_path: string) => (options: unknown) => ({
@@ -17,6 +25,7 @@ vi.mock("@tanstack/react-router", () => ({
 		useSearch: () => ({}),
 	}),
 	useRouter: () => ({
+		options: { parseSearch: (search: string) => Object.fromEntries(new URLSearchParams(search)) },
 		state: { location: routerLocation },
 		subscribe: (_name: string, listener: (event: unknown) => void) => {
 			routerListeners.push(listener);
@@ -32,7 +41,10 @@ vi.mock("@/lib/files-tree-context.tsx", () => ({
 	FilesTreeProvider: { useGetLoadedNode: () => (nodeId: string) => loadedNodes.get(nodeId) },
 }));
 
-vi.mock("@/lib/files-yjs-snapshot-preload.ts", () => ({ files_yjs_preload_snapshot: preloadSnapshot }));
+vi.mock("@/lib/files-yjs-snapshot-preload.ts", () => ({
+	files_yjs_preload_snapshot: preloadSnapshot,
+	files_yjs_has_preloaded_snapshot: (args: { nodeId: string }) => preloaded.nodeId === args.nodeId,
+}));
 
 vi.mock("@/components/files/file-node-view/file-node-view.tsx", () => ({
 	FileNodeView: () => null,
@@ -138,6 +150,40 @@ describe("snapshot preload", () => {
 		navigate("file");
 		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "m1", nodeId: "file" });
 
+		view.unmount();
+	});
+
+	test("a mouse press on a file link starts the read, and the click does not start it again", () => {
+		routerListeners.length = 0;
+		preloadSnapshot.mockClear();
+		preloaded.nodeId = null;
+		routerLocation.search = {};
+		loadedNodes.set("file", {
+			kind: "file",
+			locked: false,
+			assetId: "a1",
+			textKind: "rich_text",
+			collaborationEnabled: true,
+		});
+		const client = new ConvexReactClient("https://files-route-test.convex.cloud", {
+			webSocketConstructor: class {} as unknown as typeof WebSocket,
+		});
+		const view = render(
+			createElement(ConvexProvider, { client }, createElement(Route.options.component as ComponentType)),
+		);
+		const link = document.createElement("a");
+		link.href = `${window.location.pathname}?nodeId=file`;
+		document.body.append(link);
+
+		link.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }));
+		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "m1", nodeId: "file" });
+
+		// A second start would cancel the read that the press started.
+		const event = { pathChanged: false, toLocation: { search: { nodeId: "file" } } };
+		for (const listener of routerListeners) listener(event);
+		expect(preloadSnapshot).toHaveBeenCalledOnce();
+
+		link.remove();
 		view.unmount();
 	});
 });

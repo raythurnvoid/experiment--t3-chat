@@ -314,6 +314,18 @@ does not open the created file, so it must skip preload too. Use owned items for
 restore the child rule and folder default before archive. Keep difficult access-loss, lineage and
 snapshot compaction races in focused deterministic tests.
 
+## Open-on-press preload checks
+
+`element.click()` sends no pointer events, so it never starts the press preload. Use real input:
+`page.mouse.move` to the target, `page.mouse.down()`, `page.waitForTimeout(100)`,
+`page.mouse.up()`. On a sidebar row, aim at about 30% of `.FilesSidebarTreeItemPrimaryAction`
+and check `elementFromPoint` first. In the page, record `pointerdown` and `pointerup` times and
+patch `WebSocket.prototype.send` to time each frame that names `yjs_prepare_doc_last_snapshot`.
+The assertion is one send at the press (about minus the hold time from the release) and no second
+send at the click. With the press listener off, the one send comes right after the release.
+Measure text time from the release, alternate off and on in one page load, and keep every sample:
+dev network noise can be several hundred ms, so compare quiet pairs as well as medians.
+
 ## Full action checklist
 
 For the 2026-10-05 profiling work, the user deferred D01 Download. Leave it out of the active
