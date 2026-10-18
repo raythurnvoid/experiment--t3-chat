@@ -1,5 +1,6 @@
 import type { FunctionArgs } from "convex/server";
-import { compareValues } from "convex/values";
+import { compareValues, v } from "convex/values";
+import { validate } from "convex-helpers/validators";
 import { z } from "zod";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
@@ -9,7 +10,7 @@ import type { files_SavedStream } from "../shared/files.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { convex_error, convex_invalid_cursor_error } from "./convex-utils.ts";
 import { crypto_open_cursor, crypto_seal_cursor } from "./crypto-utils.ts";
-import { files_tree_walk_cursor_schema, files_tree_walk_key, files_tree_walk_page } from "./files-tree-walk.ts";
+import { files_tree_walk_cursor_validator, files_tree_walk_key, files_tree_walk_page } from "./files-tree-walk.ts";
 import { server_path_normalize } from "./server-utils.ts";
 
 const key_schema = z.object({
@@ -18,7 +19,7 @@ const key_schema = z.object({
 	nodeId: z.string(),
 });
 const cursor_schema = z.object({ lastKey: key_schema.nullable() });
-const walk_cursor_schema = z.object({ walk: files_tree_walk_cursor_schema });
+const walk_cursor_validator = v.object({ walk: files_tree_walk_cursor_validator });
 type Key = z.infer<typeof key_schema>;
 
 function compare_keys(a: Key, b: Key) {
@@ -132,9 +133,9 @@ export async function files_saved_list_page(
 		if (args.order === "desc") throw convex_error({ message: "A recursive list reads in path order only." });
 		let walkCursor = null;
 		if (cursor !== null) {
-			const parsed = walk_cursor_schema.safeParse(await crypto_open_cursor({ purpose: "files_list", scope, cursor }));
-			if (!parsed.success) throw convex_invalid_cursor_error("The saved list scope changed.");
-			walkCursor = parsed.data.walk;
+			const opened = await crypto_open_cursor({ purpose: "files_list", scope, cursor });
+			if (!validate(walk_cursor_validator, opened)) throw convex_invalid_cursor_error("The saved list scope changed.");
+			walkCursor = opened.walk;
 		}
 		const readArgs = {
 			agentSource: args.agentSource,
