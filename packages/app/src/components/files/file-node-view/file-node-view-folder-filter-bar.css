@@ -37,6 +37,15 @@
 
 	.FileNodeViewFolderFilterBar-area {
 		padding-right: 4px;
+
+		/* A disabled bar does not take text, so dim the filter icon with the input. */
+		&:has(.MyInputControl:disabled) {
+			cursor: default;
+
+			.MyInputIcon {
+				opacity: 0.5;
+			}
+		}
 	}
 
 	.FileNodeViewFolderFilterBar-hotkey {

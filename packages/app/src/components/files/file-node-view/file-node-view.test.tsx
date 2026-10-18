@@ -809,7 +809,9 @@ describe("FileNodeView node loading", () => {
 		nodeQueryStatus = "loading";
 		renderFileView({ nodeId: node._id });
 		expect(await screen.findByRole("heading", { name: "No README.md" })).toBeTruthy();
-		expect(screen.getByRole("button", { name: "New file" })).toBeTruthy();
+		expect(
+			within(screen.getByRole("group", { name: "Create files and folders" })).getByRole("button", { name: "New file" }),
+		).toBeTruthy();
 	});
 
 	test("keeps a loaded folder README draft when the folder query answers", async () => {

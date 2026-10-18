@@ -1347,6 +1347,19 @@ describe("FileNodeView folder filter", () => {
 		if (message !== "No rows match this filter") expect(screen.queryByText("No rows match this filter")).toBeNull();
 	});
 
+	test("disables the filter bar in an empty folder only while the bar holds nothing", async () => {
+		result = { rows: [], isDone: true };
+		const view = renderFileView({ nodeId: node._id });
+		await screen.findByText("This folder is empty");
+		expect(screen.getByRole("combobox", { name: "Filter and sort this folder" })).toHaveProperty("disabled", true);
+		view.unmount();
+
+		// A sort token keeps the folder "empty", but the user must still be able to remove it.
+		renderFileView({ nodeId: node._id, filter: "sort_by:file.updated:desc" });
+		await screen.findByText("This folder is empty");
+		expect(screen.getByRole("combobox", { name: "Filter and sort this folder" })).toHaveProperty("disabled", false);
+	});
+
 	test("keeps a loading filter out of the empty state, and Show more keeps looking after a short page", async () => {
 		result = { rows: undefined, isBusy: true, isDone: false };
 		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:rare" });
@@ -1664,7 +1677,8 @@ describe("FileNodeView file views", () => {
 		}
 
 		renderFileView({ nodeId: node._id });
-		expect(await screen.findByRole("button", { name: "New file" })).toBeTruthy();
+		const createGroup = await screen.findByRole("group", { name: "Create files and folders" });
+		expect(within(createGroup).getByRole("button", { name: "New file" })).toBeTruthy();
 		expect(screen.queryByRole("combobox", { name: /^View: / })).toBeNull();
 	});
 

@@ -384,6 +384,10 @@ export type FileNodeViewFolderFilterBar_Props = {
 	 */
 	folderPath: string;
 	/**
+	 * True when there is nothing to filter or sort, such as in an empty folder.
+	 */
+	disabled: boolean;
+	/**
 	 * Write a new `committedQuery`, a new `viewQuery`, or both. A missing key stays as it is.
 	 */
 	onChange: (change: { committedQuery?: string; viewQuery?: string }) => void;
@@ -489,7 +493,7 @@ function read_text_tokens(text: string) {
 export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilterBar(
 	props: FileNodeViewFolderFilterBar_Props,
 ) {
-	const { ref, committedQuery, viewQuery, folderId, folderPath, onChange } = props;
+	const { ref, committedQuery, viewQuery, folderId, folderPath, disabled, onChange } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -761,7 +765,8 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 						<MyComboboxInputControl
 							ref={inputRef}
 							aria-label="Filter and sort this folder"
-							placeholder="Filter or sort this folder"
+							placeholder={disabled ? "Nothing to filter yet" : "Filter or sort this folder"}
+							disabled={disabled}
 							showOnChange={false}
 							showOnClick={false}
 							showOnKeyPress={false}
@@ -805,6 +810,7 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 							aria-expanded={isSuggestionsOpen}
 							aria-controls={isSuggestionsOpen ? suggestionsId : undefined}
 							className={cn("FileNodeViewFolderFilterBar-icon-button" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+							disabled={disabled}
 							onClick={handleShowSuggestions}
 						>
 							<MyIconButtonIcon>

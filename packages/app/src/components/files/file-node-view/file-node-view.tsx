@@ -164,6 +164,7 @@ import {
 	FilePlus,
 	FileText,
 	Folder,
+	FolderOpen,
 	FolderPlus,
 	Hash,
 	Home,
@@ -174,7 +175,7 @@ import {
 	PanelLeftOpen,
 	Users,
 } from "lucide-react";
-import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, memo, use, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { z } from "zod";
@@ -3583,6 +3584,21 @@ const FileNodeViewToolbar = memo(function FileNodeViewToolbar(props: FileNodeVie
 // #endregion toolbar
 
 // #region folder create node modal
+/**
+ * The create dialog of the shown folder. The toolbar buttons and the empty folder state both open it.
+ */
+type FileNodeViewCreateNodeContextValue = {
+	canCreate: boolean;
+	isCreatingNode: boolean;
+	/**
+	 * Why the user cannot create here, or `null` when there is no reason to show.
+	 */
+	unavailableMessage: string | null;
+	openCreateNode: (kind: app_convex_Doc<"files_nodes">["kind"]) => void;
+};
+
+const FileNodeViewCreateNodeContext = createContext<FileNodeViewCreateNodeContextValue | null>(null);
+
 type FileNodeViewToolbarCreateNodeActions_Props = {
 	children: (folderActionsSlot: FileNodeViewToolbar_Props["folderActionsSlot"]) => React.ReactNode;
 	folderItemId: FileNodeViewFolder_Props["folderItemId"] | null;
@@ -3703,7 +3719,16 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 					onCreateNode={handleCreateNodeSubmit}
 				/>
 			)}
-			{children(folderActionsSlot)}
+			<FileNodeViewCreateNodeContext.Provider
+				value={{
+					canCreate: canReceiveChildren,
+					isCreatingNode,
+					unavailableMessage: createUnavailableMessage,
+					openCreateNode: handleCreateNodeModalOpen,
+				}}
+			>
+				{children(folderActionsSlot)}
+			</FileNodeViewCreateNodeContext.Provider>
 		</>
 	);
 });
@@ -4803,6 +4828,110 @@ const FileNodeViewFolderExplorerColumnMenu = memo(function FileNodeViewFolderExp
 });
 // #endregion folder explorer column menu
 
+// #region folder explorer empty folder
+type FileNodeViewFolderExplorerEmptyFolder_ClassNames =
+	| "FileNodeViewFolderExplorerEmptyFolder"
+	| "FileNodeViewFolderExplorerEmptyFolder-cell"
+	| "FileNodeViewFolderExplorerEmptyFolder-icon"
+	| "FileNodeViewFolderExplorerEmptyFolder-title"
+	| "FileNodeViewFolderExplorerEmptyFolder-hint"
+	| "FileNodeViewFolderExplorerEmptyFolder-actions";
+
+type FileNodeViewFolderExplorerEmptyFolder_Props = {
+	columnCount: number;
+};
+
+/**
+ * The table body of a folder with no items. It points the user to the create actions,
+ * because there is nothing else to do in an empty folder.
+ */
+const FileNodeViewFolderExplorerEmptyFolder = memo(function FileNodeViewFolderExplorerEmptyFolder(
+	props: FileNodeViewFolderExplorerEmptyFolder_Props,
+) {
+	const { columnCount } = props;
+
+	const createNode = use(FileNodeViewCreateNodeContext);
+	if (!createNode) {
+		throw new Error("FileNodeViewFolderExplorerEmptyFolder must be used within FileNodeViewToolbarCreateNodeActions");
+	}
+
+	return (
+		<MyGridTableRow
+			className={"FileNodeViewFolderExplorerEmptyFolder" satisfies FileNodeViewFolderExplorerEmptyFolder_ClassNames}
+		>
+			<MyGridTableCell
+				className={
+					"FileNodeViewFolderExplorerEmptyFolder-cell" satisfies FileNodeViewFolderExplorerEmptyFolder_ClassNames
+				}
+				aria-colspan={columnCount}
+			>
+				<FolderOpen
+					aria-hidden
+					className={
+						"FileNodeViewFolderExplorerEmptyFolder-icon" satisfies FileNodeViewFolderExplorerEmptyFolder_ClassNames
+					}
+				/>
+				<p
+					role="status"
+					className={
+						"FileNodeViewFolderExplorerEmptyFolder-title" satisfies FileNodeViewFolderExplorerEmptyFolder_ClassNames
+					}
+				>
+					This folder is empty
+				</p>
+				{createNode.canCreate ? (
+					<>
+						<p
+							className={
+								"FileNodeViewFolderExplorerEmptyFolder-hint" satisfies FileNodeViewFolderExplorerEmptyFolder_ClassNames
+							}
+						>
+							Create a file or folder to get started.
+						</p>
+						<div
+							className={
+								"FileNodeViewFolderExplorerEmptyFolder-actions" satisfies FileNodeViewFolderExplorerEmptyFolder_ClassNames
+							}
+						>
+							<MyButton
+								variant="outline"
+								disabled={createNode.isCreatingNode}
+								onClick={() => createNode.openCreateNode("file")}
+							>
+								<MyButtonIcon>
+									<FilePlus />
+								</MyButtonIcon>
+								New file
+							</MyButton>
+							<MyButton
+								variant="outline"
+								disabled={createNode.isCreatingNode}
+								onClick={() => createNode.openCreateNode("folder")}
+							>
+								<MyButtonIcon>
+									<FolderPlus />
+								</MyButtonIcon>
+								New folder
+							</MyButton>
+						</div>
+					</>
+				) : (
+					createNode.unavailableMessage !== null && (
+						<p
+							className={
+								"FileNodeViewFolderExplorerEmptyFolder-hint" satisfies FileNodeViewFolderExplorerEmptyFolder_ClassNames
+							}
+						>
+							{createNode.unavailableMessage}
+						</p>
+					)
+				)}
+			</MyGridTableCell>
+		</MyGridTableRow>
+	);
+});
+// #endregion folder explorer empty folder
+
 // #region folder explorer
 type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer"
@@ -4986,6 +5115,10 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 						? "This folder is empty"
 						: // A metadata sort hides the rows without its key, so the folder can still have rows.
 							`No rows have ${displayedSort[0]!.field}`;
+	const isFolderEmpty = emptyMessage === "This folder is empty";
+	// With nothing in the folder and nothing typed in the bar, there is nothing to filter or sort.
+	// The bar stays enabled while it holds text or tokens, so the user can still clear them.
+	const isFilterBarDisabled = isFolderEmpty && committedQuery === "" && viewQuery === "";
 	// A filter picks the index, and the index fixes the order. Other columns cannot sort while it is on.
 	const filterOrderField = filter === null ? null : files_table_filter_order_field(filter);
 	const sortField = sort[0]!.field;
@@ -5129,6 +5262,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 						viewQuery={viewQuery}
 						folderId={folderId}
 						folderPath={folderPath}
+						disabled={isFilterBarDisabled}
 						onChange={onQueryChange}
 					/>
 					<FileNodeViewFolderExplorerColumns
@@ -5377,19 +5511,23 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 									/>
 								</MyGridTableRow>
 							))}
-						{/* Show the empty message as a static row under the headers, like Windows Explorer does.
-						    It is not an item, so it has no link, no hover and no drag. */}
-						{emptyMessage !== null && (
-							<MyGridTableRow
-								className={"FileNodeViewFolderExplorer-empty-row" satisfies FileNodeViewFolderExplorer_ClassNames}
-							>
-								<MyGridTableCell
-									className={"FileNodeViewFolderExplorer-empty-cell" satisfies FileNodeViewFolderExplorer_ClassNames}
-									aria-colspan={columns.length + 1}
+						{isFolderEmpty ? (
+							<FileNodeViewFolderExplorerEmptyFolder columnCount={columns.length + 1} />
+						) : (
+							// Show the other empty messages as a static row under the headers, like Windows Explorer
+							// does. It is not an item, so it has no link, no hover and no drag.
+							emptyMessage !== null && (
+								<MyGridTableRow
+									className={"FileNodeViewFolderExplorer-empty-row" satisfies FileNodeViewFolderExplorer_ClassNames}
 								>
-									<span role="status">{emptyMessage}</span>
-								</MyGridTableCell>
-							</MyGridTableRow>
+									<MyGridTableCell
+										className={"FileNodeViewFolderExplorer-empty-cell" satisfies FileNodeViewFolderExplorer_ClassNames}
+										aria-colspan={columns.length + 1}
+									>
+										<span role="status">{emptyMessage}</span>
+									</MyGridTableCell>
+								</MyGridTableRow>
+							)
 						)}
 					</MyGridTableBody>
 				</MyGridTable>
@@ -5441,6 +5579,7 @@ type FileNodeViewFolderReadme_ClassNames =
 	| "FileNodeViewFolderReadme-icon"
 	| "FileNodeViewFolderReadme-title"
 	| "FileNodeViewFolderReadme-empty"
+	| "FileNodeViewFolderReadme-empty-icon"
 	| "FileNodeViewFolderReadme-empty-title"
 	| "FileNodeViewFolderReadme-empty-description"
 	| "FileNodeViewFolderReadme-empty-action"
@@ -5474,6 +5613,9 @@ const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: F
 				</div>
 			) : (
 				<div className={"FileNodeViewFolderReadme-empty" satisfies FileNodeViewFolderReadme_ClassNames}>
+					<MyIcon className={"FileNodeViewFolderReadme-empty-icon" satisfies FileNodeViewFolderReadme_ClassNames}>
+						<BookOpen />
+					</MyIcon>
 					<h2 className={"FileNodeViewFolderReadme-empty-title" satisfies FileNodeViewFolderReadme_ClassNames}>
 						No README.md
 					</h2>
@@ -6682,49 +6824,52 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								folderItemId={targetFolderId}
 								fileNodesList={fileNodesList}
 							>
+								{/* The content is inside too, so the empty folder state can open the same create dialog. */}
 								{(folderActionsSlot) => (
-									<FileNodeViewToolbar
-										editorActionsRef={handleToolbarPortalHostChange}
-										viewSelectRef={handleViewSelectPortalHostChange}
-										showEditorActions={
-											isEditorActive &&
-											(!searchPrivateNodeId || (!!privateTextIntent && privateTargetView?.readiness === "ready"))
-										}
-										folderActionsSlot={folderActionsSlot}
-										fileActionsSlot={
-											privateEntry && privateTargetView ? (
-												<FileNodeViewPrivateActions
-													key={privateSourceKey}
-													view={{ ...privateTargetView, entry: privateEntry }}
-												/>
-											) : (
-												<FileNodeViewToolbarFileDownloadAction node={resolvedNode} />
-											)
-										}
-									/>
+									<>
+										<FileNodeViewToolbar
+											editorActionsRef={handleToolbarPortalHostChange}
+											viewSelectRef={handleViewSelectPortalHostChange}
+											showEditorActions={
+												isEditorActive &&
+												(!searchPrivateNodeId || (!!privateTextIntent && privateTargetView?.readiness === "ready"))
+											}
+											folderActionsSlot={folderActionsSlot}
+											fileActionsSlot={
+												privateEntry && privateTargetView ? (
+													<FileNodeViewPrivateActions
+														key={privateSourceKey}
+														view={{ ...privateTargetView, entry: privateEntry }}
+													/>
+												) : (
+													<FileNodeViewToolbarFileDownloadAction node={resolvedNode} />
+												)
+											}
+										/>
+										{topStickyFloatingSlot ? (
+											<FileNodeViewTopStickyFloatingContainer innerScrollbar={topFloatingInnerScrollbar}>
+												{topStickyFloatingSlot}
+											</FileNodeViewTopStickyFloatingContainer>
+										) : null}
+										{/* Mount both toolbar hosts before the content that fills them. */}
+										{toolbarPortalHost && viewSelectPortalHost && activeEditorTarget ? (
+											<FileEditorPresenceSupplier
+												key={`${membershipId}:${activeEditorTarget.kind}:${activeEditorTarget.id}`}
+												userId={authenticated.userId}
+												target={activeEditorTarget}
+											>
+												{(presenceProps) => renderContent({ presenceProps, toolbarPortalHost, viewSelectPortalHost })}
+											</FileEditorPresenceSupplier>
+										) : toolbarPortalHost && viewSelectPortalHost ? (
+											renderContent({
+												presenceProps: { presenceStore: null, onlineUsers: [] },
+												toolbarPortalHost,
+												viewSelectPortalHost,
+											})
+										) : null}
+									</>
 								)}
 							</FileNodeViewToolbarCreateNodeActions>
-							{topStickyFloatingSlot ? (
-								<FileNodeViewTopStickyFloatingContainer innerScrollbar={topFloatingInnerScrollbar}>
-									{topStickyFloatingSlot}
-								</FileNodeViewTopStickyFloatingContainer>
-							) : null}
-							{/* Mount both toolbar hosts before the content that fills them. */}
-							{toolbarPortalHost && viewSelectPortalHost && activeEditorTarget ? (
-								<FileEditorPresenceSupplier
-									key={`${membershipId}:${activeEditorTarget.kind}:${activeEditorTarget.id}`}
-									userId={authenticated.userId}
-									target={activeEditorTarget}
-								>
-									{(presenceProps) => renderContent({ presenceProps, toolbarPortalHost, viewSelectPortalHost })}
-								</FileEditorPresenceSupplier>
-							) : toolbarPortalHost && viewSelectPortalHost ? (
-								renderContent({
-									presenceProps: { presenceStore: null, onlineUsers: [] },
-									toolbarPortalHost,
-									viewSelectPortalHost,
-								})
-							) : null}
 						</MyPanel>
 						<MyPanelResizeHandle
 							aria-label="Resize comments and agent sidebar"
