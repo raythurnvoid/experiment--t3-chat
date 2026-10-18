@@ -2735,6 +2735,7 @@ describe("service upload delete", () => {
 				yjsSequence: 0,
 				path: target.path,
 				treePath: target.path,
+				restrictedScopeNodeId: null,
 				fieldPath: "service.recording",
 				docKind: "field",
 			}),

@@ -7,8 +7,7 @@
 // - `key`: one row per field path. `count` is its field docs, `kindCounts` its value docs by kind.
 // - `value`: one row per field path and string value of at most 1,024 encoded bytes.
 // - `area_key` and `area_value`: the same as `key` and `value`, per area. `parentId` holds the area:
-//   the doc's `restrictedScopeNodeId`, or `"root"` for the open area. A doc without the field counts
-//   in no area row, so a missing area hides a key instead of showing it.
+//   the doc's `restrictedScopeNodeId`, or `"root"` for the open area.
 // - `parent`: one row per folder (or `"root"`) and field path of its open children's field docs.
 // - `parent_restricted`: the same for the children that are their own restricted root
 //   (`isRestrictedScopeRoot`). A field doc without the flag counts here too, so a missing flag hides
@@ -187,12 +186,10 @@ function add_doc(changes: files_metadata_catalog_Changes, doc: Source | null, si
 		fieldPath: doc.fieldPath,
 	};
 	const kindCounts: KindCounts = { string: 0, number: 0, boolean: 0, maybe_date: 0 };
-	// Fail closed: a doc with no area yet counts in no area row.
-	const area =
-		doc.restrictedScopeNodeId === undefined ? null : { parentId: doc.restrictedScopeNodeId ?? ("root" as const) };
+	const area = { parentId: doc.restrictedScopeNodeId ?? ("root" as const) };
 	if (doc.docKind === "field") {
 		add_change(changes, { ...base, family: "key", count: sign, kindCounts });
-		if (area) add_change(changes, { ...base, ...area, family: "area_key", count: sign, kindCounts });
+		add_change(changes, { ...base, ...area, family: "area_key", count: sign, kindCounts });
 		// Fail closed: only a doc that says it is open counts in the `parent` rows every folder reader sees.
 		if (doc.parentId !== undefined)
 			add_change(changes, {
@@ -207,15 +204,14 @@ function add_doc(changes: files_metadata_catalog_Changes, doc: Source | null, si
 	// `count` counts field docs, so a value doc adds to its key's kinds only.
 	const valueKinds = { ...kindCounts, [doc.valueKind]: sign };
 	add_change(changes, { ...base, family: "key", count: 0, kindCounts: valueKinds });
-	if (area) add_change(changes, { ...base, ...area, family: "area_key", count: 0, kindCounts: valueKinds });
+	add_change(changes, { ...base, ...area, family: "area_key", count: 0, kindCounts: valueKinds });
 	if (
 		doc.valueKind === "string" &&
 		doc.stringValue !== undefined &&
 		files_metadata_catalog_value_is_short(doc.stringValue)
 	) {
 		add_change(changes, { ...base, family: "value", stringValue: doc.stringValue, count: sign });
-		if (area)
-			add_change(changes, { ...base, ...area, family: "area_value", stringValue: doc.stringValue, count: sign });
+		add_change(changes, { ...base, ...area, family: "area_value", stringValue: doc.stringValue, count: sign });
 	}
 }
 

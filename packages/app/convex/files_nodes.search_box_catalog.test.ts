@@ -325,6 +325,7 @@ describe("search box doors", () => {
 				sourceKind: "committed" as const,
 				path: openTask.path,
 				treePath: openTask.treePath,
+				restrictedScopeNodeId: null,
 			};
 			for (let index = 0; index < 120; index += 1) {
 				const fieldPath = `frontmatter.page-${String(index).padStart(3, "0")}`;
@@ -463,6 +464,7 @@ describe("search box doors", () => {
 				sourceKind: "committed",
 				path: openTask.path,
 				treePath: openTask.treePath,
+				restrictedScopeNodeId: null,
 				fieldPath: "frontmatter.status",
 				docKind: "value",
 				valueKind: "string",

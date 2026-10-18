@@ -1073,6 +1073,7 @@ describe("apply_file_pending_move", () => {
 				sourceKind: "committed",
 				path: "/apply-src.md",
 				treePath: "/apply-src.md",
+				restrictedScopeNodeId: null,
 				fieldPath: "meta.topic",
 				docKind: "field",
 			}),

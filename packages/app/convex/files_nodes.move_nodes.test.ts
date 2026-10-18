@@ -483,6 +483,7 @@ describe("reviewed Move graph", () => {
 						fieldPath: "metadata.tag",
 						path: node.path,
 						treePath: node.path,
+						restrictedScopeNodeId: node.restrictedScopeNodeId,
 					});
 				}
 				return assetId;
@@ -801,6 +802,7 @@ describe("paged folder moves and scope jobs", () => {
 						fieldPath: `metadata.key-${index}`,
 						path: node.path,
 						treePath: node.treePath,
+						restrictedScopeNodeId: node.restrictedScopeNodeId,
 						archiveOperationId: node.archiveOperationId ?? undefined,
 					});
 				}

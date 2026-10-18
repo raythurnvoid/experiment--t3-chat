@@ -201,6 +201,7 @@ async function seed_generation(
 			fileNodeId,
 			path,
 			treePath: `${path}/`,
+			restrictedScopeNodeId: null,
 			fieldPath: "metadata.source",
 			docKind: "value",
 			valueKind: "string",

@@ -128,6 +128,7 @@ export async function seed_tree(f: Fixture, args: { name: string; folderCount: n
 					yjsSequence: 1,
 					path,
 					treePath: path,
+					restrictedScopeNodeId: null,
 					fieldPath: "frontmatter.tag",
 					docKind: "field",
 				});

@@ -299,6 +299,7 @@ describe("Move owner views", () => {
 					fileNodeId: f.nodeId,
 					path: f.saved.path,
 					treePath: f.saved.treePath,
+					restrictedScopeNodeId: f.saved.restrictedScopeNodeId,
 					docKind: "field",
 					fieldPath: `metadata.key${index}`,
 				});

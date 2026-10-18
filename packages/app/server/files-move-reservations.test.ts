@@ -1039,6 +1039,7 @@ describe("Move write reservations", () => {
 						fileNodeId: file._id,
 						path: file.path,
 						treePath: file.treePath,
+						restrictedScopeNodeId: file.restrictedScopeNodeId,
 						fieldPath: `${namespace}.r${round}k${key}`,
 					};
 					return [
@@ -1108,6 +1109,7 @@ describe("Move write reservations", () => {
 				fileNodeId: fileId,
 				path: "/target/free.md",
 				treePath: "/target/free.md",
+				restrictedScopeNodeId: null,
 				fieldPath,
 				docKind: "field",
 				parentId: f.parentId,

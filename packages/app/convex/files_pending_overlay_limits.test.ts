@@ -585,6 +585,7 @@ describe("saved scope job", () => {
 							fileNodeId: nodeId,
 							path: node.path,
 							treePath: node.treePath,
+							restrictedScopeNodeId: node.restrictedScopeNodeId,
 							fieldPath: prefix + "x".repeat(160 - prefix.length),
 						};
 						await ctx.db.insert("files_metadata_docs", {

@@ -569,8 +569,8 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
 
 - **Families.** `key`: one row per field path, with `count` (field docs) and `kindCounts` (value docs per
   kind). `value`: one row per field path and string value. `area_key` and `area_value`: the same, per
-  area; `parentId` holds the area, the doc's `restrictedScopeNodeId` or `"root"` for the open area. A doc
-  without the field counts in no area row (fail closed). `parent`: one row per folder (or `"root"`) and
+  area; `parentId` holds the area, the doc's `restrictedScopeNodeId` or `"root"` for the open area. Every
+  saved doc has the field. `parent`: one row per folder (or `"root"`) and
   field path of its open children's field docs, for the folder Columns menu. `parent_restricted`: the
   same for the children that are their own restricted root, from the field doc's
   `isRestrictedScopeRoot` copy. A field doc without the flag counts there too (fail closed). Each row

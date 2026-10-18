@@ -79,8 +79,8 @@ async function settle_catalog(t: T) {
 }
 
 /**
- * A committed metadata doc of `nodeId`, as the savers write it: field docs carry the parent and the
- * restricted flag of an open node.
+ * A committed metadata doc of `nodeId`, as the savers write it: every doc carries the open area, and
+ * field docs carry the parent and the restricted flag of an open node.
  */
 function metadata_doc(
 	scope: Pick<Doc<"files_metadata_docs">, "organizationId" | "workspaceId">,
@@ -100,6 +100,7 @@ function metadata_doc(
 		path: "/node",
 		treePath: "/node",
 		fieldPath: fields.fieldPath,
+		restrictedScopeNodeId: null,
 	};
 	if (!fields.valueKind)
 		return { ...base, docKind: "field" as const, parentId: fields.parentId ?? ("root" as const), isRestrictedScopeRoot: false };
@@ -168,6 +169,14 @@ describe("catalog hook and compactor", () => {
 		]);
 		await test_compact_metadata_catalog(t);
 		expect(await list_rows(t)).toEqual([
+			{
+				family: "area_key",
+				fieldPath: "metadata.Status",
+				parentId: "root",
+				count: 2,
+				kindCounts: { ...NO_KINDS, string: 2, number: 1 },
+			},
+			{ family: "area_value", fieldPath: "metadata.Status", parentId: "root", stringValue: "open", count: 2 },
 			{ family: "key", fieldPath: "metadata.Status", count: 2, kindCounts: { ...NO_KINDS, string: 2, number: 1 } },
 			{ family: "parent", fieldPath: "metadata.Status", parentId: "root", count: 2 },
 			{ family: "value", fieldPath: "metadata.Status", stringValue: "open", count: 2 },
@@ -207,6 +216,7 @@ describe("catalog hook and compactor", () => {
 		});
 		await test_compact_metadata_catalog(t);
 		expect(await list_rows(t)).toEqual([
+			{ family: "area_key", fieldPath: "metadata.status", parentId: "root", count: 3, kindCounts: NO_KINDS },
 			{ family: "key", fieldPath: "metadata.status", count: 3, kindCounts: NO_KINDS },
 			{ family: "parent", fieldPath: "metadata.status", parentId: "root", count: 1 },
 			{ family: "parent_restricted", fieldPath: "metadata.status", parentId: "root", count: 2 },
@@ -217,7 +227,7 @@ describe("catalog hook and compactor", () => {
 			await ctx.db.patch("files_metadata_docs", openId!, { isRestrictedScopeRoot: true });
 		});
 		await test_compact_metadata_catalog(t);
-		expect((await list_rows(t)).filter((row) => row.family !== "key")).toEqual([
+		expect((await list_rows(t)).filter((row) => row.family.startsWith("parent"))).toEqual([
 			{ family: "parent_restricted", fieldPath: "metadata.status", parentId: "root", count: 3 },
 		]);
 	});
@@ -273,7 +283,7 @@ describe("catalog hook and compactor", () => {
 
 		await insert_docs(t, [metadata_doc(scope, a, { fieldPath: `metadata.${"k".repeat(151)}` })]);
 		await test_compact_metadata_catalog(t);
-		expect((await list_rows(t)).map((row) => row.fieldPath.length)).toEqual([160, 160]);
+		expect((await list_rows(t)).map((row) => row.fieldPath.length)).toEqual([160, 160, 160]);
 	});
 
 	test("long string values count in the string kind but get no value row", async () => {
@@ -313,7 +323,7 @@ describe("catalog hook and compactor", () => {
 			for (const id of ids) await ctx.db.patch("files_metadata_docs", id, { archiveOperationId: undefined });
 		});
 		await test_compact_metadata_catalog(t);
-		expect(await list_rows(t)).toHaveLength(3);
+		expect(await list_rows(t)).toHaveLength(5);
 	});
 
 	test("two writes of one doc in one Promise.all count the doc once", async () => {
@@ -346,13 +356,15 @@ describe("catalog hook and compactor", () => {
 		});
 		expect((await list_deltas(t)).map((delta) => [delta.family, delta.count])).toEqual([
 			["key", 1],
+			["area_key", 1],
 			["parent", 1],
 			["key", 1],
+			["area_key", 1],
 			["parent", 1],
 		]);
 		expect(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").collect())).toHaveLength(1);
 		await test_compact_metadata_catalog(t);
-		expect((await list_rows(t)).map((row) => row.count)).toEqual([2, 2]);
+		expect((await list_rows(t)).map((row) => row.count)).toEqual([2, 2, 2]);
 	});
 
 	test("the compactor takes old deltas only and keeps running while deltas remain", async () => {
@@ -364,8 +376,16 @@ describe("catalog hook and compactor", () => {
 		// A young delta, inserted after the old ones.
 		await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.second" })]);
 		await t.mutation(internal.files_pending_overlay.compact_metadata_catalog, { markerId: marker!._id });
-		expect((await list_rows(t)).map((row) => row.fieldPath)).toEqual(["metadata.first", "metadata.first"]);
-		expect((await list_deltas(t)).map((delta) => delta.fieldPath)).toEqual(["metadata.second", "metadata.second"]);
+		expect((await list_rows(t)).map((row) => row.fieldPath)).toEqual([
+			"metadata.first",
+			"metadata.first",
+			"metadata.first",
+		]);
+		expect((await list_deltas(t)).map((delta) => delta.fieldPath)).toEqual([
+			"metadata.second",
+			"metadata.second",
+			"metadata.second",
+		]);
 		// The saver did not touch the marker, and the run kept it for the young delta.
 		expect(await t.run(async (ctx) => await ctx.db.get("files_metadata_catalog_compactors", marker!._id))).toEqual(
 			marker,
@@ -382,7 +402,7 @@ describe("catalog hook and compactor", () => {
 		expect(Math.max(...scheduled.map((job) => job.scheduledTime)) - young._creationTime).toBeCloseTo(5001, 0);
 		// The scheduler runs the chain to its end: every delta applied, and the marker gone.
 		await t.finishAllScheduledFunctions(vi.runAllTimers);
-		expect(await list_rows(t)).toHaveLength(4);
+		expect(await list_rows(t)).toHaveLength(6);
 		expect(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").collect())).toEqual([]);
 	});
 
@@ -438,9 +458,9 @@ describe("catalog hook and compactor", () => {
 		vi.setSystemTime(Date.now() + 5001);
 		await t.mutation(internal.files_pending_overlay.compact_metadata_catalog, { markerId: old!._id });
 		expect(await list_rows(t)).toEqual([]);
-		expect(await list_deltas(t)).toHaveLength(4);
+		expect(await list_deltas(t)).toHaveLength(6);
 		await test_compact_metadata_catalog(t);
-		expect((await list_rows(t)).map((row) => row.count)).toEqual([2, 2]);
+		expect((await list_rows(t)).map((row) => row.count)).toEqual([2, 2, 2]);
 	});
 
 	test("the recover cron restarts a marker whose oldest delta waited too long", async () => {
@@ -812,7 +832,21 @@ describe("catalog rebuild and check", () => {
 		const { t, scope } = await seed();
 		const { a } = await seed_catalog(t, scope);
 		const expected = await list_rows(t);
-		expect(expected.filter((row) => row.family !== "value")).toEqual([
+		expect(expected.filter((row) => !row.family.endsWith("value"))).toEqual([
+			{
+				family: "area_key",
+				fieldPath: "metadata.status",
+				parentId: "root",
+				count: 2,
+				kindCounts: { string: 2, number: 1, boolean: 1, maybe_date: 0 },
+			},
+			{
+				family: "area_key",
+				fieldPath: "metadata.tags",
+				parentId: "root",
+				count: 1,
+				kindCounts: { ...NO_KINDS, string: 130 },
+			},
 			{ family: "key", fieldPath: "metadata.status", count: 2, kindCounts: { string: 2, number: 1, boolean: 1, maybe_date: 0 } },
 			{ family: "key", fieldPath: "metadata.tags", count: 1, kindCounts: { ...NO_KINDS, string: 130 } },
 			{ family: "parent", fieldPath: "metadata.status", parentId: a, count: 1 },
@@ -820,7 +854,7 @@ describe("catalog rebuild and check", () => {
 			{ family: "parent", fieldPath: "metadata.tags", parentId: "root", count: 1 },
 		]);
 		// More rows than one clear job deletes.
-		expect(expected).toHaveLength(136);
+		expect(expected).toHaveLength(269);
 
 		// Drift: a wrong count, a lost row and an extra row.
 		await t.run(async (ctx) => {
@@ -838,9 +872,9 @@ describe("catalog rebuild and check", () => {
 			const marker = await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").first());
 			phases.push(marker?.phase ?? "none");
 		});
-		// Two clear jobs, then two seed pages. A seeding marker stays while no delta waits.
-		expect(jobs).toBe(4);
-		expect(phases).toEqual(["clearing", "seeding", "seeding", "none"]);
+		// Three clear jobs, then two seed pages. A seeding marker stays while no delta waits.
+		expect(jobs).toBe(5);
+		expect(phases).toEqual(["clearing", "clearing", "seeding", "seeding", "none"]);
 		expect(await list_rows(t)).toEqual(expected);
 		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([]);
 
@@ -861,6 +895,13 @@ describe("catalog rebuild and check", () => {
 		await test_compact_metadata_catalog(t);
 		const expected = await list_rows(t);
 		expect(expected).toEqual([
+			{
+				family: "area_key",
+				fieldPath: "metadata.big",
+				parentId: "root",
+				count: 1,
+				kindCounts: { ...NO_KINDS, string: 4 },
+			},
 			{ family: "key", fieldPath: "metadata.big", count: 1, kindCounts: { ...NO_KINDS, string: 4 } },
 			{ family: "parent", fieldPath: "metadata.big", parentId: "root", count: 1 },
 		]);
@@ -1635,6 +1676,14 @@ describe("compactor drift", () => {
 		await test_compact_metadata_catalog(t);
 		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([]);
 		expect(await list_rows(t)).toEqual([
+			{
+				family: "area_key",
+				fieldPath: "metadata.status",
+				parentId: "root",
+				count: 1,
+				kindCounts: { ...NO_KINDS, string: 1 },
+			},
+			{ family: "area_value", fieldPath: "metadata.status", parentId: "root", stringValue: "open", count: 1 },
 			{ family: "key", fieldPath: "metadata.status", count: 1, kindCounts: { ...NO_KINDS, string: 1 } },
 			{ family: "parent", fieldPath: "metadata.status", parentId: "root", count: 1 },
 			{ family: "value", fieldPath: "metadata.status", stringValue: "open", count: 1 },
@@ -1650,9 +1699,10 @@ describe("compactor drift", () => {
 		});
 		await test_compact_metadata_catalog(t);
 		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([
-			["files_metadata_catalog drift", expect.objectContaining({ fieldPath: "metadata.status", driftRows: 2 })],
+			["files_metadata_catalog drift", expect.objectContaining({ fieldPath: "metadata.status", driftRows: 4 })],
 		]);
 		expect(await list_rows(t)).toEqual([
+			{ family: "area_key", fieldPath: "metadata.status", parentId: "root", count: 1, kindCounts: NO_KINDS },
 			{ family: "key", fieldPath: "metadata.status", count: 1, kindCounts: NO_KINDS },
 			{ family: "parent", fieldPath: "metadata.status", parentId: "root", count: 1 },
 		]);

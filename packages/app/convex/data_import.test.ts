@@ -816,6 +816,7 @@ describe("data_import.verify_metadata", () => {
 					sourceKind: "committed",
 					path: "/emails/thread/message.md",
 					treePath: node!.treePath,
+					restrictedScopeNodeId: node!.restrictedScopeNodeId,
 					fieldPath,
 					docKind: "field",
 				});
@@ -891,6 +892,7 @@ describe("data_import.verify_metadata", () => {
 					sourceKind: "committed",
 					path: "/emails/thread/message.md",
 					treePath: node!.treePath,
+					restrictedScopeNodeId: node!.restrictedScopeNodeId,
 					fieldPath,
 					docKind: "field",
 				});

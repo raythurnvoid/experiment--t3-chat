@@ -4607,10 +4607,9 @@ const app_convex_schema = defineSchema({
 				...files_metadata_committed_sort_fields,
 				/**
 				 * Copy of the node's `restrictedScopeNodeId` (its area), on field and value docs. The
-				 * metadata catalog counts each doc in its area's rows. Optional until the backfill
-				 * (`migrate_metadata_doc_area`) has run.
+				 * metadata catalog counts each doc in its area's rows.
 				 */
-				restrictedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+				restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 			}),
 			v.object({ ...files_pending_index_fields, ...files_metadata_index_fields }),
 		),

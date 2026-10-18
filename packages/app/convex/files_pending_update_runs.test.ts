@@ -884,6 +884,7 @@ describe("review jobs", () => {
 						yjsSequence: 1,
 						path: `/big/${name}`,
 						treePath: `/big/${name}`,
+						restrictedScopeNodeId: null,
 						fieldPath: `frontmatter.tag${field}`,
 						docKind: "field",
 					});
