@@ -919,15 +919,22 @@
 		width: 100%;
 		overflow: scroll hidden;
 
-		/* An empty table keeps the scrollbar space, so the first rows do not move the page, but paints
-		   it invisible. This rule is in a later layer than the shared `app-scrollable` rules in app.css,
-		   so repeat their hover and focus rules here. Columns that overflow still show the thumb then. */
+		/* A filter or sort with no matching rows keeps the scrollbar space, so rows that come back while
+		   the user types do not move the page, but paints it invisible. This rule is in a later layer
+		   than the shared `app-scrollable` rules in app.css, so repeat their hover and focus rules here.
+		   Columns that overflow still show the thumb then. */
 		&:has(.FileNodeViewFolderExplorer-empty-row) {
 			scrollbar-color: transparent transparent;
 
 			&:is(:hover, :focus-within):not(.app-scrollable-fits) {
 				scrollbar-color: var(--app-scrollbar-thumb-active) transparent;
 			}
+		}
+
+		/* An empty folder changes its whole layout when the first item arrives, so the reserved space
+		   would not prevent a shift. Show a scrollbar only when the columns really overflow. */
+		&:has(.FileNodeViewFolderExplorerEmptyFolder) {
+			overflow: auto hidden;
 		}
 
 		border: 1px solid var(--color-fg-03);
@@ -1127,6 +1134,56 @@
 		/* The table is as wide as its content. Without this, a long message such as a long metadata key
 		   would make the table wider than the box and bring back the scrollbar. The text wraps instead. */
 		contain: inline-size;
+	}
+
+	/* An empty folder has nothing else to do, so its body leads to the create actions. Like the
+	   message cell above, it does not make the table wider. */
+	.FileNodeViewFolderExplorerEmptyFolder-cell {
+		grid-column: 1 / -1;
+
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 4px;
+
+		padding: 32px 16px;
+
+		text-align: center;
+		overflow-wrap: anywhere;
+
+		contain: inline-size;
+	}
+
+	.FileNodeViewFolderExplorerEmptyFolder-icon {
+		width: 32px;
+		height: 32px;
+		margin-bottom: 8px;
+
+		color: var(--color-fg-06);
+	}
+
+	.FileNodeViewFolderExplorerEmptyFolder-title {
+		margin: 0;
+
+		font-size: 1rem;
+		font-weight: 500;
+		color: var(--color-fg-10);
+	}
+
+	.FileNodeViewFolderExplorerEmptyFolder-hint {
+		margin: 0;
+
+		font-size: 0.9375rem;
+		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewFolderExplorerEmptyFolder-actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		gap: 8px;
+
+		margin-top: 12px;
 	}
 
 	.FileNodeViewFolderExplorer-skeleton-icon {
@@ -1532,6 +1589,14 @@
 		padding: 48px 24px;
 
 		text-align: center;
+	}
+
+	/* Same size and color as the empty folder icon, so the two empty states above each other match. */
+	.FileNodeViewFolderReadme-empty-icon {
+		width: 32px;
+		height: 32px;
+
+		color: var(--color-fg-06);
 	}
 
 	.FileNodeViewFolderReadme-empty-title {

@@ -37,7 +37,7 @@ For this project, use the Edge install whose profile the user reserved for QA. T
 3. Install the helper namespace in that session. Pass the script with `-f` and an absolute path — the CLI reads the file from the real disk before the sandbox starts. Do not use `-e` with `fs.readFileSync`: the sandbox filesystem cannot read repo files reliably (see `references/known-hazards.md`). Code execution calls need `--timeout 5000` or less. Metadata commands above do not accept that flag. See the user's timeout rules for known slow steps.
 
 ```powershell
-vp env exec pnpx playwriter -s $session --timeout 5000 -f "C:/workspace/rt0/experiment--t3-chat/.agents/skills/app-playwriter-harness/scripts/install-harness.js"
+vp env exec pnpx playwriter -s $session --timeout 5000 -f "<absolute repo root>/.agents/skills/app-playwriter-harness/scripts/install-harness.js"
 ```
 
 4. Bind to the target app tab before acting. Use PowerShell single quotes around `-e` with double quotes inside the JavaScript — the `--%` stop-parsing token does not survive `vp env exec`, and the CLI then misreads the JavaScript as a command name. Windows PowerShell 5.1 (`powershell.exe`) strips those inner double quotes, so there put the snippet in a `-f` file instead (see `references/known-hazards.md`):

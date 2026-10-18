@@ -5,6 +5,7 @@ import { useConvex, useQuery } from "convex/react";
 import { ClipboardPaste, Copy, Scissors } from "lucide-react";
 import { toast } from "sonner";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
+import { ActivityStatusIcon } from "@/components/activity-status-icon.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
 import {
@@ -713,6 +714,7 @@ type ConflictChoices = app_convex_FunctionArgs<typeof app_convex_api.files_trans
 
 type FilesTransferRunModal_ClassNames =
 	| "FilesTransferRunModal"
+	| "FilesTransferRunModal-title"
 	| "FilesTransferRunModal-items"
 	| "FilesTransferRunModal-defaults"
 	| "FilesTransferRunModal-item"
@@ -925,7 +927,8 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 		>
 			<MyModalPopover className={"FilesTransferRunModal" satisfies FilesTransferRunModal_ClassNames}>
 				<MyModalHeader>
-					<MyModalHeading>
+					<MyModalHeading className={"FilesTransferRunModal-title" satisfies FilesTransferRunModal_ClassNames}>
+						{run ? <ActivityStatusIcon activity={run.activity} isRefusalOnly={false} /> : null}
 						{!run ? "Paste files" : isRename ? "Rename item" : run.kind === "move" ? "Move files" : "Copy files"}
 					</MyModalHeading>
 					<MyModalDescription role="status">

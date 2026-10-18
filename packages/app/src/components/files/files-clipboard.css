@@ -4,6 +4,14 @@
 		width: min(560px, calc(100vw - 32px));
 	}
 
+	.FilesTransferRunModal-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		--ActivityStatusIcon-size: 20px;
+	}
+
 	.FilesTransferRunModal .MyModalFooter {
 		flex-wrap: wrap;
 	}

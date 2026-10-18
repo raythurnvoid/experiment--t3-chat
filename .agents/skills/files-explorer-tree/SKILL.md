@@ -561,12 +561,21 @@ and `find` also keep raw name order.
   uses the editor scroll box with a 400px vertical margin. Focused rows come first, then visible
   rows, then nearby rows. Scrolling and resizing update that order. Offscreen payloads are dropped.
   This bound covers cell display only; field discovery reads every loaded shared row.
-- An empty readable folder keeps its toolbar and header. "This folder is empty" shows only after
-  every stream is done without an error. With a filter, an empty done table says "No rows match
-  this filter". While a stream has more pages but no row to show yet: "No matches loaded yet. Show
-  more to keep looking." Wide tables scroll horizontally inside the table region. The space for that
-  scrollbar is always kept, and the editor area always keeps its vertical scrollbar gutter, so
-  a scrollbar that appears never moves the table or the README. The first load also keeps a Show
+- An empty readable folder keeps its toolbar and header, so the Columns menu can set it up before
+  the first item. "This folder is empty" shows only after every stream is done without an error,
+  with no filter and a built-in sort. It shows inside the table frame, centered, with New file and
+  New folder buttons. They open the same create dialog as the page toolbar, through
+  `FileNodeViewCreateNodeContext`. A user who cannot create sees the reason instead. In that state
+  the filter bar is disabled ("Nothing to filter yet"), because there is nothing to filter or sort.
+  It stays enabled while it holds typed text or tokens, so the user can clear them. Windows Explorer,
+  Finder, Google Drive and Notion keep search enabled in an empty folder. We disable it on purpose,
+  so the create actions are the only thing to do. With a filter, an empty done table says "No rows
+  match this filter". While a stream has more pages but no row to show yet: "No matches loaded yet.
+  Show more to keep looking." These messages are static rows under the headers, with no hover.
+  Wide tables scroll horizontally inside the table region. The space for that scrollbar is always
+  kept, painted invisible under a "no match" message, and the editor area always keeps its vertical
+  scrollbar gutter, so a scrollbar that appears never moves the table or the README. Only the empty
+  folder state drops that space, because its whole layout changes when the first item arrives. The first load also keeps a Show
   more slot. The README area shows nothing until `get_folder_readme` answers: a skeleton would have
   to guess between the README and the "No README.md" box. The files route starts that query on
   the router's `onBeforeNavigate`, about 200ms before the new view mounts, so a cold folder waits

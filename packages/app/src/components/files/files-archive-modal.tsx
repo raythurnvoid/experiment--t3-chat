@@ -4,6 +4,7 @@ import { memo, useId, useRef, useState, type RefObject } from "react";
 import { useConvex, useQuery } from "convex/react";
 import { toast } from "sonner";
 
+import { ActivityStatusIcon } from "@/components/activity-status-icon.tsx";
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyProgressBar } from "@/components/my-progress-bar.tsx";
@@ -207,12 +208,15 @@ type FilesArchiveRunModal_ResolveArgs = app_convex_FunctionArgs<
 
 type FilesArchiveRunModal_ClassNames =
 	| "FilesArchiveRunModal"
+	| "FilesArchiveRunModal-title"
 	| "FilesArchiveRunModal-content"
 	| "FilesArchiveRunModal-line"
 	| "FilesArchiveRunModal-conflict"
 	| "FilesArchiveRunModal-path"
+	| "FilesArchiveRunModal-section"
 	| "FilesArchiveRunModal-heading"
-	| "FilesArchiveRunModal-list"
+	| "FilesArchiveRunModal-group"
+	| "FilesArchiveRunModal-reason"
 	| "FilesArchiveRunModal-choice"
 	| "FilesArchiveRunModal-error";
 
@@ -241,6 +245,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 	const [previousRevision, setPreviousRevision] = useState(run?.revision);
 	const idPrefix = `FilesArchiveRunModal-${useId()}`;
 	const choiceName = `${idPrefix}-choice`;
+	const archivedHeadingId = `${idPrefix}-archived`;
 	const notArchivedHeadingId = `${idPrefix}-not-archived`;
 
 	// A new clash starts with no choice picked.
@@ -255,6 +260,22 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 	const isStopPending = pendingStopSourceIds.has(runId);
 	const conflict = run?.conflict ?? null;
 	const archivedPaths = (run?.archived ?? []).flatMap((item) => (item.path === null ? [] : [item.path]));
+	// Name each refusal reason once, with the paths it refused under it. One reason, like a read-only
+	// file inside a folder, can refuse many items.
+	const notArchivedGroups: Array<{ message: string; paths: string[]; lockedCount: number }> = [];
+	for (const item of run?.notArchived ?? []) {
+		let group = notArchivedGroups.find((notArchivedGroup) => notArchivedGroup.message === item.message);
+		if (!group) {
+			group = { message: item.message, paths: [], lockedCount: 0 };
+			notArchivedGroups.push(group);
+		}
+		// The server leaves out the path of an item the person can no longer read.
+		if (item.path === null) {
+			group.lockedCount += 1;
+		} else {
+			group.paths.push(item.path);
+		}
+	}
 	// Match the Activity card: a refused item, like a read-only file, is expected and does not make the
 	// archive look partly failed. The "Not archived" section below names each refused item.
 	const isRefusalOnly =
@@ -330,7 +351,10 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 		>
 			<MyModalPopover className={"FilesArchiveRunModal" satisfies FilesArchiveRunModal_ClassNames}>
 				<MyModalHeader>
-					<MyModalHeading>{run?.activity.title ?? "Archive"}</MyModalHeading>
+					<MyModalHeading className={"FilesArchiveRunModal-title" satisfies FilesArchiveRunModal_ClassNames}>
+						{run ? <ActivityStatusIcon activity={run.activity} isRefusalOnly={isRefusalOnly} /> : null}
+						{run?.activity.title ?? "Archive"}
+					</MyModalHeading>
 					<MyModalDescription role="status">{statusLabel}</MyModalDescription>
 				</MyModalHeader>
 				<MyModalScrollableArea>
@@ -354,31 +378,58 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 						{/* The paths the person picked. A folder counts with everything inside, so the line above can
 						    count more items than this list shows. */}
 						{archivedPaths.length > 0 ? (
-							<TextMonospaceBlock
-								aria-label={isActive ? "Items to archive" : "Archived items"}
-								text={archivedPaths.join("\n")}
-								maxHeight="8lh"
-							/>
+							<section
+								className={"FilesArchiveRunModal-section" satisfies FilesArchiveRunModal_ClassNames}
+								aria-labelledby={archivedHeadingId}
+							>
+								<h3
+									id={archivedHeadingId}
+									className={"FilesArchiveRunModal-heading" satisfies FilesArchiveRunModal_ClassNames}
+								>
+									{isActive ? "To archive" : "Archived"} ({archivedPaths.length})
+								</h3>
+								<TextMonospaceBlock
+									aria-label={isActive ? "Items to archive" : "Archived items"}
+									text={archivedPaths.join("\n")}
+									maxHeight="8lh"
+								/>
+							</section>
 						) : null}
-						{/* The archive refuses each selected item it cannot change, with everything inside it. */}
+						{/* The archive refuses each selected item it cannot change, with everything inside it. Paths
+						    stay in the same monospace block as above, and each reason is written once above its paths. */}
 						{run && run.notArchived.length > 0 ? (
-							<section aria-labelledby={notArchivedHeadingId}>
+							<section
+								className={"FilesArchiveRunModal-section" satisfies FilesArchiveRunModal_ClassNames}
+								aria-labelledby={notArchivedHeadingId}
+							>
 								<h3
 									id={notArchivedHeadingId}
 									className={"FilesArchiveRunModal-heading" satisfies FilesArchiveRunModal_ClassNames}
 								>
 									Not archived ({run.notArchived.length})
 								</h3>
-								<ul className={"FilesArchiveRunModal-list" satisfies FilesArchiveRunModal_ClassNames}>
-									{run.notArchived.map((item) => (
-										<li key={item.nodeId}>
-											<span className={"FilesArchiveRunModal-path" satisfies FilesArchiveRunModal_ClassNames}>
-												{item.path ?? "An item you cannot open"}
-											</span>
-											: {item.message}
-										</li>
-									))}
-								</ul>
+								{notArchivedGroups.map((group) => (
+									<div
+										key={group.message}
+										className={"FilesArchiveRunModal-group" satisfies FilesArchiveRunModal_ClassNames}
+									>
+										<p className={"FilesArchiveRunModal-reason" satisfies FilesArchiveRunModal_ClassNames}>
+											{group.message}
+										</p>
+										{group.paths.length > 0 ? (
+											<TextMonospaceBlock
+												aria-label={`Not archived: ${group.message}`}
+												text={group.paths.join("\n")}
+												maxHeight="8lh"
+											/>
+										) : null}
+										{group.lockedCount > 0 ? (
+											<p className={"FilesArchiveRunModal-reason" satisfies FilesArchiveRunModal_ClassNames}>
+												{group.lockedCount === 1 ? "1 item you cannot open" : `${group.lockedCount} items you cannot open`}
+											</p>
+										) : null}
+									</div>
+								))}
 							</section>
 						) : null}
 						{conflict ? (

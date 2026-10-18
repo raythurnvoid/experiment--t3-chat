@@ -1387,8 +1387,9 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   The Activity card shows a bar and `Archiving 12 of 46 items…` while it runs, then one line:
   `Archived 46 items.`, or `Archived 45 of 46 items.` when the archive refused named items. A
   refusal alone still reads `Completed`. The button is `View progress` while it runs and `Open` after.
-  The job dialog lists the archived names in the read-only `textbox` `Archived items` and the refused
-  ones under `Not archived (N)`. The `Open` button can sit below the visible part of the popover list:
+  The job dialog lists the archived full paths in the read-only `textbox` `Archived items` and the refused
+  ones under the region `Not archived (N)`, one `textbox` per reason named `Not archived: <reason>`.
+  Its heading holds the job's `[data-activity-status-icon]`. The `Open` button can sit below the visible part of the popover list:
   call `scrollIntoView` on it before the mouse click, or the click lands outside and closes the popover. To test Stop, click `Stop Archive files` in `Notifications` within about 3 s of starting
   a 1,000+ node archive. To test a name clash, archive a folder, create an empty folder with the same
   name, then Restore: the card says `Action needed` and `1 name conflict needs your choice.`, the bell

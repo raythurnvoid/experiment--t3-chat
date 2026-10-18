@@ -22,6 +22,14 @@
 		width: min(92vw, 520px);
 	}
 
+	.FilesArchiveRunModal-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		--ActivityStatusIcon-size: 20px;
+	}
+
 	.FilesArchiveRunModal-content {
 		display: grid;
 		gap: 12px;
@@ -44,19 +52,27 @@
 		font-weight: 600;
 	}
 
+	.FilesArchiveRunModal-section {
+		display: grid;
+		gap: 8px;
+	}
+
 	.FilesArchiveRunModal-heading {
-		margin: 0 0 4px;
+		margin: 0;
 
 		font-size: 0.875rem;
 		font-weight: 600;
 	}
 
-	.FilesArchiveRunModal-list {
+	.FilesArchiveRunModal-group {
 		display: grid;
 		gap: 4px;
+	}
 
+	.FilesArchiveRunModal-reason {
 		margin: 0;
-		padding-inline-start: 20px;
+
+		color: var(--color-fg-09);
 	}
 
 	.FilesArchiveRunModal-choice {
