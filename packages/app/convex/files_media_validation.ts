@@ -179,16 +179,18 @@ export async function files_media_validation_db_versions_match(
 	pins: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>>,
 ) {
 	// Pin row identity too: deleting and recreating a clock cannot revive an old proof.
-	for (const pin of pins.versions) {
-		const contentId = ctx.db.normalizeId("files_content_versions", pin.id);
-		const version = contentId
-			? await ctx.db.get("files_content_versions", contentId)
-			: await ctx.db.get("files_media_validation_versions", pin.id as Id<"files_media_validation_versions">);
-		if (!version || version.revision !== pin.revision) return false;
-	}
-	for (const pin of pins.pendingVersions) {
-		const version = await ctx.db.get("files_pending_review_versions", pin.id);
-		if (!version || version.revision !== pin.revision) return false;
-	}
-	return true;
+	const matches = await Promise.all([
+		...pins.versions.map(async (pin) => {
+			const contentId = ctx.db.normalizeId("files_content_versions", pin.id);
+			const version = contentId
+				? await ctx.db.get("files_content_versions", contentId)
+				: await ctx.db.get("files_media_validation_versions", pin.id as Id<"files_media_validation_versions">);
+			return version?.revision === pin.revision;
+		}),
+		...pins.pendingVersions.map(async (pin) => {
+			const version = await ctx.db.get("files_pending_review_versions", pin.id);
+			return version?.revision === pin.revision;
+		}),
+	]);
+	return matches.every(Boolean);
 }

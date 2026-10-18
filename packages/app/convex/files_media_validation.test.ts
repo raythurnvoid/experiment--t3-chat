@@ -33,6 +33,45 @@ describe("media validation versions", () => {
 		expect(await t.run((ctx) => files_media_validation_db_versions_match(ctx, current))).toBe(true);
 	});
 
+	test("reads all proof clocks before waiting on a clock", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const scope = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const pins = await t.run((ctx) =>
+			files_media_validation_db_capture_versions(ctx, { userId: scope.userId, scopes: [scope] }),
+		);
+		await t.run(async (ctx) => {
+			const started: string[] = [];
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const trackedDb = new Proxy(ctx.db, {
+				get(target, key) {
+					const member: unknown = Reflect.get(target, key);
+					if (typeof member !== "function") return member;
+					if (key === "get")
+						return async (...args: unknown[]) => {
+							started.push(String(args[1]));
+							await gate;
+							return Reflect.apply(member, target, args);
+						};
+					return member.bind(target);
+				},
+			});
+			const proof = files_media_validation_db_versions_match({ ...ctx, db: trackedDb }, pins);
+			let startedBeforeRelease: string[];
+			try {
+				startedBeforeRelease = [...started];
+			} finally {
+				release();
+			}
+			expect(await proof).toBe(true);
+			expect(startedBeforeRelease, "all proof clocks start before waiting").toEqual(
+				[...pins.versions, ...pins.pendingVersions].map((pin) => pin.id),
+			);
+		});
+	});
+
 	test.each(["organization", "workspace", "content", "pending"] as const)(
 		"invalidates a proof when its %s clock changes",
 		async (kind) => {

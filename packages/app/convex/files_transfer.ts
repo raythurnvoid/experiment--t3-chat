@@ -3080,6 +3080,7 @@ async function db_plan(args: {
 			// folder that is only planned is new and empty.
 			parent: parent ? (parent.state === "completed" ? parent.outputTarget : null) : run.targetParent,
 			parentPath,
+			reader: run.kind === "move" && run.sourceView === "saved" ? reader : undefined,
 			nameLookups,
 		});
 		if (resolved._nay) {
@@ -3255,6 +3256,7 @@ async function db_commit_move(args: {
 				membership,
 				parent: run.targetParent,
 				parentPath: run.targetPath,
+				reader,
 			});
 	if (resolved._nay) {
 		await db_stop_run({ ctx, run, errorMessage: resolved._nay.message });

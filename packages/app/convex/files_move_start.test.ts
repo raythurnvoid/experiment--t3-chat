@@ -43,6 +43,7 @@ describe("initial Move publication", () => {
 		const physicalBefore = (await t.run((ctx) => ctx.db.get("files_nodes", sourceId)))!;
 		const pages = { count: 0 };
 		let actorReads = 0;
+		let readerMembershipReads = 0;
 		const costs: Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>[] = [];
 		let cohortCalls = 0;
 		let parentCalls = 0;
@@ -69,7 +70,10 @@ describe("initial Move publication", () => {
 					const member: unknown = Reflect.get(target, key);
 					if (typeof member !== "function") return member;
 					if (key === "query")
-						return (...queryArgs: unknown[]) => track_pages(Reflect.apply(member, target, queryArgs), pages);
+						return (...queryArgs: unknown[]) => {
+							if (queryArgs[0] === "organizations_workspaces_users") readerMembershipReads++;
+							return track_pages(Reflect.apply(member, target, queryArgs), pages);
+						};
 					if (key === "get")
 						return (...getArgs: unknown[]) => {
 							if (getArgs[0] === "users" && getArgs[1] === db.userId) actorReads++;
@@ -102,7 +106,7 @@ describe("initial Move publication", () => {
 		);
 		console.info(
 			"inline empty Move acceptance",
-			JSON.stringify({ sourcePath, step: cohort?.step, phase: cohort?.workPhase, actorReads, costs }),
+			JSON.stringify({ sourcePath, step: cohort?.step, phase: cohort?.workPhase, actorReads, readerMembershipReads, costs }),
 		);
 		expect(cohort, "an empty folder is published before acceptance returns").toMatchObject({
 			phase: "published",
@@ -154,6 +158,7 @@ describe("initial Move publication", () => {
 			moveCohortId: cohort._id,
 		});
 		expect(costs).toHaveLength(1);
+		expect(readerMembershipReads, "saved Move name checks reuse transaction membership reads").toBe(6);
 		expect(actorReads, "joined Move removes repeated actor fact reads").toBeLessThan(40);
 		expect(Object.keys(costs[0]!)).toHaveLength(7);
 		for (const [key, metric] of Object.entries(costs[0]!))
