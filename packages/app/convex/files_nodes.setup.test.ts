@@ -927,17 +927,49 @@ export const statusOpenPlans: files_metadata_SearchPlan[] = [
 ];
 
 /**
- * One first page of `search_saved`, as node ids, or the problem message.
+ * Every page of the search box's custom-field search (`search_saved_metadata`), in order. A problem
+ * row stays a row; an answer with no rows throws its message.
+ */
+export async function search_saved_metadata_all(args: {
+	asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+	membershipId: Id<"organizations_workspaces_users">;
+	plan: files_metadata_SearchPlan;
+	folderPath?: string;
+}) {
+	const rows: NonNullable<FunctionReturnType<typeof api.files_nodes.search_saved_metadata>["_yay"]>["page"] = [];
+	let cursor: string | null = null;
+	do {
+		const result: FunctionReturnType<typeof api.files_nodes.search_saved_metadata> = await args.asWho.action(
+			api.files_nodes.search_saved_metadata,
+			{ membershipId: args.membershipId, plan: args.plan, folderPath: args.folderPath, numItems: 50, cursor },
+		);
+		if (result._nay) throw new Error(result._nay.message);
+		rows.push(...result._yay.page);
+		cursor = result._yay.cursor;
+	} while (cursor !== null);
+	return rows;
+}
+
+/**
+ * One first page of `search_saved`, as node ids, or the problem message. A metadata clause reads
+ * every page of `search_saved_metadata`.
  */
 export async function search_saved_page(args: {
 	asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
 	membershipId: Id<"organizations_workspaces_users">;
-	clause: FunctionArgs<typeof api.files_nodes.search_saved>["clause"];
+	clause:
+		| FunctionArgs<typeof api.files_nodes.search_saved>["clause"]
+		| { kind: "metadata"; plan: files_metadata_SearchPlan };
 	folderPath?: string;
 }) {
+	const clause = args.clause;
+	if (clause.kind === "metadata") {
+		const rows = await search_saved_metadata_all({ ...args, plan: clause.plan });
+		return new Set(rows.map((row) => (row.kind === "problem" ? row.message : row.nodeId)));
+	}
 	const result = await args.asWho.query(api.files_nodes.search_saved, {
 		membershipId: args.membershipId,
-		clause: args.clause,
+		clause,
 		folderPath: args.folderPath,
 		paginationOpts: { numItems: 50, cursor: null },
 	});

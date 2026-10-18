@@ -718,6 +718,65 @@ export function files_metadata_db_query_saved_plan(
 }
 
 /**
+ * The same plans on one restricted area (the `..._scope_tree` indexes), for a member's metadata
+ * search (`files_visible.internal_search_metadata_saved`). The area comes right before the value, so
+ * every plan works per area. `bounds` is the rest of the range: a walk frame's `treePath` range for
+ * `exists` and `eq`, the value range for `prefix` and `range`.
+ */
+export function files_metadata_db_query_saved_plan_in_area(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		plan: files_metadata_SearchPlan;
+		scopeNodeId: Id<"files_nodes"> | null;
+		moveView?: files_saved_placement_FixedView;
+		bounds: Parameters<typeof files_index_range_apply>[1];
+	},
+) {
+	const { plan } = args;
+	const valueKind =
+		plan.op === "exists"
+			? null
+			: plan.op === "prefix"
+				? "string"
+				: plan.op === "range"
+					? plan.valueKind
+					: typeof plan.value === "string"
+						? "string"
+						: typeof plan.value === "number"
+							? "number"
+							: "boolean";
+	// The four indexes share their fields up to the value, so one builder fills them. Their names
+	// differ, so the typed range builder cannot check the fields.
+	const range = (q: any) => {
+		let builder = q
+			.eq("organizationId", args.organizationId)
+			.eq("workspaceId", args.workspaceId)
+			.eq("sourceKind", "committed")
+			.eq("moveView.cohortId", args.moveView?.cohortId)
+			.eq("moveView.view", args.moveView?.view)
+			.eq("archiveOperationId", undefined)
+			.eq("docKind", valueKind === null ? "field" : "value")
+			.eq("fieldPath", plan.fieldPath);
+		if (valueKind !== null) builder = builder.eq("valueKind", valueKind);
+		builder = builder.eq("restrictedScopeNodeId", args.scopeNodeId);
+		if (plan.op === "eq")
+			builder = builder.eq(
+				valueKind === "string" ? "stringValue" : valueKind === "number" ? "numberValue" : "booleanValue",
+				plan.value,
+			);
+		return files_index_range_apply(builder, args.bounds);
+	};
+	const docs = ctx.db.query("files_metadata_docs");
+	if (valueKind === null) return docs.withIndex("by_org_ws_source_archive_docKind_field_scope_tree", range);
+	if (valueKind === "string") return docs.withIndex("by_org_ws_source_archive_docKind_field_string_scope_tree", range);
+	if (valueKind === "boolean")
+		return docs.withIndex("by_org_ws_source_archive_docKind_field_boolean_scope_tree", range);
+	return docs.withIndex("by_org_ws_source_archive_docKind_field_number_scope_tree", range);
+}
+
+/**
  * One page of the saved metadata keys whose path starts with `prefix`, ignoring case, with the value
  * kinds each one holds. The page is one range of the metadata catalog (`server/files-metadata-catalog.ts`),
  * in key order. It reads one stream: the normal rows, or the rows of one Move view (`savedStream`).

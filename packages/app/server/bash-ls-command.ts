@@ -630,6 +630,11 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					continue;
 				}
 
+				// GNU ls lists a locked folder, prints this line for it and goes on (exit 1).
+				for (const path of result._yay.denied ?? []) {
+					stderr += `ls: cannot open directory '${target.pathResolution.renderShellPath(path)}': Permission denied\n`;
+					if (exitCode === 0) exitCode = bash_COMMAND_EXIT_FAILURE;
+				}
 				lines.push(
 					...result._yay.items.map((item) =>
 						format_item({

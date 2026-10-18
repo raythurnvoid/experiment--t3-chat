@@ -1,6 +1,6 @@
 ---
 name: file-metadata
-description: Spec for the flat key-value metadata stored next to a file or folder — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the Properties modal and `update_entries_by_path` for the agent), the key grammar and caps, how it sits beside Markdown frontmatter in `meta search`, and the sidebar search box language (`packages/app/shared/files-search-query.ts`) with its doors (the saved-only `files_nodes.search_saved`, `list_search_fields`, `list_search_values`). Use when changing `packages/app/shared/files-metadata.ts`, `packages/app/shared/files-search-query.ts`, the metadata or search box regions of `packages/app/convex/files_metadata.ts`, the Properties modal in `packages/app/src/components/files/files-properties-modal.tsx`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
+description: Spec for the flat key-value metadata stored next to a file or folder — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the Properties modal and `update_entries_by_path` for the agent), the key grammar and caps, how it sits beside Markdown frontmatter in `meta search`, and the sidebar search box language (`packages/app/shared/files-search-query.ts`) with its doors (the saved-only `files_nodes.search_saved` and `search_saved_metadata`, `list_search_fields`, `list_search_values`). Use when changing `packages/app/shared/files-metadata.ts`, `packages/app/shared/files-search-query.ts`, the metadata or search box regions of `packages/app/convex/files_metadata.ts`, the Properties modal in `packages/app/src/components/files/files-properties-modal.tsx`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
 ---
 
 # Mental Model
@@ -526,19 +526,23 @@ field names and the tokenizer from `files-search-query.ts` and adds `sort_by:`. 
 URL cleaner live in `shared/files-folder-table-query.ts`; the `files-explorer-tree` skill describes
 the bar under "Table filter and sort bar".
 
-The doors sit in the search box region of `convex/files_metadata.ts`, except `search_saved`. Each
-answers its empty shape for a membership that is not the caller's.
+The doors sit in the search box region of `convex/files_metadata.ts`, except `search_saved` and
+`search_saved_metadata`. Each answers its empty shape for a membership that is not the caller's.
 
 - `files_nodes.search_saved({ membershipId, clause, folderPath?, paginationOpts })` is the
-  saved-only door (`convex/files_nodes.ts`). The box shows no drafts, not even the caller's own.
-  A `metadata` clause carries one plan of `files_search_query_to_plans`, so a chip with two plans
-  is two paginated calls. It reads `files_metadata_db_query_saved_plan`: the committed-only indexes
-  `by_org_ws_source_archive_docKind_field_*` with `sourceKind = "committed"`. With a folder only
-  `eq` and `exists` run, as a `treePath` range of the folder's stored `treePath`; `prefix` and
-  `range` with a folder get an empty page. Each row reads its node with one `get`, then one batch
-  read check. With a folder, the node's own `treePath` must be under it too: a move op gives the
-  node its new path before its docs, so a doc can keep an old path for a while. The split guard is
-  400 (comment at `SEARCH_SAVED_SPLIT_GUARD`). String prefix plans use `string_prefix_upper_bound`, which includes non-BMP text such as `op😀`.
+  saved-only door (`convex/files_nodes.ts`) for names, contents, paths and links. The box shows no
+  drafts, not even the caller's own.
+- `files_nodes.search_saved_metadata({ membershipId, searchGeneration?, plan, folderPath?, numItems,
+  cursor })` is the custom-field door, an action. A chip with two plans is two calls. It runs the
+  walk of Bash `meta search` (`files_pending_overlay_list` in metadata mode, saved rows only), so
+  the rows are a snapshot and not reactive. `eq` and `exists` walk the folder area by area on the
+  `_scope_tree` metadata indexes and never read a doc under a locked folder; `prefix` and `range`
+  read in value order, so they take no folder (an empty page) and a member reads the open area only.
+  The owner, plugin volumes and GLOBAL workspaces read every area. The cursor is a `value_store` id
+  (one day) that holds the walk cursor and the `searchGeneration`; a page of another search view
+  answers `_nay` "The saved search view changed. Search again.". A missing or unreadable folder and
+  a value too long come back as a problem row, like `search_saved`. String prefix plans use
+  `string_prefix_upper_bound`, which includes non-BMP text such as `op😀`.
 - `files_search_db_create_reader` serves the agent's `search`. It shares owner, ancestor, and permission reads across indexed results. It checks
   active membership, private ownership, current proposal id and revision, readiness, and read
   access. Ready private drafts use captured metadata and pending frontmatter. Saved metadata stays
@@ -549,10 +553,10 @@ answers its empty shape for a membership that is not the caller's.
 - A member whose role has no workspace-wide `content.read` still finds files in folders shared with
   them: `search_saved` passes the tree reader's `hasWorkspaceRead` to the readable-nodes filter
   instead of refusing. The other way round holds too: a member whose role reads the workspace never gets a
-  file of a restricted folder from `search_saved` until it is shared with them. The suggestion
+  file of a restricted folder from `search_saved` or `search_saved_metadata` until it is shared with them. The suggestion
   doors follow the same rule by area: a member reads the keys and values of one area they can open
   (the area rule in "Suggestions"), so a value of a file they cannot open is never suggested.
-- Archiving a file removes it from every door: `search_saved` reads `archiveOperationId: undefined`
+- Archiving a file removes it from every door: `search_saved_metadata` reads `archiveOperationId: undefined`
   docs only, and the catalog counts active docs only, so an archived file's keys and values
   disappear with it (after the catalog lag). `search_saved` reads saved, active rows only, so the
   search box never lists an archived file.
@@ -654,7 +658,7 @@ and values from the catalog. Each read is one index range, so it costs the same 
     restricted area R reads `parentId: R` and needs `content.read` on R itself. Added people inside R
     open only part of R, so they get nothing there, like a guest in an open folder. A missing path or
     one that is not a folder gets the same empty, done page or null. A typed filter still searches
-    (`search_saved` checks each row). `list_folder_fields` keeps its folder gate, so a guest keeps the
+    (`search_saved_metadata` checks each row). `list_folder_fields` keeps its folder gate, so a guest keeps the
     Columns keys of a shared folder.
   - **Folder sent by the browser.** The search box sends the folder of its `file.path` chip
     (`search_path_filter`, `/` without one); the folder filter bar sends the table folder's path.

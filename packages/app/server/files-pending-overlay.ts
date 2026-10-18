@@ -15,7 +15,7 @@
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`).
 
-import { compareValues, type Infer, type Value } from "convex/values";
+import { compareValues, ConvexError, type Infer, type Value } from "convex/values";
 import { Result } from "common/errors-as-values-utils.ts";
 import { z } from "zod";
 import type { PaginationResult, TransactionMetrics, WithoutSystemFields } from "convex/server";
@@ -83,6 +83,12 @@ import {
 	files_move_reservations_db_note_source,
 	files_move_reservations_db_is_rename_allocation,
 } from "./files-move-reservations.ts";
+import {
+	files_tree_walk_cursor_schema,
+	files_tree_walk_MAX_CALLS,
+	files_tree_walk_page,
+	type files_tree_walk_stack_validator,
+} from "./files-tree-walk.ts";
 
 /**
  * Tables the flush recomputes from. A write to one of them marks derived docs dirty. A grant write
@@ -3240,7 +3246,9 @@ function moved_in_args(movedIn: { savedNodeId: string; ownerTreePath: string } |
  *
  * Merges the saved stream, the user's place stream and, in a subtree, one saved stream per folder the
  * user moved in by a draft. A row shows only when every open stream has read past its key; ties go by
- * stream order. Used by `ls`, `find`, `tree`, `meta search`, the skills catalog and transfer
+ * stream order. In a subtree and in a metadata `exists` or `eq` listing each saved stream is a walk
+ * (`server/files-tree-walk.ts`) over every saved source: it does not enter locked folders, and a
+ * subtree returns their paths in `denied`. Used by `ls`, `find`, `tree`, `meta search`, the skills catalog and transfer
  * discovery, so it takes any ctx that can run a query.
  *
  * Nested queries share the caller's transaction. When the caller is a query or a mutation, the merge
@@ -3331,9 +3339,18 @@ export async function files_pending_overlay_list(
 	const plan = args.plan;
 	if (args.mode === "metadata" && !plan)
 		throw should_never_happen("Metadata listings need a plan", { folderPath: args.folderPath });
+	const walk =
+		(args.mode === "subtree" && order === "asc") ||
+		(args.mode === "metadata" && (plan?.op === "exists" || plan?.op === "eq"));
 
 	type CursorStream = z.infer<typeof list_cursor_schema>["streams"][number];
-	type Row = NonNullable<files_visible_stream_Result["_yay"]>["rows"][number];
+	type StreamResult = files_visible_stream_Result | { _nay: { message: string; name?: string }; _yay?: undefined };
+	type Row = NonNullable<files_visible_stream_Result["_yay"]>["rows"][number] & {
+		/**
+		 * Walk rows only: a locked folder the walk did not enter.
+		 */
+		denied?: string;
+	};
 	type Stream = CursorStream & {
 		/**
 		 * False once nothing is left after `buffer`.
@@ -3346,6 +3363,15 @@ export async function files_pending_overlay_list(
 		 * True once a call of this page returned rows, a frontier, or the end.
 		 */
 		hasRead: boolean;
+		/**
+		 * A walk stream in this page: its start, and the frames above its cursor's top frame, so the
+		 * next merge round reads neither again.
+		 */
+		walk?: {
+			root: NonNullable<files_visible_stream_Result["_yay"]>["root"];
+			start: { scopeNodeId: Id<"files_nodes"> | null; treePath: string } | null;
+			frames: { cursor: string; frames: NonNullable<Infer<typeof files_tree_walk_stack_validator>> } | null;
+		};
 	};
 
 	const start = { rangeStart: null, cursor: null, lastKey: null };
@@ -3359,8 +3385,11 @@ export async function files_pending_overlay_list(
 	let root: string | null = null;
 	let cursorStreams: CursorStream[];
 	if (args.cursor === null) {
-		cursorStreams = savedSources.flatMap((savedStream) => [
-			{ kind: "saved" as const, movedIn: null, numItems: pageSize, position: start, savedStream },
+		cursorStreams = savedSources.flatMap((savedStream, index) => [
+			// A walk reads every saved source itself.
+			...(walk && index > 0
+				? []
+				: [{ kind: "saved" as const, movedIn: null, numItems: pageSize, position: start, savedStream }]),
 			...(overlay
 				? parentAliases.map((parentAlias) => ({
 						kind: "places" as const,
@@ -3410,9 +3439,10 @@ export async function files_pending_overlay_list(
 		root = parsed.data.root;
 		cursorStreams = parsed.data.streams;
 	}
+	const is_walk = (stream: Pick<CursorStream, "kind">) => walk && (stream.kind === "saved" || stream.kind === "nested");
 	const streams: Stream[] = cursorStreams.map((stream) => ({
 		...stream,
-		position: view.cohortId && stream.kind !== "pending" ? start : stream.position,
+		position: view.cohortId && stream.kind !== "pending" && !is_walk(stream) ? start : stream.position,
 		open: true,
 		buffer: [],
 		frontier: null,
@@ -3420,7 +3450,142 @@ export async function files_pending_overlay_list(
 		hasRead: false,
 	}));
 
-	const run = (stream: Stream): Promise<files_visible_stream_Result> => {
+	// A walk stream: the saved rows under the folder, one restricted area at a time, over every saved
+	// source. Its position holds the walk cursor. Every walk stream of the page shares one budget of
+	// stream calls, since the merge below can run a walk once per round.
+	let walkCalls = 0;
+	const run_walk = async (stream: Stream): Promise<StreamResult> => {
+		const movedIn = moved_in_args(stream.movedIn);
+		let cursor = null;
+		if (stream.position.cursor !== null) {
+			const parsed = files_tree_walk_cursor_schema.safeParse(JSON.parse(stream.position.cursor));
+			if (!parsed.success)
+				return Result({
+					_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
+				});
+			cursor = parsed.data;
+		}
+		// The Move view's places name every node of the cohort, so the frames read in that view.
+		const viewStream = savedSources.find((source) => source.kind === "cohort") ?? savedSources[0]!;
+		if (!stream.walk) {
+			const opened = await ctx.runQuery(internal.files_visible.internal_get_walk_start, {
+				...streamArgs,
+				...movedIn,
+				savedStream: viewStream,
+			});
+			if (opened._nay) return opened;
+			stream.walk = { root: opened._yay.root, start: opened._yay.start, frames: null };
+		}
+		const walk = stream.walk;
+		const { root: walkRoot, start: walkStart } = walk;
+		if (walkStart === null || walkRoot === null)
+			return Result({
+				_yay: { root: walkRoot, rows: [], frontier: null, position: start, done: true, decided: 0, overBudget: false },
+			});
+
+		// A failed stream call ends the walk with its answer.
+		let failed: StreamResult | null = null;
+		const stopped = new Error("The walk stopped on a failed stream call");
+		const yay_of = <T extends { _nay?: unknown; _yay?: unknown }>(result: T) => {
+			if (result._nay) {
+				failed = result as unknown as typeof failed;
+				throw stopped;
+			}
+			return result._yay as NonNullable<T["_yay"]>;
+		};
+		const common = { ...streamArgs, ...movedIn, position: start };
+		try {
+			const walked = await files_tree_walk_page<Row>({
+				// A metadata search inside a folder lists the folder too; `ls -R`, `find` and `tree` leave it out.
+				start: { ...walkStart, kind: "folder", withRoot: args.mode === "metadata" },
+				cursor,
+				numItems: stream.numItems,
+				maxCalls: files_tree_walk_MAX_CALLS - walkCalls,
+				rows: savedSources.map((savedStream) => async (frame, numItems) => {
+					const yay = yay_of(
+						args.mode === "metadata"
+							? await ctx.runQuery(internal.files_visible.internal_search_metadata_saved, {
+									...common,
+									plan: plan!,
+									numItems,
+									savedStream,
+									frame,
+								})
+							: await ctx.runQuery(internal.files_visible.internal_list_subtree_saved, {
+									...common,
+									...filter,
+									order,
+									numItems,
+									savedStream,
+									frame,
+								}),
+					);
+					return {
+						items: yay.rows.map((row) => ({ key: row.position.lastKey!, value: row as Row })),
+						frontier: yay.frontier,
+						phaseCount: ("phaseCount" in yay ? yay.phaseCount : undefined) ?? 1,
+						isDone: yay.done,
+					};
+				}),
+				boundaries: savedSources.map((savedStream) => async (frame, numItems) => {
+					const yay = yay_of(
+						await ctx.runQuery(internal.files_visible.internal_list_subtree_boundaries, {
+							...common,
+							...filter,
+							numItems,
+							savedStream,
+							frame,
+							withRows: args.mode === "subtree",
+						}),
+					);
+					return {
+						...yay,
+						items: yay.boundaries.map(({ key, ...boundary }) => ({ key, value: boundary })),
+					};
+				}),
+				// Read once per page. Its own query keeps its reads apart from the start's folder lookup.
+				resolve_stack: async (top) =>
+					walk.frames?.cursor === stream.position.cursor
+						? walk.frames.frames
+						: await ctx.runQuery(internal.files_visible.internal_resolve_walk_stack, {
+								...streamArgs,
+								savedStream: viewStream,
+								start: walkStart,
+								top,
+							}),
+			});
+			walkCalls += walked.calls;
+			walk.frames = walked.cursor && { cursor: JSON.stringify(walked.cursor), frames: walked.frames };
+			const rows: Row[] = walked.entries.map((entry) => {
+				const position = { rangeStart: null, cursor: JSON.stringify(entry.cursor), lastKey: null };
+				// A locked folder that does not match the filter only prints its "Permission denied" line.
+				const row: Row = entry.row ?? { key: [`${entry.denied}/`, entry.key[2], entry.key[3]], item: null, position };
+				return { ...row, position, ...(entry.denied === null ? {} : { denied: entry.denied }) };
+			});
+			return Result({
+				_yay: {
+					root: walkRoot,
+					rows,
+					frontier: rows.at(-1)?.key ?? null,
+					position: walked.cursor ? { rangeStart: null, cursor: JSON.stringify(walked.cursor), lastKey: null } : start,
+					done: walked.cursor === null,
+					decided: rows.length,
+					overBudget: false,
+				},
+			});
+		} catch (error) {
+			if (error === stopped && failed) return failed;
+			// A frame above the cursor changed, or the start did.
+			if (error instanceof ConvexError && error.data?.paginationError === "InvalidCursor")
+				return Result({
+					_nay: { message: "the folder changed since the last page; rerun the original command without --cursor." },
+				});
+			throw error;
+		}
+	};
+
+	const run = (stream: Stream): Promise<StreamResult> => {
+		if (is_walk(stream)) return run_walk(stream);
 		const common = {
 			...streamArgs,
 			numItems: stream.numItems,
@@ -3483,6 +3648,7 @@ export async function files_pending_overlay_list(
 
 	// A metadata row also says which value it matched.
 	const items: Array<NonNullable<Row["item"]> & { match?: Row["match"] }> = [];
+	const denied: string[] = [];
 	const seen = new Set<string>();
 	let rounds = 0;
 	let progressed = false;
@@ -3507,12 +3673,15 @@ export async function files_pending_overlay_list(
 		// be in neither read. So the first source reads rows once per page, and the page ends when it
 		// needs more. The next page seeks both sources again from a key no later than its frontier. Calls
 		// that only cross an empty seek phase read no rows, so they do not count.
-		const runnable = view.cohortId
-			? blocking.filter(
-					(stream) =>
-						!(stream.kind !== "pending" && stream.savedStream.kind === savedSources[0]!.kind && stream.hasRead),
-				)
-			: blocking;
+		const runnable = (
+			view.cohortId
+				? blocking.filter(
+						(stream) =>
+							is_walk(stream) ||
+							!(stream.kind !== "pending" && stream.savedStream.kind === savedSources[0]!.kind && stream.hasRead),
+					)
+				: blocking
+		).filter((stream) => !is_walk(stream) || walkCalls < files_tree_walk_MAX_CALLS);
 		if (blocking.length > 0) {
 			if (runnable.length === 0 || rounds === LIST_MAX_ROUNDS) break;
 			rounds++;
@@ -3563,7 +3732,7 @@ export async function files_pending_overlay_list(
 			stream.open = !stream.after.done;
 		}
 		if (row.movedIn && !streams.some((other) => other.movedIn?.savedNodeId === row.movedIn!.savedNodeId)) {
-			for (const savedStream of savedSources)
+			for (const savedStream of walk ? savedSources.slice(0, 1) : savedSources)
 				streams.push({
 					kind: "nested",
 					movedIn: row.movedIn,
@@ -3577,6 +3746,7 @@ export async function files_pending_overlay_list(
 					hasRead: false,
 				});
 		}
+		if (row.denied !== undefined && args.mode === "subtree") denied.push(row.denied);
 		// Two calls read different snapshots, so a moved row can come from two streams.
 		if (row.item && !seen.has(row.item.target.id)) {
 			seen.add(row.item.target.id);
@@ -3596,7 +3766,7 @@ export async function files_pending_overlay_list(
 		: streams.filter((stream) => stream.open);
 	if (view.cohortId) {
 		for (const stream of left) {
-			if (stream.kind === "pending") continue;
+			if (stream.kind === "pending" || is_walk(stream)) continue;
 			let seek: { key: Value[]; inclusive: boolean } | null = null;
 			let undecided = false;
 			for (const other of left) {
@@ -3629,6 +3799,7 @@ export async function files_pending_overlay_list(
 	return Result({
 		_yay: {
 			items,
+			...(denied.length > 0 ? { denied } : {}),
 			continueCursor:
 				left.length === 0
 					? null

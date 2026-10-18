@@ -7,8 +7,9 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
 import type { files_SavedStream } from "../shared/files.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { convex_invalid_cursor_error } from "./convex-utils.ts";
+import { convex_error, convex_invalid_cursor_error } from "./convex-utils.ts";
 import { crypto_open_cursor, crypto_seal_cursor } from "./crypto-utils.ts";
+import { files_tree_walk_cursor_schema, files_tree_walk_key, files_tree_walk_page } from "./files-tree-walk.ts";
 import { server_path_normalize } from "./server-utils.ts";
 
 const key_schema = z.object({
@@ -17,6 +18,7 @@ const key_schema = z.object({
 	nodeId: z.string(),
 });
 const cursor_schema = z.object({ lastKey: key_schema.nullable() });
+const walk_cursor_schema = z.object({ walk: files_tree_walk_cursor_schema });
 type Key = z.infer<typeof key_schema>;
 
 function compare_keys(a: Key, b: Key) {
@@ -29,7 +31,9 @@ function compare_keys(a: Key, b: Key) {
  * Answers `_nay` named `folder_unavailable` when the folder is missing or archived, `folder_locked`
  * when the caller cannot open it, and `not_a_folder` when the path is a readable file.
  *
- * Every row has `locked`. Only a list of direct children with `withLocked` returns locked rows.
+ * Every row has `locked`. A list of direct children with `withLocked` returns its locked children. A
+ * recursive list is one page of the walk (`server/files-tree-walk.ts`): a locked folder is a locked
+ * row and nothing under it is read.
  */
 export async function files_saved_list_page(
 	ctx: Pick<ActionCtx, "runQuery">,
@@ -98,6 +102,22 @@ export async function files_saved_list_page(
 	if (view.cohortId !== null && view.view !== null) {
 		sources.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
 	}
+	// Source order follows migration. A doc moved between these reads is seen at least once.
+	if (view.migrationDirection === "to_normal") sources.reverse();
+	const check_view = async () => {
+		const current = await ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs);
+		const currentMembership = await ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs);
+		if (
+			!current ||
+			current.generation !== view.generation ||
+			current.cohortId !== view.cohortId ||
+			current.view !== view.view ||
+			current.migrationDirection !== view.migrationDirection ||
+			JSON.stringify(currentMembership) !== JSON.stringify(membership)
+		) {
+			throw convex_invalid_cursor_error("The saved Move view changed.");
+		}
+	};
 	// The folder id is in the scope, so a cursor stops working when the folder is replaced at the same path.
 	const scope = JSON.stringify([
 		cursorScope,
@@ -107,6 +127,93 @@ export async function files_saved_list_page(
 		sources,
 		root?._id ?? null,
 	]);
+	if (args.maxDepth === undefined) {
+		if (args.order === "desc") throw convex_error({ message: "A recursive list reads in path order only." });
+		let walkCursor = null;
+		if (cursor !== null) {
+			const parsed = walk_cursor_schema.safeParse(await crypto_open_cursor({ purpose: "files_list", scope, cursor }));
+			if (!parsed.success) throw convex_invalid_cursor_error("The saved list scope changed.");
+			walkCursor = parsed.data.walk;
+		}
+		const readArgs = {
+			agentSource: args.agentSource,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			visibilityUserId: args.visibilityUserId,
+			subject: args.subject,
+		};
+		const filter = { kind: args.kind, lowercaseExtension: args.lowercaseExtension };
+		const start = { scopeNodeId: root?.restrictedScopeNodeId ?? null, treePath: root?.treePath ?? "/" };
+		const walked = await files_tree_walk_page<{ node: Doc<"files_nodes">; locked: boolean }>({
+			start: { ...start, kind: "folder", withRoot: (args.minDepth ?? 0) === 0 },
+			cursor: walkCursor,
+			numItems,
+			// One stream per source and per type value. Each reads one index range of matching rows only.
+			rows: sources.flatMap((source) =>
+				(contentTypePrefixes ?? [undefined]).map((contentTypePrefix) => async (frame, numItems) => {
+					const result: files_nodes_list_subtree_Result = await ctx.runQuery(internal.files_nodes.list_subtree, {
+						...readArgs,
+						...filter,
+						folderPath: args.folderPath,
+						contentTypePrefix,
+						cursor: null,
+						numItems,
+						savedStream: source,
+						frame,
+					});
+					const locked = new Set("lockedIds" in result ? result.lockedIds : []);
+					const frontier = "frontier" in result ? (result.frontier ?? null) : null;
+					return {
+						items: result.page.map((node) => ({
+							key: files_tree_walk_key(node),
+							value: { node, locked: locked.has(node._id) },
+						})),
+						frontier: frontier && [frontier.value, frontier.createdAt, frontier.nodeId],
+						phaseCount: "phaseCount" in result ? (result.phaseCount ?? 1) : 1,
+						isDone: result.isDone,
+					};
+				}),
+			),
+			boundaries: sources.map((source) => async (frame, numItems) => {
+				const result = await ctx.runQuery(internal.files_nodes.list_subtree_boundaries, {
+					...readArgs,
+					...filter,
+					contentTypePrefixes,
+					savedStream: source,
+					frame,
+					numItems,
+				});
+				return {
+					...result,
+					items: result.page.map(({ node, status, matches }) => ({
+						key: files_tree_walk_key(node),
+						value: { node, status, row: matches ? { node, locked: true } : null, path: node.path },
+					})),
+				};
+			}),
+			// The Move view's places name every node of the cohort, so the frames come from that view.
+			resolve_stack: (top) =>
+				ctx.runQuery(internal.files_nodes.resolve_walk_stack, {
+					...readArgs,
+					savedStream: sources.find((source) => source.kind === "cohort") ?? sources[0]!,
+					start,
+					top,
+				}),
+		});
+		await check_view();
+		return Result({
+			_yay: {
+				page: walked.entries.flatMap((entry) => (entry.row ? [{ ...entry.row.node, locked: entry.row.locked }] : [])),
+				// The cursor can name a folder the caller may not read, so it is sealed.
+				continueCursor:
+					walked.cursor === null
+						? ""
+						: await crypto_seal_cursor({ purpose: "files_list", scope, payload: { walk: walked.cursor } }),
+				isDone: walked.cursor === null,
+			},
+		});
+	}
+
 	let lastKey: Key | null = null;
 	if (cursor !== null) {
 		const parsed = cursor_schema.safeParse(await crypto_open_cursor({ purpose: "files_list", scope, cursor }));
@@ -122,9 +229,8 @@ export async function files_saved_list_page(
 	const page: Doc<"files_nodes">[] = [];
 	const lockedIds = new Set<Id<"files_nodes">>();
 	let isDone = false;
-	// Source order follows migration. A doc moved between these reads is seen at least once.
-	if (view.migrationDirection === "to_normal") sources.reverse();
-	// Sparse access can leave a short page with a cursor.
+	// A folder the caller cannot open (the root, for a guest) lists only the children they can open, so a
+	// page can be short with a cursor.
 	for (let round = 0; round < 8 && page.length < numItems; round++) {
 		const batches: Array<{ rows: Doc<"files_nodes">[]; frontier: Key | null; done: boolean }> = [];
 		// One stream per source and per type value. Each reads one index range of matching rows only.
@@ -180,18 +286,7 @@ export async function files_saved_list_page(
 		if (isDone) break;
 		// Re-seek both sources. A native cursor ahead of this common window can lose migrating docs.
 	}
-	const current = await ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs);
-	const currentMembership = await ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs);
-	if (
-		!current ||
-		current.generation !== view.generation ||
-		current.cohortId !== view.cohortId ||
-		current.view !== view.view ||
-		current.migrationDirection !== view.migrationDirection ||
-		JSON.stringify(currentMembership) !== JSON.stringify(membership)
-	) {
-		throw convex_invalid_cursor_error("The saved Move view changed.");
-	}
+	await check_view();
 	// `lastKey` can be a doc the caller may not read, so the cursor must hide it.
 	const continueCursor = isDone ? "" : await crypto_seal_cursor({ purpose: "files_list", scope, payload: { lastKey } });
 	return Result({

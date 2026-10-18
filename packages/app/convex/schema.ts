@@ -2858,21 +2858,53 @@ const app_convex_schema = defineSchema({
 		.index("by_view_path_archive", ["cohortId", "view", "path", "archiveOperationId", "nodeCreationTime", "nodeId"])
 		.index("by_view_tree", ["cohortId", "view", "treePath", "nodeCreationTime", "nodeId"])
 		.index("by_view_archive_tree", ["cohortId", "view", "archiveOperationId", "treePath", "nodeCreationTime", "nodeId"])
-		.index("by_view_archive_kind_tree", [
+		// The Move views of the `files_nodes.by_org_ws_scope_archive_*` indexes.
+		.index("by_view_scope_archive_tree", [
 			"cohortId",
 			"view",
+			"restrictedScopeNodeId",
+			"archiveOperationId",
+			"treePath",
+			"nodeCreationTime",
+			"nodeId",
+		])
+		.index("by_view_scope_archive_kind_tree", [
+			"cohortId",
+			"view",
+			"restrictedScopeNodeId",
 			"archiveOperationId",
 			"kind",
 			"treePath",
 			"nodeCreationTime",
 			"nodeId",
 		])
-		.index("by_view_archive_kind_ext_tree", [
+		.index("by_view_scope_archive_kind_ext_tree", [
 			"cohortId",
 			"view",
+			"restrictedScopeNodeId",
 			"archiveOperationId",
 			"kind",
 			"lowercaseExtension",
+			"treePath",
+			"nodeCreationTime",
+			"nodeId",
+		])
+		.index("by_view_scope_archive_family_tree", [
+			"cohortId",
+			"view",
+			"restrictedScopeNodeId",
+			"archiveOperationId",
+			"contentTypeFamily",
+			"treePath",
+			"nodeCreationTime",
+			"nodeId",
+		])
+		.index("by_view_scope_archive_essence_tree", [
+			"cohortId",
+			"view",
+			"restrictedScopeNodeId",
+			"archiveOperationId",
+			"contentTypeEssence",
 			"treePath",
 			"nodeCreationTime",
 			"nodeId",
@@ -4496,17 +4528,6 @@ const app_convex_schema = defineSchema({
 			"sortName",
 			"name",
 		])
-		// The restricted folders and service account nodes one principal may read, in path order
-		// (`server/files-readable-scopes.ts`).
-		.index("by_org_ws_principal_archive_treePath", [
-			"organizationId",
-			"workspaceId",
-			"principalKey",
-			"moveView.cohortId",
-			"moveView.view",
-			"archiveOperationId",
-			"treePath",
-		])
 		.index("by_node", ["nodeId", "moveView.cohortId", "moveView.view"])
 		.index("by_grant", ["grantId", "moveView.cohortId", "moveView.view"]),
 
@@ -4695,6 +4716,62 @@ const app_convex_schema = defineSchema({
 			"docKind",
 			"fieldPath",
 			"valueKind",
+			"booleanValue",
+			"treePath",
+		])
+		// Metadata search by restricted area: a member reads only the areas they can open (the walk in
+		// `server/files-tree-walk.ts`). The area comes before the value, so a value range works per area.
+		.index("by_org_ws_source_archive_docKind_field_scope_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"moveView.cohortId",
+			"moveView.view",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"restrictedScopeNodeId",
+			"treePath",
+		])
+		.index("by_org_ws_source_archive_docKind_field_string_scope_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"moveView.cohortId",
+			"moveView.view",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"restrictedScopeNodeId",
+			"stringValue",
+			"treePath",
+		])
+		.index("by_org_ws_source_archive_docKind_field_number_scope_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"moveView.cohortId",
+			"moveView.view",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"restrictedScopeNodeId",
+			"numberValue",
+			"treePath",
+		])
+		.index("by_org_ws_source_archive_docKind_field_boolean_scope_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"moveView.cohortId",
+			"moveView.view",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"restrictedScopeNodeId",
 			"booleanValue",
 			"treePath",
 		])
@@ -5114,25 +5191,57 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"treePath",
 		])
-		.index("by_organization_workspace_archiveOperation_kind_treePath", [
+		// A recursive read pages one restricted area at a time (`server/files-tree-walk.ts`), so it never
+		// reads a row under a folder the caller cannot open.
+		.index("by_org_ws_scope_archive_treePath", [
 			"organizationId",
 			"workspaceId",
 			"moveCohortId",
+			"restrictedScopeNodeId",
+			"archiveOperationId",
+			"treePath",
+		])
+		.index("by_org_ws_scope_archive_kind_treePath", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"restrictedScopeNodeId",
 			"archiveOperationId",
 			"kind",
 			"treePath",
 		])
-		.index("by_organization_workspace_archive_kind_lowercaseExtension_tree", [
+		.index("by_org_ws_scope_archive_kind_ext_treePath", [
 			"organizationId",
 			"workspaceId",
 			"moveCohortId",
+			"restrictedScopeNodeId",
 			"archiveOperationId",
 			"kind",
 			"lowercaseExtension",
 			"treePath",
 		])
-		// The public files list pages a subtree's files of one type family or one exact type. No `kind`:
+		// The public files list pages one area's files of one type family or one exact type. No `kind`:
 		// folders store null types, so every row in these ranges is a file.
+		.index("by_org_ws_scope_archive_family_treePath", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"restrictedScopeNodeId",
+			"archiveOperationId",
+			"contentTypeFamily",
+			"treePath",
+		])
+		.index("by_org_ws_scope_archive_essence_treePath", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"restrictedScopeNodeId",
+			"archiveOperationId",
+			"contentTypeEssence",
+			"treePath",
+		])
+		// `find --content-type` pages a subtree's files of one type family or one exact type, then checks
+		// access per candidate (the approved exception in `AGENTS.md`).
 		.index("by_org_ws_archive_contentTypeFamily_tree", [
 			"organizationId",
 			"workspaceId",

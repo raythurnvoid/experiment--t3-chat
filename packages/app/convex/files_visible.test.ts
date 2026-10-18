@@ -1198,8 +1198,10 @@ describe("internal_list_children_saved", () => {
 
 describe("internal_search_name_saved", () => {
 	/**
-	 * Under a restricted `/t`, one Add-people chain per item in `chains`, `depth` folders deep, with
-	 * the member added only at its top. Each deepest folder holds `hits` files the member cannot open.
+	 * Under a restricted `/t`, the member is added to `/t/m` only. Under it, one Add-people chain per
+	 * item in `chains`, `depth` folders deep, with the member added again only at its top. Each deepest
+	 * folder holds `hits` files the member cannot open. The search starts at `/t/m`, since a walk
+	 * from `/` stops at the locked `/t`.
 	 */
 	async function seed_deep_chains(
 		f: Awaited<ReturnType<typeof fixture>>,
@@ -1239,9 +1241,20 @@ describe("internal_search_name_saved", () => {
 					updatedAt: 1,
 				});
 			const tId = await node({ parentId: "root", name: "t", path: "/t", kind: "folder" });
-			await ctx.db.patch("files_nodes", tId, { isRestrictedScopeRoot: true, restrictedScopeNodeId: tId });
+			await ctx.db.patch("files_nodes", tId, {
+				isRestrictedScopeRoot: true,
+				restrictedScopeNodeId: tId,
+				parentScopeNodeId: null,
+			});
+			const mId = await node({ parentId: tId, name: "m", path: "/t/m", kind: "folder" });
+			await ctx.db.patch("files_nodes", mId, {
+				restrictedScopeNodeId: tId,
+				extendedScopeNodeId: mId,
+				parentExtendedScopeNodeId: null,
+			});
+			await grant(mId, member.userId);
 			for (const chain of chains) {
-				let parent = { _id: tId, path: "/t" };
+				let parent = { _id: mId, path: "/t/m" };
 				for (let depth = 0; depth < chain.depth; depth++) {
 					const name = depth === 0 ? chain.name : "a";
 					const path = `${parent.path}/${name}`;
@@ -1249,7 +1262,8 @@ describe("internal_search_name_saved", () => {
 					await ctx.db.patch("files_nodes", nodeId, {
 						restrictedScopeNodeId: tId,
 						extendedScopeNodeId: nodeId,
-						parentExtendedScopeNodeId: depth === 0 ? null : parent._id,
+						parentExtendedScopeNodeId: parent._id,
+						ancestor2: mId,
 					});
 					await grant(nodeId, depth === 0 ? member.userId : strangerId);
 					parent = { _id: nodeId, path };
@@ -1258,7 +1272,12 @@ describe("internal_search_name_saved", () => {
 					const name = `hit-${chain.name}-${index}.md`;
 					const nodeId = await node({ parentId: parent._id, name, path: `${parent.path}/${name}`, kind: "file" });
 					// Its own restricted root with no grant: the member cannot open it.
-					await ctx.db.patch("files_nodes", nodeId, { isRestrictedScopeRoot: true, restrictedScopeNodeId: nodeId });
+					await ctx.db.patch("files_nodes", nodeId, {
+						isRestrictedScopeRoot: true,
+						restrictedScopeNodeId: nodeId,
+						parentScopeNodeId: tId,
+						ancestor2: mId,
+					});
 				}
 			}
 		});
@@ -1278,7 +1297,7 @@ describe("internal_search_name_saved", () => {
 				visibilityUserId: member.userId,
 				subject: { kind: "user", userId: member.userId, plugin: null },
 				...(args.overlay ? { overlayUserId: member.userId } : {}),
-				folderPath: "/",
+				folderPath: "/t/m",
 				query: "hit",
 				numItems: args.numItems,
 				cursor: args.cursor,

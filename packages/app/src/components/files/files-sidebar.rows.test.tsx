@@ -133,7 +133,12 @@ vi.mock("convex/react", async (importOriginal) => {
 			query: async (query: FunctionReference<"query">, args: unknown) =>
 				getFunctionName(query) === "files_transfer_queries:get_move_acceptance" ? null : creationPolicy(query, args),
 			mutation: createNode,
-			action: createNode,
+			// The custom-field search answers by its metadata clause, with all its rows at once.
+			action: async (action: FunctionReference<"action">, args: { plan?: unknown }) => {
+				if (getFunctionName(action) !== "files_nodes:search_saved_metadata") return createNode(action, args);
+				const answer = savedState.answers.get(JSON.stringify({ kind: "metadata", plan: args.plan }));
+				return { _yay: { page: answer?.rows ?? [], cursor: null, isDone: true } };
+			},
 		}),
 		useQuery: (query: FunctionReference<"query">, args: unknown) => {
 			const links = useSyncExternalStore(subscribeLinks, () => linkState.links);

@@ -29,6 +29,7 @@ import {
 	seed_grant_only_member,
 	list_values,
 	statusOpenPlans,
+	search_saved_metadata_all,
 	search_saved_page,
 	search_saved_plans,
 } from "./files_nodes.setup.test.ts";
@@ -635,9 +636,14 @@ describe("search box doors", () => {
 			nodeId: seeded.tasksFolderId,
 		});
 		if (restricted._nay) throw new Error(restricted._nay.message);
+		// The scope job moves the custom fields under /tasks into its new area. Let it run.
+		for (let step = 0; step < 20; step++) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			await t.finishInProgressScheduledFunctions();
+		}
 		const search = (
 			who: "owner" | "member",
-			clause: FunctionArgs<typeof api.files_nodes.search_saved>["clause"],
+			clause: Parameters<typeof search_saved_page>[0]["clause"],
 			folderPath?: string,
 		) =>
 			search_saved_page({
@@ -711,14 +717,20 @@ describe("search box doors", () => {
 describe("search box locked hits", () => {
 	/** One first page of `search_saved` as `path → locked`, or the problem message. */
 	async function search_locked(args: Parameters<typeof search_saved_page>[0]) {
-		const result = await args.asWho.query(api.files_nodes.search_saved, {
-			membershipId: args.membershipId,
-			clause: args.clause,
-			folderPath: args.folderPath,
-			paginationOpts: { numItems: 50, cursor: null },
-		});
+		const clause = args.clause;
+		const rows =
+			clause.kind === "metadata"
+				? await search_saved_metadata_all({ ...args, plan: clause.plan })
+				: (
+						await args.asWho.query(api.files_nodes.search_saved, {
+							membershipId: args.membershipId,
+							clause,
+							folderPath: args.folderPath,
+							paginationOpts: { numItems: 50, cursor: null },
+						})
+					).page;
 		return Object.fromEntries(
-			result.page.map((row) => (row.kind === "problem" ? [row.message, null] : [row.path, row.locked])),
+			rows.map((row) => (row.kind === "problem" ? [row.message, null] : [row.path, row.locked])),
 		);
 	}
 
@@ -749,7 +761,7 @@ describe("search box locked hits", () => {
 			}),
 		);
 		await restrict(seeded, seeded.openTaskId);
-		const search = (clause: FunctionArgs<typeof api.files_nodes.search_saved>["clause"], folderPath?: string) =>
+		const search = (clause: Parameters<typeof search_saved_page>[0]["clause"], folderPath?: string) =>
 			search_locked({ asWho: member.asMember, membershipId: member.membershipId, clause, folderPath });
 		return { t, seeded, member, search };
 	}

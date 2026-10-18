@@ -870,8 +870,9 @@ query `get_path_access_for_membership`) or, by id, `files_tree.get_file_node_acc
 cannot open (a missing name there is locked too). `missing` means nothing is there and the nearest
 folder is readable. The path helper sends the node only when its parent is readable.
 
-**The search rule.** Search returns a locked item only for a name or path match. Custom-field
-searches read by restricted area. Accepted exception: content (text) search filters after the search
+**The search rule.** Search returns a locked item only for a name or path match, and a name match
+only where a recursive read would reach it. Custom-field searches read by restricted area (see "The
+walk"). Accepted exception: content (text) search filters after the search
 index; its page shape can show only that some unreadable file matches, never which one.
 
 Sources:
@@ -1137,8 +1138,7 @@ Five rules that look like details and are not:
 Changes in C2 (slices S5, S8, S8b), see "Locked, not hidden".
 
 `files_share_rows` holds one row per share, so a member's shared items can be paged with indexes like
-the folder table, and a reader can list the restricted folders it may read in path order (see
-"Readable scopes" below). Code: `packages/app/server/files-share-rows.ts`.
+the folder table. Code: `packages/app/server/files-share-rows.ts`.
 
 - A share is a file `content.read` grant to a user, a role or a service account. Its row lives while
   the grant lives and its node is a scope root (restricted or extended) in the grant's organization
@@ -1174,39 +1174,58 @@ the folder table, and a reader can list the restricted folders it may read in pa
   `files_share_rows_db_sync_grant` (`server/files-share-rows.ts`) for each reported grant.
 - Data deletion: see `../data-deletion/SKILL.md`.
 
-### Readable scopes
+### The walk
 
-Changes in C2 (slice S9: replaced by the walk), see "Locked, not hidden".
+Changes in C2 (slice S9), see "Locked, not hidden".
 
-`server/files-readable-scopes.ts` tells a file list which rows it may read, so a list never reads a
-hidden row only to drop it. Rows are split by their stored `restrictedScopeNodeId`: open content
-(null) and one partition per restricted folder. No list reads it yet.
+Recursive reads (`ls -R`, `find`, `tree`, `meta search` `eq` / `exists`, the API's `recursive: true`
+and the search box's custom-field search) walk the tree one restricted area at a time, so they never
+read a row under a folder the caller cannot open. Code: `server/files-tree-walk.ts`, run by
+`files_pending_overlay_list` (Bash, search box) and `files_saved_list_page` (API).
 
-- A partition boundary is a restricted root. It stores `parentScopeNodeId`, the scope of its parent
-  (`null` for an open parent), on the node and on Move places. Index:
-  `files_nodes.by_org_ws_parentScope_archive_treePath`. A root's `scopeOpId` names its newest scope
-  op, and that op's end clears it. A folder that stops being restricted keeps `parentScopeNodeId`
-  until that end, so only the newest op removes it. A file has no op, so it loses the field at once.
-  A Move of a former root drops it at the new place. No read uses them yet.
-
-- `files_readable_scopes_db_reader` takes a `subject` and is the one flat-mode decision. The owner
-  as a person, plugin volumes and GLOBAL reserved workspaces read flat with `filter: false`: every
-  row is readable. A plugin subject reads flat with `filter: true`: the per-row filter checks every
-  row. Everyone else is `scoped`, with the share row principals to read (the member and their
-  roles, or the account).
-- `files_readable_scopes_db_enumerate_by_path` pages one principal's rows on
-  `by_org_ws_principal_archive_treePath` under a folder, after a `treePath`, and checks each row
-  again like the share streams. It gives `scope` items (restricted folders) and `node` items (open
-  nodes an account reads by its own grant). The caller merges the principals by `treePath`. Folder
-  `/` walks the whole workspace (the plan's `enumerate_all`).
-- `files_readable_scopes_db_plan` gives the partitions open at a list's last key: open content, the
-  folder's own stored scope, the readable restricted folders that hold the key, and the
-  **transitional partitions** of running unrestrict jobs. A child of an unrestricted folder keeps the
-  dead pointer until its job writes it, so the plan opens that pointer's partition, readable like its
-  live scope. It skips an op whose `treePaths` miss the folder before it reads the op's roots. It
-  reads at most 500 scope ops of the workspace. Past that, the children of the other jobs stay hidden
-  until their job runs (closed, never open), and the plan returns `truncated: true`. A reader that
-  needs a whole folder, like `cp -r`, must stop then instead of copying part of it.
+- An **area** is all nodes with the same stored `restrictedScopeNodeId` (`null` for open content).
+  Whoever can open an area's root can open every row of it, so a frame reads its rows with no check
+  per row. A row a scope job has not reached yet still points at its old area; it gets its own check
+  (locked in `ls` and the API, dropped from `meta search`).
+- A **boundary** is a node with `parentScopeNodeId` set: a live restricted root, or a former root
+  while its unrestrict op runs. `parentScopeNodeId` is the scope of its parent (`null` for an open
+  parent), on the node and on Move places. Index: `files_nodes.by_org_ws_parentScope_archive_treePath`
+  (`files_saved_places.by_parent_scope_archive_tree` for a Move view). A root's `scopeOpId` names its
+  newest scope op, and that op's end clears `parentScopeNodeId` from a former root. A file has no op,
+  so it loses the field at once. A Move of a former root drops it at the new place.
+- Each frame reads two kinds of streams, each one internal query with one `.paginate()`: the rows of
+  its area (`by_org_ws_scope_archive_*` on `files_nodes`, `by_view_scope_archive_*` on Move places,
+  the `_scope_tree` metadata indexes) and its boundaries. Only the top frame is read (depth first).
+  At a readable boundary the walk enters a new frame. At a locked one it lists the locked row and a
+  "Permission denied" path, and reads nothing under it. A locked former root's old area stays closed,
+  with no line.
+- Locked items show only when the folder that holds them is readable. Every frame root is, except the
+  workspace root: a guest with one shared folder, or an account with no grant, cannot open it. That
+  frame lists only what the caller can open, with no locked rows and no "Permission denied" lines,
+  like the folder list of the root. The walk still enters the readable roots it meets there.
+- Rows under a folder the user's drafts hide are skipped as a range: the rows stream answers the
+  folder's end as its frontier (a key of only a path), so the walk does not read the rest of it.
+- The cursor holds the start folder's `treePath`, the top frame's root (`nodeId`, `treePath`) and one
+  key. `files_nodes.resolve_walk_stack` / `files_visible.internal_resolve_walk_stack` rebuild the
+  frames above by following `parentScopeNodeId`, once per page, in the view the frames came from. It
+  is its own query, apart from the start folder's check (`internal_get_walk_start`), so the two read
+  budgets do not add up. A rename or a lost grant on the way answers "The folder changed since the
+  last page. Run the command again." (Bash: rerun without `--cursor`).
+- A page stops at its row count or at 64 stream calls (`files_tree_walk_MAX_CALLS`). The Bash merge
+  can run the walk once per round; its walk streams share that one budget and keep the frames in
+  memory between rounds. Each call moves forward, so a page over many small restricted folders can
+  be short; the next page goes on.
+- A name search hit shows only when the walk from the search folder would reach it: every restricted
+  folder between them is readable (`internal_search_name_saved`, one check per area per page). A guest
+  added inside a locked folder finds names by searching from that folder.
+- `server/files-tree-walk.test.ts` checks the read cost and the cursor size at 500 nested restricted
+  folders against the Convex limits, without drafts (the API view).
+- Known limit with drafts (the Bash view): the draft reader resolves every folder on the path. A list
+  that starts a few dozen restricted levels deep answers "Listing is too broad", and a name search
+  through a few hundred levels runs out of reads.
+- Custom-field `prefix` / `range` keep value order, so they cannot walk. A member reads the open area
+  only, and a folder is refused. The owner, plugin volumes and GLOBAL workspaces read every area.
+- Known gap: `find --content-type` keeps its old type indexes and does not walk yet.
 
 ## Public file links
 

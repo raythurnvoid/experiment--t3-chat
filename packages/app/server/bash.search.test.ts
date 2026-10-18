@@ -1,9 +1,10 @@
 // The find, /tmp, search, grep, tree and stat tests, split from bash.test.ts so the files can run at the same
 // time.
 import { describe, expect, test } from "vitest";
-import { internal } from "../convex/_generated/api.js";
+import { api, internal } from "../convex/_generated/api.js";
 import type { ai_chat_files_patch_thread_tmp_files_Args } from "../convex/ai_chat_files.ts";
-import { test_mocks_fill_db_with } from "../convex/setup.test.ts";
+import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
+import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { bash_COMMAND_EXIT_USAGE, bash_READ_INLINE_MAX_BYTES } from "./bash-utils.ts";
 import { ai_chat_tool_create_set_file_metadata } from "./server-ai-tools.ts";
 import {
@@ -11,6 +12,8 @@ import {
 	function_name_of,
 	big_md_file,
 	create_bash_runner,
+	default_organization_files,
+	drain_scheduled_continuations,
 	get_seeded_node,
 	get_seeded_node_id,
 	upsert_pending_update_for_test,
@@ -1940,5 +1943,189 @@ describe("bash_run_command", () => {
 		expect(longFormat.stderr).toContain("stat: --format requires a value");
 		expect(shortFormat.stderr).toContain("Usage: stat [-c FORMAT] [--] FILE...");
 		expect(longFormat.stderr).toContain("Usage: stat [-c FORMAT] [--] FILE...");
+	});
+});
+
+describe("recursive reads stop at a locked folder", () => {
+	const mount = "/home/cloud-usr/w/walk-team/home";
+
+	/**
+	 * The owner restricts /docs without sharing it. The member reads the rest of the workspace.
+	 */
+	async function seed_locked_docs(extraFiles: typeof default_organization_files = []) {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "walk-team", workspaceName: "home" }),
+		);
+		const owner = await create_bash_runner({
+			shared: { t, seeded },
+			extraFiles: [...default_organization_files, ...extraFiles],
+		});
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "walk-member" });
+			await test_mocks_fill_db_with.membership(ctx, { userId, organizationName: "personal", workspaceName: "home" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				role: "member",
+				now: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "walk-owner",
+			external_id: seeded.userId,
+			email: "walk-owner@test.local",
+		});
+		const docsId = await get_seeded_node_id(owner, "/docs");
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: seeded.membershipId, nodeId: docsId }))
+				._nay,
+		).toBeUndefined();
+		// The scope job moves the items inside /docs into its area.
+		await drain_scheduled_continuations(owner);
+		const runner = await create_bash_runner({ shared: { t, seeded: { ...seeded, ...member } } });
+		const share = async (path: string) => {
+			const shared = await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: seeded.membershipId,
+				nodeId: await get_seeded_node_id(owner, path),
+				principal: { kind: "user", userId: member.userId },
+				level: "read",
+			});
+			expect(shared._nay).toBeUndefined();
+			await drain_scheduled_continuations(owner);
+		};
+		return { t, seeded, owner, asOwner, member, runner, share };
+	}
+
+	test("ls -R prints Permission denied for a locked folder and goes on", async () => {
+		const { runner } = await seed_locked_docs();
+
+		const result = await runner.run({ command: `ls -R ${mount}` });
+
+		expect(result.stderr).toContain(`ls: cannot open directory '${mount}/docs': Permission denied`);
+		expect(result.metadata.exitCode).toBe(1);
+		expect(result.stdout).toContain("summary.md");
+		expect(result.stdout).not.toContain("readme.md");
+	});
+
+	test("find prints Permission denied and exits 1, also with -type f", async () => {
+		const { runner } = await seed_locked_docs();
+
+		const all = await runner.run({ command: `find ${mount}` });
+		expect(all.stdout).toContain(`${mount}/docs/`);
+		expect(all.stdout).toContain(`${mount}/reports/summary.md`);
+		expect(all.stdout).not.toContain(`${mount}/docs/readme.md`);
+		expect(all.stderr).toContain(`find: '${mount}/docs': Permission denied`);
+		expect(all.metadata.exitCode).toBe(1);
+
+		// The locked folder is not a file, but its denied line still prints.
+		const files = await runner.run({ command: `find ${mount} -type f` });
+		expect(files.stdout).not.toContain(`${mount}/docs`);
+		expect(files.stdout).toContain(`${mount}/reports/summary.md`);
+		expect(files.stderr).toContain(`find: '${mount}/docs': Permission denied`);
+		expect(files.metadata.exitCode).toBe(1);
+	});
+
+	test("tree marks a locked folder", async () => {
+		const { runner } = await seed_locked_docs();
+
+		const result = await runner.run({ command: `tree ${mount}` });
+
+		expect(result.stdout).toMatch(/docs\/ {2}\[error opening dir\]/u);
+		expect(result.stdout).not.toContain("readme.md");
+		expect(result.stdout).toContain("summary.md");
+	});
+
+	test("find -name does not return files under a locked folder", async () => {
+		const { runner } = await seed_locked_docs();
+
+		const result = await runner.run({ command: `find ${mount} -name readme` });
+
+		expect(result.stdout).not.toContain("readme.md");
+	});
+
+	// A guest cannot chat in this workspace, so Bash has no guest. `server/files-tree-walk.test.ts`
+	// runs the same search as a guest.
+	test("find -name finds a file a member reads through Add people", async () => {
+		const { runner, share } = await seed_locked_docs();
+		await share("/docs/nested");
+
+		const inside = await runner.run({ command: `find ${mount}/docs/nested -name deep` });
+		expect(inside.stdout).toContain(`${mount}/docs/nested/deep.md`);
+		// From the root the walk stops at the locked /docs, so the search does too.
+		const fromRoot = await runner.run({ command: `find ${mount} -name deep` });
+		expect(fromRoot.stdout).not.toContain("deep.md");
+	});
+
+	/** Every page of `meta search --limit 1` for `topic: atlas`, as the paths of each page. */
+	async function meta_pages(runner: Awaited<ReturnType<typeof create_bash_runner>>) {
+		const pages: string[][] = [];
+		let cursor: string | null = null;
+		for (let page = 0; page < 20; page++) {
+			const result = await runner.run({
+				command: `meta search --path ${mount} --format json --limit 1 --where '{"eq":["frontmatter.topic","atlas"]}'${cursor ? ` --cursor '${cursor}'` : ""}`,
+			});
+			expect(result.stderr).toBe("");
+			const json = JSON.parse(result.stdout) as { results: Array<{ path: string }>; nextCursor: string | null };
+			pages.push(json.results.map((row) => row.path));
+			cursor = json.nextCursor;
+			if (cursor === null) return pages;
+		}
+		throw new Error("meta search did not end");
+	}
+	const topic = (value: string) => `---\ntopic: ${value}\n---\n`;
+
+	test("meta search --limit 1 pages past a locked folder", async () => {
+		const { runner } = await seed_locked_docs([
+			{ path: "/a.md", content: topic("atlas") },
+			{ path: "/docs/b.md", content: topic("atlas") },
+			{ path: "/z.md", content: topic("atlas") },
+		]);
+
+		const pages = await meta_pages(runner);
+
+		expect(pages.flat()).toEqual([`${mount}/a.md`, `${mount}/z.md`]);
+		expect(pages.every((page) => page.length <= 1)).toBe(true);
+	});
+
+	test("a locked file's value does not change the pages", async () => {
+		const pages_with = async (value: string) =>
+			meta_pages(
+				(
+					await seed_locked_docs([
+						{ path: "/a.md", content: topic("atlas") },
+						{ path: "/docs/b.md", content: topic(value) },
+						{ path: "/z.md", content: topic("atlas") },
+					])
+				).runner,
+			);
+
+		expect(await pages_with("atlas")).toEqual(await pages_with("other"));
+	});
+
+	test("meta search walks into a readable restricted folder", async () => {
+		const { runner, share } = await seed_locked_docs([
+			{ path: "/a.md", content: topic("atlas") },
+			{ path: "/docs/b.md", content: topic("atlas") },
+			{ path: "/docs/nested/c.md", content: topic("atlas") },
+		]);
+		await share("/docs");
+
+		expect((await meta_pages(runner)).flat()).toEqual([
+			`${mount}/a.md`,
+			`${mount}/docs/b.md`,
+			`${mount}/docs/nested/c.md`,
+		]);
 	});
 });

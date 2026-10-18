@@ -476,14 +476,17 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// Render each returned descendant as a simple tree branch relative to the
 		// requested root, preserving folder slashes for easy visual scanning.
 		const lines = [target.absoluteShellPath];
+		const denied = new Set(result._yay.denied);
 		for (const item of result._yay.items) {
 			const segments = relative_segments(rootDbFilesPath, item.path);
 			if (segments.length === 0) {
 				continue;
 			}
 			const prefix = segments.length === 1 ? "|-- " : `${"|   ".repeat(segments.length - 1)}|-- `;
-			// A locked item is listed but cannot be opened, so nothing under a locked folder is shown.
-			lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}${item.locked ? "  [locked]" : ""}`);
+			// A locked item is listed but cannot be opened. GNU tree marks a folder it cannot open, and
+			// nothing under it is shown.
+			const mark = denied.has(item.path) ? "  [error opening dir]" : item.locked ? "  [locked]" : "";
+			lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}${mark}`);
 		}
 
 		// Emit a complete continuation command so the next page can be copied without

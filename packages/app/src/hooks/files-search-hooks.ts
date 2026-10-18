@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { UsePaginatedQueryResult } from "convex/react";
+import { useConvex, type UsePaginatedQueryResult } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { useFn } from "./utils-hooks.ts";
 import { useFilesSavedView } from "./files-saved-view-hooks.ts";
@@ -87,6 +87,110 @@ export function files_merge_search_lists(results: Array<UsePaginatedQueryResult<
 	} satisfies FilesSearchSavedList;
 }
 
+type FilesSearchSavedMetadataPlan = FunctionArgs<typeof app_convex_api.files_nodes.search_saved_metadata>["plan"];
+
+type FilesSearchSavedMetadataPage = {
+	rows: FilesSearchSavedRow[];
+	cursor: string | null;
+	isDone: boolean;
+	problem: string | null;
+};
+
+/**
+ * Run the plans of a custom-field chip on the `files_nodes.search_saved_metadata` action, as one
+ * list. The rows are a snapshot: the search runs again when its input changes.
+ */
+function useFilesSearchSavedMetadata(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	plans: FilesSearchSavedMetadataPlan[];
+	folderPath: string | undefined;
+	searchGeneration: number | null;
+}): FilesSearchSavedList {
+	const { membershipId, plans, folderPath, searchGeneration } = args;
+	const convex = useConvex();
+	const searchKey =
+		plans.length === 0 || searchGeneration === null
+			? null
+			: JSON.stringify([membershipId, plans, folderPath, searchGeneration]);
+	const [loaded, setLoaded] = useState<{
+		searchKey: string;
+		pages: FilesSearchSavedMetadataPage[];
+		isLoadingMore: boolean;
+	} | null>(null);
+	const shown = searchKey !== null && loaded?.searchKey === searchKey ? loaded : null;
+
+	const load_page = useFn(
+		async (plan: FilesSearchSavedMetadataPlan, cursor: string | null): Promise<FilesSearchSavedMetadataPage> => {
+			const result = await convex
+				.action(app_convex_api.files_nodes.search_saved_metadata, {
+					membershipId,
+					plan,
+					folderPath,
+					searchGeneration: searchGeneration!,
+					numItems: FILES_SEARCH_SAVED_PAGE_SIZE,
+					cursor,
+				})
+				.catch((error: unknown) => {
+					console.error("[useFilesSearchSavedMetadata.load_page] Unexpected async error", { error });
+					// A failed page ends the list with a problem, so it never stays loading.
+					return { _nay: { message: "The search failed. Search again." } };
+				});
+			if (result._nay) return { rows: [], cursor: null, isDone: true, problem: result._nay.message };
+			const rows: FilesSearchSavedRow[] = [];
+			let problem: string | null = null;
+			for (const row of result._yay.page) {
+				if (row.kind === "problem") problem = row.message;
+				else rows.push(row);
+			}
+			return { rows, cursor: result._yay.cursor, isDone: result._yay.isDone, problem };
+		},
+	);
+
+	useEffect(() => {
+		if (searchKey === null) return;
+		// A newer search replaces this one, so its late answer is dropped.
+		let cancelled = false;
+		void Promise.all(plans.map((plan) => load_page(plan, null))).then((pages) => {
+			if (!cancelled) setLoaded({ searchKey, pages, isLoadingMore: false });
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [searchKey]);
+
+	const loadMore = useFn(() => {
+		if (!shown || shown.isLoadingMore || shown.pages.every((page) => page.isDone)) return;
+		setLoaded({ ...shown, isLoadingMore: true });
+		void Promise.all(
+			shown.pages.map(async (page, index) => {
+				if (page.isDone) return page;
+				const next = await load_page(plans[index]!, page.cursor);
+				return { ...next, rows: [...page.rows, ...next.rows] };
+			}),
+		).then((pages) => {
+			setLoaded((current) =>
+				current?.searchKey === shown.searchKey ? { ...current, pages, isLoadingMore: false } : current,
+			);
+		});
+	});
+
+	const rows: FilesSearchSavedRow[] = [];
+	const seenNodeIds = new Set<string>();
+	for (const row of shown?.pages.flatMap((page) => page.rows) ?? []) {
+		if (seenNodeIds.has(row.nodeId)) continue;
+		seenNodeIds.add(row.nodeId);
+		rows.push(row);
+	}
+	return {
+		rows,
+		status: !shown ? "loading" : shown.pages.every((page) => page.isDone) ? "done" : "more",
+		isLoadingMore: shown?.isLoadingMore ?? false,
+		problem: shown?.pages.find((page) => page.problem !== null)?.problem ?? null,
+		isTopMatches: false,
+		loadMore,
+	};
+}
+
 /**
  * Run a search box query on `files_nodes.search_saved`: saved and active rows only, 50 per page.
  *
@@ -95,7 +199,8 @@ export function files_merge_search_lists(results: Array<UsePaginatedQueryResult<
  * draft link asks for nothing (`mode: "draft"`), and other text searches name words.
  *
  * `names` is the name list, or the only list of a path, a metadata chip or `file.link:public`. A
- * metadata chip can make two plans, so its list merges two queries. `contents` is the contents list
+ * metadata chip runs on `useFilesSearchSavedMetadata` and can make two plans, so its list merges
+ * two searches. `contents` is the contents list
  * of plain text when `withContents` is set, "folder" when a folder chip blocks it, and null otherwise.
  */
 export function useFilesSearchSaved(args: {
@@ -123,6 +228,7 @@ export function useFilesSearchSaved(args: {
 
 	let first: SearchArgs | null = null;
 	let second: SearchArgs | null = null;
+	let metadataPlans: FilesSearchSavedMetadataPlan[] = [];
 	let isFolderDate = false;
 	if (isInvalid || textQuery?.mode === "private") {
 		// Nothing to search.
@@ -139,15 +245,13 @@ export function useFilesSearchSaved(args: {
 		const [firstPlan, secondPlan] = files_search_query_to_plans(clauseFilter);
 		// A folder cannot scope a range, so a date `eq` in a folder asks for the typed text only.
 		isFolderDate = hasFolder && secondPlan?.op === "range";
-		first = firstPlan ? { membershipId, clause: { kind: "metadata", plan: firstPlan }, folderPath } : null;
-		second =
-			secondPlan && !isFolderDate ? { membershipId, clause: { kind: "metadata", plan: secondPlan }, folderPath } : null;
+		metadataPlans = [firstPlan, isFolderDate ? undefined : secondPlan].filter((plan) => plan !== undefined);
 	} else if (folderPath !== undefined) {
 		// A folder alone is an exact path.
 		first = { membershipId, clause: { kind: "path", path: folderPath } };
 	}
 
-	const savedView = useFilesSavedView(membershipId, first !== null || second !== null);
+	const savedView = useFilesSavedView(membershipId, first !== null || second !== null || metadataPlans.length > 0);
 	const source_args = (query: SearchArgs | null, savedStream: files_SavedStream | null) =>
 		query === null || savedStream === null || (query.clause.kind === "path" && savedStream.kind === "cohort")
 			? ("skip" as const)
@@ -161,6 +265,12 @@ export function useFilesSearchSaved(args: {
 		...(savedView.cohort === null || first.clause.kind === "path" ? [] : [firstCohort])];
 	const secondResults = second === null || savedView.normal === null ? [] : [secondResult,
 		...(savedView.cohort === null ? [] : [secondCohort])];
+	const metadataList = useFilesSearchSavedMetadata({
+		membershipId,
+		plans: metadataPlans,
+		folderPath,
+		searchGeneration: savedView.searchGeneration,
+	});
 
 	return {
 		mode:
@@ -179,11 +289,10 @@ export function useFilesSearchSaved(args: {
 		 * A date chip inside a folder: it matches only values stored with the same text.
 		 */
 		isFolderDate,
-		names: files_merge_search_lists(
-			[...firstResults, ...(isText ? [] : secondResults)],
-			isText,
-			savedView.loading,
-		),
+		names:
+			metadataPlans.length > 0
+				? metadataList
+				: files_merge_search_lists([...firstResults, ...(isText ? [] : secondResults)], isText, savedView.loading),
 		contents:
 			isText && withContents
 				? hasFolder

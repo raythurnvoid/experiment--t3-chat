@@ -28,7 +28,7 @@ import {
 } from "./access_control.ts";
 import { access_control_subject_reads_drafts } from "../shared/access-control.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { files_metadata_db_query_saved_plan } from "./files_metadata.ts";
+import { files_metadata_db_query_saved_plan, files_metadata_db_query_saved_plan_in_area } from "./files_metadata.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import {
@@ -39,6 +39,15 @@ import {
 } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import { files_index_range_apply, files_index_range_phases } from "../server/files-index-range.ts";
+import {
+	files_tree_walk_boundary_status,
+	files_tree_walk_db_boundaries,
+	files_tree_walk_db_resolve_stack,
+	files_tree_walk_boundary_status_validator,
+	files_tree_walk_frame_validator,
+	files_tree_walk_phase,
+	files_tree_walk_stack_validator,
+} from "../server/files-tree-walk.ts";
 import {
 	files_pending_overlay_LIST_STREAM_MAX_PAGE,
 	files_pending_overlay_list_over_budget,
@@ -154,6 +163,10 @@ export type files_visible_list_Result =
 	| {
 			_yay: {
 				items: ReadonlyArray<Infer<typeof entry_validator> & { match?: Infer<typeof metadata_match_validator> }>;
+				/**
+				 * A recursive listing only: the locked folders it did not enter, for "Permission denied" lines.
+				 */
+				denied?: string[];
 				continueCursor: string | null;
 				isDone: boolean;
 			};
@@ -647,6 +660,10 @@ const stream_result = v_result({
 		 * True when the call stopped on the read budget. The merge then keeps the page size.
 		 */
 		overBudget: v.boolean(),
+		/**
+		 * Walk frames only: how many native ranges the frame's read has (`files_tree_walk_phase`).
+		 */
+		phaseCount: v.optional(v.number()),
 	}),
 });
 
@@ -881,6 +898,11 @@ async function db_stream_decide<T>(
 		cut: boolean;
 		indexKey: (row: T) => Value[];
 		mergeKey: (row: T) => Value[];
+		/**
+		 * The key of `frontier`, `mergeKey` by default. A walk frame merges by the saved index key.
+		 */
+		frontierKey?: (row: T) => Value[];
+		phaseCount?: number;
 		decide: (row: T) => Promise<StreamDecision | null | "denied" | "denied_destination" | "stop">;
 		/**
 		 * Subtree streams: where a new range starts after a row under a hidden folder.
@@ -947,11 +969,19 @@ async function db_stream_decide<T>(
 		_yay: {
 			root: args.root,
 			rows,
-			frontier: frontierRow === null ? null : args.mergeKey(frontierRow),
+			// A walk frame skips the rest of a hidden folder too: its frontier is the folder's end, as a
+			// key of only a path (`server/files-tree-walk.ts`).
+			frontier:
+				frontierRow === null
+					? null
+					: args.frontierKey && !done && restart !== null
+						? [restart]
+						: (args.frontierKey ?? args.mergeKey)(frontierRow),
 			position,
 			done,
 			decided,
 			overBudget,
+			...(args.phaseCount === undefined ? {} : { phaseCount: args.phaseCount }),
 		},
 	});
 }
@@ -1070,6 +1100,24 @@ function db_stream_saved_access(
 		}
 		return readable.get(node._id)!;
 	};
+}
+
+/**
+ * Whether a walk frame lists the items the subject cannot open, as locked. Locked items show only when
+ * the folder that holds them is readable. Every frame root is, except the workspace root: a guest with
+ * one shared folder, or an account with no grant, cannot open it, so that frame lists only what they
+ * can open (like the folder list of the root).
+ */
+async function db_stream_frame_lists_locked(
+	ctx: QueryCtx,
+	args: StreamOpenArgs,
+	reader: Awaited<ReturnType<typeof files_visible_db_create_reader>> | null,
+	frame: { treePath: string },
+) {
+	if (frame.treePath !== "/") return true;
+	return reader
+		? await reader.canRead(null)
+		: await access_control_db_can_act_on_file_node(ctx, { ...args, fileNode: null, permission: "content.read" });
 }
 
 /**
@@ -1548,9 +1596,138 @@ export const internal_list_children_places = internalQuery({
 });
 
 /**
+ * The saved range a subtree stream reads (`savedTreePath`) and the same folder in the user's paths
+ * (`ownerTreePath`): the listing folder, or with `movedIn` one saved folder the user moved under the
+ * listing folder (the moved-in folder). `node` is that saved folder, null for the workspace root.
+ * Null when the stream has nothing to read.
+ */
+async function db_stream_subtree_range(
+	ctx: QueryCtx,
+	args: StreamOpenArgs & { movedIn?: Infer<typeof moved_in_validator> },
+	opened: NonNullable<Awaited<ReturnType<typeof db_stream_open>>["_yay"]>,
+) {
+	const { reader, root } = opened;
+	if (!args.movedIn) {
+		if (root.parent.kind === "private") return null;
+		return { node: root.savedNode, savedTreePath: root.savedNode?.treePath ?? "/", ownerTreePath: opened.treePath };
+	}
+	if (!reader) return null;
+	const movedIn = args.movedIn;
+	// Check the moved-in folder's place every call: another chat of the user can change it between
+	// calls.
+	const place = await db_stream_saved_place(ctx, reader, {
+		nodeId: movedIn.savedNodeId,
+		userId: args.visibilityUserId,
+	});
+	const node = await files_saved_placement_db_get_node(ctx.db, movedIn.savedNodeId);
+	if (
+		!place?.isVisible ||
+		place.organizationId !== args.organizationId ||
+		place.workspaceId !== args.workspaceId ||
+		place.ownerTreePath !== movedIn.ownerTreePath ||
+		!place.ownerTreePath.startsWith(opened.treePath) ||
+		node?.kind !== "folder" ||
+		node.archiveOperationId !== null ||
+		// The rows below are checked on their own, but their paths would name the destination.
+		(await db_place_destinations_readable(ctx, reader, place)) !== true
+	)
+		return null;
+	return { node, savedTreePath: node.treePath, ownerTreePath: place.ownerTreePath };
+}
+
+/**
+ * The folders the user's drafts hide among saved rows from `first` to `last` (saved tree paths)
+ * below `savedTreePath`: hidden folders inside that range, at most 1,000, and the hidden folders
+ * above `first`. When the range read is full, rows after `end` are not decided.
+ */
+async function db_stream_hidden_folders(
+	ctx: QueryCtx,
+	args: {
+		tenant: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> };
+		userId: Id<"users">;
+		view: Awaited<ReturnType<typeof files_saved_placement_db_get_view>>;
+		savedTreePath: string;
+		first: string;
+		last: string;
+	},
+) {
+	const { tenant, first } = args;
+	const hiddenFolders = new Set<string>();
+	let end: string | null = null;
+	const tags = [undefined, ...(args.view.cohortId ? [{ cohortId: args.view.cohortId, view: args.view.view! }] : [])];
+	for (const tag of tags) {
+		const folders = await ctx.db
+			.query("files_pending_hides")
+			.withIndex("by_org_ws_user_kind_treePath", (q) =>
+				q
+					.eq("organizationId", tenant.organizationId)
+					.eq("workspaceId", tenant.workspaceId)
+					.eq("userId", args.userId)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view)
+					.eq("kind", "folder")
+					.gte("treePath", first)
+					.lte("treePath", args.last),
+			)
+			.take(STREAM_HIDDEN_FOLDERS_MAX);
+		for (const folder of folders) hiddenFolders.add(folder.treePath);
+		if (folders.length === STREAM_HIDDEN_FOLDERS_MAX) {
+			const folderEnd = folders.at(-1)!.treePath;
+			if (end === null || compareValues(folderEnd, end) < 0) end = folderEnd;
+		}
+	}
+
+	// A hidden folder that starts before the page and holds a page row also holds the first row,
+	// so check only the first row's ancestors inside the range. The moved-in folder itself and the
+	// folders above the listing folder are outside it, so a moved-in root never hides its own rows.
+	for (
+		let index = first.indexOf("/", args.savedTreePath.length);
+		index !== -1 && index < first.length - 1;
+		index = first.indexOf("/", index + 1)
+	) {
+		const ancestor = first.slice(0, index + 1);
+		for (const tag of tags) {
+			const hide = await ctx.db
+				.query("files_pending_hides")
+				.withIndex("by_org_ws_user_kind_treePath", (q) =>
+					q
+						.eq("organizationId", tenant.organizationId)
+						.eq("workspaceId", tenant.workspaceId)
+						.eq("userId", args.userId)
+						.eq("moveView.cohortId", tag?.cohortId)
+						.eq("moveView.view", tag?.view)
+						.eq("kind", "folder")
+						.eq("treePath", ancestor),
+				)
+				.first();
+			if (hide) hiddenFolders.add(ancestor);
+		}
+	}
+	return { hiddenFolders, end };
+}
+
+/**
+ * The outermost folder of `hiddenFolders` that holds this saved row, if any.
+ */
+function stream_hidden_folder_of(hiddenFolders: Set<string>, savedTreePath: string, treePath: string) {
+	for (
+		let index = treePath.indexOf("/", savedTreePath.length);
+		index !== -1 && index < treePath.length - 1;
+		index = treePath.indexOf("/", index + 1)
+	) {
+		if (hiddenFolders.has(treePath.slice(0, index + 1))) return treePath.slice(0, index + 1);
+	}
+	return null;
+}
+
+/**
  * Saved rows under the listing folder in tree path order, or with `movedIn` under one saved folder
  * the user moved under the listing folder (the moved-in folder), with its saved path rewritten to the
  * user's path. Asc only with the overlay; desc is for saved-only listings (no hides).
+ *
+ * With `frame` it is the rows stream of one walk frame (`server/files-tree-walk.ts`): one area in the
+ * frame's range, keyed by the saved index key. Without it, it reads the open area only: only a
+ * saved-only reverse listing of a volume or the codebase reads that way, and they have no other area.
  */
 export const internal_list_subtree_saved = internalQuery({
 	args: {
@@ -1558,6 +1735,7 @@ export const internal_list_subtree_saved = internalQuery({
 		...stream_filter_args,
 		order: v.union(v.literal("asc"), v.literal("desc")),
 		movedIn: v.optional(moved_in_validator),
+		frame: v.optional(files_tree_walk_frame_validator),
 	},
 	returns: stream_result,
 	handler: async (ctx, args) => {
@@ -1573,37 +1751,9 @@ export const internal_list_subtree_saved = internalQuery({
 		}
 
 		// `savedTreePath` is the range in saved space, `ownerTreePath` the same folder in the user's paths.
-		let savedTreePath: string;
-		let ownerTreePath: string;
-		if (args.movedIn) {
-			if (!reader) return stream_done(root.parent);
-			const movedIn = args.movedIn;
-			// Check the moved-in folder's place every call: another chat of the user can change it between
-			// calls.
-			const place = await db_stream_saved_place(ctx, reader, {
-				nodeId: movedIn.savedNodeId,
-				userId: args.visibilityUserId,
-			});
-			const node = await files_saved_placement_db_get_node(ctx.db, movedIn.savedNodeId);
-			if (
-				!place?.isVisible ||
-				place.organizationId !== args.organizationId ||
-				place.workspaceId !== args.workspaceId ||
-				place.ownerTreePath !== movedIn.ownerTreePath ||
-				!place.ownerTreePath.startsWith(opened._yay.treePath) ||
-				node?.kind !== "folder" ||
-				node.archiveOperationId !== null ||
-				// The rows below are checked on their own, but their paths would name the destination.
-				(await db_place_destinations_readable(ctx, reader, place)) !== true
-			)
-				return stream_done(root.parent);
-			savedTreePath = node.treePath;
-			ownerTreePath = place.ownerTreePath;
-		} else {
-			if (root.parent.kind === "private") return stream_done(root.parent);
-			savedTreePath = root.savedNode?.treePath ?? "/";
-			ownerTreePath = opened._yay.treePath;
-		}
+		const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
+		if (!subtree) return stream_done(root.parent);
+		const { savedTreePath, ownerTreePath } = subtree;
 
 		// Clamp `rangeStart` into the range after `savedTreePath`. `lastKey` only skips rows of this range, so it
 		// needs no clamp.
@@ -1635,78 +1785,48 @@ export const internal_list_subtree_saved = internalQuery({
 				})
 			: null;
 		if (args.seek && !range) return stream_done(root.parent);
-		const filterBounds: ReturnType<typeof files_index_range_phases>[number] =
+		const frameRange = args.frame
+			? files_tree_walk_phase(args.frame, tag ? ["nodeCreationTime", "nodeId"] : ["_creationTime", "_id"])
+			: null;
+		if (frameRange && !frameRange.bounds) return stream_done(root.parent);
+		const treeBounds: ReturnType<typeof files_index_range_phases>[number] = frameRange?.bounds ??
+			range?.bounds ?? [
+				[start === null ? "gt" : "gte", "treePath", start ?? savedTreePath],
+				["lt", "treePath", upper],
+			];
+		const scopeNodeId = args.frame?.scopeNodeId ?? null;
+		const query =
 			args.lowercaseExtension !== undefined
-				? [
-						["eq", "kind", "file"],
-						["eq", "lowercaseExtension", args.lowercaseExtension],
-					]
+				? saved.queries.by_scope_archive_kind_ext_tree((q) =>
+						files_index_range_apply(
+							q
+								.eq("restrictedScopeNodeId", scopeNodeId)
+								.eq("archiveOperationId", null)
+								.eq("kind", "file")
+								.eq("lowercaseExtension", args.lowercaseExtension!),
+							treeBounds,
+						),
+					)
 				: args.kind !== undefined
-					? [["eq", "kind", args.kind]]
-					: [];
-		const query = range
-			? tag
-				? ctx.db
-						.query("files_saved_places")
-						.withIndex(
-							args.lowercaseExtension !== undefined
-								? "by_view_archive_kind_ext_tree"
-								: args.kind !== undefined
-									? "by_view_archive_kind_tree"
-									: "by_view_archive_tree",
-							(q) =>
-								files_index_range_apply(
-									q.eq("cohortId", tag.cohortId).eq("view", tag.view).eq("archiveOperationId", null),
-									[...filterBounds, ...range.bounds],
-								),
+					? saved.queries.by_scope_archive_kind_tree((q) =>
+							files_index_range_apply(
+								q.eq("restrictedScopeNodeId", scopeNodeId).eq("archiveOperationId", null).eq("kind", args.kind!),
+								treeBounds,
+							),
 						)
-				: ctx.db
-						.query("files_nodes")
-						.withIndex(
-							args.lowercaseExtension !== undefined
-								? "by_organization_workspace_archive_kind_lowercaseExtension_tree"
-								: args.kind !== undefined
-									? "by_organization_workspace_archiveOperation_kind_treePath"
-									: "by_organization_workspace_archiveOperation_treePath",
-							(q) =>
-								files_index_range_apply(
-									q
-										.eq("organizationId", args.organizationId)
-										.eq("workspaceId", args.workspaceId)
-										.eq("moveCohortId", undefined)
-										.eq("archiveOperationId", null),
-									[...filterBounds, ...range.bounds],
-								),
-						)
-			: args.lowercaseExtension !== undefined
-				? saved.queries.by_archive_kind_ext_tree((q) => {
-						const eq = q
-							.eq("archiveOperationId", null)
-							.eq("kind", "file")
-							.eq("lowercaseExtension", args.lowercaseExtension!);
-						return (start === null ? eq.gt("treePath", savedTreePath) : eq.gte("treePath", start)).lt(
-							"treePath",
-							upper,
+					: saved.queries.by_scope_archive_tree((q) =>
+							files_index_range_apply(
+								q.eq("restrictedScopeNodeId", scopeNodeId).eq("archiveOperationId", null),
+								treeBounds,
+							),
 						);
-					})
-				: args.kind !== undefined
-					? saved.queries.by_archive_kind_tree((q) => {
-							const eq = q.eq("archiveOperationId", null).eq("kind", args.kind!);
-							return (start === null ? eq.gt("treePath", savedTreePath) : eq.gte("treePath", start)).lt(
-								"treePath",
-								upper,
-							);
-						})
-					: saved.queries.by_archive_tree((q) => {
-							const eq = q.eq("archiveOperationId", null);
-							return (start === null ? eq.gt("treePath", savedTreePath) : eq.gte("treePath", start)).lt(
-								"treePath",
-								upper,
-							);
-						});
 		const nativePage = await query
 			.order(args.order)
-			.paginate(range?.pagination ?? { cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+			.paginate(
+				frameRange
+					? { cursor: null, numItems: stream_page_size(args.numItems) }
+					: (range?.pagination ?? { cursor: args.position.cursor, numItems: stream_page_size(args.numItems) }),
+			);
 		const rawPage = range ? range.finish(nativePage) : nativePage;
 		const page = { ...rawPage, page: await saved.read_nodes(rawPage.page) };
 
@@ -1716,73 +1836,26 @@ export const internal_list_subtree_saved = internalQuery({
 
 		// Saved rows the user's drafts remove: hides of the rows, and rows under a hidden folder.
 		let is_hidden: ((savedNodeId: Id<"files_nodes">) => Promise<boolean>) | null = null;
-		const hiddenFolders = new Set<string>();
+		let hiddenFolders = new Set<string>();
 		if (reader && tenant && rows.length > 0) {
 			const first = rows[0]!.treePath;
 			const last = rows.at(-1)!.treePath;
 
-			// Hidden folders inside the page, at most 1,000. When the read is full, decide rows
-			// only up to the last folder read.
-			const tags = [
-				undefined,
-				...(opened._yay.saved.view.cohortId
-					? [
-							{
-								cohortId: opened._yay.saved.view.cohortId,
-								view: opened._yay.saved.view.view!,
-							},
-						]
-					: []),
-			];
-			for (const tag of tags) {
-				const folders = await ctx.db
-					.query("files_pending_hides")
-					.withIndex("by_org_ws_user_kind_treePath", (q) =>
-						q
-							.eq("organizationId", tenant.organizationId)
-							.eq("workspaceId", tenant.workspaceId)
-							.eq("userId", args.visibilityUserId)
-							.eq("moveView.cohortId", tag?.cohortId)
-							.eq("moveView.view", tag?.view)
-							.eq("kind", "folder")
-							.gte("treePath", first)
-							.lte("treePath", last),
-					)
-					.take(STREAM_HIDDEN_FOLDERS_MAX);
-				for (const folder of folders) hiddenFolders.add(folder.treePath);
-				if (folders.length === STREAM_HIDDEN_FOLDERS_MAX) {
-					const end = folders.at(-1)!.treePath;
-					const kept = rows.filter((row) => compareValues(row.treePath, end) <= 0);
-					cut ||= kept.length < rows.length;
-					rows = kept;
-				}
-			}
-
-			// A hidden folder that starts before the page and holds a page row also holds the first row,
-			// so check only the first row's ancestors inside the range. The moved-in folder itself and the
-			// folders above the listing folder are outside it, so a moved-in root never hides its own rows.
-			for (
-				let index = first.indexOf("/", savedTreePath.length);
-				index !== -1 && index < first.length - 1;
-				index = first.indexOf("/", index + 1)
-			) {
-				const ancestor = first.slice(0, index + 1);
-				for (const tag of tags) {
-					const hide = await ctx.db
-						.query("files_pending_hides")
-						.withIndex("by_org_ws_user_kind_treePath", (q) =>
-							q
-								.eq("organizationId", tenant.organizationId)
-								.eq("workspaceId", tenant.workspaceId)
-								.eq("userId", args.visibilityUserId)
-								.eq("moveView.cohortId", tag?.cohortId)
-								.eq("moveView.view", tag?.view)
-								.eq("kind", "folder")
-								.eq("treePath", ancestor),
-						)
-						.first();
-					if (hide) hiddenFolders.add(ancestor);
-				}
+			// When the hidden folder read is full, decide rows only up to the last folder read.
+			const hidden = await db_stream_hidden_folders(ctx, {
+				tenant,
+				userId: args.visibilityUserId,
+				view: opened._yay.saved.view,
+				savedTreePath,
+				first,
+				last,
+			});
+			hiddenFolders = hidden.hiddenFolders;
+			if (hidden.end !== null) {
+				const end = hidden.end;
+				const kept = rows.filter((row) => compareValues(row.treePath, end) <= 0);
+				cut ||= kept.length < rows.length;
+				rows = kept;
 			}
 
 			// The hide window on the hide index that matches the filter.
@@ -1818,19 +1891,10 @@ export const internal_list_subtree_saved = internalQuery({
 			});
 		}
 
-		// The outermost hidden folder that holds this row, if any.
-		const hidden_folder_of = (treePath: string) => {
-			for (
-				let index = treePath.indexOf("/", savedTreePath.length);
-				index !== -1 && index < treePath.length - 1;
-				index = treePath.indexOf("/", index + 1)
-			) {
-				if (hiddenFolders.has(treePath.slice(0, index + 1))) return treePath.slice(0, index + 1);
-			}
-			return null;
-		};
+		const hidden_folder_of = (treePath: string) => stream_hidden_folder_of(hiddenFolders, savedTreePath, treePath);
 		const owner_tree_path = (node: Doc<"files_nodes">) => ownerTreePath + node.treePath.slice(savedTreePath.length);
 		const can_read = db_stream_saved_access(ctx, args, reader, rows);
+		const withLocked = args.frame && (await db_stream_frame_lists_locked(ctx, args, reader, args.frame));
 
 		return await db_stream_decide(ctx, {
 			root: root.parent,
@@ -1842,13 +1906,22 @@ export const internal_list_subtree_saved = internalQuery({
 			cut,
 			indexKey,
 			mergeKey: (node) => [owner_tree_path(node), node._creationTime, node._id],
+			...(frameRange ? { frontierKey: indexKey, phaseCount: frameRange.phaseCount } : {}),
 			decide: async (node) => {
 				if (hidden_folder_of(node.treePath) !== null || (is_hidden && (await is_hidden(node._id)))) return null;
-				if (!(await can_read(node))) return "denied";
 				const treePath = owner_tree_path(node);
+				const path = node.kind === "folder" ? treePath.slice(0, -1) : treePath;
+				if (!(await can_read(node)))
+					// In a walk frame this is a row a scope job has not reached yet: listed locked, like in a
+					// folder list.
+					return args.frame
+						? withLocked
+							? await db_stream_saved_item(ctx, { node, path, overlayUserId: null, locked: true })
+							: null
+						: "denied";
 				return await db_stream_saved_item(ctx, {
 					node,
-					path: node.kind === "folder" ? treePath.slice(0, -1) : treePath,
+					path,
 					overlayUserId: reader ? args.visibilityUserId : null,
 				});
 			},
@@ -1856,6 +1929,177 @@ export const internal_list_subtree_saved = internalQuery({
 				const folder = hidden_folder_of(node.treePath);
 				return folder === null ? null : path_tree_prefix_upper_bound(folder);
 			},
+		});
+	},
+});
+
+/**
+ * One page of a walk frame's boundaries for an agent listing (`server/files-tree-walk.ts`), keyed by
+ * the saved index key, each with its status. A locked one that matches the filter comes with its
+ * locked row; a metadata listing gets no locked rows. Boundaries the user's drafts hide are left out.
+ */
+export const internal_list_subtree_boundaries = internalQuery({
+	args: {
+		...stream_args.fields,
+		...stream_filter_args,
+		movedIn: v.optional(moved_in_validator),
+		frame: files_tree_walk_frame_validator,
+		withRows: v.boolean(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			root: v.union(files_pending_parent_validator, v.null()),
+			boundaries: v.array(
+				v.object({
+					key: v.array(v.any()),
+					node: v.object({
+						_id: v.id("files_nodes"),
+						treePath: v.string(),
+						kind: doc(app_convex_schema, "files_nodes").fields.kind,
+					}),
+					status: files_tree_walk_boundary_status_validator,
+					row: v.union(stream_row_validator, v.null()),
+					path: v.string(),
+				}),
+			),
+			frontier: v.union(v.array(v.any()), v.null()),
+			phaseCount: v.number(),
+			isDone: v.boolean(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		const none = { boundaries: [], frontier: null, phaseCount: 0, isDone: true };
+		if (!opened._yay) return Result({ _yay: { root: null, ...none } });
+		const { reader, tenant, root, saved } = opened._yay;
+		const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
+		if (!subtree) return Result({ _yay: { root: root.parent, ...none } });
+		const { savedTreePath, ownerTreePath } = subtree;
+		const checker = access_control_create_file_checker(ctx, args);
+		const result = await files_tree_walk_db_boundaries({
+			saved,
+			frame: args.frame,
+			numItems: args.numItems,
+			can: reader ? reader.canRead : (node) => checker.can(node, "content.read"),
+		});
+		const first = result.page[0]?.node.treePath;
+		const hidden =
+			reader && tenant && first !== undefined
+				? await db_stream_hidden_folders(ctx, {
+						tenant,
+						userId: args.visibilityUserId,
+						view: saved.view,
+						savedTreePath,
+						first,
+						last: result.page.at(-1)!.node.treePath,
+					})
+				: null;
+		// More than 1,000 hidden folders among one page of boundaries: stop, like a hide window that runs out.
+		if (hidden && hidden.end !== null)
+			return Result({ _nay: { message: "Listing is too broad. Narrow the folder or filters." } });
+		const withLocked = await db_stream_frame_lists_locked(ctx, args, reader, args.frame);
+		const boundaries = [];
+		for (const { node, status } of result.page) {
+			// The walk does not enter a locked one either way, so leaving it out only drops its row and line.
+			if (!withLocked && status !== "readable" && status !== "former_readable") continue;
+			if (
+				hidden &&
+				(stream_hidden_folder_of(hidden.hiddenFolders, savedTreePath, node.treePath) !== null ||
+					hidden.hiddenFolders.has(node.treePath) ||
+					(await db_stream_is_hidden(ctx, { savedNodeId: node._id, userId: args.visibilityUserId, view: saved.view })))
+			)
+				continue;
+			const treePath = ownerTreePath + node.treePath.slice(savedTreePath.length);
+			const path = node.kind === "folder" ? treePath.slice(0, -1) : treePath;
+			const matches =
+				args.withRows &&
+				(args.kind === undefined || node.kind === args.kind) &&
+				(args.lowercaseExtension === undefined ||
+					(node.kind === "file" && node.lowercaseExtension === args.lowercaseExtension));
+			boundaries.push({
+				key: [node.treePath, node._creationTime, node._id],
+				node: { _id: node._id, treePath: node.treePath, kind: node.kind },
+				status,
+				row:
+					status === "locked" && matches
+						? {
+								key: [treePath, node._creationTime, node._id],
+								...(await db_stream_saved_item(ctx, { node, path, overlayUserId: null, locked: true })),
+								position: { rangeStart: null, cursor: null, lastKey: null },
+							}
+						: null,
+				path,
+			});
+		}
+		return Result({
+			_yay: {
+				root: root.parent,
+				boundaries,
+				frontier: result.frontier,
+				phaseCount: result.phaseCount,
+				isDone: result.isDone,
+			},
+		});
+	},
+});
+
+const walk_start_validator = v.object({ scopeNodeId: v.union(v.id("files_nodes"), v.null()), treePath: v.string() });
+
+/**
+ * The start of an agent listing's walk: the saved folder it reads (`db_stream_subtree_range`) and its
+ * area.
+ */
+export const internal_get_walk_start = internalQuery({
+	args: {
+		...stream_args.omit("numItems", "position").fields,
+		movedIn: v.optional(moved_in_validator),
+	},
+	returns: v_result({
+		_yay: v.object({
+			root: v.union(files_pending_parent_validator, v.null()),
+			start: v.union(walk_start_validator, v.null()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		if (!opened._yay) return Result({ _yay: { root: null, start: null } });
+		const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
+		const root = opened._yay.root.parent;
+		if (!subtree) return Result({ _yay: { root, start: null } });
+		return Result({
+			_yay: {
+				root,
+				start: { scopeNodeId: subtree.node?.restrictedScopeNodeId ?? null, treePath: subtree.savedTreePath },
+			},
+		});
+	},
+});
+
+/**
+ * The frames above a walk cursor's top frame (`files_tree_walk_db_resolve_stack`), null when that chain
+ * changed. It is its own query, so its reads do not add up with the folder lookup of
+ * `internal_get_walk_start`. Both get large at deep paths.
+ */
+export const internal_resolve_walk_stack = internalQuery({
+	args: {
+		...stream_args.omit("numItems", "position").fields,
+		start: walk_start_validator,
+		top: v.object({ nodeId: v.id("files_nodes"), treePath: v.string() }),
+	},
+	returns: files_tree_walk_stack_validator,
+	handler: async (ctx, args) => {
+		// `internal_get_walk_start` checked the folder. Open at the root, which needs no lookup.
+		const opened = await db_stream_open(ctx, { ...args, folderPath: "/" });
+		if (!opened._yay) return null;
+		const { reader, saved } = opened._yay;
+		const checker = access_control_create_file_checker(ctx, args);
+		return await files_tree_walk_db_resolve_stack({
+			get_node: (nodeId) => files_saved_placement_db_get_node(ctx.db, nodeId, saved.tag),
+			can: reader ? reader.canRead : (node) => checker.can(node, "content.read"),
+			start: args.start,
+			top: args.top,
 		});
 	},
 });
@@ -2258,6 +2502,47 @@ export const internal_search_name_saved = internalQuery({
 			const readable = await check;
 			return reader?.exhausted ? "retry" : readable;
 		};
+		// A hit shows only when the walk would reach it: every restricted folder between the listing
+		// folder and the hit is readable (`server/files-tree-walk.ts`). Each area is checked once per
+		// page. When the budget runs out, the page ends before the hit (fail closed).
+		const startScope = scope?.restrictedScopeNodeId ?? null;
+		const startTreePath = scope?.treePath ?? "/";
+		const areaChecks = new Map<Id<"files_nodes">, Promise<boolean>>();
+		const area_reached = (areaId: Id<"files_nodes">): Promise<boolean> => {
+			let check = areaChecks.get(areaId);
+			if (!check) {
+				check = (async () => {
+					const area = await files_saved_placement_db_get_node(ctx.db, areaId, tag);
+					if (
+						!area ||
+						area.parentScopeNodeId === undefined ||
+						area.treePath === startTreePath ||
+						!area.treePath.startsWith(startTreePath)
+					)
+						return false;
+					const status = await files_tree_walk_boundary_status(
+						area,
+						reader ? reader.canRead : (node) => checker.can(node, "content.read"),
+					);
+					if (status !== "readable" && status !== "former_readable") return false;
+					const parent = area.parentScopeNodeId;
+					return parent === startScope || (parent !== null && (await area_reached(parent)));
+				})();
+				areaChecks.set(areaId, check);
+			}
+			return check;
+		};
+		const walk_reaches = async (index: number, node: Doc<"files_nodes">) => {
+			// A locked restricted folder shows like in the walk: its parent area must be reached.
+			const areaId = node.restrictedScopeNodeId === node._id ? node.parentScopeNodeId : node.restrictedScopeNodeId;
+			if (areaId === startScope) return true;
+			if (!areaId) return false;
+			if (!areaChecks.has(areaId)) {
+				const used = (await ctx.meta.getTransactionMetrics()).databaseQueries.used;
+				if (index > 0 && used + SEARCH_PARENT_CHECK_MAX_RANGES > 4_096) return "retry";
+			}
+			return await area_reached(areaId);
+		};
 		const items: Infer<typeof entry_validator>[] = [];
 		for (const [index, node] of page.page.entries()) {
 			if (index > 0 && files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics())) return retry;
@@ -2266,6 +2551,9 @@ export const internal_search_name_saved = internalQuery({
 				const shows = locked ? await locked_hit_shows(index, node.parentId) : true;
 				if (shows === "retry") return retry;
 				if (!shows) continue;
+				const reached = await walk_reaches(index, node);
+				if (reached === "retry") return retry;
+				if (!reached) continue;
 				const decision = await db_stream_saved_item(ctx, { node, path: node.path, overlayUserId: null, locked });
 				items.push(decision.item!);
 				continue;
@@ -2285,6 +2573,9 @@ export const internal_search_name_saved = internalQuery({
 			const shows = locked ? await locked_hit_shows(index, node.parentId) : true;
 			if (shows === "retry") return retry;
 			if (!shows) continue;
+			const reached = await walk_reaches(index, node);
+			if (reached === "retry" || reader.exhausted) return retry;
+			if (!reached) continue;
 			const decision = await db_stream_saved_item(ctx, {
 				node,
 				path: resolved.entry.path,
@@ -2632,16 +2923,41 @@ function db_stream_place_fields(
 }
 
 /**
+ * Whether a metadata search reads every restricted area in one range: the organization owner, or a
+ * volume or the codebase, which have no restricted areas.
+ */
+async function db_reads_every_area(ctx: QueryCtx, args: StreamOpenArgs) {
+	if (
+		files_db_resolve_scope(ctx, args.workspaceId).kind === "volume" ||
+		organizations_is_global_organization_id(args.organizationId)
+	)
+		return true;
+	if (args.subject.kind !== "user" || args.subject.plugin !== null) return false;
+	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
+	const organization = organizationId ? await ctx.db.get("organizations", organizationId) : null;
+	return organization?.ownerUserId === args.subject.userId;
+}
+
+/**
  * Committed metadata rows of saved nodes, or with `movedIn` the rows under one saved folder the user
  * moved into the listing folder by a draft (`exists` and `eq` only: `prefix` and `range` read the
  * whole workspace, so they already meet those rows).
+ *
+ * `exists` and `eq` read one walk frame (`frame`, `server/files-tree-walk.ts`): one restricted area in
+ * the frame's range, so no doc under a locked folder is read. `prefix` and `range` keep value order,
+ * which cannot merge many areas: a member reads the open area only, the owner every area.
  *
  * Under the overlay every row reads the user's hide and resolves the user's path with the reader,
  * like `ls -t` with no path. A saved row shows its committed metadata, also while the user has a
  * content edit on it; drafts come from place fields.
  */
 export const internal_search_metadata_saved = internalQuery({
-	args: { ...stream_args.fields, plan: files_metadata_search_plan_validator, movedIn: v.optional(moved_in_validator) },
+	args: {
+		...stream_args.fields,
+		plan: files_metadata_search_plan_validator,
+		movedIn: v.optional(moved_in_validator),
+		frame: v.optional(files_tree_walk_frame_validator),
+	},
 	returns: stream_result,
 	handler: async (ctx, args) => {
 		// Leave the reader most of the read budget, like `ls -t` with no path.
@@ -2671,18 +2987,39 @@ export const internal_search_metadata_saved = internalQuery({
 				? { ...seek, key: [savedTreePath + key.slice(under.length), ...seek.key.slice(1)] }
 				: { key: [], inclusive: false };
 		}
-		const range = args.seek
-			? metadata_range({ ...args, seek }, "treePath", byTree ? (rangeFolder?.treePath ?? null) : null)
-			: null;
-		if (args.seek && !range) return stream_done(root.parent);
-		const nativePage = await files_metadata_db_query_saved_plan(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			plan,
-			moveView: stream_move_view(args),
-			treePathPrefix: byTree ? (rangeFolder?.treePath ?? null) : null,
-			bounds: range?.bounds,
-		}).paginate(range?.pagination ?? { cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+		if (byTree !== (args.frame !== undefined))
+			throw should_never_happen("Metadata exists and eq read walk frames only", { op: plan.op });
+		const frameRange = args.frame ? files_tree_walk_phase(args.frame, ["_creationTime", "_id"]) : null;
+		if (frameRange && !frameRange.bounds) return stream_done(root.parent);
+		const everyArea = !args.frame && (await db_reads_every_area(ctx, args));
+		const range =
+			!args.frame && (args.seek || !everyArea)
+				? metadata_range({ ...args, seek }, "treePath", byTree ? (rangeFolder?.treePath ?? null) : null)
+				: null;
+		if (!args.frame && (args.seek || !everyArea) && !range) return stream_done(root.parent);
+		const nativePage = await (
+			everyArea
+				? files_metadata_db_query_saved_plan(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						plan,
+						moveView: stream_move_view(args),
+						treePathPrefix: null,
+						bounds: range?.bounds,
+					})
+				: files_metadata_db_query_saved_plan_in_area(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						plan,
+						scopeNodeId: args.frame?.scopeNodeId ?? null,
+						moveView: stream_move_view(args),
+						bounds: frameRange?.bounds ?? range!.bounds,
+					})
+		).paginate(
+			frameRange
+				? { cursor: null, numItems: stream_page_size(args.numItems) }
+				: (range?.pagination ?? { cursor: args.position.cursor, numItems: stream_page_size(args.numItems) }),
+		);
 		const page = range ? range.finish(nativePage) : nativePage;
 
 		const indexKey = (doc: Doc<"files_metadata_docs">) => metadata_index_key(plan, doc, doc.treePath);
@@ -2706,6 +3043,7 @@ export const internal_search_metadata_saved = internalQuery({
 			cut: false,
 			indexKey,
 			mergeKey,
+			...(frameRange ? { frontierKey: indexKey, phaseCount: frameRange.phaseCount } : {}),
 			decide: async (doc) => {
 				if (doc.sourceKind !== "committed") return null;
 				const node = await files_saved_placement_db_get_node(ctx.db, doc.fileNodeId);
@@ -2719,7 +3057,9 @@ export const internal_search_metadata_saved = internalQuery({
 						subject: args.subject,
 						nodes: [node],
 					});
-					if (readable.length === 0) return "denied";
+					// Every row of a readable area is readable. Only a row a scope job has not reached yet can
+					// fail here; the job ends this soon, so it hides only rows that were open seconds ago.
+					if (readable.length === 0) return null;
 					return { ...(await db_stream_saved_item(ctx, { node, path: node.path, overlayUserId: null })), match };
 				}
 				if (listingFolder && doc.treePath.startsWith(listingFolder.treePath)) return null;
@@ -2735,7 +3075,8 @@ export const internal_search_metadata_saved = internalQuery({
 				if (resolved?.entry.kind !== "saved" || !`${resolved.entry.path}/`.startsWith(under)) return null;
 				if (movedFolder && `${resolved.entry.path}/` !== under + `${node.path}/`.slice(movedFolder.treePath.length))
 					return null;
-				if (!(await reader.canRead(resolved.accessNode))) return "denied";
+				// Only a row a scope job has not reached yet, or a draft move, fails here (see above).
+				if (!(await reader.canRead(resolved.accessNode))) return null;
 				if (doc.fieldPath.startsWith("frontmatter.")) {
 					const sourceProposal = await ctx.db
 						.query("files_pending_updates")

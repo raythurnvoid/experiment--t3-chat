@@ -16,6 +16,7 @@ type SortedPage = FunctionReturnType<typeof app_convex_api.files_tree.list_tree_
 type SortedRow = SortedPage["page"][number];
 type SavedArgs = FunctionArgs<typeof app_convex_api.files_nodes.search_saved>;
 type SavedRow = FunctionReturnType<typeof app_convex_api.files_nodes.search_saved>["page"][number];
+type MetadataArgs = FunctionArgs<typeof app_convex_api.files_nodes.search_saved_metadata>;
 
 // `sorted.rows` holds every row of each stream, keyed by its full folder, sort and stream scope.
 // `paginatedArgsSeen` records the args of every active paginated query.
@@ -23,7 +24,9 @@ type SavedRow = FunctionReturnType<typeof app_convex_api.files_nodes.search_save
 // `pages` gives a stream fixed server pages instead of `rows`. `splitting` keeps a stream past its first
 // page in "LoadingMore", like a page that answered SplitRequired. `loadMoreCalls` counts each stream's calls.
 // `saved` answers `search_saved` by clause: `argsSeen` records its args, and a clause with no
-// answer is empty and done.
+// answer is empty and done. `search_saved_metadata` answers by `{ kind: "metadata", plan }` with all
+// its rows at once ("CanLoadMore" adds a next page), and `metadataArgsSeen` records its args.
+// `metadataFails` makes its first page or its next pages fail.
 const { paginatedArgsSeen, sorted, saved } = vi.hoisted(() => ({
 	paginatedArgsSeen: [] as SortedArgs[],
 	sorted: {
@@ -40,6 +43,8 @@ const { paginatedArgsSeen, sorted, saved } = vi.hoisted(() => ({
 	},
 	saved: {
 		argsSeen: [] as SavedArgs[],
+		metadataArgsSeen: [] as MetadataArgs[],
+		metadataFails: null as "first" | "more" | null,
 		answers: new Map<
 			string,
 			{ results: SavedRow[]; status: "LoadingFirstPage" | "LoadingMore" | "CanLoadMore" | "Exhausted" }
@@ -142,6 +147,15 @@ vi.mock("convex/react", async (importOriginal) => {
 			useSyncExternalStore(subscribe, () => sorted.revision);
 			return sorted.view;
 		},
+		useConvex: () => ({
+			action: async (_action: unknown, args: MetadataArgs) => {
+				saved.metadataArgsSeen.push(args);
+				if (saved.metadataFails === (args.cursor === null ? "first" : "more")) throw new Error("Server error");
+				const answer = saved.answers.get(JSON.stringify({ kind: "metadata", plan: args.plan }));
+				const more = args.cursor === null && answer?.status === "CanLoadMore";
+				return { _yay: { page: answer?.results ?? [], cursor: more ? "next" : null, isDone: !more } };
+			},
+		}),
 		usePaginatedQuery: (
 			query: FunctionReference<"query">,
 			args: SortedArgs | "skip",
@@ -252,6 +266,8 @@ beforeEach(() => {
 	sorted.splitting.clear();
 	sorted.loadMoreCalls.clear();
 	saved.argsSeen.length = 0;
+	saved.metadataArgsSeen.length = 0;
+	saved.metadataFails = null;
 	saved.answers.clear();
 });
 
@@ -905,12 +921,14 @@ describe("useFilesSearchSaved", () => {
 		expect(result.current.contents).toBeNull();
 	});
 
-	test("a metadata chip merges its plans into one list", () => {
+	test("a metadata chip merges its plans into one list", async () => {
 		const { result } = render_search("file.path:/docs metadata.count:3");
+		await act(async () => {});
 
-		expect(saved.argsSeen.map((args) => [args.clause.kind, args.folderPath])).toEqual([
-			["metadata", "/docs"],
-			["metadata", "/docs"],
+		expect(saved.argsSeen).toEqual([]);
+		expect(saved.metadataArgsSeen.map((args) => [args.plan.op, args.folderPath])).toEqual([
+			["eq", "/docs"],
+			["eq", "/docs"],
 		]);
 		expect(result.current.contents).toBeNull();
 		expect(result.current.names.status).toBe("done");
@@ -933,7 +951,7 @@ describe("useFilesSearchSaved", () => {
 		expect(render_search("log").result.current.names.isTopMatches).toBe(true);
 	});
 
-	test("a metadata list has no index limit, so it never says it shows the top matches", () => {
+	test("a metadata list has no index limit, so it never says it shows the top matches", async () => {
 		saved.answers.set(
 			JSON.stringify({ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.status", value: "open" } }),
 			{
@@ -942,10 +960,46 @@ describe("useFilesSearchSaved", () => {
 			},
 		);
 
-		expect(render_search("metadata.status:open").result.current.names).toMatchObject({
+		const { result } = render_search("metadata.status:open");
+		await act(async () => {});
+		expect(result.current.names).toMatchObject({ status: "done", isTopMatches: false });
+		expect(result.current.names.rows).toHaveLength(1024);
+	});
+
+	test("a failed metadata search ends with a problem instead of loading forever", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		saved.metadataFails = "first";
+
+		const { result } = render_search("metadata.status:open");
+		await act(async () => {});
+		expect(result.current.names).toMatchObject({
+			rows: [],
 			status: "done",
-			isTopMatches: false,
+			isLoadingMore: false,
+			problem: "The search failed. Search again.",
 		});
+		consoleError.mockRestore();
+	});
+
+	test("a failed next metadata page keeps the rows and stops loading more", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		saved.answers.set(
+			JSON.stringify({ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.status", value: "open" } }),
+			{ results: [saved_match("/tasks/a.md")], status: "CanLoadMore" },
+		);
+		saved.metadataFails = "more";
+
+		const { result } = render_search("metadata.status:open");
+		await act(async () => {});
+		expect(result.current.names).toMatchObject({ status: "more", isLoadingMore: false });
+		await act(async () => result.current.names.loadMore());
+		expect(result.current.names).toMatchObject({
+			status: "done",
+			isLoadingMore: false,
+			problem: "The search failed. Search again.",
+		});
+		expect(result.current.names.rows.map((row) => row.path)).toEqual(["/tasks/a.md"]);
+		consoleError.mockRestore();
 	});
 
 	test("a list says when its next page is loading", () => {
@@ -961,17 +1015,14 @@ describe("useFilesSearchSaved", () => {
 		const { result } = render_search("file.path:/docs metadata.due:2026-09-04");
 
 		// A folder cannot scope the range plan that finds dates stored with a time.
-		expect(saved.argsSeen.map((args) => [args.clause, args.folderPath])).toEqual([
-			[{ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.due", value: "2026-09-04" } }, "/docs"],
+		expect(saved.metadataArgsSeen.map((args) => [args.plan, args.folderPath])).toEqual([
+			[{ op: "eq", fieldPath: "metadata.due", value: "2026-09-04" }, "/docs"],
 		]);
 		expect(result.current.isFolderDate).toBe(true);
 
-		saved.argsSeen.length = 0;
+		saved.metadataArgsSeen.length = 0;
 		expect(render_search("metadata.due:2026-09-04").result.current.isFolderDate).toBe(false);
-		expect(saved.argsSeen.map((args) => args.clause.kind === "metadata" && args.clause.plan.op)).toEqual([
-			"eq",
-			"range",
-		]);
+		expect(saved.metadataArgsSeen.map((args) => args.plan.op)).toEqual(["eq", "range"]);
 	});
 
 	test("the root folder scopes nothing, so a range and a date run in full", () => {
@@ -980,10 +1031,6 @@ describe("useFilesSearchSaved", () => {
 
 		expect(range.mode).toBe("search");
 		expect(date.isFolderDate).toBe(false);
-		expect(saved.argsSeen.map((args) => args.clause.kind === "metadata" && args.clause.plan.op)).toEqual([
-			"range",
-			"eq",
-			"range",
-		]);
+		expect(saved.metadataArgsSeen.map((args) => args.plan.op)).toEqual(["range", "eq", "range"]);
 	});
 });

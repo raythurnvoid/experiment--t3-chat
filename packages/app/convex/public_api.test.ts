@@ -4251,6 +4251,13 @@ describe("locked and missing paths", () => {
 			for (const nodeId of [sharedId, sharedFileId]) {
 				await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: sharedId });
 			}
+			// The roots, with the area of their parent, so a recursive list meets them as boundaries.
+			for (const [nodeId, parentScopeNodeId] of [
+				[secretId, null],
+				[hiddenFileId, null],
+				[sharedId, secretId],
+			] as const)
+				await ctx.db.patch("files_nodes", nodeId, { isRestrictedScopeRoot: true, parentScopeNodeId });
 
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-list-hidden-member" });
 			// The write route's credit gate bills the acting member, so the fixture pays.
@@ -4352,8 +4359,9 @@ describe("locked and missing paths", () => {
 		};
 
 		const member = await walk(f.memberCredential);
-		expect(member.paths).toEqual(["/b.md", "/notes", "/secret/shared", "/secret/shared/ok.md"]);
-		// One request reads at most 8 docs per stream, so some pages end inside the hidden block.
+		// Locked items are listed, and the walk does not enter the locked folder, so the share inside it
+		// is not listed (it opens by path).
+		expect(member.paths).toEqual(["/b.md", "/hidden.md", "/notes", "/secret"]);
 		const cursors = member.cursors.join("\n");
 		expect(cursors, "no cursor shows a hidden path").not.toContain("/secret/h");
 		for (const id of f.hiddenIds) expect(cursors, "no cursor shows a hidden id").not.toContain(id);
@@ -4445,9 +4453,65 @@ describe("locked and missing paths", () => {
 			{ path: "/notes", locked: false },
 			{ path: "/secret", kind: "folder", nodeId: f.secretId, locked: true },
 		]);
-		// A recursive list still leaves locked items out.
+	});
+
+	test("recursive list stops at a locked folder", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+
+		// The locked items show like in a folder list. Nothing under the locked folder is listed, not
+		// even the folder shared with the member inside it.
 		const recursive = await list(t, f.memberCredential, { path: "/", recursive: true });
-		expect(recursive.body.items.map((item) => item.path)).not.toContain("/hidden.md");
+		expect(recursive.body.items).toMatchObject([
+			{ path: "/b.md", locked: false },
+			{ path: "/hidden.md", kind: "file", nodeId: f.hiddenFileId, locked: true },
+			{ path: "/notes", locked: false },
+			{ path: "/secret", kind: "folder", nodeId: f.secretId, locked: true },
+		]);
+		expect(recursive.body.isDone).toBe(true);
+		// The shared folder lists from its own path.
+		const shared = await list(t, f.memberCredential, { path: "/secret/shared", recursive: true });
+		expect(shared.body.items.map((item) => item.path)).toEqual(["/secret/shared/ok.md"]);
+		// A filter lists only the locked items that match it.
+		const files = await list(t, f.memberCredential, { path: "/", recursive: true, kind: "file" });
+		expect(files.body.items.map((item) => item.path)).toEqual(["/b.md", "/hidden.md"]);
+	});
+
+	test("a recursive list of the root a caller cannot open lists only what they can open", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		// A service account has no workspace role, so it cannot open the root. It reaches the route
+		// through its grant on `/hidden.md`. The route refuses a guest key and an account with no grant.
+		const account = await f.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: f.db.membershipId,
+			name: "Root reader",
+		});
+		if (account._nay) throw new Error(account._nay.message);
+		const granted = await f.asOwner.mutation(api.access_control.set_service_account_grant, {
+			membershipId: f.db.membershipId,
+			serviceAccountId: account._yay.serviceAccountId,
+			resource: { kind: "file", nodeId: f.hiddenFileId },
+			level: "read",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+		const key = await f.asOwner.mutation(api.public_api.api_credential_create, {
+			membershipId: f.db.membershipId,
+			serviceAccountId: account._yay.serviceAccountId,
+			name: "Root reader",
+			scopes: ["files:list"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+
+		// The open items and the locked folder sit in the root it cannot open: no locked rows.
+		const recursive = await list(t, key._yay.credential, { path: "/", recursive: true });
+		expect(recursive.status).toBe(200);
+		expect(recursive.body.items).toMatchObject([{ path: "/hidden.md", locked: false }]);
+		expect(recursive.body.items).toHaveLength(1);
+		expect(recursive.body.isDone).toBe(true);
+		// Like the folder list of the root.
+		expect((await list(t, key._yay.credential, { path: "/" })).body.items.map((item) => item.path)).toEqual([
+			"/hidden.md",
+		]);
 	});
 
 	test("a folder list of a folder the caller cannot open returns no locked rows", async () => {

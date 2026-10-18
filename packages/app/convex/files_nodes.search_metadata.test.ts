@@ -42,6 +42,7 @@ import {
 	test_setup_r2_capture,
 	test_materialize_markdown_file,
 	text_search_files_all_pages,
+	search_saved_metadata_all,
 } from "./files_nodes.setup.test.ts";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
@@ -1808,13 +1809,13 @@ describe("folder metadata", () => {
 		const search = async (folderPath: string) =>
 			new Set(
 				(
-					await asOwner.query(api.files_nodes.search_saved, {
+					await search_saved_metadata_all({
+						asWho: asOwner,
 						membershipId: db.membershipId,
-						clause: { kind: "metadata", plan: { op: "exists", fieldPath: "metadata.status" } },
+						plan: { op: "exists", fieldPath: "metadata.status" },
 						folderPath,
-						paginationOpts: { numItems: 50, cursor: null },
 					})
-				).page.map((row) => (row.kind === "problem" ? row.message : row.nodeId)),
+				).map((row) => (row.kind === "problem" ? row.message : row.nodeId)),
 			);
 		expect(await search("/folder-metadata")).toEqual(new Set(["Folder not found"]));
 		expect(await search("/pending-folder")).toEqual(new Set([folderId, nestedId]));

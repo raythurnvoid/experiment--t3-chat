@@ -538,6 +538,13 @@ function prefix_to_shell_path(args: { commandCtx: CommandContext; dbFilesRoots: 
  *
  * `_yay` is null when no row of this listing is at those depths.
  */
+/**
+ * GNU find prints a folder it cannot open, then this line, and exits 1 at the end.
+ */
+function denied_lines(denied: readonly string[] | undefined, render: (path: string) => string) {
+	return (denied ?? []).map((path) => `find: '${render(path)}': Permission denied\n`).join("");
+}
+
 function map_find_depth(args: { minDepth: number | null; maxDepth: number | null; shift: number }) {
 	const { minDepth, maxDepth, shift } = args;
 	if ((maxDepth !== null && maxDepth > shift + 1) || (minDepth !== null && minDepth > shift + 1)) {
@@ -1295,10 +1302,11 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				lines.push("0 matches.");
 			}
 
+			const denied = denied_lines(result._yay.denied, prefixResolution.renderShellPath);
 			return {
 				stdout: `${lines.join("\n")}\n`,
-				stderr: "",
-				exitCode: 0,
+				stderr: denied,
+				exitCode: denied ? bash_COMMAND_EXIT_FAILURE : 0,
 			};
 		}
 
@@ -1480,6 +1488,10 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		const lines = result._yay.items.map(
 			(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 		);
+		const denied = denied_lines(
+			"denied" in result._yay ? result._yay.denied : undefined,
+			pathResolution.renderShellPath,
+		);
 		// find includes the starting folder at depth zero. The shared list returns its descendants. A
 		// search prints it when it matches too: by path for the scan, and for name search when every
 		// query word starts a word of its name.
@@ -1519,6 +1531,6 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (lines.length === 0) lines.push("0 matches.");
 			lines.push(...notes);
 		}
-		return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
+		return { stdout: `${lines.join("\n")}\n`, stderr: denied, exitCode: denied ? bash_COMMAND_EXIT_FAILURE : 0 };
 	});
 }

@@ -111,10 +111,17 @@ describe("private search", () => {
 			paginationOpts: { numItems: 50, cursor: null },
 		});
 		expect(fields.page).toEqual([]);
+		expect(
+			await f.asUser.action(api.files_nodes.search_saved_metadata, {
+				membershipId: f.db.membershipId,
+				plan: { op: "eq", fieldPath: "metadata.source", value: "captured" },
+				numItems: 50,
+				cursor: null,
+			}),
+		).toMatchObject({ _yay: { page: [], isDone: true } });
 		for (const clause of [
 			{ kind: "name", text: "note" },
 			{ kind: "content", text: "privateneedle" },
-			{ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.source", value: "captured" } },
 			{ kind: "path", path: "/draft/note.md" },
 		] as const) {
 			expect(

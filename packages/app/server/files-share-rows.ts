@@ -1,6 +1,5 @@
 // Share rows (`files_share_rows`): one copy of a node per file `content.read` grant, so a member's
-// shared items can be paged with indexes like the folder table, and a reader can list the restricted
-// folders it may read in path order (`server/files-readable-scopes.ts`). A user, role or service
+// shared items can be paged with indexes like the folder table. A user, role or service
 // account grant has a copy while its node is a scope root in the grant's workspace, active or
 // archived: a restricted root, or an extended root (an item with added people).
 //

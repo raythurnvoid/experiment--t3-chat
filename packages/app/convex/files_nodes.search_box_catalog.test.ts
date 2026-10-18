@@ -80,12 +80,13 @@ describe("search box doors", () => {
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "other" });
 
 		expect(
-			await seeded.asOwner.query(api.files_nodes.search_saved, {
+			await seeded.asOwner.action(api.files_nodes.search_saved_metadata, {
 				membershipId: member.membershipId,
-				clause: { kind: "metadata", plan: statusOpenPlans[0]! },
-				paginationOpts: { numItems: 50, cursor: null },
+				plan: statusOpenPlans[0]!,
+				numItems: 50,
+				cursor: null,
 			}),
-		).toEqual({ page: [], isDone: true, continueCursor: "" });
+		).toEqual({ _yay: { page: [], cursor: null, isDone: true } });
 		expect(await list_keys({ t, asWho: seeded.asOwner, membershipId: member.membershipId })).toEqual([]);
 		expect(
 			await list_values({
@@ -102,6 +103,24 @@ describe("search box doors", () => {
 				fieldPath: "frontmatter.status",
 			}),
 		).toBeNull();
+	});
+
+	test("the custom-field search refuses a cursor it did not make", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+
+		// Another door's cursor, and a value that is not JSON.
+		for (const value of [JSON.stringify({ scope: "list", streams: [] }), "not json"]) {
+			const cursor = await t.mutation(internal.value_store.put, { value, ttl: 60_000 });
+			expect(
+				await seeded.asOwner.action(api.files_nodes.search_saved_metadata, {
+					membershipId: seeded.db.membershipId,
+					plan: statusOpenPlans[0]!,
+					numItems: 50,
+					cursor,
+				}),
+			).toEqual({ _nay: { message: "This search cursor is not valid. Search again." } });
+		}
 	});
 
 	test("folder maps follow read and write grants in every metadata door", async () => {
@@ -430,6 +449,7 @@ describe("search box doors", () => {
 					sourceKind: "committed" as const,
 					path: openTask.path,
 					treePath: openTask.treePath,
+					restrictedScopeNodeId: null,
 					fieldPath,
 				};
 				await ctx.db.insert("files_metadata_docs", { ...doc, docKind: "field" });

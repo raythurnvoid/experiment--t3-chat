@@ -8,6 +8,9 @@ import { plugins_external_files_db_get_node } from "../convex/plugins_external_f
 import { organizations_membership_lifetimes_db_record } from "../convex/organizations_membership_lifetimes.ts";
 import { getFunctionName, type FunctionArgs } from "convex/server";
 import type { ActionCtx } from "../convex/_generated/server.js";
+import type { Id } from "../convex/_generated/dataModel.js";
+import { test_mocks } from "../convex/setup.test.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -308,6 +311,48 @@ describe("saved list action", () => {
 		expect(await walk(), "the cleaned up rows come back from the normal stream").toEqual(["/target/new.txt", "/z.txt"]);
 	}, 120_000);
 
+	test("a recursive list walks into a restricted folder once in both Move views", async () => {
+		const f = await test_create_saved_placement_fixture({ normalPaths: ["/r/x.txt"] });
+		// Restrict /r by hand. The owner reads it, so the walk enters it.
+		await f.t.run(async (ctx) => {
+			const file = (await ctx.db.get("files_nodes", f.normalNodes.get("/r/x.txt")!))!;
+			const folderId = file.parentId as Id<"files_nodes">;
+			await ctx.db.patch("files_nodes", folderId, {
+				isRestrictedScopeRoot: true,
+				restrictedScopeNodeId: folderId,
+				parentScopeNodeId: null,
+			});
+			await ctx.db.patch("files_nodes", file._id, { restrictedScopeNodeId: folderId });
+		});
+		const ctx: Pick<ActionCtx, "runQuery"> = {
+			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
+		};
+		const walk = async () => {
+			const paths: string[] = [];
+			for (let cursor: string | null = null; ;) {
+				const listed = await files_saved_list_page(ctx, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					visibilityUserId: f.db.userId,
+					subject: { kind: "user" as const, userId: f.db.userId, plugin: null },
+					folderPath: "/",
+					minDepth: 1,
+					numItems: 1,
+					cursorScope: "walk",
+					cursor,
+				});
+				const page = listed._yay!;
+				paths.push(...page.page.map((node) => node.path));
+				if (page.isDone) return paths;
+				cursor = page.continueCursor;
+			}
+		};
+
+		expect(await walk(), "the before view").toEqual(["/old.txt", "/r", "/r/x.txt", "/target"]);
+		await f.publish();
+		expect(await walk(), "the after view").toEqual(["/r", "/r/x.txt", "/target", "/target/new.txt"]);
+	}, 120_000);
+
 	test("checks the folder once on every page, never for the root, and in the selected Move view", async () => {
 		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.txt", "/target/a.txt"] });
 		const calls: string[] = [];
@@ -357,6 +402,71 @@ describe("saved list action", () => {
 		expect(pages.flat()).toEqual(["/target/a.txt", "/target/new.txt"]);
 		expect(count("get_by_path"), "one folder check per page").toBe(pages.length);
 		expect(count("get_path_access"), "a found folder asks no locked or missing question").toBe(0);
+	});
+
+	test("the first page is full with sparse access", async () => {
+		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.txt"] });
+		const memberId = await f.t.run((ctx) => ctx.db.insert("users", { clerkUserId: "saved-list-sparse" }));
+		expect(
+			await f.asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userIdToAdd: memberId,
+			}),
+		).toEqual({ _yay: null });
+		// More unreadable rows than a row page, all inside one locked folder, then readable rows.
+		await f.t.run(async (ctx) => {
+			const node = (fields: { parentId: Id<"files_nodes"> | "root"; path: string; kind: "file" | "folder" }) => {
+				const name = fields.path.slice(fields.path.lastIndexOf("/") + 1);
+				return ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					...fields,
+					name,
+					sortName: files_sort_text_key(name),
+					treePath: fields.kind === "folder" ? `${fields.path}/` : fields.path,
+					pathDepth: fields.path.split("/").length - 1,
+				});
+			};
+			const lockedId = await node({ parentId: "root", path: "/b-locked", kind: "folder" });
+			await ctx.db.patch("files_nodes", lockedId, {
+				isRestrictedScopeRoot: true,
+				restrictedScopeNodeId: lockedId,
+				parentScopeNodeId: null,
+			});
+			for (let index = 0; index < 150; index++) {
+				const fileId = await node({ parentId: lockedId, path: `/b-locked/${index}.txt`, kind: "file" });
+				await ctx.db.patch("files_nodes", fileId, { restrictedScopeNodeId: lockedId });
+			}
+			for (let index = 0; index < 5; index++) await node({ parentId: "root", path: `/c-${index}.txt`, kind: "file" });
+		});
+		const ctx: Pick<ActionCtx, "runQuery"> = {
+			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
+		};
+
+		const first = (
+			await files_saved_list_page(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				visibilityUserId: memberId,
+				subject: { kind: "user", userId: memberId, plugin: null },
+				folderPath: "/",
+				minDepth: 1,
+				numItems: 4,
+				cursorScope: "sparse",
+				cursor: null,
+			})
+		)._yay!;
+
+		expect(first.page.map((node) => [node.path, node.locked])).toEqual([
+			["/a.txt", false],
+			["/b-locked", true],
+			["/c-0.txt", false],
+			["/c-1.txt", false],
+		]);
 	});
 
 	test("refuses a seek key outside its recursive source range", async () => {

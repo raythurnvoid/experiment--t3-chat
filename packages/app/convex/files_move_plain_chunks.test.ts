@@ -16,6 +16,8 @@ import {
 import { create_fixture, create_folder, mock_move_scale_storage } from "./files_move_scale.setup.test.ts";
 import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 import type { files_SavedStream } from "../shared/files.ts";
+import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
+import { search_saved_metadata_all } from "./files_nodes.setup.test.ts";
 
 const text = `movechunkneedle\n${"plain line with unchanged text ".repeat(40)}\n`.repeat(12);
 
@@ -155,10 +157,25 @@ async function drive_to(
 
 async function saved_search(
 	f: Fixture,
-	clause: FunctionArgs<typeof api.files_nodes.search_saved>["clause"],
+	clause:
+		| FunctionArgs<typeof api.files_nodes.search_saved>["clause"]
+		| { kind: "metadata"; plan: files_metadata_SearchPlan },
 	folderPath?: string,
 	member = { asUser: f.asUser, membershipId: f.db.membershipId },
 ) {
+	// The custom-field search reads both saved streams itself.
+	if (clause.kind === "metadata") {
+		const found = await search_saved_metadata_all({
+			asWho: member.asUser,
+			membershipId: member.membershipId,
+			plan: clause.plan,
+			folderPath,
+		});
+		return found.map((row) => {
+			if (row.kind === "problem") throw new Error(row.message);
+			return { nodeId: row.nodeId, path: row.path };
+		});
+	}
 	const view = await f.t.run((ctx) => files_saved_placement_db_get_view(ctx.db, f.db));
 	const streams: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
 	if (view.cohortId && view.view)

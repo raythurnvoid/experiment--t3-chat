@@ -2579,16 +2579,18 @@ describe("locked paths", () => {
 				role: "member",
 				now: Date.now(),
 			});
-			// A restricted root points at itself; the nodes inside point at the root.
+			// A restricted root points at itself and at the open area as its parent area; the nodes inside
+			// point at the root.
 			for (const node of await ctx.db.query("files_nodes").collect()) {
 				if (node.path === "/Team" || node.path.startsWith("/Team/"))
 					await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: teamId });
 				if (node.path === "/open/Sub" || node.path.startsWith("/open/Sub/"))
 					await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: subId });
 				if (node.path.startsWith("/many/"))
-					await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: node._id });
+					await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: node._id, parentScopeNodeId: null });
 			}
-			await ctx.db.patch("files_nodes", lockedId, { restrictedScopeNodeId: lockedId });
+			for (const rootId of [teamId, subId, lockedId])
+				await ctx.db.patch("files_nodes", rootId, { restrictedScopeNodeId: rootId, parentScopeNodeId: null });
 			return { userId, membershipId };
 		});
 		return await create_bash_runner({ shared: { t, seeded: { ...seeded, ...member } } });

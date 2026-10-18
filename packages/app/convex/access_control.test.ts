@@ -43,10 +43,6 @@ import {
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
-import {
-	files_readable_scopes_db_enumerate_by_path,
-	files_readable_scopes_db_reader,
-} from "../server/files-readable-scopes.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
@@ -1041,21 +1037,6 @@ describe("access_control_db_has_permission service accounts", () => {
 		expect(await can(shared)).toBe(true);
 		// The role's own workspace permissions do not come with it.
 		expect(await can(open)).toBe(false);
-		// A list reads the role's share rows too: they are the second stream, after the account's own.
-		const listed = await t.run(async (ctx) => {
-			const reader = await files_readable_scopes_db_reader(ctx, { ...scope, subject });
-			if (reader.mode !== "scoped") throw new Error("expected a scoped reader");
-			const page = await files_readable_scopes_db_enumerate_by_path(ctx, {
-				reader,
-				tag: undefined,
-				principalIndex: 1,
-				folderTreePath: "/",
-				afterTreePath: null,
-				numItems: 10,
-			});
-			return page.items.map((item) => item.node._id);
-		});
-		expect(listed).toEqual([shared]);
 
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		expect(

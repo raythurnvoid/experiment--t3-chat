@@ -9,7 +9,8 @@ type SavedArgs = FunctionArgs<typeof app_convex_api.files_nodes.search_saved>;
 type SavedRow = FunctionReturnType<typeof app_convex_api.files_nodes.search_saved>["page"][number];
 
 // `savedPages` answers `search_saved` by its clause and folder: each entry is one server page, and
-// `undefined` keeps the first page loading. A query with no entry is empty and done.
+// `undefined` keeps the first page loading. A query with no entry is empty and done. A metadata clause
+// answers `search_saved_metadata` with all its pages at once.
 const { savedArgsSeen, savedPages, queryPushListeners, navigateMock } = vi.hoisted(() => ({
 	savedArgsSeen: [] as SavedArgs[],
 	savedPages: new Map<string, SavedRow[][] | undefined>(),
@@ -17,8 +18,12 @@ const { savedArgsSeen, savedPages, queryPushListeners, navigateMock } = vi.hoist
 	navigateMock: vi.fn().mockResolvedValue(undefined),
 }));
 
-const saved_key = (clause: SavedArgs["clause"], folderPath?: string) =>
-	JSON.stringify([clause, folderPath ?? null, { kind: "normal", generation: 0 }, 0]);
+const saved_key = (
+	clause:
+		| SavedArgs["clause"]
+		| { kind: "metadata"; plan: FunctionArgs<typeof app_convex_api.files_nodes.search_saved_metadata>["plan"] },
+	folderPath?: string,
+) => JSON.stringify([clause, folderPath ?? null, { kind: "normal", generation: 0 }, 0]);
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -41,7 +46,19 @@ vi.mock("convex/react", async (importOriginal) => {
 	const { useEffect, useState } = await import("react");
 	return {
 		...(await importOriginal<typeof import("convex/react")>()),
-		useConvex: () => ({ query: async () => [] }),
+		useConvex: () => ({
+			query: async () => [],
+			action: async (
+				_action: unknown,
+				args: FunctionArgs<typeof app_convex_api.files_nodes.search_saved_metadata>,
+			) => ({
+				_yay: {
+					page: (savedPages.get(saved_key({ kind: "metadata", plan: args.plan }, args.folderPath)) ?? []).flat(),
+					cursor: null,
+					isDone: true,
+				},
+			}),
+		}),
 		useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") => {
 			if (args === "skip") return undefined;
 			const name = getFunctionName(query);

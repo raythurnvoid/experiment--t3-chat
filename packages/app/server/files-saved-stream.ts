@@ -209,36 +209,45 @@ export async function files_saved_stream_db_create(
 				: db.query("files_nodes").withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
-		by_archive_kind_tree: (range: (q: SavedRange<["archiveOperationId", "kind", "treePath"]>) => IndexRange) =>
+		// One restricted area of a recursive read (`server/files-tree-walk.ts`).
+		by_scope_archive_tree: (range: (q: SavedRange<["restrictedScopeNodeId", "archiveOperationId", "treePath"]>) => IndexRange) =>
 			fixedView
-				? db.query("files_saved_places").withIndex("by_view_archive_kind_tree", (q) =>
+				? db.query("files_saved_places").withIndex("by_view_scope_archive_tree", (q) =>
 						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
 					)
-				: db.query("files_nodes").withIndex("by_organization_workspace_archiveOperation_kind_treePath", (q) =>
+				: db.query("files_nodes").withIndex("by_org_ws_scope_archive_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
-		by_archive_kind_ext_tree: (range: (q: SavedRange<["archiveOperationId", "kind", "lowercaseExtension", "treePath"]>) => IndexRange) =>
+		by_scope_archive_kind_tree: (range: (q: SavedRange<["restrictedScopeNodeId", "archiveOperationId", "kind", "treePath"]>) => IndexRange) =>
 			fixedView
-				? db.query("files_saved_places").withIndex("by_view_archive_kind_ext_tree", (q) =>
+				? db.query("files_saved_places").withIndex("by_view_scope_archive_kind_tree", (q) =>
 						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
 					)
-				: db.query("files_nodes").withIndex("by_organization_workspace_archive_kind_lowercaseExtension_tree", (q) =>
+				: db.query("files_nodes").withIndex("by_org_ws_scope_archive_kind_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
-		by_archive_content_type_family_tree: (range: (q: SavedRange<["archiveOperationId", "contentTypeFamily", "treePath"]>) => IndexRange) =>
+		by_scope_archive_kind_ext_tree: (range: (q: SavedRange<["restrictedScopeNodeId", "archiveOperationId", "kind", "lowercaseExtension", "treePath"]>) => IndexRange) =>
 			fixedView
-				? db.query("files_saved_places").withIndex("by_view_archive_contentTypeFamily_tree", (q) =>
+				? db.query("files_saved_places").withIndex("by_view_scope_archive_kind_ext_tree", (q) =>
 						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
 					)
-				: db.query("files_nodes").withIndex("by_org_ws_archive_contentTypeFamily_tree", (q) =>
+				: db.query("files_nodes").withIndex("by_org_ws_scope_archive_kind_ext_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
-		by_archive_content_type_essence_tree: (range: (q: SavedRange<["archiveOperationId", "contentTypeEssence", "treePath"]>) => IndexRange) =>
+		by_scope_archive_family_tree: (range: (q: SavedRange<["restrictedScopeNodeId", "archiveOperationId", "contentTypeFamily", "treePath"]>) => IndexRange) =>
 			fixedView
-				? db.query("files_saved_places").withIndex("by_view_archive_contentTypeEssence_tree", (q) =>
+				? db.query("files_saved_places").withIndex("by_view_scope_archive_family_tree", (q) =>
 						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
 					)
-				: db.query("files_nodes").withIndex("by_org_ws_archive_contentTypeEssence_tree", (q) =>
+				: db.query("files_nodes").withIndex("by_org_ws_scope_archive_family_treePath", (q) =>
+						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
+					),
+		by_scope_archive_essence_tree: (range: (q: SavedRange<["restrictedScopeNodeId", "archiveOperationId", "contentTypeEssence", "treePath"]>) => IndexRange) =>
+			fixedView
+				? db.query("files_saved_places").withIndex("by_view_scope_archive_essence_tree", (q) =>
+						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
+					)
+				: db.query("files_nodes").withIndex("by_org_ws_scope_archive_essence_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
 		by_archive_updated: (range: (q: SavedRange<["archiveOperationId", "updatedAt"]>) => IndexRange) =>

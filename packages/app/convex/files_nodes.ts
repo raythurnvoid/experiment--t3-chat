@@ -30,6 +30,7 @@ import {
 	path_tree_prefix_upper_bound,
 } from "../server/server-utils.ts";
 import { compareValues, v, type Infer } from "convex/values";
+import { z } from "zod";
 import {
 	date_get_week_start_timestamp,
 	date_get_day_start_timestamp,
@@ -78,6 +79,14 @@ import {
 	files_saved_content_db_yjs_updates,
 } from "../server/files-saved-content.ts";
 import { files_index_range_apply, files_index_range_phases } from "../server/files-index-range.ts";
+import {
+	files_tree_walk_db_boundaries,
+	files_tree_walk_db_resolve_stack,
+	files_tree_walk_boundary_status_validator,
+	files_tree_walk_frame_validator,
+	files_tree_walk_phase,
+	files_tree_walk_stack_validator,
+} from "../server/files-tree-walk.ts";
 import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
 import {
 	files_saved_placement_db_get_search_generation,
@@ -110,14 +119,14 @@ import {
 import { files_updated_by_db_delete_for_node, files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
-import { access_control_db_authorize_membership, access_control_db_authorize_node, access_control_db_authorize_file_write, access_control_db_can_act_on_file_node, access_control_db_filter_readable_file_nodes, access_control_subject_validator, type access_control_Subject } from "./access_control.ts";
+import { access_control_create_file_checker, access_control_db_authorize_membership, access_control_db_authorize_node, access_control_db_authorize_file_write, access_control_db_can_act_on_file_node, access_control_db_filter_readable_file_nodes, access_control_subject_validator, type access_control_Subject } from "./access_control.ts";
 import { access_control_subject_reads_drafts } from "../shared/access-control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { files_ANCESTOR_FIELD_COUNT, files_derive_tree_path_for_file_node, files_lowercase_extension, files_default_text_shape_for_name, files_get_normalized_node_path_segments, files_normalize_markdown_name, files_normalize_name, files_normalize_special_node_path, files_normalize_upload_file_name, files_parse_content_type_prefix, files_pending_update_content_is_stale, files_pending_update_index_revision, files_TEXT_SEARCH_MAX_RESULTS, type files_VisibleEntry, files_check_name_and_path_length, files_PATH_MAX_LENGTH, files_check_new_folder_count, files_check_request_folder_prefixes, files_NEW_FOLDER_DEPTH_MAX } from "../shared/files.ts";
-import { files_metadata_db_patch_file_scope, files_metadata_db_query_saved_plan } from "./files_metadata.ts";
+import { files_metadata_db_patch_file_scope } from "./files_metadata.ts";
 import {
 	files_search_query_field_path_is_valid,
 	files_search_query_FIELD_PATH_MAX_LENGTH,
@@ -135,6 +144,7 @@ import {
 import { quotas_db_ensure } from "./quotas.ts";
 import {
 	files_pending_overlay_db_schedule_saved_scope,
+	files_pending_overlay_list,
 	files_pending_overlay_list_over_budget,
 } from "../server/files-pending-overlay.ts";
 import { quotas } from "../shared/quotas.ts";
@@ -163,12 +173,14 @@ const MAX_SUBTREE_POLICY_NODE_COUNT = 2000;
 // A search box page holds at most this many rows. A text search page has no split cursor and can
 // grow on a rerun, so a bigger one restarts from the first page before any per-row read.
 const SEARCH_SAVED_MAX_ITEMS = 100;
-// The split guard of the search box's metadata and link pages. Each row reads its node with one
+// The split guard of the search box's link pages. Each row reads its node with one
 // `get` and checks access once per restricted scope. The worst row is its own restricted scope,
 // read by a member: the node, the scope node, the user grant, 2 role assignments and 2 role
 // grants, 7 reads, so floor(3,000 / 7) = 428, and the guard is 400.
 const SEARCH_SAVED_SPLIT_GUARD = 400;
 const SEARCH_SAVED_TEXT_MAX_LENGTH = 200;
+// Like a Bash cursor: a custom-field search can go on for a day.
+const SEARCH_SAVED_CURSOR_TTL_MS = 24 * 60 * 60 * 1000;
 
 export async function enqueue_file_content_materialization(
 	ctx: MutationCtx,
@@ -4402,6 +4414,13 @@ export const list_subtree = internalQuery({
 		 * `lockedIds`, so a folder list shows them locked. A recursive list still leaves them out.
 		 */
 		withLocked: v.optional(v.literal(true)),
+		/**
+		 * Recursive only: one page of one area of the walk (`server/files-tree-walk.ts`), in the frame's
+		 * range. Rows a scope job has not reached yet come back with their ids in `lockedIds` when the
+		 * subject cannot open them. Without it a recursive read pages the open area only: volumes and
+		 * mounts have no other.
+		 */
+		frame: v.optional(files_tree_walk_frame_validator),
 	},
 	returns: v.object({
 		...paginationResultValidator(doc(app_convex_schema, "files_nodes")).fields,
@@ -4485,6 +4504,14 @@ export const list_subtree = internalQuery({
 		if (seek && (withRoot || !Number.isInteger(seek.phase) || seek.phase < 0)) {
 			throw convex_invalid_cursor_error("Invalid saved list seek.");
 		}
+		if (args.frame && (directChildren || seek || args.cursor !== null || args.order === "desc"))
+			throw convex_error({ message: "A walk frame reads a whole subtree in path order, from its own start." });
+		const frameRange = args.frame
+			? files_tree_walk_phase(
+					args.frame,
+					args.savedStream?.kind === "cohort" ? ["nodeCreationTime", "nodeId"] : ["_creationTime", "_id"],
+				)
+			: null;
 		for (const key of [seek?.lowerKey, seek?.upperKey]) {
 			if (
 				key &&
@@ -4513,9 +4540,11 @@ export const list_subtree = internalQuery({
 			startInclusive: seek?.lowerKey ? false : withRoot,
 			endInclusive: false,
 		});
-		const phase = phases[seek?.phase ?? 0];
-		if (!phase) return { page: [], continueCursor: "", isDone: true, phaseCount: phases.length, frontier: null };
+		const phase = frameRange ? frameRange.bounds : phases[seek?.phase ?? 0];
+		const phaseCount = frameRange ? frameRange.phaseCount : phases.length;
+		if (!phase) return { page: [], continueCursor: "", isDone: true, phaseCount, frontier: null };
 		const range = (q: IndexRange) => files_index_range_apply(q, phase);
+		const scopeNodeId = args.frame?.scopeNodeId ?? null;
 		const query = (
 			directChildren
 				? lowercaseExtension != null
@@ -4536,20 +4565,40 @@ export const list_subtree = internalQuery({
 								range(q.eq("parentId", parentId).eq("archiveOperationId", null).eq("kind", kind)),
 							)
 				: lowercaseExtension != null
-					? saved.queries.by_archive_kind_ext_tree((q) =>
-							range(q.eq("archiveOperationId", null).eq("kind", "file").eq("lowercaseExtension", lowercaseExtension)),
+					? saved.queries.by_scope_archive_kind_ext_tree((q) =>
+							range(
+								q
+									.eq("restrictedScopeNodeId", scopeNodeId)
+									.eq("archiveOperationId", null)
+									.eq("kind", "file")
+									.eq("lowercaseExtension", lowercaseExtension),
+							),
 						)
 					: contentTypeMatch?.field === "contentTypeFamily"
-						? saved.queries.by_archive_content_type_family_tree((q) =>
-								range(q.eq("archiveOperationId", null).eq("contentTypeFamily", contentTypeMatch.value)),
+						? saved.queries.by_scope_archive_family_tree((q) =>
+								range(
+									q
+										.eq("restrictedScopeNodeId", scopeNodeId)
+										.eq("archiveOperationId", null)
+										.eq("contentTypeFamily", contentTypeMatch.value),
+								),
 							)
 						: contentTypeMatch?.field === "contentTypeEssence"
-							? saved.queries.by_archive_content_type_essence_tree((q) =>
-									range(q.eq("archiveOperationId", null).eq("contentTypeEssence", contentTypeMatch.value)),
+							? saved.queries.by_scope_archive_essence_tree((q) =>
+									range(
+										q
+											.eq("restrictedScopeNodeId", scopeNodeId)
+											.eq("archiveOperationId", null)
+											.eq("contentTypeEssence", contentTypeMatch.value),
+									),
 								)
 							: kind == null
-								? saved.queries.by_archive_tree((q) => range(q.eq("archiveOperationId", null)))
-								: saved.queries.by_archive_kind_tree((q) => range(q.eq("archiveOperationId", null).eq("kind", kind)))
+								? saved.queries.by_scope_archive_tree((q) =>
+										range(q.eq("restrictedScopeNodeId", scopeNodeId).eq("archiveOperationId", null)),
+									)
+								: saved.queries.by_scope_archive_kind_tree((q) =>
+										range(q.eq("restrictedScopeNodeId", scopeNodeId).eq("archiveOperationId", null).eq("kind", kind)),
+									)
 		).order(args.order ?? "asc");
 
 		// The first page of direct children starts with the root row (the last page, in desc order). With
@@ -4580,6 +4629,17 @@ export const list_subtree = internalQuery({
 				}
 			: null;
 		const readable = await filter_readable(nodes);
+		if (args.frame) {
+			const withLocked =
+				scope.kind === "volume" || (await walk_frame_lists_locked(ctx, { ...args, frame: args.frame }));
+			return {
+				...result,
+				page: withLocked ? nodes : readable,
+				lockedIds: withLocked ? nodes.filter((node) => !readable.includes(node)).map((node) => node._id) : [],
+				frontier,
+				phaseCount,
+			};
+		}
 		// A folder list never drops a child of a readable folder: the caller sees it locked. Check the
 		// folder here, in this query: the caller looked it up in another one, and access may have changed
 		// since. A caller who cannot open it (also the workspace root, for a guest with one shared folder)
@@ -4614,6 +4674,117 @@ export type files_nodes_list_subtree_Result =
 	typeof list_subtree extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+const walk_read_args = {
+	agentSource: v.optional(ai_chat_workspaces_source_validator),
+	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+	visibilityUserId: v.id("users"),
+	subject: access_control_subject_validator,
+};
+
+/**
+ * Whether a walk frame lists the items the subject cannot open, as locked. Locked items show only when
+ * the folder that holds them is readable. Every frame root is, except the workspace root: a guest with
+ * one shared folder, or an account with no grant, cannot open it, so that frame lists only what they
+ * can open (like the folder list of the root).
+ */
+async function walk_frame_lists_locked(
+	ctx: QueryCtx,
+	args: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId"> & {
+		subject: access_control_Subject;
+		frame: { treePath: string };
+	},
+) {
+	return (
+		args.frame.treePath !== "/" ||
+		(await access_control_db_can_act_on_file_node(ctx, { ...args, fileNode: null, permission: "content.read" }))
+	);
+}
+
+/**
+ * One page of a walk frame's boundaries (`server/files-tree-walk.ts`): the restricted roots directly
+ * inside its area, each with its status for the subject. `matches` says whether the node matches the
+ * list's filter, so a locked one is listed.
+ */
+export const list_subtree_boundaries = internalQuery({
+	args: {
+		...walk_read_args,
+		savedStream: v.optional(files_saved_stream_validator),
+		frame: files_tree_walk_frame_validator,
+		numItems: v.number(),
+		kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
+		lowercaseExtension: v.optional(v.string()),
+		contentTypePrefixes: v.optional(v.array(v.string())),
+	},
+	returns: v.object({
+		page: v.array(
+			v.object({
+				node: doc(app_convex_schema, "files_nodes"),
+				status: files_tree_walk_boundary_status_validator,
+				matches: v.boolean(),
+			}),
+		),
+		frontier: v.union(v.array(v.any()), v.null()),
+		phaseCount: v.number(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+		if (authorized._nay) return { page: [], frontier: null, phaseCount: 0, isDone: true };
+		const saved = await files_saved_stream_db_create(ctx.db, args, args.savedStream);
+		const checker = access_control_create_file_checker(ctx, args);
+		const result = await files_tree_walk_db_boundaries({
+			saved,
+			frame: args.frame,
+			numItems: args.numItems,
+			can: (node) => checker.can(node, "content.read"),
+		});
+		const types = args.contentTypePrefixes?.map((prefix) => files_parse_content_type_prefix(prefix));
+		const withLocked = await walk_frame_lists_locked(ctx, args);
+		return {
+			...result,
+			// The walk does not enter a locked one either way, so leaving it out only drops its row.
+			page: result.page
+				.filter(({ status }) => withLocked || status === "readable" || status === "former_readable")
+				.map(({ node, status }) => ({
+					node,
+					status,
+					matches:
+						(args.kind === undefined || node.kind === args.kind) &&
+						(args.lowercaseExtension === undefined ||
+							(node.kind === "file" && node.lowercaseExtension === args.lowercaseExtension)) &&
+						(types === undefined || types.some((type) => type !== null && node[type.field] === type.value)),
+				})),
+		};
+	},
+});
+
+/**
+ * The walk frames above a cursor's top frame (`files_tree_walk_db_resolve_stack`), in the view of
+ * `savedStream`, where the frames came from. Null when the chain changed.
+ */
+export const resolve_walk_stack = internalQuery({
+	args: {
+		...walk_read_args,
+		savedStream: v.optional(files_saved_stream_validator),
+		start: v.object({ scopeNodeId: v.union(v.id("files_nodes"), v.null()), treePath: v.string() }),
+		top: v.object({ nodeId: v.id("files_nodes"), treePath: v.string() }),
+	},
+	returns: files_tree_walk_stack_validator,
+	handler: async (ctx, args) => {
+		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+		if (authorized._nay) return null;
+		const saved = await files_saved_stream_db_create(ctx.db, args, args.savedStream);
+		const checker = access_control_create_file_checker(ctx, args);
+		return await files_tree_walk_db_resolve_stack({
+			get_node: (nodeId) => files_saved_placement_db_get_node(ctx.db, nodeId, saved.tag),
+			can: (node) => checker.can(node, "content.read"),
+			start: args.start,
+			top: args.top,
+		});
+	},
+});
 
 // #endregion list
 
@@ -7012,7 +7183,8 @@ export type files_nodes_text_search_files_Result =
 
 /**
  * The search box door: one clause plus an optional folder, one page of matching rows. Every read is
- * one index range or one text search. The client merges and dedupes pages by `nodeId`.
+ * one index range or one text search. The client merges and dedupes pages by `nodeId`. Custom fields
+ * use `search_saved_metadata`.
  *
  * A problem comes back as the only row of a done page, because `usePaginatedQuery` shows rows only.
  * Input the app never sends gets an empty, done page.
@@ -7030,19 +7202,13 @@ export const search_saved = query({
 				nodeKind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
 			}),
 			v.object({ kind: v.literal("content"), text: v.string() }),
-			// One plan of `files_search_query_to_plans`. A chip with two plans is two calls.
-			v.object({
-				kind: v.literal("metadata"),
-				plan: files_metadata_search_plan_validator,
-			}),
 			// An exact path, with its case, or a saved node id.
 			v.object({ kind: v.literal("path"), path: v.string() }),
 			// `file.link:public`: the files with a public link.
 			v.object({ kind: v.literal("link") }),
 		),
 		/**
-		 * The exact path of the folder to search inside. Names, metadata `eq` and `exists`, and links
-		 * take one.
+		 * The exact path of the folder to search inside. Names and links take one.
 		 */
 		folderPath: v.optional(v.string()),
 		paginationOpts: paginationOptsValidator,
@@ -7067,7 +7233,6 @@ export const search_saved = query({
 				message: v.union(
 					v.literal("Folder not found"),
 					v.literal("This folder is too deep to search inside. Search a folder higher up"),
-					v.literal(files_search_query_VALUE_TOO_LONG_PROBLEM),
 				),
 			}),
 		),
@@ -7295,52 +7460,6 @@ export const search_saved = query({
 			};
 		}
 
-		if (clause.kind === "metadata") {
-			const plan = clause.plan;
-			// A folder scopes `eq` and `exists` only: `prefix` and `range` put their range on the value.
-			if (
-				plan.fieldPath.length > files_search_query_FIELD_PATH_MAX_LENGTH ||
-				!files_search_query_field_path_is_valid(plan.fieldPath) ||
-				(folder && (plan.op === "prefix" || plan.op === "range"))
-			) {
-				return refused;
-			}
-			// The index cuts long values, so a longer value could match a different one. Refuse it like the
-			// search box does.
-			if (
-				(plan.op === "eq" || plan.op === "prefix") &&
-				typeof plan.value === "string" &&
-				plan.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
-			) {
-				return { ...refused, page: [{ kind: "problem" as const, message: files_search_query_VALUE_TOO_LONG_PROBLEM }] };
-			}
-			const result = await files_metadata_db_query_saved_plan(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				plan,
-				treePathPrefix: folderTreePath,
-				moveView: saved.tag,
-			}).paginate(paginationOpts);
-			if (files_tree_db_page_needs_split(result, SEARCH_SAVED_SPLIT_GUARD)) {
-				return files_tree_db_page_split_required(result);
-			}
-			const nodes = await Promise.all(
-				result.page.map(async (metadataDoc) =>
-					metadataDoc.sourceKind === "committed"
-						? await files_saved_placement_db_get_node(ctx.db, metadataDoc.fileNodeId, saved.tag)
-						: null,
-				),
-			);
-			return {
-				...result,
-				// A move op gives the node its new path first, and its docs get it later. So check the
-				// folder on the node too: a doc with an old path must not show the file in its old folder.
-				page: await readable_rows(
-					nodes.filter((node) => folderTreePath === null || node?.treePath.startsWith(folderTreePath)),
-				),
-			};
-		}
-
 		// `set_node_share_link` keeps at most 500 links in a workspace, so a folder can drop rows of a
 		// page here instead of in an index range.
 		if (saved.tag) return refused;
@@ -7366,6 +7485,195 @@ export const search_saved = query({
 				nodes.filter((node) => folderTreePath === null || node?.treePath.startsWith(folderTreePath)),
 			),
 		};
+	},
+});
+
+const search_saved_metadata_problem_validator = v.object({
+	kind: v.literal("problem"),
+	message: v.union(v.literal("Folder not found"), v.literal(files_search_query_VALUE_TOO_LONG_PROBLEM)),
+});
+
+/**
+ * The checks of a search box custom-field search, then the caller's tenant and search view. Null is
+ * input the app never sends.
+ */
+export const get_search_saved_metadata_start = internalQuery({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		plan: files_metadata_search_plan_validator,
+		folderPath: v.optional(v.string()),
+	},
+	returns: v.union(
+		v.object({
+			kind: v.literal("start"),
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			userId: v.id("users"),
+			searchGeneration: v.number(),
+		}),
+		search_saved_metadata_problem_validator,
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) return null;
+		const { membership, userAuth } = reader;
+		const plan = args.plan;
+		const folderPath = args.folderPath === "/" ? undefined : args.folderPath;
+		// A folder scopes `eq` and `exists` only: `prefix` and `range` put their range on the value.
+		if (
+			plan.fieldPath.length > files_search_query_FIELD_PATH_MAX_LENGTH ||
+			!files_search_query_field_path_is_valid(plan.fieldPath) ||
+			(folderPath !== undefined && (plan.op === "prefix" || plan.op === "range"))
+		) {
+			return null;
+		}
+		// The index cuts long values, so a longer value could match a different one. Refuse it like the
+		// search box does.
+		if (
+			(plan.op === "eq" || plan.op === "prefix") &&
+			typeof plan.value === "string" &&
+			plan.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
+		) {
+			return { kind: "problem" as const, message: files_search_query_VALUE_TOO_LONG_PROBLEM };
+		}
+		if (folderPath !== undefined) {
+			const folderNode =
+				folderPath.startsWith("/") && folderPath.length <= files_search_query_FOLDER_PATH_MAX_LENGTH
+					? await files_db_get_visible_node_by_path(ctx, {
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							path: folderPath,
+						})
+					: null;
+			const folder =
+				folderNode?.kind === "folder"
+					? await files_tree_db_get_readable_node(ctx, { reader, nodeId: folderNode._id })
+					: null;
+			if (!folder) return { kind: "problem" as const, message: "Folder not found" as const };
+		}
+		return {
+			kind: "start" as const,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			searchGeneration: await files_saved_placement_db_get_search_generation(ctx.db, membership),
+		};
+	},
+});
+
+const search_saved_metadata_page_validator = v.object({
+	page: v.array(
+		v.union(
+			v.object({
+				kind: doc(app_convex_schema, "files_nodes").fields.kind,
+				nodeId: v.id("files_nodes"),
+				path: doc(app_convex_schema, "files_nodes").fields.path,
+				contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
+				locked: v.boolean(),
+			}),
+			search_saved_metadata_problem_validator,
+		),
+	),
+	cursor: v.union(v.string(), v.null()),
+	isDone: v.boolean(),
+});
+
+type search_saved_metadata_Result =
+	| { _yay: Infer<typeof search_saved_metadata_page_validator>; _nay?: undefined }
+	| { _nay: { message: string }; _yay?: undefined };
+
+/**
+ * The `value_store` value of a `search_saved_metadata` cursor. `kind` keeps out other values, like a
+ * Bash cursor.
+ */
+const search_saved_metadata_cursor_schema = z.object({
+	kind: z.literal("search_saved_metadata"),
+	searchGeneration: z.number(),
+	cursor: z.string(),
+});
+
+/**
+ * The search box's custom-field search: one page of saved rows. It runs the walk of Bash `meta
+ * search` (`files_pending_overlay_list`), so it reads nothing under a folder the caller cannot open.
+ * `prefix` and `range` take no folder. The rows are a snapshot, not reactive. The cursor is a
+ * `value_store` id, bound to the search view.
+ */
+export const search_saved_metadata = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		searchGeneration: v.optional(v.number()),
+		// One plan of `files_search_query_to_plans`. A chip with two plans is two calls.
+		plan: files_metadata_search_plan_validator,
+		folderPath: v.optional(v.string()),
+		numItems: v.number(),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v_result({ _yay: search_saved_metadata_page_validator }),
+	handler: async (ctx, args): Promise<search_saved_metadata_Result> => {
+		const start = await ctx.runQuery(internal.files_nodes.get_search_saved_metadata_start, {
+			membershipId: args.membershipId,
+			plan: args.plan,
+			folderPath: args.folderPath,
+		});
+		if (start?.kind !== "start") return Result({ _yay: { page: start ? [start] : [], cursor: null, isDone: true } });
+		let stored: z.infer<typeof search_saved_metadata_cursor_schema> | null = null;
+		if (args.cursor !== null) {
+			const value = await ctx.runQuery(internal.value_store.get, { id: args.cursor });
+			if (!value) return Result({ _nay: { message: "This search expired. Search again." } });
+			let raw: unknown = null;
+			try {
+				raw = JSON.parse(value.value);
+			} catch {
+				// Not JSON: not a cursor of this search.
+			}
+			const parsed = search_saved_metadata_cursor_schema.safeParse(raw);
+			if (!parsed.success) return Result({ _nay: { message: "This search cursor is not valid. Search again." } });
+			stored = parsed.data;
+		}
+		// A page of another search view could skip or repeat rows.
+		if ((stored?.searchGeneration ?? args.searchGeneration ?? start.searchGeneration) !== start.searchGeneration) {
+			return Result({ _nay: { message: "The saved search view changed. Search again." } });
+		}
+		const result = await files_pending_overlay_list(ctx, {
+			organizationId: start.organizationId,
+			workspaceId: start.workspaceId,
+			visibilityUserId: start.userId,
+			subject: { kind: "user", userId: start.userId, plugin: null },
+			folderPath: args.folderPath ?? "/",
+			mode: "metadata",
+			plan: args.plan,
+			order: "asc",
+			numItems: Math.min(args.numItems, SEARCH_SAVED_MAX_ITEMS),
+			cursor: stored?.cursor ?? null,
+		});
+		if (result._nay) return Result({ _nay: { message: result._nay.message } });
+		// No overlay user, so every row is saved.
+		const page = result._yay.items.flatMap((item) =>
+			item.target.kind === "saved"
+				? [
+						{
+							kind: item.kind,
+							nodeId: item.target.id,
+							path: item.path,
+							contentType: item.contentType,
+							locked: item.locked,
+						},
+					]
+				: [],
+		);
+		const cursor =
+			result._yay.continueCursor === null
+				? null
+				: await ctx.runMutation(internal.value_store.put, {
+						value: JSON.stringify({
+							kind: "search_saved_metadata",
+							searchGeneration: start.searchGeneration,
+							cursor: result._yay.continueCursor,
+						} satisfies z.infer<typeof search_saved_metadata_cursor_schema>),
+						ttl: SEARCH_SAVED_CURSOR_TTL_MS,
+					});
+		return Result({ _yay: { page, cursor, isDone: cursor === null } });
 	},
 });
 

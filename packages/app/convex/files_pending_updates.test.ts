@@ -2676,12 +2676,13 @@ describe("overlay reads on a file with collaboration off", () => {
 		});
 		// The search box is saved-only: it never finds a proposal.
 		const search_saved_title = async (value: string) => {
-			const found = await asUser.query(api.files_nodes.search_saved, {
+			const found = await asUser.action(api.files_nodes.search_saved_metadata, {
 				membershipId: seeded.membershipId,
-				clause: { kind: "metadata", plan: { op: "eq", fieldPath: "frontmatter.title", value } },
-				paginationOpts: { numItems: 50, cursor: null },
+				plan: { op: "eq", fieldPath: "frontmatter.title", value },
+				numItems: 50,
+				cursor: null,
 			});
-			return found.page.map((row) => (row.kind === "problem" ? row.message : row.nodeId));
+			return found._yay!.page.map((row) => (row.kind === "problem" ? row.message : row.nodeId));
 		};
 		const title_by_path = async () => {
 			const found = await t.query(internal.files_metadata.get_index_values_by_path, {

@@ -207,7 +207,8 @@ describe("files_pending_overlay flush", () => {
 		});
 		expect(await pending_view(draft)).toBe(null);
 		// Listings drop the places, and the hides still drop the saved rows, so `find` shows none of them.
-		expect((await f.v_find()).paths).toEqual([]);
+		// It shows only /hr, locked, and reads nothing under it.
+		expect((await f.v_find()).paths).toEqual(["/hr"]);
 		expect((await f.v_find({ kind: "file" })).paths).toEqual([]);
 		// `cp -r /proj` finds no folder to copy, since path reads hide /proj too. The refusal for a hidden
 		// child of a folder V can still open is in the next test.
@@ -434,7 +435,8 @@ describe("files_pending_overlay flush", () => {
 		// both: the move of /team is blocked, and so is notes.md, whose path goes through it.
 		await f.restrict(pub);
 		await f.expect_overlay_true();
-		expect((await f.v_find()).paths).toEqual([]);
+		// `find` shows /pub locked and reads nothing under it.
+		expect((await f.v_find()).paths).toEqual(["/pub"]);
 		const get_path = (pendingTarget: files_PendingTarget) =>
 			f.asV.query(api.files_visible.get_path, { membershipId: f.vMember.membershipId, target: pendingTarget });
 		expect(await get_path(target(team))).toBe(null);

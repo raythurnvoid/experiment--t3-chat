@@ -261,6 +261,7 @@ async function create_volume_fixture() {
 				docKind,
 				valueKind: "string",
 				stringValue: "published",
+				restrictedScopeNodeId: null,
 			});
 		}
 		return { scope, volumeId, generationId, installationId, rootId, rootPath, path, nodeId, assetId, r2Key };
