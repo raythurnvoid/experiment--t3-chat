@@ -8,7 +8,7 @@ import { PermanentUserData, mergeUpdates } from "yjs";
 
 import { files_yjs_Awareness } from "@/lib/files-yjs-awareness.ts";
 import { files_yjs_DocHandler } from "@/lib/files-yjs-doc.ts";
-import { files_yjs_fetch_snapshot, files_yjs_take_preloaded_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
+import { files_yjs_fetch_snapshot, files_yjs_take_preloaded_snapshot } from "@/lib/files-yjs-snapshot.ts";
 import {
 	app_convex,
 	app_convex_api,

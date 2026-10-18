@@ -127,7 +127,7 @@ import { useFileNodeActivities } from "@/lib/activities.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesTreeProvider, type FilesTreeRow } from "@/lib/files-tree-context.tsx";
-import { files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
+import { files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot.ts";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
 import { path_extract_segments_from, path_name_of } from "@/lib/paths.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";

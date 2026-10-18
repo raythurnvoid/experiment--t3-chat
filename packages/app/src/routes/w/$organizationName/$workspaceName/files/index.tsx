@@ -4,7 +4,7 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
-import { files_yjs_has_preloaded_snapshot, files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
+import { files_yjs_has_preloaded_snapshot, files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot.ts";
 import { files_editor_view_values, files_ROOT_ID } from "@/lib/files.ts";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";

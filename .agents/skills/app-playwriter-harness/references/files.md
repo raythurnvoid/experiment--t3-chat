@@ -1209,7 +1209,7 @@ Verified 2026-09-07 with rich and plain text in both collaboration modes, plus P
 
 ### Yjs Snapshot Load Paths
 
-Verified 2026-10-18 on `personal/home:/about.md`, a collaborative Markdown file. All three paths call `files_yjs_fetch_snapshot` in `src/lib/files-yjs-snapshot-preload.ts`.
+Verified 2026-10-18 on `personal/home:/about.md`, a collaborative Markdown file. All three paths call `files_yjs_fetch_snapshot` in `src/lib/files-yjs-snapshot.ts`.
 
 - Rich text: click the sidebar row. The click starts the preload, and the Yjs provider takes it. Check that `.ProseMirror` holds the file text.
 - Plain text: open the same node with `view=plain_text_editor`. A collaborative file loads through `files_fetch_file_yjs_state_and_text` in `src/lib/files.ts`. Check `.monaco-editor .view-lines`.

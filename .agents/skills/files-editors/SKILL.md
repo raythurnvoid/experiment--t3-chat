@@ -15,7 +15,7 @@ Paths below are relative to the repository root. Open the files for the affected
 | Diff review and hunk widgets | `packages/app/src/components/files/file-editor/file-editor-diff/file-editor-diff.tsx` and its paired CSS |
 | Client loading, rebasing, Monaco models, and presence | `packages/app/src/lib/files.ts` |
 | Yjs provider and its hook | `packages/app/src/lib/files-yjs-provider.ts`, `packages/app/src/lib/files-yjs-doc.ts`, `packages/app/src/lib/files-yjs-awareness.ts`, `packages/app/src/hooks/files-hooks.ts` |
-| Snapshot preload | `packages/app/src/lib/files-yjs-snapshot-preload.ts`, the creation handlers in `packages/app/src/components/files/files-sidebar.tsx`, and the open preload in `packages/app/src/routes/w/$organizationName/$workspaceName/files/index.tsx` |
+| Snapshot read and preload | `packages/app/src/lib/files-yjs-snapshot.ts`, the creation handlers in `packages/app/src/components/files/files-sidebar.tsx`, and the open preload in `packages/app/src/routes/w/$organizationName/$workspaceName/files/index.tsx` |
 | Text conversion and Yjs updates | `packages/app/shared/files-tiptap.ts`, `packages/app/shared/files-yjs.ts` |
 | Proposal text merge | `packages/app/shared/files-pending-text-merge.ts` |
 | Live updates and stored content | `packages/app/convex/files_nodes.ts`, `packages/app/convex/files_nodes_content.ts`, `packages/app/convex/schema.ts` |
