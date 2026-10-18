@@ -45,7 +45,9 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Tree engine: `@headless-tree/core` + `@headless-tree/react`
 - Backend data: saved lists and file/folder headers in `files_tree`; writes and content operations in `files_nodes`.
 - Primary data source: `files_tree.list_tree_children`, one open folder at a time (see Server-Driven Data)
-- `files_tree.get_workspace_move_view` selects the current normal and cohort streams. Tree and table queries use `files_tree_db` for the same current access and public fields as file detail reads. These modules keep editor code out of list queries. The view, index ranges and native page rules stay the same.
+- Tree, table and picker directory pages choose their Move view on the server. They start together,
+  without waiting for `get_workspace_move_view`. Search and Shared with you still use that workspace
+  view. Tree and table queries use `files_tree_db` for current access and public fields.
 - `files_transfer_queries` owns the four public Transfer read queries. Move and Copy writers stay in `files_transfer`. `files_visible_db` owns the shared draft reader. Read queries load its actual body, without loading the Visible list or file writers.
 - Local state is UI-only (`expandedItems`, search/selection, busy/pending flags) plus derived indexes from query data
 - Prefer Convex mutation `optimisticUpdate` over ad-hoc local mirrored tree state
@@ -390,6 +392,17 @@ and `find` also keep raw name order.
 
 ### Data path
 
+- The three directory doors (`list_tree_children`, `list_tree_children_sorted` and
+  `list_tree_children_shared`) take `stream: "normal" | "cohort"`. Each checks folder access,
+  then reads one exact parent anchor in `files_saved_places`. A folder with no anchor never
+  reads the workspace Move slot. A folder with an anchor reads the slot's selected side.
+- Every page returns `directoryView`: null when idle, else `{ cohortId, view }`. A continuation
+  or split child sends that tag as `pageView`, beside its unchanged native cursor. A stale tag
+  answers InvalidCursor. Idle cohort streams return tagged empty pages. They still check access.
+- `useFilesPaginatedQuery` checks tags across pages and split children. A mismatch or native
+  InvalidCursor starts a fresh pagination ID and refills the requested rows. Tree, table and picker
+  streams merge only matching tags. They keep their last complete rows while new pages load.
+  Search, Shared roots and action cursors keep their existing global view rules.
 - `files_tree.list_tree_children_sorted` pages one stream of one folder: one `kind` (folder or
   file), one `segment` (`value` or `missing`), and `restricted` (the open children, or the children
   that are their own restricted root). Each stream is one index range, read with one `.paginate()`
@@ -504,6 +517,7 @@ and `find` also keep raw name order.
     files down. A missing segment starts once both value streams of its kind are done, and stays
     started for that sort.
   - The hook loads pages until it has the rows the table wants. `loadMore()` asks for 100 more.
+    A Move view change keeps that requested count. A new folder, sort or filter starts one page.
   - A node in two streams (shared to the member and to their role, or for a moment right after it
     became restricted) shows once.
   - A custom-field sort gives a member's twin rows no value (`sortKey.parts: [null]`), so the merge
@@ -579,7 +593,12 @@ and `find` also keep raw name order.
   more slot. The README area shows nothing until `get_folder_readme` answers: a skeleton would have
   to guess between the README and the "No README.md" box. The files route starts that query on
   the router's `onBeforeNavigate`, about 200ms before the new view mounts, so a cold folder waits
-  only a few frames and then shows the README header with its editor skeleton, or the empty box. A folder with fewer than five rows still shrinks
+  only a few frames and then shows the README header with its editor skeleton, or the empty box.
+  It starts the view's other first queries there too, with the view's exact args so they share one
+  subscription: the node, its pending target, the breadcrumb ancestors, the write permission, and for
+  a folder the saved sort and the drafts hint. A left mouse press on a folder table link or a
+  sidebar row starts them before the click. A cold folder then shows its rows about 160ms sooner
+  (median 630ms to 468ms on dev, 2026-10-18). The sorted list still waits for the saved sort. A folder with fewer than five rows still shrinks
   when its rows arrive; its size is not known before then.
 - The table carries `data-sort-fields` for the sort of the shown rows (`rowsSort`, held while a new
   sort loads). Headers follow the requested sort at once: the sorted header carries

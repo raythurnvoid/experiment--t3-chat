@@ -113,9 +113,10 @@ vi.mock("convex/react", async () => {
 			}, []);
 			// A test can answer with its own page status. Otherwise every list uses `pendingListStatus`.
 			const result = queryMock(query, args);
+			const directoryView = args !== "skip" && (args as { stream?: string }).stream !== undefined ? null : undefined;
 			return result !== undefined && !Array.isArray(result)
-				? { ...result, loadMore: loadMorePendingMock }
-				: { results: result ?? [], status: pendingListStatus, loadMore: loadMorePendingMock };
+				? { ...result, directoryView, loadMore: loadMorePendingMock }
+				: { results: result ?? [], status: pendingListStatus, directoryView, loadMore: loadMorePendingMock };
 		},
 		useQueries: (queries: Record<string, { query: never; args: unknown }>) => {
 			querySetsMock(useId(), queries);
@@ -167,6 +168,7 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 				// The query mock ignores these args and answers with every tree row as a plain array, not one folder page.
 				const rows = useQuery(api.files_tree.list_tree_children, {
 					membershipId,
+					stream: "normal",
 					parentId: "root",
 					kind: "folder",
 					archived: false,
@@ -595,7 +597,7 @@ beforeEach(() => {
 			case "files_tree:list_tree_children_shared": {
 				// Serve a whole segment at once. The hook's paging has its own tests. The tree rows are open, and
 				// `lockedRows` come on the twin. This member has no share streams.
-				const { parentId, kind, segment, sort, filter, restricted, principalIndex } = args as {
+				const { parentId, kind, segment, sort, filter, restricted, principalIndex, stream } = args as {
 					parentId: string;
 					kind: string;
 					segment: string;
@@ -603,7 +605,9 @@ beforeEach(() => {
 					filter: files_table_Filter | null;
 					restricted?: boolean;
 					principalIndex?: number;
+					stream: "normal" | "cohort";
 				};
+				if (stream === "cohort") return [];
 				const source = principalIndex !== undefined ? [] : restricted ? lockedRows : (treeNodes ?? []);
 				return segment === "missing"
 					? []
@@ -1721,10 +1725,11 @@ describe("FileNodeView folder clipboard", () => {
 		}));
 		let secondPageReady = false;
 		const query = queryMock.getMockImplementation()!;
-		queryMock.mockImplementation((reference: never, args: { kind?: string; restricted?: boolean }) => {
+		queryMock.mockImplementation((reference: never, args: { kind?: string; restricted?: boolean; stream?: string }) => {
 			if (
 				getFunctionName(reference) !== "files_tree:list_tree_children_sorted" ||
 				args.kind !== "file" ||
+				args.stream === "cohort" ||
 				args.restricted
 			) {
 				return query(reference, args);
@@ -2011,8 +2016,8 @@ describe("FileNodeView folder sort", () => {
 		treeNodes = [node, file, folder];
 		folderSort = { sort: [{ field: "size", direction: "desc" }], canSave: true };
 		const query = queryMock.getMockImplementation()!;
-		queryMock.mockImplementation((reference: never, args: { kind?: string; segment?: string }) => {
-			if (getFunctionName(reference) !== "files_tree:list_tree_children_sorted" || args.segment !== "value") {
+		queryMock.mockImplementation((reference: never, args: { kind?: string; segment?: string; stream?: string }) => {
+			if (getFunctionName(reference) !== "files_tree:list_tree_children_sorted" || args.segment !== "value" || args.stream === "cohort") {
 				return query(reference, args);
 			}
 			return args.kind === "file"
@@ -2051,8 +2056,8 @@ describe("FileNodeView folder sort", () => {
 		treeNodes = [node, file, folder];
 		folderSort = { sort: [{ field: "extension", direction: "asc" }], canSave: true };
 		const query = queryMock.getMockImplementation()!;
-		queryMock.mockImplementation((reference: never, args: { kind?: string; segment?: string }) => {
-			if (getFunctionName(reference) !== "files_tree:list_tree_children_sorted") {
+		queryMock.mockImplementation((reference: never, args: { kind?: string; segment?: string; stream?: string }) => {
+			if (getFunctionName(reference) !== "files_tree:list_tree_children_sorted" || args.stream === "cohort") {
 				return query(reference, args);
 			}
 			// Folders have no file.extension, so they are all in the missing segment, keyed by name.

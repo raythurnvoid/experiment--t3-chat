@@ -450,17 +450,14 @@ describe("saved placement foundation", () => {
 		const args = {
 			membershipId: f.db.membershipId,
 			savedStream,
-			parentId: "root" as const,
-			kind: "file" as const,
-			archived: false,
-			restricted: false,
+			clause: { kind: "name", text: "old", nodeKind: "file" } as const,
 			paginationOpts: { cursor: null, numItems: 1 },
 		};
 		// A normal stream becomes stale at intake; a cohort stream becomes stale at publication.
-		if (kind === "cohort") await f.asUser.query(api.files_tree.list_tree_children, args);
+		if (kind === "cohort") await f.asUser.query(api.files_nodes.search_saved, args);
 		await f.publish();
 		await expect(
-			f.asUser.query(api.files_tree.list_tree_children, args),
+			f.asUser.query(api.files_nodes.search_saved, args),
 			"a stale view stays refused and carries its machine-readable reason",
 		).rejects.toMatchObject({
 			data: {
@@ -472,12 +469,15 @@ describe("saved placement foundation", () => {
 		});
 		const after = await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
 		if (!after?.cohortId || !after.view) throw new Error("Expected the new saved view");
-		const fresh = await f.asUser.query(api.files_tree.list_tree_children, {
+		const fresh = await f.asUser.query(api.files_nodes.search_saved, {
 			...args,
-			parentId: f.parentId,
+			clause: { kind: "name", text: "new", nodeKind: "file" },
 			savedStream: { kind: "cohort", cohortId: after.cohortId, view: after.view, generation: after.generation },
 		});
-		expect(fresh.page.map((node) => node._id), "the new view still returns the same saved file").toEqual([f.nodeId]);
+		expect(
+			fresh.page.map((node) => (node.kind === "problem" ? node.message : node.nodeId)),
+			"the new view still returns the same saved file",
+		).toEqual([f.nodeId]);
 	});
 
 	test("a search counter change rejects search continuation but keeps tree continuation", async () => {
@@ -502,7 +502,7 @@ describe("saved placement foundation", () => {
 		} as const;
 		const treeArgs = {
 			membershipId: f.db.membershipId,
-			savedStream,
+			stream: "normal",
 			parentId: "root",
 			kind: "file",
 			archived: false,
@@ -531,6 +531,7 @@ describe("saved placement foundation", () => {
 		).toEqual(slot);
 		const nextTree = await f.asUser.query(api.files_tree.list_tree_children, {
 			...treeArgs,
+			pageView: tree.directoryView,
 			paginationOpts: { cursor: tree.continueCursor, numItems: 1 },
 		});
 		const expected = [...f.normalNodes.values()].sort();

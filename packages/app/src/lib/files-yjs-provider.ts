@@ -8,7 +8,7 @@ import { PermanentUserData, mergeUpdates } from "yjs";
 
 import { files_yjs_Awareness } from "@/lib/files-yjs-awareness.ts";
 import { files_yjs_DocHandler } from "@/lib/files-yjs-doc.ts";
-import { files_yjs_take_preloaded_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
+import { files_yjs_fetch_snapshot, files_yjs_take_preloaded_snapshot } from "@/lib/files-yjs-snapshot.ts";
 import {
 	app_convex,
 	app_convex_api,
@@ -410,15 +410,7 @@ class FilesConvexYjsStream {
 						throw new Error("Yjs snapshot URL is not set");
 					}
 
-					const snapshotUpdate = preload
-						? await preload.update
-						: await fetch(result.snapshotUrl).then((response) => {
-								if (!response.ok) {
-									throw new Error("Failed to fetch Yjs snapshot from R2");
-								}
-
-								return response.arrayBuffer();
-							});
+					const snapshotUpdate = preload ? await preload.update : await files_yjs_fetch_snapshot(result.snapshotUrl);
 					if (!snapshotUpdate) throw new Error("Yjs snapshot bytes are not set");
 					resultSnapshotUpdate = snapshotUpdate;
 					if (this.disposed) break;

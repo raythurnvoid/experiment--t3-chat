@@ -9,7 +9,7 @@ import {
 	type files_sort_Sort,
 } from "../../shared/files-sort.ts";
 import type { files_table_Filter } from "../../shared/files-table.ts";
-import type { files_SavedStream } from "../../shared/files.ts";
+import type { files_DirectoryView } from "../../shared/files.ts";
 import { useFilesSearchSaved, useFilesSortedChildren } from "./files-search-hooks.ts";
 
 type SortedPage = FunctionReturnType<typeof app_convex_api.files_tree.list_tree_children_sorted>;
@@ -38,6 +38,7 @@ const { paginatedArgsSeen, sorted, saved } = vi.hoisted(() => ({
 		pages: new Map<string, SortedRow[][]>(),
 		splitting: new Set<string>(),
 		loadMoreCalls: new Map<string, number>(),
+		directoryViews: new Map<string, files_DirectoryView>(),
 		revision: 0,
 		listeners: new Set<() => void>(),
 	},
@@ -55,7 +56,7 @@ const { paginatedArgsSeen, sorted, saved } = vi.hoisted(() => ({
 // The args of a `list_tree_children_sorted` stream (`restricted`) or of a `list_tree_children_shared`
 // stream (`principalIndex`).
 type SortedArgs = {
-	savedStream?: files_SavedStream;
+	stream: "normal" | "cohort";
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	parentId: app_convex_Id<"files_nodes"> | "root";
 	kind: "file" | "folder";
@@ -67,7 +68,7 @@ type SortedArgs = {
 	namePrefix: string | null;
 };
 
-const sorted_key = (args: SortedArgs) =>
+const sorted_key = (args: SortedArgs, directoryView: files_DirectoryView = null) =>
 	JSON.stringify([
 		args.membershipId,
 		args.parentId,
@@ -78,7 +79,8 @@ const sorted_key = (args: SortedArgs) =>
 		args.sort,
 		args.filter,
 		args.namePrefix,
-		args.savedStream ?? { kind: "normal", generation: 0 },
+		args.stream,
+		directoryView,
 	]);
 const sorted_fixture_key = (args: {
 	kind: "folder" | "file";
@@ -90,7 +92,8 @@ const sorted_fixture_key = (args: {
 	folderId?: typeof FOLDER_ID;
 	filter?: files_table_Filter | null;
 	namePrefix?: string | null;
-	savedStream?: files_SavedStream;
+	stream?: "normal" | "cohort";
+	directoryView?: files_DirectoryView;
 }) => {
 	const {
 		direction,
@@ -102,7 +105,8 @@ const sorted_fixture_key = (args: {
 		folderId = FOLDER_ID,
 		filter = null,
 		namePrefix = null,
-		savedStream,
+		stream = "normal",
+		directoryView = null,
 	} = args;
 
 	return sorted_key({
@@ -114,8 +118,8 @@ const sorted_fixture_key = (args: {
 		sort: [{ field, direction }],
 		filter,
 		namePrefix,
-		savedStream,
-	});
+		stream,
+	}, directoryView);
 };
 const notify_sorted = () => {
 	sorted.revision++;
@@ -163,7 +167,9 @@ vi.mock("convex/react", async (importOriginal) => {
 		) => {
 			useSyncExternalStore(subscribe, () => sorted.revision);
 			const isSaved = getFunctionName(query) === "files_nodes:search_saved";
-			const key = args === "skip" ? "skip" : sorted_key(args);
+			const directoryView: files_DirectoryView = sorted.view?.cohortId ? { cohortId: sorted.view.cohortId, view: sorted.view.view! } : null;
+			const key = args === "skip" ? "skip" : sorted_key(args, directoryView);
+			const reportedView = sorted.directoryViews.has(key) ? sorted.directoryViews.get(key)! : directoryView;
 			if (args !== "skip" && !isSaved) paginatedArgsSeen.push(args);
 			const [loaded, setLoaded] = useState({ key, numItems: options.initialNumItems, pageCount: 1 });
 			if (args !== "skip" && isSaved) {
@@ -178,7 +184,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			const numItems = loaded.key === key ? loaded.numItems : options.initialNumItems;
 			const pageCount = loaded.key === key ? loaded.pageCount : 1;
 			if (args === "skip" || sorted.loadingFields.has(args.sort[0].field) || sorted.loadingKeys.has(key)) {
-				return { results: [], status: "LoadingFirstPage", loadMore: () => {} };
+				return { results: [], status: "LoadingFirstPage", directoryView: undefined, loadMore: () => {} };
 			}
 
 			const countLoadMore = () => sorted.loadMoreCalls.set(key, (sorted.loadMoreCalls.get(key) ?? 0) + 1);
@@ -191,11 +197,12 @@ vi.mock("convex/react", async (importOriginal) => {
 				// Convex keeps the pages before a split page and reports "LoadingMore" until the split ends.
 				// It ignores loadMore then.
 				if (pageCount > 1 && sorted.splitting.has(key)) {
-					return { results: pages.slice(0, pageCount - 1).flat(), status: "LoadingMore", loadMore: countLoadMore };
+					return { results: pages.slice(0, pageCount - 1).flat(), status: "LoadingMore", directoryView: undefined, loadMore: countLoadMore };
 				}
 				return {
 					results: pages.slice(0, pageCount).flat(),
 					status: pageCount >= pages.length ? "Exhausted" : "CanLoadMore",
+					directoryView: reportedView,
 					loadMore,
 				};
 			}
@@ -205,6 +212,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			return {
 				results: rows.slice(0, numItems),
 				status: numItems >= rows.length ? "Exhausted" : "CanLoadMore",
+				directoryView: reportedView,
 				loadMore,
 			};
 		},
@@ -265,6 +273,7 @@ beforeEach(() => {
 	sorted.pages.clear();
 	sorted.splitting.clear();
 	sorted.loadMoreCalls.clear();
+	sorted.directoryViews.clear();
 	saved.argsSeen.length = 0;
 	saved.metadataArgsSeen.length = 0;
 	saved.metadataFails = null;
@@ -309,24 +318,72 @@ describe("useFilesSortedChildren", () => {
 			},
 		);
 
-	test("merges the selected saved view and restarts it at publication", () => {
+	test("starts directory pages before the workspace Move view answers", () => {
+		sorted.view = undefined;
+		render_sorted(NAME_ASC);
+		expect(paginatedArgsSeen.length, "directory pages do not wait for the workspace Move view").toBeGreaterThan(0);
+	});
+
+	test("merges matching directory views and holds rows until publication reaches every stream", () => {
 		const cohortId = "cohort_1" as app_convex_Id<"files_move_cohorts">;
 		sorted.view = { cohortId, view: "before", generation: 1, searchGeneration: 1 };
-		const normal: files_SavedStream = { kind: "normal", generation: 1 };
-		const before: files_SavedStream = { kind: "cohort", cohortId, view: "before", generation: 1 };
-		const after: files_SavedStream = { kind: "cohort", cohortId, view: "after", generation: 2 };
+		const before = { cohortId, view: "before" } as const;
+		const after = { cohortId, view: "after" } as const;
 		const fixture = { kind: "file", segment: "value", field: "name", direction: "asc" } as const;
-		sorted.rows.set(sorted_fixture_key({ ...fixture, savedStream: normal }), [saved_row({ kind: "file", name: "b.md" })]);
-		sorted.rows.set(sorted_fixture_key({ ...fixture, savedStream: before }), [saved_row({ kind: "file", name: "a.md" })]);
-		sorted.rows.set(sorted_fixture_key({ ...fixture, savedStream: after }), [saved_row({ kind: "file", name: "c.md" })]);
-		sorted.rows.set(sorted_fixture_key({ ...fixture, savedStream: { kind: "normal", generation: 2 } }), [saved_row({ kind: "file", name: "b.md" })]);
+		sorted.rows.set(sorted_fixture_key({ ...fixture, directoryView: before }), [saved_row({ kind: "file", name: "b.md" })]);
+		sorted.rows.set(sorted_fixture_key({ ...fixture, stream: "cohort", directoryView: before }), [saved_row({ kind: "file", name: "a.md" })]);
+		const afterKey = sorted_fixture_key({ ...fixture, stream: "cohort", directoryView: after });
+		sorted.rows.set(afterKey, [saved_row({ kind: "file", name: "c.md" })]);
+		sorted.rows.set(sorted_fixture_key({ ...fixture, directoryView: after }), [saved_row({ kind: "file", name: "b.md" })]);
 		const { result } = render_sorted(NAME_ASC);
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md"]);
 		act(() => {
+			sorted.directoryViews.set(afterKey, before);
 			sorted.view = { cohortId, view: "after", generation: 2, searchGeneration: 2 };
 			notify_sorted();
 		});
+		expect(result.current.rows?.map((row) => row.name), "different directory views never form one table").toEqual(["a.md", "b.md"]);
+		expect(result.current.isBusy).toBe(true);
+		act(() => {
+			sorted.directoryViews.clear();
+			notify_sorted();
+		});
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["b.md", "c.md"]);
+	});
+
+	test.each(["before", "after", "idle"] as const)("keeps Show more rows while a Move %s view refills", (view) => {
+		const cohortId = "cohort_1" as app_convex_Id<"files_move_cohorts">;
+		const initialView = view === "before" ? null : { cohortId, view: view === "after" ? "before" as const : "after" as const };
+		const nextView = view === "idle" ? null : { cohortId, view };
+		sorted.view = initialView === null
+			? { cohortId: null, view: null, generation: 0, searchGeneration: 0 }
+			: { ...initialView, generation: 0, searchGeneration: 0 };
+		const fixture = { kind: "file", segment: "value", field: "name", direction: "asc" } as const;
+		const rows = file_names(150).map((name) => saved_row({ kind: "file", name }));
+		sorted.rows.set(sorted_fixture_key({ ...fixture, directoryView: initialView }), rows);
+		const { result } = render_sorted(NAME_ASC);
+		act(() => result.current.loadMore());
+		expect(result.current.rows).toHaveLength(150);
+
+		const nextKey = sorted_fixture_key({ ...fixture, directoryView: nextView });
+		sorted.pages.set(nextKey, [rows.slice(0, 100), rows.slice(100)]);
+		sorted.splitting.add(nextKey);
+		act(() => {
+			sorted.view = nextView === null
+				? { cohortId: null, view: null, generation: 1, searchGeneration: 1 }
+				: { ...nextView, generation: 1, searchGeneration: 1 };
+			notify_sorted();
+		});
+		expect(result.current.rows, "Show more keeps all loaded rows while the Move pages refill").toHaveLength(150);
+		expect(result.current.isBusy).toBe(true);
+		expect(sorted.loadMoreCalls.get(nextKey)).toBe(1);
+
+		act(() => {
+			sorted.splitting.delete(nextKey);
+			notify_sorted();
+		});
+		expect(result.current.rows?.map((row) => row.name)).toEqual(file_names(150));
+		expect(result.current.isBusy).toBe(false);
 	});
 
 	test("puts folders first and holds a locked row until the loaded rows reach it", () => {

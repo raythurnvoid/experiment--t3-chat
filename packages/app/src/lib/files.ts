@@ -25,6 +25,7 @@ import { TypedEventTarget } from "@remix-run/interaction";
 import { should_never_happen, XCustomEvent } from "./utils.ts";
 import type { usePresenceList, usePresenceSessions, usePresenceSessionsData } from "../hooks/presence-hooks.ts";
 import { objects_equal_deep } from "./object.ts";
+import { files_yjs_fetch_snapshot } from "./files-yjs-snapshot.ts";
 import { editor as monaco_editor } from "monaco-editor";
 import {
 	app_convex,
@@ -756,13 +757,7 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 			continue;
 		}
 
-		const yjsSnapshotUpdate = await fetch(yjsSnapshotTarget.snapshotUrl).then((response) => {
-			if (!response.ok) {
-				throw new Error("Failed to fetch Yjs snapshot from R2");
-			}
-
-			return response.arrayBuffer();
-		});
+		const yjsSnapshotUpdate = await files_yjs_fetch_snapshot(yjsSnapshotTarget.snapshotUrl);
 		const yjsSnapshotDoc = yjsSnapshotTarget.snapshot;
 
 		// By default the API returns updates in descending order; normalize to ascending and filter

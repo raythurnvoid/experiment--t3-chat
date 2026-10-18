@@ -34,7 +34,7 @@ import { CatchBoundary } from "@tanstack/react-router";
 import { FileEditorError } from "./file-editor-error.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import type { files_yjs_EditBlockReason } from "@/lib/files-yjs-provider.ts";
-import { files_yjs_has_preloaded_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
+import { files_yjs_has_preloaded_snapshot } from "@/lib/files-yjs-snapshot.ts";
 
 // #region pending updates floating
 type FileEditorPendingUpdatesFloating_ClassNames =

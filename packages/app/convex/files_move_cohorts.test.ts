@@ -10,7 +10,6 @@ import {
 	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_slot,
-	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { list_tree_children } from "./files_tree.ts";
@@ -626,10 +625,9 @@ describe("Move cohort publication", () => {
 			for (const [table] of query.mock.calls) tables.add(table);
 			return result;
 		});
-		const view = await f.t.run((ctx) => files_saved_placement_db_get_view(ctx.db, f.scope));
 		const page = await f.asUser.query(api.files_tree.list_tree_children, {
 			membershipId: f.db.membershipId,
-			savedStream: { kind: "normal", generation: view.generation },
+			stream: "normal",
 			parentId: outside._yay.nodeId,
 			kind: "folder",
 			archived: false,
@@ -637,7 +635,8 @@ describe("Move cohort publication", () => {
 			paginationOpts: { numItems: 10, cursor: null },
 		});
 		expect(page.page.map((row) => row.name)).toEqual(["inner"]);
-		expect(cohortReads, "the page reads the view from the slot").toEqual([]);
+		expect(cohortReads, "the page never reads the Move cohort").toEqual([]);
+		expect(tables, "an unrelated folder never reads the Move slot").not.toContain("files_move_workspace_slots");
 		expect(tables, "the page does not read the search number").not.toContain("files_move_search_generations");
 	});
 
@@ -662,7 +661,7 @@ describe("Move cohort publication", () => {
 				slotChanges.push(next.slot?.cohortId ? `${next.slot.visibleView}/${next.slot.migrationDirection}` : "null/null");
 			last = next;
 		});
-		// Tree pages read the slot. Each change runs every open tree page again.
+		// Only folders with staged places read this slot.
 		expect(slotChanges, "only publish and complete change the slot").toEqual(["after/to_normal", "null/null"]);
 		expect(last.search - first.search, "each cleaned node still restarts search").toBeGreaterThan(2);
 	}, 120_000);

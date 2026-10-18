@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import * as Y from "yjs";
 import { files_PresenceStore } from "./files.ts";
 import { files_yjs_Provider, type files_yjs_Provider_Args } from "./files-yjs-provider.ts";
-import { files_yjs_preload_snapshot } from "./files-yjs-snapshot-preload.ts";
+import { files_yjs_preload_snapshot } from "./files-yjs-snapshot.ts";
 
 type PromiseConstructorWithTry = Omit<PromiseConstructor, "try"> & {
 	try?: <T>(callback: () => T | PromiseLike<T>) => Promise<Awaited<T>>;

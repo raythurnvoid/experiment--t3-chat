@@ -2468,6 +2468,7 @@ describe("selected file writers", () => {
 		const [{ page: outerFolders }, { page: innerFolders }] = await Promise.all(
 			[outerId, innerId].map((parentId) =>
 				asMember.query(api.files_tree.list_tree_children, {
+					stream: "normal" as const,
 					membershipId: member.membershipId,
 					parentId,
 					kind: "folder",
@@ -4754,6 +4755,7 @@ describe("files_nodes public read-only view", () => {
 			restricted: boolean;
 		}) =>
 			args.as.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId: args.membershipId,
 				parentId: args.parentId,
 				kind: args.kind,
@@ -4922,6 +4924,7 @@ describe("member controls on plugin-labeled nodes", () => {
 		if (created._nay) throw new Error(created._nay.message);
 		const list_folders = (parentId: Id<"files_nodes"> | typeof files_ROOT_ID) =>
 			asOwner.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",

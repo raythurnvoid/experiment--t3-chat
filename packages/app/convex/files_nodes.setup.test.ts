@@ -23,6 +23,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import type { files_metadata_Entry, files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import { files_sort_compare, files_sort_text_key, type files_sort_Clause } from "../shared/files-sort.ts";
 import type { files_table_Filter } from "../shared/files-table.ts";
+import type { files_DirectoryView } from "../shared/files.ts";
 
 /**
  * Insert one node for the tree query tests. `scope: "self"` makes the node its own restricted scope.
@@ -335,8 +336,13 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 		 */
 		principalIndex?: 0 | 1 | 2;
 	};
-	type PageArgs = Stream & { paginationOpts: { numItems: number; cursor: string | null; endCursor?: string } };
+	type PageArgs = Stream & {
+		pageView?: files_DirectoryView;
+		paginationOpts: { numItems: number; cursor: string | null; endCursor?: string };
+	};
 	const page_query_args = (args: PageArgs) => ({
+		stream: "normal" as const,
+		pageView: args.pageView ?? null,
 		membershipId: args.membershipId ?? db.membershipId,
 		parentId,
 		kind: args.kind,
@@ -348,6 +354,8 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 		paginationOpts: args.paginationOpts,
 	});
 	const shared_query_args = (args: PageArgs, principalIndex: 0 | 1 | 2) => ({
+		stream: "normal" as const,
+		pageView: args.pageView ?? null,
 		membershipId: args.membershipId ?? db.membershipId,
 		parentId,
 		kind: args.kind,
@@ -392,8 +400,9 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 	const walk = async (args: Stream & { numItems: number }) => {
 		const pages: Page["page"][] = [];
 		let cursor: string | null = null;
+		let pageView: files_DirectoryView = null;
 		for (let index = 0; index < 200; index++) {
-			const result: Page = await read_page({ ...args, paginationOpts: { numItems: args.numItems, cursor } });
+			const result: Page = await read_page({ ...args, pageView, paginationOpts: { numItems: args.numItems, cursor } });
 			pages.push(result.page);
 			if (result.isDone) {
 				const full =
@@ -410,6 +419,7 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 				return pages;
 			}
 			cursor = result.continueCursor;
+			pageView = result.directoryView;
 		}
 		throw new Error("Expected the stream to end");
 	};
@@ -833,6 +843,7 @@ export async function seed_search_box_fixture(t: ReturnType<typeof test_convex>)
 	if (written._nay) throw new Error(written._nay.message);
 
 	const { page: rootFolders } = await asOwner.query(api.files_tree.list_tree_children, {
+		stream: "normal",
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		kind: "folder",

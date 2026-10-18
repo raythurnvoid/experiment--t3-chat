@@ -141,7 +141,7 @@ describe("initial Move publication", () => {
 			kind: "folder",
 			archived: false,
 			restricted: false,
-			savedStream: { kind: "cohort", cohortId: cohort._id, view: "after", generation: cohort.slotGeneration },
+			stream: "cohort",
 			paginationOpts: { cursor: null, numItems: 100 },
 		});
 		expect(selected.page).toEqual([

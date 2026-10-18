@@ -23,6 +23,11 @@ export type files_SavedStream =
 			generation: number;
 	  };
 
+export type files_DirectoryView = {
+	cohortId: app_convex_Id<"files_move_cohorts">;
+	view: "before" | "after";
+} | null;
+
 export type files_PendingTarget = app_convex_Doc<"files_pending_updates">["target"];
 export type files_PendingParent = app_convex_Doc<"files_pending_nodes">["parent"];
 export type files_VisibleEntry =

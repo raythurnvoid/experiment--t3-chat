@@ -6,7 +6,7 @@ import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/a
 import { files_ROOT_ID } from "@/lib/files.ts";
 import { files_merge_sorted_streams } from "@/hooks/files-search-hooks.ts";
 import { files_sort_text_key } from "../../shared/files-sort.ts";
-import type { files_SavedStream } from "../../shared/files.ts";
+import type { files_DirectoryView, files_SavedStream } from "../../shared/files.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useFilesPaginatedQuery } from "@/hooks/files-paginated-query-hooks.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -92,11 +92,11 @@ export function files_tree_stream_args(args: {
 	folderId: FilesTreeFolderId;
 	kind: app_convex_Doc<"files_nodes">["kind"];
 	archived: boolean;
-	savedStream?: files_SavedStream;
+	stream: "normal" | "cohort";
 }) {
-	const { membershipId, folderId, kind, archived, savedStream } = args;
+	const { membershipId, folderId, kind, archived, stream } = args;
 	return {
-		children: (restricted: boolean) => ({ membershipId, parentId: folderId, kind, archived, restricted, ...(savedStream ? { savedStream } : {}) }),
+		children: (restricted: boolean) => ({ membershipId, parentId: folderId, kind, archived, restricted, stream }),
 	};
 }
 
@@ -131,13 +131,24 @@ function merge_tree_streams(streams: Array<UsePaginatedQueryResult<FilesTreeRow>
  * segments before it are done, so a later page of folders cannot push the files down. Show more
  * loads the stream that holds the last shown segment back.
  */
-function picker_list(segments: Array<Array<UsePaginatedQueryResult<FilesTreeRow>>>, pageSize: number) {
+function picker_list(
+	segments: Array<Array<UsePaginatedQueryResult<FilesTreeRow> & { directoryView?: files_DirectoryView }>>,
+	pageSize: number,
+	directory = false,
+) {
+	const streams = segments.flat();
+	const viewKey = JSON.stringify(streams[0]?.directoryView);
+	const viewsMatch = !directory || streams.every((stream) =>
+		stream.directoryView !== undefined && JSON.stringify(stream.directoryView) === viewKey,
+	);
 	const openIndex = segments.findIndex((streams) => streams.some((stream) => stream.status !== "Exhausted"));
 	const merges = (openIndex === -1 ? segments : segments.slice(0, openIndex + 1)).map(merge_tree_streams);
 	const blocking = merges.at(-1)?.blocking ?? null;
 	return {
-		rows: merges.flatMap((merge) => merge.rows),
-		status: segments.some((streams) => streams.some((stream) => stream.status === "LoadingFirstPage"))
+		rows: viewsMatch ? merges.flatMap((merge) => merge.rows) : [],
+		status: !viewsMatch || segments.some((streams) => streams.some((stream) =>
+			stream.status === "LoadingFirstPage" || (directory && stream.status === "LoadingMore"),
+		))
 			? ("loading" as const)
 			: openIndex === -1
 				? ("done" as const)
@@ -168,33 +179,30 @@ type FilesTreeFolderPager_Props = {
  * false, no stream is read.
  */
 function useFilesTreeKindSource(
-	args: Omit<Parameters<typeof files_tree_stream_args>[0], "savedStream"> & {
+	args: Parameters<typeof files_tree_stream_args>[0] & {
 		pageSize: number;
 		enabled: boolean;
-		savedStream: files_SavedStream | null;
 	},
 ) {
 	const { pageSize, enabled } = args;
-	const streamArgs = files_tree_stream_args({ ...args, savedStream: args.savedStream ?? undefined });
+	const streamArgs = files_tree_stream_args(args);
 	const options = { initialNumItems: pageSize };
 	const streamArgsOrSkip = (restricted: boolean) =>
-		enabled && args.savedStream ? streamArgs.children(restricted) : ("skip" as const);
+		enabled ? streamArgs.children(restricted) : ("skip" as const);
 	const open = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children, streamArgsOrSkip(false), options);
 	const twin = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children, streamArgsOrSkip(true), options);
 	return [open, twin];
 }
 
 function useFilesTreeKindStreams(
-	args: Parameters<typeof files_tree_stream_args>[0] & {
+	args: Omit<Parameters<typeof files_tree_stream_args>[0], "stream"> & {
 		pageSize: number;
 		enabled: boolean;
 	},
 ) {
-	const view = useFilesSavedView(args.membershipId, args.enabled);
-	const normal = useFilesTreeKindSource({ ...args, savedStream: view.normal });
-	const cohort = useFilesTreeKindSource({ ...args, savedStream: view.cohort });
-	if (!view.loading && !view.normal) return [];
-	return [...normal, ...(view.cohort ? cohort : [])];
+	const normal = useFilesTreeKindSource({ ...args, stream: "normal" });
+	const cohort = useFilesTreeKindSource({ ...args, stream: "cohort" });
+	return args.enabled ? [...normal, ...cohort] : [];
 }
 
 /**
@@ -202,6 +210,10 @@ function useFilesTreeKindStreams(
  */
 const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTreeFolderPager_Props) {
 	const { membershipId, folderKey, folderId, archived, onResult } = props;
+	const wantedScope = JSON.stringify([membershipId, folderKey]);
+	// Show the first available rows. Remember their merged count once they settle.
+	const [wanted, setWanted] = useState({ wantedScope, count: 0 });
+	const wantedCount = wanted.wantedScope === wantedScope ? wanted.count : 0;
 
 	const streamArgs = { membershipId, folderId, archived, pageSize: FILES_TREE_PAGE_SIZE, enabled: true };
 	const folders = useFilesTreeKindStreams({ ...streamArgs, kind: "folder" });
@@ -213,19 +225,33 @@ const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTree
 		// While a page loads, `results` can miss rows: a page split drops the old page before its two halves
 		// arrive. So report only settled results. The provider keeps the rows it has until then.
 		const streams = [...folders, ...files];
-		if (!streams.every((stream) => stream.status === "CanLoadMore" || stream.status === "Exhausted")) {
+		const viewKey = JSON.stringify(streams[0]?.directoryView);
+		if (!streams.every((stream) =>
+			(stream.status === "CanLoadMore" || stream.status === "Exhausted") &&
+			stream.directoryView !== undefined && JSON.stringify(stream.directoryView) === viewKey,
+		)) {
 			onResult(folderKey, "loading");
 			return;
 		}
 
 		const folderMerge = merge_tree_streams(folders);
 		const fileMerge = merge_tree_streams(files);
+		const rows = [...folderMerge.rows, ...fileMerge.rows];
+		const isDone = streams.every((stream) => stream.status === "Exhausted");
+		if (rows.length < wantedCount && !isDone) {
+			onResult(folderKey, "loading");
+			(folderMerge.blocking ?? fileMerge.blocking)?.loadMore(FILES_TREE_PAGE_SIZE);
+			return;
+		}
+		if (wanted.wantedScope !== wantedScope || rows.length > wantedCount) {
+			setWanted({ wantedScope, count: Math.max(wantedCount, rows.length) });
+		}
 		onResult(folderKey, {
-			rows: [...folderMerge.rows, ...fileMerge.rows],
-			status: streams.every((stream) => stream.status === "Exhausted") ? "done" : "more",
-			loadMore: () => (folderMerge.blocking ?? fileMerge.blocking)?.loadMore(FILES_TREE_PAGE_SIZE),
+			rows,
+			status: isDone ? "done" : "more",
+			loadMore: () => setWanted({ wantedScope, count: rows.length + FILES_TREE_PAGE_SIZE }),
 		});
-	}, [folderKey, folders, files, onResult]);
+	}, [folderKey, folders, files, onResult, wantedScope, wanted, wantedCount]);
 
 	useEffect(() => () => onResult(folderKey, null), [folderKey, onResult]);
 
@@ -640,9 +666,31 @@ const FilesTreeProvider = Object.assign(
 			// The owner reads everything, so the owner has no shares to read.
 			const hasShared = folderId === files_ROOT_ID && isOwner !== true;
 			const shared = useFilesTreeSharedRootStreams({ membershipId, archived: false, enabled: hasShared });
+			const children = picker_list(withFiles ? [folders, files] : [folders], pageSize, true);
+			const scope = JSON.stringify([membershipId, folderId, withFiles]);
+			// A short first page is ready. A refreshed view must refill the rows already shown.
+			const [wanted, setWanted] = useState({ scope, count: 0 });
+			const wantedCount = wanted.scope === scope ? wanted.count : 0;
+			const isSettled = children.status !== "loading" && (children.status === "done" || children.rows.length >= wantedCount);
+			useEffect(() => {
+				if (children.status === "more" && children.rows.length < wantedCount) children.loadMore();
+			});
+			const key = JSON.stringify(children.rows);
+			const [heldChildren, setHeldChildren] = useState<{ scope: string; key: string; rows: FilesTreeRow[] } | null>(null);
+			if (isSettled && (wanted.scope !== scope || children.rows.length > wantedCount)) {
+				setWanted({ scope, count: Math.max(wantedCount, children.rows.length) });
+			}
+			if (isSettled && (heldChildren?.scope !== scope || heldChildren.key !== key)) {
+				setHeldChildren({ scope, key, rows: children.rows });
+			}
 
 			return {
-				children: picker_list(withFiles ? [folders, files] : [folders], pageSize),
+				children: {
+					...children,
+					status: isSettled ? children.status : "loading" as const,
+					rows: isSettled ? children.rows : (heldChildren?.scope === scope ? heldChildren.rows : []),
+					loadMore: () => setWanted({ scope, count: children.rows.length + pageSize }),
+				},
 				shared: hasShared ? picker_list([shared], pageSize) : null,
 			};
 		},

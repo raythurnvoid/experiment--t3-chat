@@ -406,6 +406,7 @@ describe("search box doors", () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		const { page: rootFolders } = await seeded.asOwner.query(api.files_tree.list_tree_children, {
+			stream: "normal" as const,
 			membershipId: seeded.db.membershipId,
 			parentId: files_ROOT_ID,
 			kind: "folder",

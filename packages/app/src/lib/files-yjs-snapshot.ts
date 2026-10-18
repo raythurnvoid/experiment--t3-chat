@@ -16,6 +16,15 @@ type SnapshotPreload = {
 // Only the newly created file's next provider can claim this read.
 let pendingSnapshot: SnapshotPreload | null = null;
 
+/**
+ * Read the bytes of a Yjs snapshot from its signed R2 URL.
+ */
+export async function files_yjs_fetch_snapshot(snapshotUrl: string, signal?: AbortSignal) {
+	const response = await fetch(snapshotUrl, { signal });
+	if (!response.ok) throw new Error("Failed to fetch Yjs snapshot from R2");
+	return await response.arrayBuffer();
+}
+
 export function files_yjs_preload_snapshot(args: Pick<SnapshotPreload, "membershipId" | "nodeId">) {
 	pendingSnapshot?.abortController.abort();
 	const abortController = new AbortController();
@@ -25,9 +34,7 @@ export function files_yjs_preload_snapshot(args: Pick<SnapshotPreload, "membersh
 		if (!result) return null;
 		if (!result.snapshotUrl) throw new Error("Yjs snapshot URL is not set");
 
-		const response = await fetch(result.snapshotUrl, { signal: abortController.signal });
-		if (!response.ok) throw new Error("Failed to fetch Yjs snapshot from R2");
-		return response.arrayBuffer();
+		return await files_yjs_fetch_snapshot(result.snapshotUrl, abortController.signal);
 	});
 	// Creation does not await this read. The provider handles a rejection if it takes it.
 	void update.catch(() => {});

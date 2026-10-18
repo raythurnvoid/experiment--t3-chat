@@ -326,6 +326,13 @@ send at the click. With the press listener off, the one send comes right after t
 Measure text time from the release, alternate off and on in one page load, and keep every sample:
 dev network noise can be several hundred ms, so compare quiet pairs as well as medians.
 
+For a folder press, the assertion is that `get_folder_sort` goes out before the release (without
+the press start it goes out about 150ms after it). Also count `ModifyQuerySet` frames that name the
+folder id, per `udfPath`: one each means the view joined the early subscriptions. Only a folder's
+first open in a page load is cold, so reload between passes and alternate off and on across the
+folders of one pass. Learn each folder's child ids in a first pass, and mark rows shown only when
+every row link points to one of them.
+
 ## Full action checklist
 
 For the 2026-10-05 profiling work, the user deferred D01 Download. Leave it out of the active

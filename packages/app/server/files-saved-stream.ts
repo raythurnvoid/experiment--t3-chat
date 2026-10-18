@@ -1,12 +1,14 @@
-import type { IndexRange } from "convex/server";
+import type { IndexRange, PaginationOptions } from "convex/server";
 import type { Doc } from "../convex/_generated/dataModel.js";
 import type { QueryCtx } from "../convex/_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import type { files_SavedStream } from "../shared/files.ts";
+import type { files_DirectoryView, files_SavedStream } from "../shared/files.ts";
 import { convex_invalid_cursor_error } from "./convex-utils.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_view,
+	files_saved_placement_db_get_directory_view,
+	type files_saved_placement_FixedView,
 } from "./files-saved-placement.ts";
 
 export type files_saved_stream_Source = files_SavedStream;
@@ -24,27 +26,11 @@ type SavedRange<Fields extends Array<keyof Doc<"files_nodes">>> = SavedUpperRang
 	gte(field: Fields[0], value: Doc<"files_nodes">[Fields[0]]): SavedUpperRange<Fields[0]>;
 };
 
-/**
- * Read one saved stream. The browser or action merges normal and selected streams.
- * Place docs keep the original saved node's identity and creation time.
- */
-export async function files_saved_stream_db_create(
+function create_stream(
 	db: QueryCtx["db"],
 	scope: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId">,
-	source?: files_saved_stream_Source,
+	fixedView: files_saved_placement_FixedView | null,
 ) {
-	const view = await files_saved_placement_db_get_view(db, scope);
-	if (source && (
-		source.generation !== view.generation ||
-		(source.kind === "cohort" && (source.cohortId !== view.cohortId || source.view !== view.view))
-	)) {
-		// Retrying the same view cannot fix this error.
-		throw convex_invalid_cursor_error("The saved Move view changed.", "saved_move_view_changed");
-	}
-	if (!source && view.cohortId !== null) {
-		throw should_never_happen("A saved listing has no Move view", scope);
-	}
-	const fixedView = source?.kind === "cohort" ? source : null;
 	const queries = {
 		by_parent_archive_restricted_kind_created: (args: {
 			parentId: Doc<"files_nodes">["parentId"];
@@ -264,5 +250,56 @@ export async function files_saved_stream_db_create(
 		}));
 	}
 
-	return { queries, read_nodes, view, tag: fixedView ?? undefined };
+	return { queries, read_nodes, tag: fixedView ?? undefined };
+}
+
+/**
+ * Read one fixed saved stream. The browser or action merges normal and selected streams.
+ * Place docs keep the original saved node's identity and creation time.
+ */
+export async function files_saved_stream_db_create(
+	db: QueryCtx["db"],
+	scope: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId">,
+	source?: files_saved_stream_Source,
+) {
+	const view = await files_saved_placement_db_get_view(db, scope);
+	if (source && (
+		source.generation !== view.generation ||
+		(source.kind === "cohort" && (source.cohortId !== view.cohortId || source.view !== view.view))
+	)) {
+		// Retrying the same view cannot fix this error.
+		throw convex_invalid_cursor_error("The saved Move view changed.", "saved_move_view_changed");
+	}
+	if (!source && view.cohortId !== null) {
+		throw should_never_happen("A saved listing has no Move view", scope);
+	}
+	return { ...create_stream(db, scope, source?.kind === "cohort" ? source : null), view };
+}
+
+/**
+ * Directory subscriptions select their current view. Only later pages pin that view.
+ */
+export async function files_saved_stream_db_create_directory(
+	db: QueryCtx["db"],
+	scope: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId">,
+	args: {
+		parentId: Doc<"files_nodes">["parentId"];
+		stream: "normal" | "cohort";
+		pageView?: files_DirectoryView;
+		paginationOpts: PaginationOptions;
+	},
+) {
+	const directoryView = await files_saved_placement_db_get_directory_view(db, { ...scope, parentId: args.parentId });
+	if (
+		(args.paginationOpts.cursor !== null || args.paginationOpts.endCursor != null) &&
+		(args.pageView === undefined ||
+			args.pageView?.cohortId !== directoryView?.cohortId ||
+			args.pageView?.view !== directoryView?.view)
+	)
+		throw convex_invalid_cursor_error("The saved directory Move view changed.", "saved_directory_view_changed");
+	return {
+		...create_stream(db, scope, args.stream === "cohort" ? directoryView : null),
+		directoryView,
+		empty: args.stream === "cohort" && directoryView === null,
+	};
 }

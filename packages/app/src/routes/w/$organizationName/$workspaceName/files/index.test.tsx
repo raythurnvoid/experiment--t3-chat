@@ -41,7 +41,7 @@ vi.mock("@/lib/files-tree-context.tsx", () => ({
 	FilesTreeProvider: { useGetLoadedNode: () => (nodeId: string) => loadedNodes.get(nodeId) },
 }));
 
-vi.mock("@/lib/files-yjs-snapshot-preload.ts", () => ({
+vi.mock("@/lib/files-yjs-snapshot.ts", () => ({
 	files_yjs_preload_snapshot: preloadSnapshot,
 	files_yjs_has_preloaded_snapshot: (args: { nodeId: string }) => preloaded.nodeId === args.nodeId,
 }));
