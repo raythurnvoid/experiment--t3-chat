@@ -7258,6 +7258,7 @@ export const search_saved_metadata = action({
 							searchGeneration: start.searchGeneration,
 							cursor: result._yay.continueCursor,
 						} satisfies z.infer<typeof search_saved_metadata_cursor_schema>),
+						userId: start.userId,
 						ttl: SEARCH_SAVED_CURSOR_TTL_MS,
 					});
 		return Result({ _yay: { page, cursor, isDone: cursor === null } });

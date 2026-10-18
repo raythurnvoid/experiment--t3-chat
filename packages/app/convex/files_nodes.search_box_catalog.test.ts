@@ -111,7 +111,7 @@ describe("search box doors", () => {
 
 		// Another door's cursor, and a value that is not JSON.
 		for (const value of [JSON.stringify({ scope: "list", streams: [] }), "not json"]) {
-			const cursor = await t.mutation(internal.value_store.put, { value, ttl: 60_000 });
+			const cursor = await t.mutation(internal.value_store.put, { value, userId: seeded.db.userId, ttl: 60_000 });
 			expect(
 				await seeded.asOwner.action(api.files_nodes.search_saved_metadata, {
 					membershipId: seeded.db.membershipId,

@@ -1,6 +1,7 @@
 import { defineCommand, type Command, type CommandContext } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
+import type { Id } from "../convex/_generated/dataModel.js";
 import type { files_nodes_list_subtree_Result, files_nodes_search_paths_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { files_visible_internal_list_Result } from "../convex/files_visible.ts";
@@ -721,6 +722,7 @@ export async function bash_find_type_prepare(args: {
 
 export async function bash_find_type_render(args: {
 	ctx: ActionCtx;
+	userId: Id<"users">;
 	result: files_type_queries_PageResult;
 	shellPrefix: string;
 	dbPrefix: string;
@@ -739,7 +741,11 @@ export async function bash_find_type_render(args: {
 		};
 	const page = args.result._yay;
 	const next = async () => {
-		const cursor = await bash_cursor_id_create(args.ctx, JSON.stringify({ queryId: page.queryId, step: page.step }));
+		const cursor = await bash_cursor_id_create(
+			args.ctx,
+			args.userId,
+			JSON.stringify({ queryId: page.queryId, step: page.step }),
+		);
 		return `find ${bash_shell_arg_quote(args.shellPrefix)} --content-type ${bash_shell_arg_quote(args.contentType)}${args.directoriesOnly ? " -type d" : ""} --limit ${args.limit} --cursor ${bash_shell_arg_quote(cursor)}`;
 	};
 	if (page.state !== "page")
@@ -773,6 +779,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			const { request, cursor, shellPrefix, dbPrefix } = typed.prepared;
 			return await bash_find_type_render({
 				ctx,
+				userId: request.userId,
 				result: await files_type_query_page(ctx, request, cursor),
 				shellPrefix,
 				dbPrefix,
@@ -1000,7 +1007,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						parsed: parsed._yay,
 						target: target.absoluteShellPath,
 						prefix: null,
-						cursor: await bash_cursor_id_create(ctx, fanOut._yay.continueCursor),
+						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
 					}),
 				);
 			} else if (lines.length === 0) {
@@ -1200,7 +1207,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						parsed: parsed._yay,
 						target: target.absoluteShellPath,
 						prefix: null,
-						cursor: await bash_cursor_id_create(ctx, fanOut._yay.continueCursor),
+						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
 					}),
 				);
 			} else if (lines.length === 0) {
@@ -1368,7 +1375,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						parsed: parsed._yay,
 						target: null,
 						prefix: prefixResolution.renderShellPath(prefixFolderPath),
-						cursor: await bash_cursor_id_create(ctx, result._yay.continueCursor),
+						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, result._yay.continueCursor),
 					}),
 				);
 			} else if (lines.length === 0) {
@@ -1650,6 +1657,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					prefix: null,
 					cursor: await bash_cursor_id_create(
 						ctx,
+						dbFilesRoots.app.fs.ctxData.userId,
 						window ? JSON.stringify({ now, cursor: result._yay.continueCursor }) : result._yay.continueCursor,
 					),
 				}),

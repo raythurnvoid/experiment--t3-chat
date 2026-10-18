@@ -2481,6 +2481,7 @@ export async function bash_run_job(
 			page && query
 				? await bash_find_type_render({
 						ctx,
+						userId: query.userId,
 						result: page,
 						shellPrefix: checkpoint.shellPrefix,
 						dbPrefix: checkpoint.dbPrefix,

@@ -247,7 +247,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					build_continuation({
 						target: target.absoluteShellPath,
 						limit: parsed._yay.limit,
-						cursor: await bash_cursor_id_create(ctx, fanOut._yay.continueCursor),
+						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
 					}),
 				);
 				if (parsed._yay.cursor != null) {
@@ -351,7 +351,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					build_continuation({
 						target: target.absoluteShellPath,
 						limit: parsed._yay.limit,
-						cursor: await bash_cursor_id_create(ctx, fanOut._yay.continueCursor),
+						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
 					}),
 				);
 				if (parsed._yay.cursor != null) {
@@ -497,7 +497,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				build_continuation({
 					target: target.absoluteShellPath,
 					limit: parsed._yay.limit,
-					cursor: await bash_cursor_id_create(ctx, result._yay.continueCursor),
+					cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, result._yay.continueCursor),
 				}),
 			);
 			if (parsed._yay.cursor != null) {

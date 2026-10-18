@@ -206,7 +206,7 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 		const page = result._yay;
 		const nextCursor = page.isDone
 			? null
-			: await bash_cursor_id_create(ctx, JSON.stringify({ key, cursor: page.continueCursor }));
+			: await bash_cursor_id_create(ctx, source.userId, JSON.stringify({ key, cursor: page.continueCursor }));
 		const next = nextCursor
 			? `Next page: channels ${args
 					.filter((arg, index) => arg !== "--cursor" && args[index - 1] !== "--cursor" && !arg.startsWith("--cursor="))

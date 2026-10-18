@@ -677,7 +677,9 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			...new Map(result.items.map((item) => [`${item.target.kind}:${item.target.id}`, item])).values(),
 		].flatMap((item) => (item.match ? [{ ...item, ...item.match }] : []));
 		const nextCursor =
-			result.isDone || result.continueCursor == null ? null : await bash_cursor_id_create(ctx, result.continueCursor);
+			result.isDone || result.continueCursor == null
+				? null
+				: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, result.continueCursor);
 		if (parsed._yay.format === "json") {
 			return {
 				stdout: `${JSON.stringify(

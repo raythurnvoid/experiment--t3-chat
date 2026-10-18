@@ -946,7 +946,7 @@ describe("bash_run_command", () => {
 	});
 
 	test("resolves stored cursor ids through value_store with an explicit 24-hour TTL", async () => {
-		const { run, runQuery, runMutation } = await create_bash_runner();
+		const { run, runQuery, runMutation, seeded } = await create_bash_runner();
 
 		const firstPage = await run({ command: `ls --limit 1 ${test_db_files_mount}/docs` });
 		const cursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
@@ -967,6 +967,7 @@ describe("bash_run_command", () => {
 		expect(secondPage.stdout).toContain("readme.md");
 		expect(runMutation).toHaveBeenCalledWith(internal.value_store.put, {
 			value: rawCursor,
+			userId: seeded.userId,
 			ttl: 24 * 60 * 60 * 1000,
 		});
 		expect(runQuery).toHaveBeenCalledWith(internal.value_store.get, { id: cursorId });

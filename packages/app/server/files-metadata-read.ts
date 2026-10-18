@@ -285,7 +285,11 @@ export async function files_metadata_read_full_page(
 			throw new Error("Full metadata page made no progress");
 		const cursor = built.page.isDone
 			? null
-			: await bash_cursor_id_create(ctx, JSON.stringify({ kind: "full-metadata", binding, ...built.position }));
+			: await bash_cursor_id_create(
+					ctx,
+					source.userId,
+					JSON.stringify({ kind: "full-metadata", binding, ...built.position }),
+				);
 		built.page.continueCursor = cursor;
 		const json = `${JSON.stringify(built.page, null, 2)}\n`;
 		const stdout = args.format === "json" ? json : page_text(built.page);

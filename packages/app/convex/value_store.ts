@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
-import type { Doc } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { convex_error } from "../server/convex-utils.ts";
@@ -20,9 +20,25 @@ async function delete_value(ctx: MutationCtx, value: Doc<"value_store">) {
 	await ctx.db.delete("value_store", value._id);
 }
 
+/**
+ * Deletes one batch of a user's values, for account deletion.
+ */
+export async function value_store_db_delete_user_batch(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; batchSize: number },
+) {
+	const values = await ctx.db
+		.query("value_store")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(Math.min(args.batchSize, REMOVE_ALL_BATCH_SIZE));
+	await Promise.all(values.map((value) => delete_value(ctx, value)));
+	return values.length;
+}
+
 export const put = internalMutation({
 	args: {
 		value: v.string(),
+		userId: v.id("users"),
 		/**
 		 * Lifetime in milliseconds. Null keeps the value until it is removed.
 		 */
@@ -39,6 +55,7 @@ export const put = internalMutation({
 			value: args.value,
 			expiresAt,
 			metadataId: null,
+			userId: args.userId,
 		});
 		if (expiresAt !== null) {
 			const metadataId = await ctx.db.insert("value_store_metadata", { valueId, expiresAt });

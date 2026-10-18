@@ -2560,10 +2560,12 @@ export async function files_agent_write_file_text(
  *
  * Raw Convex cursors are extremely long and hard for the AI to copy back into
  * shell commands reliably, so bash output exposes only this value_store id.
+ * `userId` owns the cursor, so account deletion removes it.
  */
-export async function bash_cursor_id_create(ctx: ActionCtx, cursor: string) {
+export async function bash_cursor_id_create(ctx: ActionCtx, userId: Id<"users">, cursor: string) {
 	return (await ctx.runMutation(internal.value_store.put, {
 		value: cursor,
+		userId,
 		ttl: PAGINATION_CURSOR_TTL_MS,
 	})) as Id<"value_store">;
 }

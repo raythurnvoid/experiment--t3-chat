@@ -262,7 +262,7 @@ async function print_status(args: {
 			mode.kind === "transfers" ? ["jobs", "--transfers", String(mode.jobNumber)] : ["jobs", "--call", mode.toolCallId];
 	}
 	if (!page.isDone) {
-		const nextCursor = await bash_cursor_id_create(ctx, page.continueCursor);
+		const nextCursor = await bash_cursor_id_create(ctx, job.userId, page.continueCursor);
 		stdout += `Next page: ${[...next, "--cursor", nextCursor].map(bash_shell_arg_quote).join(" ")}\n`;
 	}
 	return { stdout, stderr: "", exitCode: 0 };

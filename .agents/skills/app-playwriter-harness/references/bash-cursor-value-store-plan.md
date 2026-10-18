@@ -14,19 +14,19 @@ Missing, removed, malformed, and expired IDs use the existing Bash recovery erro
 
 | Function | Contract |
 | --- | --- |
-| `put({ value, ttl })` | Insert a string and return its generated ID. TTL is required, in milliseconds. `null` means no expiry; zero means immediately expired. Negative and non-finite durations are rejected. |
+| `put({ value, userId, ttl })` | Insert a string owned by `userId` and return its generated ID. TTL is required, in milliseconds. `null` means no expiry; zero means immediately expired. Negative and non-finite durations are rejected. |
 | `get({ id })` | Return `{ value, createdAt }` or null. Reject expiry at `expiresAt <= Date.now()`. Reading does not delete or renew the value. |
 | `remove({ id })` | Delete one value and its expiry metadata in one transaction. Repeated removal is harmless. |
 | `remove_all({ before? })` | Delete values created at or before a fixed cutoff, defaulting to now. Delete five per batch and schedule the remaining batches. Values in later batches remain readable until their batch runs. Newer values survive. |
 | `cleanup_expired({ expiresAt? })` | Scan expiry metadata and delete expired values in batches of ten. Keep the first cutoff across scheduled batches. Return `{ deletedCount, done }` for each batch. |
 
-`value_store` holds `value: string`, `expiresAt: number | null`, and `metadataId: Id | null`. All fields are required and top-level. A get reads only this doc, including its expiry.
+`value_store` holds `value: string`, `expiresAt: number | null`, `metadataId: Id | null`, and the owner `userId`, indexed by `by_user`. All fields are top-level. `userId` is optional only for rows written before it existed; `put` always sets it, and those old rows expire by TTL. A get reads only this doc, including its expiry.
 
 Only expiring values have a companion `value_store_metadata` doc with `valueId` and the same `expiresAt`, indexed by `by_expiresAt`. Compute the deadline once, then insert both docs and link them in the same mutation. The payload is stored only in `value_store`. Permanent values have null expiry and null metadata ID. Reads trust the atomic writer and do not load metadata or compare the two copies.
 
 Convex deletion reads the old value. Expiry cleanup scans small metadata docs first, so ten values fit per batch. Global removal scans full values first and deletes five per batch. These limits keep large strings within the transaction read limit. Removal deletes both linked docs in one transaction. Single-value removal checks existence first because deleting a missing doc would throw. The daily cron at 04:30 UTC starts expiry cleanup; scheduled batches remove the remaining expired values.
 
-The store has no user or workspace ownership fields. Keep it internal. Do not expose it as a public key-value API without a separate scope and access contract. Custom keys and plugin-data changes are separate work.
+The store has an owner user so account deletion can find and delete its values (`value_store_db_delete_user_batch`), but no workspace ownership and no access contract. Keep it internal. Do not expose it as a public key-value API without a separate scope and access contract. Custom keys and plugin-data changes are separate work.
 
 ## Verification
 
