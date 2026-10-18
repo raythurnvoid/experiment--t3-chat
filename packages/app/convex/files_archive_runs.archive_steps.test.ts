@@ -100,6 +100,10 @@ describe("archive_nodes", () => {
 				activityId: expect.any(String),
 				isDone: true,
 				notArchivedNodeIds: [refused.topId, refused.fileIds[0]],
+				// The reason names the locked file, so the toast can say what to unlock.
+				refusedItems: [
+					{ nodeId: refused.topId, message: '"/refused/d0/f001.md" is read-only. Unlock it, then try again.' },
+				],
 			},
 		});
 		const job = archived._yay!;
@@ -117,7 +121,11 @@ describe("archive_nodes", () => {
 			runId: job.runId,
 		});
 		expect(run?.notArchived).toEqual([
-			{ nodeId: refused.topId, path: "/refused", message: "An item inside it is read-only." },
+			{
+				nodeId: refused.topId,
+				path: "/refused",
+				message: '"/refused/d0/f001.md" is read-only. Unlock it, then try again.',
+			},
 		]);
 		// The job dialog lists the named items that were archived. The file inside the refused folder is not one.
 		expect(run?.archived).toEqual([{ nodeId: kept.topId, path: "/kept" }]);
@@ -181,7 +189,11 @@ describe("archive_nodes", () => {
 			runId: archived._yay!.runId,
 		});
 		expect(run?.notArchived).toEqual([
-			{ nodeId: big.topId, path: "/big-alone", message: "An item inside it is read-only." },
+			{
+				nodeId: big.topId,
+				path: "/big-alone",
+				message: '"/big-alone/d5/f019.md" is read-only. Unlock it, then try again.',
+			},
 		]);
 	});
 

@@ -254,6 +254,8 @@ async function db_get_owned_run(
  * The person must still write each node the job changes: the node's own lock, and write access
  * where it lives. Access is asked once per restricted scope, and once for the unrestricted part of
  * the workspace, so an ordinary tree costs one check per step.
+ * A lock refusal also returns the locked node. The person passed the write check for it, so they
+ * may read it, and the refusal may name it.
  */
 async function db_check_writable_nodes(
 	args: StepArgs & {
@@ -283,7 +285,7 @@ async function db_check_writable_nodes(
 		if (!allowed) return { kind: "failed", nay: { message: "Permission denied" } } as const;
 
 		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: args.userAuth.id });
-		if (writable._nay) return { kind: "failed", nay: writable._nay } as const;
+		if (writable._nay) return { kind: "failed", nay: writable._nay, node } as const;
 
 		if (args.run.pendingUpdateCleanup?.reviewedPendingUpdateIds) {
 			const reviewed = await files_pending_updates_db_require_reviewed_archive_node(ctx, {
@@ -389,17 +391,20 @@ function refuse_named_item(args: StepArgs, refusal: RunFields["refusedItems"][nu
 }
 
 /**
- * The reason saved for a refused named item. When the refused node is inside the named folder, the
- * node's own message would blame the folder. So say that an item inside it is refused.
+ * The reason saved for a refused named item, with how to fix it. `inside` is set when the refused node
+ * is inside the named folder. Then the node's own message would blame the folder, so name the locked
+ * node instead, or say that an item inside is refused. `lockedPath` is set only for a node the person
+ * may read.
  */
-function get_named_item_refusal(nay: { name?: string; message: string }, isInside: boolean) {
+function get_named_item_refusal(nay: { name?: string; message: string }, inside: { lockedPath: string | null } | null) {
 	const name = nay.name ?? null;
 	// A review refusal of an agent's delete asks for a new review. That message fits an item inside too.
-	if (!isInside || name === "needs_review") return { name, message: nay.message };
-	return {
-		name,
-		message: name === "read_only" ? "An item inside it is read-only." : "You cannot change an item inside it.",
-	};
+	if (name === "needs_review") return { name, message: nay.message };
+	if (name === "read_only") {
+		const lockedItem = !inside ? "This item" : inside.lockedPath ? `"${inside.lockedPath}"` : "An item inside it";
+		return { name, message: `${lockedItem} is read-only. Unlock it, then try again.` };
+	}
+	return { name, message: inside ? "You cannot change an item inside it." : nay.message };
 }
 
 /**
@@ -460,7 +465,7 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			const refusal = await db_check_writable_nodes({ ctx, ...args, nodes: [node] });
 			if (refusal) {
 				if (refusal === MEMBERSHIP_LOST) return refusal;
-				refuse_named_item(args, get_named_item_refusal(refusal.nay, false));
+				refuse_named_item(args, get_named_item_refusal(refusal.nay, null));
 				continue;
 			}
 			progress.discovered += 1;
@@ -484,13 +489,17 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 		const refusal = await db_check_writable_nodes({ ctx, ...args, nodes: activeNodes });
 		if (refusal) {
 			if (refusal === MEMBERSHIP_LOST) return refusal;
-			refuse_named_item(args, get_named_item_refusal(refusal.nay, true));
+			refuse_named_item(
+				args,
+				get_named_item_refusal(refusal.nay, { lockedPath: "node" in refusal ? (refusal.node?.path ?? null) : null }),
+			);
 			continue;
 		}
 
 		// Archive does not change archived nodes inside. But it must not hide a read-only one under a
 		// newly archived folder. Use a general error when the person cannot see it.
-		const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
+		const archivedNodes = page.children.filter((child) => child.archiveOperationId !== null);
+		const sweptArgs = {
 			organizationId: args.run.organizationId,
 			workspaceId: args.run.workspaceId,
 			writeContext: {
@@ -500,10 +509,28 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				resourceScope: { kind: "workspace" },
 				policyReach: "ancestors",
 			},
-			nodes: page.children.filter((child) => child.archiveOperationId !== null),
+		} as const;
+		const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
+			...sweptArgs,
+			nodes: archivedNodes,
 		});
 		if (archivedProtected._nay) {
-			refuse_named_item(args, get_named_item_refusal(archivedProtected._nay, true));
+			// The check says read-only only for a node the person may read, but not which node. Check the
+			// nodes one at a time to name it. This runs only after a refusal, for one page.
+			let lockedPath = null;
+			if (archivedProtected._nay.name === "read_only") {
+				for (const archivedNode of archivedNodes) {
+					const writable = await files_nodes_db_require_swept_nodes_writable(ctx, {
+						...sweptArgs,
+						nodes: [archivedNode],
+					});
+					if (writable._nay?.name === "read_only") {
+						lockedPath = archivedNode.path;
+						break;
+					}
+				}
+			}
+			refuse_named_item(args, get_named_item_refusal(archivedProtected._nay, { lockedPath }));
 			continue;
 		}
 
@@ -1801,7 +1828,15 @@ export async function files_archive_runs_db_start(
 		now,
 	});
 	if (!outcome) {
-		return Result({ _yay: { runId, activityId, isDone: false, notArchivedNodeIds: [] as Array<Id<"files_nodes">> } });
+		return Result({
+			_yay: {
+				runId,
+				activityId,
+				isDone: false,
+				notArchivedNodeIds: [] as Array<Id<"files_nodes">>,
+				refusedItems: [] as Array<{ nodeId: Id<"files_nodes">; message: string }>,
+			},
+		});
 	}
 
 	await db_settle_step(ctx, { opId, runId, activityId, run, progress, outcome, now });
@@ -1813,7 +1848,8 @@ export async function files_archive_runs_db_start(
 
 	// A job that goes on in the background can refuse more named items in later steps.
 	const notArchivedNodeIds = run.refusedItems.map((refusedItem) => refusedItem.nodeId);
-	return Result({ _yay: { runId, activityId, isDone: outcome.kind === "done", notArchivedNodeIds } });
+	const refusedItems = run.refusedItems.map(({ nodeId, refusal }) => ({ nodeId, message: refusal.message }));
+	return Result({ _yay: { runId, activityId, isDone: outcome.kind === "done", notArchivedNodeIds, refusedItems } });
 }
 
 /**

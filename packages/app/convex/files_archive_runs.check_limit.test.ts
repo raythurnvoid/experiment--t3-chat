@@ -102,7 +102,10 @@ describe("apply_file_pending_archive", () => {
 		const activity = (await f.t.run((ctx) => ctx.db.query("activities").first()))!;
 		const ended = await run_to_end(f, { runId: run._id, activityId: activity._id });
 		// An agent's delete names one item, so the refusal that leaves out one named item fails the delete.
-		expect(ended.activity).toMatchObject({ status: "failed", errorMessage: "An item inside it is read-only." });
+		expect(ended.activity).toMatchObject({
+			status: "failed",
+			errorMessage: '"/huge/d4/f399.md" is read-only. Unlock it, then try again.',
+		});
 		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
 	});
 });
