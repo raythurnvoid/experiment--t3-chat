@@ -1,6 +1,6 @@
 import { act, render } from "@testing-library/react";
 import { ConvexProvider, ConvexReactClient } from "convex/react";
-import { createElement, type ComponentType } from "react";
+import { StrictMode, createElement, type ComponentType } from "react";
 import { describe, expect, test, vi } from "vitest";
 
 const { routerListeners, routerLocation, loadedNodes, preloadSnapshot } = vi.hoisted(() => ({
@@ -20,7 +20,10 @@ vi.mock("@tanstack/react-router", () => ({
 		state: { location: routerLocation },
 		subscribe: (_name: string, listener: (event: unknown) => void) => {
 			routerListeners.push(listener);
-			return () => {};
+			// StrictMode subscribes twice, so the first listener must really go away.
+			return () => {
+				routerListeners.splice(routerListeners.indexOf(listener), 1);
+			};
 		},
 	}),
 }));
@@ -99,8 +102,10 @@ describe("README preload", () => {
 });
 
 describe("snapshot preload", () => {
-	test("preloads a page load and a clicked rich text file, but not a known folder or the open file", () => {
+	test("preloads a page load once and a clicked rich text file, but not a known folder or the open file", () => {
+		vi.useFakeTimers();
 		routerListeners.length = 0;
+		preloadSnapshot.mockClear();
 		routerLocation.search = { nodeId: "unknown" };
 		const richText = { kind: "file", locked: false, assetId: "a1", textKind: "rich_text", collaborationEnabled: true };
 		loadedNodes.set("folder", { kind: "folder", locked: false, assetId: null, textKind: null });
@@ -109,12 +114,15 @@ describe("snapshot preload", () => {
 		const client = new ConvexReactClient("https://files-route-test.convex.cloud", {
 			webSocketConstructor: class {} as unknown as typeof WebSocket,
 		});
+		// Render the way the app does. StrictMode runs the mount effect twice in development.
 		const view = render(
 			createElement(ConvexProvider, { client }, createElement(Route.options.component as ComponentType)),
+			{ wrapper: StrictMode },
 		);
+		act(() => vi.advanceTimersByTime(0));
 
 		// A page load does not know the node's type yet.
-		expect(preloadSnapshot).toHaveBeenLastCalledWith({ membershipId: "m1", nodeId: "unknown" });
+		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "m1", nodeId: "unknown" });
 		preloadSnapshot.mockClear();
 
 		// The router's `fromLocation` is the last finished navigation, so it can stay old.
@@ -135,5 +143,6 @@ describe("snapshot preload", () => {
 		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "m1", nodeId: "file" });
 
 		view.unmount();
+		vi.useRealTimers();
 	});
 });
