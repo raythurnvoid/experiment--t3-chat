@@ -24,10 +24,12 @@ const CONTENT_WRITE_PERMISSION = "content.write" as const satisfies RequiredAppP
 // Public scopes describe API access. App permissions describe what the user may do. Keep the
 // values separate because several file scopes can require the same app permission.
 const REQUIRED_APP_PERMISSION_BY_SCOPE = {
-	"files:list": CONTENT_READ_PERMISSION,
-	"files:read": CONTENT_READ_PERMISSION,
-	"files:write": CONTENT_WRITE_PERMISSION,
-	"files:download": CONTENT_READ_PERMISSION,
+	// Every file read and write checks the node for the caller, so a guest (a member without
+	// workspace read) can use the files shared with them.
+	"files:list": null,
+	"files:read": null,
+	"files:write": null,
+	"files:download": null,
 	// Policy management is checked on the actual file, including restricted folders.
 	"files:permissions": null,
 	// Volume writes check the exact installation in their transaction.

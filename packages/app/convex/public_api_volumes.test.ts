@@ -376,6 +376,20 @@ async function readable_file(f: Awaited<ReturnType<typeof fixture>>, path = "/no
 	return saved;
 }
 
+/**
+ * Give the plugin's account read on the workspace. A plugin lists the root only with an open root:
+ * the root is above a file root.
+ */
+async function open_root(f: Awaited<ReturnType<typeof fixture>>) {
+	const allowed = await f.asOwner.mutation(api.access_control.set_service_account_grant, {
+		membershipId: f.owner.membershipId,
+		serviceAccountId: f.installation.serviceAccountId,
+		resource: { kind: "workspace" },
+		level: "read",
+	});
+	if (allowed._nay) throw new Error(allowed._nay.message);
+}
+
 function api_request(args: { f: Awaited<ReturnType<typeof fixture>>; path: string; body: unknown }) {
 	const { f, path, body } = args;
 
@@ -1147,8 +1161,9 @@ describe("scheduled Files response authority", () => {
 			headers: { Authorization: `Bearer ${f.token}` },
 			body: JSON.stringify({}),
 		});
-		expect(listed.status).toBe(200);
-		expect(await listed.json()).toMatchObject({ items: [{ path: file.path }] });
+		// The member cannot open the workspace root, so a list of it is locked, like Bash `ls /`.
+		expect(listed.status).toBe(403);
+		expect(await listed.json()).toEqual({ message: "Permission denied: /" });
 		const denied = await f.t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: { Authorization: `Bearer ${f.token}` },
@@ -1161,6 +1176,16 @@ describe("scheduled Files response authority", () => {
 	test("registered Files routes read with the user and account", async () => {
 		const f = await fixture({ scheduled: true });
 		await readable_file(f);
+		// The plugin's only root is the file, so the root above it is locked, even though the person can
+		// open the root.
+		const locked = await f.t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${f.token}` },
+			body: JSON.stringify({}),
+		});
+		expect(locked.status).toBe(403);
+		expect(await locked.json()).toEqual({ message: "Permission denied: /" });
+		await open_root(f);
 		for (const [path, body] of [
 			["/api/v1/files/read", { path: "/note.txt" }],
 			["/api/v1/files/list", {}],
@@ -1180,6 +1205,7 @@ describe("scheduled Files response authority", () => {
 		async (kind) => {
 			const f = await fixture({ scheduled: true });
 			await readable_file(f);
+			if (kind === "list") await open_root(f);
 			let sawIo = false;
 			const afterIo = async () => {
 				sawIo = true;
@@ -1199,6 +1225,7 @@ describe("scheduled Files response authority", () => {
 	test.each(["read", "list"] as const)("%s rechecks the exact returned path after I/O", async (kind) => {
 		const f = await fixture({ scheduled: true });
 		const file = await readable_file(f);
+		if (kind === "list") await open_root(f);
 		const afterIo = async () => {
 			await f.t.run((ctx) => ctx.db.patch("files_nodes", file.nodeId, { path: "/renamed.txt" }));
 		};

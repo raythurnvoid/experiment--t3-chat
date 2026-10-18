@@ -1907,10 +1907,14 @@ export async function bash_run_command(
 			ctx.runQuery(internal.plugins.list_bash_source_mounts, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
+				userId: args.userId,
+				membershipId: args.membershipId,
 			}) as Promise<plugins_list_bash_source_mounts_Result>,
 			ctx.runQuery(internal.plugins.list_bash_volume_mounts, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
+				userId: args.userId,
+				membershipId: args.membershipId,
 			}) as Promise<plugins_list_bash_volume_mounts_Result>,
 		]);
 
@@ -2680,10 +2684,14 @@ export async function bash_run_job(
 			ctx.runQuery(internal.plugins.list_bash_source_mounts, {
 				organizationId: row.organizationId,
 				workspaceId: row.workspaceId,
+				userId: row.userId,
+				membershipId: row.membershipId,
 			}) as Promise<plugins_list_bash_source_mounts_Result>,
 			ctx.runQuery(internal.plugins.list_bash_volume_mounts, {
 				organizationId: row.organizationId,
 				workspaceId: row.workspaceId,
+				userId: row.userId,
+				membershipId: row.membershipId,
 			}) as Promise<plugins_list_bash_volume_mounts_Result>,
 		]);
 

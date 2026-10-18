@@ -224,7 +224,7 @@ function format_item(args: {
 
 function build_continuation(args: {
 	parsed: NonNullable<ReturnType<typeof parse_args>["_yay"]>;
-	absoluteShellPath?: string;
+	absoluteShellPath: string;
 	cursor: string;
 }) {
 	const continuationParts = ["Next page:", "ls"];
@@ -241,9 +241,7 @@ function build_continuation(args: {
 		continuationParts.push("-R");
 	}
 	continuationParts.push("--limit", String(args.parsed.limit), "--cursor", bash_shell_arg_quote(args.cursor));
-	if (args.absoluteShellPath != null) {
-		continuationParts.push(bash_shell_arg_quote(args.absoluteShellPath));
-	}
+	continuationParts.push(bash_shell_arg_quote(args.absoluteShellPath));
 	return continuationParts.join(" ");
 }
 
@@ -319,43 +317,6 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			cursor = resolvedCursor._yay;
 		}
 
-		// Pathless `ls -t` is the workspace-wide recency view, so the agent can ask
-		// "what changed recently?" without first discovering every folder. Only for a workspace cwd —
-		// inside a mount there is no workspace-wide view, so it falls to the per-target mount listing below.
-		if (parsed._yay.time && parsed._yay.paths.length === 0 && targets[0]?.pathResolution.kind === "app") {
-			const result = await files_pending_overlay_list(ctx, {
-				agentSource: targets[0].pathResolution.ctxData.agentSource,
-				organizationId: targets[0].pathResolution.ctxData.organizationId,
-				workspaceId: targets[0].pathResolution.ctxData.workspaceId,
-				visibilityUserId: targets[0].pathResolution.ctxData.userId,
-				subject: { kind: "user", userId: targets[0].pathResolution.ctxData.userId, plugin: null },
-				overlayUserId: targets[0].pathResolution.fs.overlayUserId,
-				folderPath: "/",
-				mode: "recent",
-				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
-				cursor,
-				order: parsed._yay.reverse ? "asc" : "desc",
-			});
-			if (result._nay)
-				return { stdout: "", stderr: `ls: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
-			const lines = result._yay.items.map(
-				(item) =>
-					`${new Date(item.updatedAt).toISOString()}\t${targets[0].pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
-			);
-			if (!result._yay.isDone && result._yay.continueCursor !== null) {
-				lines.push(
-					"",
-					build_continuation({
-						parsed: parsed._yay,
-						cursor: await bash_cursor_id_create(ctx, result._yay.continueCursor),
-					}),
-				);
-			} else if (lines.length === 0) {
-				lines.push("(no files)");
-			}
-			return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
-		}
-
 		// There is no single indexed query for recursive subtree results ordered by
 		// updatedAt, so reject instead of loading and sorting a whole tree in memory.
 		if (hasDbFilesPathTarget && parsed._yay.time && parsed._yay.recursive && !parsed._yay.directory) {
@@ -363,7 +324,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stdout: "",
 				stderr:
 					"ls -t -R is not supported for app file paths.\n" +
-					"Use `ls -t` for workspace-wide recency, `ls -t <dir>` for immediate children, or `find <dir>` for recursive path discovery.\n",
+					"Use `ls -t <dir>` for immediate children, `find <dir> -mmin -N` for recent files in a subtree, or `find <dir>` for recursive path discovery.\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}

@@ -1,5 +1,6 @@
 // The find, /tmp, search, grep, tree and stat tests, split from bash.test.ts so the files can run at the same
 // time.
+import type { FunctionReference } from "convex/server";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import type { ai_chat_files_patch_thread_tmp_files_Args } from "../convex/ai_chat_files.ts";
@@ -8,6 +9,7 @@ import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { bash_COMMAND_EXIT_USAGE, bash_READ_INLINE_MAX_BYTES } from "./bash-utils.ts";
 import { ai_chat_tool_create_set_file_metadata } from "./server-ai-tools.ts";
 import {
+	accept_pending_move_group_for_test,
 	test_db_files_mount,
 	function_name_of,
 	big_md_file,
@@ -2127,5 +2129,287 @@ describe("recursive reads stop at a locked folder", () => {
 			`${mount}/docs/b.md`,
 			`${mount}/docs/nested/c.md`,
 		]);
+	});
+
+	const MINUTE = 60_000;
+	const HOUR = 60 * MINUTE;
+	const DAY = 24 * HOUR;
+
+	/** The documents each query of the next commands reads, by query name. */
+	function count_reads(runner: Awaited<ReturnType<typeof create_bash_runner>>) {
+		const reads: Record<string, number> = {};
+		runner.runQuery.mockImplementation((ref, args) =>
+			runner.t.run(async (ctx) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				const result: unknown = await ctx.runQuery(ref as FunctionReference<"query">, args);
+				const name = function_name_of(ref) ?? "unknown";
+				reads[name] =
+					(reads[name] ?? 0) + (await ctx.meta.getTransactionMetrics()).documentsRead.used - before.documentsRead.used;
+				return result;
+			}),
+		);
+		return reads;
+	}
+	/** The documents the row streams read: the time read, or the path walk. */
+	const row_reads = (reads: Record<string, number>) =>
+		(reads["files_visible:internal_list_subtree_recent_saved"] ?? 0) +
+		(reads["files_visible:internal_list_subtree_saved"] ?? 0);
+
+	test("find -mmin -60 lists only files changed in the last hour", async () => {
+		const now = Date.now();
+		const { runner } = await seed_locked_docs([
+			{ path: "/old.md", updatedAt: now - 3 * HOUR },
+			{ path: "/reports/recent.md", updatedAt: now - 5 * MINUTE },
+		]);
+
+		const result = await runner.run({ command: `find ${mount} -mmin -60` });
+
+		expect(result.stdout).toContain(`${mount}/reports/recent.md`);
+		expect(result.stdout).not.toContain("old.md");
+		// `-name` is checked on each recent row.
+		const named = await runner.run({ command: `find ${mount} -mmin -60 -name recent` });
+		expect(named.stdout).toContain(`${mount}/reports/recent.md`);
+		expect(named.stdout).not.toContain("summary.md");
+		// With only `+N`, a name check would scan every old row.
+		const older = await runner.run({ command: `find ${mount} -mmin +60 -name old` });
+		expect(older.stderr).toContain("find: -name and --content-type need a time test like -mmin -60");
+	});
+
+	test("find -mmin pages keep the same time window", async () => {
+		const now = Date.now();
+		const { runner } = await seed_locked_docs([
+			...Array.from({ length: 12 }, (_, index) => ({ path: `/new/n-${index}.md`, updatedAt: now - MINUTE - index })),
+			{ path: "/new/old.md", updatedAt: now - 3 * HOUR },
+		]);
+
+		const listed: string[] = [];
+		let command = `find ${mount}/new -mmin -60 -type f --limit 5`;
+		for (let page = 0; page < 10; page++) {
+			const result = await runner.run({ command });
+			listed.push(...result.stdout.split("\n").filter((line) => line.endsWith(".md")));
+			const next = result.stdout.match(/Next page: (find .*)/u)?.[1];
+			if (!next) break;
+			command = next;
+		}
+
+		expect(listed).toEqual(Array.from({ length: 12 }, (_, index) => `${mount}/new/n-${index}.md`));
+		// A changed command cannot reuse the cursor.
+		const first = await runner.run({ command: `find ${mount}/new -mmin -60 -type f --limit 5` });
+		const cursor = first.stdout.match(/--cursor (\S+)/u)![1];
+		const wrong = await runner.run({ command: `find ${mount}/new -type f --limit 5 --cursor ${cursor}` });
+		expect(wrong.metadata.exitCode).toBe(1);
+	});
+
+	test("find -mmin +60", async () => {
+		const now = Date.now();
+		const { runner } = await seed_locked_docs([
+			{ path: "/old.md", updatedAt: now - 3 * HOUR },
+			{ path: "/reports/recent.md", updatedAt: now - 5 * MINUTE },
+		]);
+
+		const result = await runner.run({ command: `find ${mount} -mmin +60` });
+
+		expect(result.stdout).toContain(`${mount}/old.md`);
+		expect(result.stdout).not.toContain("recent.md");
+		// The seeded files changed about 16 minutes ago.
+		expect(result.stdout).not.toContain("summary.md");
+	});
+
+	test("find -mtime -1, like GNU find", async () => {
+		const now = Date.now();
+		const { runner } = await seed_locked_docs([
+			{ path: "/m4.md", updatedAt: now - 4.5 * MINUTE },
+			{ path: "/h3.md", updatedAt: now - 3 * HOUR },
+			{ path: "/d1.md", updatedAt: now - 36 * HOUR },
+			{ path: "/d3.md", updatedAt: now - 3 * DAY },
+		]);
+		const names = async (test: string) =>
+			(await runner.run({ command: `find ${mount} -type f ${test}` })).stdout
+				.split("\n")
+				.filter((line) => /\/(m4|h3|d1|d3)\.md$/u.test(line))
+				.map((line) => line.slice(mount.length + 1));
+
+		// Days are rounded down: `+1` needs two whole days.
+		expect(await names("-mtime -1")).toEqual(["m4.md", "h3.md"]);
+		expect(await names("-mtime 1")).toEqual(["d1.md"]);
+		expect(await names("-mtime +1")).toEqual(["d3.md"]);
+		// `-mmin 5` alone means 4 to 5 minutes ago.
+		expect(await names("-mmin 5")).toEqual(["m4.md"]);
+		expect(await names("-mmin 4")).toEqual([]);
+		// Several tests must all match.
+		expect(await names("-mtime -2 -mtime +0")).toEqual(["d1.md"]);
+		const fraction = await runner.run({ command: `find ${mount} -mmin 1.5` });
+		expect(fraction.stderr).toContain("find: -mmin needs a whole number like -60, +60 or 60");
+		expect(fraction.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
+	});
+
+	test("find -mmin prints Permission denied for a locked folder", async () => {
+		const now = Date.now();
+		const { runner } = await seed_locked_docs([{ path: "/docs/secret.md", updatedAt: now - MINUTE }]);
+
+		const result = await runner.run({ command: `find ${mount} -mmin -60` });
+
+		expect(result.stderr).toContain(`find: '${mount}/docs': Permission denied`);
+		expect(result.metadata.exitCode).toBe(1);
+		expect(result.stdout).not.toContain("secret.md");
+		expect(result.stdout).toContain(`${mount}/reports/summary.md`);
+	});
+
+	test("find -mmin reads only recent rows", async () => {
+		const now = Date.now();
+		const { runner } = await seed_locked_docs([
+			...Array.from({ length: 2000 }, (_, index) => ({
+				path: `/Open/old-${index}.md`,
+				updatedAt: now - 3 * HOUR - index,
+			})),
+			...Array.from({ length: 5 }, (_, index) => ({ path: `/Open/new-${index}.md`, updatedAt: now - MINUTE })),
+		]);
+		const reads = count_reads(runner);
+
+		const result = await runner.run({ command: `find ${mount} -mmin -60` });
+
+		expect(result.stdout).toContain(`${mount}/Open/new-4.md`);
+		expect(result.stdout).not.toContain("old-");
+		console.info("find -mmin -60 over 2,005 rows read", JSON.stringify(reads));
+		expect(row_reads(reads), "the time index skips the 2,000 old rows").toBeLessThan(100);
+	}, 120_000);
+
+	test("find -mmin +60 at the top of an area reads only old rows", async () => {
+		const now = Date.now();
+		const { runner } = await seed_locked_docs([
+			...Array.from({ length: 2000 }, (_, index) => ({
+				path: `/Open/new-${index}.md`,
+				updatedAt: now - MINUTE - index,
+			})),
+			...Array.from({ length: 5 }, (_, index) => ({ path: `/Open/old-${index}.md`, updatedAt: now - 3 * HOUR })),
+		]);
+		const reads = count_reads(runner);
+
+		const result = await runner.run({ command: `find ${mount} -mmin +60` });
+
+		console.info("find -mmin +60 over 2,005 rows read", JSON.stringify(reads));
+		expect(row_reads(reads), "the time index skips the 2,000 new rows").toBeLessThan(100);
+		expect(result.stdout).toContain(`${mount}/Open/old-4.md`);
+		expect(result.stdout).not.toContain("new-");
+	}, 120_000);
+
+	test("find -mmin through Add people reads no row outside the shared folder", async () => {
+		const now = Date.now();
+		const { runner, share } = await seed_locked_docs(
+			Array.from({ length: 100 }, (_, index) => ({ path: `/docs/r-${index}.md`, updatedAt: now - MINUTE })),
+		);
+		await share("/docs/nested");
+		const reads = count_reads(runner);
+
+		const result = await runner.run({ command: `find ${mount}/docs/nested -mmin -60` });
+
+		expect(result.stdout).toContain(`${mount}/docs/nested/deep.md`);
+		expect(result.stdout).not.toContain("r-");
+		console.info("find -mmin -60 through Add people read", JSON.stringify(reads));
+		expect(row_reads(reads), "the per-folder read skips the 100 recent rows of /docs").toBeLessThan(100);
+	});
+
+	test("find -mmin groups output per restricted folder, newest first", async () => {
+		const now = Date.now();
+		const { runner, share } = await seed_locked_docs([
+			{ path: "/a-new.md", updatedAt: now - MINUTE },
+			{ path: "/z-old.md", updatedAt: now - 10 * MINUTE },
+			{ path: "/docs/b-mid.md", updatedAt: now - 5 * MINUTE },
+			{ path: "/docs/c-newest.md", updatedAt: now - 0.5 * MINUTE },
+		]);
+		await share("/docs");
+
+		const result = await runner.run({ command: `find ${mount} -mmin -15` });
+
+		expect(result.stdout.split("\n").filter((line) => line.endsWith(".md"))).toEqual([
+			`${mount}/a-new.md`,
+			`${mount}/z-old.md`,
+			`${mount}/docs/c-newest.md`,
+			`${mount}/docs/b-mid.md`,
+		]);
+	});
+
+	test("find -mmin +60 under a folder in the middle of an area", async () => {
+		const now = Date.now();
+		const { runner } = await seed_locked_docs([
+			{ path: "/old-root.md", updatedAt: now - 3 * HOUR },
+			{ path: "/reports/old.md", updatedAt: now - 3 * HOUR },
+			{ path: "/reports/new.md", updatedAt: now - 5 * MINUTE },
+		]);
+
+		const result = await runner.run({ command: `find ${mount}/reports -mmin +60` });
+
+		expect(result.stdout).toContain(`${mount}/reports/old.md`);
+		expect(result.stdout).not.toContain("new.md");
+		expect(result.stdout).not.toContain("old-root.md");
+	});
+
+	test("find -mmin --content-type leaves out a locked file", async () => {
+		const { runner, owner, asOwner, seeded } = await seed_locked_docs();
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: seeded.membershipId,
+					nodeId: await get_seeded_node_id(owner, "/reports/summary.md"),
+				})
+			)._nay,
+		).toBeUndefined();
+		await drain_scheduled_continuations(owner);
+
+		const all = await runner.run({ command: `find ${mount} -mmin -60` });
+		expect(all.stdout, "the locked file shows by name").toContain(`${mount}/reports/summary.md`);
+		const typed = await runner.run({ command: `find ${mount} -mmin -60 --content-type text/` });
+		expect(typed.stdout, "a type search does not match a locked file").not.toContain("summary.md");
+	});
+
+	test("find -mmin does not show another user's drafts", async () => {
+		const { runner, owner } = await seed_locked_docs();
+		expect(
+			(await owner.run({ command: `echo hi > ${test_db_files_mount}/reports/owner-draft.md` })).metadata.exitCode,
+		).toBe(0);
+		expect((await owner.run({ command: `find ${test_db_files_mount} -mmin -5` })).stdout).toContain("owner-draft.md");
+
+		const result = await runner.run({ command: `find ${mount} -mmin -5` });
+
+		expect(result.stdout).not.toContain("owner-draft.md");
+	});
+
+	test("find -mmin with tests that cannot all match reads nothing", async () => {
+		const runner = await create_bash_runner();
+		const reads = count_reads(runner);
+
+		const result = await runner.run({ command: `find ${test_db_files_mount} -mmin -10 -mmin +20` });
+
+		expect(reads["files_visible:internal_get_move_view"], "no listing runs").toBeUndefined();
+		expect(result.stdout).toBe("0 matches.\n");
+	});
+
+	test("find -mmin shows the agent's recent drafts", async () => {
+		const runner = await create_bash_runner();
+		expect((await runner.run({ command: `echo hi > ${test_db_files_mount}/reports/draft.md` })).metadata.exitCode).toBe(
+			0,
+		);
+
+		const all = await runner.run({ command: `find ${test_db_files_mount} -mmin -5` });
+		expect(all.stdout).toContain(`${test_db_files_mount}/reports/draft.md`);
+		// The seeded files changed about 16 minutes ago.
+		expect(all.stdout).not.toContain("summary.md");
+		const docs = await runner.run({ command: `find ${test_db_files_mount}/docs -mmin -5` });
+		expect(docs.stdout).not.toContain("draft.md");
+	});
+
+	test("find -mmin after a Move does not list the moved file as recent", async () => {
+		const runner = await create_bash_runner({ extraFiles: [{ path: "/old.md", updatedAt: Date.now() - 3 * HOUR }] });
+		const oldId = await get_seeded_node_id(runner, "/old.md");
+		expect(
+			(await runner.run({ command: `mv ${test_db_files_mount}/old.md ${test_db_files_mount}/reports/old.md` })).metadata
+				.exitCode,
+		).toBe(0);
+		await accept_pending_move_group_for_test(runner, [oldId]);
+
+		const recent = await runner.run({ command: `find ${test_db_files_mount} -mmin -60` });
+		expect(recent.stdout).not.toContain("old.md");
+		const older = await runner.run({ command: `find ${test_db_files_mount} -mmin +60` });
+		expect(older.stdout).toContain(`${test_db_files_mount}/reports/old.md`);
 	});
 });

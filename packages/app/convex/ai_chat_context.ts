@@ -10,6 +10,8 @@ import { files_visible_is_preparing } from "./files_visible.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
 import { ai_chat_workspaces_source_validator } from "./schema.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 
 export const ai_chat_context_ENABLED = process.env.AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED === "true";
 
@@ -94,6 +96,11 @@ export const discover_sources = internalQuery({
 				numItems: CATALOG_PAGE_SIZE,
 				cursor: scan.cursor,
 			});
+			// A skills folder the user cannot open gives them no skills, so this workspace is done.
+			if (listed._nay?.name === "permission_denied") {
+				scan.complete = true;
+				continue;
+			}
 			// A page that fails leaves the catalog incomplete. Stop here and return the skills found
 			// so far with the warning below, instead of failing the whole chat.
 			if (listed._nay) {
@@ -128,14 +135,28 @@ export const discover_sources = internalQuery({
 		skills.sort((a, b) => a.workspace.localeCompare(b.workspace) || a.path.localeCompare(b.path));
 
 		// Plugin skills come only from enabled installations in the current workspace, so they never
-		// reach the home workspace. The Bash mount `/.plugins/<pluginName>` follows the same rule.
+		// reach the home workspace. The Bash mount `/.plugins/<pluginName>` follows the same rule, and
+		// so does its guest rule: a member without workspace read gets no plugins.
 		const current = workspaces.find((root) => root.workspace === "current")!;
-		const installations = await ctx.db
-			.query("plugins_workspace_installations")
-			.withIndex("by_organization_workspace_status_pluginName", (q) =>
-				q.eq("organizationId", current.organizationId).eq("workspaceId", current.workspaceId).eq("status", "enabled"),
-			)
-			.collect();
+		const membership = await organizations_db_get_membership(ctx, args.source);
+		const authorized =
+			membership &&
+			(await access_control_db_authorize_membership(ctx, {
+				userAuth: { id: args.source.userId },
+				membership,
+				permission: "content.read",
+			}));
+		const installations = !authorized?._yay
+			? []
+			: await ctx.db
+					.query("plugins_workspace_installations")
+					.withIndex("by_organization_workspace_status_pluginName", (q) =>
+						q
+							.eq("organizationId", current.organizationId)
+							.eq("workspaceId", current.workspaceId)
+							.eq("status", "enabled"),
+					)
+					.collect();
 		const pluginSkills: { pluginName: string; name: string; description: string; path: string }[] = [];
 		for (const installation of installations) {
 			if (!installation.acceptedCapabilities.includes("agent.skills.contribute")) continue;

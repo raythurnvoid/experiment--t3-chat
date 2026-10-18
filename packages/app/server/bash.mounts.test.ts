@@ -5,6 +5,7 @@ import type { Id } from "../convex/_generated/dataModel";
 import type { bash_ReviewScratch } from "../convex/bash.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "../convex/files_nodes_create_db.ts";
 import { files_nodes_db_insert_file_content_docs } from "../convex/files_nodes_content.ts";
+import { files_db_authorize_volume_read } from "../convex/files_volume_access.ts";
 import { r2 } from "../convex/r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
@@ -505,6 +506,34 @@ describe("bash_run_command", () => {
 			return inserted._yay.mountId;
 		}
 
+		test("a guest's chat gets no volume: no mount and no read", async () => {
+			const f = await create_volume_runner({ reader: true });
+			const { organizationId, workspaceId, userId, membershipId, membershipLifetime, threadId } = f.runner.ctxData;
+			const agentSource = { organizationId, workspaceId, userId, membershipId, membershipLifetime, threadId };
+			const authorize = () =>
+				f.runner.t.run((ctx) =>
+					files_db_authorize_volume_read(ctx, {
+						organizationId,
+						volumeId: f.volumeId,
+						readerUserId: userId,
+						agentSource,
+					}),
+				);
+			// The same reader with a role reads the volume, so the refusals below come from the guest.
+			expect((await f.runner.run({ command: `cat ${VOLUME_PATH}` })).stdout).toBe(VOLUME_TEXT);
+			expect(await authorize()).toEqual({ _yay: null });
+
+			// Without a role the reader is a guest. A volume is plugin data with no per-file access.
+			await f.runner.t.run(async (ctx) => {
+				for (const assignment of await ctx.db.query("access_control_role_assignments").collect())
+					if (assignment.userId === userId) await ctx.db.delete("access_control_role_assignments", assignment._id);
+			});
+			const read = await f.runner.run({ command: `cat ${VOLUME_PATH}` });
+			expect(read.stdout).toBe("");
+			expect(read.stderr).toBe(`cat: ${VOLUME_PATH}: No such file or directory\n`);
+			expect(await authorize()).toEqual({ _nay: { message: "Volume unavailable" } });
+		});
+
 		test("reads published copies through every reader and forwards the original source", async () => {
 			const f = await create_volume_runner();
 			for (const [command, text] of [
@@ -885,7 +914,8 @@ describe("bash_run_command", () => {
 				const [settled] = await reading;
 				expect(intercepted).toBe(true);
 				expect(readResults, "the paused read must not release old text").toEqual([null]);
-				if (state === "purging" || state === "left and rejoined" || state === "role loss") {
+				// After a role loss the chat goes on (the user is a guest), but the volume read is refused.
+				if (state === "purging" || state === "left and rejoined") {
 					expect(settled.status).toBe("rejected");
 					if (settled.status === "rejected") expect(String(settled.reason)).toContain("Unauthorized");
 				} else {

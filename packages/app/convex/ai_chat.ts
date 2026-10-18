@@ -51,7 +51,6 @@ import {
 } from "../server/server-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
-import type { access_control_Permission } from "../shared/access-control.ts";
 import { files_READ_RANGE_MAX_LINES } from "./files_nodes.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
@@ -128,12 +127,6 @@ export {
 	get_file_pending_update_last_sequence_saved,
 	save_file_pending_update,
 } from "./files_pending_updates.ts";
-
-/**
- * Chats are private to their creator. Workspace read access is also required, so leaving the
- * workspace removes access to its chats. File writes check their own permissions.
- */
-const THREAD_PERMISSION = "content.read" as const satisfies access_control_Permission;
 
 /**
  * `thread_delete` aborts at most this many branch copies of the chat at once. A copy it misses
@@ -1503,14 +1496,6 @@ export const save_shell = internalMutation({
 		if (invocation.run && !(await ai_chat_runs_db_is_current(ctx, invocation.run)))
 			throw convex_error({ message: "Stopped" });
 
-		// A role change during the call must stop writes to the creator's shell and transcript.
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth: { id: invocation.userId },
-			membership,
-			permission: "content.read",
-		});
-		if (authorized._nay) throw convex_error({ message: authorized._nay.message });
-
 		// The shell id comes from the call's own begin; a name invented after begin is not accepted.
 		const shell = await ctx.db.get("ai_chat_bash_shells", args.shellId);
 		if (!shell || shell.threadId !== invocation.threadId) throw convex_error({ message: "Unauthorized" });
@@ -1553,10 +1538,12 @@ export const threads_list = query({
 			};
 		}
 
+		// Chats are private to their creator. An active membership is enough, so a guest chats too, and
+		// leaving the workspace removes access. Every file read and write checks the node.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: THREAD_PERMISSION,
+			permission: null,
 		});
 		if (authorized._nay) {
 			return {
@@ -1621,7 +1608,7 @@ export const thread_get = query({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: THREAD_PERMISSION,
+			permission: null,
 		});
 		if (authorized._nay) {
 			return null;
@@ -1687,7 +1674,7 @@ export const thread_create = mutation({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: THREAD_PERMISSION,
+			permission: null,
 		});
 		if (authorized._nay) {
 			return authorized;
@@ -1809,7 +1796,7 @@ export const thread_update = mutation({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: THREAD_PERMISSION,
+			permission: null,
 		});
 		if (authorized._nay) {
 			return authorized;
@@ -1918,7 +1905,7 @@ export const thread_mark_read = mutation({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: THREAD_PERMISSION,
+			permission: null,
 		});
 		if (authorized._nay) {
 			return authorized;
@@ -1982,7 +1969,7 @@ export const thread_archive = mutation({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: THREAD_PERMISSION,
+			permission: null,
 		});
 		if (authorized._nay) {
 			return authorized;
@@ -2046,7 +2033,7 @@ export const thread_delete = mutation({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: THREAD_PERMISSION,
+			permission: null,
 		});
 		if (authorized._nay) {
 			return authorized;
@@ -3298,13 +3285,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			} as const;
 		}
 
-		// A team viewer can work in their own home. Each file tool checks its destination.
-		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
-			membershipId: membership._id,
-			permission: "content.read",
-		});
-		if (!allowed) return { status: 403, body: { message: "Permission denied" } } as const;
-
+		// An active member can chat: a team viewer in their own home, and a guest without workspace read
+		// with what is shared with them. Each file tool checks its destination.
 		const workspaces = await ctx.runMutation(internal.ai_chat_workspaces.capture, {
 			userId: user._id,
 			membershipId: membership._id,
@@ -3442,9 +3424,14 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 
 		// Load MCP tools only after the credit check and the message checks above, because each server
 		// costs an outside call. The schema check below needs the built agent, so it runs later.
-		// Ask mode never offers MCP tools, because it must not act outside Press.
+		// Ask mode never offers MCP tools, because it must not act outside Press. MCP tools are plugin
+		// and connector tools, not files, so a guest without workspace read gets none.
 		const mcp =
 			body.mode !== "ask" &&
+			(await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+				membershipId: membership._id,
+				permission: "content.read",
+			})) &&
 			(await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
 				membershipId: membership._id,
 				permission: "workspace.mcp.use",
@@ -3687,18 +3674,10 @@ export const get_job_wakeup_context = internalQuery({
 			? await ctx.db.get("ai_chat_bash_invocations", trigger.jobFinishInvocationId)
 			: null;
 		if (!trigger || !reply || !invocation?.job) return Result({ _nay: { message: "Not found" } });
-		const userAuth = { id: invocation.userId };
 		// The same fence as every other job door: it also checks the membership lifetime, so a
 		// member who was removed and invited again cannot be woken by the older membership.
 		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
 		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
-		if (authorized._nay) return Result({ _nay: { message: authorized._nay.message } });
 
 		const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
 		if (
@@ -3931,21 +3910,8 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 			} as const;
 		}
 
-		// This route only runs the thread titler above. It writes a thread
-		// title and never touches a file, so reading is enough.
-		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
-			membershipId: membership._id,
-			permission: THREAD_PERMISSION,
-		});
-		if (!allowed) {
-			return {
-				status: 403,
-				body: {
-					message: "Permission denied",
-				},
-			} as const;
-		}
-
+		// This route only runs the thread titler above. It writes a thread title and never touches a
+		// file, so the active membership above is enough.
 		const messages = body.messages || [];
 		const thread_id = body.thread_id;
 		const thread = await ctx.runQuery(api.ai_chat.thread_get, {
@@ -4697,9 +4663,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"Use ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...] for app listings. Bare ls --limit N lists the current directory.",
 			);
 			expect(agentSurface).toContain(
-				"ls -t (newest first) and ls -rt (oldest first) without PATH list the whole workspace ordered by update time",
+				"ls -t (newest first) and ls -rt (oldest first) list a directory's immediate children by update time; without PATH, the current directory",
 			);
-			expect(agentSurface).toContain("bare ls -t is still workspace-wide");
+			expect(agentSurface).toContain("use find <folder> -mmin -N (minutes) or -mtime -N (days)");
 			expect(agentSurface).toContain("ls -R lists a paginated subtree as full app shell paths");
 			expect(agentSurface).toContain("when the user asks for tree-shaped output, use tree, not ls -R");
 			expect(agentSurface).toContain(
@@ -4721,7 +4687,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain("When asked for app files under a folder, include -type f");
 			expect(agentSurface).toContain("find -type f and find -type d restrict app results to files or folders.");
 			expect(agentSurface).toContain(
-				"General glob/regex patterns and GNU find extensions such as -printf, -mtime, -newer, -exec, and -ok are not supported for app paths",
+				"General glob/regex patterns and GNU find extensions such as -printf, -newer, -exec, and -ok are not supported for app paths",
+			);
+			expect(agentSurface).toContain(
+				"find -mmin N and -mtime N (+N, -N or N, like GNU find) work on app paths; their output is grouped by restricted folder, newest first in each group",
 			);
 			expect(agentSurface).toContain(
 				"Use search [--limit N] [--cursor CURSOR] <content terms...> for full-text content search",

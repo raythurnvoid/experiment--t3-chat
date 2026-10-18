@@ -557,7 +557,7 @@ export const get_human_readable_object = internalQuery({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: "content.read",
+			permission: null,
 		});
 		if (authorized._nay) return null;
 		const workspace = await ctx.db.get("organizations_workspaces", membership.workspaceId);

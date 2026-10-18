@@ -354,7 +354,7 @@ export const stop = mutation({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: "content.read",
+			permission: null,
 		});
 		if (authorized._nay) return authorized;
 
@@ -1139,7 +1139,7 @@ export const branch_page = query({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: "content.read",
+			permission: null,
 		});
 		if (authorized._nay) return null;
 

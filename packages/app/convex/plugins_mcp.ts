@@ -1213,19 +1213,25 @@ export const recheck_call = internalQuery({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		// Membership lifetime, thread, `content.read`, and the purge fence.
+		// Membership lifetime, thread, and the purge fence.
 		const current = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
 		if (current._nay) {
 			return Result({ _nay: { message: current._nay.message } });
 		}
 
+		// MCP tools are not files, so they also need workspace read: a guest's chat gets none.
 		const membership = (await ctx.db.get("organizations_workspaces_users", args.source.membershipId))!;
+		const mayRead = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.source.userId },
+			membership,
+			permission: "content.read",
+		});
 		const mayUse = await access_control_db_authorize_membership(ctx, {
 			userAuth: { id: args.source.userId },
 			membership,
 			permission: "workspace.mcp.use",
 		});
-		if (mayUse._nay) {
+		if (mayRead._nay || mayUse._nay) {
 			return Result({ _nay: { message: plugins_mcp_CANNOT_USE_MESSAGE } });
 		}
 

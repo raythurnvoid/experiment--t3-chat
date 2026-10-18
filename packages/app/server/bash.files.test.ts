@@ -2351,10 +2351,11 @@ describe("bash_run_command", () => {
 		expect(rootLines).toContain("root-readme.md");
 		expect(rootLines).not.toContain("readme.md");
 
-		// The workspace recency view shows the visible path of a moved file.
-		const recency = await runner.run({ command: "ls -t --limit 50" });
-		expect(recency.stdout).toContain(`${test_db_files_mount}/reports/guide.md`);
-		expect(recency.stdout).not.toContain(`${test_db_files_mount}/docs/tutorial.md`);
+		// A time listing of the current folder shows a moved file at its visible place.
+		const recency = await runner.run({ command: `cd ${test_db_files_mount}/reports && ls -t --limit 50` });
+		expect(recency.stdout.trim().split("\n")).toContain("guide.md");
+		const sourceRecency = await runner.run({ command: `cd ${test_db_files_mount}/docs && ls -t --limit 50` });
+		expect(sourceRecency.stdout.trim().split("\n")).not.toContain("tutorial.md");
 	});
 
 	test("shows an in-place rename exactly once in listings", async () => {
@@ -2521,12 +2522,12 @@ describe("bash_run_command", () => {
 		expect(list.metadata.exitCode).toBe(0);
 		const lines = list.stdout.trim().split("\n");
 		expect(lines.filter((line) => line === "x.md")).toHaveLength(1);
-		// The recency view projects every committed node: the shadowed child must not
-		// emit a second /b/x.md line next to the claiming move's line.
-		const recency = await runner.run({ command: "ls -t --limit 50" });
+		// The time order reads another index: the shadowed child must not emit a second x.md line next to
+		// the claiming move's line there either.
+		const recency = await runner.run({ command: `cd ${test_db_files_mount}/b && ls -t --limit 50` });
 		expect(recency.metadata.exitCode).toBe(0);
 		const recencyLines = recency.stdout.trim().split("\n");
-		expect(recencyLines.filter((line) => line.endsWith(`${test_db_files_mount}/b/x.md`))).toHaveLength(1);
+		expect(recencyLines.filter((line) => line === "x.md")).toHaveLength(1);
 		const read = await runner.run({ command: `cat ${test_db_files_mount}/b/x.md` });
 		expect(read.metadata.exitCode).toBe(0);
 		expect(read.stdout).toContain("Z body");
@@ -2833,5 +2834,150 @@ describe("locked paths", () => {
 		expect((await runner.run({ command: `find ${mount}/nope --content-type text/markdown` })).stderr).toBe(
 			"find: File or folder not found\n",
 		);
+	});
+});
+
+describe("guests", () => {
+	const mount = "/home/cloud-usr/w/guest-team/home";
+
+	/**
+	 * A guest runner: an active member of a team workspace with no workspace role. The owner shares
+	 * only `/shared` with the guest, with write. `/open/a.md` is open to the workspace.
+	 */
+	async function create_guest_runner() {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "guest-team", workspaceName: "home" }),
+		);
+		const owner = await create_bash_runner({
+			shared: { t, seeded },
+			extraFiles: [
+				{ path: "/shared/s.md", content: "shared body\n", withRealYjsSnapshot: true },
+				{ path: "/open/a.md", content: "open body\n", withRealYjsSnapshot: true },
+			],
+		});
+		const guest = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "bash-guest" });
+			await test_mocks_fill_db_with.membership(ctx, { userId, organizationName: "personal", workspaceName: "home" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const asOwner = runner_as_user(owner);
+		const sharedId = await get_seeded_node_id(owner, "/shared");
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: seeded.membershipId, nodeId: sharedId }))
+				._nay,
+		).toBeUndefined();
+		await drain_scheduled_continuations(owner);
+		const shared = await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: seeded.membershipId,
+			nodeId: sharedId,
+			principal: { kind: "user", userId: guest.userId },
+			level: "write",
+		});
+		expect(shared._nay).toBeUndefined();
+		await drain_scheduled_continuations(owner);
+		// Creating the runner starts the guest's chat with `thread_create`.
+		return await create_bash_runner({ shared: { t, seeded: { ...seeded, ...guest } } });
+	}
+
+	test("a guest can start a chat and the agent reads a file shared with them", async () => {
+		const runner = await create_guest_runner();
+
+		const read = await runner.run({ command: `cat ${mount}/shared/s.md` });
+		expect(read.stderr).toBe("");
+		expect(read.stdout).toBe("shared body\n");
+		expect((await runner.run({ command: `ls ${mount}/shared` })).stdout).toBe("s.md\n");
+	});
+
+	test("a guest's agent gets Permission denied on an open file, like a missing one", async () => {
+		const runner = await create_guest_runner();
+
+		const read = await runner.run({ command: `cat ${mount}/open/a.md ${mount}/open/nope.md` });
+		expect(read.stdout).toBe("");
+		expect(read.stderr).toBe(
+			`cat: ${mount}/open/a.md: Permission denied\ncat: ${mount}/open/nope.md: Permission denied\n`,
+		);
+		expect((await runner.run({ command: `ls ${mount}` })).stderr).toBe(
+			`ls: cannot open directory '${mount}': Permission denied\n`,
+		);
+	});
+
+	test("a guest's ls, ls -R, find and tree of the root say Permission denied", async () => {
+		const runner = await create_guest_runner();
+
+		for (const [command, stderr] of [
+			[`ls ${mount}`, `ls: cannot open directory '${mount}': Permission denied\n`],
+			[`ls -R ${mount}`, `ls: cannot open directory '${mount}': Permission denied\n`],
+			[`find ${mount}`, `find: '${mount}': Permission denied\n`],
+			[`find ${mount} -name s.md`, `find: '${mount}': Permission denied\n`],
+			[`tree ${mount}`, `tree: '${mount}': Permission denied\n`],
+		]) {
+			const result = await runner.run({ command });
+			expect(result.stdout, command).toBe("");
+			expect(result.stderr, command).toBe(stderr);
+		}
+		// The shared folder lists by its own path.
+		expect((await runner.run({ command: `find ${mount}/shared` })).stdout).toBe(
+			`${mount}/shared/\n${mount}/shared/s.md\n`,
+		);
+	});
+
+	test("a guest's agent can cp and mv inside the shared folder, but not from or to an open folder", async () => {
+		const runner = await create_guest_runner();
+
+		for (const command of [
+			`cp ${mount}/shared/s.md ${mount}/shared/c.md`,
+			`mv ${mount}/shared/s.md ${mount}/shared/m.md`,
+		]) {
+			const result = await runner.run({ command });
+			expect(result.stderr, command).toBe("");
+			expect(result.metadata.exitCode, command).toBe(0);
+		}
+		expect((await runner.run({ command: `cat ${mount}/shared/c.md ${mount}/shared/m.md` })).stdout).toBe(
+			"shared body\nshared body\n",
+		);
+		// Each item still checks read on its source and write on its destination.
+		for (const command of [
+			`cp ${mount}/open/a.md ${mount}/shared/a.md`,
+			`cp ${mount}/shared/c.md ${mount}/open/c.md`,
+			`mv ${mount}/shared/m.md ${mount}/open/m.md`,
+		]) {
+			const result = await runner.run({ command });
+			expect(result.metadata.exitCode, command).not.toBe(0);
+			expect(result.stderr, command).toContain("Permission denied");
+		}
+	});
+
+	test("a guest can add a thread file and copy a thread", async () => {
+		const runner = await create_guest_runner();
+
+		const written = await runner.run({ command: "printf note > /tmp/note.txt && cat /tmp/note.txt" });
+		expect(written.stderr).toBe("");
+		expect(written.stdout).toBe("note");
+
+		const begun = await runner.t.mutation(internal.ai_chat_thread_copies.begin, {
+			userId: runner.ctxData.userId,
+			membershipId: runner.ctxData.membershipId,
+			threadId: runner.threadId,
+		});
+		expect(begun._nay).toBeUndefined();
+		let step = "running";
+		while (step === "running")
+			step = await runner.t.mutation(internal.ai_chat_thread_copies.step, { copyId: begun._yay!.copyId });
+		expect(step).toBe("published");
+		expect(
+			await runner_as_user(runner).query(api.ai_chat.thread_get, {
+				membershipId: runner.ctxData.membershipId,
+				threadId: begun._yay!.threadId,
+			}),
+		).toMatchObject({ _id: begun._yay!.threadId });
 	});
 });

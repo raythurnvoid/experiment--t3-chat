@@ -546,6 +546,33 @@ describe("Move owner views", () => {
 		expect(cursor).toBeNull();
 	});
 
+	test("find -mmin reads the time index of the selected Move view", async () => {
+		const f = await fixture();
+		const ctx = { runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">;
+		// Each view's place has its own update time, so a window that holds one time finds one place.
+		const list = async (updatedAt: number) => {
+			const result = await files_pending_overlay_list(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				visibilityUserId: f.db.userId,
+				subject: { kind: "user", userId: f.db.userId, plugin: null },
+				folderPath: "/",
+				mode: "subtree",
+				order: "asc",
+				kind: "file",
+				updated: { from: updatedAt, to: updatedAt },
+				numItems: 20,
+				cursor: null,
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			return result._yay.items.map((item) => item.path);
+		};
+
+		expect(await list(f.before.updatedAt), "the before view").toEqual(["/old.txt"]);
+		await f.publish();
+		expect(await list(f.after.updatedAt), "the after view").toEqual(["/target/new.txt"]);
+	});
+
 	test("keeps a saved doc that stages between two stream calls of one page", async () => {
 		for (const stageMidPage of [false, true]) {
 			const f = await fixture({ normalPaths: ["/target/a.txt", "/target/b1.txt", "/target/b2.txt", "/target/c.txt"] });

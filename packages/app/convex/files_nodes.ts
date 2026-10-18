@@ -332,7 +332,8 @@ export async function files_nodes_db_get_path_access(
 	// `null` is the workspace root.
 	const can_read = (fileNode: Doc<"files_nodes"> | null) =>
 		access_control_db_can_act_on_file_node(ctx, { ...args, fileNode, permission: "content.read" });
-	if (args.path === "/") return { status: "missing" };
+	// The workspace root has no node. It is locked for a caller who cannot open it (a guest).
+	if (args.path === "/") return (await can_read(null)) ? { status: "missing" } : { status: "locked", node: null };
 	const lookups = await files_db_create_path_lookups(ctx, args);
 	// Use the path, not `parentId`: during a Move the stored parent can be the old one.
 	const can_read_parent_of = async (path: string) => {
@@ -4213,169 +4214,6 @@ export const get_authorized_by_path = query({
 
 // #region list
 
-async function db_list_children(
-	ctx: QueryCtx,
-	args: {
-		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		visibilityUserId: Id<"users">;
-		subject: access_control_Subject;
-		numItems: number;
-		cursor: string | null;
-		parentId?: Id<"files_nodes"> | typeof files_ROOT_ID;
-		orderBy: "name" | "updatedAt";
-		order?: "asc" | "desc";
-	},
-) {
-	const allowed = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
-	if (allowed._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-	const scope = files_db_resolve_scope(ctx, args.workspaceId);
-	// A page can come back shorter than `numItems` once restricted nodes are dropped. The cursor still
-	// points at the right place, so paging keeps working; only the page size varies.
-	const filter_readable = (nodes: Doc<"files_nodes">[]) =>
-		scope.kind === "volume"
-			? nodes
-			: access_control_db_filter_readable_file_nodes(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					subject: args.subject,
-					nodes,
-				});
-
-	if (args.parentId == null) {
-		if (args.orderBy === "name") {
-			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-		}
-
-		const result = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_archiveOperation_updatedAt", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("moveCohortId", undefined)
-					.eq("archiveOperationId", null),
-			)
-			.order(args.order ?? "desc")
-			.paginate({
-				cursor: args.cursor,
-				numItems: args.numItems,
-			});
-
-		return {
-			items: (await filter_readable(result.page)).map((fileNode) => ({
-				name: fileNode.name,
-				kind: fileNode.kind,
-				path: fileNode.path,
-				updatedAt: fileNode.updatedAt,
-				updatedBy: fileNode.updatedBy,
-				contentType: fileNode.contentType,
-			})),
-			continueCursor: result.continueCursor,
-			isDone: result.isDone,
-		};
-	}
-
-	const parentId = args.parentId;
-	if (parentId !== files_ROOT_ID) {
-		const parent = await ctx.db.get("files_nodes", parentId);
-		if (
-			!parent ||
-			parent.organizationId !== args.organizationId ||
-			parent.workspaceId !== args.workspaceId ||
-			parent.kind !== "folder"
-		) {
-			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-		}
-	}
-
-	const result =
-		args.orderBy === "name"
-			? await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("moveCohortId", undefined)
-							.eq("parentId", parentId)
-							.eq("archiveOperationId", null),
-					)
-					.order(args.order ?? "asc")
-					.paginate({
-						cursor: args.cursor,
-						numItems: args.numItems,
-					})
-			: await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_archiveOperation_updatedAt", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("moveCohortId", undefined)
-							.eq("parentId", parentId)
-							.eq("archiveOperationId", null),
-					)
-					.order(args.order ?? "desc")
-					.paginate({
-						cursor: args.cursor,
-						numItems: args.numItems,
-					});
-
-	return {
-		items: (await filter_readable(result.page)).map((fileNode) => ({
-			name: fileNode.name,
-			kind: fileNode.kind,
-			path: fileNode.path,
-			updatedAt: fileNode.updatedAt,
-			updatedBy: fileNode.updatedBy,
-			contentType: fileNode.contentType,
-		})),
-		continueCursor: result.continueCursor,
-		isDone: result.isDone,
-	};
-}
-
-export const list_children = internalQuery({
-	args: {
-		agentSource: v.optional(ai_chat_workspaces_source_validator),
-		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
-		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		/** Who is looking. Required so a new caller cannot forget it and list restricted nodes. */
-		visibilityUserId: v.id("users"),
-		/** Who the access checks act as. `visibilityUserId` only picks personal rows and drafts. */
-		subject: access_control_subject_validator,
-		numItems: v.number(),
-		cursor: paginationOptsValidator.fields.cursor,
-		parentId: v.optional(v.union(v.id("files_nodes"), v.literal(files_ROOT_ID))),
-		orderBy: v.union(v.literal("name"), v.literal("updatedAt")),
-		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
-	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				name: v.string(),
-				kind: v.union(v.literal("folder"), v.literal("file")),
-				path: v.string(),
-				updatedAt: v.number(),
-				updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
-				contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
-			}),
-		),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		return await db_list_children(ctx, args);
-	},
-});
-
-export type files_nodes_list_children_Result =
-	typeof list_children extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
 const subtree_key_validator = v.object({
 	value: v.string(),
 	createdAt: v.number(),
@@ -7644,6 +7482,8 @@ export const search_saved_metadata = action({
 			mode: "metadata",
 			plan: args.plan,
 			order: "asc",
+			// A guest searches from the root it cannot open, like the name search.
+			searchLockedRoot: true,
 			numItems: Math.min(args.numItems, SEARCH_SAVED_MAX_ITEMS),
 			cursor: stored?.cursor ?? null,
 		});

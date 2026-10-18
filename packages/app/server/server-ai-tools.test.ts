@@ -932,12 +932,14 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("with PATH they list that directory's immediate children by update time"),
+				description: expect.stringContaining(
+					"list a directory's immediate children by update time; without PATH, the current directory",
+				),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("bare ls -t is still workspace-wide"),
+				description: expect.stringContaining("use find <folder> -mmin -N (minutes) or -mtime -N (days)"),
 			}),
 		);
 		expect(tool).toEqual(

@@ -467,13 +467,14 @@ describe("Bash workspace commands", () => {
 		).toMatchObject({ content: command === "tee" ? "data" : "" });
 	});
 
-	test("personal recency links use the personal root", async () => {
+	test("ls -t in the personal root lists the personal draft", async () => {
 		const f = await fixture();
 		expect((await f.run(`printf home > ${homePath}/notes.txt`)).exitCode).toBe(0);
 		const result = await f.run(`cd ${homePath}; ls -t`);
 		expect(result.exitCode).toBe(0);
-		expect(result.stdout).toContain(`${homePath}/notes.txt`);
-		expect(result.stdout).not.toContain(`${teamPath}/notes.txt`);
+		expect(result.stdout.trim().split("\n")).toContain("notes.txt");
+		const team = await f.run(`cd ${teamPath}; ls -t`);
+		expect(team.stdout.trim().split("\n")).not.toContain("notes.txt");
 	});
 
 	test("rm removes only the personal draft at a matching path", async () => {

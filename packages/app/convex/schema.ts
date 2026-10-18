@@ -2909,6 +2909,15 @@ const app_convex_schema = defineSchema({
 			"nodeCreationTime",
 			"nodeId",
 		])
+		.index("by_view_scope_archive_updated", [
+			"cohortId",
+			"view",
+			"restrictedScopeNodeId",
+			"archiveOperationId",
+			"updatedAt",
+			"nodeCreationTime",
+			"nodeId",
+		])
 		.index("by_view_archive_contentTypeFamily_tree", [
 			"cohortId",
 			"view",
@@ -2942,14 +2951,6 @@ const app_convex_schema = defineSchema({
 			"parentScopeNodeId",
 			"archiveOperationId",
 			"treePath",
-			"nodeCreationTime",
-			"nodeId",
-		])
-		.index("by_view_archive_updated", [
-			"cohortId",
-			"view",
-			"archiveOperationId",
-			"updatedAt",
 			"nodeCreationTime",
 			"nodeId",
 		])
@@ -3669,13 +3670,6 @@ const app_convex_schema = defineSchema({
 			"pendingMove.destName",
 		])
 		.index("by_copiedFrom_target", ["copiedFrom.target.kind", "copiedFrom.target.id"])
-		.index("by_organization_workspace_user_targetKind_updatedAt", [
-			"organizationId",
-			"workspaceId",
-			"userId",
-			"target.kind",
-			"updatedAt",
-		])
 		.index("by_pendingMove_destParent", ["pendingMove.destParent.kind", "pendingMove.destParent.id"]),
 
 	files_pending_updates_last_sequence_saved: defineTable({
@@ -5240,6 +5234,15 @@ const app_convex_schema = defineSchema({
 			"contentTypeEssence",
 			"treePath",
 		])
+		// `find -mmin` / `-mtime` read one area's rows changed in a time window, newest first.
+		.index("by_org_ws_scope_archive_updatedAt", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"restrictedScopeNodeId",
+			"archiveOperationId",
+			"updatedAt",
+		])
 		// `find --content-type` pages a subtree's files of one type family or one exact type, then checks
 		// access per candidate (the approved exception in `AGENTS.md`).
 		.index("by_org_ws_archive_contentTypeFamily_tree", [
@@ -5257,13 +5260,6 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"contentTypeEssence",
 			"treePath",
-		])
-		.index("by_organization_workspace_archiveOperation_updatedAt", [
-			"organizationId",
-			"workspaceId",
-			"moveCohortId",
-			"archiveOperationId",
-			"updatedAt",
 		])
 		.index("by_organization_workspace_asset", ["organizationId", "workspaceId", "assetId"])
 		.index("by_organization_workspace_publishedFromPrivateNode", [

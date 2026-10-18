@@ -329,7 +329,7 @@ describe("files_pending_overlay flush", () => {
 		).toMatchObject({ entry: { path: "/notes.md" }, canAccept: false, moveDestinationUnreadable: true });
 	});
 
-	test("ls -t, find -name and meta search leave out the saved children of a blocked moved folder", async () => {
+	test("find -mmin, find -name and meta search leave out the saved children of a blocked moved folder", async () => {
 		const f = await fixture();
 		const team = await f.saved(null, "team", "folder");
 		const proj = await f.saved(null, "proj", "folder");
@@ -337,7 +337,7 @@ describe("files_pending_overlay flush", () => {
 		await f.set_metadata("/proj/plan.md", [{ key: "status", value: "open" }], f.v);
 		await f.draft_move(target(proj), parent(team), "proj", f.v);
 		await f.expect_overlay_true();
-		const ls_t = async () => {
+		const find_mmin = async () => {
 			const result = await files_pending_overlay_list(
 				{ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">,
 				{
@@ -347,8 +347,9 @@ describe("files_pending_overlay flush", () => {
 					subject: { kind: "user", userId: f.v.userId, plugin: null },
 					overlayUserId: f.v.userId,
 					folderPath: "/",
-					mode: "recent",
-					order: "desc",
+					mode: "subtree",
+					order: "asc",
+					updated: { from: 0, to: null },
 					numItems: 50,
 					cursor: null,
 				},
@@ -378,13 +379,13 @@ describe("files_pending_overlay flush", () => {
 			(await test_meta_search(f.t, { ...f.v, plan: { op: "exists", fieldPath: "metadata.status" } })).items.map(
 				(item) => item.path,
 			);
-		expect(await ls_t()).toEqual(["/team/proj/plan.md"]);
+		expect(await find_mmin()).toEqual(["/team/proj/plan.md"]);
 		expect(await find_name()).toEqual(["/team/proj/plan.md"]);
 		expect(await meta_search()).toEqual(["/team/proj/plan.md"]);
 
 		// The owner restricts /team. No listing shows plan.md, at the destination or at its saved place.
 		await f.restrict(team);
-		expect(await ls_t()).toEqual([]);
+		expect(await find_mmin()).toEqual([]);
 		expect(await find_name()).toEqual([]);
 		expect(await meta_search()).toEqual([]);
 	});

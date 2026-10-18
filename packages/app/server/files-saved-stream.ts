@@ -250,12 +250,13 @@ export async function files_saved_stream_db_create(
 				: db.query("files_nodes").withIndex("by_org_ws_scope_archive_essence_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
-		by_archive_updated: (range: (q: SavedRange<["archiveOperationId", "updatedAt"]>) => IndexRange) =>
+		// One area's rows by update time, for `find -mmin` / `-mtime`.
+		by_scope_archive_updated: (range: (q: SavedRange<["restrictedScopeNodeId", "archiveOperationId", "updatedAt"]>) => IndexRange) =>
 			fixedView
-				? db.query("files_saved_places").withIndex("by_view_archive_updated", (q) =>
+				? db.query("files_saved_places").withIndex("by_view_scope_archive_updated", (q) =>
 						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
 					)
-				: db.query("files_nodes").withIndex("by_organization_workspace_archiveOperation_updatedAt", (q) =>
+				: db.query("files_nodes").withIndex("by_org_ws_scope_archive_updatedAt", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
 	};

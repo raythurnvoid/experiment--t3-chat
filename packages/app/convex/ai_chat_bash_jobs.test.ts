@@ -2133,13 +2133,13 @@ describe("job wakeup", () => {
 		expect(state.wakeups).toHaveLength(0);
 	});
 
-	test("a viewer's job wakes, but losing read access prevents another finish", async () => {
+	test("a viewer's job wakes, but leaving the workspace prevents another finish", async () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent, allowDbFilesMkdir: true });
 		// The fixture user created the organization, so they own it, and an owner passes every
 		// permission check. Hand the organization to somebody else and give the user a real role, so
 		// the role below is what decides.
-		const assignmentId = await f.t.run(async (ctx) => {
+		await f.t.run(async (ctx) => {
 			const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
 			await ctx.db.patch("organizations", f.db.organizationId, { ownerUserId: otherOwnerId });
 			return await access_control_db_ensure_role_assignment(ctx, {
@@ -2169,9 +2169,9 @@ describe("job wakeup", () => {
 		expect((await f.read(job.invocationId)).row).toMatchObject({ status: "finished" });
 		await end_runs(f, "job_wakeup");
 
-		// A member with no role at all cannot even read the thread, so an Ask-mode job stores nothing
+		// A user who left the workspace cannot even read the thread, so an Ask-mode job stores nothing
 		// either.
-		await f.t.run((ctx) => ctx.db.delete("access_control_role_assignments", assignmentId));
+		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
 		const ask = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: ask.invocationId,
@@ -2945,7 +2945,7 @@ describe("poll_bash_job", () => {
 		});
 	});
 
-	test("both job modes keep running for a viewer and stop after losing read access", async () => {
+	test("both job modes keep running for a viewer and a guest, and stop after leaving the workspace", async () => {
 		const f = await fixture();
 		const agentJob = await f.seed_job({ jobNumber: 1, status: "running", allowDbFilesMkdir: true });
 		const askJob = await f.seed_job({ jobNumber: 2, status: "running" });
@@ -2983,9 +2983,18 @@ describe("poll_bash_job", () => {
 			authorized: true,
 		});
 
-		// The poll asks for `content.read` in both modes. A member who keeps the membership but holds no
-		// role at all has no permission, so now neither job may keep running.
+		// A member with no role at all is a guest. The poll asks only for the membership, so both jobs
+		// keep running, and each command checks the files it opens.
 		await f.t.run((ctx) => ctx.db.delete("access_control_role_assignments", assignmentId));
+		for (const job of [agentJob, askJob])
+			expect(await f.t.query(internal.ai_chat_files.poll_bash_job, { invocationId: job.invocationId })).toEqual({
+				status: "running",
+				stopRequested: false,
+				authorized: true,
+			});
+
+		// After leaving the workspace, neither job may keep running.
+		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
 		expect(await f.t.query(internal.ai_chat_files.poll_bash_job, { invocationId: agentJob.invocationId })).toEqual({
 			status: "running",
 			stopRequested: false,

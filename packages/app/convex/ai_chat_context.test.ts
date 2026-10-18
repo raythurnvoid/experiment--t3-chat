@@ -393,10 +393,110 @@ describe("discover_sources", () => {
 		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([]);
 	});
 
-	test("refuses other memberships and content.read denial", async () => {
+	test("a guest gets their home skills and none from team folders they cannot open", async () => {
+		const f = await fixture();
+		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		const guest = await f.member(false);
+		const home = await f.t.run(async (ctx) =>
+			(await ctx.db.query("organizations_workspaces_users").collect()).find(
+				(membership) => membership.userId === guest.source.userId && membership.workspaceId !== f.db.workspaceId,
+			),
+		);
+		await test_create_saved_text_file(f.t, {
+			membershipId: home!._id,
+			path: "/.agents/skills/mine/SKILL.md",
+			textContent: skillText,
+		});
+
+		const found = await f.t.query(internal.ai_chat_context.discover_sources, guest);
+		// The locked team folder has no skills for the guest, so the catalog is complete.
+		expect(found._yay).toMatchObject({ skills: [{ workspace: "personal", path: "/.agents/skills/mine/SKILL.md" }] });
+		expect(found._yay?.warning).toBeUndefined();
+	});
+
+	test("a guest gets no plugin skills", async () => {
+		const f = await fixture();
+		const guest = await f.member(false);
+		const skill = { name: "triage", path: "dist/skills/triage/SKILL.md", description: "Plugin triage" };
+		await f.t.run(async (ctx) => {
+			const now = Date.now();
+			const { organizationId, workspaceId, userId } = f.db;
+			const pluginVersionId = await ctx.db.insert("plugins_versions", {
+				name: "tracker",
+				displayName: "tracker",
+				version: "1.0.0",
+				description: "",
+				reviewStatus: "passed",
+				reviewId: null,
+				isLatest: true,
+				artifactHash: "hash",
+				sourceRepositoryUrl: "https://github.test/acme/tracker",
+				sourceOwner: "acme",
+				sourceRepo: "tracker",
+				sourceCommitSha: "sha",
+				manifestR2Key: "manifest",
+				backendEntrypointFile: null,
+				configuration: null,
+				mounts: [],
+				events: [],
+				pages: [],
+				fileViews: [],
+				capabilities: ["agent.skills.contribute"],
+				outboundOrigins: [],
+				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [skill],
+				files: [],
+				sourceStatus: "ready",
+				sourceLastError: null,
+				createdBy: userId,
+				updatedAt: now,
+				secrets: [],
+				endpoints: [],
+				userWritableCollections: null,
+			});
+			await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await ctx.db.insert("access_control_service_accounts", {
+					organizationId,
+					workspaceId,
+					name: "tracker",
+					createdBy: userId,
+					createdAt: now,
+					updatedAt: now,
+					revokedAt: null,
+				}),
+				organizationId,
+				workspaceId,
+				pluginVersionId,
+				pluginName: "tracker",
+				status: "enabled",
+				managementAccess: "selected",
+				configurationYaml: null,
+				acceptedCapabilities: ["agent.skills.contribute"],
+				capabilitiesAcceptedAt: now,
+				acceptedOutboundOrigins: [],
+				acceptedUiOutboundOrigins: [],
+				acceptedMcpServersFingerprint: "mcp-servers-hash",
+				acceptedSkillNames: [skill.name],
+				outboundOriginsAcceptedAt: now,
+				sandbox: { roots: [], rebuild: null },
+				installedBy: userId,
+				updatedBy: userId,
+				updatedAt: now,
+			});
+		});
+
+		// The owner gets the skill. The guest has no workspace read, so it gets no plugins.
+		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.pluginSkills).toEqual([
+			{ pluginName: "tracker", ...skill },
+		]);
+		expect((await f.t.query(internal.ai_chat_context.discover_sources, guest))._yay?.pluginSkills).toEqual([]);
+	});
+
+	test("refuses other memberships", async () => {
 		const f = await fixture();
 		const second = await f.member(false);
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, second))._nay?.name).toBe("unavailable");
 		expect(
 			(
 				await f.t.query(internal.ai_chat_context.discover_sources, {

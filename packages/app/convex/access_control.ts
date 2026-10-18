@@ -1834,6 +1834,8 @@ export async function access_control_db_has_permission(
  * It takes the membership the handler already loaded. That way this file never has to import
  * `organizations.ts`, which already imports this file. Pass `fileNode` when the operation targets one
  * file or folder: the file scope is worked out here, so call sites cannot build the wrong ids.
+ * `permission: null` checks only the live user and the active membership, for the user's own data
+ * such as their chats.
  *
  * On success it returns the organization, so handlers do not have to load it again, and
  * `defaultWorkspaceId` separately because here it is already known to be set. Read from
@@ -1845,9 +1847,14 @@ export async function access_control_db_authorize_membership(
 	args: {
 		userAuth: { id: Id<"users"> };
 		membership: Doc<"organizations_workspaces_users">;
-		permission: access_control_GrantPermission;
-		fileNode?: Pick<Doc<"files_nodes">, "_id" | "organizationId" | "workspaceId" | "restrictedScopeNodeId">;
-	},
+	} & (
+		| {
+				permission: access_control_GrantPermission;
+				fileNode?: Pick<Doc<"files_nodes">, "_id" | "organizationId" | "workspaceId" | "restrictedScopeNodeId">;
+		  }
+		// A file check needs a permission, so `null` takes no file.
+		| { permission: null; fileNode?: undefined }
+	),
 ) {
 	const user = await ctx.db.get("users", args.userAuth.id);
 	if (!user || user.deletedAt != null) {
@@ -1864,6 +1871,9 @@ export async function access_control_db_authorize_membership(
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 	const defaultWorkspaceId = organization.defaultWorkspaceId;
+	if (args.permission === null) {
+		return Result({ _yay: { organization, defaultWorkspaceId } });
+	}
 
 	let resource: access_control_Resource;
 	if (args.fileNode) {

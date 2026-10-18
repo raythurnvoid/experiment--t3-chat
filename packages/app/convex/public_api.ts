@@ -2530,6 +2530,11 @@ export async function public_api_db_revalidate_file_write_principal(
 		now: number;
 		/** The caller's lookups for this path, so a mutation reads each folder once. */
 		lookups?: Awaited<ReturnType<typeof files_db_create_path_lookups>>;
+		/**
+		 * A batch caller checks write on each item and its deepest existing folder itself, so a person's key
+		 * skips the check of `path`.
+		 */
+		eachPathChecked?: boolean;
 	},
 ) {
 	if (args.externalFileWrite !== undefined) {
@@ -2838,15 +2843,18 @@ export async function public_api_db_revalidate_file_write_principal(
 	}
 	const credential = liveCredential._yay;
 	const subject = credential_subject(credential);
-	// A person's key needs workspace write first, like the app. A key bound to an account may hold
-	// only folder grants, so its write is checked on the target below.
+	// A person's key needs write on the target, or on the deepest folder that exists on the way, so a
+	// guest writes only into a folder shared with them. A key bound to an account is checked on the
+	// target below.
 	if (
 		subject.kind === "user" &&
+		!args.eachPathChecked &&
 		!(await has_workspace_content_permission(ctx, {
 			organizationId: credential.organizationId,
 			workspaceId: credential.workspaceId,
 			subject,
 			permission: "content.write",
+			...(ancestorNode ? { fileNode: ancestorNode } : {}),
 		}))
 	) {
 		return Result({ _nay: { message: "Permission denied" } });
@@ -3413,35 +3421,6 @@ export const publish_file_write = internalMutation({
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-
-			// Each folder above the parent needs write for the actor or for the full subject. The parent itself
-			// is checked with the full subject below, so a plugin root or an account grant there still works.
-			let ancestorId = parentNode?.parentId ?? files_ROOT_ID;
-			while (ancestorId !== files_ROOT_ID) {
-				const ancestor: Doc<"files_nodes"> | null = await files_saved_placement_db_get_node(ctx.db, ancestorId);
-				if (!ancestor) {
-					break;
-				}
-				if (
-					!(await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: stage.organizationId,
-						workspaceId: stage.workspaceId,
-						subject: { kind: "user", userId: writeContext.actorUserId, plugin: null },
-						fileNode: ancestor,
-						permission: "content.write",
-					})) &&
-					!(await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: stage.organizationId,
-						workspaceId: stage.workspaceId,
-						subject: writeContext.subject,
-						fileNode: ancestor,
-						permission: "content.write",
-					}))
-				) {
-					return Result({ _nay: { message: "Permission denied" } });
-				}
-				ancestorId = ancestor.parentId;
-			}
 		}
 
 		// The replacement remains at the checked path and uses the current parent before any archive.
@@ -3449,6 +3428,8 @@ export const publish_file_write = internalMutation({
 			...writeContext,
 			resourceScope: { kind: "create", parentNodeId: parentNode?._id ?? files_ROOT_ID, path: stage.path },
 		};
+		// Write on the target (above) and on its folder is enough, like any write: the folders above may be
+		// locked when the folder is shared deep inside them.
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: stage.organizationId,
@@ -3763,7 +3744,7 @@ export const publish_file_fill = internalMutation({
 			return Result({ _nay: { message: "The file changed during the write" } });
 		}
 
-		// `public_api_db_revalidate_file_write_principal` above asks about the workspace, and a write can be staged
+		// `public_api_db_revalidate_file_write_principal` above asked before staging, and a write can be staged
 		// for a while. This is the commit, so the node itself is asked again here: a grant taken away
 		// during staging has to stop the write, not arrive too late.
 		if (
@@ -4398,15 +4379,15 @@ export const create_file_upload_targets = internalMutation({
 		if (args.principalRef.kind !== "user_api_key") {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
-		// One transactional re-check covers the whole batch. The user_api_key branch never reads
-		// the path (path only matters for the plugin-run sibling constraint, and the route only
-		// admits user keys), so any placeholder path works.
+		// One transactional re-check of the key covers the whole batch. The loop below checks write on each
+		// item and its deepest existing folder, so a guest can upload into a folder shared with write.
 		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			principalRef: args.principalRef,
 			path: "/",
+			eachPathChecked: true,
 			now,
 		});
 		if (revalidated._nay) {

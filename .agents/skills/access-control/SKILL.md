@@ -414,7 +414,9 @@ server closes it with `end_browser_session_internal` and does not save the brows
 of MCP servers. `admin` and `member` have it. `viewer` does not. The chat route checks it before it
 loads any MCP tool for a turn (`/api/chat` in `convex/ai_chat.ts`), and `plugins_mcp.recheck_call`
 checks it again right before each tool call, so a member who loses it mid-reply is refused with
-"You cannot use MCP servers in this workspace." Ask mode never loads MCP tools, whatever the role.
+"You cannot use MCP servers in this workspace." Both checks also need `content.read`: MCP tools are
+not files, so a guest (a member without workspace read) gets none. Ask mode never loads MCP tools,
+whatever the role.
 The "MCP servers" page (`convex/mcp_custom_servers.ts`) needs it to add, edit, test, or turn on the
 member's own servers. Starting an MCP sign-in (`plugins_mcp_oauth.start`) needs it too, and the
 check runs again before the pending sign-in and the grant are written, because the sign-in waits on
@@ -693,8 +695,9 @@ of a restricted folder has to be able to share what the grant gave them and noth
 - `workspace.channels.manage` lets a holder rename, archive, and moderate public channels. It is in
   the admin role. It gives no extra private, direct, or file access. Role and invite ceilings compare
   the full list, so an admin-like custom role also needs this permission before it can grant admin.
-- Chat threads are private to their creator. Every read and change also needs current workspace
-  `content.read` (`THREAD_PERMISSION` in `ai_chat.ts`). Team owners, admins, and writers have no
+- Chat threads are private to their creator. Every read and change also needs a current active
+  membership (`permission: null` in `ai_chat.ts`), not workspace `content.read`: a
+  guest can chat, and each file door checks the node. Team owners, admins, and writers have no
   override. Lists and branch title numbering use a creator-filtered index. Direct reads return
   null for another creator's thread. Mark-read changes only the creator's private read cursor.
   A viewer can manage its own chats; file writes still need their separate file permissions.
@@ -707,11 +710,11 @@ These are real and confirmed against the code. None is an oversight to patch qui
 product decision, so record the answer here before changing the behaviour. An entry that starts with
 **Decided** already has its answer. Do not report it again as a finding.
 
-- **The public API refuses a grant-only person.** Each file scope maps to an app permission, which
-  `get_workspace_content_permissions` answers about the *workspace* for a person's key. An account
-  key only needs any grant there, or a role.
-  Somebody whose only access is a direct grant on one restricted file gets 403 before any per-file
-  check, so their API key cannot use the grant the UI honours. This is under-permission, not a leak.
+- **Fixed: the public API serves a grant-only person.** The file scopes (`files:list`, `files:read`,
+  `files:write`, `files:download`) no longer map to a workspace permission in
+  `REQUIRED_APP_PERMISSION_BY_SCOPE`. Every file read and write checks the node for the person, so a
+  guest's key uses the grants the UI honours. A person's write checks the target, or the deepest
+  folder that exists on the way.
 - **An outgoing owner keeps nothing.** The owner holds no grant docs anywhere — `restrict_node` skips
   the self-grant for them on purpose — and `transfer_organization_ownership` gives them the `member`
   role. A role gives nothing inside a restricted scope, so the moment they hand the organization over
@@ -874,6 +877,19 @@ folder is readable. The path helper sends the node only when its parent is reada
 only where a recursive read would reach it. Custom-field searches read by restricted area (see "The
 walk"). Accepted exception: content (text) search filters after the search
 index; its page shape can show only that some unreadable file matches, never which one.
+
+**Guests.** A guest is an active member without workspace `content.read`. They open only what is
+shared with them. The workspace root is locked for them: Bash `ls /`, `ls -R /`, `find /` (also with
+`-name`), `tree /` and API `files/list` of `/` (also `recursive`) say "Permission denied" (403), so
+they reach a shared item by its exact path. The UI root page shows nothing for them; they use "Shared
+with you". The UI search box still searches from the root and finds only what they can open. Their
+agent can `cp` and `mv`: each item checks read on its source and write on its destination. Chat, the agent's file tools
+and the public API file routes need only the active membership; each file door checks the node.
+Plugins stay closed to guests: MCP tools, volume mounts (`list_bash_volume_mounts`,
+`files_db_authorize_volume_read`), `/.plugins` source mounts (`list_bash_source_mounts`), plugin
+skills in chat, plugin pages, plugin data and backend invoke still need workspace read or write.
+`/.mounts/t3-chat` stays open. For a guest, the content search exception above covers the whole open workspace, since
+they cannot open any open file. It still never names the file.
 
 Sources:
 
@@ -1528,8 +1544,8 @@ docs.
 Be explicit about this when planning work; do not assume the subsystem is complete.
 
 - **AI tools and the bash shell** keep the original chat separate from the file workspace.
-  `/api/chat` and background jobs require source `content.read` in both modes. A team viewer can
-  use Agent mode in their own home. Each file door checks the selected workspace, the current
+  `/api/chat` and background jobs need only the active source membership in both modes, so a guest
+  can chat. A team viewer can use Agent mode in their own home. Each file door checks the selected workspace, the current
   node permission and its write policy. Original membership lifetime checks prevent an old run
   from returning private data or writing after leave/re-invite. Reads check again after external I/O.
   Ask mode removes write tools from the `tools` registry, not only from advisory `activeTools`.

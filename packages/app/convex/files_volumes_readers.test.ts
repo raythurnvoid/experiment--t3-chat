@@ -180,7 +180,6 @@ describe("internal_list volume reads", () => {
 				kind,
 				parent: { kind: "root" },
 				cursor: null,
-				timeOrder: false,
 				order: "asc",
 			});
 			expect(page).toEqual({ target: null, savedNode: null, cursor: "", done: true });

@@ -579,24 +579,25 @@ describe("a caller who cannot open the root", () => {
 		return { t, seeded, ctx, guest: as_user(guestId), share };
 	}
 
-	test("the API walk lists only what a guest or an account can open, and no locked rows", async () => {
+	test("the API list of the root is Permission denied for a guest or an account", async () => {
 		const { t, seeded, ctx, guest, share } = await seed_guest();
 		await share("/docs");
 		const list = (args: Omit<Parameters<typeof files_saved_list_page>[1], "cursorScope" | "numItems" | "cursor">) =>
 			files_saved_list_page(ctx, { ...args, cursorScope: "test", numItems: 100, cursor: null, minDepth: 1 });
 		const paths = (listed: Awaited<ReturnType<typeof files_saved_list_page>>) =>
 			listed._yay!.page.map((node) => `${node.path}${node.locked ? " (locked)" : ""}`);
+		const denied = { _nay: { name: "folder_locked", message: "Permission denied: /" } };
 
-		// The open items sit in the root the guest cannot open, so they are not listed, not even locked.
-		expect(paths(await list({ ...guest, folderPath: "/" }))).toEqual([
-			"/docs",
+		// The guest cannot open the root, so a direct or recursive list of it is locked. The shared
+		// folder lists by its own path.
+		expect(await list({ ...guest, folderPath: "/" })).toEqual(denied);
+		expect(await list({ ...guest, folderPath: "/", maxDepth: 1, withLocked: true })).toEqual(denied);
+		expect(paths(await list({ ...guest, folderPath: "/docs" }))).toEqual([
 			"/docs/nested",
 			"/docs/nested/deep.md",
 			"/docs/readme.md",
 			"/docs/tutorial.md",
 		]);
-		// Like the folder list of the root.
-		expect(paths(await list({ ...guest, folderPath: "/", maxDepth: 1, withLocked: true }))).toEqual(["/docs"]);
 
 		const serviceAccountId = await t.run((ctx) =>
 			ctx.db.insert("access_control_service_accounts", {
@@ -615,32 +616,33 @@ describe("a caller who cannot open the root", () => {
 			visibilityUserId: seeded.userId,
 			subject: { kind: "service_account" as const, serviceAccountId },
 		};
-		expect(paths(await list({ ...account, folderPath: "/" }))).toEqual([]);
+		expect(await list({ ...account, folderPath: "/" })).toEqual(denied);
 	});
 
-	test("the Bash walk lists only what a guest can open, with no denied line", async () => {
+	test("the Bash walk of the root is Permission denied for a guest", async () => {
 		const { ctx, guest, share } = await seed_guest();
 		await share("/docs");
 
 		// What `ls -R`, `find` and `tree` read: the user's own overlay.
-		const listed = await files_pending_overlay_list(ctx, {
-			...guest,
-			overlayUserId: guest.visibilityUserId,
-			folderPath: "/",
-			mode: "subtree",
-			order: "asc",
-			numItems: 100,
-			cursor: null,
-		});
+		const list = (folderPath: string) =>
+			files_pending_overlay_list(ctx, {
+				...guest,
+				overlayUserId: guest.visibilityUserId,
+				folderPath,
+				mode: "subtree",
+				order: "asc",
+				numItems: 100,
+				cursor: null,
+			});
+		expect(await list("/")).toEqual({ _nay: { name: "permission_denied", message: "Permission denied" } });
+		const listed = await list("/docs");
 		if (listed._nay) throw new Error(listed._nay.message);
 		expect(listed._yay.items.map((item) => `${item.path}${item.locked ? " (locked)" : ""}`)).toEqual([
-			"/docs",
 			"/docs/nested",
 			"/docs/nested/deep.md",
 			"/docs/readme.md",
 			"/docs/tutorial.md",
 		]);
-		expect(listed._yay).not.toHaveProperty("denied");
 	});
 
 	test("a name search finds a file a guest reads through Add people only from inside", async () => {
@@ -660,8 +662,8 @@ describe("a caller who cannot open the root", () => {
 			return found._yay.items.map((item) => item.path);
 		};
 		expect(await search("/docs/nested")).toEqual(["/docs/nested/deep.md"]);
-		// From the root the walk stops at the locked /docs, so the search does too.
-		expect(await search("/")).toEqual([]);
+		// The guest cannot open the root, so a search from it is Permission denied.
+		await expect(search("/")).rejects.toThrow("Permission denied");
 	});
 });
 
@@ -879,7 +881,7 @@ describe("the walk on a real database", () => {
 		expect(fromRoot.denied).toEqual(["/docs"]);
 	});
 
-	test("a plugin lists only its sandbox, with no locked row and no denied line", async () => {
+	test("a plugin lists only its sandbox, and the root above its roots is Permission denied", async () => {
 		const { t, seeded, ownerRunner, list, member } = await seed_team();
 		const installationId = await insert_installation({ t, db: seeded } as unknown as Fixture);
 		const reportsId = await get_seeded_node_id(ownerRunner, "/reports");
@@ -895,7 +897,37 @@ describe("the walk on a real database", () => {
 			},
 		};
 
-		// The plugin cannot open the root, so the root lists only what its sandbox reaches.
-		expect(await list(plugin)).toEqual({ paths: ["/reports", "/reports/summary.md"], denied: [] });
+		// The root is above the plugin's roots, so it is locked (Landlock behavior).
+		await expect(list(plugin)).rejects.toThrow("Permission denied");
+		expect(await list(plugin, { folderPath: "/reports" })).toEqual({ paths: ["/reports/summary.md"], denied: [] });
+	});
+
+	test("find -mmin in a plugin's sandbox inside an area reads no row outside it", async () => {
+		const now = Date.now();
+		const { t, seeded, ownerRunner, calls, list, member } = await seed_team(
+			Array.from({ length: 100 }, (_, index) => ({ path: `/r-${index}.md`, updatedAt: now - 60_000 })),
+		);
+		const installationId = await insert_installation({ t, db: seeded } as unknown as Fixture);
+		const reportsId = await get_seeded_node_id(ownerRunner, "/reports");
+		const plugin = {
+			...member,
+			subject: {
+				kind: "user" as const,
+				userId: member.visibilityUserId,
+				plugin: {
+					installationId,
+					roots: [{ target: { kind: "folder" as const, nodeId: reportsId }, level: "read" as const }],
+				},
+			},
+		};
+		calls.length = 0;
+
+		const listed = await list(plugin, { folderPath: "/reports", updated: { from: now - 3_600_000, to: null } });
+
+		const rows = calls
+			.filter((call) => call.name === "files_visible:internal_list_subtree_recent_saved")
+			.reduce((sum, call) => sum + call.documents, 0);
+		expect(rows, "the per-folder read skips the 100 recent rows outside the sandbox").toBeLessThan(50);
+		expect(listed).toEqual({ paths: ["/reports/summary.md"], denied: [] });
 	});
 });

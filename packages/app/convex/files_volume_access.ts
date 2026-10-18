@@ -2,6 +2,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import type { Infer } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import type { ai_chat_workspaces_source_validator } from "./schema.ts";
@@ -40,6 +41,15 @@ export async function files_db_authorize_volume_read(
 		userId: args.readerUserId,
 	});
 	if (allowed._nay) return Result({ _nay: { message: "Volume unavailable" } });
+	// A volume is plugin data with no per-file access, so it needs workspace read: a guest's chat
+	// reads no volume.
+	const membership = (await ctx.db.get("organizations_workspaces_users", source.membershipId))!;
+	const mayRead = await access_control_db_authorize_membership(ctx, {
+		userAuth: { id: args.readerUserId },
+		membership,
+		permission: "content.read",
+	});
+	if (mayRead._nay) return Result({ _nay: { message: "Volume unavailable" } });
 	return Result({ _yay: null });
 }
 

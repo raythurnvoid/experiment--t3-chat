@@ -1096,7 +1096,12 @@ describe("list_bash_volume_mounts", () => {
 			}
 			return result;
 		});
-		const scope = { organizationId: owner.organizationId, workspaceId: owner.workspaceId };
+		const scope = {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userId: owner.userId,
+			membershipId: owner.membershipId,
+		};
 		const listed = await t.query(internal.plugins.list_bash_volume_mounts, scope);
 		expect(
 			listed.map((copy) => `${copy.mountName}/${copy.volumeKey}`),
@@ -1111,6 +1116,8 @@ describe("list_bash_volume_mounts", () => {
 			await t.query(internal.plugins.list_bash_volume_mounts, {
 				organizationId: member.organizationId,
 				workspaceId: member.workspaceId,
+				userId: member.userId,
+				membershipId: member.membershipId,
 			}),
 		).toEqual([
 			{
@@ -1132,6 +1139,21 @@ describe("list_bash_volume_mounts", () => {
 			"renamed",
 			"renamed",
 		]);
+		// A guest (an active member without workspace read) sees no volumes: they are plugin data with
+		// no per-file access.
+		const guest = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "volume-guest" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		expect(await t.query(internal.plugins.list_bash_volume_mounts, { ...scope, ...guest }), "a guest").toEqual([]);
 		await t.run((ctx) =>
 			ctx.db.patch("plugins_workspace_installations", installed._yay.installationId, { status: "disabled" }),
 		);

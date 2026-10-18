@@ -80,9 +80,10 @@ export async function files_saved_list_page(
 				}),
 	]);
 	if (!view || !membership) return Result({ _yay: { page: [], continueCursor: "", isDone: true } });
-	if (path !== "/" && !root) {
+	if (!root) {
 		// Locked, not hidden: an item the caller cannot open, or any path below a locked folder, is
-		// "Permission denied". Only a missing path is "not found".
+		// "Permission denied". Only a missing path is "not found". The workspace root is locked for a
+		// guest, like Bash `ls /`, and for a plugin whose roots are folders: the root is above them.
 		const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -92,7 +93,7 @@ export async function files_saved_list_page(
 		if (access.status === "locked") {
 			return Result({ _nay: { name: "folder_locked", message: `Permission denied: ${path}` } });
 		}
-		return Result({ _nay: { name: "folder_unavailable", message: `Folder not found: ${path}` } });
+		if (path !== "/") return Result({ _nay: { name: "folder_unavailable", message: `Folder not found: ${path}` } });
 	}
 	if (root && root.kind !== "folder") {
 		return Result({ _nay: { name: "not_a_folder", message: `Path must point to a folder: ${path}` } });
@@ -229,8 +230,7 @@ export async function files_saved_list_page(
 	const page: Doc<"files_nodes">[] = [];
 	const lockedIds = new Set<Id<"files_nodes">>();
 	let isDone = false;
-	// A folder the caller cannot open (the root, for a guest) lists only the children they can open, so a
-	// page can be short with a cursor.
+	// Rows the caller cannot open can drop out, so a page can be short with a cursor.
 	for (let round = 0; round < 8 && page.length < numItems; round++) {
 		const batches: Array<{ rows: Doc<"files_nodes">[]; frontier: Key | null; done: boolean }> = [];
 		// One stream per source and per type value. Each reads one index range of matching rows only.

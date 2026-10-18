@@ -3329,7 +3329,7 @@ describe("enforcement", () => {
 		expect(after).toEqual(before);
 	});
 
-	test.each(["content.read", "membership"] as const)("a creator loses chat access after losing %s", async (revoked) => {
+	test("a creator loses chat access after losing the membership", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "private-chat-revoked",
@@ -3352,39 +3352,21 @@ describe("enforcement", () => {
 			threads: await ctx.db.query("ai_chat_threads").collect(),
 			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 		}));
-		if (revoked === "membership") {
-			// The shared fixture inserts membership directly; removal also needs its credential quota.
-			await t.run((ctx) =>
-				quotas_db_ensure(ctx, {
-					quotaName: "active_api_credentials",
-					userId: fixture.memberId,
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.defaultWorkspaceId,
-					now: Date.now(),
-				}),
-			);
-			const removed = await fixture.asOwner.mutation(api.organizations.remove_user_from_organization, {
-				organizationId: fixture.organizationId,
-				userIdToRemove: fixture.memberId,
-			});
-			expect(removed._nay).toBeUndefined();
-		} else {
-			const role = await fixture.asOwner.mutation(api.access_control.create_role, {
-				organizationId: fixture.organizationId,
-				name: "Workspace maker",
-				description: "",
-				permissions: ["workspace.create"],
-			});
-			expect(role._nay).toBeUndefined();
-			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-			const assigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+		// The shared fixture inserts membership directly; removal also needs its credential quota.
+		await t.run((ctx) =>
+			quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId: fixture.memberId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.defaultWorkspaceId,
-				userId: fixture.memberId,
-				role: role._yay!.roleId,
-			});
-			expect(assigned._nay).toBeUndefined();
-		}
+				now: Date.now(),
+			}),
+		);
+		const removed = await fixture.asOwner.mutation(api.organizations.remove_user_from_organization, {
+			organizationId: fixture.organizationId,
+			userIdToRemove: fixture.memberId,
+		});
+		expect(removed._nay).toBeUndefined();
 		const membershipId = fixture.memberMembershipId;
 		const listed = await fixture.asMember.query(api.ai_chat.threads_list, {
 			membershipId,
@@ -3412,7 +3394,7 @@ describe("enforcement", () => {
 		const marked = await fixture.asMember.mutation(api.ai_chat.thread_mark_read, { membershipId, threadId });
 		const branched = await fixture.asMember.action(api.ai_chat.thread_branch, { membershipId, threadId });
 		for (const refused of [renamed, archived, marked, branched]) {
-			expect(refused._nay?.message).toBe(revoked === "membership" ? "Unauthorized" : "Permission denied");
+			expect(refused._nay?.message).toBe("Unauthorized");
 		}
 		const replied = await fixture.asMember.fetch("/api/chat", {
 			method: "POST",
@@ -3429,9 +3411,7 @@ describe("enforcement", () => {
 			}),
 		});
 		expect(replied.status).toBe(403);
-		expect(await replied.json()).toEqual({
-			message: revoked === "membership" ? "Unauthorized" : "Permission denied",
-		});
+		expect(await replied.json()).toEqual({ message: "Unauthorized" });
 		const after = await t.run(async (ctx) => ({
 			threads: await ctx.db.query("ai_chat_threads").collect(),
 			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
@@ -3439,7 +3419,7 @@ describe("enforcement", () => {
 		expect(after).toEqual(before);
 	});
 
-	test("a role without content.read cannot start a chat thread either", async () => {
+	test("a role without content.read can still start a chat thread", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "chat-noread-org",
@@ -3470,7 +3450,8 @@ describe("enforcement", () => {
 			lastMessageAt: 1,
 		});
 
-		expect(thread._nay?.message).toBe("Permission denied");
+		// A member without workspace read is a guest. The chat is theirs, and each file tool checks the node.
+		expect(thread._nay).toBeUndefined();
 	});
 
 	test("/api/chat lets a viewer use both modes while file tools check destination writes", async () => {
@@ -3513,16 +3494,15 @@ describe("enforcement", () => {
 		await viewerAsk.text();
 	});
 
-	test("/api/chat refuses ask and agent mode to a role that cannot read", async () => {
+	test("/api/chat lets a role that cannot read chat in ask and agent mode", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "chat-noread-org",
 			suffix: "chat-noread",
 		});
 
-		// A role cannot hold `content.write` without `content.read`, so this role holds neither.
-		// `thread_get` and `thread_create` ask for `content.read`, but they answer 400, which looks like a
-		// broken request. The route checks by itself and answers 403.
+		// A role cannot hold `content.write` without `content.read`, so this role holds neither. The member
+		// is a guest: the chat is theirs, and each file tool checks the node.
 		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
 			organizationId: fixture.organizationId,
 			name: "No content",
@@ -3541,8 +3521,7 @@ describe("enforcement", () => {
 		});
 		expect(assigned._nay).toBeUndefined();
 
-		// The role really was given, so the 403 below cannot come from a test setup that failed to give
-		// it. Without this call the test would keep passing even if the read check was removed.
+		// The role really was given, so the 200 below is for a member without workspace read.
 		expect(
 			await fixture.asMember.query(api.access_control.get_current_user_organization_permission, {
 				organizationId: fixture.organizationId,
@@ -3568,23 +3547,7 @@ describe("enforcement", () => {
 
 		for (const mode of ["ask", "agent"] as const) {
 			await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-			const refused = await post_chat(`thread-noread-${mode}`, mode);
-			expect(refused.status).toBe(403);
-			expect(await refused.json()).toMatchObject({ message: "Permission denied" });
-		}
-
-		// Control: the only thing that changed is content access. So some other check earlier in the
-		// route cannot be what produced the 403 above.
-		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const widened = await fixture.asOwner.mutation(api.access_control.update_role, {
-			roleId: role._yay!.roleId,
-			permissions: ["content.read", "content.write"],
-		});
-		expect(widened._nay).toBeUndefined();
-
-		for (const mode of ["ask", "agent"] as const) {
-			await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-			const allowed = await post_chat(`thread-read-${mode}`, mode);
+			const allowed = await post_chat(`thread-noread-${mode}`, mode);
 			expect(allowed.status).toBe(200);
 			await allowed.text();
 		}

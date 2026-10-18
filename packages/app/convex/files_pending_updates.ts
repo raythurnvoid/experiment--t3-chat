@@ -7367,11 +7367,12 @@ export const get_pending_source_summary = query({
 			)
 			.first();
 		if (!membership) return null;
-		// Use the normal chat read rule, which includes archived chats. Do not require the access an agent run needs.
+		// The chat read rule: the caller's own chat, archived too, needs only an active membership, so a guest
+		// sees it. It does not need the access an agent run needs.
 		const allowed = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: "content.read",
+			permission: null,
 		});
 		if (allowed._nay) return null;
 		const workspace = await ctx.db.get("organizations_workspaces", membership.workspaceId);
@@ -7418,10 +7419,11 @@ export const get_chat_pending_updates_summary = query({
 			thread.workspaceId !== current.workspaceId
 		)
 			return [];
+		// Only counts of the caller's own pending changes, so an active member (a guest too) may see them.
 		const allowed = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership: current,
-			permission: "content.read",
+			permission: null,
 		});
 		if (allowed._nay) return [];
 		const user = (await ctx.db.get("users", userAuth.id))!;

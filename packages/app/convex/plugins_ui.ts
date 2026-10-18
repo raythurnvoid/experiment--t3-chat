@@ -235,9 +235,8 @@ export const insert_page_session = internalMutation({
 
 		// Opening an installed page is not managing plugins, so we do not ask for
 		// `workspace.plugins.manage`. But the token created here can read files through the public API,
-		// so it must not go to someone who cannot read the workspace. Checking when the token is
-		// created avoids minting a useless file token. Public file routes also map their scope to an app
-		// permission and recheck it on every request.
+		// so it must not go to someone who cannot read the workspace: a guest gets no plugin pages.
+		// Public file routes also check each file for the person on every request.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,

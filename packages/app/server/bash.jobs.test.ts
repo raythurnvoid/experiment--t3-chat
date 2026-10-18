@@ -1032,7 +1032,7 @@ describe("bash_run_command", () => {
 			expect(await activity_of(runner, 1)).toMatchObject({ status: "canceled" });
 		});
 
-		test("a running job stops when its read permission is taken away", async () => {
+		test("a running job stops when its user leaves the workspace", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run({ command: "{ echo before; t=60; sleep $t; } &" })).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
@@ -1041,22 +1041,13 @@ describe("bash_run_command", () => {
 			try {
 				const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 				await vi.advanceTimersByTimeAsync(1_000);
-				// Hand ownership away and remove the role, keeping the membership active.
-				await runner.t.run(async (ctx) => {
-					const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
-					await ctx.db.patch("organizations", runner.seeded.organizationId, { ownerUserId: otherOwnerId });
-					const assignmentId = await access_control_db_ensure_role_assignment(ctx, {
-						organizationId: runner.seeded.organizationId,
-						workspaceId: runner.seeded.workspaceId,
-						userId: runner.seeded.userId,
-						role: "member",
-						now: Date.now(),
-					});
-					await ctx.db.delete("access_control_role_assignments", assignmentId);
-				});
+				// Losing workspace read alone keeps a job running (a guest's job runs), so end the membership.
+				await runner.t.run((ctx) =>
+					ctx.db.patch("organizations_workspaces_users", runner.seeded.membershipId, { active: false }),
+				);
 				await vi.advanceTimersByTimeAsync(10_000);
 				// Run out the job's whole 8-minute budget too. The poll has already stopped the job by now.
-				// If a poll had skipped the permission check, the job would report 124 here instead of
+				// If a poll had skipped the membership check, the job would report 124 here instead of
 				// hanging the test.
 				await vi.advanceTimersByTimeAsync(8 * 60 * 1000);
 				await worker;

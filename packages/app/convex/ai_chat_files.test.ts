@@ -686,7 +686,7 @@ describe("ai_chat_files creator privacy", () => {
 		});
 	});
 
-	test("losing content.read hides scratch, transcripts, and jobs but keeps requester Activity Stop", async () => {
+	test("losing content.read keeps scratch, transcripts, jobs and Activity Stop for the creator", async () => {
 		const f = await create_team_thread();
 		const job = await start_job(f);
 		const role = await f.asOwner.mutation(api.access_control.create_role, {
@@ -704,30 +704,18 @@ describe("ai_chat_files creator privacy", () => {
 				role: role._yay.roleId,
 			}),
 		).toEqual({ _yay: null });
-		await expect(
-			f.t.query(internal.ai_chat_files.read_shell_transcript, {
-				...f.scope,
-				shellId: f.invocation.shell._id,
-			}),
-		).rejects.toThrow("Permission denied");
-		await expect(f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).rejects.toThrow(
-			"Permission denied",
-		);
-		await expect(
-			f.t.query(internal.ai_chat_files.load_thread_tmp_files, {
-				threadId: f.scope.threadId,
-				invocationId: f.invocation.invocationId,
-			}),
-		).rejects.toThrow("Unauthorized");
+		// The creator is now a guest. The chat and its scratch are theirs, and each file door checks the
+		// node, so all of this keeps working.
+		await f.t.query(internal.ai_chat_files.read_shell_transcript, { ...f.scope, shellId: f.invocation.shell._id });
+		await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 });
+		await f.t.query(internal.ai_chat_files.load_thread_tmp_files, {
+			threadId: f.scope.threadId,
+			invocationId: f.invocation.invocationId,
+		});
 		const { shellName: _shellName, run: _run, ...identity } = f.beginArgs;
-		expect(await f.t.query(internal.ai_chat_files.get_bash_invocation, identity)).toEqual({
-			_nay: { message: "Unauthorized" },
-		});
-		expect(await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs)).toEqual({
-			_nay: { message: "Unauthorized" },
-		});
+		expect((await f.t.query(internal.ai_chat_files.get_bash_invocation, identity))._nay).toBeUndefined();
 		expect(await f.t.query(internal.ai_chat_files.poll_bash_job, { invocationId: job._id })).toMatchObject({
-			authorized: false,
+			authorized: true,
 		});
 		const activity = await f.t.run((ctx) =>
 			ctx.db
@@ -743,9 +731,33 @@ describe("ai_chat_files creator privacy", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(await f.t.query(internal.ai_chat_files.poll_bash_job, { invocationId: job._id })).toMatchObject({
-			authorized: false,
+			authorized: true,
 			stopRequested: true,
 		});
+
+		// Leaving the workspace still ends access to all of it.
+		expect(
+			await f.asCreator.mutation(api.organizations.remove_user_from_organization, {
+				organizationId: f.scope.organizationId,
+				userIdToRemove: f.creator.userId,
+			}),
+		).toEqual({ _yay: null });
+		await expect(
+			f.t.query(internal.ai_chat_files.read_shell_transcript, { ...f.scope, shellId: f.invocation.shell._id }),
+		).rejects.toThrow("Unauthorized");
+		await expect(f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).rejects.toThrow(
+			"Unauthorized",
+		);
+		await expect(
+			f.t.mutation(internal.ai_chat.save_shell, {
+				...f.scope,
+				invocationId: f.invocation.invocationId,
+				shellId: f.invocation.shell._id,
+				cwd: "~",
+				cwdTarget: null,
+				transcriptEntry: "after leaving",
+			}),
+		).rejects.toThrow("Unauthorized");
 	});
 
 	test("a removed and restored membership cannot queue another run of an old job", async () => {

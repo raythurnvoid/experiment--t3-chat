@@ -17,7 +17,8 @@ import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 /**
- * Trusted tool reads still check the current chat owner and workspace read access.
+ * Trusted tool reads still check the current chat owner and the active membership. Files check
+ * each node.
  */
 export async function ai_chat_files_db_get_door_membership(
 	ctx: QueryCtx | MutationCtx,
@@ -52,7 +53,7 @@ export async function ai_chat_files_db_get_door_membership(
 	const authorized = await access_control_db_authorize_membership(ctx, {
 		userAuth: { id: args.userId },
 		membership,
-		permission: "content.read",
+		permission: null,
 	});
 	if (authorized._nay) return authorized;
 	return Result({ _yay: membership });
@@ -102,7 +103,7 @@ export async function ai_chat_files_db_get_invocation_membership(
 	const authorized = await access_control_db_authorize_membership(ctx, {
 		userAuth: { id: invocation.userId },
 		membership,
-		permission: "content.read",
+		permission: null,
 	});
 	if (authorized._nay) return null;
 	return membership;

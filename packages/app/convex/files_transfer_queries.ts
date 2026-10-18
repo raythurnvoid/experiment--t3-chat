@@ -274,11 +274,12 @@ export const get_activity_for_agent = internalQuery({
 					.eq("active", true),
 			)
 			.first();
+		// The path readiness says nothing about any node, so an active member (a guest too) may see it.
 		const destinationAccess = destinationMembership
 			? await access_control_db_authorize_membership(ctx, {
 					userAuth: { id: args.userId },
 					membership: destinationMembership,
-					permission: "content.read",
+					permission: null,
 				})
 			: null;
 		const paths = destinationAccess?._yay

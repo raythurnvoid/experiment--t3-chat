@@ -53,6 +53,7 @@ import {
 	crypto_sha256_hex,
 } from "../server/crypto-utils.ts";
 import {
+	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
 	access_control_db_has_permission,
 	access_control_db_authorize_service_account_grant,
@@ -73,6 +74,7 @@ import {
 import { plugins_mcp_db_drain_installation_batch, plugins_mcp_db_sync_installation_servers } from "./plugins_mcp.ts";
 import { plugins_volumes_db_drain_batch, plugins_volumes_db_schedule_volume_drain } from "./plugins_volumes.ts";
 import { organizations_integration_policy_db_plugin_version_status } from "./organizations_integration_policy.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	plugins_access_db_authorize_management,
 	plugins_access_db_authorize_membership,
@@ -4625,6 +4627,8 @@ export const list_bash_source_mounts = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
 	},
 	returns: v.array(
 		v.object({
@@ -4633,6 +4637,15 @@ export const list_bash_source_mounts = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
+		// A guest without workspace read gets no plugins, so it sees no plugin sources either.
+		const membership = await organizations_db_get_membership(ctx, args);
+		if (!membership) return [];
+		const mayRead = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.read",
+		});
+		if (mayRead._nay) return [];
 		// The status+pluginName index yields enabled installations already in plugin-name order.
 		const installations = await ctx.db
 			.query("plugins_workspace_installations")
@@ -4656,6 +4669,8 @@ export const list_bash_volume_mounts = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
 	},
 	returns: v.array(
 		v.object({
@@ -4666,6 +4681,15 @@ export const list_bash_volume_mounts = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
+		// A volume is plugin data with no per-file access, so a guest without workspace read sees none.
+		const membership = await organizations_db_get_membership(ctx, args);
+		if (!membership) return [];
+		const mayRead = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.read",
+		});
+		if (mayRead._nay) return [];
 		const installations = await ctx.db
 			.query("plugins_workspace_installations")
 			.withIndex("by_organization_workspace_status_pluginName", (q) =>

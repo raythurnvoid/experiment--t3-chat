@@ -698,6 +698,26 @@ describe("plugin ui sessions", () => {
 		expect(afterDisable).toEqual([]);
 	});
 
+	test("a guest still cannot open a plugin page", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const member = await seed_reader_member(t, fixture);
+		const asMember = t.withIdentity(user_identity(member.userId));
+		const list = () => asMember.query(api.plugins_ui.list_ui_pages, { membershipId: member.membershipId });
+		// The same member with workspace read sees the page, so the refusals below come from the guest.
+		expect(await list()).toHaveLength(1);
+
+		// Without workspace read the member is a guest. A guest gets no plugins.
+		await t.run((ctx) => ctx.db.delete("access_control_permission_grants", member.grantId));
+		expect(await list()).toEqual([]);
+		expect(
+			await asMember.action(api.plugins_ui.mint_page_session, {
+				membershipId: member.membershipId,
+				pluginName: "gallery",
+			}),
+		).toMatchObject({ _nay: { message: "Permission denied" } });
+	});
+
 	test("a plugin-session identity cannot mint sessions or list pages", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);

@@ -1175,32 +1175,42 @@ describe("bash_run_command", () => {
 		);
 	});
 
-	test("ls -t lists the workspace newest-first and supports scoped immediate-child recency", async () => {
-		const runner = await create_bash_runner({
-			extraFiles: [
-				{ path: "/docs/aaa-old.md", content: "old\n", updatedAt: Date.now() - 2_000_000 },
-				{ path: "/docs/zzz-new.md", content: "new\n", updatedAt: Date.now() + 10_000 },
-			],
-		});
+	const time_files = [
+		{ path: "/docs/aaa-old.md", content: "old\n", updatedAt: Date.now() - 2_000_000 },
+		{ path: "/docs/zzz-new.md", content: "new\n", updatedAt: Date.now() + 10_000 },
+	];
+
+	test("ls -t with no path lists the current folder newest first", async () => {
+		const { run } = await create_bash_runner({ extraFiles: time_files });
+
+		const newest = await run({ command: `cd ${test_db_files_mount}/docs && ls -t --limit 10` });
+		const oldest = await run({ command: `cd ${test_db_files_mount}/docs && ls -rt --limit 10` });
+
+		expect(newest.metadata.exitCode).toBe(0);
+		const first = newest.stdout.trim().split("\n").at(0);
+		expect(first).toBe("zzz-new.md");
+		expect(oldest.stdout.trim().split("\n").at(0)).toBe("aaa-old.md");
+	});
+
+	test("ls -t continuation names the folder", async () => {
+		const { run } = await create_bash_runner({ extraFiles: time_files });
+
+		const paged = await run({ command: `cd ${test_db_files_mount}/docs && ls -t --limit 1` });
+
+		expect(paged.stdout).toMatch(
+			new RegExp(`Next page: ls -t --limit 1 --cursor \\S+ ${test_db_files_mount}/docs`, "u"),
+		);
+	});
+
+	test("ls -t <dir> lists that folder newest first", async () => {
+		const runner = await create_bash_runner({ extraFiles: time_files });
 		const { run, runQuery } = runner;
 
-		const newest = await run({ command: "ls -t --limit 50" });
-		const oldest = await run({ command: "ls -rt --limit 50" });
 		const scopedNewest = await run({ command: `ls -t --limit 10 ${test_db_files_mount}/docs` });
 		const scopedOldest = await run({ command: `ls -rt --limit 10 ${test_db_files_mount}/docs` });
 		const scopedPaged = await run({ command: `ls -t --limit 1 ${test_db_files_mount}/docs` });
 		const recursiveScoped = await run({ command: `ls -Rt ${test_db_files_mount}/docs` });
-		const workspacePaged = await run({ command: "ls -t --limit 1" });
 
-		expect(newest.metadata.exitCode).toBe(0);
-		// Each line is "<ISO timestamp>\t<shell path>"; assert the recency formatting + a known path.
-		expect(newest.stdout).toMatch(/\dT\d.*Z\t\/home\/cloud-usr\/w\/personal\/home\/docs\/readme\.md/u);
-		const recencyCalls = runQuery.mock.calls
-			.filter(([ref]) => function_name_of(ref) === "files_visible:internal_list_recent_saved")
-			.map((call) => call[1]);
-		expect(recencyCalls.some((a) => a.order === "desc")).toBe(true);
-		expect(recencyCalls.some((a) => a.order === "asc")).toBe(true);
-		expect(oldest.metadata.exitCode).toBe(0);
 		expect(scopedNewest.metadata.exitCode).toBe(0);
 		expect(scopedNewest.stdout.trim().split("\n").at(0)).toBe("zzz-new.md");
 		expect(scopedOldest.metadata.exitCode).toBe(0);
@@ -1214,7 +1224,6 @@ describe("bash_run_command", () => {
 		const recursiveReverse = await run({ command: `ls -Rr ${test_db_files_mount}/docs` });
 		expect(recursiveReverse.metadata.exitCode).toBe(2);
 		expect(recursiveReverse.stderr).toContain("ls -R -r is not supported for app file paths");
-		expect(workspacePaged.stdout).toContain("Next page: ls -t --limit 1 --cursor");
 		expect(runQuery).toHaveBeenCalledWith(
 			internal.files_visible.internal_list_children_saved,
 			expect.objectContaining({

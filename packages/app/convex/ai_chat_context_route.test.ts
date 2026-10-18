@@ -368,7 +368,7 @@ describe("/api/chat run access", () => {
 		{ preparation: "title", revoked: false },
 		{ preparation: "title", revoked: true },
 	])(
-		"checks source access after $preparation preparation (read revoked: $revoked)",
+		"checks source access after $preparation preparation (membership removed: $revoked)",
 		async ({ preparation, revoked }) => {
 			const t = test_convex();
 			const owner = await t.run((ctx) =>
@@ -400,13 +400,6 @@ describe("/api/chat run access", () => {
 			});
 			if (created._nay) throw new Error(created._nay.message);
 			const threadId = created._yay.threadId;
-			const role = await asOwner.mutation(api.access_control.create_role, {
-				organizationId: owner.organizationId,
-				name: "Workspace maker",
-				description: "",
-				permissions: ["workspace.create"],
-			});
-			if (role._nay) throw new Error(role._nay.message);
 			expect(
 				await asUser.query(api.access_control.get_current_user_workspace_permission, {
 					membershipId: membership._id,
@@ -459,13 +452,12 @@ describe("/api/chat run access", () => {
 										languageModel.doStreamCalls.length === 1;
 							if (!prepared && atBoundary) {
 								expect(result).not.toBeNull();
+								// Losing workspace read does not stop a chat (a guest can chat). Leaving the workspace does.
 								if (revoked) {
 									expect(
-										await asOwner.mutation(api.access_control.set_user_role, {
+										await asUser.mutation(api.organizations.remove_user_from_organization, {
 											organizationId: owner.organizationId,
-											workspaceId: owner.workspaceId,
-											userId: member.userId,
-											role: role._yay.roleId,
+											userIdToRemove: member.userId,
 										}),
 									).toEqual({ _yay: null });
 								}

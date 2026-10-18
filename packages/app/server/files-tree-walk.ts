@@ -15,6 +15,10 @@
 // While a scope job runs, a row can still point at its old area. It comes from that area's frame,
 // maybe a little out of path order, and its own check decides it (locked when not readable).
 //
+// `find -mmin` / `-mtime` walk the same way, but a frame reads its rows by update time
+// (`files_tree_walk_time_key`): every row of the frame comes first, newest first, then its boundaries
+// in path order. So the output is grouped by area, areas in path order.
+//
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`).
 
@@ -166,6 +170,34 @@ export function files_tree_walk_phase(frame: files_tree_walk_FrameArgs, idFields
 		endInclusive: false,
 	});
 	return { bounds: phases[frame.phase] ?? null, phaseCount: phases.length };
+}
+
+/**
+ * The key of a row in a time frame (`find -mmin` / `-mtime`): the frame's `treePath` first, so every
+ * row comes before the frame's boundaries, then newest first. `folder` is set when the frame reads
+ * folder by folder. Nodes have different creation times, so the id only matters for one node.
+ */
+export function files_tree_walk_time_key(
+	frame: { treePath: string },
+	node: { updatedAt: number; _creationTime: number; _id: string },
+	folder?: string,
+): Key {
+	return [frame.treePath, ...(folder === undefined ? [] : [folder]), -node.updatedAt, -node._creationTime, node._id];
+}
+
+/**
+ * Where a time frame goes on, from its `lower` bound. Null when its rows are all read: the bound is
+ * at a boundary, past the frame's own path. `folder` is the first folder to read, when the frame reads
+ * folder by folder, and `after` the index key (`updatedAt`, creation time, id) to read after.
+ */
+export function files_tree_walk_time_lower(frame: files_tree_walk_FrameArgs, byFolder: boolean) {
+	const key = frame.lower.key;
+	if (key[0] !== frame.treePath) return null;
+	const rest = key.slice(byFolder ? 2 : 1);
+	return {
+		folder: byFolder ? ((key[1] as string | undefined) ?? frame.treePath) : null,
+		after: rest.length === 3 ? [-(rest[0] as number), -(rest[1] as number), rest[2]] : null,
+	};
 }
 
 /**
@@ -370,9 +402,9 @@ export async function files_tree_walk_page<Row>(args: {
 			const boundary = item.boundary;
 			if (!boundary) {
 				lower = { key: item.key, inclusive: false };
-				// Two calls read different snapshots, so a row can come twice.
-				if (!seen.has(String(item.key[3]))) {
-					seen.add(String(item.key[3]));
+				// Two calls read different snapshots, so a row can come twice. The id is the last key field.
+				if (!seen.has(String(item.key.at(-1)))) {
+					seen.add(String(item.key.at(-1)));
 					entries.push({ key: item.key, row: item.row!, denied: null, cursor: cursor_at(lower) });
 					listed++;
 				}

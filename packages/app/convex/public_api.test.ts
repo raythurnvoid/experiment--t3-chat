@@ -1421,11 +1421,12 @@ describe("service-bound API credentials", () => {
 			headers: auth_headers(created._yay.credential),
 		});
 		expect(inspected.status).toBe(200);
-		// The key acts as the account, and the account holds no grant yet, so it cannot read files.
+		// The key acts as the account. File scopes are checked on each file, so the key keeps them even
+		// though the account holds no grant yet.
 		expect(await inspected.json()).toMatchObject({
 			serviceAccountId,
 			sponsorUserId: db.userId,
-			scopes: ["files:permissions"],
+			scopes: ["files:read", "files:permissions"],
 		});
 		const rotated = await asUser.mutation(api.public_api.api_credential_rotate, {
 			membershipId: db.membershipId,
@@ -2830,7 +2831,7 @@ describe("public files API", () => {
 		expect(((await readResponse.json()) as { content: string }).content).toContain("New content");
 	});
 
-	test("a replace that cannot recreate the file does not archive it", async () => {
+	test("a replace needs write on the file and its folder only, not on a locked folder above", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-nested-scope-owner" });
@@ -2996,20 +2997,20 @@ describe("public files API", () => {
 			});
 		});
 
-		// Recreation has to walk /outer, which this writer cannot write, so the replace fails.
+		// The writer cannot write /outer, but the recreate starts at /outer/inner, so the replace works. A
+		// recreate that fails still throws, so the old file is never lost.
 		const published = await t.mutation(internal.public_api.publish_file_write, {
 			stageId,
 			content: "# Replacement",
 			// This is the file that `prepare_file_write` would remember.
 			targetAnchor: { kind: "existing", nodeId: targetNodeId },
 		});
-		expect(published._nay?.message).toBe("Permission denied");
-
-		// The point of the fix: the refusal must not leave the caller with no file.
+		expect(published._nay).toBeUndefined();
 		await t.run(async (ctx) => {
-			const target = await ctx.db.get("files_nodes", targetNodeId);
-			expect(target?.archiveOperationId).toBeNull();
-			expect(target?.path).toBe("/outer/inner/report.md");
+			const live = (await ctx.db.query("files_nodes").collect()).filter(
+				(node) => node.path === "/outer/inner/report.md" && node.archiveOperationId === null,
+			);
+			expect(live.map((node) => node._id)).toEqual([published._yay!.nodeId]);
 		});
 	});
 
@@ -3938,7 +3939,7 @@ describe("public files API", () => {
 		}
 	});
 
-	test("maps every read file scope to request-time content.read permission", async () => {
+	test("a key of a member without workspace read opens no open file", async () => {
 		const t = test_convex();
 		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-owner" });
 		const keyId = `pk_${"4".repeat(32)}`;
@@ -3975,15 +3976,21 @@ describe("public files API", () => {
 		for (const request of [
 			{ path: "/api/v1/files/list", body: { path: "/" } },
 			{ path: "/api/v1/files/read", body: { path: "/notes.md" } },
-			{ path: "/api/v1/files/download-urls", body: { fileNodeIds: ["missing-node"] } },
 		] as const) {
 			const response = await t.fetch(request.path, {
 				method: "POST",
 				headers: auth_headers(credential),
 				body: JSON.stringify(request.body),
 			});
-			expect(response.status).toBe(403);
+			// The scopes pass. The root is locked for this member, so each path answers 403.
+			expect(response.status, request.path).toBe(403);
 		}
+		const download = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ fileNodeIds: ["missing-node"] }),
+		});
+		expect(await download.json()).toMatchObject({ items: [], errors: [{ fileNodeId: "missing-node" }] });
 	});
 
 	test("refuses a write to a viewer's API key while still allowing it to read", async () => {
@@ -4008,6 +4015,8 @@ describe("public files API", () => {
 					updatedAt: now,
 				});
 			}
+			// The write route checks credits first, so the viewer pays and reaches the permission check.
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
 			// The organization role is stored on the default workspace, the same way an invite
 			// writes it.
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -4317,6 +4326,7 @@ describe("locked and missing paths", () => {
 			asOwner,
 			db,
 			secretId,
+			sharedId,
 			hiddenFileId,
 			hiddenIds,
 			memberUserId: member.userId,
@@ -4477,11 +4487,11 @@ describe("locked and missing paths", () => {
 		expect(files.body.items.map((item) => item.path)).toEqual(["/b.md", "/hidden.md"]);
 	});
 
-	test("a recursive list of the root a caller cannot open lists only what they can open", async () => {
+	test("a list of the root a caller cannot open answers 403, like Bash ls /", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_folder(t);
-		// A service account has no workspace role, so it cannot open the root. It reaches the route
-		// through its grant on `/hidden.md`. The route refuses a guest key and an account with no grant.
+		// A service account has no workspace role, so it cannot open the root, even with a grant on
+		// `/hidden.md`.
 		const account = await f.asOwner.mutation(api.access_control.create_service_account, {
 			membershipId: f.db.membershipId,
 			name: "Root reader",
@@ -4502,16 +4512,12 @@ describe("locked and missing paths", () => {
 		});
 		if (key._nay) throw new Error(key._nay.message);
 
-		// The open items and the locked folder sit in the root it cannot open: no locked rows.
-		const recursive = await list(t, key._yay.credential, { path: "/", recursive: true });
-		expect(recursive.status).toBe(200);
-		expect(recursive.body.items).toMatchObject([{ path: "/hidden.md", locked: false }]);
-		expect(recursive.body.items).toHaveLength(1);
-		expect(recursive.body.isDone).toBe(true);
-		// Like the folder list of the root.
-		expect((await list(t, key._yay.credential, { path: "/" })).body.items.map((item) => item.path)).toEqual([
-			"/hidden.md",
-		]);
+		for (const recursive of [false, true]) {
+			expect(await list(t, key._yay.credential, { path: "/", recursive })).toEqual({
+				status: 403,
+				body: { message: "Permission denied: /" },
+			});
+		}
 	});
 
 	test("a folder list of a folder the caller cannot open returns no locked rows", async () => {
@@ -4676,6 +4682,187 @@ describe("locked and missing paths", () => {
 				overwrite: "fail",
 			}),
 		).toEqual({ status: 403, body: { message: "Permission denied" } });
+	});
+
+	/** A guest: an active member with no workspace role. `/secret/shared` is shared with them with write. */
+	async function seed_guest(t: ReturnType<typeof test_convex>, f: Awaited<ReturnType<typeof seed_hidden_folder>>) {
+		const guest = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-list-hidden-guest" });
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: now,
+			});
+			for (const permission of ["content.read", "content.write"] as const) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					resourceKind: "file",
+					resourceId: String(f.sharedId),
+					principalKind: "user",
+					userId,
+					permission,
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				now,
+			});
+			return { userId, membershipId };
+		});
+		const asGuest = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "list-hidden-guest",
+			external_id: guest.userId,
+		});
+		const created = await asGuest.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
+			membershipId: guest.membershipId,
+			name: "Guest key",
+			scopes: ["files:list", "files:read", "files:download", "files:write"],
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		return created._yay.credential;
+	}
+
+	test("a guest key reads a file shared with the guest by exact path", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const f = await seed_hidden_folder(t);
+		const guestCredential = await seed_guest(t, f);
+
+		const response = await post(t, "/api/v1/files/read", guestCredential, { path: "/secret/shared/ok.md" });
+		expect(response.status).toBe(200);
+		expect(response.body).toMatchObject({ content: expect.stringContaining("/secret/shared/ok.md") });
+		expect(await list(t, guestCredential, { path: "/secret/shared" })).toMatchObject({
+			status: 200,
+			body: { items: [{ path: "/secret/shared/ok.md", locked: false }] },
+		});
+	});
+
+	test("a guest key gets 403 for /", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const guestCredential = await seed_guest(t, f);
+
+		for (const body of [{}, { path: "/" }, { path: "/", recursive: true }]) {
+			expect(await list(t, guestCredential, body)).toEqual({ status: 403, body: { message: "Permission denied: /" } });
+		}
+		// Control: a member with a role lists the root.
+		expect((await list(t, f.memberCredential, { path: "/" })).status).toBe(200);
+	});
+
+	test("a guest key gets 403 for an open file", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const f = await seed_hidden_folder(t);
+		const guestCredential = await seed_guest(t, f);
+		const openFileId = await t.run(
+			async (ctx) => (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/b.md")!._id,
+		);
+
+		// An open file, a locked file and a missing name at the root all get the same answer.
+		for (const path of ["/b.md", "/hidden.md", "/nope.md"]) {
+			expect(await post(t, "/api/v1/files/read", guestCredential, { path }), path).toEqual({
+				status: 403,
+				body: { message: `Permission denied: ${path}` },
+			});
+			expect(
+				await post(t, "/api/v1/files/read-bytes", guestCredential, { path, offset: 0, length: 4, revision: null }),
+				path,
+			).toEqual({ status: 403, body: { message: `Permission denied: ${path}` } });
+		}
+		expect(
+			await post(t, "/api/v1/files/download-urls", guestCredential, { fileNodeIds: [openFileId, f.hiddenFileId] }),
+		).toEqual({
+			status: 200,
+			body: {
+				items: [],
+				errors: [
+					{ fileNodeId: openFileId, message: "Permission denied" },
+					{ fileNodeId: f.hiddenFileId, message: "Permission denied" },
+				],
+				truncated: false,
+			},
+		});
+		// Control: a member with a role reads the open file.
+		expect((await post(t, "/api/v1/files/read", f.memberCredential, { path: "/b.md" })).status).toBe(200);
+	});
+
+	test("a guest key writes into a folder shared with write", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const f = await seed_hidden_folder(t);
+		const guestCredential = await seed_guest(t, f);
+
+		const written = await post(t, "/api/v1/files/write", guestCredential, {
+			path: "/secret/shared/new.md",
+			content: "# Guest",
+		});
+		expect(written.status).toBe(200);
+		expect(await post(t, "/api/v1/files/read", guestCredential, { path: "/secret/shared/new.md" })).toMatchObject({
+			status: 200,
+			body: { content: expect.stringContaining("Guest") },
+		});
+		// A replace of a file with no text checks the file and its folder, not the locked `/secret` above them.
+		await t.run(async (ctx) => {
+			const okId = (await ctx.db.query("files_nodes").collect()).find(
+				(node) => node.path === "/secret/shared/ok.md",
+			)!._id;
+			await ctx.db.patch("files_nodes", okId, {
+				contentType: "image/png",
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+			});
+		});
+		expect(
+			await post(t, "/api/v1/files/write", guestCredential, {
+				path: "/secret/shared/ok.md",
+				content: "# Replaced",
+				overwrite: "replace",
+			}),
+		).toMatchObject({ status: 200 });
+		expect(await post(t, "/api/v1/files/read", guestCredential, { path: "/secret/shared/ok.md" })).toMatchObject({
+			status: 200,
+			body: { content: expect.stringContaining("Replaced") },
+		});
+		// The upload door checks the shared folder too, not the root.
+		expect(
+			await post(t, "/api/v1/files/upload-urls", guestCredential, {
+				files: [{ path: "/secret/shared/new.png", contentType: "image/png", size: 4 }],
+			}),
+		).toMatchObject({ status: 200, body: { files: [{ path: "/secret/shared/new.png" }] } });
+	});
+
+	test("a guest key cannot write next to it", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const f = await seed_hidden_folder(t);
+		const guestCredential = await seed_guest(t, f);
+
+		// Beside the shared folder, in the open root, and over an open file.
+		for (const path of ["/secret/new.md", "/new.md", "/b.md"]) {
+			expect(await post(t, "/api/v1/files/write", guestCredential, { path, content: "# Guest" }), path).toEqual({
+				status: 403,
+				body: { message: "Permission denied" },
+			});
+		}
+		expect(
+			await post(t, "/api/v1/files/upload-urls", guestCredential, {
+				files: [{ path: "/new.md", contentType: "text/markdown;charset=utf-8", size: 6 }],
+			}),
+		).toMatchObject({ status: 403 });
 	});
 });
 

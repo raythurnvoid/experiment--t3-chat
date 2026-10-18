@@ -85,7 +85,7 @@ export const begin = internalMutation({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: "content.read",
+			permission: null,
 		});
 		if (authorized._nay) {
 			return authorized;

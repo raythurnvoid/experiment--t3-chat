@@ -4631,6 +4631,8 @@ describe("plugins list_bash_source_mounts", () => {
 			await t.query(internal.plugins.list_bash_source_mounts, {
 				organizationId: membershipA.organizationId,
 				workspaceId: membershipA.workspaceId,
+				userId: membershipA.userId,
+				membershipId: membershipA.membershipId,
 			}),
 		).toEqual([]);
 		const seededTreeNodes = await count_source_tree_nodes();
@@ -4650,6 +4652,8 @@ describe("plugins list_bash_source_mounts", () => {
 			await t.query(internal.plugins.list_bash_source_mounts, {
 				organizationId: membershipA.organizationId,
 				workspaceId: membershipA.workspaceId,
+				userId: membershipA.userId,
+				membershipId: membershipA.membershipId,
 			}),
 		).toEqual([{ pluginName: "media", pluginVersionId: registered.pluginVersionId }]);
 		// A workspace without an installation sees nothing.
@@ -4657,6 +4661,8 @@ describe("plugins list_bash_source_mounts", () => {
 			await t.query(internal.plugins.list_bash_source_mounts, {
 				organizationId: membershipB.organizationId,
 				workspaceId: membershipB.workspaceId,
+				userId: membershipB.userId,
+				membershipId: membershipB.membershipId,
 			}),
 		).toEqual([]);
 
@@ -4674,6 +4680,8 @@ describe("plugins list_bash_source_mounts", () => {
 			await t.query(internal.plugins.list_bash_source_mounts, {
 				organizationId: membershipB.organizationId,
 				workspaceId: membershipB.workspaceId,
+				userId: membershipB.userId,
+				membershipId: membershipB.membershipId,
 			}),
 		).toEqual([{ pluginName: "media", pluginVersionId: registered.pluginVersionId }]);
 		expect(await count_source_tree_nodes()).toBe(seededTreeNodes);
@@ -4690,12 +4698,16 @@ describe("plugins list_bash_source_mounts", () => {
 			await t.query(internal.plugins.list_bash_source_mounts, {
 				organizationId: membershipA.organizationId,
 				workspaceId: membershipA.workspaceId,
+				userId: membershipA.userId,
+				membershipId: membershipA.membershipId,
 			}),
 		).toEqual([]);
 		expect(
 			await t.query(internal.plugins.list_bash_source_mounts, {
 				organizationId: membershipB.organizationId,
 				workspaceId: membershipB.workspaceId,
+				userId: membershipB.userId,
+				membershipId: membershipB.membershipId,
 			}),
 		).toEqual([{ pluginName: "media", pluginVersionId: registered.pluginVersionId }]);
 		expect(await count_source_tree_nodes()).toBe(seededTreeNodes);
@@ -4721,8 +4733,48 @@ describe("plugins list_bash_source_mounts", () => {
 		const mounts = await t.query(internal.plugins.list_bash_source_mounts, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			membershipId: membership.membershipId,
 		});
 		expect(mounts.map((mount) => mount.pluginName)).toEqual(["alpha", "zebra"]);
+	});
+
+	test("lists no plugin for a guest", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin({ t, userId: membership.userId });
+		const installed = await t.withIdentity(user_identity(membership.userId)).mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) throw new Error(installed._nay.message);
+		// A guest: an active member with no workspace role.
+		const guest = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "source-mounts-guest" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			return { ...membership, userId, membershipId };
+		});
+
+		for (const [who, expected] of [
+			[membership, ["media"]],
+			[guest, []],
+		] as const) {
+			const mounts = await t.query(internal.plugins.list_bash_source_mounts, {
+				organizationId: who.organizationId,
+				workspaceId: who.workspaceId,
+				userId: who.userId,
+				membershipId: who.membershipId,
+			});
+			expect(mounts.map((mount) => mount.pluginName)).toEqual(expected);
+		}
 	});
 });
 

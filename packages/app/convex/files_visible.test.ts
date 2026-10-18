@@ -1120,80 +1120,102 @@ describe("internal_list_children_saved", () => {
 	// ranges left under Convex's 4,096 must hold one more row. The worst row is a restricted child
 	// with no cached answer: it reads the member's grants and both roles on its own scope (9 ranges
 	// measured, so a call stops near 3,004).
-	test("ls of a folder with many restricted children stays under the Convex limits", async () => {
-		const f = await fixture();
-		const member = await add_member(f);
-		const big = await create_saved(f, "big");
-		const names = Array.from({ length: 600 }, (_, index) => `r-${String(index).padStart(3, "0")}`);
-		await f.t.run(async (ctx) => {
-			for (const name of names) {
-				const nodeId = await ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: f.db.organizationId,
-					workspaceId: f.db.workspaceId,
-					createdBy: f.db.userId,
-					updatedBy: f.db.userId,
-					parentId: big.id,
-					name,
-					sortName: files_sort_text_key(name),
-					kind: "folder",
-					path: `/big/${name}`,
-					treePath: `/big/${name}/`,
-					pathDepth: 2,
-					isRestrictedScopeRoot: true,
+	// A guest (no workspace role) opens /big only through a grant on it. Their rows must fit the limits too.
+	test.each(["member", "guest"] as const)(
+		"ls of a folder with many restricted children stays under the Convex limits (%s)",
+		async (caller) => {
+			const f = await fixture();
+			const member = await add_member(f);
+			const big = await create_saved(f, "big");
+			if (caller === "guest")
+				await f.t.run(async (ctx) => {
+					for (const assignment of await ctx.db.query("access_control_role_assignments").collect())
+						if (assignment.userId === member.userId)
+							await ctx.db.delete("access_control_role_assignments", assignment._id);
+					await ctx.db.patch("files_nodes", big.id, { restrictedScopeNodeId: big.id, isRestrictedScopeRoot: true });
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						resourceKind: "file",
+						resourceId: String(big.id),
+						principalKind: "user",
+						userId: member.userId,
+						permission: "content.read",
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+					});
 				});
-				// Each child is its own restricted root, so no access answer is shared between rows.
-				await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
-			}
-		});
-		const list = (
-			numItems: number,
-			position: { rangeStart: string | null; cursor: string | null; lastKey: unknown[] | null },
-		) =>
-			member.as.run(async (ctx) => {
-				const before = await ctx.meta.getTransactionMetrics();
-				const result = await ctx.runQuery(internal.files_visible.internal_list_children_saved, {
-					organizationId: f.db.organizationId,
-					workspaceId: f.db.workspaceId,
-					visibilityUserId: member.userId,
-					subject: { kind: "user", userId: member.userId, plugin: null },
-					overlayUserId: member.userId,
-					folderPath: "/big",
-					orderBy: "name",
-					order: "asc",
-					numItems,
-					position,
-				});
-				const after = await ctx.meta.getTransactionMetrics();
-				if (result._nay) throw new Error(result._nay.message);
-				return { ...result._yay, ranges: after.databaseQueries.used - before.databaseQueries.used };
+			const names = Array.from({ length: 600 }, (_, index) => `r-${String(index).padStart(3, "0")}`);
+			await f.t.run(async (ctx) => {
+				for (const name of names) {
+					const nodeId = await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						createdBy: f.db.userId,
+						updatedBy: f.db.userId,
+						parentId: big.id,
+						name,
+						sortName: files_sort_text_key(name),
+						kind: "folder",
+						path: `/big/${name}`,
+						treePath: `/big/${name}/`,
+						pathDepth: 2,
+						isRestrictedScopeRoot: true,
+					});
+					// Each child is its own restricted root, so no access answer is shared between rows.
+					await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+				}
 			});
-		const start = { rangeStart: null, cursor: null, lastKey: null };
+			const list = (
+				numItems: number,
+				position: { rangeStart: string | null; cursor: string | null; lastKey: unknown[] | null },
+			) =>
+				member.as.run(async (ctx) => {
+					const before = await ctx.meta.getTransactionMetrics();
+					const result = await ctx.runQuery(internal.files_visible.internal_list_children_saved, {
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						visibilityUserId: member.userId,
+						subject: { kind: "user", userId: member.userId, plugin: null },
+						overlayUserId: member.userId,
+						folderPath: "/big",
+						orderBy: "name",
+						order: "asc",
+						numItems,
+						position,
+					});
+					const after = await ctx.meta.getTransactionMetrics();
+					if (result._nay) throw new Error(result._nay.message);
+					return { ...result._yay, ranges: after.databaseQueries.used - before.databaseQueries.used };
+				});
+			const start = { rangeStart: null, cursor: null, lastKey: null };
 
-		// The page cost minus the cost of a one-row page is what the other rows read.
-		const one = await list(1, start);
-		const eleven = await list(11, start);
-		const perRow = (eleven.ranges - one.ranges) / 10;
-		expect(perRow).toBeGreaterThan(0);
-		expect(3_000 + perRow).toBeLessThan(4_096);
+			// The page cost minus the cost of a one-row page is what the other rows read.
+			const one = await list(1, start);
+			const eleven = await list(11, start);
+			const perRow = (eleven.ranges - one.ranges) / 10;
+			expect(perRow).toBeGreaterThan(0);
+			expect(3_000 + perRow).toBeLessThan(4_096);
 
-		// Every row comes back locked, over calls that each stay under the limit.
-		let position: { rangeStart: string | null; cursor: string | null; lastKey: unknown[] | null } = start;
-		const seen: string[] = [];
-		const ranges: number[] = [];
-		for (let call = 0; call < 10; call++) {
-			const result = await list(1_000, position);
-			ranges.push(result.ranges);
-			for (const row of result.rows) {
-				expect(row.item).toMatchObject({ locked: true });
-				seen.push(row.item!.name);
+			// Every row comes back locked, over calls that each stay under the limit.
+			let position: { rangeStart: string | null; cursor: string | null; lastKey: unknown[] | null } = start;
+			const seen: string[] = [];
+			const ranges: number[] = [];
+			for (let call = 0; call < 10; call++) {
+				const result = await list(1_000, position);
+				ranges.push(result.ranges);
+				for (const row of result.rows) {
+					expect(row.item).toMatchObject({ locked: true });
+					seen.push(row.item!.name);
+				}
+				position = result.position;
+				if (result.done) break;
 			}
-			position = result.position;
-			if (result.done) break;
-		}
-		expect(seen).toEqual(names);
-		expect(Math.max(...ranges)).toBeLessThan(4_096);
-	});
+			expect(seen).toEqual(names);
+			expect(Math.max(...ranges)).toBeLessThan(4_096);
+		},
+	);
 });
 
 describe("internal_search_name_saved", () => {

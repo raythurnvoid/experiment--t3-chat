@@ -47,6 +47,8 @@ import {
 	files_tree_walk_frame_validator,
 	files_tree_walk_phase,
 	files_tree_walk_stack_validator,
+	files_tree_walk_time_key,
+	files_tree_walk_time_lower,
 } from "../server/files-tree-walk.ts";
 import {
 	files_pending_overlay_LIST_STREAM_MAX_PAGE,
@@ -89,6 +91,13 @@ const STREAM_ACCESS_CHUNK = 25;
 // The hidden folders one subtree stream call reads under the listing folder.
 const STREAM_HIDDEN_FOLDERS_MAX = 1_000;
 
+// The folders one `find -mmin` stream call reads when its frame reads folder by folder.
+const STREAM_RECENT_FOLDERS_MAX = 25;
+
+// The rows one `find -mmin` stream call reads from an area's time index. It is more than a page:
+// recent rows outside the listing folder are dropped, and the call stops at a page of kept rows.
+const STREAM_RECENT_READ_PAGE = 100;
+
 // The most index ranges one folder access check can read: a folder 500 levels deep in an Add-people
 // chain with the grant only at its top. The cost test under `internal_search_name_saved` measured
 // about 2,000. A name search starts a new one only while it still fits the Convex limit of 4,096.
@@ -96,7 +105,7 @@ const SEARCH_PARENT_CHECK_MAX_RANGES = 2_300;
 
 const listing_args = {
 	folderPath: v.string(),
-	mode: v.union(v.literal("children"), v.literal("subtree"), v.literal("recent")),
+	mode: v.union(v.literal("children"), v.literal("subtree")),
 	numItems: v.number(),
 	cursor: paginationOptsValidator.fields.cursor,
 	order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
@@ -204,8 +213,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 		return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
 
 	const view = reader?.view ?? (await files_saved_placement_db_get_view(ctx.db, args));
-	const timeOrder = args.mode === "recent" || args.orderBy === "updatedAt";
-	const order = args.order ?? (timeOrder ? "desc" : "asc");
+	const order = args.order ?? (args.orderBy === "updatedAt" ? "desc" : "asc");
 	const scope = JSON.stringify([
 		args.organizationId,
 		args.workspaceId,
@@ -272,8 +280,8 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 			overlayUserId: args.overlayUserId,
 			requireComplete: args.requireComplete,
 			folderPath: frame.path,
-			mode: args.mode === "recent" ? "recent" : "children",
-			orderBy: timeOrder ? "updatedAt" : "name",
+			mode: "children",
+			orderBy: args.orderBy ?? "name",
 			order,
 			...(args.mode === "children" ? { kind: args.kind, lowercaseExtension: args.lowercaseExtension } : {}),
 			numItems: args.mode === "subtree" || args.pathQuery !== undefined ? 1 : limit - items.length,
@@ -326,7 +334,6 @@ export const internal_page = internalQuery({
 		kind: v.union(v.literal("saved"), v.literal("private"), v.literal("moved")),
 		parent: files_pending_parent_validator,
 		cursor: paginationOptsValidator.fields.cursor,
-		timeOrder: v.boolean(),
 		order: v.union(v.literal("asc"), v.literal("desc")),
 	},
 	returns: v.object({
@@ -349,7 +356,6 @@ export const internal_page = internalQuery({
 			if (authorized._nay) return { target: null, savedNode: null, cursor: args.cursor ?? "", done: true };
 		}
 		const stream = args;
-		const timeOrder = args.timeOrder;
 		const order = args.order;
 
 		let target: files_PendingTarget | null = null;
@@ -360,33 +366,23 @@ export const internal_page = internalQuery({
 		if (stream.kind === "saved") {
 			const parentId = stream.parent.kind === "saved" ? stream.parent.id : "root";
 
-			const savedQuery = timeOrder
-				? ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_archiveOperation_updatedAt", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("moveCohortId", undefined)
-								.eq("archiveOperationId", null),
-						)
-				: ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("moveCohortId", undefined)
-								.eq("parentId", parentId)
-								.eq("archiveOperationId", null),
-						);
+			const savedQuery = ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("parentId", parentId)
+						.eq("archiveOperationId", null),
+				);
 
 			const page = await savedQuery.order(order).paginate({ cursor: stream.cursor, numItems: 1 });
 			savedNode = page.page[0] ?? null;
 			target = savedNode ? { kind: "saved", id: savedNode._id } : null;
 			cursor = page.continueCursor;
 			done = page.isDone;
-		} else if (stream.kind === "private" && !timeOrder) {
+		} else if (stream.kind === "private") {
 			if (!tenantScope) return { target: null, savedNode: null, cursor: args.cursor ?? "", done: true };
 			const parent = stream.parent;
 
@@ -411,29 +407,21 @@ export const internal_page = internalQuery({
 			if (!tenantScope) return { target: null, savedNode: null, cursor: args.cursor ?? "", done: true };
 			const parent = stream.parent;
 
-			const pendingQuery = timeOrder
-				? ctx.db
-						.query("files_pending_updates")
-						.withIndex("by_organization_workspace_user_targetKind_updatedAt", (q) =>
-							q
-								.eq("organizationId", tenantScope.organizationId)
-								.eq("workspaceId", tenantScope.workspaceId)
-								.eq("userId", args.visibilityUserId)
-								.eq("target.kind", "private"),
-						)
-				: ctx.db.query("files_pending_updates").withIndex("by_org_ws_user_pendingMove_destParent_destName", (q) =>
-						q
-							.eq("organizationId", tenantScope.organizationId)
-							.eq("workspaceId", tenantScope.workspaceId)
-							.eq("userId", args.visibilityUserId)
-							.eq("pendingMove.destParent.kind", parent.kind)
-							.eq("pendingMove.destParent.id", parent.kind === "root" ? undefined : parent.id),
-					);
+			const pendingQuery = ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_org_ws_user_pendingMove_destParent_destName", (q) =>
+					q
+						.eq("organizationId", tenantScope.organizationId)
+						.eq("workspaceId", tenantScope.workspaceId)
+						.eq("userId", args.visibilityUserId)
+						.eq("pendingMove.destParent.kind", parent.kind)
+						.eq("pendingMove.destParent.id", parent.kind === "root" ? undefined : parent.id),
+				);
 
 			const page = await pendingQuery.order(order).paginate({ cursor: stream.cursor, numItems: 1 });
 			target = page.page[0]?.target ?? null;
 			// Private replacement claims already appear in the private-node stream.
-			if (!timeOrder && target?.kind === "private") target = null;
+			if (target?.kind === "private") target = null;
 			cursor = page.continueCursor;
 			done = page.isDone;
 		}
@@ -605,6 +593,31 @@ const stream_filter_args = {
 	kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
 	lowercaseExtension: v.optional(v.string()),
 };
+
+/**
+ * The `updatedAt` window of `find -mmin` / `-mtime`, both ends included. Null is no bound.
+ */
+const updated_window_validator = v.object({ from: v.union(v.number(), v.null()), to: v.union(v.number(), v.null()) });
+
+function updated_in(window: Infer<typeof updated_window_validator> | undefined, updatedAt: number) {
+	return (
+		!window || ((window.from === null || updatedAt >= window.from) && (window.to === null || updatedAt <= window.to))
+	);
+}
+
+/**
+ * Whether a row matches the stream filter, for the reads whose index does not hold it.
+ */
+function stream_filter_matches(
+	args: { kind?: Doc<"files_nodes">["kind"]; lowercaseExtension?: string },
+	row: Pick<Doc<"files_nodes">, "kind" | "lowercaseExtension">,
+) {
+	return (
+		(args.kind === undefined || row.kind === args.kind) &&
+		(args.lowercaseExtension === undefined ||
+			(row.kind === "file" && row.lowercaseExtension === args.lowercaseExtension))
+	);
+}
 
 /**
  * The metadata value a `meta search` row matched.
@@ -1104,9 +1117,9 @@ function db_stream_saved_access(
 
 /**
  * Whether a walk frame lists the items the subject cannot open, as locked. Locked items show only when
- * the folder that holds them is readable. Every frame root is, except the workspace root: a guest with
- * one shared folder, or an account with no grant, cannot open it, so that frame lists only what they
- * can open (like the folder list of the root).
+ * the folder that holds them is readable. Every frame root is readable except maybe the root:
+ * `internal_get_walk_start` refuses a walk of a workspace root the caller cannot open (except for the UI
+ * search box), and this check covers the root of any other walk.
  */
 async function db_stream_frame_lists_locked(
 	ctx: QueryCtx,
@@ -1118,6 +1131,26 @@ async function db_stream_frame_lists_locked(
 	return reader
 		? await reader.canRead(null)
 		: await access_control_db_can_act_on_file_node(ctx, { ...args, fileNode: null, permission: "content.read" });
+}
+
+/**
+ * Whether the opened folder is a workspace root the caller cannot open (a guest, or a plugin whose roots
+ * are folders). A walk or a name search of it is "Permission denied", like the folder list of the root.
+ */
+async function db_stream_root_locked(
+	ctx: QueryCtx,
+	args: StreamOpenArgs,
+	opened: {
+		reader: Awaited<ReturnType<typeof files_visible_db_create_reader>> | null;
+		root: { parent: files_PendingParent };
+	},
+) {
+	return (
+		opened.root.parent.kind === "root" &&
+		files_db_resolve_scope(ctx, args.workspaceId).kind === "workspace" &&
+		!organizations_is_global_organization_id(args.organizationId) &&
+		!(await db_stream_frame_lists_locked(ctx, args, opened.reader, { treePath: "/" }))
+	);
 }
 
 /**
@@ -1736,6 +1769,10 @@ export const internal_list_subtree_saved = internalQuery({
 		order: v.union(v.literal("asc"), v.literal("desc")),
 		movedIn: v.optional(moved_in_validator),
 		frame: v.optional(files_tree_walk_frame_validator),
+		/**
+		 * `find -mmin +N` / `-mtime +N`: rows outside the window are read and dropped.
+		 */
+		updated: v.optional(updated_window_validator),
 	},
 	returns: stream_result,
 	handler: async (ctx, args) => {
@@ -1909,6 +1946,7 @@ export const internal_list_subtree_saved = internalQuery({
 			...(frameRange ? { frontierKey: indexKey, phaseCount: frameRange.phaseCount } : {}),
 			decide: async (node) => {
 				if (hidden_folder_of(node.treePath) !== null || (is_hidden && (await is_hidden(node._id)))) return null;
+				if (!updated_in(args.updated, node.updatedAt)) return null;
 				const treePath = owner_tree_path(node);
 				const path = node.kind === "folder" ? treePath.slice(0, -1) : treePath;
 				if (!(await can_read(node)))
@@ -1945,6 +1983,10 @@ export const internal_list_subtree_boundaries = internalQuery({
 		movedIn: v.optional(moved_in_validator),
 		frame: files_tree_walk_frame_validator,
 		withRows: v.boolean(),
+		/**
+		 * `find -mmin` / `-mtime`: a locked row is listed only when it changed in the window.
+		 */
+		updated: v.optional(updated_window_validator),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -2012,11 +2054,7 @@ export const internal_list_subtree_boundaries = internalQuery({
 				continue;
 			const treePath = ownerTreePath + node.treePath.slice(savedTreePath.length);
 			const path = node.kind === "folder" ? treePath.slice(0, -1) : treePath;
-			const matches =
-				args.withRows &&
-				(args.kind === undefined || node.kind === args.kind) &&
-				(args.lowercaseExtension === undefined ||
-					(node.kind === "file" && node.lowercaseExtension === args.lowercaseExtension));
+			const matches = args.withRows && stream_filter_matches(args, node) && updated_in(args.updated, node.updatedAt);
 			boundaries.push({
 				key: [node.treePath, node._creationTime, node._id],
 				node: { _id: node._id, treePath: node.treePath, kind: node.kind },
@@ -2054,24 +2092,31 @@ export const internal_get_walk_start = internalQuery({
 	args: {
 		...stream_args.omit("numItems", "position").fields,
 		movedIn: v.optional(moved_in_validator),
+		/** The UI search box may search from a root the caller cannot open. The walk still checks each row. */
+		searchLockedRoot: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.object({
 			root: v.union(files_pending_parent_validator, v.null()),
 			start: v.union(walk_start_validator, v.null()),
+			/** Whether the start is the top of its area: the root, or a restricted folder's root. */
+			areaTop: v.boolean(),
 		}),
 	}),
 	handler: async (ctx, args) => {
 		const opened = await db_stream_open(ctx, args);
 		if (opened._nay) return opened;
-		if (!opened._yay) return Result({ _yay: { root: null, start: null } });
+		if (!opened._yay) return Result({ _yay: { root: null, start: null, areaTop: false } });
+		if (!args.searchLockedRoot && (await db_stream_root_locked(ctx, args, opened._yay)))
+			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 		const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
 		const root = opened._yay.root.parent;
-		if (!subtree) return Result({ _yay: { root, start: null } });
+		if (!subtree) return Result({ _yay: { root, start: null, areaTop: false } });
 		return Result({
 			_yay: {
 				root,
 				start: { scopeNodeId: subtree.node?.restrictedScopeNodeId ?? null, treePath: subtree.savedTreePath },
+				areaTop: !subtree.node || subtree.node.restrictedScopeNodeId === subtree.node._id,
 			},
 		});
 	},
@@ -2109,7 +2154,7 @@ export const internal_resolve_walk_stack = internalQuery({
  * also opens a nested saved stream.
  */
 export const internal_list_subtree_places = internalQuery({
-	args: { ...stream_args.fields, ...stream_filter_args },
+	args: { ...stream_args.fields, ...stream_filter_args, updated: v.optional(updated_window_validator) },
 	returns: stream_result,
 	handler: async (ctx, args) => {
 		const opened = await db_stream_open(ctx, args);
@@ -2146,7 +2191,13 @@ export const internal_list_subtree_places = internalQuery({
 			cut: false,
 			indexKey,
 			mergeKey: indexKey,
-			decide: (place) => db_stream_place_item(ctx, reader, place),
+			decide: async (place) => {
+				const decision = await db_stream_place_item(ctx, reader, place);
+				// A moved-in folder outside the window still opens the stream of the rows inside it.
+				if (decision && typeof decision === "object" && !updated_in(args.updated, place.updatedAt))
+					return decision.movedIn ? { item: null, movedIn: decision.movedIn } : null;
+				return decision;
+			},
 		});
 	},
 });
@@ -2223,111 +2274,223 @@ export const internal_list_subtree_moved_in_folders = internalQuery({
 });
 
 /**
- * Saved rows of the whole workspace by update time, for `ls -t` with no path. Each row reads the
- * user's hide (one point read), then the user's reader for hidden ancestors and the path (cached per
- * folder).
+ * The rows stream of one walk frame of `find -mmin` / `-mtime` (`files_tree_walk_time_key`): the rows of
+ * the frame's area changed in the window, newest first. Rows outside the listing folder are read and
+ * dropped: an area can be bigger than the folder. That waste is bounded by recent writes. With only
+ * `+N` (no `from`) the walk uses this stream only for an area the folder holds whole, so it reads
+ * only matching rows (`files_pending_overlay_list`).
+ *
+ * The time index serves a frame only when the subject can open its whole area. Otherwise (a folder
+ * opened through Add people, or a plugin's sandbox root inside an area) the start frame reads its
+ * folders in path order and each folder's recent children, so it reads no row the subject cannot
+ * open. A workspace root the subject cannot open is refused before this (`internal_get_walk_start`).
+ * That rule skips the global organization and reserved workspaces. There a per-folder read of the root
+ * would read every folder, so a root keeps the time index and checks each row, like the walk does.
+ *
+ * Under the owner's overlay each row reads its hide and its path through the user's reader. Rows
+ * inside a folder the user moved here by a draft from another area are not read.
  */
-export const internal_list_recent_saved = internalQuery({
-	args: { ...stream_args.fields, order: v.union(v.literal("asc"), v.literal("desc")) },
+export const internal_list_subtree_recent_saved = internalQuery({
+	args: {
+		...stream_args.fields,
+		...stream_filter_args,
+		frame: files_tree_walk_frame_validator,
+		updated: updated_window_validator,
+	},
 	returns: stream_result,
 	handler: async (ctx, args) => {
 		// Leave the reader most of the listing read budget; it stops a call before it runs out.
-		const opened = await db_stream_open(ctx, { ...args, folderPath: "/", readLimit: 2_000 });
+		const opened = await db_stream_open(ctx, { ...args, readLimit: 2_000 });
 		if (opened._nay) return opened;
 		if (!opened._yay) return stream_done(null);
 		const { reader, root, saved } = opened._yay;
+		const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
+		if (!subtree) return stream_done(root.parent);
+		const { savedTreePath, ownerTreePath } = subtree;
+		const { frame } = args;
 
-		const tag = stream_move_view(args);
-		const range = args.seek
-			? stream_range({
-					...args,
-					fields: ["updatedAt", ...(tag ? ["nodeCreationTime", "nodeId"] : ["_creationTime", "_id"])],
-				})
-			: null;
-		if (args.seek && !range) return stream_done(root.parent);
-		const nativePage = await (
-			range
-				? tag
-					? ctx.db
-							.query("files_saved_places")
-							.withIndex("by_view_archive_updated", (q) =>
-								files_index_range_apply(
-									q.eq("cohortId", tag.cohortId).eq("view", tag.view).eq("archiveOperationId", null),
-									range.bounds,
-								),
-							)
-					: ctx.db
-							.query("files_nodes")
-							.withIndex("by_organization_workspace_archiveOperation_updatedAt", (q) =>
-								files_index_range_apply(
+		const checker = access_control_create_file_checker(ctx, args);
+		const can = reader ? reader.canRead : (node: Doc<"files_nodes"> | null) => checker.can(node, "content.read");
+		const byFolder =
+			frame.treePath === savedTreePath &&
+			savedTreePath !== "/" &&
+			!(await can(
+				frame.scopeNodeId === null
+					? null
+					: await files_saved_placement_db_get_node(ctx.db, frame.scopeNodeId, saved.tag),
+			));
+		const lower = files_tree_walk_time_lower(frame, byFolder);
+		if (!lower) return stream_done(root.parent);
+		const idFields = saved.tag ? ["nodeCreationTime", "nodeId"] : ["_creationTime", "_id"];
+		const window_phases = (after: Value[] | null) =>
+			files_index_range_phases({
+				fields: ["updatedAt", ...idFields],
+				order: "desc",
+				start: args.updated.from === null ? [] : [args.updated.from],
+				startInclusive: true,
+				end: after ?? (args.updated.to === null ? [] : [args.updated.to]),
+				endInclusive: after === null,
+			});
+
+		let nativePage: PaginationResult<Doc<"files_nodes"> | Doc<"files_saved_places">> | null = null;
+		let folderTreePath: string | undefined;
+		if (!byFolder) {
+			// Every phase in this one call, with `take`: the walk goes on from the frontier, not a cursor.
+			const size = stream_page_size(Math.max(args.numItems, STREAM_RECENT_READ_PAGE));
+			const rows: Array<Doc<"files_nodes"> | Doc<"files_saved_places">> = [];
+			for (const bounds of window_phases(lower.after)) {
+				if (rows.length >= size) break;
+				rows.push(
+					...(await saved.queries
+						.by_scope_archive_updated((q) =>
+							files_index_range_apply(
+								q.eq("restrictedScopeNodeId", frame.scopeNodeId).eq("archiveOperationId", null),
+								bounds,
+							),
+						)
+						.order("desc")
+						.take(size - rows.length)),
+				);
+			}
+			nativePage = { page: rows, isDone: rows.length < size, continueCursor: "" };
+		} else {
+			// The next folder from `lower.folder` with a recent child. The start folder comes first.
+			let next = lower.folder!;
+			let after = lower.after;
+			for (let count = 0; count < STREAM_RECENT_FOLDERS_MAX && !nativePage; count++) {
+				const found =
+					next === savedTreePath
+						? subtree.node
+						: await saved.queries
+								.by_scope_archive_kind_tree((q) =>
 									q
-										.eq("organizationId", args.organizationId)
-										.eq("workspaceId", args.workspaceId)
-										.eq("moveCohortId", undefined)
-										.eq("archiveOperationId", null),
-									range.bounds,
-								),
-							)
-				: saved.queries.by_archive_updated((q) => q.eq("archiveOperationId", null))
-		)
-			.order(args.order)
-			.paginate(range?.pagination ?? { cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
-		const rawPage = range ? range.finish(nativePage) : nativePage;
-		const page = { ...rawPage, page: await saved.read_nodes(rawPage.page) };
-		const indexKey = (node: Doc<"files_nodes">) => [node.updatedAt, node._creationTime, node._id];
-		const rows = stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: args.order, indexKey });
-		const can_read = db_stream_saved_access(ctx, args, null, rows);
+										.eq("restrictedScopeNodeId", frame.scopeNodeId)
+										.eq("archiveOperationId", null)
+										.eq("kind", "folder")
+										.gte("treePath", next)
+										.lt("treePath", path_tree_prefix_upper_bound(savedTreePath)),
+								)
+								.first();
+				const [folder] = found ? await saved.read_nodes([found]) : [];
+				if (!folder) return stream_done(root.parent);
+				if (folder.treePath !== next) after = null;
+				for (const bounds of window_phases(after)) {
+					const children = await saved.queries
+						.by_parent_archive_updated((q) =>
+							files_index_range_apply(q.eq("parentId", folder._id).eq("archiveOperationId", null), bounds),
+						)
+						.order("desc")
+						.take(stream_page_size(args.numItems));
+					if (children.length > 0) {
+						// Later folders may hold more rows. The walk goes on from the frontier, not a cursor.
+						nativePage = { page: children, isDone: false, continueCursor: "" };
+						folderTreePath = folder.treePath;
+						break;
+					}
+				}
+				// No recent child here: go on after this folder. Its subfolders sort after this key.
+				next = `${folder.treePath}\u0000`;
+				after = null;
+			}
+			if (!nativePage)
+				return Result({
+					_yay: {
+						root: root.parent,
+						rows: [],
+						frontier: [frame.treePath, next] as Value[],
+						position: { rangeStart: null, cursor: null, lastKey: null },
+						done: false,
+						decided: 0,
+						overBudget: false,
+						phaseCount: 1,
+					},
+				});
+		}
+		const page = { ...nativePage, page: await saved.read_nodes(nativePage.page) };
 
+		const indexKey = (node: Doc<"files_nodes">) => files_tree_walk_time_key(frame, node, folderTreePath);
+		const ownerFrameTreePath = ownerTreePath + frame.treePath.slice(savedTreePath.length);
+		const can_read = db_stream_saved_access(ctx, args, reader, page.page);
+		const withLocked = await db_stream_frame_lists_locked(ctx, args, reader, frame);
+		let kept = 0;
 		return await db_stream_decide(ctx, {
 			root: root.parent,
 			requireComplete: args.requireComplete,
-			order: args.order,
+			order: "desc",
 			position: args.position,
 			page,
-			rows,
+			rows: page.page,
 			cut: false,
 			indexKey,
-			mergeKey: indexKey,
+			mergeKey: (node) => [ownerFrameTreePath, ...indexKey(node).slice(1)],
+			frontierKey: indexKey,
 			decide: async (node) => {
-				if (!reader) {
-					if (!(await can_read(node))) return "denied";
-					return await db_stream_saved_item(ctx, { node, path: node.path, overlayUserId: null });
+				// A page of kept rows is enough; the next call goes on after the last decided row.
+				if (kept >= args.numItems) return "stop";
+				// Children of a folder in another area are that area's frame (or its boundary).
+				if (node.restrictedScopeNodeId !== frame.scopeNodeId || !stream_filter_matches(args, node)) return null;
+				let path = node.path;
+				let accessNode: Doc<"files_nodes"> | null = node;
+				if (reader) {
+					if (
+						await db_stream_is_hidden(ctx, { savedNodeId: node._id, userId: args.visibilityUserId, view: saved.view })
+					)
+						return null;
+					const resolved = await reader.resolve({ kind: "saved", id: node._id });
+					if (reader.exhausted) return "stop";
+					if (resolved?.entry.kind !== "saved") return null;
+					path = resolved.entry.path;
+					accessNode = resolved.accessNode;
 				}
-				const hide = await db_stream_is_hidden(ctx, {
-					savedNodeId: node._id,
-					userId: args.visibilityUserId,
-					view: opened._yay.saved.view,
-				});
-				if (hide) return null;
-				const resolved = await reader.resolve({ kind: "saved", id: node._id });
-				if (reader.exhausted) return "stop";
-				if (resolved?.entry.kind !== "saved") return null;
-				if (!(await reader.canRead(resolved.accessNode))) return "denied";
-				return await db_stream_saved_item(ctx, {
-					node,
-					path: resolved.entry.path,
-					overlayUserId: args.visibilityUserId,
-				});
+				const treePath = files_derive_tree_path_for_file_node(path, node.kind);
+				if (!treePath.startsWith(ownerTreePath) || treePath === ownerTreePath) return null;
+				const readable = await (reader ? reader.canRead(accessNode) : can_read(node));
+				if (!readable && !withLocked) return null;
+				kept++;
+				return readable
+					? await db_stream_saved_item(ctx, { node, path, overlayUserId: reader ? args.visibilityUserId : null })
+					: await db_stream_saved_item(ctx, { node, path, overlayUserId: null, locked: true });
 			},
 		});
 	},
 });
 
 /**
- * The user's places of the whole workspace by update time, for `ls -t` with no path.
+ * The user's places under the listing folder changed in the window, newest first, for `find -mmin` /
+ * `-mtime`. Their keys put them in the walk's first group (`files_tree_walk_time_key`).
  */
-export const internal_list_recent_places = internalQuery({
-	args: { ...stream_args.fields, order: v.union(v.literal("asc"), v.literal("desc")) },
+export const internal_list_subtree_recent_places = internalQuery({
+	args: {
+		...stream_args.fields,
+		...stream_filter_args,
+		updated: updated_window_validator,
+	},
 	returns: stream_result,
 	handler: async (ctx, args) => {
-		const opened = await db_stream_open(ctx, { ...args, folderPath: "/" });
+		const opened = await db_stream_open(ctx, args);
 		if (opened._nay) return opened;
 		if (!opened._yay) return stream_done(null);
-		const { reader, tenant, root } = opened._yay;
+		const { reader, tenant, root, treePath } = opened._yay;
 		if (!reader || !tenant) return stream_done(root.parent);
 
-		const range = args.seek ? stream_range({ ...args, fields: ["updatedAt", "_creationTime", "_id"] }) : null;
+		// The merge key `[treePath, -updatedAt, -creation time, id]` as an index key, for a Move view's seek.
+		const seek = args.seek?.key.length === 4 ? args.seek : null;
+		const range = args.seek
+			? stream_range({
+					...args,
+					order: "desc",
+					fields: ["updatedAt", "_creationTime", "_id"],
+					seek: seek
+						? { key: [-(seek.key[1] as number), -(seek.key[2] as number), seek.key[3]], inclusive: seek.inclusive }
+						: undefined,
+					lower: args.updated.from === null ? undefined : { key: [args.updated.from], inclusive: true },
+					upper: args.updated.to === null ? undefined : { key: [args.updated.to], inclusive: true },
+				})
+			: null;
 		if (args.seek && !range) return stream_done(root.parent);
+		const windowBounds: ReturnType<typeof files_index_range_phases>[number] = [];
+		if (args.updated.from !== null) windowBounds.push(["gte", "updatedAt", args.updated.from]);
+		if (args.updated.to !== null) windowBounds.push(["lte", "updatedAt", args.updated.to]);
 		const nativePage = await ctx.db
 			.query("files_pending_places")
 			.withIndex("by_org_ws_user_visible_updatedAt", (q) =>
@@ -2339,24 +2502,27 @@ export const internal_list_recent_places = internalQuery({
 						.eq("moveView.cohortId", stream_move_view(args)?.cohortId)
 						.eq("moveView.view", stream_move_view(args)?.view)
 						.eq("isVisible", true),
-					range?.bounds ?? [],
+					range?.bounds ?? windowBounds,
 				),
 			)
-			.order(args.order)
+			.order("desc")
 			.paginate(range?.pagination ?? { cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
 		const page = range ? range.finish(nativePage) : nativePage;
 		const indexKey = (place: Doc<"files_pending_places">) => [place.updatedAt, place._creationTime, place._id];
 		return await db_stream_decide(ctx, {
 			root: root.parent,
 			requireComplete: args.requireComplete,
-			order: args.order,
+			order: "desc",
 			position: args.position,
 			page,
-			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: args.order, indexKey }),
+			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: "desc", indexKey }),
 			cut: false,
 			indexKey,
-			mergeKey: indexKey,
+			mergeKey: (place) => files_tree_walk_time_key({ treePath }, place),
 			decide: async (place) => {
+				if (!place.ownerTreePath.startsWith(treePath) || place.ownerTreePath === treePath) return null;
+				if (!stream_filter_matches(args, place)) return null;
+				// A moved-in folder opens no stream here: the time read has no path order to merge it by.
 				const decision = await db_stream_place_item(ctx, reader, place);
 				return decision && typeof decision === "object" ? { item: decision.item } : decision;
 			},
@@ -2415,16 +2581,18 @@ function search_name_page_size(numItems: number) {
  * with `movedIn`, nodes under one saved folder the user moved into the folder by a draft.
  *
  * Under the overlay every row reads the user's hide and resolves the user's path with the reader,
- * like `ls -t` with no path; a draft can move a row out of the folder, so the path is checked too.
+ * like `find -mmin`; a draft can move a row out of the folder, so the path is checked too.
  */
 export const internal_search_name_saved = internalQuery({
 	args: { ...search_name_args, movedIn: v.optional(moved_in_validator) },
 	returns: search_name_result,
 	handler: async (ctx, args) => {
-		// Leave the reader most of the read budget, like `ls -t` with no path.
+		// Leave the reader most of the read budget, like `find -mmin`.
 		const opened = await db_stream_open(ctx, { ...args, readLimit: 2_000 });
 		if (opened._nay) return opened;
 		if (!opened._yay) return Result({ _yay: search_name_done });
+		if (await db_stream_root_locked(ctx, args, opened._yay))
+			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 		const { reader, root } = opened._yay;
 
 		// The saved folder whose `ancestor<depth>` filter scopes the search.
@@ -2609,6 +2777,8 @@ export const internal_search_name_places = internalQuery({
 		const opened = await db_stream_open(ctx, args);
 		if (opened._nay) return opened;
 		if (!opened._yay) return Result({ _yay: search_name_done });
+		if (await db_stream_root_locked(ctx, args, opened._yay))
+			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 		const { reader, tenant, treePath } = opened._yay;
 		if (!reader || !tenant) return Result({ _yay: search_name_done });
 
@@ -2948,7 +3118,7 @@ async function db_reads_every_area(ctx: QueryCtx, args: StreamOpenArgs) {
  * which cannot merge many areas: a member reads the open area only, the owner every area.
  *
  * Under the overlay every row reads the user's hide and resolves the user's path with the reader,
- * like `ls -t` with no path. A saved row shows its committed metadata, also while the user has a
+ * like `find -mmin`. A saved row shows its committed metadata, also while the user has a
  * content edit on it; drafts come from place fields.
  */
 export const internal_search_metadata_saved = internalQuery({
@@ -2960,7 +3130,7 @@ export const internal_search_metadata_saved = internalQuery({
 	},
 	returns: stream_result,
 	handler: async (ctx, args) => {
-		// Leave the reader most of the read budget, like `ls -t` with no path.
+		// Leave the reader most of the read budget, like `find -mmin`.
 		const opened = await db_stream_open(ctx, { ...args, readLimit: 2_000 });
 		if (opened._nay) return opened;
 		if (!opened._yay) return stream_done(null);
@@ -3111,7 +3281,7 @@ export const internal_search_metadata_pending = internalQuery({
 	args: { ...stream_args.fields, plan: files_metadata_search_plan_validator },
 	returns: stream_result,
 	handler: async (ctx, args) => {
-		// Leave the reader most of the read budget, like `ls -t` with no path.
+		// Leave the reader most of the read budget, like `find -mmin`.
 		const opened = await db_stream_open(ctx, { ...args, readLimit: 2_000 });
 		if (opened._nay) return opened;
 		if (!opened._yay) return stream_done(null);

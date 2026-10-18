@@ -6,7 +6,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import type { files_visible_internal_list_Result } from "../convex/files_visible.ts";
 import type { files_type_queries_PageResult } from "../convex/files_type_queries.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_parse_content_type_prefix } from "../shared/files.ts";
+import { files_content_type_index_fields, files_parse_content_type_prefix } from "../shared/files.ts";
 import {
 	bash_APP_MOUNT_PATH,
 	bash_DbFilesPermissionDeniedError,
@@ -51,6 +51,7 @@ const BUILTIN_OPTIONS_WITH_VALUES = new Set([
 	"-iregex",
 	"-maxdepth",
 	"-mindepth",
+	"-mmin",
 	"-mtime",
 	"-name",
 	"-newer",
@@ -62,6 +63,10 @@ const BUILTIN_OPTIONS_WITH_VALUES = new Set([
 	"-size",
 	"-type",
 ]);
+
+const FIND_USAGE =
+	"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [-mmin [+-]N] [-mtime [+-]N] [--limit N] [--cursor CURSOR]\n" +
+	"With -mmin or -mtime, results come grouped by restricted folder, newest first in each group. Under a folder you open only by Add people, the first group goes folder by folder; with only +N under part of a restricted folder, it is in path order. Pipe to sort for path order.\n";
 
 /**
  * Clean the extension value used by `find --extension`.
@@ -135,6 +140,18 @@ function normalize_name_path_query(value: string | undefined) {
 }
 
 /**
+ * Whether every query word starts a word of the name, like app-file name search.
+ */
+function name_words_match(name: string, query: string) {
+	const nameWords = name.toLowerCase().split(/[^\p{L}\p{N}]+/u);
+	return query
+		.toLowerCase()
+		.split(/[^\p{L}\p{N}]+/u)
+		.filter(Boolean)
+		.every((word) => nameWords.some((nameWord) => nameWord.startsWith(word)));
+}
+
+/**
  * Build the agent-facing `Try:` line for name word search recovery.
  *
  * This points the model at the `find -name` form when it used a glob or
@@ -168,10 +185,20 @@ function parse_args(args: string[]) {
 	let pathQuery: string | undefined;
 	let extension: string | undefined;
 	let contentType: string | undefined;
+	const times: Array<{ flag: "-mmin" | "-mtime"; value: string }> = [];
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
 
+		if (arg === "-mmin" || arg === "-mtime") {
+			const value = bash_read_option_value("find", args, index, arg);
+			if (value._nay) return value;
+			if (!/^[+-]?\d+$/u.test(value._yay.value))
+				return Result({ _nay: { message: `find: ${arg} needs a whole number like -60, +60 or 60` } });
+			times.push({ flag: arg, value: value._yay.value });
+			index++;
+			continue;
+		}
 		if (arg === "--limit") {
 			const value = bash_read_option_value("find", args, index, "--limit");
 			if (value._nay) return value;
@@ -494,8 +521,33 @@ function parse_args(args: string[]) {
 			pathQuery: pathQuery == null ? undefined : normalizedPathQuery,
 			extension: normalizedExtension,
 			contentType,
+			times,
 		} as const,
 	});
+}
+
+/**
+ * The `updatedAt` window of the `-mmin` / `-mtime` tests (both ends included, null is no bound), like
+ * GNU find: `-N` is less than N ago and `+N` more than N ago. `-mtime` counts whole days, rounded
+ * down, so `+1` needs two days; `-mmin N` alone means N-1 to N minutes ago. Several tests must all
+ * match. Null when there is no time test.
+ */
+function updated_window(times: ReadonlyArray<{ flag: "-mmin" | "-mtime"; value: string }>, now: number) {
+	if (times.length === 0) return null;
+	let from: number | null = null;
+	let to: number | null = null;
+	for (const time of times) {
+		const unit = time.flag === "-mmin" ? 60_000 : 86_400_000;
+		const n = Math.abs(Number(time.value));
+		// The ages of `N` alone, in units: from `newest` up to, not including, `oldest`.
+		const [newest, oldest] = time.flag === "-mmin" ? [n - 1, n] : [n, n + 1];
+		const op = time.value[0];
+		const low = op === "+" ? null : now - (op === "-" ? n : oldest) * unit + 1;
+		const high = op === "-" ? null : op === "+" ? now - oldest * unit - 1 : now - newest * unit;
+		if (low !== null) from = from === null ? low : Math.max(from, low);
+		if (high !== null) to = to === null ? high : Math.min(to, high);
+	}
+	return { from, to };
 }
 
 /**
@@ -605,6 +657,7 @@ function build_continuation(args: {
 	if (args.parsed.contentType !== undefined) {
 		continuationParts.push("--content-type", bash_shell_arg_quote(args.parsed.contentType));
 	}
+	for (const time of args.parsed.times) continuationParts.push(time.flag, time.value);
 	continuationParts.push("--limit", String(args.parsed.limit), "--cursor", bash_shell_arg_quote(args.cursor));
 	return continuationParts.join(" ");
 }
@@ -625,6 +678,8 @@ export async function bash_find_type_prepare(args: {
 	});
 	if (parsed._nay) return failure(parsed._nay.message);
 	const options = parsed._yay;
+	// With a time test the time read drives the listing, and the type is checked after it.
+	if (options.times.length > 0) return null;
 	const shellPath = bash_resolve_path(args.cwd, options.path ?? args.cwd);
 	const pathResolution = bash_resolve_db_files_shell_path(shellPath, args.dbFilesRoots);
 	if (
@@ -742,10 +797,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						)}\n`;
 			return {
 				stdout: "",
-				stderr:
-					`${parsed._nay.message}\n` +
-					tryLine +
-					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
+				stderr: `${parsed._nay.message}\n` + tryLine + FIND_USAGE,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -757,7 +809,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stderr:
 					"find: --next-page is not supported\n" +
 					"Copy the exact `Next page: find ... --limit N --cursor ...` command from the previous find output.\n" +
-					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
+					FIND_USAGE,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -795,11 +847,19 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					stdout: "",
 					stderr:
 						`find: unsupported predicate ${parsed._yay.unsupportedDbFilesPredicate} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
-						"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
-						"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
+						"GNU find extensions like -printf, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
+						FIND_USAGE,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+
+			// -mmin and -mtime read the files of one plugin, not the list of plugins.
+			if (parsed._yay.times.length > 0)
+				return {
+					stdout: "",
+					stderr: "find: -mmin and -mtime need one plugin here: find /.plugins/<pluginName> -mmin -60\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
 
 			// Path word search at the root supports the full fan-out subtree only; depth
 			// filters need a single plugin's folder anchor.
@@ -853,7 +913,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (perPluginDepth._nay) {
 				return {
 					stdout: "",
-					stderr: `${perPluginDepth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n`,
+					stderr: `${perPluginDepth._nay.message}\n${FIND_USAGE}`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -971,11 +1031,18 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					stdout: "",
 					stderr:
 						`find: unsupported predicate ${parsed._yay.unsupportedDbFilesPredicate} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
-						"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
-						"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
+						"GNU find extensions like -printf, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
+						FIND_USAGE,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+			// -mmin and -mtime read the files of one mount, not the list of mounts.
+			if (parsed._yay.times.length > 0)
+				return {
+					stdout: "",
+					stderr: "find: -mmin and -mtime need one mount here: find /.mounts/<name> -mmin -60\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
 			// Path word search at the root supports the full fan-out subtree only; depth
 			// filters need a single mount's folder anchor.
 			if (pathQuery != null && (parsed._yay.maxDepth != null || parsed._yay.minDepth != null)) {
@@ -1016,7 +1083,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (refusedDepth?._nay) {
 				return {
 					stdout: "",
-					stderr: `${refusedDepth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n`,
+					stderr: `${refusedDepth._nay.message}\n${FIND_USAGE}`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -1183,8 +1250,8 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					regexPredicateHint +
 					regexPathQueryRetry +
 					// App files refuse --path-query, so only plugins and mounts suggest it.
-					`GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, ${pathResolution.kind === "app" ? "" : "--path-query QUERY, "}-type f|d, -maxdepth N, or -mindepth N instead.\n` +
-					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
+					`GNU find extensions like -printf, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, ${pathResolution.kind === "app" ? "" : "--path-query QUERY, "}-type f|d, -maxdepth N, or -mindepth N instead.\n` +
+					FIND_USAGE,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -1203,6 +1270,12 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 		// Prefix search scans treePath descendants and does not require an existing folder.
 		if (parsed._yay.prefix != null) {
+			if (parsed._yay.times.length > 0)
+				return {
+					stdout: "",
+					stderr: "find: --prefix cannot be combined with -mmin or -mtime; use find <folder> -mmin -60\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
 			// Prefix mode is only for broad path-boundary scans.
 			if (parsed._yay.extension != null) {
 				return {
@@ -1350,6 +1423,48 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			};
 		}
 
+		// A time test drives the read; `-type`, `--extension`, `-name` and `--content-type` are checked on
+		// each row after it. The window stays the same on every page, so the cursor keeps its `now`.
+		const times = parsed._yay.times;
+		let now = Date.now();
+		if (times.length > 0 && (parsed._yay.maxDepth !== null || parsed._yay.pathQuery !== undefined))
+			return {
+				stdout: "",
+				stderr:
+					"find: -mmin and -mtime read the whole subtree; omit -maxdepth and --path-query. For one folder by time, use ls -t <folder>\n",
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		if (times.length > 0 && cursor !== null) {
+			let stored: { now?: unknown; cursor?: unknown } = {};
+			try {
+				stored = JSON.parse(cursor) ?? {};
+			} catch {}
+			if (typeof stored.now !== "number" || typeof stored.cursor !== "string")
+				return {
+					stdout: "",
+					stderr:
+						"find: cursor does not match this listing; rerun the original command to get a fresh Next page cursor.\n",
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			now = stored.now;
+			cursor = stored.cursor;
+		}
+		const window = updated_window(times, now);
+		const in_window = (updatedAt: number) =>
+			!window || ((window.from === null || updatedAt >= window.from) && (window.to === null || updatedAt <= window.to));
+		// Tests that cannot all match, like -mmin -10 -mmin +20, match nothing: read nothing.
+		if (window && window.from !== null && window.to !== null && window.from > window.to)
+			return { stdout: "0 matches.\n", stderr: "", exitCode: 0 };
+		// With only `+N` the walk reads the whole folder, so a name or type check after it would be a scan.
+		if (window?.from === null && (pathQuery !== undefined || parsed._yay.contentType !== undefined))
+			return {
+				stdout: "",
+				stderr: "find: -name and --content-type need a time test like -mmin -60 or -mmin 60, not only +N\n",
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		const typePrefix =
+			parsed._yay.contentType === undefined ? null : files_parse_content_type_prefix(parsed._yay.contentType);
+
 		// Inside one plugin or mount, `--path-query` and `-maxdepth 1 -name` keep the path word scan: those
 		// trees are small and have no drafts.
 		const pathScan =
@@ -1416,7 +1531,10 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			const matches =
 				(parsed._yay.type == null || parsed._yay.type === "f") &&
 				(parsed._yay.minDepth == null || parsed._yay.minDepth <= 0) &&
-				(parsed._yay.extension == null || entry.name.toLowerCase().endsWith(`.${parsed._yay.extension}`));
+				(parsed._yay.extension == null || entry.name.toLowerCase().endsWith(`.${parsed._yay.extension}`)) &&
+				in_window(entry.updatedAt) &&
+				(!typePrefix ||
+					files_content_type_index_fields(entry.contentType ?? null)[typePrefix.field] === typePrefix.value);
 			return {
 				stdout: cursor == null && matches ? `${pathResolution.renderShellPath(target.dbFilesPath)}\n` : "0 matches.\n",
 				stderr: "",
@@ -1427,13 +1545,13 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// Name search keeps its own depth rules above. Other app reads take the depth shapes of
 		// `map_find_depth`: the folder only, its children, or its whole subtree.
 		const depth =
-			pathQuery == null
+			pathQuery == null || window
 				? map_find_depth({ minDepth: parsed._yay.minDepth, maxDepth: parsed._yay.maxDepth, shift: 0 })
 				: null;
 		if (depth?._nay)
 			return {
 				stdout: "",
-				stderr: `${depth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n`,
+				stderr: `${depth._nay.message}\n${FIND_USAGE}`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		const listArgs = {
@@ -1456,7 +1574,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// Name word search on saved rows, then a second search on the user's drafts. With a folder, each
 		// draft is checked to be under it.
 		const searched =
-			pathQuery != null && !pathScan
+			pathQuery != null && !pathScan && !window
 				? await files_pending_overlay_search_name(ctx, { ...listArgs, query: pathQuery })
 				: null;
 		const result =
@@ -1475,6 +1593,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 							...listArgs,
 							mode: depth._yay.maxDepth === 1 ? "children" : "subtree",
 							order: "asc",
+							...(window ? { updated: window } : {}),
 						}));
 		if (result._nay)
 			return {
@@ -1485,9 +1604,17 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						: `find: ${result._nay.message}\n`,
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
-		const lines = result._yay.items.map(
-			(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
-		);
+		const lines = result._yay.items
+			.filter(
+				(item) =>
+					!window ||
+					((pathQuery === undefined || name_words_match(item.name, pathQuery)) &&
+						// Like the type index, a type search lists only files the caller can open.
+						(!typePrefix ||
+							(!item.locked &&
+								files_content_type_index_fields(item.contentType)[typePrefix.field] === typePrefix.value))),
+			)
+			.map((item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`);
 		const denied = denied_lines(
 			"denied" in result._yay ? result._yay.denied : undefined,
 			pathResolution.renderShellPath,
@@ -1495,22 +1622,19 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// find includes the starting folder at depth zero. The shared list returns its descendants. A
 		// search prints it when it matches too: by path for the scan, and for name search when every
 		// query word starts a word of its name.
-		const nameWords = entry?.name.toLowerCase().split(/[^\p{L}\p{N}]+/u) ?? [];
 		if (
 			cursor == null &&
 			entry?.kind === "folder" &&
 			parsed._yay.type !== "f" &&
 			parsed._yay.extension == null &&
+			!typePrefix &&
+			in_window(entry.updatedAt) &&
 			(parsed._yay.minDepth == null || parsed._yay.minDepth === 0) &&
 			(pathQuery == null
 				? depth?._yay != null
 				: pathScan
 					? parsed._yay.maxDepth !== 1 && entry.path.toLowerCase().includes(pathQuery.toLowerCase())
-					: pathQuery
-							.toLowerCase()
-							.split(/[^\p{L}\p{N}]+/u)
-							.filter(Boolean)
-							.every((word) => nameWords.some((nameWord) => nameWord.startsWith(word))))
+					: name_words_match(entry.name, pathQuery))
 		) {
 			lines.unshift(`${pathResolution.renderShellPath(entry.path)}/`);
 		}
@@ -1524,7 +1648,10 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					parsed: parsed._yay,
 					target: target.absoluteShellPath,
 					prefix: null,
-					cursor: await bash_cursor_id_create(ctx, result._yay.continueCursor),
+					cursor: await bash_cursor_id_create(
+						ctx,
+						window ? JSON.stringify({ now, cursor: result._yay.continueCursor }) : result._yay.continueCursor,
+					),
 				}),
 			);
 		} else {

@@ -3240,15 +3240,17 @@ function moved_in_args(movedIn: { savedNodeId: string; ownerTreePath: string } |
 }
 
 /**
- * One page of an agent listing: the children of a folder, the subtree under it (path order), the
- * whole workspace by update time (`ls -t` with no path), or the metadata rows one `meta search` plan
- * matches under it.
+ * One page of an agent listing: the children of a folder, the subtree under it (path order), or the
+ * metadata rows one `meta search` plan matches under it.
  *
  * Merges the saved stream, the user's place stream and, in a subtree, one saved stream per folder the
  * user moved in by a draft. A row shows only when every open stream has read past its key; ties go by
  * stream order. In a subtree and in a metadata `exists` or `eq` listing each saved stream is a walk
  * (`server/files-tree-walk.ts`) over every saved source: it does not enter locked folders, and a
- * subtree returns their paths in `denied`. Used by `ls`, `find`, `tree`, `meta search`, the skills catalog and transfer
+ * subtree returns their paths in `denied`. A subtree with an `updated` window (`find -mmin`) reads
+ * an area newest first when the folder holds it whole or the window has a start (`-N`); when the start
+ * frame reads that way, it opens no moved-in streams.
+ * Used by `ls`, `find`, `tree`, `meta search`, the skills catalog and transfer
  * discovery, so it takes any ctx that can run a query.
  *
  * Nested queries share the caller's transaction. When the caller is a query or a mutation, the merge
@@ -3265,9 +3267,9 @@ export async function files_pending_overlay_list(
 		overlayUserId?: Id<"users">;
 		requireComplete?: boolean;
 		folderPath: string;
-		mode: "children" | "subtree" | "recent" | "metadata";
+		mode: "children" | "subtree" | "metadata";
 		/**
-		 * Children only. Recent listings are always by update time.
+		 * Children only.
 		 */
 		orderBy?: "name" | "updatedAt";
 		/**
@@ -3277,6 +3279,17 @@ export async function files_pending_overlay_list(
 		order: "asc" | "desc";
 		kind?: "file" | "folder";
 		lowercaseExtension?: string;
+		/**
+		 * Subtree only, for `find -mmin` / `-mtime`: keep rows whose `updatedAt` is in this window (both
+		 * ends included, null is no bound). With `from`, each area is read by update time, newest first.
+		 * With only `to`, so is each area the folder holds whole; the rest reads in path order.
+		 */
+		updated?: { from: number | null; to: number | null };
+		/**
+		 * For the UI search box: a walk of a root the caller cannot open finds what it can read, instead of
+		 * "Permission denied".
+		 */
+		searchLockedRoot?: boolean;
 		numItems: number;
 		cursor: string | null;
 	},
@@ -3333,6 +3346,7 @@ export async function files_pending_overlay_list(
 		args.lowercaseExtension,
 		args.requireComplete,
 		args.plan,
+		args.updated,
 		[view.cohortId, view.view, view.generation, view.migrationDirection],
 	]);
 	const pageSize = Math.max(1, Math.floor(args.numItems));
@@ -3342,6 +3356,26 @@ export async function files_pending_overlay_list(
 	const walk =
 		(args.mode === "subtree" && order === "asc") ||
 		(args.mode === "metadata" && (plan?.op === "exists" || plan?.op === "eq"));
+	const updated = args.mode === "subtree" && args.updated ? { updated: args.updated } : {};
+	// `find -mmin` / `-mtime` read an area by update time (`files_tree_walk_time_key`): always with a
+	// window start (`-N`). With only `+N` the time index would read every old row of the area, so it
+	// serves only an area the folder holds whole: one inside the folder, or the folder's own area when
+	// the folder is its top. Other frames walk in path order and drop the newer rows.
+	const timeWindow = walk && args.mode === "subtree" && args.updated ? args.updated : null;
+	const by_time = (areaTop: boolean) => timeWindow !== null && (timeWindow.from !== null || areaTop);
+	// The Move view's places name every node of the cohort, so the frames read in that view.
+	const viewStream = savedSources.find((source) => source.kind === "cohort") ?? savedSources[0]!;
+	const open_walk = (movedIn: ReturnType<typeof moved_in_args>) =>
+		ctx.runQuery(internal.files_visible.internal_get_walk_start, {
+			...streamArgs,
+			...movedIn,
+			savedStream: viewStream,
+			searchLockedRoot: args.searchLockedRoot,
+		});
+	// With only `+N` the place streams follow the start frame's order, so read the start first.
+	const startOpened = timeWindow?.from === null ? await open_walk({}) : null;
+	if (startOpened?._nay) return startOpened;
+	const startByTime = by_time(startOpened?._yay.areaTop ?? false);
 
 	type CursorStream = z.infer<typeof list_cursor_schema>["streams"][number];
 	type StreamResult = files_visible_stream_Result | { _nay: { message: string; name?: string }; _yay?: undefined };
@@ -3370,6 +3404,8 @@ export async function files_pending_overlay_list(
 		walk?: {
 			root: NonNullable<files_visible_stream_Result["_yay"]>["root"];
 			start: { scopeNodeId: Id<"files_nodes"> | null; treePath: string } | null;
+			/** Whether the start frame reads by update time (`by_time`). */
+			startByTime: boolean;
 			frames: { cursor: string; frames: NonNullable<Infer<typeof files_tree_walk_stack_validator>> } | null;
 		};
 	};
@@ -3404,7 +3440,7 @@ export async function files_pending_overlay_list(
 			// `exists` and `eq` read the folder's range, so they need them too; with no folder, and for
 			// `prefix` and `range`, the saved stream reads the whole workspace and meets their rows.
 			...(overlay &&
-			((args.mode === "subtree" && (args.kind === "file" || args.lowercaseExtension !== undefined)) ||
+			((args.mode === "subtree" && !startByTime && (args.kind === "file" || args.lowercaseExtension !== undefined)) ||
 				(args.mode === "metadata" &&
 					(plan?.op === "exists" || plan?.op === "eq") &&
 					server_path_normalize(args.folderPath) !== "/"))
@@ -3465,16 +3501,15 @@ export async function files_pending_overlay_list(
 				});
 			cursor = parsed.data;
 		}
-		// The Move view's places name every node of the cohort, so the frames read in that view.
-		const viewStream = savedSources.find((source) => source.kind === "cohort") ?? savedSources[0]!;
 		if (!stream.walk) {
-			const opened = await ctx.runQuery(internal.files_visible.internal_get_walk_start, {
-				...streamArgs,
-				...movedIn,
-				savedStream: viewStream,
-			});
+			const opened = stream.movedIn === null && startOpened ? startOpened : await open_walk(movedIn);
 			if (opened._nay) return opened;
-			stream.walk = { root: opened._yay.root, start: opened._yay.start, frames: null };
+			stream.walk = {
+				root: opened._yay.root,
+				start: opened._yay.start,
+				startByTime: by_time(opened._yay.areaTop),
+				frames: null,
+			};
 		}
 		const walk = stream.walk;
 		const { root: walkRoot, start: walkStart } = walk;
@@ -3511,14 +3546,25 @@ export async function files_pending_overlay_list(
 									savedStream,
 									frame,
 								})
-							: await ctx.runQuery(internal.files_visible.internal_list_subtree_saved, {
-									...common,
-									...filter,
-									order,
-									numItems,
-									savedStream,
-									frame,
-								}),
+							: timeWindow && (walk.startByTime || frame.treePath !== walkStart.treePath)
+								? await ctx.runQuery(internal.files_visible.internal_list_subtree_recent_saved, {
+										...streamArgs,
+										position: start,
+										...filter,
+										numItems,
+										savedStream,
+										frame,
+										updated: timeWindow,
+									})
+								: await ctx.runQuery(internal.files_visible.internal_list_subtree_saved, {
+										...common,
+										...filter,
+										...updated,
+										order,
+										numItems,
+										savedStream,
+										frame,
+									}),
 					);
 					return {
 						items: yay.rows.map((row) => ({ key: row.position.lastKey!, value: row as Row })),
@@ -3532,6 +3578,7 @@ export async function files_pending_overlay_list(
 						await ctx.runQuery(internal.files_visible.internal_list_subtree_boundaries, {
 							...common,
 							...filter,
+							...updated,
 							numItems,
 							savedStream,
 							frame,
@@ -3611,35 +3658,38 @@ export async function files_pending_overlay_list(
 			) as Promise<files_visible_stream_Result>;
 		}
 		const query =
-			args.mode === "recent"
+			args.mode === "children"
 				? stream.kind === "saved"
-					? ctx.runQuery(internal.files_visible.internal_list_recent_saved, { ...common, order })
-					: ctx.runQuery(internal.files_visible.internal_list_recent_places, { ...common, order })
-				: args.mode === "children"
-					? stream.kind === "saved"
-						? ctx.runQuery(internal.files_visible.internal_list_children_saved, {
+					? ctx.runQuery(internal.files_visible.internal_list_children_saved, {
+							...common,
+							...filter,
+							orderBy,
+							order,
+						})
+					: ctx.runQuery(internal.files_visible.internal_list_children_places, {
+							...common,
+							...filter,
+							...(stream.parentAlias ? { parentAlias: stream.parentAlias as files_PendingParent } : {}),
+							orderBy,
+							order,
+						})
+				: stream.kind === "places"
+					? timeWindow && startByTime
+						? ctx.runQuery(internal.files_visible.internal_list_subtree_recent_places, {
 								...common,
 								...filter,
-								orderBy,
-								order,
+								updated: timeWindow,
 							})
-						: ctx.runQuery(internal.files_visible.internal_list_children_places, {
+						: ctx.runQuery(internal.files_visible.internal_list_subtree_places, { ...common, ...filter, ...updated })
+					: stream.kind === "moved_in"
+						? ctx.runQuery(internal.files_visible.internal_list_subtree_moved_in_folders, common)
+						: ctx.runQuery(internal.files_visible.internal_list_subtree_saved, {
 								...common,
 								...filter,
-								...(stream.parentAlias ? { parentAlias: stream.parentAlias as files_PendingParent } : {}),
-								orderBy,
+								...updated,
 								order,
-							})
-					: stream.kind === "places"
-						? ctx.runQuery(internal.files_visible.internal_list_subtree_places, { ...common, ...filter })
-						: stream.kind === "moved_in"
-							? ctx.runQuery(internal.files_visible.internal_list_subtree_moved_in_folders, common)
-							: ctx.runQuery(internal.files_visible.internal_list_subtree_saved, {
-									...common,
-									...filter,
-									order,
-									...movedIn,
-								});
+								...movedIn,
+							});
 		return query as Promise<files_visible_stream_Result>;
 	};
 

@@ -177,10 +177,12 @@ async function db_get_run_memberships(args: {
 			thread.workspaceId !== run.workspaceId
 		)
 			return null;
+		// An active member is enough, so a guest's agent can copy and move. Each item checks read on its
+		// source and write on its destination.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth: { id: run.userId },
 			membership,
-			permission: "content.read",
+			permission: null,
 		});
 		if (authorized._nay) return null;
 	}

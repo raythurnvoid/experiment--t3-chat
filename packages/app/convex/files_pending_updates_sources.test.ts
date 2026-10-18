@@ -353,8 +353,9 @@ describe("pending source summaries", () => {
 		},
 	);
 
-	test("checks source content permission even when membership stays active", async () => {
+	test("shows a guest its own chat and its own pending counts", async () => {
 		const f = await fixture();
+		await f.folder({ root: f.current, path: "/current" });
 		const organization = await f.t.run((ctx) => ctx.db.get("organizations", f.owner.organizationId));
 		const role = await f.asOwner.mutation(api.access_control.create_role, {
 			organizationId: f.owner.organizationId,
@@ -371,8 +372,18 @@ describe("pending source summaries", () => {
 				role: role._yay.roleId,
 			}),
 		).toEqual({ _yay: null });
-		expect(await f.summary()).toBeNull();
-		expect(await f.counts()).toEqual([]);
+		// The role has no content read, so the user is a guest. The chat and the drafts are their own.
+		expect(await f.summary()).toMatchObject({ title: "Private source title", organizationName: "test-organization" });
+		expect(await f.counts()).toEqual([
+			{
+				workspace: "current",
+				organizationName: "test-organization",
+				workspaceName: "test-workspace",
+				count: 1,
+				truncated: false,
+			},
+			{ workspace: "personal", organizationName: "personal", workspaceName: "home", count: 0, truncated: false },
+		]);
 	});
 
 	test("requires authentication", async () => {

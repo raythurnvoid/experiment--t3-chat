@@ -7,6 +7,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { ai_chat_runs_db_insert_node } from "./ai_chat_runs.ts";
+import { plugins_mcp_CANNOT_USE_MESSAGE } from "./plugins_mcp.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_encrypt_secret_value } from "../server/crypto-utils.ts";
 import { mcp_client_list_tools } from "../server/mcp-client.ts";
@@ -459,6 +460,74 @@ describe("/api/chat MCP tool loading", () => {
 		expect(response.status, response.body).toBe(200);
 		expect(Object.keys(last_call().tools ?? {}).some((name) => name.startsWith("mcp__"))).toBe(false);
 		expect(fixtures.wire).toEqual([]);
+	});
+
+	test("gives a guest no MCP tools and refuses their calls", async () => {
+		const t = test_convex();
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const owner = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "mcp-team", workspaceName: "home" }),
+		);
+		const member = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+		await install_mcp_plugin({ t, membership: owner, url: MODERN_BASIC_URL });
+		expect(
+			await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userIdToAdd: member.userId,
+			}),
+		).toEqual({ _yay: null });
+		const membership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true),
+				)
+				.first(),
+		);
+		if (!membership) throw new Error("Expected invited membership");
+		const role = await asOwner.mutation(api.access_control.create_role, {
+			organizationId: owner.organizationId,
+			name: "MCP user",
+			description: "",
+			permissions: ["content.read", "workspace.mcp.use"],
+		});
+		if (role._nay) throw new Error(role._nay.message);
+		expect(
+			await asOwner.mutation(api.access_control.set_user_role, {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId: member.userId,
+				role: role._yay.roleId,
+			}),
+		).toEqual({ _yay: null });
+		const thread = await asMember.mutation(api.ai_chat.thread_create, {
+			membershipId: membership._id,
+			clientGeneratedId: "guest-thread",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const has_mcp_tools = () => Object.keys(last_call().tools ?? {}).some((name) => name.startsWith("mcp__"));
+		// With workspace read the member gets the tools, so the refusals below come from the guest.
+		expect((await chat(asMember, { membershipId: membership._id, threadId: thread._yay.threadId })).status).toBe(200);
+		expect(has_mcp_tools()).toBe(true);
+
+		// Without workspace read the member is a guest. MCP tools are not files, so a guest gets none.
+		expect(
+			await asOwner.mutation(api.access_control.update_role, {
+				roleId: role._yay.roleId,
+				permissions: ["workspace.mcp.use"],
+			}),
+		).toEqual({ _yay: null });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "guest" } });
+		expect(result.error).toBe(plugins_mcp_CANNOT_USE_MESSAGE);
+		expect(tools_calls()).toEqual([]);
+		// Wait out the chat rate limit before the next turn.
+		vi.setSystemTime(Date.now() + 60_000);
+		expect((await chat(asMember, { membershipId: membership._id, threadId: thread._yay.threadId })).status).toBe(200);
+		expect(has_mcp_tools()).toBe(false);
 	});
 });
 

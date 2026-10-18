@@ -27,10 +27,11 @@ const workspace_validator = v.object({
 });
 
 async function read_workspace(ctx: QueryCtx | MutationCtx, membership: Doc<"organizations_workspaces_users">) {
+	// An active member is enough, also a guest without workspace read: each file door checks the node.
 	const allowed = await access_control_db_authorize_membership(ctx, {
 		userAuth: { id: membership.userId },
 		membership,
-		permission: "content.read",
+		permission: null,
 	});
 	if (allowed._nay) return allowed;
 	const workspace = await ctx.db.get("organizations_workspaces", membership.workspaceId);

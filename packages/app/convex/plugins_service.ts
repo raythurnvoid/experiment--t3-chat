@@ -664,19 +664,24 @@ export type plugins_service_http_verify_live_Body = z.infer<typeof verify_live_b
 /**
  * Which workspace content permission the member behind the grant needs for each claimed scope.
  *
- * `REQUIRED_APP_PERMISSION_BY_SCOPE` in `public_api_http_auth.ts` says the same thing for these
- * scopes, and `public_api_resolve_live_principal` applies it to a service grant on every `/api/v1/*`
- * route the grant can reach, before that route does the work. Keep the two in step. A scope this map
- * calls readable while that one calls it writable is answered 200 here and `Permission denied` at
- * the very call the service asked about.
+ * For the `plugin_data:*` scopes, `REQUIRED_APP_PERMISSION_BY_SCOPE` in `public_api_http_auth.ts` says
+ * the same thing, and `public_api_resolve_live_principal` applies it to a service grant on every
+ * `/api/v1/*` route the grant can reach, before that route does the work. Keep the two in step. A
+ * scope this map calls readable while that one calls it writable is answered 200 here and
+ * `Permission denied` at the very call the service asked about.
+ *
+ * `files:write` is not in step. The file doors check write on each node, not on the workspace, and
+ * in the plugin's own output folder the plugin writes as its account while its person can read. So a
+ * member who lost workspace write can still write there through the grant. This map still asks for
+ * workspace write, so it can answer 409 for a write the door would allow. That only refuses more.
  *
  * That check skips one kind of caller, and it does so deliberately: a `plugin_run` principal. A run
  * has no user of its own, so its principal carries no `contentPermissions` for the check to read.
  * Narrower rules bound it instead. It may download only the upload that started it, and it may write
  * only next to that file. Its plugin-document calls are judged too, with the content permission of
  * the person whose upload started it, by `db_authorize` in `plugins_data.ts`, inside the same
- * transaction as the read or write. A service grant is not skipped, so what this map asks for here
- * is what the grant really meets later.
+ * transaction as the read or write. A service grant is not skipped, so for `plugin_data:*` what this
+ * map asks for here is what the grant really meets later.
  */
 const REQUIRED_CONTENT_PERMISSION_BY_SCOPE = {
 	"plugin_data:read": "read",
@@ -728,10 +733,10 @@ export async function plugins_service_http_verify_live(ctx: ActionCtx, request: 
 	}
 	// A scope the member behind the grant may no longer use is not a scope the service can rely on.
 	// An admin can move that member to the `viewer` role while a meeting runs. The member stays in the
-	// workspace, so every check above still passes, but `content.write` is gone and the `/api/v1/*`
-	// doors refuse `plugin_data:write` and `files:write` from then on. Without this the host answers
-	// 200 to the question the service asks before it starts recording, and the meeting fails on the
-	// upload after everyone left.
+	// workspace, so every check above still passes, but `content.write` is gone. The `/api/v1/*` doors
+	// refuse `plugin_data:write` from then on, and `files:write` everywhere but the plugin's own output
+	// folder. Without this the host answers 200 to the question the service asks before it starts
+	// recording, and the meeting fails on the upload after everyone left.
 	if (expected.scopes.some((scope) => !principal.contentPermissions[REQUIRED_CONTENT_PERMISSION_BY_SCOPE[scope]])) {
 		return {
 			status: 409,

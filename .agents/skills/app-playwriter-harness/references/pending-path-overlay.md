@@ -40,7 +40,7 @@ Covers the user-facing flows around `files_pending_updates` move/copy proposals 
 - Start a fresh chat per scenario ("New chat" button in the Agent tab); follow-ups within a scenario can reuse the chat.
 - Put each command in backticks in the prompt (`` `mv a.md b.md` ``). Without them the model can copy a trailing period into the command.
 - Trust the bash tool-part terminal text over the model's prose summary.
-- To check whether a node is listed, use `ls <folder>`, `find <folder>`, or `ls -t` with no path. `find --prefix NAME` lists what is under the folder path `NAME/`; it does not match names that start with `NAME`, so 0 matches there proves nothing.
+- To check whether a node is listed, use `ls <folder>`, `find <folder>`, or `find <folder> -mmin -60` for recent changes. `find --prefix NAME` lists what is under the folder path `NAME/`; it does not match names that start with `NAME`, so 0 matches there proves nothing.
 
 ## Fixture helper (committed file/folder creation)
 

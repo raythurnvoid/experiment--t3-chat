@@ -3505,7 +3505,7 @@ export const list_live_thread_jobs = query({
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
-			permission: "content.read",
+			permission: null,
 		});
 		if (authorized._nay) return [];
 		const live: Doc<"activities">[] = [];
@@ -3824,14 +3824,8 @@ export const list_bash_invocation_transfers = query({
 			.withIndex("by_thread_toolCall", (q) => q.eq("threadId", args.threadId).eq("toolCallId", args.toolCallId))
 			.first();
 		if (!invocation || invocation.userId !== userAuth.id || invocation.membershipId !== args.membershipId) return null;
-		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
-		if (!membership) return null;
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
-		if (authorized._nay) return null;
+		// This checks the chat and the active membership, which is all a chat needs.
+		if (!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))) return null;
 		const result = await ai_chat_files_db_list_invocation_transfers(ctx, {
 			invocationId: invocation._id,
 			paginationOpts: args.paginationOpts,

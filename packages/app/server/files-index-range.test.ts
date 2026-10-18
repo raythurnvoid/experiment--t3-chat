@@ -42,10 +42,10 @@ test.each(["asc", "desc"] as const)("native seek keeps the complete key in %s or
 		let cursor: string | null = null;
 		while (true) {
 			const page = await t.run((ctx) => ctx.db.query("files_nodes")
-				.withIndex("by_organization_workspace_archiveOperation_updatedAt", (q) =>
+				.withIndex("by_org_ws_scope_archive_updatedAt", (q) =>
 					files_index_range_apply(q.eq("organizationId", scope.organizationId)
 						.eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)
-						.eq("archiveOperationId", null), bounds))
+						.eq("restrictedScopeNodeId", null).eq("archiveOperationId", null), bounds))
 				.order(order).paginate({ cursor, numItems: 3 }));
 			ids.push(...page.page.map((node) => node._id));
 			if (page.isDone) break;

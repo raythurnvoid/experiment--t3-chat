@@ -290,10 +290,11 @@ async function read_volume(
 	};
 	return {
 		entry: await f.t.query(internal.files_nodes.get_visible_entry_by_path, { ...visibleArgs, path: f.path }),
-		children: await f.t.query(internal.files_nodes.list_children, {
+		children: await f.t.query(internal.files_nodes.list_subtree, {
 			...visibleArgs,
-			parentId: f.rootId,
-			orderBy: "name",
+			folderPath: f.rootPath,
+			minDepth: 1,
+			maxDepth: 1,
 			numItems: 10,
 			cursor: null,
 		}),
@@ -354,7 +355,7 @@ async function read_volume(
 
 function expect_refused(read: Awaited<ReturnType<typeof read_volume>>) {
 	expect(read.entry).toBeNull();
-	expect(read.children.items).toEqual([]);
+	expect(read.children.page).toEqual([]);
 	expect(read.subtree.page).toEqual([]);
 	expect(read.paths.items).toEqual([]);
 	expect(read.full).toBeNull();
@@ -375,7 +376,7 @@ describe("volume reads", () => {
 		const f = await create_volume_fixture();
 		const read = await read_volume(f);
 		expect(read.entry).toMatchObject({ kind: "saved", node: { _id: f.nodeId, createdBy: users_SYSTEM_AUTHOR } });
-		expect(read.children.items).toMatchObject([{ path: f.path }]);
+		expect(read.children.page).toMatchObject([{ path: f.path }]);
 		expect(read.subtree.page).toMatchObject([{ _id: f.rootId }, { _id: f.nodeId }]);
 		expect(read.paths.items).toMatchObject([{ path: f.path }]);
 		expect(read.full?.content).toBe(volume_text);
