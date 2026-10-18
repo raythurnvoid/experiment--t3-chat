@@ -42,6 +42,11 @@ vi.mock("convex/react", async (importOriginal) => ({
 	usePaginatedQuery: () => ({ results: [], status: "Exhausted", loadMore: () => {} }),
 	useQueries: () => ({}),
 }));
+// The cached hooks use the `convex/react` mock above.
+vi.mock("convex-helpers/react/cache", async (importOriginal) => {
+	const { useQueries, useQuery } = await import("convex/react");
+	return { ...(await importOriginal<typeof import("convex-helpers/react/cache")>()), useQueries, useQuery };
+});
 
 const upload = {
 	kind: "upload" as const,
