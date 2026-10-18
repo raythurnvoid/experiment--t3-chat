@@ -249,7 +249,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 	const isActive = run?.activity.finishedAt === undefined;
 	const isStopPending = pendingStopSourceIds.has(runId);
 	const conflict = run?.conflict ?? null;
-	const archivedNames = (run?.archived ?? []).flatMap((item) => (item.name === null ? [] : [item.name]));
+	const archivedPaths = (run?.archived ?? []).flatMap((item) => (item.path === null ? [] : [item.path]));
 	// Match the Activity card: a refused item, like a read-only file, is expected and does not make the
 	// archive look partly failed. The "Not archived" section below names each refused item.
 	const isRefusalOnly =
@@ -346,12 +346,12 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 										: `${verbs[1]} ${progress.completed} ${progress.completed === 1 ? "item" : "items"}.`}
 							</p>
 						) : null}
-						{/* The names the person picked. A folder counts with everything inside, so the line above can
-						    count more items than this list names. */}
-						{archivedNames.length > 0 ? (
+						{/* The paths the person picked. A folder counts with everything inside, so the line above can
+						    count more items than this list shows. */}
+						{archivedPaths.length > 0 ? (
 							<TextMonospaceBlock
 								aria-label={isActive ? "Items to archive" : "Archived items"}
-								text={archivedNames.join("\n")}
+								text={archivedPaths.join("\n")}
 								maxHeight="8lh"
 							/>
 						) : null}
@@ -368,7 +368,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 									{run.notArchived.map((item) => (
 										<li key={item.nodeId}>
 											<span className={"FilesArchiveRunModal-path" satisfies FilesArchiveRunModal_ClassNames}>
-												{item.name ?? "An item you cannot open"}
+												{item.path ?? "An item you cannot open"}
 											</span>
 											: {item.message}
 										</li>

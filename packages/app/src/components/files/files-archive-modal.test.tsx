@@ -324,13 +324,13 @@ describe("FilesArchiveRunModal", () => {
 			controls: { canStop: false, canRetry: false, canDismiss: true },
 			conflict: null,
 			archived: [
-				{ nodeId: "node_1", name: "note.md" },
-				{ nodeId: "node_4", name: null },
-				{ nodeId: "node_5", name: "Plans" },
+				{ nodeId: "node_1", path: "/note.md" },
+				{ nodeId: "node_4", path: null },
+				{ nodeId: "node_5", path: "/Plans" },
 			],
 			notArchived: [
-				{ nodeId: "node_2", name: "Reports", message: "An item inside it is read-only." },
-				{ nodeId: "node_3", name: null, message: "Permission denied" },
+				{ nodeId: "node_2", path: "/Reports", message: "An item inside it is read-only." },
+				{ nodeId: "node_3", path: null, message: "Permission denied" },
 			],
 		});
 		renderRunModal();
@@ -338,13 +338,13 @@ describe("FilesArchiveRunModal", () => {
 		// A refused read-only item is expected, so the job reads as completed, not partly completed.
 		expect(within(dialog).getByText("Completed.")).toBeTruthy();
 		expect(within(dialog).getByText("Archived 4 of 6 items.")).toBeTruthy();
-		// A name the person can no longer read is left out.
-		expect(within(dialog).getByRole("textbox", { name: "Archived items" }).textContent).toBe("note.md\nPlans");
+		// A path the person can no longer read is left out.
+		expect(within(dialog).getByRole("textbox", { name: "Archived items" }).textContent).toBe("/note.md\n/Plans");
 		const list = within(dialog).getByRole("region", { name: "Not archived (2)" });
 		expect(
 			within(list)
 				.getAllByRole("listitem")
 				.map((item) => item.textContent),
-		).toEqual(["Reports: An item inside it is read-only.", "An item you cannot open: Permission denied"]);
+		).toEqual(["/Reports: An item inside it is read-only.", "An item you cannot open: Permission denied"]);
 	});
 });

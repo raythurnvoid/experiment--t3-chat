@@ -1965,8 +1965,8 @@ export async function files_archive_runs_db_request_stop(
 /**
  * The job the person owns, with its progress and the clash it waits on. The clash name and paths are
  * shown only when the person may read the node.
- * `archived` lists the other named items of an archive, and `notArchived` the named items it refused.
- * Both name only nodes of the run's workspace that the person can still read.
+ * `archived` lists the paths of the other named items of an archive, and `notArchived` the paths of the
+ * items it refused. Both show only nodes of the run's workspace that the person can still read.
  */
 export const get = query({
 	args: {
@@ -1990,11 +1990,11 @@ export const get = query({
 				}),
 				v.null(),
 			),
-			archived: v.array(v.object({ nodeId: v.id("files_nodes"), name: v.union(v.string(), v.null()) })),
+			archived: v.array(v.object({ nodeId: v.id("files_nodes"), path: v.union(v.string(), v.null()) })),
 			notArchived: v.array(
 				v.object({
 					nodeId: v.id("files_nodes"),
-					name: v.union(v.string(), v.null()),
+					path: v.union(v.string(), v.null()),
 					message: v.string(),
 				}),
 			),
@@ -2021,13 +2021,13 @@ export const get = query({
 			subject: { kind: "user", userId: userAuth.id, plugin: null },
 			nodes: namedNodes,
 		});
-		const nameByNodeId = new Map(readableNodes.map((node) => [node._id, node.name]));
+		const pathByNodeId = new Map(readableNodes.map((node) => [node._id, node.path]));
 		const notArchived = run.refusedItems.map((refusedItem) => ({
 			nodeId: refusedItem.nodeId,
-			name: nameByNodeId.get(refusedItem.nodeId) ?? null,
+			path: pathByNodeId.get(refusedItem.nodeId) ?? null,
 			message: refusedItem.refusal.message,
 		}));
-		const archived = archivedNodeIds.map((nodeId) => ({ nodeId, name: nameByNodeId.get(nodeId) ?? null }));
+		const archived = archivedNodeIds.map((nodeId) => ({ nodeId, path: pathByNodeId.get(nodeId) ?? null }));
 
 		let conflict = null;
 		// A job stopped while it waited keeps its last clash. Show it only while the job waits.

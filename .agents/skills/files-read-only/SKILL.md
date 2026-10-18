@@ -284,7 +284,7 @@ of not counting locked items.
     agent's delete names one item, so the same rule refuses the whole delete.
     `archive_nodes` answers the named ids refused before the job and the named ids refused so far as
     `notArchivedNodeIds`, with the named ids inside the refused ones. `get` lists them as
-    `notArchived`. It names only items of the run's workspace that the person can still read. An
+    `notArchived`, each with its full `path`. It shows only items of the run's workspace that the person can still read. An
     archive that refused a named item keeps its job and Activity, even when it finished inside the
     request.
     The restore check pages the operation's items by `treePath`. Archived items can share one path. When a restore check page ends inside such
