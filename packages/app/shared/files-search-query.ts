@@ -35,6 +35,12 @@ import {
  */
 export const files_search_query_FIELD_PATH_MAX_LENGTH = files_metadata_FIELD_PATH_MAX_LENGTH;
 
+/**
+ * Longest path the search and suggestion doors look up: a typed path or a `file.path` folder. A longer
+ * one matches nothing.
+ */
+export const files_search_query_FOLDER_PATH_MAX_LENGTH = 1024;
+
 export const files_search_query_FILE_FIELDS = ["path", "link"] as const;
 
 export type files_search_query_Key = {

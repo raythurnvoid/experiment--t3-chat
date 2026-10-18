@@ -986,16 +986,15 @@ them resolve the reader with `files_nodes_db_get_tree_reader` and never show a n
   (`restricted: true`, the `parent_restricted` family) that only the owner reads. So the keys of a
   restricted child show to the owner only, also when the child is shared with a member. A field doc
   without the `isRestrictedScopeRoot` copy counts in the twin (fail closed).
-- **Accepted leak in metadata suggestions (user, 2026-10-08, narrowed 2026-10-10).**
-  `list_search_fields`, `get_search_field`, `list_search_values` and `list_folder_fields` read the
-  metadata catalog, which counts saved keys and values with no access data. The first three need
-  workspace-wide `content.read` (`hasWorkspaceRead`), so a guest gets an empty answer, also inside a
-  folder shared with them. A member with workspace read still sees every saved key and short string
-  value of the workspace, also from restricted files they cannot open. `list_folder_fields` shows
-  restricted children's keys to the owner only (see above). Search results, opening a
-  file, and the folder gate stay access-checked. This is temporary: Convex has no "distinct values"
-  search. A search engine must fix it by counting keys and values over only the files the caller can
-  read. Do not copy this pattern to other data. See the `file-metadata` skill, "Suggestions".
+- **Metadata suggestions read one area.** `list_search_fields`, `get_search_field` and
+  `list_search_values` read the metadata catalog, which counts saved keys and values with no access
+  data, so the door picks the rows. The owner reads the whole workspace (`key`, `value`). A member
+  reads the `area_*` rows of the area their `folderPath` is in: the open area (needs workspace read),
+  or a restricted area R (needs `content.read` on R itself, so added people inside R get nothing).
+  One area per call; a member never reads rows of an area they cannot open, and every refusal gets
+  the same empty answer. A grant change writes no catalog row. After a restrict the area rows follow
+  the saved scope job ("late is fine"). `list_folder_fields` shows restricted children's keys to the
+  owner only (see above). See the `file-metadata` skill, "Suggestions".
 - `files_metadata.list_node_fields` and `get_field_values` check the node on every call: they load
   the saved node, check tenant and active state, then `access_control_db_authorize_membership(...,
   { fileNode })` with `content.read`. A private target or a refusal returns null, including after a

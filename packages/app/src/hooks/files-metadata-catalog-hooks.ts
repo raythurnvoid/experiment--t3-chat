@@ -188,15 +188,22 @@ export function useFilesMetadataFolderKeys(args: {
 }
 
 /**
- * Shown to a member without workspace read in place of the workspace-wide suggestions.
+ * Shown to a member without workspace read when a suggestion page is empty. The server gives them
+ * nothing at the root, in an open folder, or in a restricted folder whose root they cannot open.
  */
 export const files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE =
-	"Suggestions need access to the whole workspace. You can still type a filter, like metadata.status:open.";
+	"Suggestions need access to the whole workspace or to the restricted folder you are in. You can still type a filter, like metadata.status:open.";
 
 /**
- * Whether the caller reads the whole workspace, or null while that loads. `list_search_fields`,
- * `get_search_field` and `list_search_values` count the whole workspace, so a member without it (a
- * guest) gets empty pages.
+ * Shown to a member under the value suggestions: a member reads the values of one area only.
+ */
+export const files_metadata_catalog_AREA_VALUES_MESSAGE =
+	"Suggestions show values from files everyone can open, or from the restricted folder you are in.";
+
+/**
+ * Whether the caller reads the whole workspace, or null while that loads. At the root (and in an
+ * open folder) `list_search_fields`, `get_search_field` and `list_search_values` read the open
+ * area, which needs workspace read, so a member without it (a guest) gets empty pages there.
  */
 export function useFilesMetadataHasWorkspaceRead(workspaceId: app_convex_Id<"organizations_workspaces">) {
 	const organizationList = useQuery(app_convex_api.organizations.list);
@@ -204,4 +211,13 @@ export function useFilesMetadataHasWorkspaceRead(workspaceId: app_convex_Id<"org
 	return organizationList === undefined
 		? null
 		: permissions === "all" || permissions?.includes("content.read") === true;
+}
+
+/**
+ * Whether the caller owns the organization, or null while that loads. Only the owner has every
+ * permission ("all"), and only the owner reads the suggestions of the whole workspace.
+ */
+export function useFilesMetadataIsOwner(workspaceId: app_convex_Id<"organizations_workspaces">) {
+	const organizationList = useQuery(app_convex_api.organizations.list);
+	return organizationList === undefined ? null : organizationList.workspaceIdsPermissionsDict[workspaceId] === "all";
 }

@@ -2875,6 +2875,10 @@ function useFolderColumnValues(args: {
 
 type FileNodeViewFolder_Props = {
 	folderItemId: app_convex_Doc<"files_nodes">["parentId"];
+	/**
+	 * The folder's path, `/` at the root.
+	 */
+	folderPath: string;
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
@@ -2903,6 +2907,7 @@ type FileNodeViewFolder_Props = {
 const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewFolder_Props) {
 	const {
 		folderItemId,
+		folderPath,
 		fileNodesList,
 		protectedDescendantIds,
 		pendingUpdateId,
@@ -3256,6 +3261,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					hasMoreChildItems={hiddenChildItemsCount > 0 || (sortedChildren.rows !== undefined && !sortedChildren.isDone)}
 					isDone={sortedChildren.isDone}
 					folderId={folderItemId}
+					folderPath={folderPath}
 					columns={columns}
 					columnsOpen={columnsOpen.scope === folderScope && columnsOpen.open}
 					committedQuery={committedQuery}
@@ -4844,6 +4850,10 @@ type FileNodeViewFolderExplorer_Props = {
 	 * The folder of the table. Columns and the bar list the keys on its children.
 	 */
 	folderId: app_convex_Doc<"files_nodes">["parentId"];
+	/**
+	 * The folder's path, `/` at the root.
+	 */
+	folderPath: string;
 	columns: string[];
 	columnsOpen: boolean;
 	/**
@@ -4920,6 +4930,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		isSortBusy,
 		isDone,
 		folderId,
+		folderPath,
 		columns,
 		columnsOpen,
 		committedQuery,
@@ -5115,6 +5126,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 						committedQuery={committedQuery}
 						viewQuery={viewQuery}
 						folderId={folderId}
+						folderPath={folderPath}
 						onChange={onQueryChange}
 					/>
 					<FileNodeViewFolderExplorerColumns
@@ -5623,6 +5635,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 				/>
 				<FileNodeViewFolder
 					folderItemId={files_ROOT_ID}
+					folderPath="/"
 					fileNodesList={fileNodesList}
 					protectedDescendantIds={protectedDescendantIds}
 					pendingUpdateId={pendingUpdateId}
@@ -5663,6 +5676,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 				/>
 				<FileNodeViewFolder
 					folderItemId={node._id}
+					folderPath={node.path}
 					fileNodesList={fileNodesList}
 					protectedDescendantIds={protectedDescendantIds}
 					pendingUpdateId={pendingUpdateId}

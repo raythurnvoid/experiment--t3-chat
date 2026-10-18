@@ -1066,34 +1066,63 @@ describe("FileNodeView folder filter", () => {
 		consoleError.mockRestore();
 	});
 
-	test("the bar tells a member without workspace read why no values are suggested", async () => {
+	test("the bar reads the folder's area for values, says why a member without workspace read gets none, and hints where a member's values come from", async () => {
 		workspacePermissions = ["files.read"];
+		isOwner = false;
+		// Like the server, a member without workspace read gets an empty page here.
+		let values: string[] = [];
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) =>
-			// Like the server, a guest gets an empty page.
 			getFunctionName(reference) === "files_metadata:list_search_values"
-				? { results: [], status: "Exhausted" }
+				? { results: values, status: "Exhausted" }
 				: previousQuery(reference, args),
 		);
-		// Render by hand: the debounce writes from an effect, and the harness would rerender inside it.
-		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
-			wrapper: ({ children }) => (
-				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={tenantContextMock().membershipId}>
-						{children}
-					</FilesClipboardProvider>
-				</AppActivitiesProvider>
-			),
-		});
-		const input = await screen.findByRole("combobox", { name: "Filter and sort this folder" });
-		act(() => input.focus());
-		fireEvent.change(input, { target: { value: "metadata.status:is:" } });
-		expect(
-			await screen.findByRole("option", {
-				name: "Suggestions need access to the whole workspace. You can still type a filter, like metadata.status:open.",
-			}),
-		).toBeTruthy();
+		const message =
+			"Suggestions need access to the whole workspace or to the restricted folder you are in. You can still type a filter, like metadata.status:open.";
+		const hint = "Suggestions show values from files everyone can open, or from the restricted folder you are in.";
+		const typeValue = async (nodeId: string) => {
+			// Render by hand: the debounce writes from an effect, and the harness would rerender inside it.
+			render(<FileNodeView searchParams={{ nodeId }} onNavigateSearch={vi.fn()} />, {
+				wrapper: ({ children }) => (
+					<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
+						<FilesClipboardProvider
+							userId={"user_1" as app_convex_Id<"users">}
+							membershipId={tenantContextMock().membershipId}
+						>
+							{children}
+						</FilesClipboardProvider>
+					</AppActivitiesProvider>
+				),
+			});
+			const input = await screen.findByRole("combobox", { name: "Filter and sort this folder" });
+			act(() => input.focus());
+			fireEvent.change(input, { target: { value: "metadata.status:is:" } });
+		};
+
+		// A guest in `/Docs`, an open folder: the reason, not "No saved values" or the hint.
+		await typeValue(node._id);
+		expect(await screen.findByRole("option", { name: message })).toBeTruthy();
 		expect(screen.queryByRole("option", { name: "No saved values" })).toBeNull();
+		expect(screen.queryByRole("option", { name: hint })).toBeNull();
+		expect(queryMock).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ fieldPath: "metadata.status", folderPath: "/Docs" }),
+		);
+		cleanup();
+
+		// The same at the root.
+		await typeValue("root");
+		expect(await screen.findByRole("option", { name: message })).toBeTruthy();
+		expect(screen.queryByRole("option", { name: hint })).toBeNull();
+		cleanup();
+
+		// A member who gets values sees the hint under them.
+		workspacePermissions = ["content.read"];
+		values = ["open"];
+		await typeValue(node._id);
+		expect(await screen.findByRole("option", { name: hint })).toBeTruthy();
+		expect(screen.getByRole("option", { name: "open" })).toBeTruthy();
+		expect(screen.queryByRole("option", { name: message })).toBeNull();
 	});
 
 	test.each([

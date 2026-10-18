@@ -61,6 +61,7 @@ import {
 import {
 	files_search_query_field_path_is_valid,
 	files_search_query_FIELD_PATH_MAX_LENGTH,
+	files_search_query_FOLDER_PATH_MAX_LENGTH,
 } from "../shared/files-search-query.ts";
 import { files_sort_text_key, files_sort_value_of } from "../shared/files-sort.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
@@ -503,6 +504,57 @@ function search_field_path_is_valid(fieldPath: string) {
 }
 
 /**
+ * The catalog rows a suggestion door reads, or null when the caller gets none. The owner reads the
+ * whole workspace (`key` and `value`). A member reads the `area_*` rows of the area `folderPath` is
+ * in: the open area at the root or in an open folder (needs workspace read), or a restricted
+ * folder's area (needs read on that area's restricted root).
+ */
+async function db_get_search_catalog_rows(
+	ctx: QueryCtx,
+	args: {
+		reader: NonNullable<Awaited<ReturnType<typeof files_nodes_db_get_tree_reader>>>;
+		folderPath: string | undefined;
+	},
+) {
+	const { reader, folderPath } = args;
+	if (reader.isOwner) {
+		return { keyFamily: "key", valueFamily: "value", parentId: undefined } as const;
+	}
+
+	// The folder comes from its saved row, like `search_saved`. A missing folder answers like a refusal.
+	let area: Id<"files_nodes"> | null = null;
+	if (folderPath !== undefined && folderPath !== "/") {
+		const folder =
+			folderPath.startsWith("/") && folderPath.length <= files_search_query_FOLDER_PATH_MAX_LENGTH
+				? await files_db_get_visible_node_by_path(ctx, {
+						organizationId: reader.membership.organizationId,
+						workspaceId: reader.membership.workspaceId,
+						path: folderPath,
+					})
+				: null;
+		if (folder?.kind !== "folder") return null;
+		area = folder.restrictedScopeNodeId;
+	}
+
+	// One area per call: a member never reads rows of an area they cannot open. Added people inside
+	// the area open only part of it, so the check is on the area's root, not on the folder.
+	if (area === null) {
+		return reader.hasWorkspaceRead
+			? ({ keyFamily: "area_key", valueFamily: "area_value", parentId: "root" } as const)
+			: null;
+	}
+	const areaRoot = await files_saved_placement_db_get_node(ctx.db, area);
+	if (!areaRoot) return null;
+	const readable = await access_control_db_authorize_membership(ctx, {
+		userAuth: reader.userAuth,
+		membership: reader.membership,
+		permission: "content.read",
+		fileNode: areaRoot,
+	});
+	return readable._nay ? null : ({ keyFamily: "area_key", valueFamily: "area_value", parentId: area } as const);
+}
+
+/**
  * The index range of one plan over saved (committed), active docs, for the search box
  * (`files_nodes.search_saved`) and the agent's metadata stream (`files_visible.internal_search_metadata_saved`).
  * A folder is the last range of the `exists` and `eq` plans: `treePathPrefix` is the folder's stored
@@ -677,6 +729,10 @@ export const list_search_fields = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		savedStream: v.optional(files_saved_stream_validator),
+		/**
+		 * The exact path of the folder the search is in. A member gets the keys of its area only.
+		 */
+		folderPath: v.optional(v.string()),
 		prefix: v.string(),
 		paginationOpts: paginationOptsValidator,
 	},
@@ -689,17 +745,17 @@ export const list_search_fields = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		// The catalog has no access data: its rows count the keys and values of the whole workspace. So
-		// only a member who reads the whole workspace gets suggestions. A member without it (a guest)
-		// would see keys and values of files outside their shares. A workspace reader still sees the
-		// keys and values of restricted files (accepted, user 2026-10-08). See the file-metadata skill,
-		// "Suggestions".
+		// The catalog has no access data, so the reader picks the rows: the owner the whole workspace, a
+		// member one area they can open. Every refusal gives the same empty, done page. See the
+		// file-metadata skill, "Suggestions".
 		const refused = { page: [], isDone: true, continueCursor: "" };
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
 		// No key is longer than this, so a longer prefix matches nothing.
-		if (!reader?.hasWorkspaceRead || args.prefix.length > files_search_query_FIELD_PATH_MAX_LENGTH) {
+		if (!reader || args.prefix.length > files_search_query_FIELD_PATH_MAX_LENGTH) {
 			return refused;
 		}
+		const catalogRows = await db_get_search_catalog_rows(ctx, { reader, folderPath: args.folderPath });
+		if (!catalogRows) return refused;
 
 		const { membership } = reader;
 		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
@@ -713,8 +769,8 @@ export const list_search_fields = query({
 					.eq("workspaceId", membership.workspaceId)
 					.eq("moveView.cohortId", tag?.cohortId)
 					.eq("moveView.view", tag?.view)
-					.eq("family", "key")
-					.eq("parentId", undefined)
+					.eq("family", catalogRows.keyFamily)
+					.eq("parentId", catalogRows.parentId)
 					.gte("fieldPathLower", lower);
 				return upperBound === null ? keys : keys.lt("fieldPathLower", upperBound);
 			})
@@ -740,6 +796,8 @@ export const list_search_fields = query({
 export const get_search_field = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		/** Like `list_search_fields`. */
+		folderPath: v.optional(v.string()),
 		fieldPath: v.string(),
 	},
 	returns: v.union(
@@ -751,11 +809,13 @@ export const get_search_field = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		// Like `list_search_fields`, only a member who reads the whole workspace gets suggestions.
+		// Like `list_search_fields`: the owner reads the whole workspace, a member one area.
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
-		if (!reader?.hasWorkspaceRead || !search_field_path_is_valid(args.fieldPath)) {
+		if (!reader || !search_field_path_is_valid(args.fieldPath)) {
 			return null;
 		}
+		const catalogRows = await db_get_search_catalog_rows(ctx, { reader, folderPath: args.folderPath });
+		if (!catalogRows) return null;
 
 		const { membership } = reader;
 		const moveView = await files_saved_placement_db_get_view(ctx.db, membership);
@@ -770,8 +830,8 @@ export const get_search_field = query({
 								.eq("workspaceId", membership.workspaceId)
 								.eq("moveView.cohortId", view?.cohortId)
 								.eq("moveView.view", view?.view)
-								.eq("family", "key")
-								.eq("parentId", undefined)
+								.eq("family", catalogRows.keyFamily)
+								.eq("parentId", catalogRows.parentId)
 								.eq("fieldPathLower", files_metadata_catalog_lower(args.fieldPath))
 								.eq("fieldPath", args.fieldPath)
 								.eq("stringValue", undefined),
@@ -797,22 +857,22 @@ export const list_search_values = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		savedStream: v.optional(files_saved_stream_validator),
+		/** Like `list_search_fields`. */
+		folderPath: v.optional(v.string()),
 		fieldPath: v.string(),
 		prefix: v.string(),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(v.string()),
 	handler: async (ctx, args) => {
-		// Like `list_search_fields`, only a member who reads the whole workspace gets suggestions.
+		// Like `list_search_fields`: the owner reads the whole workspace, a member one area.
 		const refused = { page: [], isDone: true, continueCursor: "" };
 		const reader = await files_nodes_db_get_tree_reader(ctx, args);
-		if (
-			!reader?.hasWorkspaceRead ||
-			!search_field_path_is_valid(args.fieldPath) ||
-			args.prefix.length > SEARCH_VALUE_PREFIX_MAX_LENGTH
-		) {
+		if (!reader || !search_field_path_is_valid(args.fieldPath) || args.prefix.length > SEARCH_VALUE_PREFIX_MAX_LENGTH) {
 			return refused;
 		}
+		const catalogRows = await db_get_search_catalog_rows(ctx, { reader, folderPath: args.folderPath });
+		if (!catalogRows) return refused;
 
 		const { membership } = reader;
 		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
@@ -825,8 +885,8 @@ export const list_search_values = query({
 					.eq("workspaceId", membership.workspaceId)
 					.eq("moveView.cohortId", tag?.cohortId)
 					.eq("moveView.view", tag?.view)
-					.eq("family", "value")
-					.eq("parentId", undefined)
+					.eq("family", catalogRows.valueFamily)
+					.eq("parentId", catalogRows.parentId)
 					.eq("fieldPathLower", files_metadata_catalog_lower(args.fieldPath))
 					.eq("fieldPath", args.fieldPath)
 					.gte("stringValue", args.prefix);

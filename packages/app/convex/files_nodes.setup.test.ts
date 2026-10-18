@@ -886,11 +886,13 @@ export async function list_keys(args: {
 	t: ReturnType<typeof test_convex>;
 	asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
 	membershipId: Id<"organizations_workspaces_users">;
+	folderPath?: string;
 	prefix?: string;
 }) {
 	await test_compact_metadata_catalog(args.t);
 	const result = await args.asWho.query(api.files_metadata.list_search_fields, {
 		membershipId: args.membershipId,
+		folderPath: args.folderPath,
 		prefix: args.prefix ?? "",
 		paginationOpts: { numItems: 50, cursor: null },
 	});
@@ -904,12 +906,14 @@ export async function list_values(args: {
 	t: ReturnType<typeof test_convex>;
 	asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
 	membershipId: Id<"organizations_workspaces_users">;
+	folderPath?: string;
 	fieldPath: string;
 	prefix: string;
 }) {
 	await test_compact_metadata_catalog(args.t);
 	const result = await args.asWho.query(api.files_metadata.list_search_values, {
 		membershipId: args.membershipId,
+		folderPath: args.folderPath,
 		fieldPath: args.fieldPath,
 		prefix: args.prefix,
 		paginationOpts: { numItems: 50, cursor: null },

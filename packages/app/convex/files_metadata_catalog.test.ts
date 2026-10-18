@@ -3,8 +3,9 @@ import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_metadata_db_insert_committed } from "./files_metadata.ts";
-import { insert_tree_node } from "./files_nodes.setup.test.ts";
+import { insert_tree_node, seed_grant_only_member } from "./files_nodes.setup.test.ts";
 import {
 	test_compact_metadata_catalog,
 	test_convex,
@@ -47,6 +48,34 @@ async function create_folder(t: T, scope: Scope, path: string) {
 	const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path });
 	if (created._nay) throw new Error(created._nay.message);
 	return created._yay.nodeId;
+}
+
+/**
+ * Another member of the workspace. The `member` role reads the whole workspace except restricted
+ * folders; with no role they read only what is shared with them.
+ */
+async function seed_member(t: T, db: Awaited<ReturnType<typeof seed>>["db"], name: string, role: "member" | null) {
+	const member = await seed_grant_only_member({ t, db, suffix: name });
+	if (role)
+		await t.run((ctx) =>
+			access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: member.userId,
+				role,
+				now: Date.now(),
+			}),
+		);
+	return member;
+}
+
+/**
+ * Run the scope ops, the saved scope jobs and the compactor, so every area row is current.
+ */
+async function settle_catalog(t: T) {
+	await t.finishAllScheduledFunctions(vi.runAllTimers);
+	await test_finish_saved_scope_jobs(t);
+	await test_compact_metadata_catalog(t);
 }
 
 /**
@@ -492,6 +521,207 @@ describe("catalog doors", () => {
 			await asOwner.query(api.files_metadata.get_search_field, { membershipId: db.membershipId, fieldPath: "metadata.status" }),
 		).toEqual({ valueKinds: ["boolean"] });
 	});
+
+	type Who = { as: ReturnType<T["withIdentity"]>; membershipId: Id<"organizations_workspaces_users"> };
+	const values = async (who: Who, fieldPath: string, folderPath?: string) =>
+		(
+			await who.as.query(api.files_metadata.list_search_values, {
+				membershipId: who.membershipId,
+				folderPath,
+				fieldPath,
+				prefix: "",
+				paginationOpts,
+			})
+		).page;
+	const keys = async (who: Who, prefix: string, folderPath?: string) =>
+		(
+			await who.as.query(api.files_metadata.list_search_fields, {
+				membershipId: who.membershipId,
+				folderPath,
+				prefix,
+				paginationOpts,
+			})
+		).page.map((key) => key.fieldPath);
+	const field = async (who: Who, fieldPath: string, folderPath?: string) =>
+		await who.as.query(api.files_metadata.get_search_field, { membershipId: who.membershipId, folderPath, fieldPath });
+
+	async function set_metadata(
+		t: T,
+		owner: Who & { userId: Id<"users"> },
+		nodeId: Id<"files_nodes">,
+		metadataYaml: string,
+	) {
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: owner.userId });
+		expect(
+			await owner.as.mutation(api.files_metadata.set_entries, {
+				membershipId: owner.membershipId,
+				fileNodeId: nodeId,
+				metadataYaml,
+			}),
+		).toEqual({ _yay: null });
+	}
+
+	async function share(t: T, owner: Who & { userId: Id<"users"> }, nodeId: Id<"files_nodes">, userId: Id<"users">) {
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_sharing_write", key: owner.userId });
+		const granted = await owner.as.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: owner.membershipId,
+			nodeId,
+			principal: { kind: "user", userId },
+			level: "read",
+		});
+		expect(granted._nay).toBeUndefined();
+	}
+
+	test("a member gets no key or value of a restricted file they cannot open", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const ana = { as: asOwner, membershipId: db.membershipId, userId: db.userId };
+		const hr = await create_folder(t, scope, "/HR");
+		const review = await create_folder(t, scope, "/HR/review");
+		await set_metadata(t, ana, review, "pip_status: active\n");
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: hr }))._nay,
+		).toBeUndefined();
+		const mia = await seed_member(t, db, "mia", "member");
+		await settle_catalog(t);
+
+		const miaWho = { as: mia.asMember, membershipId: mia.membershipId };
+		expect(await values(miaWho, "metadata.pip_status"), "the open area has no value of /HR").not.toContain("active");
+		expect(await keys(miaWho, "metadata.pip")).toEqual([]);
+		expect(await field(miaWho, "metadata.pip_status")).toBeNull();
+		// Mia cannot open /HR, so its area answers like a refusal.
+		expect(await values(miaWho, "metadata.pip_status", "/HR")).toEqual([]);
+		// The owner reads the whole workspace, with or without a folder.
+		expect(await values(ana, "metadata.pip_status")).toEqual(["active"]);
+		expect(await values(ana, "metadata.pip_status", "/HR")).toEqual(["active"]);
+		expect(await keys(ana, "metadata.pip")).toEqual(["metadata.pip_status"]);
+		expect(await field(ana, "metadata.pip_status")).toEqual({ valueKinds: ["string"] });
+	});
+
+	test("inside a restricted folder a member gets that area's values", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const ana = { as: asOwner, membershipId: db.membershipId, userId: db.userId };
+		await create_folder(t, scope, "/Clients");
+		const acme = await create_folder(t, scope, "/Clients/Acme");
+		const plan = await create_folder(t, scope, "/Clients/Acme/plan");
+		const open = await create_folder(t, scope, "/Clients/open");
+		await set_metadata(t, ana, plan, "status: Done\n");
+		await set_metadata(t, ana, open, "status: Open\n");
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: acme }))._nay,
+		).toBeUndefined();
+		const bob = await seed_member(t, db, "bob", "member");
+		await share(t, ana, acme, bob.userId);
+		await settle_catalog(t);
+
+		const bobWho = { as: bob.asMember, membershipId: bob.membershipId };
+		expect(await values(bobWho, "metadata.status", "/Clients/Acme")).toEqual(["Done"]);
+		expect(await values(bobWho, "metadata.status", "/Clients/Acme/plan")).toEqual(["Done"]);
+		expect(await keys(bobWho, "metadata.", "/Clients/Acme")).toEqual(["metadata.status"]);
+		expect(await field(bobWho, "metadata.status", "/Clients/Acme")).toEqual({ valueKinds: ["string"] });
+		// `/Clients` is in the open area: only its open child's value.
+		expect(await values(bobWho, "metadata.status", "/Clients")).toEqual(["Open"]);
+		expect(await values(bobWho, "metadata.status")).toEqual(["Open"]);
+		// A path that is not a folder answers like a refusal.
+		expect(await values(bobWho, "metadata.status", "/Clients/missing")).toEqual([]);
+	});
+
+	test("a member who cannot open the area root gets nothing there", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const ana = { as: asOwner, membershipId: db.membershipId, userId: db.userId };
+		const design = await create_folder(t, scope, "/Design");
+		await set_metadata(t, ana, design, "tone: calm\n");
+		const vault = await create_folder(t, scope, "/Vault");
+		const inside = await create_folder(t, scope, "/Vault/inside");
+		await set_metadata(t, ana, inside, "tone: secret\n");
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: vault }))._nay,
+		).toBeUndefined();
+		// Gus has no workspace read. Add people gives him `/Design` and `/Vault/inside`, not their areas.
+		const gus = await seed_member(t, db, "gus", null);
+		await share(t, ana, design, gus.userId);
+		await share(t, ana, inside, gus.userId);
+		await settle_catalog(t);
+
+		const gusWho = { as: gus.asMember, membershipId: gus.membershipId };
+		expect(await values(gusWho, "metadata.tone", "/Design")).toEqual([]);
+		expect(await values(gusWho, "metadata.tone", "/Vault/inside")).toEqual([]);
+		expect(await keys(gusWho, "metadata.", "/Vault/inside")).toEqual([]);
+		expect(await field(gusWho, "metadata.tone", "/Vault/inside")).toBeNull();
+		expect(await values(gusWho, "metadata.tone")).toEqual([]);
+	});
+
+	test("a member who opens a restricted folder gets nothing in a nested restricted folder they have no grant on", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const ana = { as: asOwner, membershipId: db.membershipId, userId: db.userId };
+		const outer = await create_folder(t, scope, "/R");
+		const plan = await create_folder(t, scope, "/R/plan");
+		const nested = await create_folder(t, scope, "/R/N");
+		const inner = await create_folder(t, scope, "/R/N/inner");
+		await set_metadata(t, ana, plan, "tone: outer\n");
+		await set_metadata(t, ana, inner, "tone: inner\n");
+		for (const nodeId of [outer, nested])
+			expect(
+				(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId }))._nay,
+			).toBeUndefined();
+		const bob = await seed_member(t, db, "bob", "member");
+		await share(t, ana, outer, bob.userId);
+		await settle_catalog(t);
+
+		const bobWho = { as: bob.asMember, membershipId: bob.membershipId };
+		expect(await values(bobWho, "metadata.tone", "/R")).toEqual(["outer"]);
+		expect(await values(bobWho, "metadata.tone", "/R/N")).toEqual([]);
+		expect(await values(bobWho, "metadata.tone", "/R/N/inner")).toEqual([]);
+		expect(await values(ana, "metadata.tone", "/R/N")).toEqual(["inner", "outer"]);
+	});
+
+	test("an archived folder path gets nothing", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const ana = { as: asOwner, membershipId: db.membershipId, userId: db.userId };
+		const open = await create_folder(t, scope, "/open");
+		const old = await create_folder(t, scope, "/old");
+		await set_metadata(t, ana, open, "tone: calm\n");
+		const mia = await seed_member(t, db, "mia", "member");
+		await settle_catalog(t);
+		const miaWho = { as: mia.asMember, membershipId: mia.membershipId };
+		expect(await values(miaWho, "metadata.tone", "/old")).toEqual(["calm"]);
+
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
+		const archived = await asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [old],
+		});
+		expect(archived._nay).toBeUndefined();
+		await settle_catalog(t);
+		expect(await values(miaWho, "metadata.tone", "/old")).toEqual([]);
+		expect(await keys(miaWho, "metadata.", "/old")).toEqual([]);
+		expect(await field(miaWho, "metadata.tone", "/old")).toBeNull();
+	});
+
+	test("a grant change writes no catalog delta", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const ana = { as: asOwner, membershipId: db.membershipId, userId: db.userId };
+		await create_folder(t, scope, "/Clients");
+		const acme = await create_folder(t, scope, "/Clients/Acme");
+		await set_metadata(t, ana, acme, "status: Done\n");
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: acme }))._nay,
+		).toBeUndefined();
+		const bob = await seed_member(t, db, "bob", "member");
+		await settle_catalog(t);
+		expect(await list_deltas(t)).toEqual([]);
+
+		await share(t, ana, acme, bob.userId);
+		expect(await list_deltas(t)).toEqual([]);
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_sharing_write", key: db.userId });
+		const removed = await asOwner.mutation(api.files_sharing.remove_node_share_grant, {
+			membershipId: db.membershipId,
+			nodeId: acme,
+			principal: { kind: "user", userId: bob.userId },
+		});
+		expect(removed._nay).toBeUndefined();
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(await list_deltas(t)).toEqual([]);
+	});
 });
 
 describe("catalog rebuild and check", () => {
@@ -701,11 +931,24 @@ describe("catalog rebuild and check", () => {
 				.map((row) => `${row.parentId}:${row.stringValue}`);
 		};
 		expect(await areaValues()).toEqual(["root:secret"]);
+		// Mia reads the whole workspace except restricted folders. She asks at the root.
+		const mia = await seed_member(t, db, "mia", "member");
+		const miaValues = async () =>
+			(
+				await mia.asMember.query(api.files_metadata.list_search_values, {
+					membershipId: mia.membershipId,
+					fieldPath: "metadata.level",
+					prefix: "",
+					paginationOpts: { numItems: 50, cursor: null },
+				})
+			).page;
+		expect(await miaValues()).toEqual(["secret"]);
 
 		expect(
 			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: team }))._nay,
 		).toBeUndefined();
 		const restricted = await areaValues();
+		expect(await miaValues()).not.toContain("secret");
 		expect(restricted, "the open area no longer has the value").not.toContain("root:secret");
 		expect(restricted, "the restricted area has it").toEqual([`${team}:secret`]);
 		await rebuild(t, scope, "check");
@@ -717,6 +960,7 @@ describe("catalog rebuild and check", () => {
 			(await asOwner.mutation(api.files_sharing.unrestrict_node, { membershipId: db.membershipId, nodeId: team }))._nay,
 		).toBeUndefined();
 		expect(await areaValues()).toEqual(["root:secret"]);
+		expect(await miaValues()).toEqual(["secret"]);
 		await rebuild(t, scope, "check");
 		expect(await check(t, scope)).toEqual([]);
 	});
@@ -1073,6 +1317,46 @@ describe("catalog lifecycle", () => {
 		});
 		expect(moved._nay).toBeUndefined();
 		expect(await visible_rows(t, scope)).toEqual(rows(dst));
+		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doors(dst));
+	});
+
+	test("a Move into a restricted folder moves the values to that area in the after view and keeps them for the owner at every step", async () => {
+		const { t, db, asOwner, scope } = await seed();
+		const src = await create_folder(t, scope, "/src");
+		const a = await create_folder(t, scope, "/src/a");
+		const dst = await create_folder(t, scope, "/dst");
+		await set_status(t, db, a);
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: dst }))._nay,
+		).toBeUndefined();
+		const rows = (area: Id<"files_nodes"> | "root", parentId: Id<"files_nodes">) =>
+			[
+				`area_key:${area}:metadata.status:=1`,
+				`area_value:${area}:metadata.status:open=1`,
+				"key::metadata.status:=1",
+				`parent:${parentId}:metadata.status:=1`,
+				"value::metadata.status:open=1",
+			].sort();
+		expect(await visible_rows(t, scope)).toEqual(rows("root", src));
+		const doors = (parentId: Id<"files_nodes">) =>
+			["field:string", "key:metadata.status:string", `parent:${parentId}:metadata.status`, "value:open"].sort();
+		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doors(src));
+
+		await reset_tree_write_limit(t, db.userId);
+		const moved = await test_move_nodes(t, asOwner, {
+			membershipId: db.membershipId,
+			itemIds: [a],
+			targetParentId: dst,
+			onStep: async () => {
+				const visible = await visible_rows(t, scope);
+				expect([JSON.stringify(rows("root", src)), JSON.stringify(rows(dst, dst))]).toContain(JSON.stringify(visible));
+				expect([JSON.stringify(doors(src)), JSON.stringify(doors(dst))]).toContain(
+					JSON.stringify(await door_rows(asOwner, db.membershipId, [src, dst])),
+				);
+			},
+		});
+		expect(moved._nay).toBeUndefined();
+		expect(await visible_rows(t, scope)).toEqual(rows(dst, dst));
 		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doors(dst));
 	});
 

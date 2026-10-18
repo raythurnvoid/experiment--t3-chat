@@ -214,27 +214,49 @@ describe("FilesSearchInput", () => {
 		await waitFor(() => expect(test_labels("Values for metadata.status")).toEqual(["* (any value)", "true", "false", "fixed", "open", "opened"]));
 	});
 
-	test("a member without workspace read sees why no keys or values are suggested", async () => {
-		// Like the server, a guest gets empty pages.
+	test.each(["", "file.path:/Docs"])(
+		"a member without workspace read sees why no keys or values are suggested (%s)",
+		async (initialQuery) => {
+			// Like the server, a guest gets empty pages at the root and in an open folder like `/Docs`.
+			test_catalog.permissions = ["files.read"];
+			test_catalog.keys = [];
+			test_catalog.values = [];
+			const message =
+				"Suggestions need access to the whole workspace or to the restricted folder you are in. You can still type a filter, like metadata.status:open.";
+			render(<FilesSearchInput {...props} initialQuery={initialQuery} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			fireEvent.change(input, { target: { value: "metadata.st" } });
+			expect(await screen.findByRole("option", { name: message })).toBeTruthy();
+			expect(screen.queryByRole("option", { name: "No keys start with metadata.st" })).toBeNull();
+			fireEvent.change(input, { target: { value: "metadata.status:op" } });
+			await waitFor(() =>
+				expect(
+					within(screen.getByRole("group", { name: "Values for metadata.status" }))
+						.getAllByRole("option")
+						.map((option) => option.textContent),
+				).toEqual([message]),
+			);
+		},
+	);
+
+	test("a member's suggestions read the file.path chip's folder, and the values say where they come from", async () => {
+		// A guest too: inside a restricted folder they can open, the server answers from its area.
 		test_catalog.permissions = ["files.read"];
-		test_catalog.keys = [];
-		test_catalog.values = [];
-		const message =
-			"Suggestions need access to the whole workspace. You can still type a filter, like metadata.status:open.";
-		render(<FilesSearchInput {...props} />);
+		const hint = "Suggestions show values from files everyone can open, or from the restricted folder you are in.";
+		render(<FilesSearchInput {...props} initialQuery="file.path:/HR" />);
 		const input = screen.getByRole<HTMLInputElement>("combobox");
 		act(() => input.focus());
-		fireEvent.change(input, { target: { value: "metadata.st" } });
-		expect(await screen.findByRole("option", { name: message })).toBeTruthy();
-		expect(screen.queryByRole("option", { name: "No keys start with metadata.st" })).toBeNull();
-		fireEvent.change(input, { target: { value: "metadata.status:op" } });
+		fireEvent.change(input, { target: { value: "metadata.status:" } });
 		await waitFor(() =>
-			expect(
-				within(screen.getByRole("group", { name: "Values for metadata.status" }))
-					.getAllByRole("option")
-					.map((option) => option.textContent),
-			).toEqual([message]),
+			expect(test_labels("Values for metadata.status")).toEqual(["* (any value)", "fixed", "open", "opened"]),
 		);
+		const options = within(screen.getByRole("group", { name: "Values for metadata.status" })).getAllByRole("option");
+		expect(options.at(-1)?.textContent).toBe(hint);
+		expect(screen.queryByRole("option", { name: /Suggestions need access/u })).toBeNull();
+		const valueRequests = test_catalog.requests.filter((request) => request.fieldPath === "metadata.status");
+		expect(valueRequests.length).toBeGreaterThan(0);
+		expect(valueRequests.every((request) => request.folderPath === "/HR")).toBe(true);
 	});
 
 	test("held values of one key do not show for another key", async () => {
@@ -379,6 +401,7 @@ describe("FilesSearchInput", () => {
 			expect(screen.getByRole("option", { name: "frontmatter.status text" })).toBeTruthy();
 			expect(test_catalog.requests).toContainEqual({
 				membershipId: "test-membership",
+				folderPath: "/",
 				prefix: "metadata.STA",
 				savedStream: { kind: "normal", generation: 1 },
 			});

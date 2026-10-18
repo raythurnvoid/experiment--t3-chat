@@ -23,7 +23,6 @@
 // Rows carry no access data, so each reader reads only rows it may see: the owner reads `key`,
 // `value` and `parent_restricted` (like the folder table's restricted twin), a member reads the
 // `area_*` rows of one area they can open, and a member who reads a folder reads its `parent` rows.
-// Until the member suggestion doors switch to the `area_*` rows, they still read `key` and `value`.
 //
 // Late is fine: after a restrict, an item inside keeps its old access until the scope job reaches it
 // (`AGENTS.md`: a file is restricted once the background job has reached it). Its docs, and so its

@@ -121,6 +121,7 @@ import { files_metadata_db_patch_file_scope, files_metadata_db_query_saved_plan 
 import {
 	files_search_query_field_path_is_valid,
 	files_search_query_FIELD_PATH_MAX_LENGTH,
+	files_search_query_FOLDER_PATH_MAX_LENGTH,
 	files_search_query_VALUE_TOO_LONG_PROBLEM,
 } from "../shared/files-search-query.ts";
 import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
@@ -168,7 +169,6 @@ const SEARCH_SAVED_MAX_ITEMS = 100;
 // grants, 7 reads, so floor(3,000 / 7) = 428, and the guard is 400.
 const SEARCH_SAVED_SPLIT_GUARD = 400;
 const SEARCH_SAVED_TEXT_MAX_LENGTH = 200;
-const SEARCH_SAVED_PATH_MAX_LENGTH = 1024;
 
 export async function enqueue_file_content_materialization(
 	ctx: MutationCtx,
@@ -7161,7 +7161,7 @@ export const search_saved = query({
 
 		if (clause.kind === "path") {
 			if (saved.tag) return refused;
-			if (args.folderPath !== undefined || clause.path.length > SEARCH_SAVED_PATH_MAX_LENGTH) {
+			if (args.folderPath !== undefined || clause.path.length > files_search_query_FOLDER_PATH_MAX_LENGTH) {
 				return refused;
 			}
 			// A pasted link holds the node id.
@@ -7185,7 +7185,7 @@ export const search_saved = query({
 		let folder: Doc<"files_nodes"> | null = null;
 		if (args.folderPath !== undefined && args.folderPath !== "/") {
 			const folderNode =
-				args.folderPath.startsWith("/") && args.folderPath.length <= SEARCH_SAVED_PATH_MAX_LENGTH
+				args.folderPath.startsWith("/") && args.folderPath.length <= files_search_query_FOLDER_PATH_MAX_LENGTH
 					? await files_db_get_visible_node_by_path(ctx, {
 							organizationId: membership.organizationId,
 							workspaceId: membership.workspaceId,

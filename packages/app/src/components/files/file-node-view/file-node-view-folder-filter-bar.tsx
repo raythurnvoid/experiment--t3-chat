@@ -31,6 +31,7 @@ import {
 	type MyInputArea_Props,
 } from "@/components/my-input.tsx";
 import {
+	files_metadata_catalog_AREA_VALUES_MESSAGE,
 	files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE,
 	useFilesMetadataCatalogPages,
 	useFilesMetadataFolderKeys,
@@ -254,6 +255,10 @@ const FileNodeViewFolderFilterBarKeyRows = memo(function FileNodeViewFolderFilte
  */
 const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFilterBarValueRows(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	/**
+	 * The table folder's path, `/` at the root. A member gets the values of its area only.
+	 */
+	folderPath: string;
 	fieldPath: string;
 	prefix: string;
 	/**
@@ -263,21 +268,25 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 	stale: boolean;
 	onPick: (value: string) => void;
 }) {
-	const { membershipId, fieldPath, prefix, typed, stale, onPick } = props;
+	const { membershipId, folderPath, fieldPath, prefix, typed, stale, onPick } = props;
 
 	const { workspaceId } = AppTenantProvider.useContext();
 	const hasWorkspaceRead = useFilesMetadataHasWorkspaceRead(workspaceId);
+	const isOwner = FilesTreeProvider.useIsOwner();
 	const values = useFilesMetadataCatalogPages({
 		query: app_convex_api.files_metadata.list_search_values,
 		membershipId,
-		requests: [{ membershipId, fieldPath, prefix }],
-		scope: `${membershipId}\n${fieldPath}`,
+		requests: [{ membershipId, folderPath, fieldPath, prefix }],
+		scope: `${membershipId}\n${folderPath}\n${fieldPath}`,
 		order: (value) => value,
 		rowKey: (value) => value,
 	});
 	const isDisabled = stale || values.updating;
 	// A held row of an older text may not start with the typed text any more.
 	const rows = values.rows.filter((value) => value.startsWith(typed));
+	// The server gives a member without workspace read nothing at the root, in an open folder, or in a
+	// restricted folder whose root they cannot open. Its page is then empty: say why, not "No saved values".
+	const isNoAccess = hasWorkspaceRead === false && values.rows.length === 0 && values.status === "Exhausted";
 
 	return (
 		<>
@@ -303,8 +312,7 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 			))}
 			{isDisabled ? (
 				<FileNodeViewFolderFilterBarSuggestionsMessage>Updating suggestions…</FileNodeViewFolderFilterBarSuggestionsMessage>
-			) : hasWorkspaceRead === false ? (
-				// The values come from the whole workspace, so a guest gets none. Say why.
+			) : isNoAccess ? (
 				<FileNodeViewFolderFilterBarSuggestionsMessage>
 					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
 				</FileNodeViewFolderFilterBarSuggestionsMessage>
@@ -324,6 +332,11 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 						}
 					}}
 				/>
+			) : null}
+			{isOwner === false && !isNoAccess ? (
+				<FileNodeViewFolderFilterBarSuggestionsMessage>
+					{files_metadata_catalog_AREA_VALUES_MESSAGE}
+				</FileNodeViewFolderFilterBarSuggestionsMessage>
 			) : null}
 		</>
 	);
@@ -366,6 +379,10 @@ export type FileNodeViewFolderFilterBar_Props = {
 	 * The folder whose children's keys the suggestions list.
 	 */
 	folderId: app_convex_Doc<"files_nodes">["parentId"];
+	/**
+	 * The folder's path, `/` at the root. Value suggestions read this folder's area.
+	 */
+	folderPath: string;
 	/**
 	 * Write a new `committedQuery`, a new `viewQuery`, or both. A missing key stays as it is.
 	 */
@@ -472,7 +489,7 @@ function read_text_tokens(text: string) {
 export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilterBar(
 	props: FileNodeViewFolderFilterBar_Props,
 ) {
-	const { ref, committedQuery, viewQuery, folderId, onChange } = props;
+	const { ref, committedQuery, viewQuery, folderId, folderPath, onChange } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -1009,6 +1026,7 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 									>
 										<FileNodeViewFolderFilterBarValueRows
 											membershipId={membershipId}
+											folderPath={folderPath}
 											fieldPath={valueFieldPath}
 											prefix={typedValueDebounced}
 											typed={stage.typed}

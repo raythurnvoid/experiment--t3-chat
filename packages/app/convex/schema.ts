@@ -4521,8 +4521,7 @@ const app_convex_schema = defineSchema({
 	 * Derived docs: only the compactor writes them. Savers insert deltas instead. Rows carry no
 	 * access data, so the reader picks the family: the owner reads `key`, `value` and
 	 * `parent_restricted`, a member reads `area_*` rows of one area they can open, and a folder reader
-	 * reads its `parent` rows. Until the member doors switch, they still read `key` and `value`. See
-	 * `server/files-metadata-catalog.ts`.
+	 * reads its `parent` rows. See `server/files-metadata-catalog.ts`.
 	 */
 	files_metadata_catalog: defineTable(files_metadata_catalog_row_fields).index(
 		"by_org_ws_family_parent_lower_field_value",

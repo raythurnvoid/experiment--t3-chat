@@ -532,31 +532,34 @@ describe("search box doors", () => {
 			nodeId: seeded.tasksFolderId,
 		});
 		if (restricted._nay) throw new Error(restricted._nay.message);
+		// The docs of `/tasks` move to its area with the saved scope job.
+		await test_finish_saved_scope_jobs(t);
 
 		const search = () =>
 			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans: statusOpenPlans });
-		const keys = () =>
-			list_keys({ t, asWho: member.asMember, membershipId: member.membershipId }).then((fields) =>
+		const keys = (folderPath?: string) =>
+			list_keys({ t, asWho: member.asMember, membershipId: member.membershipId, folderPath }).then((fields) =>
 				fields.map((field) => field.fieldPath),
 			);
-		const statusValues = () =>
+		const statusValues = (folderPath?: string) =>
 			list_values({
 				t,
 				asWho: member.asMember,
 				membershipId: member.membershipId,
+				folderPath,
 				fieldPath: "frontmatter.status",
 				prefix: "",
 			});
 
 		// The role reads the whole workspace except the restricted `/tasks`: only the archive file is
-		// found. Accepted leak until a search engine arrives: suggestions still name the keys and
-		// values of `/tasks`.
+		// found, and the suggestions at the root come from the open area only.
 		expect(await search()).toEqual(new Set([seeded.archivedTaskId]));
-		expect(await statusValues()).toEqual(["fixed", "open"]);
+		expect(await statusValues()).toEqual(["open"]);
 		const keysBefore = await keys();
 		expect(keysBefore).toContain("frontmatter.legacy");
-		expect(keysBefore).toContain("frontmatter.regression");
-		expect(keysBefore).toContain("metadata.status");
+		expect(keysBefore).not.toContain("frontmatter.regression");
+		expect(keysBefore).not.toContain("metadata.status");
+		expect(await statusValues("/tasks")).toEqual([]);
 
 		await reset_file_write_rate_limits(t, seeded.db.userId);
 		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
@@ -567,9 +570,11 @@ describe("search box doors", () => {
 		});
 		if (granted._nay) throw new Error(granted._nay.message);
 
+		// With the grant, `/tasks` suggests its own area's keys and values.
 		expect(await search()).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]));
-		expect(await statusValues()).toEqual(["fixed", "open"]);
-		expect(await keys()).toContain("metadata.status");
+		expect(await statusValues()).toEqual(["open"]);
+		expect(await statusValues("/tasks")).toEqual(["fixed", "open"]);
+		expect(await keys("/tasks")).toContain("metadata.status");
 	});
 
 	test("list_search_values keeps the saved value while the owner has a draft", async () => {

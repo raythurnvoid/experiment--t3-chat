@@ -34,16 +34,19 @@ import {
 	type MyInputArea_Props,
 } from "@/components/my-input.tsx";
 import {
+	files_metadata_catalog_AREA_VALUES_MESSAGE,
 	files_metadata_catalog_key_order,
 	files_metadata_catalog_key_prefixes,
 	files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE,
 	useFilesMetadataCatalogPages,
 	useFilesMetadataHasWorkspaceRead,
+	useFilesMetadataIsOwner,
 } from "@/hooks/files-metadata-catalog-hooks.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { search_path_filter } from "@/lib/files-search.ts";
 import { cn } from "@/lib/utils.ts";
 import type { files_SavedStream } from "../../../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX, type files_metadata_Value } from "../../../shared/files-metadata.ts";
@@ -188,6 +191,10 @@ const FilesSearchInputSuggestionsError = memo(function FilesSearchInputSuggestio
  */
 const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	/**
+	 * The `file.path` chip's folder, `/` without one. A member gets the keys of its area only.
+	 */
+	folderPath: string;
 	prefix: string;
 	/**
 	 * The typed text is newer than `prefix`.
@@ -199,15 +206,19 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 	 */
 	onUnmatched: (prefix: string) => void;
 }) {
-	const { membershipId, prefix, stale, onPick, onUnmatched } = props;
+	const { membershipId, folderPath, prefix, stale, onPick, onUnmatched } = props;
 
 	const { workspaceId } = AppTenantProvider.useContext();
 	const hasWorkspaceRead = useFilesMetadataHasWorkspaceRead(workspaceId);
 	const keys = useFilesMetadataCatalogPages({
 		query: app_convex_api.files_metadata.list_search_fields,
 		membershipId,
-		requests: files_metadata_catalog_key_prefixes(prefix).map((keyPrefix) => ({ membershipId, prefix: keyPrefix })),
-		scope: membershipId,
+		requests: files_metadata_catalog_key_prefixes(prefix).map((keyPrefix) => ({
+			membershipId,
+			folderPath,
+			prefix: keyPrefix,
+		})),
+		scope: `${membershipId}\n${folderPath}`,
 		order: (row) => files_metadata_catalog_key_order(row.fieldPath),
 		rowKey: (row) => row.fieldPath,
 	});
@@ -263,8 +274,8 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 			})}
 			{isDisabled ? (
 				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
-			) : hasWorkspaceRead === false ? (
-				// The keys come from the whole workspace, so a guest gets none. Say why.
+			) : hasWorkspaceRead === false && keys.rows.length === 0 ? (
+				// A member without workspace read gets keys only in a restricted folder they can open. Say why.
 				<FilesSearchInputSuggestionsMessage>
 					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
 				</FilesSearchInputSuggestionsMessage>
@@ -295,6 +306,10 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
  */
 const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	/**
+	 * Like `FilesSearchInputKeyRows`.
+	 */
+	folderPath: string;
 	fieldPath: string;
 	prefix: string;
 	/**
@@ -304,21 +319,24 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 	stale: boolean;
 	onPick: (value: string) => void;
 }) {
-	const { membershipId, fieldPath, prefix, typed, stale, onPick } = props;
+	const { membershipId, folderPath, fieldPath, prefix, typed, stale, onPick } = props;
 
 	const { workspaceId } = AppTenantProvider.useContext();
 	const hasWorkspaceRead = useFilesMetadataHasWorkspaceRead(workspaceId);
+	const isOwner = useFilesMetadataIsOwner(workspaceId);
 	const values = useFilesMetadataCatalogPages({
 		query: app_convex_api.files_metadata.list_search_values,
 		membershipId,
-		requests: [{ membershipId, fieldPath, prefix }],
-		scope: `${membershipId}\n${fieldPath}`,
+		requests: [{ membershipId, folderPath, fieldPath, prefix }],
+		scope: `${membershipId}\n${folderPath}\n${fieldPath}`,
 		order: (value) => value,
 		rowKey: (value) => value,
 	});
 	// The exact key's kinds, not a prefix page, decide the boolean hint.
-	const field = useQuery(app_convex_api.files_metadata.get_search_field, { membershipId, fieldPath });
+	const field = useQuery(app_convex_api.files_metadata.get_search_field, { membershipId, folderPath, fieldPath });
 	const isDisabled = stale || values.updating;
+	// Like the key rows: an empty page for a member without workspace read gets the reason, not the hint.
+	const isNoAccess = hasWorkspaceRead === false && values.rows.length === 0 && values.status === "Exhausted";
 
 	const rows: Array<{ value: string; label: string }> = [];
 	const push = (value: string, label = value) => {
@@ -361,7 +379,7 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 			))}
 			{isDisabled ? (
 				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
-			) : hasWorkspaceRead === false ? (
+			) : isNoAccess ? (
 				<FilesSearchInputSuggestionsMessage>
 					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
 				</FilesSearchInputSuggestionsMessage>
@@ -380,6 +398,11 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 						}
 					}}
 				/>
+			) : null}
+			{isOwner === false && !isNoAccess ? (
+				<FilesSearchInputSuggestionsMessage>
+					{files_metadata_catalog_AREA_VALUES_MESSAGE}
+				</FilesSearchInputSuggestionsMessage>
 			) : null}
 		</MyComboboxGroup>
 	);
@@ -513,6 +536,10 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		? files_search_query_FILE_FIELDS.map((field) => `file.${field}`)
 		: matchingFileFields;
 	const keyPrefix = isNewFilter ? "" : typedKeyDebounced;
+
+	// Key and value suggestions read the area of the `file.path` chip's folder, like the search.
+	const pathFilter = search_path_filter(filters);
+	const folderPath = pathFilter === null ? "/" : files_search_query_folder_path(pathFilter.value);
 
 	// A range value (`>2`) has nothing to complete. A `file.*` key completes from the rows below.
 	const valueFieldPath =
@@ -888,12 +915,13 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 						<MyComboboxPopoverContent>
 							{typingFilter === null ? (
 								<CatchBoundary
-									getResetKey={() => `${membershipId}\n${keyPrefix}`}
+									getResetKey={() => `${membershipId}\n${folderPath}\n${keyPrefix}`}
 									onCatch={handleSuggestionsError}
 									errorComponent={FilesSearchInputSuggestionsError}
 								>
 									<FilesSearchInputKeyRows
 										membershipId={membershipId}
+										folderPath={folderPath}
 										prefix={keyPrefix}
 										stale={!isNewFilter && typedKey !== typedKeyDebounced}
 										onPick={pickKey}
@@ -938,12 +966,13 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 							) : null}
 							{valueFieldPath !== null ? (
 								<CatchBoundary
-									getResetKey={() => `${membershipId}\n${valueFieldPath}\n${typedValueDebounced}`}
+									getResetKey={() => `${membershipId}\n${folderPath}\n${valueFieldPath}\n${typedValueDebounced}`}
 									onCatch={handleSuggestionsError}
 									errorComponent={FilesSearchInputSuggestionsError}
 								>
 									<FilesSearchInputValueRows
 										membershipId={membershipId}
+										folderPath={folderPath}
 										fieldPath={valueFieldPath}
 										prefix={typedValueDebounced}
 										typed={typedValue}
