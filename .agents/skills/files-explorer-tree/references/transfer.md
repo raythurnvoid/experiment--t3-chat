@@ -97,7 +97,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
   troubleshooting skill (`Move repair stuck`).
 - Each preparation transaction checks current membership lifetime, source and destination access,
   local write rules and version pins. A moved folder carries protected children unchanged.
-  Reparenting checks nested restricted roots. Replacement checks every removed descendant.
+  Nested restricted roots move along with their own people, with no check. Replacement checks every
+  removed descendant.
   Source, subtree and name reservations block competing writes. The guard checks each write's file once
   per mutation and drops those answers when a reservation or a parent changes, so a bulk metadata or
   chunk write of one file stays cheap while any Move runs. Security changes can revoke access;

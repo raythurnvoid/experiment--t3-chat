@@ -1107,7 +1107,7 @@ describe("move_nodes", () => {
 		{ access: "write", archived: true },
 		{ access: "owner", archived: true },
 	] as const)(
-		"checks nested restricted descendants with $access access (archived: $archived)",
+		"moves nested restricted descendants along with $access access (archived: $archived)",
 		async ({ access, archived }) => {
 			const t = test_convex();
 			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -1197,35 +1197,19 @@ describe("move_nodes", () => {
 				itemIds: [other._yay.nodeId, source._id],
 				targetParentId: target._id,
 			});
-			if (access === "none" || access === "read") {
-				expect(result._nay?.message).toBe("Permission denied");
-				expect(JSON.stringify(result)).not.toContain(restricted.name);
-				expect(await t.run((ctx) => ctx.db.get("files_nodes", source._id))).toEqual(
-					before.find((node) => node._id === source._id),
-				);
-				for (const node of [restricted, child]) {
-					expect(await t.run((ctx) => ctx.db.get("files_nodes", node._id))).toEqual(
-						before.find((saved) => saved._id === node._id),
-					);
-				}
-				expect(await t.run((ctx) => ctx.db.get("files_nodes", other._yay.nodeId))).toMatchObject({
-					parentId: target._id,
-					path: `${target.path}/other-source`,
-				});
-			} else {
-				expect(result._nay).toBeUndefined();
-				for (const node of [restricted, child]) {
-					expect(await t.run((ctx) => ctx.db.get("files_nodes", node._id))).toMatchObject({
-						path: `${target.path}${node.path}`,
-						restrictedScopeNodeId: restricted._id,
-						archiveOperationId: before.find((saved) => saved._id === node._id)!.archiveOperationId,
-					});
-				}
-				expect(await t.run((ctx) => ctx.db.get("files_nodes", other._yay.nodeId))).toMatchObject({
-					parentId: target._id,
-					path: `${target.path}/other-source`,
+			// Every access level moves the restricted folder along. It keeps its own people.
+			expect(result._nay).toBeUndefined();
+			for (const node of [restricted, child]) {
+				expect(await t.run((ctx) => ctx.db.get("files_nodes", node._id))).toMatchObject({
+					path: `${target.path}${node.path}`,
+					restrictedScopeNodeId: restricted._id,
+					archiveOperationId: before.find((saved) => saved._id === node._id)!.archiveOperationId,
 				});
 			}
+			expect(await t.run((ctx) => ctx.db.get("files_nodes", other._yay.nodeId))).toMatchObject({
+				parentId: target._id,
+				path: `${target.path}/other-source`,
+			});
 		},
 	);
 

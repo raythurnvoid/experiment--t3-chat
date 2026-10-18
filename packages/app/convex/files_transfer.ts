@@ -74,10 +74,6 @@ import { files_db_patch_pending_update, files_db_get_pending_update } from "../s
 import type { upsert_file_pending_move_in_db_Result } from "./files_pending_updates.ts";
 import { files_metadata_db_read_entries, files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
-import {
-	files_media_validation_db_capture_versions,
-	files_media_validation_db_versions_match,
-} from "./files_media_validation.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import {
 	files_nodes_content_db_discard_transfer_file_attempt,
@@ -95,7 +91,6 @@ import {
 import {
 	path_extract_segments_from,
 	path_join,
-	path_tree_prefix_upper_bound,
 	server_convex_get_user_fallback_to_anonymous,
 	should_never_happen,
 } from "../server/server-utils.ts";
@@ -2549,7 +2544,6 @@ export const retry_remaining = mutation({
 			retryCursor: null,
 			step: "retry",
 			repairOpId: undefined,
-			moveValidation: undefined,
 			planCursor: null,
 			reserveCursor: null,
 			revision: 0,
@@ -3246,85 +3240,6 @@ async function db_commit_move(args: {
 		await db_pause_item({ ctx, item, kind: "source_changed" });
 		return;
 	}
-	// A saved Move has its source scope in the run workspace. So pins taken here are the same pins the
-	// new cohort would take below in this transaction, and it reuses them.
-	let pins: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>> | undefined;
-	if (source.kind === "folder" && source.parentId !== targetParentId) {
-		let validation = run.moveValidation;
-		if (
-			!validation ||
-			validation.itemId !== item._id ||
-			validation.treePath !== source.treePath ||
-			!(await files_media_validation_db_versions_match(ctx, { versions: validation.versions, pendingVersions: [] }))
-		) {
-			pins = await files_media_validation_db_capture_versions(ctx, {
-				userId: run.userId,
-				scopes: [run.sourceScope],
-			});
-			// The check proves access only, so it keeps the first two pins: the access clocks. A new file
-			// elsewhere must not restart it.
-			validation = {
-				itemId: item._id,
-				treePath: source.treePath,
-				cursor: null,
-				versions: pins.versions.slice(0, 2),
-				done: false,
-			};
-		}
-		if (!validation.done && validation.cursor === null) {
-			const first = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_isRestrictedScopeRoot_treePath", (q) =>
-					q
-						.eq("organizationId", source.organizationId)
-						.eq("workspaceId", source.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("isRestrictedScopeRoot", true)
-						.gt("treePath", source.treePath)
-						.lt("treePath", path_tree_prefix_upper_bound(source.treePath)),
-				)
-				.first();
-			if (!first) {
-				validation = { ...validation, done: true };
-				await ctx.db.patch("files_transfer_runs", run._id, { moveValidation: validation });
-			}
-		}
-		if (!validation.done) {
-			const page = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_isRestrictedScopeRoot_treePath", (q) =>
-					q
-						.eq("organizationId", source.organizationId)
-						.eq("workspaceId", source.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("isRestrictedScopeRoot", true)
-						.gt("treePath", source.treePath)
-						.lt("treePath", path_tree_prefix_upper_bound(source.treePath)),
-				)
-				.paginate({ numItems: 8, cursor: validation.cursor });
-			for (const nested of page.page) {
-				const authorized = await access_control_db_authorize_membership(ctx, {
-					userAuth: { id: run.userId },
-					membership,
-					permission: "content.write",
-					fileNode: nested,
-				});
-				if (authorized._nay) {
-					await db_stop_run({ ctx, run, errorMessage: authorized._nay.message });
-					return;
-				}
-			}
-			await ctx.db.patch("files_transfer_runs", run._id, {
-				moveValidation: { ...validation, cursor: page.continueCursor, done: page.isDone },
-			});
-			await ctx.db.patch("activities", activity._id, {
-				updatedAt: Date.now(),
-				deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
-			});
-			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
-			return;
-		}
-	}
 	const resolved = run.rename
 		? Result({ _yay: { name: run.targetName!, path: path_join(run.rename.parentPath, run.rename.inputPath) } })
 		: await db_resolve_name(ctx, {
@@ -3374,7 +3289,6 @@ async function db_commit_move(args: {
 		itemId: item._id,
 		fence: run.revision,
 		attemptFence: item.attempt,
-		pins,
 	});
 	if (started._nay) {
 		if (started._nay.name === "move_busy") {
@@ -3425,7 +3339,6 @@ export async function files_transfer_db_record_cohort_publication(
 		outputName: place.name,
 		outputPath: place.path,
 	});
-	await ctx.db.patch("files_transfer_runs", run._id, { moveValidation: undefined });
 	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	await ctx.db.patch("activities", activity._id, {
 		progress: { ...activity.progress, completed: activity.progress.completed + 1 },

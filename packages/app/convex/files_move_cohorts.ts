@@ -204,10 +204,6 @@ async function db_begin(
 		| "attemptFence"
 		| "itemCount"
 	>,
-	/**
-	 * Pins the caller took for this user and scope earlier in the same transaction.
-	 */
-	capturedPins?: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>>,
 ) {
 	const authorized = await db_get_membership(ctx, args);
 	if (authorized._nay) return authorized;
@@ -232,8 +228,7 @@ async function db_begin(
 			return Result({ _yay: current._id });
 		return Result({ _nay: { name: "move_busy", message: "Another Move is finishing. This Move will wait." } });
 	}
-	const pins =
-		capturedPins ?? (await files_media_validation_db_capture_versions(ctx, { userId: args.userId, scopes: [args] }));
+	const pins = await files_media_validation_db_capture_versions(ctx, { userId: args.userId, scopes: [args] });
 	const now = Date.now();
 	const generation = (slot?.generation ?? 0) + 1;
 	const cohortId = await ctx.db.insert("files_move_cohorts", {
@@ -613,7 +608,6 @@ export async function files_move_cohorts_db_begin_transfer_item(
 		itemId: Id<"files_transfer_items">;
 		fence: number;
 		attemptFence: number;
-		pins?: Awaited<ReturnType<typeof files_media_validation_db_capture_versions>>;
 	},
 ) {
 	const run = await ctx.db.get("files_transfer_runs", args.runId);
@@ -645,7 +639,6 @@ export async function files_move_cohorts_db_begin_transfer_item(
 			attemptFence: args.attemptFence,
 			itemCount: 1,
 		},
-		args.pins,
 	);
 }
 
@@ -1387,16 +1380,9 @@ async function db_headers(
 				});
 		}
 	}
-	let nestedReparented = false;
-	if (record.role === "descendant" && physical.isRestrictedScopeRoot && item) {
-		const rootRecord = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
-		const rootBefore = rootRecord.beforePlaceId
-			? await ctx.db.get("files_saved_places", rootRecord.beforePlaceId)
-			: null;
-		const rootAfter = rootRecord.afterPlaceId ? await ctx.db.get("files_saved_places", rootRecord.afterPlaceId) : null;
-		nestedReparented = rootBefore?.parentId !== rootAfter?.parentId;
-	}
-	if (record.role === "replacement" || nestedReparented) {
+	// A restricted folder inside the moved folder moves along and keeps its own people, like a folder
+	// on Linux or Windows. So the mover needs no access to it.
+	if (record.role === "replacement") {
 		const authorized = await db_authorize_node(ctx, cohort, membership, {
 			...physical,
 			...placement_header_from_place(old!),

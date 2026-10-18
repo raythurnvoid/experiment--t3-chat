@@ -5152,14 +5152,6 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 		])
 		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "moveCohortId", "treePath"])
-		// A move finds the restricted folders inside the folder it moves, without reading the rest.
-		.index("by_organization_workspace_isRestrictedScopeRoot_treePath", [
-			"organizationId",
-			"workspaceId",
-			"moveCohortId",
-			"isRestrictedScopeRoot",
-			"treePath",
-		])
 		// A recursive read finds the restricted folders directly inside one restricted area.
 		.index("by_org_ws_parentScope_archive_treePath", [
 			"organizationId",
@@ -6225,6 +6217,10 @@ const app_convex_schema = defineSchema({
 			}),
 		),
 		repairOpId: v.optional(v.id("files_subtree_ops")),
+		/**
+		 * No longer written: Move no longer checks the restricted folders inside a moved folder.
+		 * Old docs may still have it. Remove it in a later cleanup.
+		 */
 		moveValidation: v.optional(
 			v.object({
 				itemId: v.id("files_transfer_items"),

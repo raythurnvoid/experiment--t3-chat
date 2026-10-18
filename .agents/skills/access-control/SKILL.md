@@ -499,9 +499,10 @@ Rules that are easy to miss, all of which were real holes:
   path in particular: the node walk only checks nodes that already exist, so when nothing is there
   yet the workspace is the only thing left to ask.
 - **A cascade is not covered by the node you named.** Archive checks every removed descendant.
-  A Move group walks exact saved child ranges in background transactions. Reparenting checks each
-  nested restricted root, including archived roots. A locked root can refuse the group without
-  exposing its name. Ordinary protected descendants travel with their rules unchanged.
+  A Move group walks exact saved child ranges in background transactions. A nested restricted
+  root moves along with its own people, even when the mover cannot open it, like a folder on Linux
+  or Windows (decided 2026-10-18). Ordinary protected descendants travel with their rules
+  unchanged.
   Replacement checks every descendant it hides. Existing Move and scope repairs finish before
   new planning uses stored scopes. Access changes advance the clocks that each group checks.
   Restrict, folder protection and Archive wait while any Move holds the workspace. Their walk reads
@@ -509,7 +510,7 @@ Rules that are easy to miss, all of which were real holes:
   release wakes them.
   A move that keeps the same parent and path does not change descendants. A
   name-only rename in the same saved parent carries nested shares without asking for write access to
-  each one. Reparenting through Rename uses the same nested-scope checks as other moves.
+  each one. Reparenting through Rename carries them the same way.
 - **Preparation grants no later access.** Every unpublished cohort transaction checks the active
   membership and its original lifetime, current run, purge state and access clocks. Final publication
   uses the same proof. Reserved sources and names reject competing content writes. Security writes
@@ -517,10 +518,9 @@ Rules that are easy to miss, all of which were real holes:
   finishes its already approved physical repair; it cannot add files or grant new access.
 - **A paged Move proves access again.** `files_transfer.advance` loads the exact active membership
   lifetime once per transaction. Joined steps share that check. Stop and the deadline are still read
-  on every step. `advance` waits for running path/scope repairs, then checks nested restricted
-  roots in pages of eight through `by_organization_workspace_isRestrictedScopeRoot_treePath`.
-  The final root mutation checks the access-version pins and direct source/destination access.
-  A changed clock restarts validation. A leave and re-invite cannot revive the old run.
+  on every step. `advance` waits for running path/scope repairs. The final root mutation checks
+  the access-version pins and direct source/destination access. A leave and re-invite cannot
+  revive the old run.
   Stop or lost access keeps completed roots and ends the remaining work.
 - **Every refusal comes before the first write.** A Convex mutation that returns normally commits, so
   a `Result({ _nay })` after a write keeps that write and reports failure at the same time. Ask every

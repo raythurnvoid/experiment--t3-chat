@@ -2,10 +2,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import type { MutationCtx } from "./_generated/server.js";
-import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
-import { accept_input, advance as advance_transfer, files_transfer_db_delete_run_batch } from "./files_transfer.ts";
+import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
 import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops_db.ts";
 import {
 	test_save_file_pending_update,
@@ -16,7 +13,6 @@ import {
 	test_finish_transfer_run,
 	test_mocks,
 	test_mocks_fill_db_with,
-	test_spy_handler,
 } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
@@ -45,33 +41,6 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
-
-function track_restricted_root_query<T extends object>(
-	query: T,
-	pages: Array<{ ids: Id<"files_nodes">[]; done: boolean }>,
-	indexed = false,
-): T {
-	return new Proxy(query, {
-		get(target, key) {
-			const method: unknown = Reflect.get(target, key);
-			if (typeof method !== "function") return method;
-			if (key === "withIndex")
-				return (...args: unknown[]) =>
-					track_restricted_root_query(
-						Reflect.apply(method, target, args),
-						pages,
-						args[0] === "by_organization_workspace_isRestrictedScopeRoot_treePath",
-					);
-			if (key === "paginate" && indexed)
-				return async (...args: unknown[]) => {
-					const page = (await Reflect.apply(method, target, args)) as { page: Doc<"files_nodes">[]; isDone: boolean };
-					pages.push({ ids: page.page.map((node) => node._id), done: page.isDone });
-					return page;
-				};
-			return method.bind(target);
-		},
-	});
-}
 
 describe("start", () => {
 	test("keeps top selected ancestors and reuses the same request", async () => {
@@ -2788,7 +2757,7 @@ describe("move", () => {
 		{ access: "write", archived: true },
 		{ access: "owner", archived: true },
 	] as const)(
-		"checks nested restricted descendants with $access access (archived: $archived)",
+		"moves nested restricted descendants along with $access access (archived: $archived)",
 		async ({ access, archived }) => {
 			const fixture = await create_folder_fixture([
 				"/source",
@@ -2844,225 +2813,28 @@ describe("move", () => {
 			await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
 			const view = await actor.query(api.files_transfer_queries.get, { membershipId, runId });
 			expect(JSON.stringify(view)).not.toContain("hidden-name");
-			if (access === "none" || access === "read") {
-				expect(view).toMatchObject({
-					movedNodeIds: [folders.get("/other")],
-					activity: { status: "partial", progress: { completed: 1, canceled: 1 }, errorMessage: "Permission denied" },
+			expect(view).toMatchObject({
+				activity: { status: "succeeded", progress: { completed: 2 }, errorMessage: null },
+			});
+			for (const path of ["/source/hidden-name", "/source/hidden-name/child"]) {
+				const nodeId = folders.get(path)!;
+				expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
+					path: `/target${path}`,
+					restrictedScopeNodeId: restrictedId,
+					archiveOperationId: before.find((node) => node._id === nodeId)!.archiveOperationId,
 				});
-				for (const path of ["/source", "/source/hidden-name", "/source/hidden-name/child"]) {
-					const nodeId = folders.get(path)!;
-					expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(
-						before.find((node) => node._id === nodeId),
-					);
-				}
-				expect(await get_node(fixture, "/target/source")).toBeNull();
-				expect((await get_node(fixture, "/target/other"))?._id).toBe(folders.get("/other"));
-			} else {
-				expect(view).toMatchObject({
-					activity: { status: "succeeded", progress: { completed: 2 }, errorMessage: null },
+			}
+			expect((await get_node(fixture, "/target/other"))?._id).toBe(folders.get("/other"));
+			if (!archived) {
+				// The restricted folder keeps its own people: the member opens it only with a grant.
+				const opened = await member.asUser.query(api.files_tree.get_file_node_for_membership, {
+					membershipId: member.membershipId,
+					fileNodeId: String(restrictedId),
 				});
-				for (const path of ["/source/hidden-name", "/source/hidden-name/child"]) {
-					const nodeId = folders.get(path)!;
-					expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
-						path: `/target${path}`,
-						restrictedScopeNodeId: restrictedId,
-						archiveOperationId: before.find((node) => node._id === nodeId)!.archiveOperationId,
-					});
-				}
-				expect((await get_node(fixture, "/target/other"))?._id).toBe(folders.get("/other"));
+				expect(opened?._id ?? null).toBe(access === "read" || access === "write" ? restrictedId : null);
 			}
 		},
 	);
-
-	test.each([
-		{ restricted: false, end: "finish" as const, title: "an exact empty restricted root range uses no native page" },
-		{ restricted: true, end: "finish" as const, title: "every native restricted root page ends the parent transaction" },
-		{ restricted: true, end: "revoke" as const, title: "a revoked later restricted root prevents cohort creation" },
-		{ restricted: true, end: "stop" as const, title: "Stop after a restricted root page leaves every source unchanged" },
-	])("$title", async ({ restricted, end }) => {
-		const nested = restricted ? Array.from({ length: 9 }, (_, i) => `/source/r${i}`) : [];
-		const fixture = await create_folder_fixture(["/source", ...nested]);
-		const { t, db, asUser, folders } = fixture;
-		const member = restricted ? await add_member(fixture) : null;
-		for (const path of nested) {
-			const nodeId = folders.get(path)!;
-			vi.setSystemTime(Date.now() + 2_000);
-			expect(
-				await asUser.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId }),
-			).toHaveProperty("_yay");
-			vi.setSystemTime(Date.now() + 2_000);
-			expect(
-				await asUser.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: db.membershipId,
-					nodeId,
-					principal: { kind: "user", userId: member!.userId },
-					level: "write",
-				}),
-			).toHaveProperty("_yay");
-		}
-		// Complete normal scope jobs before acceptance and parent work.
-		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
-		const actor = member?.asUser ?? asUser;
-		const membershipId = member?.membershipId ?? db.membershipId;
-		const sourceId = folders.get("/source")!;
-		const sourceBefore = await t.run((ctx) => ctx.db.get("files_nodes", sourceId));
-		const pages: Array<{ ids: Id<"files_nodes">[]; done: boolean }> = [];
-		const costs: Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>[] = [];
-		for (const registered of [accept_input, advance_transfer])
-			test_spy_handler(registered, async (handler, ctx, args) => {
-				const trackedDb = new Proxy(ctx.db, {
-					get(target, key) {
-						const method: unknown = Reflect.get(target, key);
-						if (typeof method !== "function") return method;
-						if (key === "query")
-							return (...args: unknown[]) =>
-								args[0] === "files_nodes"
-									? track_restricted_root_query(Reflect.apply(method, target, args), pages)
-									: Reflect.apply(method, target, args);
-						return method.bind(target);
-					},
-				});
-				const result = await handler({ ...ctx, db: trackedDb }, args);
-				costs.push(await ctx.meta.getTransactionMetrics());
-				return result;
-			});
-		const started = await actor.mutation(api.files_transfer.accept_input, {
-			membershipId,
-			requestId: `restricted-root-boundary-${end}`,
-			kind: "move",
-			expectedSourceCount: 1,
-			sourceIds: [sourceId],
-			targetParentId: folders.get("/target")!,
-		});
-		if (started._nay) throw new Error(started._nay.message);
-		const { runId } = started._yay;
-		expect(await actor.mutation(api.files_transfer.seal, { membershipId, runId })).toEqual({ _yay: null });
-		const cohortId = async () =>
-			(
-				await t.run((ctx) =>
-					ctx.db
-						.query("files_move_workspace_slots")
-						.withIndex("by_workspace", (q) =>
-							q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
-						)
-						.unique(),
-				)
-			)?.cohortId ?? null;
-		const validation = async () => (await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))?.moveValidation;
-		for (let pass = 0; pages.length === 0 && !(await cohortId()); pass++) {
-			if (pass === 20) throw new Error("The parent did not reach its restricted root check");
-			await t.mutation(internal.files_transfer.advance, { runId });
-		}
-		if (!restricted) {
-			expect(pages, "empty restricted root range consumes no native page").toEqual([]);
-			expect(await cohortId(), "the exact empty proof starts the normal cohort").not.toBeNull();
-		} else {
-			expect(
-				pages.map((page) => page.ids),
-				"the first restricted root page checks its eight exact roots",
-			).toEqual([nested.slice(0, 8).map((path) => folders.get(path)!)]);
-			expect(await cohortId(), "the first native restricted root page cannot start a cohort").toBeNull();
-			expect(await validation()).toMatchObject({ done: false, cursor: expect.any(String) });
-			if (end === "revoke") {
-				vi.setSystemTime(Date.now() + 2_000);
-				expect(
-					await asUser.mutation(api.files_sharing.remove_node_share_grant, {
-						membershipId: db.membershipId,
-						nodeId: folders.get(nested[8]!)!,
-						principal: { kind: "user", userId: member!.userId },
-					}),
-				).toHaveProperty("_yay");
-			} else if (end === "stop") {
-				expect(await actor.mutation(api.files_transfer.stop, { membershipId, runId })).toEqual({ _yay: null });
-			} else {
-				await t.mutation(internal.files_transfer.advance, { runId });
-				expect(
-					pages.flatMap((page) => page.ids),
-					"every restricted root reaches a native page",
-				).toEqual(nested.map((path) => folders.get(path)!));
-				expect(pages[1]?.done).toBe(true);
-				expect(await validation()).toMatchObject({ done: true });
-				expect(await cohortId(), "the final restricted root page does not start a cohort").toBeNull();
-				await t.mutation(internal.files_transfer.advance, { runId });
-				expect(await cohortId()).not.toBeNull();
-			}
-		}
-		await test_finish_transfer_run(actor, runId);
-		for (const cost of costs)
-			for (const [key, metric] of Object.entries(cost))
-				expect(metric.used, `restricted roots: ${key} includes final flush and leaves 25% free`).toBeLessThan(
-					(metric.used + metric.remaining) * 0.75,
-				);
-		const view = await actor.query(api.files_transfer_queries.get, { membershipId, runId });
-		if (end === "finish") {
-			expect(view?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1, failed: 0, canceled: 0 } });
-			for (const path of ["/source", ...nested])
-				expect(await t.run((ctx) => ctx.db.get("files_nodes", folders.get(path)!))).toMatchObject({
-					path: `/target${path}`,
-				});
-		} else {
-			expect(await cohortId(), "a stopped restricted root check never publishes a cohort").toBeNull();
-			expect(
-				await t.run((ctx) =>
-					ctx.db
-						.query("files_move_cohorts")
-						.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
-						.first(),
-				),
-				"a stopped or revoked restricted root check never creates a cohort",
-			).toBeNull();
-			expect(view?.activity).toMatchObject({
-				status: end === "stop" ? "canceled" : "failed",
-				progress: { completed: 0, canceled: 1 },
-			});
-			expect(JSON.stringify(view), "permission failure does not reveal the later restricted name").not.toContain("r8");
-			expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toEqual(sourceBefore);
-			for (const path of nested)
-				expect(await t.run((ctx) => ctx.db.get("files_nodes", folders.get(path)!))).toMatchObject({ path });
-		}
-	});
-
-	test("a new folder elsewhere does not restart the nested restricted check", async () => {
-		const nested = Array.from({ length: 9 }, (_, index) => `/source/r${index}`);
-		const fixture = await create_folder_fixture(["/source", ...nested]);
-		const { t, db, asUser, folders } = fixture;
-		// Empty folders need no walk, so restrict them directly.
-		await t.run(async (ctx) => {
-			for (const path of nested)
-				await files_nodes_db_set_restricted_scope({
-					ctx,
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					nodeId: folders.get(path)!,
-					restrictedScopeNodeId: folders.get(path)!,
-					shareLinkCleanup: files_share_links_create_cleanup_state(),
-				});
-		});
-		const started = await start_transfer(asUser, {
-			membershipId: db.membershipId,
-			requestId: "nested-restricted-pages",
-			kind: "move",
-			sourceIds: [folders.get("/source")!],
-			targetParentId: folders.get("/target")!,
-		});
-		if (started._nay) throw new Error(started._nay.message);
-		const runId = started._yay.runId;
-		const validation = async () => (await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))?.moveValidation;
-		// The check reads 8 restricted folders per step. Stop after the first page.
-		for (let step = 0; !(await validation())?.cursor; step++) {
-			if (step === 20) throw new Error("The nested check did not start");
-			await t.mutation(internal.files_transfer.advance, { runId });
-		}
-		const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			path: "/elsewhere",
-		});
-		if (created._nay) throw new Error(created._nay.message);
-		await t.mutation(internal.files_transfer.advance, { runId });
-		expect((await validation())?.done, "the check goes on from its second page").toBe(true);
-	});
 
 	test("continues suffix checks in later steps and moves every source", async () => {
 		const names = ["one", "two", "three"];
@@ -3153,7 +2925,7 @@ describe("move", () => {
 		expect((await get_node(fixture, "/two"))?._id).toBe(folders.get("/two"));
 	});
 
-	test("checks a nested restricted folder whose stored path a running move has not rewritten yet", async () => {
+	test("a member moves a renamed folder with a restricted child they cannot open, and the child stays closed", async () => {
 		const fixture = await create_folder_fixture(["/a", "/a/shared", "/other"]);
 		const { t, db, asUser, folders } = fixture;
 		const member = await add_member(fixture);
@@ -3208,9 +2980,16 @@ describe("move", () => {
 					targetParentId: folders.get("/other")!,
 				});
 
-		// The member cannot write in `shared`, so they cannot carry it away inside /b.
-		expect((await move(folders.get("/a")!))._nay).toMatchObject({ message: "Permission denied" });
-		// The new /a reuses the old name. It does not hold the restricted folder.
+		// The member cannot open `shared`, but it moves along inside /b and keeps its own people.
+		expect(await move(folders.get("/a")!)).toEqual({ _yay: null });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", sharedId))).toMatchObject({
+			path: "/other/b/shared",
+			restrictedScopeNodeId: sharedId,
+		});
+		expect(await member.asUser.query(api.files_tree.get_file_node_for_membership, {
+			membershipId: member.membershipId, fileNodeId: String(sharedId),
+		})).toBeNull();
+		// The new /a reuses the old name.
 		expect(await move(newA._yay.nodeId)).toEqual({ _yay: null });
 	});
 
