@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import * as Y from "yjs";
 import { FileEditor, type FileEditor_Props } from "./file-editor.tsx";
 import { files_PresenceStore } from "@/lib/files.ts";
-import { files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
+import { files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
 const { permission, client, watchers, registerProvider } = vi.hoisted(() => ({

@@ -4,7 +4,7 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
-import { files_yjs_has_preloaded_snapshot, files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot-preload.ts";
+import { files_yjs_has_preloaded_snapshot, files_yjs_preload_snapshot } from "@/lib/files-yjs-snapshot.ts";
 import { files_editor_view_values, files_ROOT_ID } from "@/lib/files.ts";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
@@ -36,38 +36,78 @@ const RouteFiles = memo(function RouteFiles() {
 		});
 	});
 
-	// Start the README query of the opened node as soon as the navigation starts. The new folder view
-	// takes about 200ms to render before its own queries start. So the README answer comes only a few
-	// frames after the view mounts, and the README area then shows the README or the "No README.md"
-	// box directly. For a file the query just answers null.
+	// Start the opened node's work as soon as the navigation starts, or when the mouse button goes down
+	// before it. The new view takes about 200ms to render before its own queries start.
 	useEffect(() => {
-		return router.subscribe("onBeforeNavigate", (event) => {
-			// The router has not validated this search yet, so read it as unknown.
-			const search: Partial<Record<string, unknown>> = event.toLocation.search;
+		// Start the queries that the new view asks first, so their answers come only a few frames after
+		// it mounts. For example the README area then shows the README or the "No README.md" box directly.
+		// A loaded row that is not a folder skips the folder queries. A page load or a link from elsewhere
+		// does not tell the type, so start them anyway. For a file they answer null or false.
+		// Keep the same arg order as the view, so both share one subscription. The view holds its own
+		// subscription once it mounts, so these end after 10s.
+		// Do not call `watchQuery(...).onUpdate(() => {})` here: the React Compiler turns the empty
+		// callback into one shared function, the client keeps it once per query, and the second
+		// unsubscribe throws.
+		// The router has not validated this search yet, so read it as unknown.
+		const prewarm_queries = (search: Partial<Record<string, unknown>>) => {
 			const nodeId = search.nodeId;
-			if (event.pathChanged || typeof nodeId !== "string" || search.pendingNodeId !== undefined) {
+			if (typeof nodeId !== "string" || search.pendingNodeId !== undefined) {
 				return;
 			}
 
-			// Keep the same arg order as the folder view, so both share one subscription.
-			// The folder view holds its own subscription once it mounts, so this one ends after 10s.
-			// Do not call `watchQuery(...).onUpdate(() => {})` here: the React Compiler turns the empty
-			// callback into one shared function, the client keeps it once per query, and the second
-			// unsubscribe throws.
+			const folderId = nodeId as app_convex_Doc<"files_nodes">["parentId"];
 			convex.prewarmQuery({
-				query: app_convex_api.files_tree.get_folder_readme,
-				args: { membershipId, folderId: nodeId as app_convex_Doc<"files_nodes">["parentId"] },
+				query: app_convex_api.files_tree.get_current_user_file_write_permission,
+				args: { membershipId, nodeId: folderId },
 				extendSubscriptionFor: 10_000,
 			});
-		});
-	}, [router, convex, membershipId]);
+			// The view asks nothing about the root node itself.
+			if (nodeId !== files_ROOT_ID) {
+				convex.prewarmQuery({
+					query: app_convex_api.files_tree.get_file_node_for_membership,
+					args: { membershipId, fileNodeId: nodeId },
+					extendSubscriptionFor: 10_000,
+				});
+				convex.prewarmQuery({
+					query: app_convex_api.files_pending_target.get_file_pending_target,
+					args: { membershipId, target: { kind: "saved", id: nodeId } },
+					extendSubscriptionFor: 10_000,
+				});
+				// The breadcrumb pin of the tree store.
+				convex.prewarmQuery({
+					query: app_convex_api.files_tree.get_tree_ancestors,
+					args: { membershipId, nodeId },
+					extendSubscriptionFor: 10_000,
+				});
+			}
 
-	// Start the Yjs reads of the opened file as soon as the navigation starts, so they run while the
-	// view loads the file's queries. The rich text editor takes them when it mounts.
-	// A click on a loaded row tells the node's type, so preload only a file that the rich text editor
-	// opens. A page load or a link from elsewhere does not tell it, so preload anyway. A folder then
-	// costs one wasted action and one wasted query, which both answer null.
-	useEffect(() => {
+			const node = nodeId === files_ROOT_ID ? null : getLoadedNode(nodeId);
+			if (node && node.kind !== "folder") {
+				return;
+			}
+
+			convex.prewarmQuery({
+				query: app_convex_api.files_tree.get_folder_readme,
+				args: { membershipId, folderId },
+				extendSubscriptionFor: 10_000,
+			});
+			convex.prewarmQuery({
+				query: app_convex_api.files_folder_sorts.get_folder_sort,
+				args: { membershipId, folderId },
+				extendSubscriptionFor: 10_000,
+			});
+			convex.prewarmQuery({
+				query: app_convex_api.files_tree.has_drafts_in_folder,
+				args: { membershipId, folderId },
+				extendSubscriptionFor: 10_000,
+			});
+		};
+
+		// Start the Yjs reads of the opened file, so they run while the view loads the file's queries. The
+		// rich text editor takes them when it mounts.
+		// A click on a loaded row tells the node's type, so preload only a file that the rich text editor
+		// opens. A page load or a link from elsewhere does not tell it, so preload anyway. A folder then
+		// costs one wasted action and one wasted query, which both answer null.
 		let cancelSnapshotPreload: (() => void) | null = null;
 		// The router has not validated this search yet, so read it as unknown.
 		const preload_snapshot = (search: Partial<Record<string, unknown>>) => {
@@ -116,17 +156,23 @@ const RouteFiles = memo(function RouteFiles() {
 		let lastNodeId = initialSearch.nodeId;
 		const unsubscribe = router.subscribe("onBeforeNavigate", (event) => {
 			const search: Partial<Record<string, unknown>> = event.toLocation.search;
-			// A new view or filter of the open file keeps its editor, so it would never take a new read.
-			if (event.pathChanged || search.nodeId === lastNodeId) {
+			if (event.pathChanged) {
 				return;
 			}
+
+			prewarm_queries(search);
+			// A new view or filter of the open file keeps its editor, so it would never take a new read.
+			if (search.nodeId === lastNodeId) {
+				return;
+			}
+
 			lastNodeId = search.nodeId;
 			preload_snapshot(search);
 		});
 
-		// Also start the reads when the mouse button goes down. The click comes only when it goes up,
+		// Also start the work when the mouse button goes down. The click comes only when it goes up,
 		// often 80-150ms later. Read the node from a link to this page (the folder table) or from a
-		// sidebar row. A press that turns into a drag wastes one preload. Skip touch, because a touch
+		// sidebar row. A press that turns into a drag wastes this work. Skip touch, because a touch
 		// that scrolls the list also starts with a press.
 		const handlePointerDown = (event: PointerEvent) => {
 			if (
@@ -159,11 +205,12 @@ const RouteFiles = memo(function RouteFiles() {
 				};
 			}
 
-			// The open file keeps its editor, so it would never take the read.
+			// The open node's view already holds these queries, and its editor would never take the read.
 			if (!search || search.nodeId === lastNodeId) {
 				return;
 			}
 
+			prewarm_queries(search);
 			preload_snapshot(search);
 		};
 		document.addEventListener("pointerdown", handlePointerDown, { capture: true });

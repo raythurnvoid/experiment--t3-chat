@@ -267,7 +267,7 @@ vi.mock("@/lib/files-tree-context.tsx", async (importOriginal) => {
 });
 
 vi.mock("@/lib/activities.ts", () => ({ useFileNodeActivities: () => [] }));
-vi.mock("@/lib/files-yjs-snapshot-preload.ts", () => ({ files_yjs_preload_snapshot: preloadSnapshot }));
+vi.mock("@/lib/files-yjs-snapshot.ts", () => ({ files_yjs_preload_snapshot: preloadSnapshot }));
 
 beforeEach(() => {
 	createNode.mockReset();
