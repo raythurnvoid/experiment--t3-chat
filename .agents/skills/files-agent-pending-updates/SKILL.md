@@ -763,8 +763,11 @@ Ordinary content-only saved proposals do not resolve an unused owner path. Whole
 - A workspace slot is either idle, with no view fields, or active, with both view fields required.
   Search cursors use only `files_move_search_generations`, indexed by workspace. A missing counter
   means zero; its first change writes one. Tree view reads use the slot and do not read the busy cohort.
-  Saved browser pagers wait for new view args on `saved_move_view_changed` or
+  Global saved browser pagers wait for new view args on `saved_move_view_changed` or
   `saved_search_view_changed`. They keep native page splits and stop loadMore while waiting.
+  Directory pages choose their view from an exact parent anchor instead. They carry that view
+  beside native cursors. Mixed or stale directory pages restart locally and refill the requested
+  rows. The tree, folder table and picker keep their last complete rows until the views agree.
   Pending keeps the selected chat while source pages load. It falls back to All changes
   only when the exact source summary is empty. A chat outside the loaded source pages
   keeps its selected option and title.

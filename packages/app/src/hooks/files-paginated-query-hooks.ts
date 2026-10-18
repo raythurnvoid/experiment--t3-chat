@@ -14,10 +14,11 @@ import {
 	type PaginationResult,
 } from "convex/server";
 import { ConvexError, convexToJson, jsonToConvex, type Infer, type Value } from "convex/values";
+import type { files_DirectoryView } from "../../shared/files.ts";
 import { useFn } from "./utils-hooks.ts";
 
 // Adapted from Convex 1.46.0 src/react/use_paginated_query.ts.
-// Files wait for new saved-view args instead of retrying the same old view.
+// Global saved views wait for new args. Directory views reset their native pages locally.
 
 type PageQuery = {
 	query: FunctionReference<"query">;
@@ -28,6 +29,8 @@ type PageState = {
 	query: FunctionReference<"query">;
 	args: Record<string, Value>;
 	id: number;
+	requestedItems: number;
+	refilling: boolean;
 	nextPageKey: number;
 	pageKeys: number[];
 	queries: Record<number, PageQuery>;
@@ -37,8 +40,7 @@ type PageState = {
 
 // SDK pagers use nonnegative IDs, so Files pagers use negative ones. The ID is part of the query args.
 // Every pager starts with the same ID, so a pager that mounts again finds its pages in the query cache.
-// Only a pager that hit an InvalidCursor error gets a new ID. Otherwise it would get the same broken
-// page back from the cache.
+// Cursor errors and mixed directory views need a new ID, or the cache returns the same broken page.
 const FIRST_PAGINATION_ID = -1;
 let paginationId = FIRST_PAGINATION_ID;
 
@@ -47,7 +49,7 @@ function next_pagination_id() {
 	return paginationId;
 }
 
-function split_page(key: number, splitCursor: string, continueCursor: string) {
+function split_page(key: number, splitCursor: string, continueCursor: string, directoryView?: files_DirectoryView) {
 	return (state: PageState) => {
 		const queries = { ...state.queries };
 		const firstKey = state.nextPageKey;
@@ -56,6 +58,7 @@ function split_page(key: number, splitCursor: string, continueCursor: string) {
 			query: state.query,
 			args: {
 				...state.args,
+				...(directoryView === undefined ? {} : { pageView: directoryView }),
 				paginationOpts: { ...state.queries[key]!.args.paginationOpts, endCursor: splitCursor },
 			},
 		};
@@ -63,6 +66,7 @@ function split_page(key: number, splitCursor: string, continueCursor: string) {
 			query: state.query,
 			args: {
 				...state.args,
+				...(directoryView === undefined ? {} : { pageView: directoryView }),
 				paginationOpts: {
 					...state.queries[key]!.args.paginationOpts,
 					cursor: splitCursor,
@@ -99,40 +103,44 @@ function complete_split(key: number) {
 }
 
 /**
- * Page a Files saved stream. A changed Move view waits until the caller supplies its new args.
+ * Page a Files saved stream. Keep native cursors beside the directory view that made them.
  */
 export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 	query: Query,
 	args: PaginatedQueryArgs<Query> | "skip",
 	options: { initialNumItems: number },
-): UsePaginatedQueryResult<PaginatedQueryItem<Query>> {
+): UsePaginatedQueryResult<PaginatedQueryItem<Query>> & { directoryView: files_DirectoryView | undefined } {
 	if (typeof options?.initialNumItems !== "number" || options.initialNumItems < 0)
 		throw new Error("initialNumItems must be a positive number.");
 	const skip = args === "skip";
 	const queryName = getFunctionName(query);
 	const argsJson = JSON.stringify(convexToJson((skip ? {} : args) as Record<string, Value>));
 	const argsObject = useMemo(() => jsonToConvex(JSON.parse(argsJson)) as Record<string, Value>, [argsJson]);
+	const directory = argsObject.stream === "normal" || argsObject.stream === "cohort";
 	const queryReference = useMemo(() => makeFunctionReference<"query">(queryName), [queryName]);
 	const createInitialState = useMemo(
-		() => (id: number): PageState => {
-			return {
-				query: queryReference,
-				args: argsObject,
-				id,
-				nextPageKey: 1,
-				pageKeys: skip ? [] : [0],
-				queries: skip
-					? {}
-					: {
-							0: {
-								query: queryReference,
-								args: { ...argsObject, paginationOpts: { numItems: options.initialNumItems, cursor: null, id } },
+		() =>
+			(id: number, requestedItems?: number, refilling = false): PageState => {
+				return {
+					query: queryReference,
+					args: argsObject,
+					id,
+					requestedItems: requestedItems ?? options.initialNumItems,
+					refilling,
+					nextPageKey: 1,
+					pageKeys: skip ? [] : [0],
+					queries: skip
+						? {}
+						: {
+								0: {
+									query: queryReference,
+									args: { ...argsObject, paginationOpts: { numItems: options.initialNumItems, cursor: null, id } },
+								},
 							},
-						},
-				ongoingSplits: {},
-				skip,
-			};
-		},
+					ongoingSplits: {},
+					skip,
+				};
+			},
 		[argsObject, queryReference, options.initialNumItems, skip],
 	);
 	const [state, setState] = useState<PageState>(() => createInitialState(FIRST_PAGINATION_ID));
@@ -147,17 +155,31 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 	}
 	const resultsObject = useQueries(current.queries) as Record<
 		number,
-		PaginationResult<PaginatedQueryItem<Query>> | Error | undefined
+		(PaginationResult<PaginatedQueryItem<Query>> & { directoryView?: files_DirectoryView }) | Error | undefined
 	>;
-	const [results, lastResult, nextState] = useMemo<
-		[PaginatedQueryItem<Query>[], PaginationResult<PaginatedQueryItem<Query>> | undefined, PageState | "reset" | null]
+	const [results, lastResult, nextState, directoryView] = useMemo<
+		[
+			PaginatedQueryItem<Query>[],
+			(PaginationResult<PaginatedQueryItem<Query>> & { directoryView?: files_DirectoryView }) | undefined,
+			PageState | "reset" | null,
+			files_DirectoryView | undefined,
+		]
 	>(() => {
 		let waitingForView = false;
 		let invalidCursor = false;
+		let directoryView: files_DirectoryView | undefined;
 		// A failed split child is defined too. Check all pages before showing rows or swapping a split.
 		for (const key of [...current.pageKeys, ...Object.values(current.ongoingSplits).flat()]) {
 			const result = resultsObject[key];
-			if (!(result instanceof Error)) continue;
+			if (!(result instanceof Error)) {
+				if (directory && result !== undefined) {
+					const view = result.directoryView;
+					if (directoryView === undefined) directoryView = view;
+					else if (directoryView?.cohortId !== view?.cohortId || directoryView?.view !== view?.view)
+						invalidCursor = true;
+				}
+				continue;
+			}
 			const data = result instanceof ConvexError ? result.data : null;
 			if (
 				data !== null &&
@@ -185,14 +207,14 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 			throw result;
 		}
 		// A cursor reset still has old view args. Wait first, but never hide another error.
-		if (waitingForView) return [[], undefined, null];
-		if (invalidCursor) return [[], undefined, "reset"];
+		if (waitingForView) return [[], undefined, null, undefined];
+		if (invalidCursor) return [[], undefined, "reset", undefined];
 		const rows: PaginatedQueryItem<Query>[] = [];
 		let result: PaginationResult<PaginatedQueryItem<Query>> | undefined;
 		let next: PageState | null = null;
 		for (const key of current.pageKeys) {
 			const page = resultsObject[key];
-			if (page === undefined) return [rows, undefined, next];
+			if (page === undefined) return [rows, undefined, next, undefined];
 			if (page instanceof Error) throw page;
 			result = page;
 			const split = current.ongoingSplits[key];
@@ -205,15 +227,45 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 					page.pageStatus === "SplitRequired" ||
 					page.page.length > options.initialNumItems * 2)
 			)
-				next = split_page(key, page.splitCursor, page.continueCursor)(next ?? current);
+				next = split_page(key, page.splitCursor, page.continueCursor, page.directoryView)(next ?? current);
 			// The caller keeps its previous complete display while a required split loads.
-			if (page.pageStatus === "SplitRequired") return [rows, undefined, next];
+			if (page.pageStatus === "SplitRequired") return [rows, undefined, next, undefined];
 			rows.push(...page.page);
 		}
-		return [rows, result, next];
-	}, [resultsObject, current, options.initialNumItems]);
+		// A directory reset refills the requested rows before it settles.
+		if (current.refilling && result) {
+			if (rows.length < current.requestedItems && !result.isDone) {
+				const previous = next ?? current;
+				const key = previous.nextPageKey;
+				return [
+					[],
+					undefined,
+					{
+						...previous,
+						nextPageKey: key + 1,
+						pageKeys: [...previous.pageKeys, key],
+						queries: {
+							...previous.queries,
+							[key]: {
+								query: previous.query,
+								args: {
+									...previous.args,
+									pageView: directoryView!,
+									paginationOpts: { numItems: options.initialNumItems, cursor: result.continueCursor, id: previous.id },
+								},
+							},
+						},
+					},
+					undefined,
+				];
+			}
+			next = { ...(next ?? current), refilling: false };
+		}
+		return [rows, result, next, directoryView];
+	}, [resultsObject, current, options.initialNumItems, directory]);
 	// Keep the page calculation pure. Apply only its derived transition during render.
-	if (nextState === "reset") setState(createInitialState(next_pagination_id()));
+	if (nextState === "reset")
+		setState(createInitialState(next_pagination_id(), directory ? current.requestedItems : undefined, directory));
 	else if (nextState !== null) setState(nextState);
 	const status = useMemo(() => {
 		if (!lastResult)
@@ -237,6 +289,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 					const key = previous.nextPageKey;
 					return {
 						...previous,
+						requestedItems: previous.requestedItems + numItems,
 						nextPageKey: key + 1,
 						pageKeys: [...previous.pageKeys, key],
 						queries: {
@@ -245,6 +298,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 								query: previous.query,
 								args: {
 									...previous.args,
+									...(lastResult.directoryView === undefined ? {} : { pageView: lastResult.directoryView }),
 									paginationOpts: { numItems, cursor: lastResult.continueCursor, id: previous.id },
 								},
 							},
@@ -256,5 +310,5 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 	}, [lastResult, current.id, current.args, current.nextPageKey]);
 	// The tree can retain an older result and its button while this view waits.
 	const loadMore = useFn(status.loadMore);
-	return { results, ...status, loadMore };
+	return { results, ...status, loadMore, directoryView };
 }

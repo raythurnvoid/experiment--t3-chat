@@ -6,7 +6,7 @@ import { useFilesSavedView } from "./files-saved-view-hooks.ts";
 import { useFilesPaginatedQuery } from "./files-paginated-query-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { detect_search_query_mode, search_free_text, search_path_filter } from "@/lib/files-search.ts";
-import { files_TEXT_SEARCH_MAX_RESULTS, type files_SavedStream } from "../../shared/files.ts";
+import { files_TEXT_SEARCH_MAX_RESULTS, type files_DirectoryView, type files_SavedStream } from "../../shared/files.ts";
 import {
 	files_search_query_folder_path,
 	files_search_query_parse,
@@ -329,6 +329,7 @@ type FilesSortedChildrenStreamStatus = "inactive" | "loading" | "more" | "done";
 type FilesSortedChildrenStream = {
 	rows: FilesSortedChildrenRow[];
 	status: FilesSortedChildrenStreamStatus;
+	directoryView: files_DirectoryView | undefined;
 	loadMore: () => void;
 };
 
@@ -425,8 +426,7 @@ function useFilesSortedChildrenSource(
 		segment: FilesSortedChildrenRow["segment"];
 		active: boolean;
 		customFieldFilter: boolean;
-		savedStream: files_SavedStream | null;
-		viewLoading: boolean;
+		stream: "normal" | "cohort";
 	},
 ): FilesSortedChildrenStream[] {
 	const { membershipId, folderId, sort, filter, namePrefix, kind, segment, active, isOwner } = props;
@@ -435,11 +435,11 @@ function useFilesSortedChildrenSource(
 	const skipsTwin = props.customFieldFilter && isOwner === false;
 	const skipsShares = !props.customFieldFilter || isOwner === true;
 	const sortedArgs = (restricted: boolean) =>
-		!active || sort === null || props.savedStream === null || (restricted && skipsTwin)
+		!active || sort === null || (restricted && skipsTwin)
 			? ("skip" as const)
-			: { membershipId, parentId: folderId, kind, sort, filter, namePrefix, restricted, segment, savedStream: props.savedStream };
+			: { membershipId, parentId: folderId, kind, sort, filter, namePrefix, restricted, segment, stream: props.stream };
 	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
-		!active || sort === null || props.savedStream === null || skipsShares
+		!active || sort === null || skipsShares
 			? ("skip" as const)
 			: {
 					membershipId,
@@ -450,7 +450,7 @@ function useFilesSortedChildrenSource(
 					filter,
 					namePrefix,
 					segment,
-					savedStream: props.savedStream,
+					stream: props.stream,
 				};
 	const options = { initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE };
 
@@ -460,37 +460,33 @@ function useFilesSortedChildrenSource(
 	const shared1 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(1), options);
 	const shared2 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(2), options);
 
-	return [open, restricted, shared0, shared1, shared2].map((result, index) => ({
-		rows: result.results.map((row): FilesSortedChildrenRow => ({
-			target: { kind: "saved", id: row._id },
-			name: row.name,
-			kind: row.kind,
-			createdAt: row._creationTime,
-			updatedAt: row.updatedAt,
-			contentByteSize: row.contentByteSize,
-			updatedBy: row.locked ? null : row.updatedBy,
-			contentType: row.contentType,
-			treeRow: row,
-			segment,
-			sortKey: row.sortKey,
-		})),
-		// A skipped `usePaginatedQuery` reports `LoadingFirstPage` forever, so a stream that has not
-		// started must count as inactive, not as loading. A stream skipped because it cannot have rows
-		// is done.
-		status:
-			(index === 1 && skipsTwin) || (index >= 2 && skipsShares)
-				? "done"
-				: !active
-					? "inactive"
-					: props.savedStream === null && !props.viewLoading
-						? "done"
-					: result.status === "Exhausted"
-						? "done"
-						: result.status === "CanLoadMore"
-							? "more"
-							: "loading",
-		loadMore: () => result.loadMore(FILES_SORTED_CHILDREN_PAGE_SIZE),
-	}));
+	return [open, restricted, shared0, shared1, shared2]
+		.filter((_result, index) => !((index === 1 && skipsTwin) || (index >= 2 && skipsShares)))
+		.map((result) => ({
+			rows: result.results.map((row): FilesSortedChildrenRow => ({
+				target: { kind: "saved", id: row._id },
+				name: row.name,
+				kind: row.kind,
+				createdAt: row._creationTime,
+				updatedAt: row.updatedAt,
+				contentByteSize: row.contentByteSize,
+				updatedBy: row.locked ? null : row.updatedBy,
+				contentType: row.contentType,
+				treeRow: row,
+				segment,
+				sortKey: row.sortKey,
+			})),
+			// A skipped query reports LoadingFirstPage, so an unstarted segment counts as inactive.
+			status: !active
+				? "inactive"
+				: result.status === "Exhausted"
+					? "done"
+					: result.status === "CanLoadMore"
+						? "more"
+						: "loading",
+			directoryView: result.directoryView,
+			loadMore: () => result.loadMore(FILES_SORTED_CHILDREN_PAGE_SIZE),
+		}));
 }
 
 function useFilesSortedChildrenSegment(
@@ -499,11 +495,10 @@ function useFilesSortedChildrenSegment(
 		segment: FilesSortedChildrenRow["segment"];
 		active: boolean;
 		customFieldFilter: boolean;
-		savedView: ReturnType<typeof useFilesSavedView>;
 	},
 ) {
-	const normal = useFilesSortedChildrenSource({ ...props, savedStream: props.savedView.normal, viewLoading: props.savedView.loading });
-	const cohort = useFilesSortedChildrenSource({ ...props, savedStream: props.savedView.cohort, viewLoading: false });
+	const normal = useFilesSortedChildrenSource({ ...props, stream: "normal" });
+	const cohort = useFilesSortedChildrenSource({ ...props, stream: "cohort" });
 	return [...normal, ...cohort];
 }
 
@@ -526,7 +521,6 @@ function useFilesSortedChildrenSegment(
  */
 export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const { membershipId, folderId, sort, filter, namePrefix, isOwner } = props;
-	const savedView = useFilesSavedView(membershipId, sort !== null);
 	const field = sort?.[0]?.field ?? null;
 	const metadataKey = files_table_metadata_field({ sort: sort?.[0] ?? null, filter });
 	const customFieldFilter = filter !== null && metadataKey !== null;
@@ -535,18 +529,15 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const hasFolderMissing = filter === null && field === "extension";
 	const hasFileMissing = filter === null && (field === "extension" || field === "size");
 
-	const sortScope = JSON.stringify([membershipId, folderId, sort, filter, namePrefix, savedView.normal, savedView.cohort]);
-	const [startedMissing, setStartedMissing] = useState({ sortScope, folder: false, file: false });
-	const started = startedMissing.sortScope === sortScope ? startedMissing : { sortScope, folder: false, file: false };
-	// The number of rows the table wants. Show more adds one page.
-	const [wanted, setWanted] = useState({ sortScope, count: FILES_SORTED_CHILDREN_PAGE_SIZE });
-	const wantedCount = wanted.sortScope === sortScope ? wanted.count : FILES_SORTED_CHILDREN_PAGE_SIZE;
+	// Keep Show more through Move view changes. A different folder, sort or filter starts one page.
+	const wantedScope = JSON.stringify([membershipId, folderId, sort, filter, namePrefix]);
+	const [wanted, setWanted] = useState({ wantedScope, count: FILES_SORTED_CHILDREN_PAGE_SIZE });
+	const wantedCount = wanted.wantedScope === wantedScope ? wanted.count : FILES_SORTED_CHILDREN_PAGE_SIZE;
 
 	// Load the first folders page and the first files page together, like the Files tree, so a normal
 	// folder needs one round trip.
 	const folderValue = useFilesSortedChildrenSegment({
 		...props,
-		savedView,
 		kind: "folder",
 		segment: "value",
 		active: sort !== null,
@@ -554,15 +545,16 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	});
 	const fileValue = useFilesSortedChildrenSegment({
 		...props,
-		savedView,
 		kind: "file",
 		segment: "value",
 		active: sort !== null,
 		customFieldFilter,
 	});
+	const sortScope = JSON.stringify([wantedScope, folderValue[0]?.directoryView]);
+	const [startedMissing, setStartedMissing] = useState({ sortScope, folder: false, file: false });
+	const started = startedMissing.sortScope === sortScope ? startedMissing : { sortScope, folder: false, file: false };
 	const folderMissing = useFilesSortedChildrenSegment({
 		...props,
-		savedView,
 		kind: "folder",
 		segment: "missing",
 		active: hasFolderMissing && started.folder,
@@ -570,7 +562,6 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	});
 	const fileMissing = useFilesSortedChildrenSegment({
 		...props,
-		savedView,
 		kind: "file",
 		segment: "missing",
 		active: hasFileMissing && started.file,
@@ -599,6 +590,10 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		fileValue,
 		...(hasFileMissing ? [fileMissing] : []),
 	];
+	const viewKey = JSON.stringify(folderValue[0]?.directoryView);
+	const viewsMatch = segments.flat().filter((stream) => stream.status !== "inactive").every((stream) =>
+		stream.directoryView !== undefined && JSON.stringify(stream.directoryView) === viewKey,
+	);
 
 	// Show a segment only once every segment before it is done. Otherwise the next page of an earlier
 	// segment would push the later rows down.
@@ -614,12 +609,13 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	});
 	const mergedRows = merges.flatMap((merge) => merge.rows);
 	const blockingStream = merges.at(-1)?.blocking ?? null;
-	const isSettled =
-		sort !== null && segments.every((streams) => streams.every((stream) => stream.status !== "loading"));
+	const isDone = viewsMatch && sort !== null && segments.every((streams) => streams.every((stream) => stream.status === "done"));
+	const streamsSettled =
+		viewsMatch && sort !== null && segments.every((streams) => streams.every((stream) => stream.status !== "loading"));
 
 	// Load the next page of the stream that holds the merge back, until the table has the rows it wants.
 	useEffect(() => {
-		if (mergedRows.length < wantedCount && blockingStream?.status === "more") blockingStream.loadMore();
+		if (viewsMatch && mergedRows.length < wantedCount && blockingStream?.status === "more") blockingStream.loadMore();
 	});
 
 	// Keep the last settled rows of this folder, to show while a new sort or a page loads. Compare by
@@ -636,15 +632,19 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		rows: FilesSortedChildrenRow[];
 	} | null>(null);
 	const shownHeldRows = heldRows?.folderScope === folderScope ? heldRows : null;
+	// Show the first rows at startup. A refreshed view keeps the old rows until it refills.
+	const isSettled = streamsSettled && (shownHeldRows === null || isDone || mergedRows.length >= wantedCount);
+	if (isSettled && (wanted.wantedScope !== wantedScope || mergedRows.length > wantedCount)) {
+		setWanted({ wantedScope, count: Math.max(wantedCount, mergedRows.length) });
+	}
 	if (isSettled && heldRows?.key !== heldKey) {
 		setHeldRows({ folderScope, key: heldKey, sort, filter, namePrefix, rows: mergedRows });
 	}
 
 	// Show more asks for one more page of rows. The effect above loads them.
 	const loadMore = useFn(() => {
-		setWanted({ sortScope, count: mergedRows.length + FILES_SORTED_CHILDREN_PAGE_SIZE });
+		setWanted({ wantedScope, count: mergedRows.length + FILES_SORTED_CHILDREN_PAGE_SIZE });
 	});
-	const isDone = isSettled && segments.every((streams) => streams.every((stream) => stream.status === "done"));
 	const rows = isSettled ? mergedRows : shownHeldRows?.rows;
 
 	return {

@@ -10,15 +10,30 @@ import {
 import { ConvexError, convexToJson, type Infer, type Value } from "convex/values";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { files_SavedStream } from "../../shared/files.ts";
+import type { files_DirectoryView, files_SavedStream } from "../../shared/files.ts";
 import { useFilesPaginatedQuery } from "./files-paginated-query-hooks.ts";
 
 type Row = { name: string };
 type Args = { folder: string; savedStream: files_SavedStream; searchGeneration: number; value?: Value };
-type QueryArgs = Args & { paginationOpts: Infer<typeof paginationOptsValidator> };
+type DirectoryArgs = { folder: string; stream: "normal" | "cohort"; pageView?: files_DirectoryView };
+type QueryArgs = (Args | DirectoryArgs) & { paginationOpts: Infer<typeof paginationOptsValidator> };
+type DirectoryPage = PaginationResult<Row> & { directoryView: files_DirectoryView };
 const query = makeFunctionReference<"query", QueryArgs, PaginationResult<Row>>("files_test:page");
 const otherQuery = makeFunctionReference<"query", QueryArgs, PaginationResult<Row>>("files_test:other_page");
+const directoryQuery = makeFunctionReference<"query", DirectoryArgs & Pick<QueryArgs, "paginationOpts">, DirectoryPage>(
+	"files_test:directory",
+);
 const args: Args = { folder: "root", savedStream: { kind: "normal", generation: 0 }, searchGeneration: 0 };
+const directoryArgs: DirectoryArgs = { folder: "root", stream: "normal" };
+const beforeView: files_DirectoryView = {
+	cohortId: "cohort-a" as NonNullable<files_DirectoryView>["cohortId"],
+	view: "before",
+};
+const afterView: files_DirectoryView = { ...beforeView, view: "after" };
+const nextView: files_DirectoryView = {
+	cohortId: "cohort-b" as NonNullable<files_DirectoryView>["cohortId"],
+	view: "before",
+};
 type Watch = { name: string; args: QueryArgs; key: string };
 const answers = new Map<string, PaginationResult<Row> | Error>();
 const listeners = new Map<string, Set<() => void>>();
@@ -43,11 +58,20 @@ function renderPager(initialArgs: Args | "skip" = args) {
 	);
 }
 
+function renderDirectoryPager(stream: DirectoryArgs["stream"] = "normal") {
+	return renderHook(
+		() => useFilesPaginatedQuery(directoryQuery, { ...directoryArgs, stream }, { initialNumItems: 2 }),
+		{
+			wrapper: Wrapper,
+		},
+	);
+}
+
 function activeWatches() {
 	return [...watches.values()].filter((watch) => (listeners.get(watch.key)?.size ?? 0) > 0);
 }
 
-function answer(watch: Watch, value: PaginationResult<Row> | Error) {
+function answer(watch: Watch, value: PaginationResult<Row> | DirectoryPage | Error) {
 	act(() => {
 		answers.set(watch.key, value);
 		listeners.get(watch.key)?.forEach((notify) => notify());
@@ -97,6 +121,124 @@ afterEach(async () => {
 	cleanup();
 	await client.close();
 	vi.restoreAllMocks();
+});
+
+describe("directory pages", () => {
+	test.each([null, beforeView, afterView])("pins continuations to directory view %j", (directoryView) => {
+		const hook = renderDirectoryPager();
+		const first = activeWatches()[0]!;
+		expect(first.args).not.toHaveProperty("pageView");
+		answer(first, { ...page(["a", "b"], false, "native-tail"), directoryView });
+		act(() => hook.result.current.loadMore(2));
+		const later = activeWatches().find((watch) => watch.args.paginationOpts.cursor === "native-tail")!;
+		expect(later.args, "a continuation pins its native cursor to the returned directory view").toHaveProperty(
+			"pageView",
+			directoryView,
+		);
+		answer(later, { ...page(["c", "d"], true, ""), directoryView });
+		expect(hook.result.current.directoryView).toEqual(directoryView);
+		expect(hook.result.current.results.map((row) => row.name)).toEqual(["a", "b", "c", "d"]);
+	});
+
+	test("settles an empty idle cohort with its null directory view", () => {
+		const hook = renderDirectoryPager("cohort");
+		answer(activeWatches()[0]!, { ...page([], true, ""), directoryView: null });
+		expect(hook.result.current, "an idle cohort is settled with an explicit null tag").toMatchObject({
+			results: [],
+			status: "Exhausted",
+			directoryView: null,
+		});
+	});
+
+	test.each([null, beforeView])("pins both native split children to directory view %j", (directoryView) => {
+		const hook = renderDirectoryPager();
+		const parent = activeWatches()[0]!;
+		answer(parent, { ...page(["a", "z"], false, "z"), directoryView, pageStatus: "SplitRequired", splitCursor: "m" });
+		const left = activeWatches().find((watch) => watch.args.paginationOpts.endCursor === "m")!;
+		const right = activeWatches().find((watch) => watch.args.paginationOpts.cursor === "m")!;
+		for (const child of [left, right])
+			expect(child.args, "both split children pin the parent directory view").toHaveProperty("pageView", directoryView);
+		expect(left.args.paginationOpts).toEqual({
+			cursor: null,
+			endCursor: "m",
+			numItems: 2,
+			id: parent.args.paginationOpts.id,
+		});
+		expect(right.args.paginationOpts).toEqual({
+			cursor: "m",
+			endCursor: "z",
+			numItems: 2,
+			id: parent.args.paginationOpts.id,
+		});
+		answer(left, { ...page(["a"], false, "m"), directoryView });
+		answer(right, { ...page(["z"], false, "z"), directoryView });
+		expect(hook.result.current.results.map((row) => row.name)).toEqual(["a", "z"]);
+		expect(hook.result.current.directoryView).toEqual(directoryView);
+	});
+
+	test.each([afterView, nextView, null])(
+		"resets mixed pages and restores the requested extent for %j",
+		(directoryView) => {
+			const hook = renderDirectoryPager();
+			const first = activeWatches()[0]!;
+			answer(first, { ...page(["a", "b"], false, "old-tail"), directoryView: beforeView });
+			act(() => hook.result.current.loadMore(2));
+			const later = activeWatches().find((watch) => watch.args.paginationOpts.cursor === "old-tail")!;
+			answer(later, { ...page(["c", "d"], true, ""), directoryView });
+			const fresh = activeWatches().find((watch) => watch.args.paginationOpts.id !== first.args.paginationOpts.id)!;
+			expect(fresh, "mixed page tags start a fresh native pagination session").toBeDefined();
+			expect(fresh.args.paginationOpts.cursor).toBeNull();
+			expect(fresh.args.paginationOpts.id).toBeLessThan(first.args.paginationOpts.id!);
+			expect(fresh.args).not.toHaveProperty("pageView");
+			answer(fresh, { ...page(["new-a", "new-b"], false, "new-tail"), directoryView });
+			expect(hook.result.current.isLoading, "a reset does not settle at the first page after Show more").toBe(true);
+			expect(hook.result.current.directoryView).toBeUndefined();
+			const refill = activeWatches().find((watch) => watch.args.paginationOpts.cursor === "new-tail")!;
+			expect(refill, "a directory reset refills the requested loaded extent").toBeDefined();
+			expect(refill.args).toHaveProperty("pageView", directoryView);
+			answer(refill, { ...page(["new-c", "new-d"], true, ""), directoryView });
+			expect(hook.result.current.results.map((row) => row.name)).toEqual(["new-a", "new-b", "new-c", "new-d"]);
+			expect(hook.result.current.directoryView).toEqual(directoryView);
+			expect(hook.result.current.status).toBe("Exhausted");
+		},
+	);
+
+	test.each([
+		{ side: "left", otherReady: false },
+		{ side: "left", otherReady: true },
+		{ side: "right", otherReady: false },
+		{ side: "right", otherReady: true },
+	] as const)("rejects a mixed $side split child while otherReady=$otherReady", ({ side, otherReady }) => {
+		const hook = renderDirectoryPager();
+		const parent = activeWatches()[0]!;
+		answer(parent, { ...page(["a", "z"]), directoryView: beforeView, pageStatus: "SplitRequired", splitCursor: "m" });
+		const left = activeWatches().find((watch) => watch.args.paginationOpts.endCursor === "m")!;
+		const right = activeWatches().find((watch) => watch.args.paginationOpts.cursor === "m")!;
+		if (otherReady) answer(side === "left" ? right : left, { ...page(["old"]), directoryView: beforeView });
+		answer(side === "left" ? left : right, { ...page(["new"]), directoryView: afterView });
+		const fresh = activeWatches().find((watch) => watch.args.paginationOpts.id !== parent.args.paginationOpts.id);
+		expect(fresh, "either split child with a different view resets before rows can join").toBeDefined();
+		expect(hook.result.current).toMatchObject({ results: [], directoryView: undefined, isLoading: true });
+	});
+
+	test("retries a native first-page error with a fresh ID and keeps the refill extent", () => {
+		const hook = renderDirectoryPager();
+		const first = activeWatches()[0]!;
+		answer(first, { ...page(["a", "b"], false, "old-tail"), directoryView: beforeView });
+		act(() => hook.result.current.loadMore(2));
+		answer(first, new Error("InvalidCursor: Native first-page journal changed."));
+		const fresh = activeWatches()[0]!;
+		expect(fresh.args.paginationOpts.id, "a native first-page failure gets a fresh negative ID").toBeLessThan(
+			first.args.paginationOpts.id!,
+		);
+		answer(fresh, { ...page(["new-a", "new-b"], false, "new-tail"), directoryView: afterView });
+		expect(hook.result.current.isLoading, "native journal recovery keeps the requested extent").toBe(true);
+		const refill = activeWatches().find((watch) => watch.args.paginationOpts.cursor === "new-tail")!;
+		expect(refill, "native first-page recovery refills past its first page").toBeDefined();
+		answer(refill, { ...page(["new-c"], true, ""), directoryView: afterView });
+		expect(hook.result.current.results.map((row) => row.name)).toEqual(["new-a", "new-b", "new-c"]);
+		expect(hook.result.current.directoryView).toEqual(afterView);
+	});
 });
 
 describe("useFilesPaginatedQuery", () => {
@@ -402,7 +544,7 @@ describe("useFilesPaginatedQuery", () => {
 		const first = activeWatches()[0]!;
 		expect(first.name).toBe("files_test:page");
 		if (value === undefined) expect(first.args).not.toHaveProperty("value");
-		else expect(first.args.value).toEqual(value);
+		else expect(first.args).toHaveProperty("value", value);
 		answer(first, page(["a"], true, ""));
 		const rows = hook.result.current.results;
 		hook.rerender({

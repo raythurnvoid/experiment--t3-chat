@@ -48,6 +48,8 @@ function read_tree(
 	},
 ) {
 	return member.as.query(api.files_tree.list_tree_children, {
+		stream: "normal" as const,
+		pageView: null,
 		membershipId: member.membershipId,
 		parentId: args.parentId ?? seeded.parentId,
 		kind: args.kind,
@@ -297,6 +299,7 @@ describe("locked rows in folder lists", () => {
 		// The root list stays refused: the guest reads no open node.
 		expect(
 			await guest.as.query(api.files_tree.list_tree_children, {
+				stream: "normal" as const,
 				membershipId: guest.membershipId,
 				parentId: "root",
 				kind: "folder",
@@ -304,7 +307,7 @@ describe("locked rows in folder lists", () => {
 				restricted: true,
 				paginationOpts: { numItems: 10, cursor: null },
 			}),
-		).toEqual({ page: [], isDone: true, continueCursor: "" });
+		).toEqual({ page: [], isDone: true, continueCursor: "", directoryView: null });
 	});
 
 	test("a row the scope job has not reached is checked once per pair", async () => {
@@ -327,6 +330,7 @@ describe("locked rows in folder lists", () => {
 			guest.as.run(async (ctx) => {
 				const before = await ctx.meta.getTransactionMetrics();
 				const result = await ctx.runQuery(api.files_tree.list_tree_children, {
+					stream: "normal" as const,
 					membershipId: guest.membershipId,
 					parentId: seeded.parentId,
 					kind: "file",
@@ -400,6 +404,7 @@ describe("locked rows in folder lists", () => {
 				f.asAdmin.run(async (ctx) => {
 					const before = await ctx.meta.getTransactionMetrics();
 					const result = await ctx.runQuery(api.files_tree.list_tree_children, {
+						stream: "normal" as const,
 						membershipId: f.admin.membershipId,
 						parentId: f.nodes.openId,
 						kind: "folder",
@@ -456,6 +461,7 @@ describe("locked rows in folder lists", () => {
 			const { page, cost } = await member.as.run(async (ctx) => {
 				const before = await ctx.meta.getTransactionMetrics();
 				const result = await ctx.runQuery(api.files_tree.list_tree_children, {
+					stream: "normal" as const,
 					membershipId: member.membershipId,
 					parentId: deepestId,
 					kind: "file",
@@ -531,6 +537,7 @@ describe("locked rows in folder lists", () => {
 			f.asAdmin.run(async (ctx) => {
 				const before = await ctx.meta.getTransactionMetrics();
 				const result = await ctx.runQuery(api.files_tree.list_tree_children, {
+					stream: "normal" as const,
 					membershipId: f.admin.membershipId,
 					parentId: folderId,
 					kind: "folder",
@@ -585,6 +592,8 @@ describe("locked rows in folder lists", () => {
 			const { result, cost } = await member.as.run(async (ctx) => {
 				const before = await ctx.meta.getTransactionMetrics();
 				const result: TreePage = await ctx.runQuery(api.files_tree.list_tree_children, {
+					stream: "normal" as const,
+					pageView: null,
 					membershipId: member.membershipId,
 					parentId: parent._id,
 					kind: "file",
@@ -654,7 +663,7 @@ describe("custom-field filters with restricted children", () => {
 					restricted: true,
 					paginationOpts: { numItems: 10, cursor: null },
 				}),
-			).toEqual({ page: [], isDone: true, continueCursor: "" });
+			).toEqual({ page: [], isDone: true, continueCursor: "", directoryView: null });
 		}
 		// The owner still sees HR by its value.
 		expect(await (await seed_clients()).read_table(BY_NAME, { filter: IS_DONE })).toEqual(["Acme", "HR", "notes.md"]);
