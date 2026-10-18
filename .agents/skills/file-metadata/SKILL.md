@@ -541,7 +541,9 @@ The doors sit in the search box region of `convex/files_metadata.ts`, except `se
   The owner, plugin volumes and GLOBAL workspaces read every area. The cursor is a `value_store` id
   (one day) that holds the walk cursor and the `searchGeneration`; a page of another search view
   answers `_nay` "The saved search view changed. Search again.". A missing or unreadable folder and
-  a value too long come back as a problem row, like `search_saved`. String prefix plans use
+  a value too long come back as a problem row, like `search_saved`. Every page charges the
+  per-user `files_search_metadata` rate limit; a refused call answers `_nay` "Rate limit exceeded",
+  which the box shows as the list problem. String prefix plans use
   `string_prefix_upper_bound`, which includes non-BMP text such as `op😀`.
 - `files_search_db_create_reader` serves the agent's `search`. It shares owner, ancestor, and permission reads across indexed results. It checks
   active membership, private ownership, current proposal id and revision, readiness, and read

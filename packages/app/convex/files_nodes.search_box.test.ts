@@ -3,7 +3,7 @@ import { R2 } from "@convex-dev/r2";
 import type { FunctionArgs } from "convex/server";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
-import { api, internal } from "./_generated/api.js";
+import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
@@ -99,8 +99,14 @@ describe("search box doors", () => {
 	test("search_saved unites metadata kinds and value kinds and scopes by folder path", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const search = (plans: files_metadata_SearchPlan[], folderPath?: string) =>
-			search_saved_plans({ asWho: seeded.asOwner, membershipId: seeded.db.membershipId, plans, folderPath });
+		// This test searches more often than the per-user search limit allows, so each search resets it.
+		const search = async (plans: files_metadata_SearchPlan[], folderPath?: string) => {
+			await t.mutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "files_search_metadata",
+				key: seeded.db.userId,
+			});
+			return await search_saved_plans({ asWho: seeded.asOwner, membershipId: seeded.db.membershipId, plans, folderPath });
+		};
 
 		// `status:open` from either metadata kind: the open task, the fixed task through its map, the archive.
 		expect(await search(statusOpenPlans)).toEqual(

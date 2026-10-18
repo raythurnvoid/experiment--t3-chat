@@ -7202,6 +7202,8 @@ export const search_saved_metadata = action({
 			folderPath: args.folderPath,
 		});
 		if (start?.kind !== "start") return Result({ _yay: { page: start ? [start] : [], cursor: null, isDone: true } });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_search_metadata", key: start.userId });
+		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
 		let stored: z.infer<typeof search_saved_metadata_cursor_schema> | null = null;
 		if (args.cursor !== null) {
 			const value = await ctx.runQuery(internal.value_store.get, { id: args.cursor });
