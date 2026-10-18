@@ -324,6 +324,11 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   number), and `files_subtree_op_nodes` (the folder queue). All three are empty when no job runs. Read
   each step's result with `convex data _scheduled_functions --limit 60` and look for
   `files_subtree_ops.js:advance`. A failed step shows `state.kind: "failed"` with the error.
+- Check a Move path refusal as a member who cannot open a nested folder. Use the catalog's
+  `c2-move-limit` fixture. The error may name the selected source and the 1,024-character limit,
+  but must not name the hidden leaf or its new path length. Read back the original paths after refusal.
+- Check a guest root table with and without a custom metadata filter. Both must stay empty;
+  `Shared with you` must still open shared roots. Restore the member's role and metadata after testing.
 - Check stored paths with `convex run files_nodes:search_paths` and `{ organizationId, workspaceId,
   visibilityUserId, pathQuery, numItems: 1000, cursor }`. Page with `continueCursor` until
   `isDone`. After a move, no hit may keep the old path prefix. `pathQuery` is a search index text

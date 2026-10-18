@@ -155,7 +155,7 @@ describe("list_tree_children_shared", () => {
 		expect(await read_table(BY_NAME, { member })).toEqual(["open.md", "shared.md"]);
 	});
 
-	test("refuses a folder the caller cannot read, and gives a grant-only member their shares at the root", async () => {
+	test("keeps a grant-only member's root table empty when a custom-field filter is applied", async () => {
 		const { t, db, asOwner, parentId, add_member, grant_read, set_metadata } = await seed_folder_table();
 		const member = await add_member("clerk_root_grant_only", null);
 		expect(
@@ -175,7 +175,17 @@ describe("list_tree_children_shared", () => {
 		};
 
 		const root = await member.as.query(api.files_tree.list_tree_children_shared, { ...args, principalIndex: 0 });
-		expect(root.page.map((row) => row.name)).toEqual(["table"]);
+		expect(root, "A custom-field filter must not open the guest root table").toEqual(REFUSED);
+		const shared = await member.as.query(api.files_tree.list_tree_shared_roots, {
+			membershipId: member.membershipId,
+			archived: false,
+			principalIndex: 0,
+			paginationOpts: FIRST_PAGE,
+		});
+		expect(
+			shared.page.map((row) => row.name),
+			"Shared with you still opens the shared folder",
+		).toEqual(["table"]);
 		// The member has no role, so no role stream.
 		expect(await member.as.query(api.files_tree.list_tree_children_shared, { ...args, principalIndex: 1 })).toEqual(
 			REFUSED,

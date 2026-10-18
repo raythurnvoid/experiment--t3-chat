@@ -878,8 +878,9 @@ index; its page shape can show only that some unreadable file matches, never whi
 **Guests.** A guest is an active member without workspace `content.read`. They open only what is
 shared with them. The workspace root is locked for them: Bash `ls /`, `ls -R /`, `find /` (also with
 `-name`), `tree /` and API `files/list` of `/` (also `recursive`) say "Permission denied" (403), so
-they reach a shared item by its exact path. The UI root page shows nothing for them; they use "Shared
-with you". The UI search box still searches from the root and finds only what they can open. Their
+they reach a shared item by its exact path. The UI root page shows nothing for them, including with
+a custom-field filter; they use "Shared with you". The UI search box still searches from the root
+and finds only what they can open. Their
 agent can `cp` and `mv`: each item checks read on its source and write on its destination. Chat, the agent's file tools
 and the public API file routes need only the active membership; each file door checks the node.
 Plugins stay closed to guests: MCP tools, volume mounts (`list_bash_volume_mounts`,

@@ -1340,7 +1340,35 @@ async function db_headers(
 		path,
 		oldPathLength: old?.path.length ?? 0,
 	});
-	if (tooLong._nay) return tooLong;
+	if (tooLong._nay) {
+		if (record.role === "descendant" && old && old.parentId !== "root" && item) {
+			const sourceParent = (await files_saved_placement_db_get_node(ctx.db, old.parentId, {
+				cohortId: cohort._id,
+				view: "before",
+			}))!;
+			const readable = await access_control_db_authorize_membership(ctx, {
+				membership,
+				userAuth: { id: cohort.userId },
+				permission: "content.read",
+				fileNode: sourceParent,
+			});
+			// Move carries locked descendants, but an error must not name anything below them.
+			if (readable._nay) {
+				const root = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
+				const source = (await files_saved_placement_db_get_node(ctx.db, root.nodeId, {
+					cohortId: cohort._id,
+					view: "before",
+				}))!;
+				return Result({
+					_nay: {
+						...tooLong._nay,
+						message: `An item inside "${source.name}" would exceed the ${files_PATH_MAX_LENGTH.toLocaleString("en-US")}-character path limit. Shorten a folder name or move it higher.`,
+					},
+				});
+			}
+		}
+		return tooLong;
+	}
 	const scope = physical.isRestrictedScopeRoot ? physical._id : (parent?.restrictedScopeNodeId ?? null);
 	if (selected) {
 		const run = cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;

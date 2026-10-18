@@ -1286,11 +1286,10 @@ export const list_tree_children_shared = query({
 			return refused;
 		}
 
-		// At the root a grant-only member still gets the shares there, because the open streams give
-		// them nothing.
 		if (
-			args.parentId !== files_ROOT_ID &&
-			!(await files_tree_db_get_readable_node(ctx, { reader, nodeId: args.parentId }))
+			args.parentId === files_ROOT_ID
+				? !reader.hasWorkspaceRead
+				: !(await files_tree_db_get_readable_node(ctx, { reader, nodeId: args.parentId }))
 		) {
 			return refused;
 		}

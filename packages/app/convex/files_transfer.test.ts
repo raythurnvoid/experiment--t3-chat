@@ -2005,6 +2005,40 @@ describe("move", () => {
 		);
 	});
 
+	test.each(["parent", "item"] as const)("a Move path refusal respects a restricted %s", async (restricted) => {
+		const secretName = "secret-file-name-should-stay-private.txt";
+		const deepPath = `/source/locked/${["a", "b", "c"].map((letter) => letter.repeat(240)).join("/")}/${secretName}`;
+		const destination = `/${"d".repeat(255)}`;
+		const fixture = await create_folder_fixture(["/source", "/source/locked", deepPath, destination]);
+		const member = await add_member(fixture);
+		expect(
+			await fixture.asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: fixture.db.membershipId,
+				nodeId: fixture.folders.get(restricted === "parent" ? "/source/locked" : deepPath)!,
+			}),
+		).toEqual({ _yay: null });
+		const result = await test_move_nodes(fixture.t, member.asUser, {
+			membershipId: member.membershipId,
+			itemIds: [fixture.folders.get("/source")!],
+			targetParentId: fixture.folders.get(destination)!,
+		});
+		expect(result._nay?.name).toBe("path_too_long");
+		if (restricted === "parent") {
+			expect(result._nay?.message, "Move errors must not name descendants below a locked folder").not.toContain(
+				secretName,
+			);
+			expect(result._nay?.message).toBe(
+				'An item inside "source" would exceed the 1,024-character path limit. Shorten a folder name or move it higher.',
+			);
+		} else {
+			// A locked item's name stays visible when its parent is readable.
+			expect(result._nay?.message).toContain(secretName);
+		}
+		expect((await get_node(fixture, deepPath))?._id, "the failed Move keeps the original path").toBe(
+			fixture.folders.get(deepPath),
+		);
+	});
+
 	// `/s` + 3 names of 255 characters + one of 251 make 1,022 characters.
 	const names = [..."abc"].map((letter) => letter.repeat(255));
 	const chainPath = `/${[...names, "d".repeat(251)].join("/")}`;

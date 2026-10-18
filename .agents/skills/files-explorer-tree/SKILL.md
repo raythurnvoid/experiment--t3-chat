@@ -731,7 +731,8 @@ and `find` also keep raw name order.
   editable controls keep normal text shortcuts. Copy and Cut also leave selected text alone.
 - Cut requires source move access, including visible protected descendants. Copy only needs read
   access. Paste requires destination write access. The backend checks the full operation again.
-  A move also checks locked and archived restricted descendants before changing any paths.
+  Nested restricted folders move along, active or archived, and keep their own people. Moving an
+  item out of a restricted folder still needs Can manage on that folder.
   Cut rows are muted and their accessible names say `ready to move`. Escape clears only an idle
   cut while file navigation has focus. Copy stays until the next Cut or Copy, or until the
   workspace changes. There is no Clear button.

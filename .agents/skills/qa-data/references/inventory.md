@@ -118,6 +118,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | File with a user writer | `chitchat-qa/xfer-qa-0914:/u18/dest.md` |
 | Folder a plugin service owns | `qa-browser/home:/chitchat`, `chitchat-qa/home:/chitchat-2eff489e` (read-only for tests) |
 | Restricted (shared) scope roots | `chitchat-qa/xfer-qa-0914:/u34-dst-a/u34a/sub`, `/u34-dst-b/u34b/sub`, `/g4-media/speakers.mp4`, `/g4-media/shapes.png` |
+| Move path error below a locked folder | `qa-browser/home:/c2-move-limit` (`v975tb2hs4e1dn2zh78pc3ekg98ghawa`), seven empty folders with a locked child and a 785-character leaf path. Destination `v9779mbbm27n9tmcqgjt0bf4fh8gge4d` has a 255-character name; moving into it would make the leaf path 1,041 characters. Owner can open the child; viewer cannot. Created for C2 checks on 2026-10-18. |
 
 ### Plugin output (read-only)
 
