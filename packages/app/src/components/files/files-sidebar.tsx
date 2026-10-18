@@ -3441,7 +3441,12 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 			return;
 		}
 
-		virtualizer.scrollToIndex(selectedItemIndex, { align: "auto" });
+		// Skip the scroll when the row is already fully visible. The virtualizer keeps the align
+		// "auto" only in that case. `scrollToIndex` would still write the scroll position there,
+		// and that forces a layout pass of about 14ms on every file open.
+		if (virtualizer.getOffsetForIndex(selectedItemIndex, "auto")?.[1] !== "auto") {
+			virtualizer.scrollToIndex(selectedItemIndex, { align: "auto" });
+		}
 		lastScrolledSelectedNodeIdRef.current = selectedNodeId;
 	}, [selectedNodeId, itemIndexById, virtualizer]);
 
