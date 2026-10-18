@@ -30,7 +30,7 @@
 	}
 	.ChannelsActivity[data-compact="true"] {
 		height: auto;
-		padding: 8px 0;
+		padding: 8px;
 		overflow: visible;
 	}
 	.ChannelsActivity-list,
