@@ -1935,6 +1935,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 			<MyModalPopover
 				className={"FilesPropertiesModal" satisfies FilesPropertiesModal_ClassNames}
 				data-files-properties-modal=""
+				unmountOnHide
 			>
 				<MyModalHeader>
 					<MyModalHeading>Properties</MyModalHeading>

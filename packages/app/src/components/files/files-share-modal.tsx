@@ -774,6 +774,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 				className={"FilesShareModal" satisfies FilesShareModal_ClassNames}
 				hideOnEscape={!busy}
 				data-files-share-modal=""
+				unmountOnHide
 			>
 				<MyModalHeader>
 					<MyModalHeading>{shareState ? `Share ${shareState.nodeName}` : "Share"}</MyModalHeading>

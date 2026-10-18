@@ -330,7 +330,7 @@ export const ChannelsComposerAttachments = memo(function ChannelsComposerAttachm
 				/>
 			</div>
 			<MyModal open={picker} setOpen={setPicker}>
-				<MyModalPopover aria-label="Attach a file">
+				<MyModalPopover aria-label="Attach a file" unmountOnHide>
 					<MyModalHeader>
 						<MyModalHeading>Attach a file</MyModalHeading>
 						<MyModalCloseTrigger />

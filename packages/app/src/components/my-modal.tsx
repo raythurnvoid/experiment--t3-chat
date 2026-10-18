@@ -59,6 +59,12 @@ export type MyModalPopover_Props = Omit<
 	ExtractStrict<keyof Ariakit.DialogProps, "modal" | "portal">
 >;
 
+/**
+ * The dialog. It stays mounted while closed unless the caller passes `unmountOnHide`. Pass it when the
+ * owner mounts again often. For example, the file view mounts again on every file open, and each closed
+ * dialog would then run Ariakit's effects again, including a `getComputedStyle` call in the backdrop
+ * that forces a style pass.
+ */
 export const MyModalPopover = memo(function MyModalPopover(props: MyModalPopover_Props) {
 	const { className, children, backdrop, portalElement, ...rest } = props;
 

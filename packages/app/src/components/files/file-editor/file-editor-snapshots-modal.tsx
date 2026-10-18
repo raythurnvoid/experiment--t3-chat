@@ -751,7 +751,10 @@ const FileEditorSnapshotsModalListModal = memo(function FileEditorSnapshotsModal
 
 	return (
 		<MyModal open={isListOpen} setOpen={setIsListOpen}>
-			<MyModalPopover className={cn("FileEditorSnapshotsModal" satisfies FileEditorSnapshotsModal_ClassNames)}>
+			<MyModalPopover
+				className={cn("FileEditorSnapshotsModal" satisfies FileEditorSnapshotsModal_ClassNames)}
+				unmountOnHide
+			>
 				<MyModalHeader>
 					<MyModalHeading>File Snapshots</MyModalHeading>
 				</MyModalHeader>
