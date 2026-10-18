@@ -117,6 +117,7 @@ const REFUSAL_TEXT = {
 	execution: "the browser command could not finish.",
 	invalid_result: "the browser returned output that could not be read.",
 	not_started: "the browser did not start this command.",
+	permission_denied: "Permission denied: the user cannot open this file.",
 } as const;
 
 const CODE_MAX_CHARS = 20_000;
@@ -216,7 +217,13 @@ function safe_reason(name: string | undefined | null): BrowserReason {
 	if (name === "busy_command" || name === "busy") return "busy";
 	if (name === "stale" || name === "stale_observation" || name === "stale_lease" || name === "stale_command")
 		return "stale";
-	if (name === "agent_access_off" || name === "limit" || name === "needs_capture" || name === "unavailable")
+	if (
+		name === "agent_access_off" ||
+		name === "limit" ||
+		name === "needs_capture" ||
+		name === "unavailable" ||
+		name === "permission_denied"
+	)
 		return name;
 	if (name === "not_connected") return "unavailable";
 	if (name === "operation_limit") return "session_limit";
@@ -767,7 +774,8 @@ async function command_open(args: {
 		if (opened._nay) {
 			const reason = safe_reason(opened._nay.name);
 			await finish({ ctx, invocation, status: "errored", reason });
-			return refuse(reason, nay_cause(opened._nay));
+			// The fixed text already says it all for a locked file.
+			return refuse(reason, reason === "permission_denied" ? null : nay_cause(opened._nay));
 		}
 		const session = opened._yay.session;
 		const binding: BrowserResource = {

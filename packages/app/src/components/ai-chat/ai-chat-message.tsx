@@ -820,6 +820,7 @@ function file_result_status_text(metadata: z.infer<typeof ai_chat_file_result_sc
 			? null
 			: {
 					unavailable: "The file is no longer available.",
+					permission_denied: "You don't have access to this file.",
 					unsupported_image: "This file cannot be viewed as an image.",
 					limit: "A size or count limit was reached.",
 					agent_required: "Use Agent mode to create files.",

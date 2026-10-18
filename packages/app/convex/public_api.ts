@@ -52,6 +52,7 @@ import {
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
 	files_db_create_path_lookups,
+	files_db_get_path_access,
 	files_default_text_shape_for_name,
 	files_editable_text_content_type_of,
 	files_editable_text_shape_of,
@@ -71,7 +72,7 @@ import { files_saved_placement_db_get_node } from "../server/files-saved-placeme
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
-import { files_nodes_db_archive_nodes, files_nodes_db_get_path_access, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
+import { files_nodes_db_archive_nodes, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
 import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
@@ -2080,7 +2081,7 @@ export const get_download_node_locked = internalQuery({
 		) {
 			return false;
 		}
-		const access = await files_nodes_db_get_path_access(ctx, { ...args, path: fileNode.path });
+		const access = await files_db_get_path_access(ctx, { ...args, path: fileNode.path });
 		return access.status === "locked";
 	},
 });
@@ -4449,7 +4450,7 @@ export const create_file_upload_targets = internalMutation({
 				// A create-only upload onto a locked name answers "File exists", like the OS. The name
 				// already shows as a locked row, so this tells nothing new.
 				if (args.overwrite === "fail") {
-					const access = await files_nodes_db_get_path_access(ctx, {
+					const access = await files_db_get_path_access(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
 						subject: writeContext.subject,

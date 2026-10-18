@@ -246,13 +246,24 @@ describe("cross-workspace Copy privacy", () => {
 		).toEqual({ _yay: null });
 		// Draft-view discovery lists the locked child, like GNU `cp -r`: it is skipped, nothing is
 		// created for it, and the rest is copied.
-		const { items } = await copy(f, [{ kind: "saved", id: created[0]! }]);
+		const { runId, items } = await copy(f, [{ kind: "saved", id: created[0]! }]);
 		expect(
 			items.map((item) => [item.sourcePath, item.state, item.skipReason ?? null, item.outputTarget !== null]),
 		).toEqual([
 			["/folder", "completed", null, true],
 			["/folder/open", "completed", null, true],
 			["/folder/secret-name", "skipped", "permission_denied", false],
+		]);
+		// The receipt cannot read the locked source, so it gets the path from the item.
+		const page = await f.asUser.query(api.files_transfer_queries.list_items, {
+			membershipId: f.current.membershipId,
+			runId,
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		expect(page?.page.map((item) => [item.source?.path ?? null, item.lockedPath])).toEqual([
+			["/folder", null],
+			["/folder/open", null],
+			[null, "/folder/secret-name"],
 		]);
 	});
 

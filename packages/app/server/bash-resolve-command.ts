@@ -141,6 +141,8 @@ export function bash_resolve_command_create(ctx: ActionCtx, dbFilesRoots: bash_D
 							nodeId,
 						});
 			if (path == null) continue;
+			if (typeof path !== "string")
+				return { stdout: "", stderr: "resolve: Permission denied\n", exitCode: bash_COMMAND_EXIT_FAILURE };
 
 			fs.observePath(path);
 			return {

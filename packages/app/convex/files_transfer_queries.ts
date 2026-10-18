@@ -451,6 +451,8 @@ const item_view_validator = v.object({
 		v.null(),
 	),
 	errorMessage: v.union(v.string(), v.null()),
+	// A Copy skips a child its user cannot open. Its row shows the path it had, with no other data.
+	lockedPath: v.union(v.string(), v.null()),
 });
 
 export const list_items = query({
@@ -512,6 +514,7 @@ export const list_items = query({
 							}
 						: null,
 				errorMessage: source ? item.errorMessage : item.errorMessage ? "This item is no longer available" : null,
+				lockedPath: item.skipReason === "permission_denied" ? item.sourcePath : null,
 			});
 		}
 		return { ...items, page };

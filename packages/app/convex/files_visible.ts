@@ -515,8 +515,15 @@ export const internal_get_directory_path = internalQuery({
 			if (authorized._nay) return null;
 		}
 		const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 4096 });
-		const entry = await reader.resolveTarget(args.target);
+		const access = await reader.resolveTargetAccess(args.target);
 		if (reader.exhausted) throw convex_error({ message: "Folder path lookup exceeded its read limit." });
+		// `cd` may enter a locked folder whose parent is open, so the next call stays in it. Only its
+		// path comes back, which its locked row already shows.
+		if (access.status === "locked")
+			return access.node?.kind === "folder"
+				? { target: { kind: "saved" as const, id: access.node._id }, path: access.node.path }
+				: null;
+		const entry = access.status === "found" ? access.entry : null;
 		return entry?.node.kind === "folder"
 			? {
 					target:

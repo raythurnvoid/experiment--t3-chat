@@ -49,6 +49,7 @@ export const ai_chat_file_result_schema = z
 				reason: z
 					.enum([
 						"unavailable",
+						"permission_denied",
 						"unsupported_image",
 						"limit",
 						"agent_required",

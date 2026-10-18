@@ -187,7 +187,20 @@ export async function files_metadata_read_full_page(
 					metadataOnly,
 				});
 	const source = await read_source();
-	if (!source) return Result({ _nay: { message: "Not found" } });
+	if (!source) {
+		// The read answers null for a locked path too. Say Permission denied for it, not Not found.
+		const access =
+			args.caller.kind === "path"
+				? await ctx.runQuery(internal.files_nodes.get_path_access, {
+						agentSource: args.caller.args.agentSource,
+						organizationId: args.caller.args.organizationId,
+						workspaceId: args.caller.args.workspaceId,
+						subject: args.caller.args.subject,
+						path: args.caller.args.path,
+					})
+				: null;
+		return Result({ _nay: { message: access?.status === "locked" ? "Permission denied" : "Not found" } });
+	}
 	const path = args.renderPath?.(source.path) ?? source.path;
 	// A new turn has a new run fence. Check it on reads, but bind pages to the same caller and chat.
 	const caller =

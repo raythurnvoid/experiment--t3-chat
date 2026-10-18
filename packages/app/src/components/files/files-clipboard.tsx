@@ -979,7 +979,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 										disabled={isSaving || isStopPending}
 									>
 										<legend className={"FilesTransferRunModal-path" satisfies FilesTransferRunModal_ClassNames}>
-											{item.source?.path ?? item.output?.path ?? "Unavailable item"}
+											{item.source?.path ?? item.output?.path ?? item.lockedPath ?? "Unavailable item"}
 										</legend>
 										{isConflict ? (
 											<>
@@ -1047,7 +1047,9 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 															? "Ready for review"
 															: "Saved"
 														: item.state === "skipped"
-															? "Skipped"
+															? item.lockedPath !== null
+																? "Skipped: Permission denied"
+																: "Skipped"
 															: item.state === "failed"
 																? "Failed"
 																: item.state === "canceled"

@@ -8,10 +8,9 @@ import { internalMutation } from "./functions.ts";
 import app_convex_schema, { ai_chat_workspaces_source_validator, files_type_query_item_validator } from "./schema.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
-import { files_nodes_db_get_path_access } from "./files_nodes.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
-import { files_db_get_pending_update, files_db_get_visible_node_by_path } from "../server/files.ts";
+import { files_db_get_path_access, files_db_get_pending_update, files_db_get_visible_node_by_path } from "../server/files.ts";
 import { files_access_version_db_get } from "../server/files-access-version.ts";
 import {
 	files_pending_review_facts_db_pin_structure,
@@ -345,7 +344,7 @@ export const advance = internalMutation({
 			if (query.rootPath !== "/" && !entry && !saved) {
 				// A missing name below a locked folder answers like the folder, so the name does not leak.
 				const access = scope
-					? await files_nodes_db_get_path_access(ctx, {
+					? await files_db_get_path_access(ctx, {
 							...scope,
 							subject: { kind: "user", userId: query.userId, plugin: null },
 							path: query.rootPath,

@@ -63,7 +63,7 @@ import {
 	files_db_patch_pending_update,
 	files_db_delete_pending_update,
 	files_db_get_visible_node_by_path,
-	files_db_create_path_lookups,
+	files_db_get_path_access,
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
@@ -309,63 +309,7 @@ export type files_nodes_get_by_path_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-/**
- * Say whether a saved path is found, locked or missing for the subject, like a file system does.
- *
- * - `locked`: the item exists and the subject cannot open it, or the path is below a folder they
- *   cannot open, whether the name exists there or not. `node` is set only when the parent folder is
- *   readable, because then the item already shows there as a locked row.
- * - `missing`: nothing is there, and the nearest folder that exists is readable. A file in the middle
- *   of the path is missing too.
- *
- * The normal lookups answer `null` for both. Callers ask this only after a `null`, to choose between
- * "Permission denied" and "not found", so a caller that does not ask still fails closed.
- */
-export async function files_nodes_db_get_path_access(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		subject: access_control_Subject;
-		path: string;
-	},
-): Promise<
-	| { status: "found"; node: Doc<"files_nodes"> }
-	| { status: "locked"; node: Doc<"files_nodes"> | null }
-	| { status: "missing" }
-> {
-	// `null` is the workspace root.
-	const can_read = (fileNode: Doc<"files_nodes"> | null) =>
-		access_control_db_can_act_on_file_node(ctx, { ...args, fileNode, permission: "content.read" });
-	// The workspace root has no node. It is locked for a caller who cannot open it (a guest).
-	if (args.path === "/") return (await can_read(null)) ? { status: "missing" } : { status: "locked", node: null };
-	const lookups = await files_db_create_path_lookups(ctx, args);
-	// Use the path, not `parentId`: during a Move the stored parent can be the old one.
-	const can_read_parent_of = async (path: string) => {
-		const parentPath = path.slice(0, path.lastIndexOf("/"));
-		if (parentPath === "") return await can_read(null);
-		const parent = await lookups.get(parentPath);
-		return parent !== null && (await can_read(parent));
-	};
-	const node = await lookups.get(args.path);
-	if (node) {
-		if (await can_read(node)) return { status: "found", node };
-		return { status: "locked", node: (await can_read_parent_of(args.path)) ? node : null };
-	}
-	const { node: nearest, depth } = await lookups.find_existing_parent(args.path);
-	// Missing only when the folder that would hold the name is readable. Otherwise the answer would
-	// tell which names exist inside a folder the subject cannot open.
-	const canSeeInside = !nearest
-		? await can_read(null)
-		: nearest.kind === "folder"
-			? await can_read(nearest)
-			: // A file in the middle of the path: decide by the folder it is in.
-				(await can_read(nearest)) ||
-				(await can_read_parent_of(`/${path_extract_segments_from(args.path).slice(0, depth).join("/")}`));
-	return canSeeInside ? { status: "missing" } : { status: "locked", node: null };
-}
-
-/** `files_nodes_db_get_path_access` for actions (Bash, the API, the agent tools). */
+/** `files_db_get_path_access` for actions (Bash, the API, the agent tools). */
 export const get_path_access = internalQuery({
 	args: {
 		agentSource: v.optional(ai_chat_workspaces_source_validator),
@@ -394,7 +338,7 @@ export const get_path_access = internalQuery({
 			const node = await files_db_get_visible_node_by_path(ctx, args);
 			return node ? { status: "found" as const, node } : { status: "missing" as const };
 		}
-		return await files_nodes_db_get_path_access(ctx, { ...args, workspaceId: scope.workspaceId });
+		return await files_db_get_path_access(ctx, { ...args, workspaceId: scope.workspaceId });
 	},
 });
 
@@ -560,7 +504,7 @@ export const get_path_access_for_membership = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) return "missing";
-		const access = await files_nodes_db_get_path_access(ctx, {
+		const access = await files_db_get_path_access(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			subject: { kind: "user", userId: userAuth.id, plugin: null },
@@ -585,7 +529,8 @@ export const get_path_by_id = internalQuery({
 		 */
 		nodeId: v.string(),
 	},
-	returns: v.union(v.string(), v.null()),
+	// A node the user cannot open is not missing: it answers locked, with no path.
+	returns: v.union(v.string(), v.null(), v.object({ status: v.literal("locked") })),
 	handler: async (ctx, args) => {
 		if (args.agentSource) {
 			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
@@ -613,9 +558,10 @@ export const get_path_by_id = internalQuery({
 			userId: args.visibilityUserId,
 			readLimit: 2048,
 		});
-		const entry = await reader.resolveTarget(target);
+		const access = await reader.resolveTargetAccess(target);
 		if (reader.exhausted) throw convex_error({ message: "File path lookup exceeded its read limit." });
-		return entry?.path ?? null;
+		if (access.status === "locked") return { status: "locked" as const };
+		return access.status === "found" ? access.entry.path : null;
 	},
 });
 

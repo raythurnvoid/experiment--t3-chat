@@ -1572,7 +1572,7 @@ describe("get_path_by_id", () => {
 		expect(paths).toEqual(unavailableIds.map(() => null));
 	});
 
-	test("hides a restricted folder and its child until the member receives a grant", async () => {
+	test("says locked for a restricted folder and its child until the member receives a grant", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -1618,7 +1618,8 @@ describe("get_path_by_id", () => {
 			)._nay,
 		).toBeUndefined();
 		expect(await read(db.userId)).toEqual(nodes.map((node) => node.path));
-		expect(await read(memberId)).toEqual([null, null]);
+		// Both exist, so they are locked, not missing. The child sits below the locked folder.
+		expect(await read(memberId)).toEqual([{ status: "locked" }, { status: "locked" }]);
 
 		expect(
 			(

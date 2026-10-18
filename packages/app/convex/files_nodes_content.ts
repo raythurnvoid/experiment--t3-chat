@@ -3605,7 +3605,14 @@ export const get_file_read_source = internalQuery({
 		const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 2048 });
 		const target =
 			args.target && (await files_pending_nodes_db_resolve_read_target(ctx, { ...scope, target: args.target }));
-		const entry = args.target ? target && (await reader.resolveTarget(target)) : await reader.resolvePath(args.path);
+		const access = args.target
+			? target
+				? await reader.resolveTargetAccess(target)
+				: null
+			: await reader.resolvePathAccess(args.path);
+		if (access?.status === "locked")
+			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
+		const entry = access?.status === "found" ? access.entry : null;
 		if (!entry || entry.path !== args.path) return Result({ _nay: { message: "File unavailable" } });
 		const source = await db_get_stored_file_read_source(ctx, { entry, userId: args.userId });
 		return source ? Result({ _yay: source }) : Result({ _nay: { message: "File unavailable" } });

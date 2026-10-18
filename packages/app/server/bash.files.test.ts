@@ -2661,6 +2661,53 @@ describe("locked paths", () => {
 		expect(result.stderr).toBe(`ls: cannot open directory '${mount}/Team': Permission denied\n`);
 	});
 
+	test("the next call stays in a locked folder that cd entered", async () => {
+		const runner = await create_locked_runner();
+		expect((await runner.run({ command: `cd ${mount}/Team` })).metadata.exitCode).toBe(0);
+
+		const result = await runner.run({ command: "pwd; ls" });
+
+		expect(result.stdout).toBe(`${mount}/Team\n`);
+		expect(result.stderr).toBe(`ls: cannot open directory '${mount}/Team': Permission denied\n`);
+	});
+
+	test("meta get on a locked file says Permission denied", async () => {
+		const runner = await create_locked_runner();
+
+		const locked = await runner.run({ command: `meta get ${mount}/open/locked.md` });
+		const missing = await runner.run({ command: `meta get ${mount}/open/nope.md` });
+
+		expect(locked.metadata.exitCode).toBe(1);
+		expect(locked.stderr).toBe(`meta get: Permission denied: ${mount}/open/locked.md\n`);
+		expect(missing.stderr).toBe(`meta get: Not found: ${mount}/open/nope.md\n`);
+	});
+
+	test("the chat image read answers permission_denied for a locked file", async () => {
+		const runner = await create_locked_runner();
+		const { organizationId, workspaceId, userId, membershipId, membershipLifetime, threadId } = runner.ctxData;
+		const read = (path: string) =>
+			runner.t.query(internal.files_nodes_content.get_file_read_source, {
+				userId,
+				membershipId,
+				agentSource: { organizationId, workspaceId, userId, membershipId, membershipLifetime, threadId },
+				path,
+			});
+
+		expect(await read("/open/locked.md")).toEqual({ _nay: { name: "permission_denied", message: "Permission denied" } });
+		expect(await read("/open/nope.md")).toEqual({ _nay: { message: "File unavailable" } });
+	});
+
+	test("resolve of a locked node id says Permission denied", async () => {
+		const runner = await create_locked_runner();
+		const lockedId = await get_seeded_node_id(runner, "/open/locked.md");
+
+		const result = await runner.run({ command: `resolve '${lockedId}'` });
+
+		expect(result.metadata.exitCode).toBe(1);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toBe("resolve: Permission denied\n");
+	});
+
 	test("cd below a locked folder says Permission denied", async () => {
 		const runner = await create_locked_runner();
 

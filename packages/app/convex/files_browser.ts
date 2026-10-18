@@ -2759,6 +2759,17 @@ export const agent_open_file_browser = internalAction({
 			subject: { kind: "user", userId: args.source.userId, plugin: null },
 			overlayUserId: args.source.userId,
 		})) as files_nodes_get_visible_entry_by_path_Result;
+		if (!entry) {
+			// The lookup answers null for a locked path too.
+			const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
+				organizationId: args.source.organizationId,
+				workspaceId: args.source.workspaceId,
+				subject: { kind: "user", userId: args.source.userId, plugin: null },
+				path: args.path,
+			});
+			if (access.status === "locked")
+				return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
+		}
 		if (!entry || entry.node.kind !== "file") return Result({ _nay: { message: "Not found" } });
 		const previous = (await ctx.runQuery(internal.files_browser.load_browser_session, {
 			userId: args.source.userId,

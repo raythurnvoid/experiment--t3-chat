@@ -422,6 +422,10 @@ describe("agent file read source", () => {
 			// A locked folder is not an empty folder.
 			else if (door === "internal_list")
 				expect(result, door).toEqual({ _nay: { name: "permission_denied", message: "Permission denied" } });
+			else if (door === "get_path_by_id") expect(result, door).toEqual({ status: "locked" });
+			// The cwd may stay in a locked folder whose parent is open. Its reads still say Permission denied.
+			else if (door === "internal_get_directory_path")
+				expect(result, door).toEqual({ target: { kind: "saved", id: destination.folderId }, path: "/notes" });
 			else expect(result, door).toEqual(restricted.refused);
 		}
 	});

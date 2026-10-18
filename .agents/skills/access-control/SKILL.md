@@ -864,7 +864,7 @@ size, empty pages, cursors and reactive reruns.
 
 **Locked or missing.** The path and id lookups still answer `null` for both, so a caller that does
 not ask fails closed. After a `null`, a surface that must say "Permission denied" asks
-`files_nodes_db_get_path_access` (`convex/files_nodes.ts`; internal query `get_path_access`, page
+`files_db_get_path_access` (`server/files.ts`; internal query `get_path_access` in `convex/files_nodes.ts`, page
 query `get_path_access_for_membership`) or, by id, `files_tree.get_file_node_access_for_membership`.
 `locked` means the item exists and the subject cannot open it, or the path is below a folder they
 cannot open (a missing name there is locked too). `missing` means nothing is there and the nearest

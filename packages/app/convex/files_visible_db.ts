@@ -3,8 +3,12 @@
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { QueryCtx, MutationCtx } from "./_generated/server.js";
 import { access_control_db_authorize_membership } from "./access_control.ts";
+import { files_db_get_path_access } from "../server/files.ts";
 import { files_visible_resolve_db_create, type files_visible_resolve_Store } from "../server/files-visible-resolve.ts";
-import type { files_saved_placement_FixedView } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	type files_saved_placement_FixedView,
+} from "../server/files-saved-placement.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
 
 /**
@@ -74,6 +78,33 @@ export async function files_visible_db_create_reader(
 		return { status: "resolved" as const, value: outcome.value };
 	}
 
+	async function resolve_target(target: files_PendingTarget) {
+		if (!membership) return null;
+		const result = await core.resolve(target);
+		return result && (await can_read(result.accessNode)) ? result.entry : null;
+	}
+
+	async function resolve_path(path: string) {
+		if (!membership) return null;
+		const result = await core.findPath(path);
+		return result && (await can_read(result.accessNode)) ? result.entry : null;
+	}
+
+	/**
+	 * Why a path this reader cannot show is not there: a saved item the user cannot open is `locked`.
+	 * A saved item that a draft moved away or deleted is `missing`, like the draft view shows it.
+	 */
+	async function path_access(path: string) {
+		if (!membership) return { status: "missing" as const };
+		const access = await files_db_get_path_access(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			subject: { kind: "user", userId: args.userId, plugin: null },
+			path,
+		});
+		return access.status === "locked" ? access : { status: "missing" as const };
+	}
+
 	return {
 		active: membership !== null,
 		view: await core.getView(),
@@ -93,10 +124,24 @@ export async function files_visible_db_create_reader(
 			resume_visible({ kind: "target", target }, options),
 		resumePath: (path: string, options?: { stepLimit?: number; allowPagination?: boolean }) =>
 			resume_visible({ kind: "path", path }, options),
-		async resolveTarget(target: files_PendingTarget) {
-			if (!membership) return null;
-			const result = await core.resolve(target);
-			return result && (await can_read(result.accessNode)) ? result.entry : null;
+		resolveTarget: resolve_target,
+		/**
+		 * Like `resolveTarget`, but tells a locked saved node from a missing one, so a caller can answer
+		 * Permission denied. A locked `node` is set only when its parent folder can be opened.
+		 */
+		async resolveTargetAccess(target: files_PendingTarget) {
+			const entry = await resolve_target(target);
+			if (entry) return { status: "found" as const, entry };
+			if (target.kind !== "saved") return { status: "missing" as const };
+			const node = await files_saved_placement_db_get_node(ctx.db, target.id, args.fixedView);
+			if (
+				!node ||
+				node.organizationId !== args.organizationId ||
+				node.workspaceId !== args.workspaceId ||
+				node.archiveOperationId !== null
+			)
+				return { status: "missing" as const };
+			return await path_access(node.path);
 		},
 		/**
 		 * Like `resolveTarget`, but a readable saved node that a blocked draft move hides still counts, at
@@ -110,10 +155,11 @@ export async function files_visible_db_create_reader(
 			const saved = core.getBlockedSavedEntry(target);
 			return saved?.kind === "saved" && (await can_read(saved.node)) ? saved : null;
 		},
-		async resolvePath(path: string) {
-			if (!membership) return null;
-			const result = await core.findPath(path);
-			return result && (await can_read(result.accessNode)) ? result.entry : null;
+		resolvePath: resolve_path,
+		/** Like `resolvePath`, but tells a locked path from a missing one. */
+		async resolvePathAccess(path: string) {
+			const entry = await resolve_path(path);
+			return entry ? { status: "found" as const, entry } : await path_access(path);
 		},
 	};
 }

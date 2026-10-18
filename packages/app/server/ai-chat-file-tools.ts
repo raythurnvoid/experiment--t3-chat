@@ -164,6 +164,12 @@ export function ai_chat_tool_create_view_image(
 				// Rechecks keep the original source and the selected destination membership.
 				const readArgs = { userId: args.userId, membershipId: destination._yay.membershipId, agentSource, path };
 				const checked = await ctx.runQuery(internal.files_nodes_content.get_file_read_source, readArgs);
+				if (checked._nay?.name === "permission_denied")
+					// The model sees only `output`, so it carries the reason too.
+					return {
+						...ai_chat_file_result({ title: "View image", status: "errored", files: [], reason: "permission_denied" }),
+						output: "View image: errored. Permission denied.",
+					};
 				if (checked._nay) return unavailable();
 				const file = checked._yay;
 				if (file.size === 0)

@@ -188,6 +188,20 @@ describe("ai_chat_tool_create_view_image", () => {
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
+	test("a locked file says Permission denied to the model and reads no bytes", async () => {
+		const { tool, readSource } = makeReader();
+		readSource.mockResolvedValue({ _nay: { name: "permission_denied", message: "Permission denied" } });
+
+		const result = await execute({ tool });
+
+		expect(result.metadata.reason).toBe("permission_denied");
+		expect(await convert({ tool, output: result })).toEqual({
+			type: "text",
+			value: "View image: errored. Permission denied.",
+		});
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
 	test.each(["current", "personal"] as const)(
 		"reads %s with the captured source and exact destination",
 		async (workspace) => {

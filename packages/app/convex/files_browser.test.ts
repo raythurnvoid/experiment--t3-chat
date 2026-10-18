@@ -1358,6 +1358,51 @@ describe("agent_open_browser", () => {
 			expect(runnerCalls.filter((call) => call.route === "control-resume")).toHaveLength(1);
 		},
 	);
+
+	test("a locked file says Permission denied and a missing file says Not found", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member({ t });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
+		await t.run((ctx) => ctx.db.patch("users", member.userId, { clerkUserId: "user_browser_locked" }));
+		const lockedId = await test_create_saved_text_file(t, {
+			membershipId: owner.membershipId,
+			path: "/locked.html",
+			textContent: HTML_TEXT,
+		});
+		// A restricted root with no grant for the member.
+		await t.run((ctx) =>
+			ctx.db.patch("files_nodes", lockedId, { restrictedScopeNodeId: lockedId, parentScopeNodeId: null }),
+		);
+		const source = await seed_browser_chat_source(t, member);
+		const browserIntent = { policyRevision: 0 };
+		const open = async (path: string) => {
+			const admitted = await t.mutation(internal.ai_chat_files.begin_browser_invocation, {
+				source,
+				browserIntent,
+				toolCallId: `open-${path}`,
+				operationHash: "b".repeat(64),
+				resource: null,
+				mode: "file",
+				timeoutMs: 120_000,
+			});
+			if (admitted._nay) throw new Error(admitted._nay.message);
+			return await t.action(internal.files_browser.agent_open_file_browser, {
+				source,
+				browserIntent,
+				operationId: admitted._yay.commandId,
+				operationDeadline: admitted._yay.deadlineAt,
+				toolCallId: `open-${path}`,
+				path,
+				sourceKind: "saved",
+			});
+		};
+
+		expect(await open("/locked.html")).toEqual({
+			_nay: { name: "permission_denied", message: "Permission denied" },
+		});
+		expect(await open("/nope.html")).toEqual({ _nay: { message: "Not found" } });
+		expect(runnerCalls).toEqual([]);
+	});
 });
 
 describe("start_web_browser", () => {

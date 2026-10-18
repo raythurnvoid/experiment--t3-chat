@@ -141,6 +141,7 @@ function make_item(overrides: Partial<TransferItemPage["page"][number]> = {}): T
 			path: "/copies/report.md",
 		},
 		errorMessage: null,
+		lockedPath: null,
 		...overrides,
 	};
 }
@@ -1443,6 +1444,28 @@ describe("FilesTransferRunModal", () => {
 		expect(screen.getByText("/conflict-49.md")).toBeTruthy();
 		expect(screen.getAllByRole("radio", { name: "Keep both" }).length).toBeGreaterThanOrEqual(50);
 		expect(screen.queryByText("Page 2")).toBeNull();
+	});
+
+	test("names a skipped locked item by its path and says Permission denied", async () => {
+		queryState.run = make_run({ status: "partial" });
+		queryState.runs = [queryState.run];
+		queryState.itemPages.first = {
+			page: [
+				make_item({
+					state: "skipped",
+					source: null,
+					conflictKind: null,
+					conflict: null,
+					lockedPath: "/folder/secret-name",
+				}),
+			],
+			isDone: true,
+			continueCursor: "",
+		};
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
+		expect(await screen.findByText("/folder/secret-name")).toBeTruthy();
+		expect(screen.getByText("Skipped: Permission denied")).toBeTruthy();
 	});
 
 	test.each(["uploading", "select", "normalize"] as const)(

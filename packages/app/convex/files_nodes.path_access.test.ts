@@ -3,7 +3,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_create_saved_text_file } from "./setup.test.ts";
 import type { access_control_Subject } from "./access_control.ts";
-import { files_nodes_db_get_path_access } from "./files_nodes.ts";
+import { files_db_get_path_access } from "../server/files.ts";
 import { fixture, mock_share_storage, reset_rate_limits, type Fixture } from "./files_share_links.setup.test.ts";
 
 beforeEach(mock_share_storage);
@@ -16,7 +16,7 @@ afterEach(() => {
 /** What the member (or `subject`) gets for `path`: the status, and the name of the node when one is sent. */
 function member_access(f: Fixture, path: string, subject?: access_control_Subject) {
 	return f.t.run(async (ctx) => {
-		const access = await files_nodes_db_get_path_access(ctx, {
+		const access = await files_db_get_path_access(ctx, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			subject: subject ?? { kind: "user", userId: f.memberId, plugin: null },

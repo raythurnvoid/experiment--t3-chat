@@ -29,6 +29,7 @@ import {
 	files_private_storage_db_release_deleted_resource,
 } from "../convex/files_private_storage.ts";
 import { files_db_resolve_scope } from "../convex/files_scopes.ts";
+import { access_control_db_can_act_on_file_node, type access_control_Subject } from "../convex/access_control.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_path,
@@ -498,6 +499,62 @@ export async function files_db_create_path_lookups(
 	}
 
 	return { get, find_existing_parent, check_folder_counts };
+}
+
+/**
+ * Say whether a saved path is found, locked or missing for the subject, like a file system does.
+ *
+ * - `locked`: the item exists and the subject cannot open it, or the path is below a folder they
+ *   cannot open, whether the name exists there or not. `node` is set only when the parent folder is
+ *   readable, because then the item already shows there as a locked row.
+ * - `missing`: nothing is there, and the nearest folder that exists is readable. A file in the middle
+ *   of the path is missing too.
+ *
+ * The normal lookups answer `null` for both. Callers ask this only after a `null`, to choose between
+ * "Permission denied" and "not found", so a caller that does not ask still fails closed.
+ */
+export async function files_db_get_path_access(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		subject: access_control_Subject;
+		path: string;
+	},
+): Promise<
+	| { status: "found"; node: Doc<"files_nodes"> }
+	| { status: "locked"; node: Doc<"files_nodes"> | null }
+	| { status: "missing" }
+> {
+	// `null` is the workspace root.
+	const can_read = (fileNode: Doc<"files_nodes"> | null) =>
+		access_control_db_can_act_on_file_node(ctx, { ...args, fileNode, permission: "content.read" });
+	// The workspace root has no node. It is locked for a caller who cannot open it (a guest).
+	if (args.path === "/") return (await can_read(null)) ? { status: "missing" } : { status: "locked", node: null };
+	const lookups = await files_db_create_path_lookups(ctx, args);
+	// Use the path, not `parentId`: during a Move the stored parent can be the old one.
+	const can_read_parent_of = async (path: string) => {
+		const parentPath = path.slice(0, path.lastIndexOf("/"));
+		if (parentPath === "") return await can_read(null);
+		const parent = await lookups.get(parentPath);
+		return parent !== null && (await can_read(parent));
+	};
+	const node = await lookups.get(args.path);
+	if (node) {
+		if (await can_read(node)) return { status: "found", node };
+		return { status: "locked", node: (await can_read_parent_of(args.path)) ? node : null };
+	}
+	const { node: nearest, depth } = await lookups.find_existing_parent(args.path);
+	// Missing only when the folder that would hold the name is readable. Otherwise the answer would
+	// tell which names exist inside a folder the subject cannot open.
+	const canSeeInside = !nearest
+		? await can_read(null)
+		: nearest.kind === "folder"
+			? await can_read(nearest)
+			: // A file in the middle of the path: decide by the folder it is in.
+				(await can_read(nearest)) ||
+				(await can_read_parent_of(`/${path_extract_segments_from(args.path).slice(0, depth).join("/")}`));
+	return canSeeInside ? { status: "missing" } : { status: "locked", node: null };
 }
 
 /**
