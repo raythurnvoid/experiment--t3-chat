@@ -40,6 +40,7 @@ import {
 import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
 import { plugins_mcp_db_delete_user_batch, plugins_mcp_db_revoke_grant } from "./plugins_mcp.ts";
+import { value_store_db_delete_user_batch } from "./value_store.ts";
 import { files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates_db.ts";
 import { files_private_storage_db_release_purged_resources } from "./files_private_storage.ts";
@@ -3168,6 +3169,10 @@ async function db_drain_user_finalization_batch(
 		.take(args.batchSize);
 	await Promise.all(codeReadBudgets.map((doc) => ctx.db.delete("ai_chat_code_read_budgets", doc._id)));
 	if (codeReadBudgets.length > 0) return { done: false, deletedCount: codeReadBudgets.length };
+
+	// Search cursors hold file paths.
+	const storedValueCount = await value_store_db_delete_user_batch(ctx, args);
+	if (storedValueCount > 0) return { done: false, deletedCount: storedValueCount };
 
 	// User finalization stopped this user's writers and removed their grants before this pass.
 	const thread = await ctx.db

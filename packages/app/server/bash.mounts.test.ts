@@ -1488,7 +1488,11 @@ describe("bash_run_command", () => {
 					.first(),
 			);
 			expect(query?.pluginReviewRoot).toBe(reviewRoot);
-			const replayCursor = await bash_cursor_id_create(runner.ctx, JSON.stringify({ queryId: query!._id, step: 0 }));
+			const replayCursor = await bash_cursor_id_create(
+				runner.ctx,
+				runner.seeded.userId,
+				JSON.stringify({ queryId: query!._id, step: 0 }),
+			);
 			const replay = `${command} --cursor ${replayCursor}`;
 			expect((await run(replay)).exitCode).toBe(0);
 			const root = await runner.t.query(internal.files_nodes.get_by_path, {

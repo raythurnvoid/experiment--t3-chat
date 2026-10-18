@@ -2230,7 +2230,11 @@ const app_convex_schema = defineSchema({
 		 */
 		expiresAt: v.union(v.number(), v.null()),
 		metadataId: v.union(v.id("value_store_metadata"), v.null()),
-	}),
+		/**
+		 * The owner. Values can hold private data, like file paths, so account deletion removes them.
+		 */
+		userId: v.id("users"),
+	}).index("by_user", ["userId"]),
 	/**
 	 * Only expiring values have metadata, so cleanup scans small docs.
 	 */

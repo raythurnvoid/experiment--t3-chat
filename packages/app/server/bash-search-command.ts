@@ -399,7 +399,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 		if (!res.isDone) {
 			// Print a complete command before long result snippets so an agent asked to
 			// continue sees the exact command before a large content block.
-			const cursorId = await bash_cursor_id_create(ctx, res.continueCursor);
+			const cursorId = await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, res.continueCursor);
 			continuationBlocks.push(
 				"",
 				bash_search_command_build_continuation({

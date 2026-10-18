@@ -459,7 +459,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						build_continuation({
 							parsed: parsed._yay,
 							absoluteShellPath: target.absoluteShellPath,
-							cursor: await bash_cursor_id_create(ctx, fanOut._yay.continueCursor),
+							cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
 						}),
 					);
 				if (targets.length > 1) lines.unshift(`${target.absoluteShellPath}:`);
@@ -616,7 +616,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						build_continuation({
 							parsed: parsed._yay,
 							absoluteShellPath: target.absoluteShellPath,
-							cursor: await bash_cursor_id_create(ctx, result._yay.continueCursor),
+							cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, result._yay.continueCursor),
 						}),
 					);
 				}

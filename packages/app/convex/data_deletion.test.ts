@@ -8131,6 +8131,32 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.jobs.every((job) => job.putMayArriveUntil! > Date.now())).toBe(true);
 	});
 
+	test("deletes the user's search cursors and keeps another user's", async () => {
+		const t = test_convex();
+		const victim = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other-cursors" }));
+		// Search cursors hold file paths for up to a day.
+		const cursor = JSON.stringify({ path: "/private/plan.md" });
+		// Two cursors, so a batch size of 1 needs more than one pass.
+		for (let index = 0; index < 2; index++) {
+			await t.mutation(internal.value_store.put, { value: cursor, userId: victim.userId, ttl: 86_400_000 });
+		}
+		const otherCursorId = await t.mutation(internal.value_store.put, {
+			value: cursor,
+			userId: other.userId,
+			ttl: 86_400_000,
+		});
+
+		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
+
+		const after = await t.run(async (ctx) => ({
+			values: await ctx.db.query("value_store").collect(),
+			metadata: await ctx.db.query("value_store_metadata").collect(),
+		}));
+		expect(after.values.map((value) => value._id)).toEqual([otherCursorId]);
+		expect(after.metadata.map((metadata) => metadata.valueId)).toEqual([otherCursorId]);
+	});
+
 	test("drains private Paste runs before memberships and keeps shared copies", async () => {
 		const t = test_convex();
 		const victim = await t.run((ctx) =>

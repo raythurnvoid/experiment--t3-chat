@@ -814,7 +814,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				if (res.searchedTop) blocks.push(bash_SEARCH_TOP_MATCHES_NOTE);
 
 				if (!res.isDone) {
-					const cursorId = await bash_cursor_id_create(ctx, res.continueCursor);
+					const cursorId = await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, res.continueCursor);
 					blocks.push(
 						"",
 						bash_search_command_build_continuation({
