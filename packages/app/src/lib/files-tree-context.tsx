@@ -42,6 +42,7 @@ type FilesTreeFoldersRequest = {
 
 const FILES_TREE_PAGE_SIZE = 200;
 const FILES_TREE_SHARED_ROOTS_PAGE_SIZE = 50;
+const FILES_TREE_NO_HOISTED_IDS: ReadonlySet<string> = new Set();
 
 function folder_key(folderId: FilesTreeFolderId, archived: boolean) {
 	return `${folderId}:${archived ? "archived" : "active"}`;
@@ -458,19 +459,26 @@ const FilesTreeProvider = Object.assign(
 				[value.registerFolders, ownerId, requestKey],
 			);
 
-			// Keep this manual memo. Callers rebuild their whole tree when these rows change identity, and a
-			// new array on every render would rebuild it on every render.
+			// Keep these manual memos. Callers rebuild their whole tree when these rows or the hoisted ids
+			// change identity, and a new array on every render would rebuild it on every render.
+			// The loaded rows do not read the pins. Opening a row of the tree pins a node that is already
+			// loaded, so the rows keep their identity and the tree rows do not render again.
 			const { folderResults, pinResults, sharedRoots } = value;
-			const folders = useMemo(() => {
-				const { folderIds, archived, pinnedNodeIds } = JSON.parse(requestKey) as FilesTreeFoldersRequest;
+			const foldersKey = JSON.stringify({ folderIds: request.folderIds, archived: request.archived });
+			const pinnedKey = JSON.stringify(request.pinnedNodeIds);
+			const loaded = useMemo(() => {
+				const { folderIds, archived } = JSON.parse(foldersKey) as Omit<FilesTreeFoldersRequest, "pinnedNodeIds">;
 				const statusByFolderId = new Map<string, FilesTreeFolderResult["status"]>();
 				const rowById = new Map<string, FilesTreeRow>();
-				// Rows shown at the top because the user cannot read their parent.
-				const hoistedIds = new Set<string>();
 
 				const rootResult = folderResults.get(folder_key(files_ROOT_ID, false));
 				if (!rootResult || rootResult.status === "loading") {
-					return { rows: undefined, statusByFolderId, hoistedIds, loadMore: (_folderId: FilesTreeFolderId) => {} };
+					return {
+						rowById: undefined,
+						rows: undefined,
+						statusByFolderId,
+						loadMore: (_folderId: FilesTreeFolderId) => {},
+					};
 				}
 
 				for (const folderId of [files_ROOT_ID, ...folderIds]) {
@@ -493,8 +501,25 @@ const FilesTreeProvider = Object.assign(
 					}
 				}
 
+				const loadMore = (folderId: FilesTreeFolderId) => {
+					folderResults.get(folder_key(folderId, false))?.loadMore();
+					if (archived) {
+						folderResults.get(folder_key(folderId, true))?.loadMore();
+					}
+				};
+
+				return { rowById, rows: [...rowById.values()], statusByFolderId, loadMore };
+			}, [folderResults, foldersKey]);
+
+			const folders = useMemo(() => {
+				const pinnedNodeIds = JSON.parse(pinnedKey) as string[];
+				const { rowById, rows, statusByFolderId, loadMore } = loaded;
+				// Rows shown at the top because the user cannot read their parent.
+				const hoistedIds = new Set<string>();
+				const pinnedRowById = new Map<string, FilesTreeRow>();
+
 				// A pinned node shows even when its page is not loaded yet. A loaded row always wins over the pinned copy.
-				for (const nodeId of pinnedNodeIds) {
+				for (const nodeId of rowById ? pinnedNodeIds : []) {
 					const pin = pinResults.get(nodeId);
 					if (!pin) {
 						continue;
@@ -506,21 +531,20 @@ const FilesTreeProvider = Object.assign(
 					}
 					// The server gives a pinned node and its ancestors only when the user can open them.
 					for (const row of chain) {
-						if (!rowById.has(row._id)) {
-							rowById.set(row._id, { ...row, locked: false });
+						if (!rowById?.has(row._id) && !pinnedRowById.has(row._id)) {
+							pinnedRowById.set(row._id, { ...row, locked: false });
 						}
 					}
 				}
 
-				const loadMore = (folderId: FilesTreeFolderId) => {
-					folderResults.get(folder_key(folderId, false))?.loadMore();
-					if (archived) {
-						folderResults.get(folder_key(folderId, true))?.loadMore();
-					}
+				return {
+					rows: rows && pinnedRowById.size > 0 ? [...rows, ...pinnedRowById.values()] : rows,
+					statusByFolderId,
+					// Share one empty set, so a pin with nothing to hoist keeps the same set.
+					hoistedIds: hoistedIds.size > 0 ? hoistedIds : FILES_TREE_NO_HOISTED_IDS,
+					loadMore,
 				};
-
-				return { rows: [...rowById.values()], statusByFolderId, hoistedIds, loadMore };
-			}, [folderResults, pinResults, requestKey]);
+			}, [loaded, pinResults, pinnedKey]);
 
 			// Active shares first, then archived ones while the archived items show.
 			const sharedRootsResult: FilesTreeFolderResult = request.archived

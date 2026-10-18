@@ -2857,6 +2857,7 @@ const FilesSidebarTreeRow = memo(
 			ancestorIds: previousAncestors,
 			hiddenTrackFileIds: previousHidden,
 			trackActiveFileIds: previousActive,
+			protectedDescendantIds: previousProtected,
 			...previousRest
 		} = previous;
 		const {
@@ -2866,6 +2867,7 @@ const FilesSidebarTreeRow = memo(
 			ancestorIds: nextAncestors,
 			hiddenTrackFileIds: nextHidden,
 			trackActiveFileIds: nextActive,
+			protectedDescendantIds: nextProtected,
 			...nextRest
 		} = next;
 		return (
@@ -2877,8 +2879,14 @@ const FilesSidebarTreeRow = memo(
 			objects_equal_shallow(previousAncestors, nextAncestors) &&
 			previousHidden.size === nextHidden.size &&
 			previousHidden.isSubsetOf(nextHidden) &&
-			previousActive.size === nextActive.size &&
-			previousActive.isSubsetOf(nextActive)
+			// The sidebar builds this set again whenever the tree rows change, usually with the same ids.
+			previousProtected.size === nextProtected.size &&
+			previousProtected.isSubsetOf(nextProtected) &&
+			// The active set is the open node's path, shared by every row. A row draws only its own track
+			// ids from it, so compare those. Then opening a file in another folder does not render every row.
+			[...nextAncestors, next.itemId].every(
+				(trackFileId) => previousActive.has(trackFileId) === nextActive.has(trackFileId),
+			)
 		);
 	},
 );
