@@ -40,7 +40,10 @@ what redundancy cannot.
   network, navigation mid-action.
 - **Test quality** — hunt the proof gaps in your own new tests: refusal tests
   with no positive control, asserting the return but not the side effect, tests
-  that pass with the code deleted.
+  that pass with the code deleted. Then hunt the tests that should not exist:
+  checks of text, labels, or layout, repeats of another test, tests that only
+  exercise a mock, and tests that name no bug they would catch. Flag them for
+  deletion, and follow the repo's own test rule when it has one.
 
 Pick the lenses the work actually has surface for. Running all twelve on a CSS
 change wastes a round.
