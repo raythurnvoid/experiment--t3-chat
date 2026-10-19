@@ -161,9 +161,9 @@ type StepArgs = {
 	membership: Doc<"organizations_workspaces_users"> | null;
 	now: number;
 	/**
-	 * How many more nodes this mutation may change (`nodes`) and read for a check (`checkNodes`). A
-	 * restore of several operations shares one budget across them, so one request cannot run past the
-	 * mutation time limit. `hasPaginated` turns true after this mutation's one paginated read. Convex
+	 * How many more nodes this mutation may change (`nodes`) and read for restore discovery or a check
+	 * (`checkNodes`). A restore of several operations shares one budget across them, so one request
+	 * cannot run past the mutation time limit. `hasPaginated` turns true after this mutation's one paginated read. Convex
 	 * allows only one, so a later read that needs one ends the step.
 	 */
 	budget: { nodes: number; checkNodes: number; hasPaginated: boolean };
@@ -820,10 +820,13 @@ function add_discover_tree_path(run: Pick<RunFields, "discoverTreePaths">, treeP
 async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	const { run } = args;
 	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
-	if (await files_subtree_ops_db_is_near_limits(ctx)) return { kind: "continue" };
+	if (args.budget.checkNodes <= 0 || (await files_subtree_ops_db_is_near_limits(ctx))) return { kind: "continue" };
 	// This index keeps its order when an archived item is renamed or moved.
 	// Convex allows one paginated query per mutation. Small restores use `take` so several operations
-	// can still finish in one request. Larger ones read one page per step.
+	// can still finish in one request. Larger ones read one page per step. A page is as big as the check
+	// budget left, because each step costs about one second of scheduler wait. 50 items per page made a
+	// 416-item restore spend 9 steps here.
+	const pageSize = args.budget.checkNodes;
 	const firstPage = run.checkCursor.treePath
 		? null
 		: await ctx.db
@@ -835,13 +838,13 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 						.eq("moveCohortId", undefined)
 						.eq("archiveOperationId", run.archiveOperationId),
 				)
-				.take(PAGE_SIZE + 1);
-	if (!(firstPage && firstPage.length <= PAGE_SIZE)) {
+				.take(pageSize + 1);
+	if (!(firstPage && firstPage.length <= pageSize)) {
 		if (args.budget.hasPaginated) return { kind: "continue" };
 		args.budget.hasPaginated = true;
 	}
 	const page =
-		firstPage && firstPage.length <= PAGE_SIZE
+		firstPage && firstPage.length <= pageSize
 			? { page: firstPage, isDone: true, continueCursor: "" }
 			: await ctx.db
 					.query("files_nodes")
@@ -852,7 +855,8 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 							.eq("moveCohortId", undefined)
 							.eq("archiveOperationId", run.archiveOperationId),
 					)
-					.paginate({ cursor: run.checkCursor.treePath || null, numItems: PAGE_SIZE });
+					.paginate({ cursor: run.checkCursor.treePath || null, numItems: pageSize });
+	args.budget.checkNodes -= page.page.length;
 	for (const node of page.page) {
 		const parentId = node.parentId;
 		let parent = parentId === files_ROOT_ID ? null : parents.get(parentId);

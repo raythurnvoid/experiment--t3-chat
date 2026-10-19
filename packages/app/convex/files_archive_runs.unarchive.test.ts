@@ -21,11 +21,12 @@ import {
 	archive_to_end,
 } from "./files_archive_runs.setup.test.ts";
 
-// A check step reads at most 100 nodes here instead of 500, so small trees cross it. The mock puts this
-// file in the isolated "Convex" project.
+// A check step reads at most 100 nodes here instead of 500, and a request at most 50 instead of 100, so
+// small trees cross them. The mock puts this file in the isolated "Convex" project.
 vi.mock("../server/files-archive-runs.ts", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../server/files-archive-runs.ts")>()),
 	files_archive_runs_CHECK_STEP_MAX_NODES: 100,
+	files_archive_runs_REQUEST_MAX_CHECK_NODES: 50,
 }));
 
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.

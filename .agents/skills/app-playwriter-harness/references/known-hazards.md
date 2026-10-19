@@ -2945,6 +2945,18 @@ and 153–612 docs written. Both moves finished and returned the fixture to its 
 did not reproduce shared-load failure, so it measured step size but not the retry delay after a
 failure. Hit 2026-09-27.
 
+## The wait between folder job steps is commit time, not a scheduler delay
+
+The next `files_subtree_ops:advance` runs with `runAfter(0)`, but in `convex logs` it starts 0.6–0.9 s
+after a step that wrote 130–155 docs. After a step that wrote 3–5 docs it starts within 0.02–0.04 s.
+So the wait grows with the writes of the step before, and fewer steps alone do not save that time.
+To find it, sort the `advance` executions by `executionTimestamp` and subtract the end of the step
+before (`executionTimestamp + executionTime`). Skip the 60 s retries: they write 0 docs. Single runs
+on dev change a lot (one copy-2 restore step took 4.85 s instead of about 1.3 s), so compare medians of
+3 or more runs. Time phases with `console.time` inside the step. In archive steps, about half of the
+time is the per-item `files_subtree_ops_db_is_near_limits` call, because its overlay flush does the
+derived work of the item stamped before. Hit 2026-10-20.
+
 ## `click()` waits forever on an `aria-disabled` button
 
 Playwright treats `aria-disabled="true"` as not enabled, so `locator.click()` retries until the call
