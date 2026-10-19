@@ -1919,8 +1919,6 @@ export async function files_archive_runs_db_start(
 		choice: null,
 		applyToRemaining: { file: null, folder: null },
 		revision: 0,
-		// No archive job removes proposals now. Save archives an accepted agent delete itself.
-		pendingUpdateCleanup: null,
 		// Cancel on a clash wait ends every job of the request, so each job names the first one.
 		requestFirstRunId: previousRun ? (previousRun.requestFirstRunId ?? previousRun._id) : null,
 		checkNamedItem: null,

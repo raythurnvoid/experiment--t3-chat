@@ -6509,12 +6509,14 @@ const app_convex_schema = defineSchema({
 		}),
 		revision: v.number(),
 		/**
-		 * Accepting an agent's delete. Each step removes the person's own proposals on the nodes it
-		 * archives. `reviewedPendingUpdateIds` is the review selection when a review job started it.
+		 * Temporary: `migrations:erase_files_archive_runs_pending_update_cleanup` erases this old field.
+		 * Remove it from the schema once no row has it.
 		 */
-		pendingUpdateCleanup: v.union(
-			v.object({ reviewedPendingUpdateIds: v.union(v.array(v.id("files_pending_updates")), v.null()) }),
-			v.null(),
+		pendingUpdateCleanup: v.optional(
+			v.union(
+				v.object({ reviewedPendingUpdateIds: v.union(v.array(v.id("files_pending_updates")), v.null()) }),
+				v.null(),
+			),
 		),
 		/**
 		 * Restore: the id of the first job of the same Unarchive request, so Cancel can end them all.
