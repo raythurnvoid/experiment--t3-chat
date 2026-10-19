@@ -972,9 +972,11 @@
 		align-items: center;
 		gap: 4px;
 
-		/* Keep 6px here, not 8px. The 24px column options buttons fill the rest, so the header stays
-		   36px tall. */
-		padding: 6px 12px;
+		/* The column options button is a full 36px icon button, so the header has no vertical padding
+		   and stays 36px tall. The 6px end padding keeps the icon where a 24px button with 12px padding
+		   had it. */
+		min-height: 36px;
+		padding: 0 6px 0 12px;
 
 		font-weight: 500;
 		white-space: nowrap;
@@ -982,13 +984,14 @@
 
 	.FileNodeViewFolderExplorer-column-header-actions {
 		grid-column: -2;
+
+		/* No options button here, so keep the text 12px from the edge as before. */
+		padding-inline-end: 12px;
 	}
 
+	/* Keep the regular icon button size (36px), the same target size as every other icon button. */
 	.FileNodeViewFolderExplorerColumnMenu-trigger.MyIconButton.MyButton {
-		width: 24px;
-		height: 24px;
 		margin-inline-start: auto;
-		padding: 4px;
 
 		color: var(--color-fg-06);
 

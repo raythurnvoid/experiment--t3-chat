@@ -623,7 +623,8 @@ and `find` also keep raw name order.
   every other column. It has no drag, no drop, no row menu and no write query, and `valueTargets`
   skip it, so its custom fields are never read. The table has active rows only, so it has no Restore.
 - Every header works the same, sortable or not: the label and the sort arrow are plain text, and
-  the only control is the column options button at the right edge. Clicking the label does nothing,
+  the only control is the column options button at the right edge. It keeps the regular 36px icon
+  button size, so the header has no vertical padding. Clicking the label does nothing,
   and headers have no hover background. Decided 2026-10-19: a whole-cell sort button made sortable
   and non-sortable columns (`file.updated_by`) behave differently.
 - Each header has a column menu. Sortable columns offer both directions (each sets the sort) and
