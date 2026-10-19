@@ -250,9 +250,39 @@ of not counting locked items.
   A locked archived descendant still blocks replacement.
 - Archive and restore run through one archive job (`files_archive_runs`, Activity source
   `files_archive_run`). The job is the `archive` or `restore` kind of a `files_subtree_ops` op, and it
-  walks the folder by `parentId`. The request runs the first step itself. When that step finishes the
-  work (up to 75 nodes), no run doc, no op, and no Activity exist. A bigger one continues in the
-  background. An archive op keeps at most 64 busy paths too, merged the same way as a restore's below.
+  walks the folder by `parentId`. The request runs a small first step itself: at most 10 stamps and
+  100 checked nodes (`files_archive_runs_REQUEST_MAX_NODES`, `files_archive_runs_REQUEST_MAX_CHECK_NODES`),
+  so it answers fast. When that step finishes the work, no run doc, no op, and no Activity exist. A
+  bigger one continues in the background, at most 30 stamps and 500 checked nodes per step. An archive
+  op keeps at most 64 busy paths too, merged the same way as a restore's below.
+  - Design principle: Archive decides in the request with index reads only. When the indexes cannot
+    decide, the request does a small share of the full check and the job does the rest. The request
+    never walks a big folder.
+  - Fast archive (`files_archive_runs_db_check_fast`). The request first refuses each named item the
+    person cannot write ("Permission denied") or that has its own lock. Then it reads a few index
+    ranges for each other named item. When they prove that the check would pass for every one, the
+    request stamps the named items at once, so they leave the tree before the toast shows. The job
+    starts in `apply` and runs no check. Its Activity shows a count with no total until the last stamp.
+    The indexes prove it only when all of these hold:
+    - at most 10 named items are left, so the request stamps all of them;
+    - no Move holds the workspace, no `scope` or `move` op runs, and no op overlaps a named path. These
+      rewrite paths and scopes page by page, so the index answers would be stale;
+    - no active restricted folder inside the item's area (`by_org_ws_parentScope_archive_treePath`;
+      skipped for the owner, who may write every area). "Add people" only adds access;
+    - no read-only or writer-list node inside, active or archived (`by_org_ws_writePolicyMode_treePath`).
+    An active read-only node in the item's own area refuses that named item in the request and names
+    the node, because the person may read it. Any other lock or restricted folder means only the check
+    can decide.
+  - One path per request: when even one named item is not proven, the whole archive runs the check,
+    and every named item stays in the tree until the check passes. `archive_nodes` lists them as
+    `waitingNodeIds` with `isChecking` true, and the Archive dialog says that they are being checked.
+    A named item can also wait after the check, when the request ran out of stamps. One job keeps one set
+    of rules: the check's queue numbers, the "every item refused" rule, the public-link cleanup, and
+    the refusal answers. Windows also handles a whole selection as one unit.
+  - Accepted: a running "Apply to contents" job can lock a child after the request, and the stamp walk
+    then hides it. The same window exists between the check and the apply. A stopped archive can leave
+    an archived restricted folder with active items inside; the fast path does not see it, and the
+    apply skips folders that another archive stamped, so it writes nothing there.
   - A restore first pages through its archive operation in creation order to find all top items. It
     keeps at most 64 folder paths that hold them: past 64, the two paths with the longest shared
     folder merge into that folder, up to `/`. It checks those paths for a running subtree job, and its
@@ -281,8 +311,8 @@ of not counting locked items.
     skipped and the rest refused) keeps `errorMessage` null, like the protection job: the card counts
     and the job dialog list say what was not archived.
     When the check refuses every named item, one item gets its own refusal, and several items get
-    "None of these items can be archived. …". If the request's own check did it, the request answers
-    with that error and makes no job. If a later check step did it, the job fails with it as
+    "None of these items can be archived. …". If the request's own check or its index reads did it,
+    the request answers with that error and makes no job. If a later check step did it, the job fails with it as
     `errorMessage`. Otherwise, during the check, only a lost membership ends the whole job. Every
     check step asks for it first, even a step that only drops the rows of a refused item, so the
     apply never starts for somebody who left. Once the apply has started, the stamp walk finishes
@@ -296,8 +326,9 @@ of not counting locked items.
     The restore check pages the operation's items by `treePath`. Archived items can share one path. When a restore check page ends inside such
     a group, the check reads up to 500 more of them at once; more refuse ("Too many archived items
     share one path."). Files with the same name in different folders can span discovery pages.
-  - Archive has no Stop. After the check, it stamps every named item before anything inside them. A
-    step stamps at most 75 items, so with more named items the rest leave the tree in the next steps.
+  - Archive has no Stop. After the check, it stamps every named item before anything inside them. The
+    request stamps at most 10 items and a background step at most 30, so with more named items the
+    rest leave the tree in the next steps.
     Then it stamps the active children of each stamped folder, page
     by page, until no active child is left. It ends inside the first named item before it goes inside
     the second. It does not check locks or access again, so a lock set during the job does not stop
@@ -356,13 +387,14 @@ of not counting locked items.
     overwrites the other's stamp.
   - A request whose first step fails after some writes returns the error ("Stopped partway") and keeps a
     failed Activity. A restore refusal before any write makes no job. An archive makes no job only
-    when the request's own check refuses every named item. When it refuses only some, it keeps the job,
-    so the Activity can list them. In `archive_nodes`, a named id that is
-    missing or in another workspace is "Not found" for that item alone, and one the person cannot open
-    (a locked item, archived or not) is "Permission denied". The job lists it and archives the others.
-    When nothing else is left to archive, the request answers with the first of these refusals. A
-    malformed id still refuses the whole request. A named item the person can read but not change goes
-    to the job, which refuses it and archives the others. `unarchive_nodes` answers "Permission denied"
+    when the request refuses every named item, in its own check or in its index reads. When it refuses
+    only some, it keeps the job, so the Activity can list them. In `archive_nodes`, a named id that is
+    missing or in another workspace is "Not found" for that item alone. One the person cannot open (a
+    locked item, archived or not) or can read but not change is "Permission denied". The job lists it
+    and archives the others. When nothing else is left to archive, the request answers with the reason
+    when one item was refused, or with "None of these items can be archived. You cannot change them or
+    items inside them." when several were. A malformed id still refuses the whole request.
+    `unarchive_nodes` answers "Permission denied"
     for an item the person cannot change, locked or not.
   - Reviewed agent delete (`pendingArchive`) uses the Save cohort worker. It checks all descendants
     in pages, then switches the whole group and removes its proposals. Stop before the switch keeps

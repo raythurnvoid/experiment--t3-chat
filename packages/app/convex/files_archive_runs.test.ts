@@ -13,6 +13,7 @@ import {
 	restore,
 	folder,
 	read_node,
+	lock_writer,
 } from "./files_archive_runs.setup.test.ts";
 
 // A check step reads at most 100 nodes here instead of 500, so small trees cross it. The mock puts this
@@ -51,7 +52,7 @@ describe("archive_nodes", () => {
 
 	test("a big archive runs as a job, and after every step the side docs match and no active node is inside a finished archive", async () => {
 		const f = await fixture();
-		// 247 items: more than one check step of 100, and more than 3 steps of 75 stamps.
+		// 247 items: more than one check step of 100, and more than 3 steps of 30 stamps.
 		const tree = await seed_tree(f, { name: "big", folderCount: 6, filesPerFolder: 40 });
 
 		const archived = await archive(f, [tree.topId]);
@@ -71,28 +72,48 @@ describe("archive_nodes", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
 	});
 
-	test("the named folder leaves the tree in the first step that writes, before its children", async () => {
+	test("a folder with no lock and no restricted folder inside leaves the tree in the request", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "first", folderCount: 6, filesPerFolder: 20 });
 
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;
-		// The check of 127 nodes does not fit in the 100 reads of the request, so nothing is stamped yet.
-		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
-		await step(f, job.runId);
-
+		// The indexes prove that the check of 127 nodes would pass, so the request stamps the folder. The
+		// job stamps the files later.
+		expect(job.waitingNodeIds).toEqual([]);
 		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBeNull();
 		expect((await read_node(f, tree.fileIds.at(-1)!)).archiveOperationId).toBeNull();
 		await expect_consistent(f);
+
+		const ended = await run_to_end(f, job);
+		expect(ended.activity.progress).toMatchObject({ total: 127, completed: 127, skipped: 0, blocked: 0 });
+	});
+
+	test("a folder the indexes cannot clear stays in the tree until the check passes", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "slow", folderCount: 6, filesPerFolder: 20 });
+		await lock_writer({ f, nodeId: tree.fileIds.at(-1)!, userId: f.db.userId });
+
+		const archived = await archive(f, [tree.topId]);
+		const job = archived._yay!;
+		// The check of 127 nodes does not fit in the 100 reads of the request, so nothing is stamped yet.
+		expect(job.waitingNodeIds).toEqual([tree.topId]);
+		expect(job.isChecking).toBe(true);
+		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
+
+		const ended = await run_to_end(f, job);
+		expect(ended.activity.status).toBe("succeeded");
+		expect((await read_node(f, tree.fileIds.at(-1)!)).archiveOperationId).not.toBeNull();
 	});
 
 	test("a folder created inside during the check is archived with the rest", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "grow", folderCount: 6, filesPerFolder: 20 });
+		await lock_writer({ f, nodeId: tree.fileIds.at(-1)!, userId: f.db.userId });
 
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;
-		// The check runs in steps first, so `d0` is still active here.
+		// The writer list makes the job check first, so `d0` is still active here.
 		expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).toBeNull();
 		const created = await folder(f, "/grow/d0/new");
 

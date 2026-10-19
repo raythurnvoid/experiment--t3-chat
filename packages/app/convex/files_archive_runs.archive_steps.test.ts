@@ -5,7 +5,7 @@ import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { activities_is_active } from "./activities_db.ts";
 import { test_mocks_fill_db_with } from "./setup.test.ts";
-import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
+import { files_archive_runs_db_check_fast, files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_find_blocker } from "./files_subtree_ops_db.ts";
 import {
 	fixture,
@@ -19,6 +19,8 @@ import {
 	run_to_end,
 	archive,
 	lock,
+	lock_archived,
+	lock_writer,
 	folder,
 	read_node,
 	queue_empty_folders_first,
@@ -47,7 +49,7 @@ describe("archive_nodes", () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "lock", folderCount: 1, filesPerFolder: 74 });
 
-		// The check of 76 nodes fits in the request, and the stamps begin there too. They stop after 75.
+		// The indexes clear the folder, so the request stamps without a check. It stops after 10 stamps.
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;
 		expect((await read_node(f, tree.fileIds.at(-1)!)).archiveOperationId).toBeNull();
@@ -71,8 +73,19 @@ describe("archive_nodes", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_archive_runs").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
 
-		// The big tree is too big to check inside the request, so the job checks it in steps. The refusal
-		// then ends the job without "partway", because nothing changed.
+		// One index read finds an active read-only file, so even a tree too big to check inside the
+		// request is refused there, and the refusal names the file.
+		expect(await archive(f, [tree.topId])).toEqual({
+			_nay: { name: "read_only", message: '"/checked/d5/f019.md" is read-only. Unlock it, then try again.' },
+		});
+		expect(await f.t.run((ctx) => ctx.db.query("files_archive_runs").collect())).toEqual([]);
+
+		// An archived read-only file needs the check, because the index cannot tell whether it is inside this
+		// folder or in an old archived folder with the same path. So the job checks the tree in steps. The
+		// refusal then ends the job without "partway", because nothing changed.
+		await lock({ f, nodeId: tree.fileIds.at(-1)!, locked: false });
+		expect(await archive(f, [tree.fileIds.at(-1)!])).toEqual({ _yay: null });
+		await lock_archived(f, tree.fileIds.at(-1)!);
 		const archived = await archive(f, [tree.topId]);
 		const ended = await run_to_end(f, archived._yay!);
 		expect(ended.activity.status).toBe("failed");
@@ -80,7 +93,46 @@ describe("archive_nodes", () => {
 		// The refused folder counts once, and the counts add up to the total.
 		expect(ended.activity.progress).toMatchObject({ total: 1, completed: 0, skipped: 0, blocked: 1 });
 		const state = await read_state(f);
-		expect(state.nodes.every((node) => node.archiveOperationId === null)).toBe(true);
+		expect(state.nodes.filter((node) => node.archiveOperationId !== null).map((node) => node.path)).toEqual([
+			"/checked/d5/f019.md",
+		]);
+	});
+
+	test("a writer list inside that does not list the person stops the archive after the check", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const tree = await seed_tree(f, { name: "listed", folderCount: 6, filesPerFolder: 20 });
+		await lock_writer({ f, nodeId: tree.fileIds.at(-1)!, userId: member.userId });
+
+		// The index cannot tell who the list names, so the folder stays in the tree while the job checks it.
+		const archived = await archive(f, [tree.topId]);
+		expect(archived._yay?.waitingNodeIds).toEqual([tree.topId]);
+		const ended = await run_to_end(f, archived._yay!);
+
+		expect(ended.activity).toMatchObject({
+			status: "failed",
+			errorMessage: '"/listed/d5/f019.md" is read-only. Unlock it, then try again.',
+		});
+		expect((await read_state(f)).nodes.every((node) => node.archiveOperationId === null)).toBe(true);
+	});
+
+	test("a running scope job makes the archive check first", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "scoped", folderCount: 6, filesPerFolder: 20 });
+		// The scope job rewrites the items inside page by page, so their indexes are not right yet.
+		expect(
+			(
+				await f.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: tree.topId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await f.t.run((ctx) => ctx.db.query("files_subtree_ops").unique()))?.status).toBe("running");
+
+		const archived = await archive(f, [tree.topId]);
+		expect(archived._yay?.waitingNodeIds).toEqual([tree.topId]);
+		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
 	});
 
 	test("a named item the check refuses is not archived with everything inside, and the other named items are archived", async () => {
@@ -101,6 +153,8 @@ describe("archive_nodes", () => {
 				refusedItems: [
 					{ nodeId: refused.topId, message: '"/refused/d0/f001.md" is read-only. Unlock it, then try again.' },
 				],
+				waitingNodeIds: [],
+				isChecking: false,
 			},
 		});
 		const job = archived._yay!;
@@ -133,8 +187,10 @@ describe("archive_nodes", () => {
 		const before = await seed_tree(f, { name: "before", folderCount: 1, filesPerFolder: 2 });
 		const big = await seed_tree(f, { name: "big-refused", folderCount: 6, filesPerFolder: 20 });
 		const after = await seed_tree(f, { name: "after", folderCount: 1, filesPerFolder: 1 });
-		// The check reads 100 nodes in each step, and the walk reaches this file last.
-		await lock({ f, nodeId: big.fileIds.at(-1)!, locked: true });
+		// The check reads 100 nodes in each step, and the walk reaches this file last. It is archived, so
+		// only the check can refuse it.
+		expect(await archive(f, [big.fileIds.at(-1)!])).toEqual({ _yay: null });
+		await lock_archived(f, big.fileIds.at(-1)!);
 
 		// The request checks 100 nodes and does not reach the read-only file yet.
 		const archived = await archive(f, [before.topId, big.topId, after.topId]);
@@ -145,7 +201,9 @@ describe("archive_nodes", () => {
 		expect(ended.activity.progress).toMatchObject({ discovered: 8, total: 8, completed: 7, blocked: 1 });
 		const state = await read_state(f);
 		const archivedIds = new Set(state.nodes.filter((node) => node.archiveOperationId !== null).map((node) => node._id));
-		expect([big.topId, ...big.folderIds, ...big.fileIds].some((nodeId) => archivedIds.has(nodeId))).toBe(false);
+		expect([big.topId, ...big.folderIds, ...big.fileIds.slice(0, -1)].some((nodeId) => archivedIds.has(nodeId))).toBe(
+			false,
+		);
 		expect(archivedIds.has(before.topId) && archivedIds.has(after.topId)).toBe(true);
 	});
 
@@ -168,7 +226,9 @@ describe("archive_nodes", () => {
 		const f = await fixture();
 		const big = await seed_tree(f, { name: "big-alone", folderCount: 6, filesPerFolder: 20 });
 		const small = await seed_tree(f, { name: "small-archived", folderCount: 1, filesPerFolder: 1 });
-		await lock({ f, nodeId: big.fileIds.at(-1)!, locked: true });
+		// Archived, so only the check can refuse it.
+		expect(await archive(f, [big.fileIds.at(-1)!])).toEqual({ _yay: null });
+		await lock_archived(f, big.fileIds.at(-1)!);
 
 		const archived = await archive(f, [big.topId, small.topId]);
 		// Somebody archives the small tree on their own before the check reaches it.
@@ -197,6 +257,8 @@ describe("archive_nodes", () => {
 	test("a named item that is gone when the check reaches it is listed as not found", async () => {
 		const f = await fixture();
 		const big = await seed_tree(f, { name: "big-first", folderCount: 6, filesPerFolder: 20 });
+		// The writer list makes the job check first.
+		await lock_writer({ f, nodeId: big.fileIds.at(-1)!, userId: f.db.userId });
 		// An empty folder, so deleting it leaves no child without a parent.
 		const small = await seed_tree(f, { name: "small-deleted", folderCount: 0, filesPerFolder: 0 });
 
@@ -233,11 +295,13 @@ describe("archive_nodes", () => {
 				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", f.db.workspaceId).eq("userId", member.userId))
 				.unique(),
 		))!._id;
-		// 99 reads for the first tree (1 + 2 folders + 2 * 48 files). The locked second folder is read 100,
-		// so the request stops right after it refuses it, with its row still in the queue.
+		// 99 reads for the first tree (1 + 2 folders + 2 * 48 files). The second folder is read 100, and its
+		// archived read-only folder 101, so the request stops right after it refuses the second folder, with
+		// its row still in the queue. Only the check can refuse an archived lock, so the whole archive runs it.
 		const first = await seed_tree(f, { name: "first-passed", folderCount: 2, filesPerFolder: 48 });
-		const refused = await seed_tree(f, { name: "second-refused", folderCount: 0, filesPerFolder: 0 });
-		await lock({ f, nodeId: refused.topId, locked: true });
+		const refused = await seed_tree(f, { name: "second-refused", folderCount: 1, filesPerFolder: 0 });
+		expect(await archive(f, [refused.folderIds[0]!])).toEqual({ _yay: null });
+		await lock_archived(f, refused.folderIds[0]!);
 
 		const archived = await f.t
 			.withIdentity({ issuer: "https://clerk.test", external_id: member.userId })
@@ -263,11 +327,13 @@ describe("archive_nodes", () => {
 		const tree = await seed_tree(f, { name: "shrink", folderCount: 3, filesPerFolder: 100 });
 		// An empty folder, so deleting it leaves no child without a parent.
 		const emptyId = await folder(f, "/shrink/d2/empty");
+		// The writer list makes the job check first, so the check counts the empty folder.
+		await lock_writer({ f, nodeId: tree.fileIds[0]!, userId: f.db.userId });
 
 		const job = (await archive(f, [tree.topId]))._yay!;
 		let run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
 		while (run.phase !== "apply") run = (await step(f, job.runId))!;
-		// The check runs in steps of 100 first. The step that ends it stamped 75 nodes. The walk reaches `d2`
+		// The check runs in steps of 100 first. The step that ends it stamped 30 nodes. The walk reaches `d2`
 		// after 204, so the empty folder is still active.
 		expect((await read_node(f, emptyId)).archiveOperationId).toBeNull();
 		await f.t.run((ctx) => ctx.db.delete("files_nodes", emptyId));
@@ -370,6 +436,8 @@ describe("archive_nodes", () => {
 	test("a second archive of a child commits now, and the job keeps the child's operation", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "busy", folderCount: 6, filesPerFolder: 20 });
+		// The writer list makes the job check first, so the child is still active for the second archive.
+		await lock_writer({ f, nodeId: tree.fileIds.at(-1)!, userId: f.db.userId });
 
 		const archived = await archive(f, [tree.topId]);
 		expect(archived._yay).not.toBeNull();
@@ -419,7 +487,7 @@ describe("archive_nodes", () => {
 
 	test("an archive of many named items marks at most 64 busy paths, and they still cover every item", async () => {
 		const f = await fixture();
-		// 80 named folders, more than one step of 75, so the archive is still a job after the request.
+		// 80 named folders, more than the 10 stamps of the request, so the archive is still a job after it.
 		const tree = await seed_tree(f, { name: "many", folderCount: 80, filesPerFolder: 0 });
 		expect((await archive(f, tree.folderIds))._nay).toBeUndefined();
 
@@ -443,7 +511,7 @@ describe("archive_nodes", () => {
 	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
 		// With a limit of 1,000 queries, clearing 200 + 200 folders needs more than one step. 70 + 70 fit in one.
 		const f = await fixture({ transactionLimits: { databaseQueries: 1000 } });
-		// 76 items, more than one step of 75, so the archive is still a job after the request.
+		// 76 items, more than the 10 stamps of the request, so the archive is still a job after it.
 		const tree = await seed_tree(f, { name: "drain", folderCount: 1, filesPerFolder: 74 });
 		const job = (await archive(f, [tree.topId]))._yay!;
 		let run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
@@ -463,10 +531,50 @@ describe("archive_nodes", () => {
 	}, 120_000);
 });
 
+describe("files_archive_runs_db_check_fast", () => {
+	test("the fast check reads a few rows for a big folder, and locked items next to it do not count", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const tree = await seed_tree(f, { name: "a", folderCount: 3, filesPerFolder: 100 });
+		// The closest paths on both sides of `/a/`: "-" sorts before "/", and the range ends at "/a0".
+		const neighbors = [
+			await seed_tree(f, { name: "a-x", folderCount: 1, filesPerFolder: 150 }),
+			await seed_tree(f, { name: "a0", folderCount: 1, filesPerFolder: 150 }),
+		];
+		await f.t.run(async (ctx) => {
+			for (const neighbor of neighbors) {
+				for (const nodeId of [neighbor.topId, ...neighbor.folderIds, ...neighbor.fileIds])
+					await ctx.db.patch("files_nodes", nodeId, { writePolicy: { mode: "read_only" } });
+			}
+		});
+
+		const checked = await f.t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", member.membershipId))!;
+			const node = (await ctx.db.get("files_nodes", tree.topId))!;
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await files_archive_runs_db_check_fast(ctx, {
+				userAuth: { id: member.userId },
+				membership,
+				nodes: [node],
+			});
+			const after = await ctx.meta.getTransactionMetrics();
+			return {
+				isFast: result.isFast,
+				refusalCount: result.refusals.size,
+				reads: after.documentsRead.used - before.documentsRead.used,
+			};
+		});
+
+		expect(checked.isFast).toBe(true);
+		expect(checked.refusalCount).toBe(0);
+		expect(checked.reads).toBeLessThan(10);
+	});
+});
+
 describe("files_archive_runs_db_delete_run_batch", () => {
 	test("history cleanup deletes the run with its Activity", async () => {
 		const f = await fixture();
-		// 76 items, more than one step of 75, so the archive runs as a job.
+		// 76 items, more than the 10 stamps of the request, so the archive runs as a job.
 		const tree = await seed_tree(f, { name: "history", folderCount: 1, filesPerFolder: 74 });
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;

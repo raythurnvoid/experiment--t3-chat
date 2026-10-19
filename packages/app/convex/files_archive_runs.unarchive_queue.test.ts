@@ -37,7 +37,7 @@ describe("unarchive_nodes", () => {
 		const f = await fixture();
 		const trees = [];
 		for (const name of ["a1", "a2", "b1", "b2"]) {
-			// 76 items: more than one step of 75, so each archive and restore is a job.
+			// 76 items: more than the 10 stamps of the request, so each archive and restore is a job.
 			const tree = await seed_tree(f, { name, folderCount: 1, filesPerFolder: 74 });
 			await archive_to_end(f, tree.topId);
 			trees.push(tree);
@@ -194,7 +194,7 @@ describe("unarchive_nodes", () => {
 	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
 		// With a limit of 1,000 queries, clearing 200 + 200 folders needs more than one step. 70 + 70 fit in one.
 		const f = await fixture({ transactionLimits: { databaseQueries: 1000 } });
-		// 76 items: more than one step of 75, so the archive and the restore are jobs.
+		// 76 items: more than the 10 stamps of the request, so the archive and the restore are jobs.
 		const tree = await seed_tree(f, { name: "drain", folderCount: 1, filesPerFolder: 74 });
 		await archive_to_end(f, tree.topId);
 		const job = (await restore(f, [tree.topId]))._yay!;

@@ -349,6 +349,18 @@ export async function find_node(f: Fixture, path: string) {
 }
 
 /**
+ * Give a node a writer list that lists `userId`. The check lets that person through, but the request's
+ * index reads cannot tell who a list names, so an archive of a folder that holds this node runs the check.
+ */
+export async function lock_writer(args: { f: Fixture; nodeId: Id<"files_nodes">; userId: Id<"users"> }) {
+	const { f, nodeId, userId } = args;
+
+	await f.t.run((ctx) =>
+		ctx.db.patch("files_nodes", nodeId, { writePolicy: { mode: "writer", writers: [{ kind: "user", userId }] } }),
+	);
+}
+
+/**
  * Make an archived node read-only. The lock API works on active nodes, so copy the policy from one.
  */
 export async function lock_archived(f: Fixture, nodeId: Id<"files_nodes">) {

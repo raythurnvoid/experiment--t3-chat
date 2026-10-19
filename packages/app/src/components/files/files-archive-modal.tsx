@@ -49,8 +49,9 @@ export type FilesArchiveModal_Props = {
 	/** The user closed it: Cancel, Escape, the backdrop or the close button. Nothing was written. */
 	onClose: () => void;
 	/**
-	 * The ids the archive changed, or that a background job took over. Ids the server refused and
-	 * left active are not in the list. The host clears its state and reacts.
+	 * The ids the archive stamped. Ids the server refused, or still has to check, stay active and are
+	 * not in the list. When no id was stamped yet, the dialog calls `onClose` instead. The host clears
+	 * its state and reacts.
 	 */
 	onArchived: (nodeIds: app_convex_Id<"files_nodes">[]) => void;
 };
@@ -115,24 +116,46 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 					return;
 				}
 
-				// A big archive continues as a background job. Its items leave the tree as the job runs.
-				const { runId, notArchivedNodeIds, refusedItems } = result._yay;
+				// A big archive continues as a background job. Its items leave the tree as the job stamps them. While
+				// the job still checks, every waiting item stays in the tree until the check passes.
+				const { runId, notArchivedNodeIds, refusedItems, waitingNodeIds, isChecking } = result._yay;
 				const action = { label: "View", onClick: () => openArchiveRun(runId) };
+				const waitingNodes = nodes.filter((node) => waitingNodeIds.includes(node._id));
 				// Warn as soon as a refusal is known. A job that ended in the request is kept only because it
-				// refused items, and a job still running can already have refused some.
+				// refused items, and a job still running can already have refused some. The warning wins over the
+				// checking text, and only counts the waiting items.
 				// Name the item and the reason when one item was refused. Activity lists each refused item.
 				const refusedNode =
 					refusedItems.length === 1 ? nodes.find((node) => node._id === refusedItems[0]!.nodeId) : undefined;
+				const waitingSentence =
+					waitingNodes.length > 0
+						? ` ${waitingNodes.length} more ${waitingNodes.length === 1 ? "is" : "are"} ${isChecking ? "being checked" : "still being archived"}.`
+						: "";
 				if (refusedNode) {
-					toast.warning(`"${refusedNode.name}" was not archived: ${refusedItems[0]!.message}`, { action });
+					// Some refusal messages end with a period and some do not.
+					const reason = refusedItems[0]!.message.replace(/\.?$/, ".");
+					toast.warning(`"${refusedNode.name}" was not archived: ${reason}${waitingSentence}`, { action });
 				} else if (refusedItems.length > 0) {
-					toast.warning(`${refusedItems.length} items were not archived. See Activity.`, { action });
+					toast.warning(`${refusedItems.length} items were not archived.${waitingSentence} See Activity.`, { action });
+				} else if (isChecking && waitingNodes.length > 0) {
+					const checkingText =
+						waitingNodes.length === 1
+							? `Checking "${waitingNodes[0]!.name}" before archiving. It stays in the list until the check ends.`
+							: `Checking ${waitingNodes.length} items before archiving. They stay in the list until the check ends.`;
+					toast.info(`${checkingText} See Activity.`, { action });
 				} else {
 					toast.info("Archiving in the background. See Activity.", { action });
 				}
-				// A background job can still refuse more items later. The host learns only about the ones known now.
-				const notArchivedNodeIdSet = new Set(notArchivedNodeIds);
-				onArchived(nodeIds.filter((nodeId) => !notArchivedNodeIdSet.has(nodeId)));
+				// A background job can still refuse more items later. The host learns only about the ones it
+				// stamped. Every host closes the dialog only in `onArchived`, so close it here when the job
+				// stamped none yet. An empty list would also move the host's focus.
+				const keptNodeIdSet = new Set([...notArchivedNodeIds, ...waitingNodeIds]);
+				const archivedNodeIds = nodeIds.filter((nodeId) => !keptNodeIdSet.has(nodeId));
+				if (archivedNodeIds.length > 0) {
+					onArchived(archivedNodeIds);
+				} else {
+					handleClose();
+				}
 			})
 			.catch((error: unknown) => {
 				console.error("[FilesArchiveModal.handleConfirm] Unexpected async error", { error, nodeIds });
@@ -425,7 +448,9 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 										) : null}
 										{group.lockedCount > 0 ? (
 											<p className={"FilesArchiveRunModal-reason" satisfies FilesArchiveRunModal_ClassNames}>
-												{group.lockedCount === 1 ? "1 item you cannot open" : `${group.lockedCount} items you cannot open`}
+												{group.lockedCount === 1
+													? "1 item you cannot open"
+													: `${group.lockedCount} items you cannot open`}
 											</p>
 										) : null}
 									</div>

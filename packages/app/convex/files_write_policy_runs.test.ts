@@ -649,7 +649,7 @@ describe("advance", () => {
 		expect(progress_of(await step(f, activityId))).toMatchObject({ skipped: 50 });
 		expect(
 			await f.asOwner.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [box] }),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { waitingNodeIds: [] } });
 
 		const failed = await step(f, activityId);
 		expect(failed).toMatchObject({

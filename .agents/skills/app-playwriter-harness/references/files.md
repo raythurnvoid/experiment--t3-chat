@@ -367,8 +367,8 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   50 ms. `search_saved` checks only the file's own `archiveOperationId`. The owner reader's rule for
   a stamped folder (`files_search_db_create_reader`) now serves only the agent's `search` (the
   internal `files_nodes:text_search_files`), which a page-context poll cannot reach.
-  `archive_nodes` returns the `runId` in `_yay.runId`. At `activity.progress.completed: 75` the folder
-  is already archived, but the file must still be a hit. It must be gone once the job ends. When you
+  `archive_nodes` returns the `runId` in `_yay.runId`. A folder with no lock inside is archived when
+  the request returns, but the file must still be a hit. It must be gone once the job ends. When you
   read `archiveOperationId`, compare it with `null`. Do not use `?? fallback`, which also replaces a
   real `null`. Restore `copy-4` and move the file back to the root afterwards. The pending-delete
   recipe further down polls search the same way.
@@ -1417,7 +1417,7 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   runners live in the `archive-job-2026-09-24` personal task folder.
   Mid-job checks (verified 2026-09-25, runners in `archive-job-followups-2026-09-25`): start the job with one
   `app_convex.mutation` call, poll `files_archive_runs.get` every 200 ms until `activity.progress.completed > 0`,
-  then act in the same `page.evaluate`. A second CLI call is too slow: a job now moves up to 75 items per
+  then act in the same `page.evaluate`. A second CLI call is too slow: an archive step stamps up to 30 items per
   step. A lock set this way (`set_node_write_policy` `read_only` on the deepest active folder) ends the job
   `failed` with `Stopped partway: This item is read-only.`, and the locked folder and its parents stay active.
   A folder created with `create_folder_node` during the check phase or after the first apply step gets the

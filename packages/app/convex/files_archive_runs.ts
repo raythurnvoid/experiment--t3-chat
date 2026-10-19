@@ -1,16 +1,25 @@
 // Archive and restore of a big folder do not fit in one mutation. This job changes a batch of nodes
 // per step. Each node's side docs (text chunks, metadata docs) change in the same step as the node,
-// so search and lists never see a node and its side docs disagree. A small request finishes inside
-// the request and writes no run, no op, and no Activity, unless the archive refused a named item.
+// so search and lists never see a node and its side docs disagree. The request runs a small first step
+// itself (`files_archive_runs_REQUEST_MAX_NODES` stamps and `files_archive_runs_REQUEST_MAX_CHECK_NODES`
+// checked nodes), so it answers fast. A small request finishes inside the request and writes no run,
+// no op, and no Activity, unless the archive refused a named item.
 //
 // The job is the archive or restore kind of a `files_subtree_ops` op, and it walks by `parentId`
-// through that op's queue. Archive first checks every node inside and writes nothing. A refusal leaves
+// through that op's queue. Archive first checks every node inside and writes nothing (a fast archive
+// skips this, see below). A refusal leaves
 // out only the named item it is in, with everything inside it. Then the archive stamps every named item
 // that passed, then the active children of each stamped folder, the first named item's folder
 // first. A child that somebody moved out, or archived on their own, is not reached or keeps its own
 // stamp. Restore finds the top items of the operation one page at a time, lands each one, then
 // restores the items of the operation inside it. The other items inside get the new path and scope
 // and keep their own stamp.
+//
+// A fast archive skips the check. The request first reads a few indexes for each named item
+// (`files_archive_runs_db_check_fast`). When they prove that the check would pass for every named item,
+// the request stamps the named items, so they leave the tree at once, and the job stamps the rest. When
+// the indexes cannot decide for one named item, the whole archive runs the check, and the named items
+// stay in the tree until the check passes.
 //
 // Archive cannot be stopped. Restore can be stopped only while it waits for a clash choice.
 
@@ -59,7 +68,14 @@ import {
 	files_subtree_ops_db_run,
 	files_subtree_ops_db_schedule_step,
 } from "./files_subtree_ops_db.ts";
-import { files_subtree_ops_db_first_node, files_subtree_ops_db_next_children, files_subtree_ops_db_pause_for_move, files_subtree_ops_db_reserve_sequences, files_subtree_ops_db_save_page } from "./files_subtree_ops.ts";
+import {
+	files_subtree_ops_db_find_blocked_paths,
+	files_subtree_ops_db_first_node,
+	files_subtree_ops_db_next_children,
+	files_subtree_ops_db_pause_for_move,
+	files_subtree_ops_db_reserve_sequences,
+	files_subtree_ops_db_save_page,
+} from "./files_subtree_ops.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
@@ -68,9 +84,17 @@ import {
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
-import { files_archive_runs_CHECK_STEP_MAX_NODES } from "../server/files-archive-runs.ts";
+import {
+	files_archive_runs_CHECK_STEP_MAX_NODES,
+	files_archive_runs_REQUEST_MAX_NODES,
+} from "../server/files-archive-runs.ts";
 import { files_ROOT_ID } from "../server/files.ts";
-import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { files_move_reservations_db_find_blocker } from "../server/files-move-reservations.ts";
+import {
+	path_join,
+	path_tree_prefix_upper_bound,
+	server_convex_get_user_fallback_to_anonymous,
+} from "../server/server-utils.ts";
 import { files_check_name_and_path_length, files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
@@ -79,10 +103,10 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 export const experimental_reuseContext = true;
 
 /**
- * An apply step ends after this many nodes. On dev, one archived node costs about 8.5 ms of
- * database time and one restored node about 16 ms, so a step stays near 1 to 3 seconds.
+ * A background apply step ends after this many nodes. On dev one archived node costs about 20 to 160 ms
+ * of database time, about 60 ms most of the time (measured 2026-10-19). So a step stays near 2 seconds.
  */
-export const files_archive_runs_STEP_MAX_NODES = 75;
+export const files_archive_runs_STEP_MAX_NODES = 30;
 
 const PAGE_SIZE = 50;
 
@@ -137,11 +161,12 @@ type StepArgs = {
 	membership: Doc<"organizations_workspaces_users"> | null;
 	now: number;
 	/**
-	 * How many more nodes this mutation may change. A restore of several operations shares one budget
-	 * across them, so one request cannot run past the mutation time limit. `hasPaginated` turns true after
-	 * this mutation's one paginated read. Convex allows only one, so a later read that needs one ends the step.
+	 * How many more nodes this mutation may change (`nodes`) and read for a check (`checkNodes`). A
+	 * restore of several operations shares one budget across them, so one request cannot run past the
+	 * mutation time limit. `hasPaginated` turns true after this mutation's one paginated read. Convex
+	 * allows only one, so a later read that needs one ends the step.
 	 */
-	budget: { nodes: number; hasPaginated: boolean };
+	budget: { nodes: number; checkNodes: number; hasPaginated: boolean };
 	/**
 	 * The restricted scopes already checked in this step. The key "" stands for no scope.
 	 */
@@ -393,6 +418,17 @@ function get_named_item_refusal(nay: { name?: string; message: string }, inside:
 }
 
 /**
+ * The answer when an archive refused every named item. One refusal keeps its own reason. Several get
+ * one general reason.
+ */
+export function files_archive_runs_get_all_refused_nay(refusedItems: RunFields["refusedItems"]) {
+	const refusal = refusedItems.length === 1 ? refusedItems[0]!.refusal : null;
+	return refusal
+		? { ...(refusal.name !== null ? { name: refusal.name } : {}), message: refusal.message }
+		: { message: "None of these items can be archived. You cannot change them or items inside them." };
+}
+
+/**
  * Check everything the archive will change before it writes anything: each active node, and each
  * archived node inside, which must not be hidden while it is read-only. The walk follows `parentId`
  * from each named item. Nothing is written, so a folder needs no second pass.
@@ -409,10 +445,9 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	if (!args.membership) return MEMBERSHIP_LOST;
 
 	const namedCount = run.rootNodeIds.length;
-	let readCount = 0;
 
 	while (true) {
-		if (readCount >= files_archive_runs_CHECK_STEP_MAX_NODES || (await files_subtree_ops_db_is_near_limits(ctx))) {
+		if (args.budget.checkNodes <= 0 || (await files_subtree_ops_db_is_near_limits(ctx))) {
 			return { kind: "continue" };
 		}
 
@@ -424,14 +459,14 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 		// the named item the check is on. Drop the rows of a refused item without checking them.
 		if (run.checkNamedItem?.isRefused && (row.sequence >= namedCount || row.nodeId === run.checkNamedItem.nodeId)) {
 			await ctx.db.delete("files_subtree_op_nodes", row._id);
-			readCount += 1;
+			args.budget.checkNodes -= 1;
 			continue;
 		}
 
 		const node = await ctx.db.get("files_nodes", row.nodeId);
 		// Only a named item's row starts with `nodeDone` false.
 		if (!row.nodeDone) {
-			readCount += 1;
+			args.budget.checkNodes -= 1;
 			run.checkNamedItem = { nodeId: row.nodeId, discoveredBefore: progress.discovered, isRefused: false };
 			// A named item that is gone by now is refused, like a missing file in `rm`.
 			if (!node) {
@@ -468,7 +503,7 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 
 		const page = await files_subtree_ops_db_next_children(ctx, { row, folder: node, budget: args.budget });
 		if (!page) return { kind: "continue" };
-		readCount += page.children.length;
+		args.budget.checkNodes -= page.children.length;
 
 		const activeNodes = page.children.filter((child) => child.archiveOperationId === null);
 		const refusal = await db_check_writable_nodes({ ctx, ...args, nodes: activeNodes });
@@ -538,13 +573,7 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	if (progress.discovered === progress.blocked) {
 		// The job ends here without an apply, so set the total the apply would set.
 		progress.total = progress.discovered;
-		const refusal = run.refusedItems.length === 1 ? run.refusedItems[0]!.refusal : null;
-		return {
-			kind: "failed",
-			nay: refusal
-				? { ...(refusal.name !== null ? { name: refusal.name } : {}), message: refusal.message }
-				: { message: "None of these items can be archived. You cannot change them or items inside them." },
-		};
+		return { kind: "failed", nay: files_archive_runs_get_all_refused_nay(run.refusedItems) };
 	}
 
 	// The apply stamps only the named items that passed.
@@ -569,6 +598,8 @@ async function db_archive_node(
 	});
 	args.writeState.isWritten = true;
 	args.progress.completed += 1;
+	// A fast archive ran no check, so it learns the items while it stamps them.
+	if (args.progress.total === null) args.progress.discovered += 1;
 	args.budget.nodes -= 1;
 }
 
@@ -578,7 +609,8 @@ async function db_archive_node(
  * leaves the index range the page reads, so each page starts again from the first active child, and
  * a folder is done when that range is empty.
  *
- * The check already ran on every node, and the job cannot stop. So a lock or grant that changes
+ * The check already ran on every node, or the request proved with index reads that it would pass
+ * (`files_archive_runs_db_check_fast`). The job cannot stop. So a lock or grant that changes
  * later does not stop the stamps. A child that somebody moved out is no longer under the folder. A
  * child that somebody archived on their own keeps their stamp and their Restore.
  */
@@ -596,9 +628,10 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 		const index = run.applyRootIndex;
 		const node = await ctx.db.get("files_nodes", run.rootNodeIds[index]!);
 		// A named item archived or deleted by somebody else in the meantime keeps that state, with
-		// everything inside. The check counted it, so count it as skipped.
+		// everything inside. Count it as skipped. The check counted it already, but a fast archive ran no check.
 		if (!node || node.archiveOperationId !== null) {
 			args.progress.skipped += 1;
+			if (args.progress.total === null) args.progress.discovered += 1;
 		} else {
 			await db_archive_node({ ctx, ...args, node });
 			// The check kept the numbers below `rootNodeIds.length` for these rows. The first named item
@@ -639,7 +672,8 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 				q
 					.eq("organizationId", run.organizationId)
-					.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
+					.eq("workspaceId", run.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("parentId", node._id)
 					.eq("archiveOperationId", null),
 			)
@@ -690,7 +724,8 @@ async function db_can_replace(
 			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 				q
 					.eq("organizationId", args.occupant.organizationId)
-					.eq("workspaceId", args.occupant.workspaceId).eq("moveCohortId", undefined)
+					.eq("workspaceId", args.occupant.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("parentId", args.occupant._id)
 					.eq("archiveOperationId", null),
 			)
@@ -720,7 +755,8 @@ async function db_can_replace(
 			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 				q
 					.eq("organizationId", args.occupant.organizationId)
-					.eq("workspaceId", args.occupant.workspaceId).eq("moveCohortId", undefined)
+					.eq("workspaceId", args.occupant.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("parentId", folderId),
 			)
 			.take(files_archive_runs_CHECK_STEP_MAX_NODES + 1 - inside.length);
@@ -795,7 +831,8 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 				.withIndex("by_organization_workspace_archiveOperation", (q) =>
 					q
 						.eq("organizationId", run.organizationId)
-						.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", run.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("archiveOperationId", run.archiveOperationId),
 				)
 				.take(PAGE_SIZE + 1);
@@ -811,7 +848,8 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 					.withIndex("by_organization_workspace_archiveOperation", (q) =>
 						q
 							.eq("organizationId", run.organizationId)
-							.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
+							.eq("workspaceId", run.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("archiveOperationId", run.archiveOperationId),
 					)
 					.paginate({ cursor: run.checkCursor.treePath || null, numItems: PAGE_SIZE });
@@ -936,10 +974,9 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	const { run, progress } = args;
 	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
 	const landings = new Map<Id<"files_nodes">, { growth: number; topId: Id<"files_nodes"> }>();
-	let readCount = 0;
 
 	while (true) {
-		if (readCount >= files_archive_runs_CHECK_STEP_MAX_NODES || (await files_subtree_ops_db_is_near_limits(ctx))) {
+		if (args.budget.checkNodes <= 0 || (await files_subtree_ops_db_is_near_limits(ctx))) {
 			return { kind: "continue" };
 		}
 
@@ -949,7 +986,8 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 				q
 					.eq("organizationId", run.organizationId)
-					.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
+					.eq("workspaceId", run.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("archiveOperationId", run.archiveOperationId)
 					.gt("treePath", cursorTreePath),
 			)
@@ -968,7 +1006,8 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 					.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 						q
 							.eq("organizationId", run.organizationId)
-							.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
+							.eq("workspaceId", run.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("archiveOperationId", run.archiveOperationId)
 							.eq("treePath", lastNode.treePath)
 							.gte("_creationTime", lastNode._creationTime),
@@ -979,7 +1018,7 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				return { kind: "failed", nay: { message: "Too many archived items share one path." } };
 			page.push(...sameTreePath);
 		}
-		readCount += page.length;
+		args.budget.checkNodes -= page.length;
 
 		const refusal = await db_check_writable_nodes({ ctx, ...args, nodes: page });
 		if (refusal) return refusal;
@@ -1099,7 +1138,8 @@ async function db_find_free_name(args: {
 		let dot = node.kind === "file" ? node.name.indexOf(".", 1) : -1;
 		const counterSuffix = `-${counter}`;
 		// Keep compound extensions unless the counter leaves no base character.
-		if (dot >= 0 && args.maxLength - counterSuffix.length - (node.name.length - dot) < 1) dot = node.name.lastIndexOf(".");
+		if (dot >= 0 && args.maxLength - counterSuffix.length - (node.name.length - dot) < 1)
+			dot = node.name.lastIndexOf(".");
 		const base = dot < 0 ? node.name : node.name.slice(0, dot);
 		const suffix = `${counterSuffix}${dot < 0 ? "" : node.name.slice(dot)}`;
 		// Cut the base, so a long name still gets a free name inside the limit. Keep at least one character.
@@ -1110,7 +1150,8 @@ async function db_find_free_name(args: {
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 				q
 					.eq("organizationId", args.run.organizationId)
-					.eq("workspaceId", args.run.workspaceId).eq("moveCohortId", undefined)
+					.eq("workspaceId", args.run.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("parentId", parentId)
 					.eq("name", name)
 					.eq("archiveOperationId", null),
@@ -1199,7 +1240,8 @@ async function db_land_node(
 		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 			q
 				.eq("organizationId", run.organizationId)
-				.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
+				.eq("workspaceId", run.workspaceId)
+				.eq("moveCohortId", undefined)
 				.eq("parentId", landingParentId)
 				.eq("name", node.name)
 				.eq("archiveOperationId", null),
@@ -1333,7 +1375,8 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 					q
 						.eq("organizationId", run.organizationId)
-						.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", run.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("archiveOperationId", run.archiveOperationId),
 				)
 				.take(PAGE_SIZE);
@@ -1472,6 +1515,23 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 }
 
 /**
+ * Run once before the first stamp of an archive, after its check or right away for a fast archive.
+ * The queue is empty then. Keep one queue number for each named item. The apply stamps the named items
+ * first and queues their folders with these numbers. Then end the public links under the named items.
+ * A queued, refused, or stopped check never gets here, so its links stay.
+ */
+async function db_begin_archive_apply(ctx: MutationCtx, args: StepArgs) {
+	await files_subtree_ops_db_reserve_sequences(ctx, { opId: args.opId, count: args.run.rootNodeIds.length });
+	await files_share_links_db_delete_for_roots({
+		ctx,
+		organizationId: args.run.organizationId,
+		workspaceId: args.run.workspaceId,
+		rootNodeIds: args.run.rootNodeIds,
+		state: args.shareLinkCleanup,
+	});
+}
+
+/**
  * Run one step: the check walk first, then the changes. A step that finishes the check goes on with
  * the changes in the same mutation, so a small request ends inside the request.
  */
@@ -1485,25 +1545,16 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 		if (checked.kind !== "done") return checked;
 		args.run.phase = "apply";
 		args.progress.total = args.progress.discovered;
-		// The archive check emptied the queue. Keep one queue number for each named item. The apply stamps
-		// the named items first and queues their folders with these numbers. The restore apply finds its
-		// top items itself.
-		if (args.run.kind === "archive") {
-			await files_subtree_ops_db_reserve_sequences(ctx, { opId: args.opId, count: args.run.rootNodeIds.length });
-			// End the public links under the items the check kept, before the first stamp. A queued, refused,
-			// or stopped check never gets here, so its links stay.
-			await files_share_links_db_delete_for_roots({
-				ctx,
-				organizationId: args.run.organizationId,
-				workspaceId: args.run.workspaceId,
-				rootNodeIds: args.run.rootNodeIds,
-				state: args.shareLinkCleanup,
-			});
-		}
+		// The restore apply finds its top items itself.
+		if (args.run.kind === "archive") await db_begin_archive_apply(ctx, args);
 	}
 
 	const outcome = args.run.kind === "archive" ? await db_apply_archive(ctx, args) : await db_apply_restore(ctx, args);
 	if (args.writeState.isWritten) await files_media_validation_db_advance_version(ctx, args.run);
+	// A fast archive learns its items while it stamps them. Set the total when the last one is stamped.
+	if (args.run.kind === "archive" && outcome.kind === "done" && args.progress.total === null) {
+		args.progress.total = args.progress.discovered;
+	}
 	// The check counted items that somebody else archived, deleted or moved out before the apply reached
 	// them. The apply leaves them as they are, so count them as skipped. Then the counts add up to the total.
 	if (args.run.kind === "archive" && outcome.kind === "done" && args.progress.total !== null) {
@@ -1618,10 +1669,155 @@ async function db_settle_step(
 }
 
 /**
- * Archive or restore through the job. The caller checked only that the person can read the items
- * they named. The job's check decides which of them can be archived.
+ * The fast check reads every subtree op of the workspace to learn whether one overlaps the named items.
+ * Past this many it gives up and the job runs the full check, because a partial read could miss an op.
+ */
+const FAST_CHECK_MAX_OPS = 500;
+
+/**
+ * Decide with index reads only whether the archive check would pass for `nodes`: the named items the
+ * person may write, with no named item inside another. Then the request stamps the named items itself,
+ * and the job runs no check.
+ *
+ * Returns the named items to refuse now, with the reason the check would give, and `isFast`: true when
+ * every other named item is proven to pass. When even one is not proven, the whole archive runs the
+ * check, so one job keeps one set of rules. Every node read is one `.first()` on an index range, and the
+ * op read stops at `FAST_CHECK_MAX_OPS`, so the cost does not grow with the size of a folder.
+ */
+export async function files_archive_runs_db_check_fast(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		nodes: Doc<"files_nodes">[];
+	},
+) {
+	const { organizationId, workspaceId } = args.membership;
+	const refusals = new Map<Id<"files_nodes">, RunFields["refusedItems"][number]["refusal"]>();
+
+	// The item's own lock needs no read. The check would refuse it with the same reason.
+	for (const node of args.nodes) {
+		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: args.userAuth.id });
+		if (writable._nay) refusals.set(node._id, get_named_item_refusal(writable._nay, null));
+	}
+	const nodes = args.nodes.filter((node) => !refusals.has(node._id));
+
+	// The index answers below are right only while nothing rewrites paths or scopes under these items.
+	// A Move, a running scope or move op, or any op on these paths does that page by page. Too many named
+	// items would also make the request stamp less than all of them.
+	const isQuiet = await (async (/* iife */) => {
+		if (nodes.length > files_archive_runs_REQUEST_MAX_NODES) return false;
+		if (await files_move_reservations_db_find_blocker(ctx.db, { wholeWorkspace: { organizationId, workspaceId } }))
+			return false;
+		for (const kind of ["scope", "move"] as const) {
+			const op = await ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_organization_workspace_kind_status", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("kind", kind)
+						.eq("status", "running"),
+				)
+				.first();
+			if (op) return false;
+		}
+		const blocked = await files_subtree_ops_db_find_blocked_paths(ctx, {
+			organizationId,
+			workspaceId,
+			treePaths: nodes.map((node) => node.treePath),
+			maxOps: FAST_CHECK_MAX_OPS,
+		});
+		return blocked !== null && !blocked.includes(true);
+	})();
+	if (!isQuiet) return { refusals, isFast: false };
+
+	const organization = await ctx.db.get("organizations", organizationId);
+	const isOwner = organization?.ownerUserId === args.userAuth.id;
+
+	let isFast = true;
+	for (const node of nodes) {
+		// A file has nothing inside.
+		if (node.kind === "file") continue;
+
+		const area = node.isRestrictedScopeRoot ? node._id : node.restrictedScopeNodeId;
+		const treePathEnd = path_tree_prefix_upper_bound(node.treePath);
+
+		// The caller proved write access in the item's own area. A restricted folder inside is another
+		// area, so only the check can ask it. "Add people" only adds access, so it needs no read. The
+		// owner may write every area.
+		if (!isOwner) {
+			const restrictedRoot = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_org_ws_parentScope_archive_treePath", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("parentScopeNodeId", area)
+						.eq("archiveOperationId", null)
+						.gt("treePath", node.treePath)
+						.lt("treePath", treePathEnd),
+				)
+				.first();
+			if (restrictedRoot) {
+				isFast = false;
+				continue;
+			}
+		}
+
+		const readOnly = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_org_ws_writePolicyMode_treePath", (q) =>
+				q
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("writePolicy.mode", "read_only")
+					.gt("treePath", node.treePath)
+					.lt("treePath", treePathEnd),
+			)
+			.first();
+		if (readOnly) {
+			// The person may read an active node in the item's own area, so the refusal may name it. An
+			// active node in another area may be hidden from them. An archived one may sit in an old archived
+			// folder with the same path. Only the check can tell those apart.
+			if (readOnly.archiveOperationId === null && (isOwner || readOnly.restrictedScopeNodeId === area)) {
+				refusals.set(
+					node._id,
+					get_named_item_refusal({ name: "read_only", message: "" }, { lockedPath: readOnly.path }),
+				);
+			} else {
+				isFast = false;
+			}
+			continue;
+		}
+
+		// A writer list may list the person or not. Only the check reads it.
+		const writerLocked = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_org_ws_writePolicyMode_treePath", (q) =>
+				q
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("writePolicy.mode", "writer")
+					.gt("treePath", node.treePath)
+					.lt("treePath", treePathEnd),
+			)
+			.first();
+		if (writerLocked) isFast = false;
+	}
+
+	return { refusals, isFast };
+}
+
+/**
+ * Archive or restore through the job. The caller checked that the person can write the items they
+ * named. The job's check decides which of them can be archived, unless the archive is fast.
  * Returns null when the work finished inside this request with nothing refused. Otherwise returns the
- * job, with `isDone` true when it already finished, and the named items refused so far.
+ * job, with `isDone` true when it already finished, the named items refused so far, the named items
+ * not stamped yet, and `isChecking` true while the check still runs before any stamp.
  *
  * Archive starts at once, even over a folder another job is archiving. Each job stamps only active
  * items, so neither overwrites the other's stamp. Restore of an operation that a job still writes is
@@ -1640,15 +1836,21 @@ export async function files_archive_runs_db_start(
 		rootNodeIds: Array<Id<"files_nodes">>;
 		/**
 		 * Archive: named ids refused before the job: "Not found" for a missing id or one in another
-		 * workspace, "Permission denied" for one the person cannot open. The job lists each one, like
-		 * `rm` does, and archives the rest. Restore: empty.
+		 * workspace, "Permission denied" for one the person cannot change, and the refusals of
+		 * `files_archive_runs_db_check_fast`. The job lists each one, like `rm` does, and archives the
+		 * rest. Restore: empty.
 		 */
-		refusedNodes: Array<{ nodeId: Id<"files_nodes">; message: "Not found" | "Permission denied" }>;
+		refusedNodes: RunFields["refusedItems"];
+		/**
+		 * True when `files_archive_runs_db_check_fast` proved that the check would pass. The job then
+		 * starts with the stamps and runs no check. Restore: false.
+		 */
+		isFast: boolean;
 		/**
 		 * Where readers see the items now. Restore passes its top item, because it has no named items yet.
 		 */
 		treePaths: string[];
-		budget: { nodes: number; hasPaginated: boolean };
+		budget: StepArgs["budget"];
 		/**
 		 * The job before this one in the same Unarchive request. The jobs of one request run one
 		 * at a time, so their steps do not write the same docs at the same moment.
@@ -1707,7 +1909,7 @@ export async function files_archive_runs_db_start(
 		kind: args.kind,
 		archiveOperationId: args.archiveOperationId,
 		rootNodeIds: args.kind === "archive" ? args.rootNodeIds : [],
-		phase: args.kind === "restore" ? "discover" : "check",
+		phase: args.kind === "restore" ? "discover" : args.isFast ? "apply" : "check",
 		checkCursor: { rootIndex: 0, treePath: "" },
 		discoverTreePaths: [],
 		applyRootIndex: 0,
@@ -1722,7 +1924,7 @@ export async function files_archive_runs_db_start(
 		// Cancel on a clash wait ends every job of the request, so each job names the first one.
 		requestFirstRunId: previousRun ? (previousRun.requestFirstRunId ?? previousRun._id) : null,
 		checkNamedItem: null,
-		refusedItems: args.refusedNodes.map(({ nodeId, message }) => ({ nodeId, refusal: { name: null, message } })),
+		refusedItems: args.refusedNodes,
 	};
 	const progress: RunProgress = {
 		unit: "items",
@@ -1750,7 +1952,8 @@ export async function files_archive_runs_db_start(
 		},
 		now,
 	});
-	if (args.kind === "archive") {
+	// The check walks from a queue row for each named item. A fast archive runs no check.
+	if (args.kind === "archive" && !args.isFast) {
 		await files_subtree_ops_db_enqueue_nodes(ctx, {
 			opId,
 			nodes: args.rootNodeIds.map((nodeId) => ({ nodeId, nodeDone: false })),
@@ -1769,9 +1972,13 @@ export async function files_archive_runs_db_start(
 		shareLinkCleanup: args.shareLinkCleanup,
 		writeState: { isWritten: false },
 	};
-	// A Move in the workspace makes the first step wait too. The Move wakes the job when it ends.
+	// A Move in the workspace makes the first step wait too. The Move wakes the job when it ends. A fast
+	// archive already proved that no Move runs.
 	const paused =
-		!blocker && (await files_subtree_ops_db_pause_for_move(ctx, (await ctx.db.get("files_subtree_ops", opId))!));
+		!blocker &&
+		!args.isFast &&
+		(await files_subtree_ops_db_pause_for_move(ctx, (await ctx.db.get("files_subtree_ops", opId))!));
+	if (args.isFast) await db_begin_archive_apply(ctx, stepArgs);
 	const outcome = blocker || paused ? null : await db_step(ctx, stepArgs);
 	// Work that ended inside the request, or a refusal before the first write, leaves no job. Work that
 	// refused a named item keeps its job, so its Activity can list what was not archived. So does a
@@ -1804,29 +2011,36 @@ export async function files_archive_runs_db_start(
 		deadlineAt: now + (blocker || outcome?.kind === "blocked" ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
 		now,
 	});
-	if (!outcome) {
-		return Result({
-			_yay: {
-				runId,
-				activityId,
-				isDone: false,
-				notArchivedNodeIds: [] as Array<Id<"files_nodes">>,
-				refusedItems: [] as Array<{ nodeId: Id<"files_nodes">; message: string }>,
-			},
-		});
+	if (outcome) {
+		await db_settle_step(ctx, { opId, runId, activityId, run, progress, outcome, now });
+		// A request that failed after some writes keeps them and a failed Activity. Answer with the error, so
+		// the caller does not say the work goes on in the background.
+		if (outcome.kind === "failed") {
+			return Result({ _nay: { ...outcome.nay, message: `Stopped partway: ${outcome.nay.message}` } });
+		}
 	}
 
-	await db_settle_step(ctx, { opId, runId, activityId, run, progress, outcome, now });
-	// A request that failed after some writes keeps them and a failed Activity. Answer with the error, so
-	// the caller does not say the work goes on in the background.
-	if (outcome.kind === "failed") {
-		return Result({ _nay: { ...outcome.nay, message: `Stopped partway: ${outcome.nay.message}` } });
-	}
-
-	// A job that goes on in the background can refuse more named items in later steps.
+	// A job that goes on in the background can refuse more named items in later steps. A named item that
+	// is neither stamped nor refused yet stays in the tree until a later step stamps it.
 	const notArchivedNodeIds = run.refusedItems.map((refusedItem) => refusedItem.nodeId);
 	const refusedItems = run.refusedItems.map(({ nodeId, refusal }) => ({ nodeId, message: refusal.message }));
-	return Result({ _yay: { runId, activityId, isDone: outcome.kind === "done", notArchivedNodeIds, refusedItems } });
+	const waitingNodeIds =
+		run.kind === "archive"
+			? (run.phase === "apply" ? run.rootNodeIds.slice(run.applyRootIndex) : run.rootNodeIds).filter(
+					(nodeId) => !notArchivedNodeIds.includes(nodeId),
+				)
+			: [];
+	return Result({
+		_yay: {
+			runId,
+			activityId,
+			isDone: outcome?.kind === "done",
+			notArchivedNodeIds,
+			refusedItems,
+			waitingNodeIds,
+			isChecking: run.kind === "archive" && run.phase === "check",
+		},
+	});
 }
 
 /**
@@ -1853,7 +2067,11 @@ export async function files_archive_runs_db_advance(
 		userAuth: { id: storedRun.userId },
 		membership,
 		now: args.now,
-		budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
+		budget: {
+			nodes: files_archive_runs_STEP_MAX_NODES,
+			checkNodes: files_archive_runs_CHECK_STEP_MAX_NODES,
+			hasPaginated: false,
+		},
 		checkedScopes: new Map(),
 		shareLinkCleanup: files_share_links_create_cleanup_state(),
 		writeState: { isWritten: false },

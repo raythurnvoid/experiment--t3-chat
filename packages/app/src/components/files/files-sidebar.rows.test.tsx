@@ -768,6 +768,8 @@ describe("FilesSidebar", () => {
 				isDone: true,
 				notArchivedNodeIds: ["alpha"],
 				refusedItems: [{ nodeId: "alpha", message: '"/alpha/locked.md" is read-only. Unlock it, then try again.' }],
+				waitingNodeIds: [],
+				isChecking: false,
 			},
 		});
 		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));

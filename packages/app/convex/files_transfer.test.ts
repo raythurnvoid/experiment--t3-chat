@@ -883,7 +883,7 @@ describe("start_for_agent", () => {
 	test("a copy to another workspace during a restore copies the items already back and not the others", async () => {
 		const fixture = await create_folder_fixture([]);
 		const { t, db, asUser } = fixture;
-		// 100 folders do not fit in one step of 75, so the restore still runs when the copy reads them.
+		// 100 folders do not fit in the 10 stamps of the request, so the restore still runs when the copy reads them.
 		const topId = await t.run(async (ctx) => {
 			const insert_folder = (args: { parentId: Doc<"files_nodes">["parentId"]; name: string; path: string }) => {
 				const { name, path, parentId } = args;

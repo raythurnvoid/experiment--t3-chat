@@ -217,6 +217,15 @@ describe("archive_nodes", () => {
 		const f = await fixture();
 		// One check step reads at most 500 nodes, so this check needs more than one step.
 		const { nodeId, folderId } = await seed_big_folder(f, 600);
+		// A writer list inside makes the archive run its check in the background. Without one, the request archives
+		// right away and there is no check phase to watch.
+		expect(
+			await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+				membershipId: f.db.membershipId,
+				nodeId,
+				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: f.db.userId }] },
+			}),
+		).toEqual({ _yay: null });
 		await link_on(f, nodeId);
 		const outside = await link_on(f, f.nodeId);
 
@@ -236,8 +245,17 @@ describe("archive_nodes", () => {
 
 	test("the step that ends the check ends the links before it stamps the files inside", async () => {
 		const f = await fixture();
-		// One check step reads at most 500 nodes, and one apply step stamps at most 75. The file sorts last.
+		// One check step reads at most 500 nodes, and one apply step stamps at most 30. The file sorts last.
 		const { nodeId, folderId } = await seed_big_folder(f, 600);
+		// A writer list inside makes the archive run its check in the background. Without one, the request archives
+		// right away and there is no check phase to watch.
+		expect(
+			await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+				membershipId: f.db.membershipId,
+				nodeId,
+				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: f.db.userId }] },
+			}),
+		).toEqual({ _yay: null });
 		const link = await link_on(f, nodeId);
 		const outside = await link_on(f, f.nodeId);
 

@@ -73,9 +73,20 @@ import { path_name_of } from "../shared/paths.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
-import app_convex_schema, { ai_chat_workspaces_source_validator, files_metadata_search_plan_validator, files_pending_target_validator, file_content_materialization_state_validator, file_content_materialization_header_validator, files_saved_stream_validator } from "./schema.ts";
+import app_convex_schema, {
+	ai_chat_workspaces_source_validator,
+	files_metadata_search_plan_validator,
+	files_pending_target_validator,
+	file_content_materialization_state_validator,
+	file_content_materialization_header_validator,
+	files_saved_stream_validator,
+} from "./schema.ts";
 import { files_search_db_create_reader } from "./files_search.ts";
-import { files_saved_placement_db_get_node, files_saved_placement_db_get_proposal, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_proposal,
+	files_saved_placement_db_get_sequence,
+} from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import {
 	files_saved_content_collect,
@@ -93,6 +104,10 @@ import {
 	files_tree_walk_stack_validator,
 } from "../server/files-tree-walk.ts";
 import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
+import {
+	files_archive_runs_REQUEST_MAX_CHECK_NODES,
+	files_archive_runs_REQUEST_MAX_NODES,
+} from "../server/files-archive-runs.ts";
 import {
 	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_view,
@@ -124,13 +139,42 @@ import {
 import { files_updated_by_db_delete_for_node, files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
-import { access_control_create_file_checker, access_control_db_authorize_membership, access_control_db_authorize_node, access_control_db_authorize_file_write, access_control_db_can_act_on_file_node, access_control_db_filter_readable_file_nodes, access_control_subject_validator, type access_control_Subject } from "./access_control.ts";
+import {
+	access_control_create_file_checker,
+	access_control_db_authorize_membership,
+	access_control_db_authorize_node,
+	access_control_db_authorize_file_write,
+	access_control_db_can_act_on_file_node,
+	access_control_db_filter_readable_file_nodes,
+	access_control_subject_validator,
+	type access_control_Subject,
+} from "./access_control.ts";
 import { access_control_subject_reads_drafts } from "../shared/access-control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { files_ANCESTOR_FIELD_COUNT, files_derive_tree_path_for_file_node, files_lowercase_extension, files_default_text_shape_for_name, files_get_normalized_node_path_segments, files_normalize_markdown_name, files_normalize_name, files_normalize_special_node_path, files_normalize_upload_file_name, files_parse_content_type_prefix, files_pending_update_content_is_stale, files_pending_update_index_revision, files_TEXT_SEARCH_MAX_RESULTS, type files_VisibleEntry, files_check_name_and_path_length, files_PATH_MAX_LENGTH, files_check_new_folder_count, files_check_request_folder_prefixes, files_NEW_FOLDER_DEPTH_MAX } from "../shared/files.ts";
+import {
+	files_ANCESTOR_FIELD_COUNT,
+	files_derive_tree_path_for_file_node,
+	files_lowercase_extension,
+	files_default_text_shape_for_name,
+	files_get_normalized_node_path_segments,
+	files_normalize_markdown_name,
+	files_normalize_name,
+	files_normalize_special_node_path,
+	files_normalize_upload_file_name,
+	files_parse_content_type_prefix,
+	files_pending_update_content_is_stale,
+	files_pending_update_index_revision,
+	files_TEXT_SEARCH_MAX_RESULTS,
+	type files_VisibleEntry,
+	files_check_name_and_path_length,
+	files_PATH_MAX_LENGTH,
+	files_check_new_folder_count,
+	files_check_request_folder_prefixes,
+	files_NEW_FOLDER_DEPTH_MAX,
+} from "../shared/files.ts";
 import { files_metadata_db_patch_file_scope } from "./files_metadata.ts";
 import {
 	files_search_query_field_path_is_valid,
@@ -138,7 +182,11 @@ import {
 	files_search_query_FOLDER_PATH_MAX_LENGTH,
 	files_search_query_VALUE_TOO_LONG_PROBLEM,
 } from "../shared/files-search-query.ts";
-import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
+import {
+	files_archive_runs_db_check_fast,
+	files_archive_runs_db_start,
+	files_archive_runs_get_all_refused_nay,
+} from "./files_archive_runs.ts";
 import { files_transfer_db_start_rename } from "./files_transfer.ts";
 import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_service_uploads.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
@@ -160,7 +208,13 @@ import {
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
-import { type files_nodes_WriteContext, files_write_policy_db_is_within_scope, files_write_policy_db_get_blocking_policy, files_nodes_db_require_writable, files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
+import {
+	type files_nodes_WriteContext,
+	files_write_policy_db_is_within_scope,
+	files_write_policy_db_get_blocking_policy,
+	files_nodes_db_require_writable,
+	files_nodes_db_require_user_writable,
+} from "../server/files-write-policy.ts";
 import {
 	files_nodes_db_get_tree_reader,
 	files_tree_db_get_readable_node,
@@ -3822,8 +3876,8 @@ export const archive_nodes = mutation({
 				 */
 				isDone: v.boolean(),
 				/**
-				 * The named ids that were missing or locked, and the named ids the job refused so far with the named ids
-				 * inside them. The refused ones stay active.
+				 * The named ids that were missing, locked or not writable, and the named ids the job refused so far
+				 * with the named ids inside them. The refused ones stay active.
 				 */
 				notArchivedNodeIds: v.array(v.id("files_nodes")),
 				/**
@@ -3831,6 +3885,16 @@ export const archive_nodes = mutation({
 				 * refused folder is not listed here.
 				 */
 				refusedItems: v.array(v.object({ nodeId: v.id("files_nodes"), message: v.string() })),
+				/**
+				 * The named ids that stay in the tree until a later step stamps them, with the named ids inside
+				 * them.
+				 */
+				waitingNodeIds: v.array(v.id("files_nodes")),
+				/**
+				 * True while the job still checks every node before it stamps any. The check may still refuse
+				 * the waiting items.
+				 */
+				isChecking: v.boolean(),
 			}),
 		),
 		_nay: { data: v.any() },
@@ -3868,22 +3932,24 @@ export const archive_nodes = mutation({
 		}
 
 		// Like `rm` with several files, a named item that is missing is "Not found" for that item alone,
-		// and one the person cannot open is "Permission denied". The job lists it and archives the others.
-		const refusedNodes = new Map<Id<"files_nodes">, "Not found" | "Permission denied">();
+		// and one the person cannot open or change is "Permission denied". The job lists it and archives
+		// the others.
+		const refusedNodes = new Map<Id<"files_nodes">, { name: string | null; message: string }>();
 		const fileNodes: Doc<"files_nodes">[] = [];
+		const writableNodeIds = new Set<Id<"files_nodes">>();
 		const loadedNodes = await Promise.all(nodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
 		// Per node, not per workspace, because a grant on one restricted folder has to be enough to
-		// archive what is inside it. This loop only refuses a node the person cannot read.
-		// A node they can read but not change goes on to the job, which refuses it and archives the other
-		// named items. The write check costs no extra read for an unrestricted tree, and the read check
-		// runs only when the write check fails.
+		// archive what is inside it. This loop refuses a node the person cannot read. A node they can read
+		// but not change is refused below, only when it is active, so an archived one is still dropped
+		// like in `rm -f`. The write check costs no extra read for an unrestricted tree, and the read
+		// check runs only when the write check fails.
 		for (const [index, fileNode] of loadedNodes.entries()) {
 			if (
 				!fileNode ||
 				fileNode.organizationId !== membership.organizationId ||
 				fileNode.workspaceId !== membership.workspaceId
 			) {
-				refusedNodes.set(nodeIds[index]!, "Not found");
+				refusedNodes.set(nodeIds[index]!, { name: null, message: "Not found" });
 				continue;
 			}
 
@@ -3893,7 +3959,9 @@ export const archive_nodes = mutation({
 				permission: "content.write",
 				fileNode,
 			});
-			if (authorized._nay) {
+			if (!authorized._nay) {
+				writableNodeIds.add(fileNode._id);
+			} else {
 				// A node the person cannot open is locked. It is refused here, whether it is archived or
 				// not, so the answer tells nothing more about it. A member with only folder grants has no
 				// workspace read, so an open node is locked for them too.
@@ -3904,7 +3972,7 @@ export const archive_nodes = mutation({
 					nodes: [fileNode],
 				});
 				if (!readable) {
-					refusedNodes.set(fileNode._id, "Permission denied");
+					refusedNodes.set(fileNode._id, { name: null, message: "Permission denied" });
 					continue;
 				}
 			}
@@ -3922,44 +3990,58 @@ export const archive_nodes = mutation({
 					(other) => other.kind === "folder" && other._id !== node._id && node.treePath.startsWith(other.treePath),
 				),
 		);
-		if (rootFileNodes.length === 0) {
-			const [refused] = refusedNodes;
-			return refused
-				? Result({ _nay: { name: "nay", message: refused[1], data: { nodeId: refused[0] } } })
+		for (const node of rootFileNodes) {
+			if (!writableNodeIds.has(node._id)) refusedNodes.set(node._id, { name: null, message: "Permission denied" });
+		}
+
+		// When index reads prove that the check would pass, the request stamps the named items at once and
+		// the job runs no check. Otherwise the job checks every node inside before it archives anything.
+		const fastCheck = await files_archive_runs_db_check_fast(ctx, {
+			userAuth,
+			membership,
+			nodes: rootFileNodes.filter((node) => !refusedNodes.has(node._id)),
+		});
+		for (const [nodeId, refusal] of fastCheck.refusals) refusedNodes.set(nodeId, refusal);
+
+		const jobFileNodes = rootFileNodes.filter((node) => !refusedNodes.has(node._id));
+		const refusedItems = [...refusedNodes].map(([nodeId, refusal]) => ({ nodeId, refusal }));
+		if (jobFileNodes.length === 0) {
+			return refusedItems.length > 0
+				? Result({ _nay: files_archive_runs_get_all_refused_nay(refusedItems) })
 				: Result({ _yay: null });
 		}
 
-		// The job checks every node inside before it archives anything, then archives in steps.
 		const started = await files_archive_runs_db_start(ctx, {
 			kind: "archive",
 			userAuth,
 			membership,
 			archiveOperationId: crypto.randomUUID(),
-			rootNodeIds: rootFileNodes.map((node) => node._id),
-			refusedNodes: [...refusedNodes].map(([nodeId, message]) => ({ nodeId, message })),
-			treePaths: rootFileNodes.map((node) => node.treePath),
-			budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
+			rootNodeIds: jobFileNodes.map((node) => node._id),
+			refusedNodes: refusedItems,
+			isFast: fastCheck.isFast,
+			treePaths: jobFileNodes.map((node) => node.treePath),
+			budget: {
+				nodes: files_archive_runs_REQUEST_MAX_NODES,
+				checkNodes: files_archive_runs_REQUEST_MAX_CHECK_NODES,
+				hasPaginated: false,
+			},
 			previousRunId: null,
 			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		});
 		if (started._nay || !started._yay) return started;
 
-		// A named item inside a refused folder stays active with that folder, so report it too.
+		// A named item inside a refused or waiting folder stays active with that folder, so report it too.
 		const job = started._yay;
-		const refusedFolders = rootFileNodes.filter(
-			(node) => node.kind === "folder" && job.notArchivedNodeIds.includes(node._id),
-		);
-		const notArchivedNodeIds = [
-			...refusedNodes.keys(),
-			...activeFileNodes
+		const getNamedIdsWithin = (nodeIds: Array<Id<"files_nodes">>) => {
+			const folders = rootFileNodes.filter((node) => node.kind === "folder" && nodeIds.includes(node._id));
+			return activeFileNodes
 				.filter(
-					(node) =>
-						job.notArchivedNodeIds.includes(node._id) ||
-						refusedFolders.some((folder) => node.treePath.startsWith(folder.treePath)),
+					(node) => nodeIds.includes(node._id) || folders.some((folder) => node.treePath.startsWith(folder.treePath)),
 				)
-				.map((node) => node._id),
-		];
-		return Result({ _yay: { ...job, notArchivedNodeIds } });
+				.map((node) => node._id);
+		};
+		const notArchivedNodeIds = [...new Set([...refusedNodes.keys(), ...getNamedIdsWithin(job.notArchivedNodeIds)])];
+		return Result({ _yay: { ...job, notArchivedNodeIds, waitingNodeIds: getNamedIdsWithin(job.waitingNodeIds) } });
 	},
 });
 
@@ -4065,7 +4147,11 @@ export const unarchive_nodes = mutation({
 			topTreePathByOperationId.set(archiveOperationId, (topNode ?? fileNode).treePath);
 		}
 
-		const budget = { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false };
+		const budget = {
+			nodes: files_archive_runs_REQUEST_MAX_NODES,
+			checkNodes: files_archive_runs_REQUEST_MAX_CHECK_NODES,
+			hasPaginated: false,
+		};
 		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		let firstJob = null;
 		let previousJob = null;
@@ -4080,6 +4166,7 @@ export const unarchive_nodes = mutation({
 				archiveOperationId,
 				rootNodeIds: [],
 				refusedNodes: [],
+				isFast: false,
 				treePaths: [topTreePath],
 				budget,
 				previousRunId: previousJob?.runId ?? null,

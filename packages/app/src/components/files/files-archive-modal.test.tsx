@@ -90,7 +90,15 @@ describe("FilesArchiveModal", () => {
 
 	test("hands a big archive to a background job and links it", async () => {
 		mutationMock.mockResolvedValue({
-			_yay: { runId: "run_1", activityId: "activity_1", isDone: false, notArchivedNodeIds: [], refusedItems: [] },
+			_yay: {
+				runId: "run_1",
+				activityId: "activity_1",
+				isDone: false,
+				notArchivedNodeIds: [],
+				refusedItems: [],
+				waitingNodeIds: [],
+				isChecking: false,
+			},
 		});
 		const { onArchived } = renderModal([REPORTS]);
 		const dialog = await screen.findByRole("dialog");
@@ -113,6 +121,8 @@ describe("FilesArchiveModal", () => {
 				isDone: true,
 				notArchivedNodeIds: [REPORTS._id],
 				refusedItems: [{ nodeId: REPORTS._id, message: reason }],
+				waitingNodeIds: [],
+				isChecking: false,
 			},
 		});
 		const { onArchived } = renderModal([NOTE, REPORTS]);
@@ -126,25 +136,27 @@ describe("FilesArchiveModal", () => {
 		expect(openArchiveRunMock).toHaveBeenCalledWith("run_1");
 	});
 
-	test("counts the refusals the request found while the job goes on in the background", async () => {
+	test("closes without archived ids when the job refused or still checks every item", async () => {
 		mutationMock.mockResolvedValue({
 			_yay: {
 				runId: "run_1",
 				activityId: "activity_1",
 				isDone: false,
-				notArchivedNodeIds: [NOTE._id, REPORTS._id],
-				refusedItems: [
-					{ nodeId: NOTE._id, message: "Permission denied" },
-					{ nodeId: REPORTS._id, message: "Not found" },
-				],
+				notArchivedNodeIds: [NOTE._id],
+				refusedItems: [{ nodeId: NOTE._id, message: "Permission denied" }],
+				waitingNodeIds: [REPORTS._id],
+				isChecking: true,
 			},
 		});
-		const { onArchived } = renderModal([NOTE, REPORTS]);
+		const { onClose, onArchived } = renderModal([NOTE, REPORTS]);
 		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Archive" }));
 
-		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([]));
+		await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+		expect(onArchived).not.toHaveBeenCalled();
 		expect(toastInfoMock).not.toHaveBeenCalled();
-		expect(toastWarningMock.mock.calls[0]?.[0]).toBe("2 items were not archived. See Activity.");
+		expect(toastWarningMock.mock.calls[0]?.[0]).toBe(
+			'"note.md" was not archived: Permission denied. 1 more is being checked.',
+		);
 	});
 
 	test("starts on Cancel", async () => {

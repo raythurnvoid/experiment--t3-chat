@@ -6464,7 +6464,8 @@ const app_convex_schema = defineSchema({
 		rootNodeIds: v.array(v.id("files_nodes")),
 		/**
 		 * Restore discovers every top root before checking overlaps. `check` walks everything before
-		 * `apply` changes the nodes.
+		 * `apply` changes the nodes. A fast archive starts in `apply`, because its request proved with
+		 * index reads that the check would pass.
 		 */
 		phase: v.union(v.literal("discover"), v.literal("check"), v.literal("apply")),
 		/**

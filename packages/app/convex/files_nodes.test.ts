@@ -977,8 +977,9 @@ describe("archive_nodes", () => {
 				nodeIds: [nodeId],
 			});
 
-		// The member reads `/shared/note.md` through a grant but cannot change it, so the job refuses it.
-		expect((await archive(f.nodes.sharedFileId))._nay?.message).not.toBe("Not found");
+		// The member reads `/shared/note.md` through a grant but cannot change it, so the request refuses it.
+		expect((await archive(f.nodes.sharedFileId))._nay?.message).toBe("Permission denied");
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", f.nodes.sharedFileId)))?.archiveOperationId).toBeNull();
 		// An open node needs workspace read, which this member lacks, so it is locked for them.
 		expect((await archive(f.nodes.openFileId))._nay?.message).toBe("Permission denied");
 		expect((await archive(f.nodes.missingNodeId))._nay?.message).toBe("Not found");

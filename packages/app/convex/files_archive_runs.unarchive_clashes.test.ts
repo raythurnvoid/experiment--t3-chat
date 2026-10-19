@@ -360,8 +360,8 @@ describe("unarchive_nodes", () => {
 			).toEqual({ _yay: null });
 			await step(f, job.runId);
 
-			// A step may change 75 nodes. Each Replace changes two: the restored file and the one in the way.
-			expect((await read_activity(f, job.activityId)).progress!.completed).toBe(38);
+			// A step may change 30 nodes. Each Replace changes two: the restored file and the one in the way.
+			expect((await read_activity(f, job.activityId)).progress!.completed).toBe(15);
 			const ended = await run_to_end(f, job);
 			expect(ended.activity.status).toBe("succeeded");
 			expect(ended.activity.progress).toMatchObject({ completed: 100 });
