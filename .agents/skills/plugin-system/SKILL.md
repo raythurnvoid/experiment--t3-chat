@@ -877,6 +877,13 @@ the `bonobo:agent-tool-call` / `bonobo:agent-tool-result` messages. It also carr
 `convex-api.d.ts` and `http-api.d.ts` changes that were not mirrored before. Typecheck and 49 SDK
 tests pass.
 
+Mail 0.1.2 was published and installed in `personal/home` on 2026-10-19 (plugin commit
+`d8435658d77fcb0c246f1529027b6db87577e131`, version doc `hn7k9j2zhxyxhqfjg7m4n90bxd8gk4e6`). The
+README now has a Setup section: add "Can view" on `/emails` in the install dialog, or later with
+**Manage grants** on the Service accounts page. When that grant is missing, the page says how to
+add it instead of a bare "Permission denied". 0.1.1 (`317e5ad`) named the button "Manage access" by
+mistake and was replaced the same day. An update keeps the account's existing grants.
+
 Mail 0.1.0 was published and installed in `personal/home` on 2026-10-19 (plugin commit
 `871de3159fabbd1ef6291f234922c427e8b0be07`, version doc `hn7jj6yrxqgbvekbkb22y1stps8gk1fb`,
 repo `raythurnvoid/bonobo-plugin-mail`). It is the first plugin on SDK 0.22.0 and the first with

@@ -428,7 +428,7 @@ That is expected. After an uninstall and a reinstall in the same thread, the mod
 earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
 it calls the tool again.
 
-## Page agent tools fixture (Mail 0.1.0)
+## Page agent tools fixture (Mail 0.1.2)
 
 Mail (`plugins/bonobo-plugin-mail`) is the fixture for page agent tools (`agent.page-tools`). Its page
 lists the Gmail plugin's `/emails` files and registers six tools: `get_view`, `open_email`,
@@ -436,15 +436,17 @@ lists the Gmail plugin's `/emails` files and registers six tools: `get_view`, `o
 on the page. Drafts are plugin documents in the
 `drafts` collection. Mail never writes to Gmail.
 
-Where it lives (verified 2026-10-19): `mail@0.1.0` is installed in `personal/home`, next to the Gmail
+Where it lives (verified 2026-10-19): `mail@0.1.2` is installed in `personal/home`, next to the Gmail
 plugin that writes `/emails/<account>/…`. Page:
 `/w/personal/home/plugins/mail/pages/mail`.
 
 - **Its service account needs "Can view" on `/emails`.** A plugin page reads Files through the
   installation's service account, and install creates that account with no grants. Without a grant
-  the frame shows `Failed to list /emails: Permission denied: /emails`. Add the grant on the Service
-  accounts page: `Manage access` on the `Mail` row, Resource `File or folder`, path `/emails`, `Can
-  view`, `Save grant`. The dialog then lists `/emails` above the form.
+  the frame shows `Mail cannot read /emails` with these steps (0.1.0 said `Permission denied:
+  /emails`). Add the grant in the install or update dialog (`Folders this plugin can use`, `File or
+  folder`, `/emails`, `Can view`, `Add reviewed grant`), or later on the Service accounts page:
+  `Manage grants` on the `Mail` row, Resource `File or folder`, path `/emails`, `Can view`, `Save
+  grant`. That dialog then lists `/emails` above the form. An update keeps existing grants.
 - **429s in the console are normal.** The list reads each email file to get its header, so it hits
   the files read bucket. `retry.ts` waits and tries again. A row whose read still failed shows its
   file name (`2026-10-01 security alert …`) instead of sender and subject.
