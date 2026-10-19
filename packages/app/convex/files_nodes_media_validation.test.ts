@@ -513,7 +513,7 @@ describe("saved file media validation clocks", () => {
 		const pending = await proposal(f, nodeId);
 		const before = await snapshot(f);
 		expect(
-			await f.asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			await test_apply_file_pending_move(f.asUser, {
 				membershipId: f.db.membershipId,
 				target: { kind: "saved", id: nodeId },
 				pendingUpdateId: pending._id,

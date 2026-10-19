@@ -44,10 +44,6 @@ import {
 } from "./files_nodes.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
-	files_pending_updates_db_remove_archived_node_proposal,
-	files_pending_updates_db_require_reviewed_archive_node,
-} from "./files_pending_updates.ts";
-import {
 	files_share_links_create_cleanup_state,
 	files_share_links_db_delete_for_roots,
 	type files_share_links_CleanupState,
@@ -73,7 +69,7 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { files_archive_runs_CHECK_STEP_MAX_NODES } from "../server/files-archive-runs.ts";
-import { files_db_get_pending_update, files_ROOT_ID } from "../server/files.ts";
+import { files_ROOT_ID } from "../server/files.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { files_check_name_and_path_length, files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -286,17 +282,6 @@ async function db_check_writable_nodes(
 
 		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: args.userAuth.id });
 		if (writable._nay) return { kind: "failed", nay: writable._nay, node } as const;
-
-		if (args.run.pendingUpdateCleanup?.reviewedPendingUpdateIds) {
-			const reviewed = await files_pending_updates_db_require_reviewed_archive_node(ctx, {
-				organizationId: args.run.organizationId,
-				workspaceId: args.run.workspaceId,
-				userId: args.userAuth.id,
-				nodeId: node._id,
-				reviewedPendingUpdateIds: args.run.pendingUpdateCleanup.reviewedPendingUpdateIds,
-			});
-			if (reviewed._nay) return { kind: "failed", nay: reviewed._nay } as const;
-		}
 	}
 	return null;
 }
@@ -582,14 +567,6 @@ async function db_archive_node(
 		updatedBy: args.userAuth.id,
 		now: args.now,
 	});
-	if (args.run.pendingUpdateCleanup) {
-		await files_pending_updates_db_remove_archived_node_proposal(ctx, {
-			organizationId: args.run.organizationId,
-			workspaceId: args.run.workspaceId,
-			userId: args.userAuth.id,
-			nodeId: node._id,
-		});
-	}
 	args.writeState.isWritten = true;
 	args.progress.completed += 1;
 	args.budget.nodes -= 1;
@@ -1671,7 +1648,6 @@ export async function files_archive_runs_db_start(
 		 * Where readers see the items now. Restore passes its top item, because it has no named items yet.
 		 */
 		treePaths: string[];
-		pendingUpdateCleanup: RunFields["pendingUpdateCleanup"];
 		budget: { nodes: number; hasPaginated: boolean };
 		/**
 		 * The job before this one in the same Unarchive request. The jobs of one request run one
@@ -1741,7 +1717,8 @@ export async function files_archive_runs_db_start(
 		choice: null,
 		applyToRemaining: { file: null, folder: null },
 		revision: 0,
-		pendingUpdateCleanup: args.pendingUpdateCleanup,
+		// No archive job removes proposals now. Save archives an accepted agent delete itself.
+		pendingUpdateCleanup: null,
 		// Cancel on a clash wait ends every job of the request, so each job names the first one.
 		requestFirstRunId: previousRun ? (previousRun.requestFirstRunId ?? previousRun._id) : null,
 		checkNamedItem: null,
@@ -1869,32 +1846,18 @@ export async function files_archive_runs_db_advance(
 	const { _id: runId, _creationTime: _runCreationTime, ...run } = storedRun;
 	const progress = { ...activity.progress };
 	const membership = await db_get_run_membership({ ctx, run: storedRun, activity });
-	// An accepted agent delete keeps its proposal on the named folder until the check ends. If the
-	// person discards it before that, nothing was archived yet, so the job ends.
-	const deleteProposal =
-		storedRun.pendingUpdateCleanup && storedRun.phase === "check" && storedRun.rootNodeIds[0]
-			? await files_db_get_pending_update(ctx, {
-					organizationId: storedRun.organizationId,
-					workspaceId: storedRun.workspaceId,
-					userId: storedRun.userId,
-					target: { kind: "saved", id: storedRun.rootNodeIds[0] },
-				})
-			: null;
-	const outcome: StepOutcome =
-		storedRun.pendingUpdateCleanup && storedRun.phase === "check" && !deleteProposal?.pendingArchive
-			? { kind: "failed", nay: { message: "The delete was discarded." } }
-			: await db_step(ctx, {
-					opId: args.op._id,
-					run,
-					progress,
-					userAuth: { id: storedRun.userId },
-					membership,
-					now: args.now,
-					budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
-					checkedScopes: new Map(),
-					shareLinkCleanup: files_share_links_create_cleanup_state(),
-					writeState: { isWritten: false },
-				});
+	const outcome = await db_step(ctx, {
+		opId: args.op._id,
+		run,
+		progress,
+		userAuth: { id: storedRun.userId },
+		membership,
+		now: args.now,
+		budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
+		checkedScopes: new Map(),
+		shareLinkCleanup: files_share_links_create_cleanup_state(),
+		writeState: { isWritten: false },
+	});
 
 	await db_settle_step(ctx, {
 		opId: args.op._id,

@@ -1,5 +1,5 @@
-// The archive_nodes tests from a lock set after the check on, and the apply_file_pending_archive and history
-// cleanup tests, are in files_archive_runs.archive_steps.test.ts, so the two files can run at the same time.
+// The archive_nodes tests from a lock set after the check on, and the history cleanup tests, are in
+// files_archive_runs.archive_steps.test.ts, so the two files can run at the same time.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import {

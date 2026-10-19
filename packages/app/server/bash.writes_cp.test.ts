@@ -2,6 +2,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
+import { test_apply_file_pending_move } from "../convex/setup.test.ts";
 import {
 	test_db_files_mount,
 	function_name_of,
@@ -215,14 +216,14 @@ describe("bash_run_command", () => {
 		).toEqual([]);
 	});
 
-	test.each(["file", "folder"])("archive acceptance releases a copied replacement under a deleted %s", async (kind) => {
+	test("archive acceptance releases a copied replacement under a deleted file", async () => {
 		const runner = await create_bash_runner({
 			extraFiles: [{ path: "/copied/existing.md", content: "keep this saved version\n" }],
 		});
 		const targetBefore = await get_seeded_node(runner, "/copied/existing.md");
-		const archivedId = kind === "file" ? targetBefore._id : await get_seeded_node_id(runner, "/copied");
+		const archivedId = targetBefore._id;
 		const result = await runner.run({
-			command: `cp docs/readme.md copied/existing.md; rm ${kind === "folder" ? "-r copied" : "copied/existing.md"}`,
+			command: "cp docs/readme.md copied/existing.md; rm copied/existing.md",
 		});
 		expect(result.metadata.exitCode, result.stderr).toBe(0);
 		const [copy] = await list_pending_updates_for_node(runner, targetBefore._id);
@@ -243,7 +244,7 @@ describe("bash_run_command", () => {
 		const [archive] = await list_pending_updates_for_node(runner, archivedId);
 		expect(archive.pendingArchive).toBeDefined();
 		const asUser = runner.t.withIdentity({ issuer: "https://clerk.test", external_id: runner.seeded.userId });
-		const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+		const accepted = await test_apply_file_pending_move(asUser, {
 			membershipId: runner.seeded.membershipId,
 			target: { kind: "saved", id: archivedId },
 			pendingUpdateId: archive._id,

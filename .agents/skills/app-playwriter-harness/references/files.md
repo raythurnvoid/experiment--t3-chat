@@ -1421,20 +1421,9 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   step. A lock set this way (`set_node_write_policy` `read_only` on the deepest active folder) ends the job
   `failed` with `Stopped partway: This item is read-only.`, and the locked folder and its parents stay active.
   A folder created with `create_folder_node` during the check phase or after the first apply step gets the
-  job's operation. Its `path` argument is relative to `parentId`, not a full path. For an agent delete
-  without a chat, make the proposal with `convex run files_pending_updates:upsert_file_pending_archive_in_db`
-  and accept it with `apply_file_pending_archive`. A `discard_file_pending_structural` during the job ends
-  it `failed` with `Stopped partway: The delete was discarded.` With a real chat (verified 2026-09-25):
-  the agent runs `rm -r copy-4` (relative; `/copy-4` is outside the Bash workspace mount) and answers
-  `pending delete created: /copy-4`. The Pending tab `Accept delete of /copy-4` starts an accept review
-  run, and the archive job appears only when that run ends (about 15-18 s later). The run's
-  `commit_unit` mutation does the job's whole check and first 75-item step in one transaction, so the
-  job's Activity has an early `_creationTime` but stays invisible until that mutation commits. The
-  `Save reviewed changes` dialog opens over the Pending row and blocks its Discard button until it is
-  closed. By the time a runner closed it, the 416-item job had already finished. Start the same run the
-  button starts from page context instead:
-  `files_pending_update_runs.start` with `kind: "discard"`, then `seal`, once the archive Activity is
-  `running`. To check search during a job, poll `files_nodes.search_saved` with
+  job's operation. Its `path` argument is relative to `parentId`, not a full path. An agent delete
+  (`rm -r` in chat) does not use this job: the Pending tab `Accept delete of <path>` archives it through
+  the review run's Save cohort worker. To check search during a job, poll `files_nodes.search_saved` with
   `clause: { kind: "content", text }` for a word from one text file inside the tree. That file must go from
   present to absent once (archive) or from absent to present once (restore), and never back.
 - For screenshots and hit-target checks, scroll the policy block into view first. Tabbing to footer
@@ -1860,8 +1849,8 @@ The run is asynchronous. Poll `files_pending_update_runs.get({membershipId, runI
 `start` takes at most 100 items; append the rest with `append_items({membershipId, runId, offset,
 items})` before sealing.
 
-`apply_file_pending_archive` remains a plain mutation. Pending Move uses the reviewed, paged
-Accept run above. There is no direct pending Move apply mutation.
+Pending Move and pending delete use the reviewed, paged Accept run above. There is no direct
+apply mutation for either.
 
 ### Reading And Restoring A Collaboration-Off File's Text
 

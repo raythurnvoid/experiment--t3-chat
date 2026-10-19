@@ -181,7 +181,6 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			upsert_file_pending_update: "upsert_file_pending_update",
 			save_file_pending_update: "save_file_pending_update",
 			apply_file_pending_move: "apply_file_pending_move",
-			apply_file_pending_archive: "apply_file_pending_archive",
 			discard_file_pending_structural: "discard_file_pending_structural",
 			accept_file_pending_replacement: "accept_file_pending_replacement",
 		},

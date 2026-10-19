@@ -257,9 +257,8 @@ function db_with_unit_budget(ctx: MutationCtx) {
 	return {
 		...ctx,
 		db,
-		// An accepted delete starts the archive job, and its first step runs in this unit. The step stops
-		// when a transaction limit is near. Report this unit's own counts and limits, so the step stops
-		// before the unit refuses, and the job does the rest in the background.
+		// Some helpers stop when a transaction limit is near. Report this unit's own counts and limits,
+		// so they stop before the unit refuses.
 		meta: {
 			...ctx.meta,
 			getTransactionMetrics: async () => ({
