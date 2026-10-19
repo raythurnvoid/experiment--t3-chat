@@ -21,6 +21,8 @@ export function files_transfer_media_dependencies_equal(
 	pinned: Doc<"files_media_dependencies">["dependency"],
 	current: Doc<"files_media_dependencies">["dependency"],
 ) {
+	if ("keptLink" in pinned || "keptLink" in current)
+		return "keptLink" in pinned && "keptLink" in current && pinned.src === current.src;
 	// Publishing unchanged private media keeps its asset, but changes the version kind.
 	const published =
 		pinned.version.kind === "pending" &&
@@ -116,6 +118,12 @@ export async function files_transfer_media_db_map_refs(
 	});
 	const referencePairs: [string, string][] = [];
 	const mediaDependencies: Doc<"files_media_dependencies">["dependency"][] = [];
+	// Missing, locked, or unselected media stays an unchanged link, like Notion. No bytes are copied,
+	// and readers check access on every view, so the kept link grants nothing.
+	const keep_link = (src: string) => {
+		referencePairs.push([src, src]);
+		mediaDependencies.push({ src, keptLink: true });
+	};
 
 	// Resolve in order: the reader shares parent-resolution state between references.
 	for (const src of new Set(args.refs)) {
@@ -124,16 +132,21 @@ export async function files_transfer_media_db_map_refs(
 		const fileId = parsed.kind === "file" ? ctx.db.normalizeId("files_nodes", parsed.fileNodeId) : null;
 		const privateId =
 			parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
-		if (!fileId && !privateId) return Result({ _nay: { message: "A linked media file is not available" } });
+		if (!fileId && !privateId) {
+			keep_link(src);
+			continue;
+		}
 		const original: files_PendingTarget = fileId ? { kind: "saved", id: fileId } : { kind: "private", id: privateId! };
 		const target = await files_pending_nodes_db_resolve_read_target(ctx, { ...run.sourceScope, target: original });
 		const access = target ? await sourceReader.resolveTargetAccess(target) : null;
-		if (access?.status === "locked")
-			return Result({ _nay: { message: "Permission denied: a linked image or video is locked" } });
+		// A reader past its limit reports readable media as missing. Refuse instead of dropping it.
+		if (sourceReader.exhausted) return Result({ _nay: { message: "Media path lookup exceeded its read limit." } });
 		const source = access?.status === "found" ? access.entry : null;
-		// Never consult selected names or explain a missing selection before source access succeeds.
-		if (!source || source.node.kind !== "file")
-			return Result({ _nay: { message: "A linked media file is not available" } });
+		// Never consult selected names before source access succeeds.
+		if (!source || source.node.kind !== "file") {
+			keep_link(src);
+			continue;
+		}
 
 		const aliases = [original];
 		if (target!.kind !== original.kind || target!.id !== original.id) aliases.push(target!);
@@ -150,8 +163,12 @@ export async function files_transfer_media_db_map_refs(
 			),
 		);
 		const mediaItem = selected.find((candidate) => candidate !== null);
+		// A media item that ended without a copy is like an unselected one.
+		if (!mediaItem || mediaItem.state === "skipped" || mediaItem.state === "failed" || mediaItem.state === "canceled") {
+			keep_link(src);
+			continue;
+		}
 		// These errors remain in job history after access to the linked file may be removed.
-		if (!mediaItem) return Result({ _nay: { message: "Select the linked image or video files with this document" } });
 		if (mediaItem.state !== "completed" || !mediaItem.outputTarget)
 			return Result({ _nay: { message: "A selected image or video file has not finished copying" } });
 

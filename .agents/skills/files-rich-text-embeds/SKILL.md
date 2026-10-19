@@ -46,8 +46,8 @@ Copying the image or video file itself still needs read access.
 
 Cross-workspace Copy rewrites only real rich-text image/video embeds. The media must be selected
 explicitly, directly or through a selected folder. Plain links and code do not import media.
-New media copies have destination-owned assets and use destination access. Missing or unreadable
-linked media still refuses cross-workspace Copy.
+New media copies have destination-owned assets and use destination access. A missing, locked, or
+unselected link stays unchanged, like in Notion. It copies no bytes and grants no access.
 
 Cross-workspace mappings are sealed paged sets owned by the Copy item, not arrays on the document.
 They only rewrite the copied text, and they retire when the Copy finishes. Large Copy review saves

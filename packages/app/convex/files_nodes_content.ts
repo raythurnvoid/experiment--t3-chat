@@ -98,6 +98,7 @@ import app_convex_schema, {
 	files_transfer_scope_validator,
 	files_transfer_source_version_validator,
 	files_media_dependency_validator,
+	files_media_kept_link_validator,
 	file_content_materialization_state_validator,
 	file_content_materialization_header_validator,
 } from "./schema.ts";
@@ -1805,7 +1806,15 @@ export const prepare_transfer_file_media = internalMutation({
 		refs: v.array(v.string()),
 	},
 	returns: v_result({
-		_yay: v.union(v.null(), v.array(v.object({ sourceSrc: v.string(), dependency: files_media_dependency_validator }))),
+		_yay: v.union(
+			v.null(),
+			v.array(
+				v.object({
+					sourceSrc: v.string(),
+					dependency: v.union(files_media_dependency_validator, files_media_kept_link_validator),
+				}),
+			),
+		),
 	}),
 	handler: async (ctx, args) => {
 		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);

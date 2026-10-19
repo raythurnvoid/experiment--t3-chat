@@ -699,6 +699,15 @@ export const files_media_dependency_validator = v.object({
 	version: files_transfer_source_version_validator,
 });
 
+/**
+ * A link that cross-workspace Copy cannot copy, such as missing, locked, or unselected media.
+ * The copied text keeps it unchanged. It copies no bytes and grants no access.
+ */
+export const files_media_kept_link_validator = v.object({
+	src: v.string(),
+	keptLink: v.literal(true),
+});
+
 export const files_media_validation_versions_validator = v.object({
 	versions: v.array(
 		v.object({
@@ -3030,7 +3039,7 @@ const app_convex_schema = defineSchema({
 		setId: v.id("files_media_dependency_sets"),
 		order: v.number(),
 		sourceSrc: v.string(),
-		dependency: files_media_dependency_validator,
+		dependency: v.union(files_media_dependency_validator, files_media_kept_link_validator),
 	})
 		.index("by_set_order", ["setId", "order"])
 		.index("by_set_sourceSrc", ["setId", "sourceSrc"])

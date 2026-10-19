@@ -290,7 +290,9 @@ export async function files_move_media_db_validate_next(
 		if (row.order !== validatedCount) return files_move_media_changed();
 		const current = await files_move_media_db_ref(ctx, checked._yay, row.sourceSrc);
 		if (current._nay) return current;
+		// Only cross-workspace Copy sets keep links. A Move set never has one.
 		if (
+			"keptLink" in row.dependency ||
 			current._yay.target.kind !== row.dependency.target.kind ||
 			current._yay.target.id !== row.dependency.target.id ||
 			current._yay.assetId !== row.dependency.assetId ||

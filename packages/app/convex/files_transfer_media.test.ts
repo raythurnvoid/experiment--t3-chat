@@ -4,9 +4,25 @@ import type { Id } from "./_generated/dataModel.js";
 import { files_media_build_file_src, files_media_build_private_src } from "../shared/files-media.ts";
 import { mock_media_storage, save_media, fixture, map_refs } from "./files_transfer_media.setup.test.ts";
 
+// Lets one test make the media readers of one workspace act like they ran out of reads: they report
+// readable media as missing. Copy preparation uses other readers, so it still runs.
+const readLimit = vi.hoisted(() => ({ exhaustedWorkspaceId: null as string | null }));
+vi.mock("./files_visible_db.ts", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./files_visible_db.ts")>();
+	return {
+		...original,
+		files_visible_db_create_reader: async (...args: Parameters<typeof original.files_visible_db_create_reader>) => {
+			const reader = await original.files_visible_db_create_reader(...args);
+			if (args[1].workspaceId !== readLimit.exhaustedWorkspaceId || args[1].readLimit !== 4096) return reader;
+			return { ...reader, exhausted: true, resolveTargetAccess: async () => ({ status: "missing" as const }) };
+		},
+	};
+});
+
 beforeEach(mock_media_storage);
 
 afterEach(() => {
+	readLimit.exhaustedWorkspaceId = null;
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
@@ -113,20 +129,29 @@ describe("files_transfer_media_db_map_refs", () => {
 		});
 	});
 
-	test("keeps unselected media errors name-free and checks access first", async () => {
+	test("keeps an unselected or locked link unchanged", async () => {
 		const f = await fixture({ selected: false });
-		expect(await map_refs(f)).toEqual({
-			_nay: { message: "Select the linked image or video files with this document" },
-		});
+		const kept = { _yay: { referencePairs: [[f.sourceRef, f.sourceRef]], mediaDependencies: [{ src: f.sourceRef, keptLink: true }] } };
+		expect(await map_refs(f)).toEqual(kept);
 		expect(
 			await f.asOwner.mutation(api.files_sharing.restrict_node, {
 				membershipId: f.owner.membershipId,
 				nodeId: f.media.target.id as Id<"files_nodes">,
 			}),
 		).toEqual({ _yay: null });
-		// A locked linked file is not missing: say why, still with no name.
+		expect(await map_refs(f)).toEqual(kept);
+	});
+
+	test("keeps a selected link whose media became locked", async () => {
+		const f = await fixture();
+		expect(
+			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.owner.membershipId,
+				nodeId: f.media.target.id as Id<"files_nodes">,
+			}),
+		).toEqual({ _yay: null });
 		expect(await map_refs(f)).toEqual({
-			_nay: { message: "Permission denied: a linked image or video is locked" },
+			_yay: { referencePairs: [[f.sourceRef, f.sourceRef]], mediaDependencies: [{ src: f.sourceRef, keptLink: true }] },
 		});
 	});
 
@@ -154,24 +179,40 @@ describe("files_transfer_media_db_map_refs", () => {
 			...args,
 			paginationOpts: { cursor: null, numItems: 20 },
 		});
-		expect(view?.activity).toMatchObject({ status: "failed", errorCode: "copy_failed" });
+		expect(view?.activity).toMatchObject({ status: "succeeded" });
 		expect(items?.page).toHaveLength(1);
 		expect(JSON.stringify({ view, items })).not.toContain("/photo.png");
 	});
 
-	test("rejects wrong-scope and wrong-table references without names", async () => {
+	test("keeps wrong-scope and wrong-table references unchanged", async () => {
 		const f = await fixture();
 		for (const ref of [
 			files_media_build_private_src(f.selectedMedia!.outputTarget!.id),
 			files_media_build_file_src(f.media.assetId),
 			"bonobo-file://not-an-id",
 		])
-			expect(await map_refs(f, [ref])).toEqual({ _nay: { message: "A linked media file is not available" } });
+			expect(await map_refs(f, [ref])).toEqual({
+				_yay: { referencePairs: [[ref, ref]], mediaDependencies: [{ src: ref, keptLink: true }] },
+			});
 	});
 
-	test.each(["failed", "copying", "skipped"] as const)("refuses a selected %s item", async (state) => {
+	test.each(["failed", "skipped", "canceled"] as const)("keeps the link of a selected %s item", async (state) => {
 		const f = await fixture();
 		await f.t.run((ctx) => ctx.db.patch("files_transfer_items", f.selectedMedia!._id, { state }));
+		expect(await map_refs(f)).toEqual({
+			_yay: { referencePairs: [[f.sourceRef, f.sourceRef]], mediaDependencies: [{ src: f.sourceRef, keptLink: true }] },
+		});
+	});
+
+	test("refuses instead of keeping a link when the source reader runs out of reads", async () => {
+		const f = await fixture();
+		readLimit.exhaustedWorkspaceId = f.source.workspaceId;
+		expect(await map_refs(f)).toEqual({ _nay: { message: "Media path lookup exceeded its read limit." } });
+	});
+
+	test("refuses a selected item that is still copying", async () => {
+		const f = await fixture();
+		await f.t.run((ctx) => ctx.db.patch("files_transfer_items", f.selectedMedia!._id, { state: "copying" }));
 		expect(await map_refs(f)).toEqual({
 			_nay: { message: "A selected image or video file has not finished copying" },
 		});

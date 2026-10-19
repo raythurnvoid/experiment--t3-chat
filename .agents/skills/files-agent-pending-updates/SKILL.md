@@ -42,7 +42,8 @@ Same-workspace Copy keeps exact image/video links. It does not read linked media
 bytes. Missing, hidden, or unready media never blocks this Copy. Readers still check current access.
 Cross-workspace Copy maps image/video links through a sealed, paged set owned by the Copy item.
 The set only rewrites the copied text, and it retires when the Copy finishes. The proposal keeps no
-media set. Cross-workspace media still needs read access and explicit selection.
+media set. Only selected, readable media is copied to the other workspace. Any other link stays
+unchanged as a kept-link row, and it grants no access.
 Move keeps its media proofs on cohort content. Review headers and proposal remainders keep no media set.
 A copied document saves like any other document. A missing or changed image stays as a link and
 never blocks Save, like Notion and Google Docs. We chose this because blocking a whole Save for one

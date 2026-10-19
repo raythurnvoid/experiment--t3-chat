@@ -366,19 +366,30 @@ describe("copy_transfer_file media", () => {
 		},
 	);
 
-	test("refuses an unselected dependency before uploading document output", async () => {
-		const f = await fixture({ selected: false });
-		const uploads = () => vi.mocked(globalThis.fetch).mock.calls.filter(([, init]) => init?.method === "PUT").length;
-		const before = uploads();
+	test("copies a document with unselected and broken links and keeps them unchanged", async () => {
+		const missingRef = "bonobo-file://not-an-id";
+		const f = await fixture({
+			selected: false,
+			documentText: (src) => `Before\n\n![Photo](${src})\n\n![Gone](${missingRef})\n\nAfter\n`,
+		});
 		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
 			itemId: f.document._id,
 			attempt: f.document.attempt,
 		});
 		expect(await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id))).toMatchObject({
-			state: "failed",
-			errorMessage: "Select the linked image or video files with this document",
+			state: "completed",
+			outputTarget: { kind: "private" },
 		});
-		expect(uploads()).toBe(before);
+		const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: f.destination.organizationId,
+			workspaceId: f.destination.workspaceId,
+			userId: f.destination.userId,
+			subject: { kind: "user", userId: f.destination.userId, plugin: null },
+			overlayUserId: f.destination.userId,
+			path: "/document.md",
+		});
+		expect(read?.content).toContain(`![Photo](${f.sourceRef})`);
+		expect(read?.content).toContain(`![Gone](${missingRef})`);
 	});
 
 	test("refuses a media revision changed while the document uploads", async () => {

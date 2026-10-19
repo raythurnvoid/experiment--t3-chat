@@ -186,10 +186,12 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Same-workspace Copy keeps exact image/video links. It does not resolve them or import their bytes.
   Missing, hidden, or unready media never blocks this Copy. Copying a media file itself still needs
   read access. Readers check current media access; a copied link grants none.
-  Cross-workspace copies rewrite real image and video embeds to destination IDs. Each linked media
-  file must be explicitly selected with the document, either directly or inside a selected folder.
-  Never copy an unselected asset. Plain links and text inside code are not embeds.
-  Missing or unreadable media still refuses cross-workspace Copy.
+  Cross-workspace copies rewrite real image and video embeds to destination IDs. Only media the
+  user selected with the document, directly or inside a selected folder, is copied. Never copy an
+  unselected asset. Plain links and text inside code are not embeds.
+  A missing, locked, or unselected link, or one whose media item failed, was skipped, or was
+  canceled, stays unchanged. It is stored as a `keptLink` row, copies no bytes, and grants no access.
+  A media item still copying and a reader past its read limit still refuse the document.
   Reserve all private output IDs first, copy media before documents, and pin the mapping for retries.
   A completed image/video item keeps its exact output asset ID, without owning the asset. The first
   document mapping must still match that ID. Saving unchanged media is allowed; replacing it is not.
