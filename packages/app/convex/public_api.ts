@@ -142,11 +142,15 @@ type stage_trusted_yjs_update_LocalResult =
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
 export const experimental_reuseContext = true;
 
-const FILES_READ_MAX_BYTES = 128_000;
+// One read returns any saved text file. A text file can never be bigger than this.
+const FILES_READ_MAX_BYTES = files_MAX_TEXT_CONTENT_BYTES;
 const FILES_READ_BYTES_MAX_LENGTH = 1024 * 1024;
 const FILES_GRANT_READ_BYTES = 8 * FILES_READ_BYTES_MAX_LENGTH;
 const FILES_READ_MANY_MAX_ITEMS = 50;
 const FILES_READ_MANY_MAX_CONTENT_BYTES = 384_000;
+// Keep one item well under the batch total. A bigger item would end every batch as `truncated`
+// with nothing returned, and the caller could never move past it. Bigger files use `files/read`.
+const FILES_READ_MANY_MAX_ITEM_BYTES = 128_000;
 const FILES_DOWNLOAD_URL_MAX_TTL_SECONDS = 15 * 60;
 // The signer timestamps after our pre-sign check, so leave one full second inside plugin authority.
 const FILES_DOWNLOAD_URL_SIGNING_MARGIN_SECONDS = 1;
@@ -5781,7 +5785,7 @@ export async function public_api_http_read_many(args: {
 		return { status: 403, body: { message: "Permission denied" } } as const;
 	}
 
-	const maxBytes = Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES);
+	const maxBytes = Math.min(body._yay.maxBytes ?? FILES_READ_MANY_MAX_ITEM_BYTES, FILES_READ_MANY_MAX_ITEM_BYTES);
 	const contents = await Promise.all(
 		requestedPaths.map(async (filePath) => {
 			const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {

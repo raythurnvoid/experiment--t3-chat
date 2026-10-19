@@ -109,3 +109,41 @@ describe("saved-only public reads", () => {
 		},
 	);
 });
+
+describe("public_api_http_read_file", () => {
+	test("returns a whole saved file over 128 KB, while read-many keeps its item cap", async () => {
+		const text = "a saved line of text\n".repeat(10_000);
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: "/big.txt", content: text, contentType: "text/plain;charset=utf-8" }],
+		});
+		const token = "d".repeat(64);
+		await runner.t.mutation(internal.public_api.create_grant, {
+			organizationId: runner.seeded.organizationId,
+			workspaceId: runner.seeded.workspaceId,
+			userId: runner.seeded.userId,
+			threadId: null,
+			principalKey: "big-reader",
+			tokenHash: await crypto_sha256_hex(token),
+			scopes: ["files:read"],
+			pathPrefix: null,
+			now: Date.now(),
+		});
+		const request = (route: string, body: Record<string, unknown>) =>
+			runner.t.fetch(`/api/v1/files/${route}`, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+
+		const single = await request("read", { path: "/big.txt" });
+		expect(single.status, "a file under the text limit must be readable").toBe(200);
+		expect(((await single.json()) as { content: string }).content).toBe(text);
+
+		const many = await request("read-many", { paths: ["/big.txt"] });
+		expect(await many.json()).toEqual({
+			files: [],
+			errors: [{ path: "/big.txt", message: "File not found or exceeds the read limit." }],
+			truncated: false,
+		});
+	});
+});

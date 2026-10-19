@@ -428,7 +428,7 @@ That is expected. After an uninstall and a reinstall in the same thread, the mod
 earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
 it calls the tool again.
 
-## Page agent tools fixture (Mail 0.1.2)
+## Page agent tools fixture (Mail 0.1.3)
 
 Mail (`plugins/bonobo-plugin-mail`) is the fixture for page agent tools (`agent.page-tools`). Its page
 lists the Gmail plugin's `/emails` files and registers six tools: `get_view`, `open_email`,
@@ -436,7 +436,7 @@ lists the Gmail plugin's `/emails` files and registers six tools: `get_view`, `o
 on the page. Drafts are plugin documents in the
 `drafts` collection. Mail never writes to Gmail.
 
-Where it lives (verified 2026-10-19): `mail@0.1.2` is installed in `personal/home`, next to the Gmail
+Where it lives (verified 2026-10-19): `mail@0.1.3` is installed in `personal/home`, next to the Gmail
 plugin that writes `/emails/<account>/…`. Page:
 `/w/personal/home/plugins/mail/pages/mail`.
 
@@ -450,6 +450,18 @@ plugin that writes `/emails/<account>/…`. Page:
 - **429s in the console are normal.** The list reads each email file to get its header, so it hits
   the files read bucket. `retry.ts` waits and tries again. A row whose read still failed shows its
   file name (`2026-10-01 security alert …`) instead of sender and subject.
+- **Big email fixture: `/emails/qa-mail-big-email-2026-10-19.md` (220,514 bytes).** Every real
+  email in the mailbox is under 30 KB (94 emails on 2026-10-19), so this upload is the only email
+  over the old 128 KB read cap. It sits at the `/emails` root, so the list does not show it. Open it
+  through the agent: "Use the Mail page tool open_email with the path
+  /emails/qa-mail-big-email-2026-10-19.md". The reader then shows `Paragraph 1800.` and
+  `END-OF-BIG-EMAIL-MARKER`. Upload note: the Files sidebar input uploads into the selected folder,
+  and `/files` reopens the last folder (`?nodeId=`), so check where the file landed.
+- **Find file sizes from the page.** The Files folder table has no size column. Listen to
+  `page.on("response")` for `/api/v1/files/list` while the Mail page loads: each item has `size`.
+  Press `Show more` until it is gone to load the whole mailbox. Remove the listener after.
+- **Long runners: use `playwriter -f <file>`.** `-e` with a multi-line script fails through
+  `pnpx.cmd` ("batch file arguments are invalid"), and cmd strips double quotes from a joined line.
 - **The composer is Tiptap, not a textarea.** `fill` on `textarea` finds nothing. Focus
   `.AiChatComposer-editor-content` from page context, then `page.keyboard.insertText(text)`.
 

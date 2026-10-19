@@ -877,6 +877,14 @@ the `bonobo:agent-tool-call` / `bonobo:agent-tool-result` messages. It also carr
 `convex-api.d.ts` and `http-api.d.ts` changes that were not mirrored before. Typecheck and 49 SDK
 tests pass.
 
+Mail 0.1.3 was published and installed in `personal/home` on 2026-10-19 (plugin commit
+`cd64dc16e5d3407da99e8e81173107899eff8c13`, version doc `hn7ws2fn09bqpc09z0cmndac918gjcb5`). It
+changes only docs and comments: `/api/v1/files/read` now returns any saved text file up to the
+900 KB text limit (it stopped at 128 KB before), so a long email opens and its list row shows the
+sender. The first publish review again failed with "could not finish its assessment" and the
+retry passed with the same commit. Live check: the agent opened a 220 KB email with `open_email`,
+and the reader showed its last line. With the old 128 KB cap pushed back, the same open failed.
+
 Mail 0.1.2 was published and installed in `personal/home` on 2026-10-19 (plugin commit
 `d8435658d77fcb0c246f1529027b6db87577e131`, version doc `hn7k9j2zhxyxhqfjg7m4n90bxd8gk4e6`). The
 README now has a Setup section: add "Can view" on `/emails` in the install dialog, or later with
