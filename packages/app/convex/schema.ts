@@ -6509,16 +6509,6 @@ const app_convex_schema = defineSchema({
 		}),
 		revision: v.number(),
 		/**
-		 * Temporary: `migrations:erase_files_archive_runs_pending_update_cleanup` erases this old field.
-		 * Remove it from the schema once no row has it.
-		 */
-		pendingUpdateCleanup: v.optional(
-			v.union(
-				v.object({ reviewedPendingUpdateIds: v.union(v.array(v.id("files_pending_updates")), v.null()) }),
-				v.null(),
-			),
-		),
-		/**
 		 * Restore: the id of the first job of the same Unarchive request, so Cancel can end them all.
 		 * Each job waits for the job before it. Null on the first job and on archive jobs.
 		 */
