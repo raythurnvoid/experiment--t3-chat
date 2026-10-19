@@ -12,6 +12,7 @@ import {
 	test_progress_guard,
 } from "./setup.test.ts";
 import { files_db_patch_pending_update, files_u8_to_array_buffer } from "../server/files.ts";
+import { files_pending_update_runs_SELECTION_PAGE_SIZE as PAGE_SIZE } from "../server/files-pending-update-runs.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { files_media_build_private_src } from "../shared/files-media.ts";
@@ -174,17 +175,17 @@ export async function start_review(args: {
 		requestId: crypto.randomUUID(),
 		kind: "accept",
 		expectedItemCount: proposals.length,
-		items: items.slice(0, 100),
+		items: items.slice(0, PAGE_SIZE),
 	});
 	if (started._nay) throw new Error(started._nay.message);
 	const runId = started._yay.runId;
-	for (let offset = 100; offset < items.length; offset += 100)
+	for (let offset = PAGE_SIZE; offset < items.length; offset += PAGE_SIZE)
 		expect(
 			await f.asUser.mutation(api.files_pending_update_runs.append_items, {
 				membershipId: f.db.membershipId,
 				runId,
 				offset,
-				items: items.slice(offset, offset + 100),
+				items: items.slice(offset, offset + PAGE_SIZE),
 			}),
 		).toEqual({ _yay: null });
 	expect(
@@ -316,5 +317,63 @@ export async function mark_copied(args: {
 			},
 		});
 		return (await ctx.db.get("files_pending_updates", pending._id))!;
+	});
+}
+
+/**
+ * Accept a Copy document with `mediaCount` Copy media. Each media is its own unit, and the document waits
+ * for all of them. The test files pick a count past one review page.
+ */
+export async function save_copy_media_before_document(mediaCount: number) {
+	const f = await fixture();
+	const source = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...f.scope, path: "/source" });
+	if (source._nay) throw new Error(source._nay.message);
+	const images = [];
+	for (let index = 0; index < mediaCount; index++)
+		images.push(await private_media({ f, path: `/image-${index}.png`, sourceId: source._yay.nodeId }));
+	const text = images.map(({ src }) => `![Image](${src})`).join("\n\n") + "\n";
+	const document = await mark_copied({
+		f,
+		pending: await private_node({ f, path: "/document.md", text }),
+		sourceId: source._yay.nodeId,
+	});
+	const runId = await start_review({ f, proposals: [document, ...images.map(({ pending }) => pending)] });
+	const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
+	expect(units).toHaveLength(mediaCount + 1);
+	expect(units.every((unit) => unit.kind === "cohort" && unit.itemCount === 1)).toBe(true);
+	expect(units.find((unit) => unit.order === 0)).toMatchObject({
+		status: "waiting",
+		remainingPrerequisiteCount: mediaCount,
+	});
+	expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_dependencies").collect())).toHaveLength(
+		mediaCount,
+	);
+	const result = await finish_review({ f, runId, stepMs: 1_200 });
+	expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: mediaCount + 1 } });
+	const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+	expect(saved).toHaveLength(mediaCount + 2);
+	expect(await saved_text(f, saved.find((node) => node.path === "/document.md")!._id)).toBe(text);
+	expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(
+		mediaCount + 1,
+	);
+	expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
+	const documentUnit = await f.t.run((ctx) =>
+		ctx.db.get("files_pending_update_run_units", units.find((unit) => unit.order === 0)!._id),
+	);
+	if (!documentUnit?.cohortId) throw new Error("Expected the completed document group");
+	const content = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_move_cohort_content")
+			.withIndex("by_cohort_proposal", (q) =>
+				q.eq("cohortId", documentUnit.cohortId!).eq("pendingUpdateId", document._id),
+			)
+			.unique(),
+	);
+	expect(content?.mediaProof).toMatchObject({
+		reviewedRevision: document.revision,
+		selectedContentStateId: document.content?.unstagedStateId,
+		expectedCount: mediaCount,
+		validatedCount: mediaCount,
+		sealed: true,
 	});
 }

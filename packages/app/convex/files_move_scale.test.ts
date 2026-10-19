@@ -1,10 +1,7 @@
 // Use the public Move intake and its scheduled workers. Measure only Move, after fixture setup.
 // Metadata byte budget tests are in files_move_scale.metadata.test.ts.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { files_ROOT_ID } from "../server/files.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	create_fixture,
@@ -13,6 +10,7 @@ import {
 	finish_move,
 	measure_move,
 	mock_move_scale_storage,
+	move_selected_files,
 	start_move,
 	write_markers,
 } from "./files_move_scale.setup.test.ts";
@@ -26,54 +24,16 @@ afterEach(() => {
 });
 
 describe("public Move scale", () => {
-	// The Move view reads at most 200 moved roots (`MAX_SELECTED_NODES` in files_transfer.ts). 201 roots
-	// go past it and use 3 input pages of `files_TRANSFER_SELECTION_PAGE_SIZE`.
-	test("moves 201 selected files and keeps every metadata value", async () => {
-		const fixture = await create_fixture();
-		const { t, db, asUser } = fixture;
-		const target = await create_folder(fixture, "target");
-		const total = 201;
-		const sourceIds: Id<"files_nodes">[] = [];
-		for (let offset = 0; offset < total; offset += 50) {
-			const length = Math.min(50, total - offset);
-			vi.setSystemTime(Date.now() + 60_000);
-			const uploaded = await asUser.mutation(api.files_nodes.create_upload_nodes, {
-				membershipId: db.membershipId,
-				parentId: files_ROOT_ID,
-				onConflict: "skip",
-				items: Array.from({ length }, (_, index) => ({
-					relativePath: `file-${(offset + index).toString().padStart(4, "0")}.bin`,
-					size: 1,
-					contentType: "application/octet-stream",
-				})),
-			});
-			if (uploaded._nay) throw new Error(uploaded._nay.message);
-			expect(uploaded._yay.created).toHaveLength(length);
-			expect(uploaded._yay.skipped).toHaveLength(0);
-			for (const item of uploaded._yay.created) {
-				expect(await fetch(item.url, { method: "PUT", body: "x" })).toHaveProperty("status", 200);
-				expect(
-					await t.mutation(internal.r2.process_uploaded_asset_event, {
-						assetId: item.assetId,
-						r2Key: r2_create_asset_key({ ...db, assetId: item.assetId }),
-						size: 1,
-						eventId: `move-scale-${item.assetId}`,
-					}),
-				).toEqual({ _yay: null });
-				sourceIds.push(item.nodeId);
-			}
-		}
-		expect(new Set(sourceIds).size, "all selected files are distinct").toBe(total);
-		await write_markers(fixture, sourceIds);
-		await t.finishAllScheduledFunctions(vi.runAllTimers, 10_000);
-		const peaks = measure_move();
-		const run = await start_move(fixture, sourceIds, target._id);
-		await finish_move(fixture, run, total);
-		const view = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: run.runId });
-		expect(view?.movedNodeIds.length, "the selection is bigger than the view's moved roots").toBeLessThan(total);
-		await expect_moved_markers(fixture, sourceIds, (node) => `/target/${node.name}`);
-		console.info("Move scale selected files", JSON.stringify(Object.fromEntries(peaks)));
-	}, 7_200_000);
+	// The Move view reads at most 200 moved roots (`files_transfer_queries_MAX_SELECTED_NODES`). 201 roots
+	// go past it and use 3 input pages of `files_TRANSFER_SELECTION_PAGE_SIZE`. It runs only with
+	// test:files:full-size. files_move_scale.selection.test.ts lowers both limits and crosses them with 21 roots.
+	test(
+		"moves 201 selected files and keeps every metadata value",
+		{ tags: ["full-size"], timeout: 7_200_000 },
+		async () => {
+			await move_selected_files(201);
+		},
+	);
 
 	for (const { count, tags } of [
 		// 33 descendants cross the 32-child native page even when exact cleanup work joins.

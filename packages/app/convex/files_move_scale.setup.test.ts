@@ -1,7 +1,7 @@
 // Fixtures shared by the files_move_scale test files.
 import { R2 } from "@convex-dev/r2";
 import { expect, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
@@ -13,7 +13,7 @@ import {
 } from "./files_transfer.ts";
 import { test_convex, test_mocks_fill_db_with, test_run_with_flush, test_spy_handler } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
-import { r2_confirmed_object_delete } from "./r2_client.ts";
+import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 
 // Each test file calls this in `beforeEach`.
@@ -312,4 +312,54 @@ export function metadata_payload(doc: Metadata) {
 		yjsSequence: doc.yjsSequence,
 		archiveOperationId: doc.archiveOperationId,
 	};
+}
+
+/**
+ * Upload `total` files at the root and Move them all in one public Move. The test files pick a count past
+ * the view's moved roots (`files_transfer_queries_MAX_SELECTED_NODES`).
+ */
+export async function move_selected_files(total: number) {
+	const fixture = await create_fixture();
+	const { t, db, asUser } = fixture;
+	const target = await create_folder(fixture, "target");
+	const sourceIds: Id<"files_nodes">[] = [];
+	for (let offset = 0; offset < total; offset += 50) {
+		const length = Math.min(50, total - offset);
+		vi.setSystemTime(Date.now() + 60_000);
+		const uploaded = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: Array.from({ length }, (_, index) => ({
+				relativePath: `file-${(offset + index).toString().padStart(4, "0")}.bin`,
+				size: 1,
+				contentType: "application/octet-stream",
+			})),
+		});
+		if (uploaded._nay) throw new Error(uploaded._nay.message);
+		expect(uploaded._yay.created).toHaveLength(length);
+		expect(uploaded._yay.skipped).toHaveLength(0);
+		for (const item of uploaded._yay.created) {
+			expect(await fetch(item.url, { method: "PUT", body: "x" })).toHaveProperty("status", 200);
+			expect(
+				await t.mutation(internal.r2.process_uploaded_asset_event, {
+					assetId: item.assetId,
+					r2Key: r2_create_asset_key({ ...db, assetId: item.assetId }),
+					size: 1,
+					eventId: `move-scale-${item.assetId}`,
+				}),
+			).toEqual({ _yay: null });
+			sourceIds.push(item.nodeId);
+		}
+	}
+	expect(new Set(sourceIds).size, "all selected files are distinct").toBe(total);
+	await write_markers(fixture, sourceIds);
+	await t.finishAllScheduledFunctions(vi.runAllTimers, 10_000);
+	const peaks = measure_move();
+	const run = await start_move(fixture, sourceIds, target._id);
+	await finish_move(fixture, run, total);
+	const view = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: run.runId });
+	expect(view?.movedNodeIds.length, "the selection is bigger than the view's moved roots").toBeLessThan(total);
+	await expect_moved_markers(fixture, sourceIds, (node) => `/target/${node.name}`);
+	console.info("Move scale selected files", JSON.stringify(Object.fromEntries(peaks)));
 }

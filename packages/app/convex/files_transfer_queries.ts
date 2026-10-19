@@ -21,11 +21,10 @@ import { server_convex_get_user_fallback_to_anonymous, should_never_happen } fro
 import { convex_error } from "../server/convex-utils.ts";
 import type { files_PendingTarget, files_VisibleEntry } from "../shared/files.ts";
 import { files_type_query_db_get_readiness } from "../server/files-type-query.ts";
+import { files_transfer_queries_MAX_SELECTED_NODES } from "../server/files-transfer-queries.ts";
 
 // Reuse the loaded module between calls. Keep request state inside each query.
 export const experimental_reuseContext = true;
-
-export const files_transfer_queries_MAX_SELECTED_NODES = 200;
 
 export async function files_transfer_queries_db_require_activity(
 	ctx: QueryCtx | MutationCtx,

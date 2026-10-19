@@ -379,10 +379,13 @@ the same producer with private proposals. `files_pending_updates.ts` and
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.
 - `convex/files_pending_update_runs*.test.ts`: selected connected units, transaction bounds,
   preparation, retry, Stop, and cleanup.
-- The normal test commands omit only five checks: "saves 1,000 Copy outputs beside one ordinary
+- The normal test commands omit only seven checks: "saves 1,000 Copy outputs beside one ordinary
   edit", "plans 10,001 unrelated saved Move proposals as 10,001 units", the 2,001-descendant Move
-  scale check, the 16-owner overlay budget check and the Copy that copies 101 media files (the
-  normal run lowers the media page from 50 to 3 and copies 4). They carry the `full-size` tag, and
+  scale check, the 16-owner overlay budget check, the Copy that copies 101 media files (the
+  normal run lowers the media page from 50 to 3 and copies 4), the Move of 201 selected files (the
+  normal run lowers the view's 200 moved roots to 20 and the input page from 100 to 10, and moves 21)
+  and the review that saves 101 Copy media before their document (the normal run lowers the review
+  page from 100 to 10 and saves 11). They carry the `full-size` tag, and
   `vitest.config.ts` filters that tag out, so `-t` cannot pick them by accident.
   `vitest.full-size.config.ts` flips the filter. Run them with
   `vp env exec pnpm --dir packages/app run test:files:full-size`.

@@ -63,6 +63,7 @@ import {
 import { files_pending_update_yjs_state_digest } from "../server/files.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
+import { files_pending_update_runs_SELECTION_PAGE_SIZE as SELECTION_PAGE_SIZE } from "../server/files-pending-update-runs.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -92,7 +93,6 @@ import {
 export const experimental_reuseContext = true;
 
 const MAX_DISCARD_ITEMS = 10_000;
-const SELECTION_PAGE_SIZE = 100;
 // Eight deep private chains stay below the query's index-read limit.
 const PLAN_PAGE_SIZE = 8;
 const ATTEMPT_TIMEOUT_MS = 5 * 60 * 1000;

@@ -7,7 +7,6 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
 import {
-	files_transfer_queries_MAX_SELECTED_NODES,
 	files_transfer_queries_db_require_activity,
 	files_transfer_queries_db_get_current_activity,
 	files_transfer_queries_db_get_owned_run,
@@ -74,6 +73,7 @@ import { files_db_patch_pending_update, files_db_get_pending_update } from "../s
 import type { upsert_file_pending_move_in_db_Result } from "./files_pending_updates.ts";
 import { files_metadata_db_read_entries, files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
+import { files_transfer_queries_MAX_SELECTED_NODES } from "../server/files-transfer-queries.ts";
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import {
 	files_nodes_content_db_discard_transfer_file_attempt,
