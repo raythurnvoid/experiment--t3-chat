@@ -77,9 +77,24 @@ vi.mock("../shared/files-tiptap.ts", async (importOriginal) => {
 	};
 });
 
+// The merged-text limit tests set a small text limit, so small text crosses it. Their versions with the
+// real limit carry the `full-size` tag. App code reads the limit through this getter on each use.
+const textLimit = vi.hoisted(() => ({ bytes: undefined as number | undefined }));
+
+vi.mock("../shared/files.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../shared/files.ts")>();
+	return {
+		...actual,
+		get files_MAX_TEXT_CONTENT_BYTES() {
+			return textLimit.bytes ?? actual.files_MAX_TEXT_CONTENT_BYTES;
+		},
+	};
+});
+
 beforeEach(mock_pending_updates_storage);
 
 afterEach(() => {
+	textLimit.bytes = undefined;
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
@@ -400,9 +415,13 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 		},
 	);
 
-	test.each(["staged", "unstaged"] as const)(
-		"keeps a stale proposal when merged %s text exceeds the limit",
-		async (branch) => {
+	// The real limit runs only with test:files:full-size. The small limit crosses the same check.
+	for (const [name, options, limitBytes] of [
+		["keeps a stale proposal when merged %s text exceeds the limit", { tags: ["full-size"] }, undefined],
+		["keeps a stale proposal when merged %s text exceeds a small test limit", {}, 10_000],
+	] as const)
+		test.each(["staged", "unstaged"] as const)(name, options, async (branch) => {
+			textLimit.bytes = limitBytes;
 			const base = "first\nlast\n";
 			const proposed = `${"a".repeat(files_MAX_TEXT_CONTENT_BYTES / 2)}\n${base}`;
 			const current = `${base}${"z".repeat(files_MAX_TEXT_CONTENT_BYTES / 2)}\n`;
@@ -420,8 +439,7 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 			expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(current);
 			const batches = await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
 			expect(batches.every((batch) => batch.expiresAt === 0)).toBe(true);
-		},
-	);
+		});
 });
 
 describe("prepare_file_pending_update_for_review", () => {
@@ -505,53 +523,62 @@ describe("prepare_file_pending_update_for_review", () => {
 		return { t, seeded, asUser, original, marked, prepareArgs, rootKind, ownerUserId: file.userId };
 	}
 
-	test.each(["staged", "unstaged"] as const)("keeps the proposal when merged %s text exceeds a cap", async (branch) => {
-		const fields = (prefix: string) =>
-			Array.from(
-				{ length: Math.floor(files_metadata_MAX_FRONTMATTER_FIELDS / 2) },
-				(_, index) => `${prefix}${index}: value\n`,
-			).join("");
-		const markdownBase = "---\nfirst: base\nmiddle: base\nlast: base\n---\n\nbody\n";
+	// The real text limit runs only with test:files:full-size. The small limit crosses the same check.
+	for (const [name, options, limitBytes] of [
+		["keeps the proposal when merged %s text exceeds a cap", { tags: ["full-size"] }, undefined],
+		["keeps the proposal when merged %s text exceeds a cap with a small test text limit", {}, 10_000],
+	] as const)
+		test.each(["staged", "unstaged"] as const)(name, options, async (branch) => {
+			textLimit.bytes = limitBytes;
+			const fields = (prefix: string) =>
+				Array.from(
+					{ length: Math.floor(files_metadata_MAX_FRONTMATTER_FIELDS / 2) },
+					(_, index) => `${prefix}${index}: value\n`,
+				).join("");
+			const markdownBase = "---\nfirst: base\nmiddle: base\nlast: base\n---\n\nbody\n";
 
-		for (const fixture of [
-			{
-				rootKind: "plain_text" as const,
-				base: "first\nlast\n",
-				proposed: `${"a".repeat(files_MAX_TEXT_CONTENT_BYTES / 2)}\nfirst\nlast\n`,
-				current: `first\nlast\n${"z".repeat(files_MAX_TEXT_CONTENT_BYTES / 2)}\n`,
-				message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit`,
-			},
-			{
-				rootKind: "rich_text" as const,
-				base: markdownBase,
-				proposed: markdownBase.replace("first: base\n", `first: base\n${fields("proposed")}`),
-				current: markdownBase.replace("last: base\n", `last: base\n${fields("current")}`),
-				message: "Too many frontmatter fields",
-			},
-		]) {
-			const { t, seeded, asUser, marked, prepareArgs } = await seed_marked_proposal({
-				...fixture,
-				staged: branch === "staged" ? fixture.proposed : fixture.base,
-				unstaged: fixture.proposed,
-				target: "asset",
-			});
-			const bytes = await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }));
-			await test_drain_billing_usage_event_outbox(t);
-			const eventsBefore = file_save_events().length;
+			for (const fixture of [
+				{
+					rootKind: "plain_text" as const,
+					base: "first\nlast\n",
+					proposed: `${"a".repeat(files_MAX_TEXT_CONTENT_BYTES / 2)}\nfirst\nlast\n`,
+					current: `first\nlast\n${"z".repeat(files_MAX_TEXT_CONTENT_BYTES / 2)}\n`,
+					message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit`,
+				},
+				{
+					rootKind: "rich_text" as const,
+					base: markdownBase,
+					proposed: markdownBase.replace("first: base\n", `first: base\n${fields("proposed")}`),
+					current: markdownBase.replace("last: base\n", `last: base\n${fields("current")}`),
+					message: "Too many frontmatter fields",
+				},
+			]) {
+				const { t, seeded, asUser, marked, prepareArgs } = await seed_marked_proposal({
+					...fixture,
+					staged: branch === "staged" ? fixture.proposed : fixture.base,
+					unstaged: fixture.proposed,
+					target: "asset",
+				});
+				const bytes = await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }));
+				await test_drain_billing_usage_event_outbox(t);
+				const eventsBefore = file_save_events().length;
 
-			const result = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, prepareArgs);
-			expect(result._nay?.message).toBe(fixture.message);
+				const result = await asUser.action(
+					api.files_pending_updates.prepare_file_pending_update_for_review,
+					prepareArgs,
+				);
+				expect(result._nay?.message).toBe(fixture.message);
 
-			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(marked);
-			expect(await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }))).toEqual(bytes);
-			expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(fixture.current);
-			await test_drain_billing_usage_event_outbox(t);
-			expect(file_save_events()).toHaveLength(eventsBefore);
-			const batches = await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
-			expect(batches).toHaveLength(1);
-			expect(batches[0]?.expiresAt).toBe(0);
-		}
-	});
+				expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(marked);
+				expect(await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }))).toEqual(bytes);
+				expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(fixture.current);
+				await test_drain_billing_usage_event_outbox(t);
+				expect(file_save_events()).toHaveLength(eventsBefore);
+				const batches = await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
+				expect(batches).toHaveLength(1);
+				expect(batches[0]?.expiresAt).toBe(0);
+			}
+		});
 
 	test.each(["plain_text", "rich_text"] as const)(
 		"keeps exact %s text across partial save, live edit, and second save",
