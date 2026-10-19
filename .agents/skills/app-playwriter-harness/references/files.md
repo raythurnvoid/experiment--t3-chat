@@ -63,6 +63,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 
 - Sidebar tree rows: `.FilesSidebarTreeItem[data-file-id]`.
 - Sidebar selected rows: `.FilesSidebarTreeItem[data-file-id][aria-selected="true"]`. The attribute sits on the row wrapper itself; `FilesSidebarTreeItemPrimaryAction` never carries it (the row strips it before passing props down).
+- For one known row, use `[role="treeitem"][data-file-id="<id>"]`. Its inner drag handle has the same file ID, so a bare ID selector matches both. Read selection and Cut markers from the row wrapper.
 - Sidebar row primary action: `.FilesSidebarTreeItemPrimaryAction`.
 - Sidebar row more action: `.FilesSidebarTreeItemMoreAction`.
 - Sidebar search input: `#app_files_sidebar_search input` (combobox named `Search files by name, path, or one key:value filter`); filter chips `.FilesSearchInputFilterChip`; suggestions `.FilesSearchInput-popover [role=option]`; sr-only status `.FilesSidebarTopSection [role=status]`. Recipes under "Sidebar Search Box" below.
