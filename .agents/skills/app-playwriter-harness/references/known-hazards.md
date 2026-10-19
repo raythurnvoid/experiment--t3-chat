@@ -131,7 +131,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - A `-f` runner, or a `-e` script with more than one statement, prints `Code executed successfully (no output)` even when its last line is an expression. Only a one-expression `-e` prints `[return value] …`. Park the result on `state` (`state.out = out`) and read it with a one-expression `-e "JSON.stringify(state.out)"` afterwards. Verified 2026-09-05 on playwriter 0.5.0.
 - A fire-and-forget runner's **wall-clock** numbers are worthless. Once the CLI stops waiting, the relay keeps running it but the many small CDP round trips it makes are starved: the same 95-step `mouse.move` sweep took 672ms in the foreground call and 55s after the CLI returned. Measure with `performance.now()` **inside** `page.evaluate` (per-event or per-loop timings stay valid), and never derive an event rate from the runner's own elapsed time. Verified 2026-08-13 while timing a `pointerover` handler.
 - Keep `--timeout` under 5000ms. A step that needs more is almost always a wrong selector, a page that is not ready, or a script that does too much in one call — not a slow app. Do not raise the timeout to make a step pass: split the runner into smaller steps and observe between them (`state.page.url()`, `snapshot(...)`, `getLatestLogs({ sinceLastCall: true })`). Long timeouts hide the real failure and burn minutes per retry. Keep in-script waits (`waitFor`, `waitForSelector`, `click({ timeout })`) shorter than the CLI timeout, or the CLI returns while the runner keeps mutating the page.
-- The CLI `--timeout` does not raise Playwright's own default navigation timeout. `page.reload()` and `page.goto()` still fail at `Timeout 10000ms exceeded` under `--timeout 120000`, because that default lives on the page, not the CLI. Pass `{ timeout }` on the call itself: `reload({ waitUntil: "domcontentloaded", timeout: 60000 })` followed by `waitForPageLoad({ page, timeout: 25000 })` is the shape that works on `/files`.
+- The CLI timeout and the page navigation timeout are separate. Keep both short. A compiled Files page can reach `domcontentloaded` after five seconds and still load correctly. Start navigation with `waitUntil: "commit"`, then check real app readiness in short calls. See [Keep navigation and app readiness separate](#keep-navigation-and-app-readiness-separate). Keep a failed navigation record; do not clear it to pass a timing check.
 - `playwriter session reset <id>` (the recovery for "Frame has been detached" / `Target.createTarget` extension timeouts after the bound tab is closed) clears every `state.*` key except `page` — the installed harness is gone afterwards. Re-run `install-harness.js` and `bindOpenTab(...)` before the next helper call. Also, a `goto` inside a CLI-timed-out call can still land: probe `state.page.url()` before assuming the navigation failed and re-running it.
 - **When an Edge profile has no Playwriter-enabled tab left, its extension stops answering and every session on it fails the same way**, including a brand-new one: `browserContext.newPage: Protocol error (Target.createTarget): Extension request timeout after 30000ms: forwardCDPCommand`, thrown from `ensurePageForContext` before your code runs. `browser list` still lists the install, so the browser looks connected and the failure reads like a dead relay. Confirm the relay is fine with `session new --browser headless` (it works), then give the profile a tab again from PowerShell: `Start-Process msedge.exe -ArgumentList @('--profile-directory=Default', '--new-window', '<url>')`. Pass only those switches — Edge is already running with the default user-data-dir, so omitting `--user-data-dir` avoids the `User Data` quoting trap entirely. Do **not** run the Edge remote-debugging skill's scripts for this: they kill every `msedge.exe`, which also kills the other agent's work-profile sessions. Verified 2026-08-13.
 - **A QA tab in its own Edge window gets discarded once it loses focus**, and the symptom is not obviously a discard: `locator.click()` on a normal button hangs to its timeout ("performing click action" and nothing after), the next call dies with `Execution context was destroyed`, and the one after that reports the page closed with no pages remaining. It looks exactly like the app crashing on the action you just clicked — reproduce in the `headless` browser before filing an app bug. (The New Chat click that "crashed" Edge three times looked clean headless on 2026-08-13, but see the next entry: it is a real app bug and headless reproduces it too.)
@@ -420,10 +420,9 @@ one was a top-level `page.goto` to another app route and back — the plugin fra
 scratch. It still arrived one body behind, so read the tag again after the navigation instead of
 assuming the second attempt worked.
 
-`page.goto` has its own 10 s navigation timeout and ignores the CLI `--timeout`: with
-`--timeout 180000` on the command line it still failed with `page.goto: Timeout 10000ms exceeded`.
-The app shell takes longer than that here, so pass
-`{ waitUntil: "domcontentloaded", timeout: 60000 }` on every `goto`.
+The CLI timeout does not change the page's navigation timeout. Use the short
+navigation start and readiness checks in
+[Keep navigation and app readiness separate](#keep-navigation-and-app-readiness-separate).
 
 ## A Vite dev server does not serve a `dist/` file as written
 
@@ -2352,9 +2351,9 @@ needs a human click on the extension icon. That ends browser QA for the session.
 Before closing a tab, check `context.pages().length`. If it is 1, do not close it. Try in this
 order instead:
 
-1. `page.goto(<known good route>, { timeout: 60000 })` — the default `goto` timeout is 10s, and a
-   slow route reads as a wedge.
-2. `page.reload()`.
+1. Start navigation to a known good route, then check readiness in short calls.
+   Follow [Keep navigation and app readiness separate](#keep-navigation-and-app-readiness-separate).
+2. Inspect the current URL and logs before trying a reload. Keep its timeout explicit too.
 3. Ask the user to open a second tab and enable Playwriter on it, then close the stuck one.
 
 The wedge that triggered this: pressing `New Chat` on the full-page `/chat` route left an optimistic
@@ -2744,18 +2743,28 @@ await state.apiPage.waitForTimeout(8000); // let the Convex client authenticate
 Then write runners as `await (state.apiPage ?? state.page).evaluate(...)`. The API keys route
 holds still, so long multi-step runners survive.
 
-## `page.goto` keeps its own 10 s timeout, and a fresh Vite server is slower than that
+## Keep navigation and app readiness separate
 
-The CLI's `--timeout` covers the whole runner. It does not reach Playwright's per-call default, so
-`page.goto(url, { waitUntil: "domcontentloaded" })` still fails after 10 s. The first navigation
-after the dev server restarts compiles the route on demand and takes far longer than that, so a
-rebind runner written the normal way dies on its very first line with
-`page.goto: Timeout 10000ms exceeded`. Pass the timeout yourself on every navigation in a rebind or
-recovery runner:
+The CLI timeout and the page's navigation timeout are separate. By default,
+set both to 5000 ms or less. Start navigation without waiting for the whole page to load:
 
 ```js
-await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180000 });
+state.navigationFailed = false;
+state.page.goto(url, { waitUntil: "commit", timeout: 5000 })
+	.catch(() => { state.navigationFailed = true; });
 ```
+
+Use this once on a fresh owned Page. Read the navigation result and poll the
+app's real readiness in later short calls. A committed document is not a ready
+app. Before timing, also prove the expected account, visible Files controls
+and actual loaded code. Keep any failed attempt and use a fresh Page for the
+next attempt. Never clear a navigation failure to make a proof pass.
+
+Seen on a compiled Files page: the document arrived quickly, but
+`domcontentloaded` took more than five seconds. The old wait reported failure
+even though Files later mounted. The same five-second `commit` wait passed,
+then the separate readiness and loaded-byte checks passed. This fixes setup;
+it is not an app speed gain.
 
 Dependency scanning after a lockfile change can take several minutes. During that scan even
 `/@vite/client` may not answer yet. Read the Vite terminal before treating the server as stuck.
