@@ -274,6 +274,15 @@ link) needs another door. Read `files_pending_target.get_file_pending_target({ m
 with an `ArgumentValidationError`. To remove it afterwards, `discard_file_pending_update` takes the
 same `target`, `pendingUpdateId`, and `reviewedRevision`. Verified 2026-09-23.
 
+To test an agent delete without a chat turn, make the proposal with
+`convex run files_pending_updates:upsert_file_pending_archive_in_db` and the args
+`{ organizationId, workspaceId, userId, target: { kind: "saved", id } }` (all from the membership doc).
+Run it from Git Bash: PowerShell 5.1 strips the JSON quotes. The Pending changes tab then shows
+`Accept delete of /<path>` and `Discard delete of /<path>`. To check a lock refusal, set a child's
+rule with `files_nodes.set_node_write_policy({ membershipId, nodeId, writePolicy: { mode: "read_only" } })`
+first. Accept then ends with "0 saved, 1 need review" and "This item is read-only.", and the folder
+stays active. Clean up with Discard delete and `writePolicy: null`. Verified 2026-10-19.
+
 ## Common Gotchas
 
 - Editor mode radios are small native inputs. If a radio locator times out, click the matching `#app_main_header_content label`.

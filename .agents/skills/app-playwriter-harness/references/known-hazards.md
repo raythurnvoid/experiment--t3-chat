@@ -10,7 +10,10 @@ route. Do not navigate or close the unrelated page.
 In an owned scratch headless Edge tab, call `await page.bringToFront()` before clicks and screenshots.
 An inactive tab can still answer DOM reads while a click stalls at "performing click action" and a
 screenshot times out. Bringing the same tab forward fixed both on 2026-10-03. Do not use this on
-the user's tab unless the task allows changing its focus.
+the user's tab unless the task allows changing its focus. The same happens in an owned tab of the
+extension Edge (opened with `context.newPage()`): on 2026-10-19 a click and a `focus()` on a sidebar
+tab timed out with `waiting for locator(...)` while `page.evaluate` found the element, and
+`bringToFront()` fixed it.
 
 Before the first attempt at a new interaction type (upload, download, screenshot, toast, tooltip, hovercard, dialog, navigation, sign-in), search this file for that word — the recipe often already exists, and finding it before the attempt is much cheaper than after the failure. Routing hints:
 
