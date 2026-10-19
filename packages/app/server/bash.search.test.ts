@@ -2257,10 +2257,13 @@ describe("recursive reads stop at a locked folder", () => {
 
 	test("find -mmin reads only recent rows", async () => {
 		const now = Date.now();
+		// find reads only dates, so the 2,000 filler files skip the real Yjs snapshot. Each one starts a
+		// headless rich-text editor, which is most of this seed time.
 		const { runner } = await seed_locked_docs([
 			...Array.from({ length: 2000 }, (_, index) => ({
 				path: `/Open/old-${index}.md`,
 				updatedAt: now - 3 * HOUR - index,
+				withRealYjsSnapshot: false,
 			})),
 			...Array.from({ length: 5 }, (_, index) => ({ path: `/Open/new-${index}.md`, updatedAt: now - MINUTE })),
 		]);
@@ -2280,6 +2283,7 @@ describe("recursive reads stop at a locked folder", () => {
 			...Array.from({ length: 2000 }, (_, index) => ({
 				path: `/Open/new-${index}.md`,
 				updatedAt: now - MINUTE - index,
+				withRealYjsSnapshot: false,
 			})),
 			...Array.from({ length: 5 }, (_, index) => ({ path: `/Open/old-${index}.md`, updatedAt: now - 3 * HOUR })),
 		]);
