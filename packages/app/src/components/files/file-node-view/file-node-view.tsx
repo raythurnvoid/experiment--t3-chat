@@ -5352,15 +5352,15 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 									</MyGridTableColumnHeader>
 								);
 							})}
+							{/* The row menus speak for themselves, so the header has no visible text, only its name. */}
 							<MyGridTableColumnHeader
 								data-column-field="actions"
+								aria-label="Actions"
 								className={cn(
 									"FileNodeViewFolderExplorer-column-header" satisfies FileNodeViewFolderExplorer_ClassNames,
 									"FileNodeViewFolderExplorer-column-header-actions" satisfies FileNodeViewFolderExplorer_ClassNames,
 								)}
-							>
-								Actions
-							</MyGridTableColumnHeader>
+							/>
 						</MyGridTableRow>
 					</MyGridTableHeader>
 					<MyGridTableBody>

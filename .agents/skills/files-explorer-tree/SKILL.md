@@ -536,7 +536,8 @@ and `find` also keep raw name order.
 
 ### Table UI
 
-- Default columns are `file.name`, `file.updated_by`, `file.updated`, then Actions. Columns may show
+- Default columns are `file.name`, `file.updated_by`, `file.updated`, then Actions. The Actions
+  header shows no text: its name lives only in `aria-label="Actions"`. Columns may show
   `file.created`, `file.extension`, `file.size`, and qualified `metadata.<key>` / `frontmatter.<path>`
   fields. `file.name` and Actions stay visible. A column shows its field name as its label, with no
   second label ("Date created", "Type" and "(metadata)" are gone). One shared helper,

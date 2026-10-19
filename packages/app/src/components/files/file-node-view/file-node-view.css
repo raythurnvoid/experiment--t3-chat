@@ -984,9 +984,6 @@
 
 	.FileNodeViewFolderExplorer-column-header-actions {
 		grid-column: -2;
-
-		/* No options button here, so keep the text 12px from the edge as before. */
-		padding-inline-end: 12px;
 	}
 
 	/* Keep the regular icon button size (36px), the same target size as every other icon button. */
