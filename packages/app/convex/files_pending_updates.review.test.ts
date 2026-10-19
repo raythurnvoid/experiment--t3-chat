@@ -417,7 +417,7 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 
 	// The real limit runs only with test:files:full-size. The small limit crosses the same check.
 	for (const [name, options, limitBytes] of [
-		["keeps a stale proposal when merged %s text exceeds the limit", { tags: ["full-size"] }, undefined],
+		["keeps a stale proposal when merged %s text exceeds the limit", { tags: "full-size" }, undefined],
 		["keeps a stale proposal when merged %s text exceeds a small test limit", {}, 10_000],
 	] as const)
 		test.each(["staged", "unstaged"] as const)(name, options, async (branch) => {
@@ -525,7 +525,7 @@ describe("prepare_file_pending_update_for_review", () => {
 
 	// The real text limit runs only with test:files:full-size. The small limit crosses the same check.
 	for (const [name, options, limitBytes] of [
-		["keeps the proposal when merged %s text exceeds a cap", { tags: ["full-size"] }, undefined],
+		["keeps the proposal when merged %s text exceeds a cap", { tags: "full-size" }, undefined],
 		["keeps the proposal when merged %s text exceeds a cap with a small test text limit", {}, 10_000],
 	] as const)
 		test.each(["staged", "unstaged"] as const)(name, options, async (branch) => {
