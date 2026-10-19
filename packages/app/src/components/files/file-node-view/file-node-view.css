@@ -968,77 +968,20 @@
 	.FileNodeViewFolderExplorer-column-header {
 		grid-row: 1;
 
-		/* The sort button covers the whole cell from inside it, so the cell is its positioning parent. */
-		position: relative;
-
 		display: flex;
 		align-items: center;
 		gap: 4px;
 
-		/* Keep 6px here, not 8px. The 24px sort buttons fill the rest, so the header stays 36px tall. */
+		/* Keep 6px here, not 8px. The 24px column options buttons fill the rest, so the header stays
+		   36px tall. */
 		padding: 6px 12px;
 
 		font-weight: 500;
 		white-space: nowrap;
-
-		/* Only a column that can sort reacts to the mouse. file.updated_by has no sort button. */
-		&:has(.FileNodeViewFolderExplorer-sort-button):hover {
-			background: var(--color-base-1-05);
-		}
 	}
 
 	.FileNodeViewFolderExplorer-column-header-actions {
 		grid-column: -2;
-	}
-
-	.FileNodeViewFolderExplorer-sort-button {
-		min-width: 0;
-		min-height: 24px;
-
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-
-		padding: 0;
-
-		font: inherit;
-		color: inherit;
-
-		border: none;
-		border-radius: 4px;
-		background: none;
-		cursor: pointer;
-
-		/* Stretch the click area over the whole header cell, so a click anywhere in the cell sorts. It stays
-		   one button, so it is still one tab stop. The column options button comes later in the HTML and
-		   is positioned too, so it paints on top and keeps its own clicks. */
-		&::after {
-			content: "";
-			position: absolute;
-			inset: 0;
-
-			border-radius: 6px;
-		}
-
-		&:hover {
-			color: var(--color-fg-11);
-		}
-
-		/* A filter fixes the order, so the other columns cannot sort. The button stays focusable to say why. */
-		&[aria-disabled="true"] {
-			cursor: default;
-			color: var(--color-fg-08);
-		}
-
-		/* Draw the focus ring around the whole cell, the same area a click covers. */
-		&:focus-visible {
-			outline: none;
-		}
-
-		&:focus-visible::after {
-			outline: 2px solid var(--color-fg-12);
-			outline-offset: -2px;
-		}
 	}
 
 	.FileNodeViewFolderExplorerColumnMenu-trigger.MyIconButton.MyButton {

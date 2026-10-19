@@ -883,24 +883,6 @@ describe("FileNodeView folder filter", () => {
 				.getAttribute("aria-sort"),
 		).toBe("descending");
 
-		// The disabled header stays focusable, so a click can say why it does not sort. It points at the
-		// visible note.
-		const updated = within(table).getByRole("button", { name: /^file\.updated/ });
-		expect(updated.getAttribute("aria-disabled")).toBe("true");
-		expect(updated.getAttribute("aria-describedby")).toBe(note.id);
-		// The status region is there before the first message, so a screen reader hears the first one.
-		const status = screen.getAllByRole("status").find((element) => element.textContent === "")!;
-		// Enter on a button fires a click.
-		fireEvent.click(updated);
-		expect(status.textContent).toBe("Remove the filter to sort by file.updated");
-		const firstMessage = status.firstElementChild;
-		// A second press puts in a new text node, so the same message is read again.
-		fireEvent.click(updated);
-		expect(status.textContent).toBe("Remove the filter to sort by file.updated");
-		expect(status.firstElementChild).not.toBe(firstMessage);
-		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "name", direction: "desc" }]);
-		expect(otherNavigations).not.toHaveBeenCalled();
-
 		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.updated" }));
 		// The name is the direction only. The reason is the description, so it is not read twice.
 		const newestFirst = await screen.findByRole("menuitem", { name: "Newest first" });
@@ -921,34 +903,18 @@ describe("FileNodeView folder filter", () => {
 		fireEvent.keyDown(menu, { key: "Enter", code: "Enter" });
 		expect(newestFirst.isConnected).toBe(true);
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "name", direction: "desc" }]);
+		expect(otherNavigations).not.toHaveBeenCalled();
 		fireEvent.keyDown(menu, { key: "Escape", code: "Escape" });
 
 		// The filter's own order field still sorts both ways.
-		fireEvent.click(within(table).getByRole("button", { name: /^file\.name/ }));
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.name" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "A to Z" }));
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "name", direction: "asc" }]);
 		expect(
 			within(table)
 				.getByRole("columnheader", { name: /^file\.name ↑/ })
 				.getAttribute("aria-sort"),
 		).toBe("ascending");
-	});
-
-	test("a filter change clears the sort reason, and it does not come back", async () => {
-		const view = renderFileView({ nodeId: node._id, filter: "file.extension:is:html" });
-		const table = await screen.findByRole("table", { name: "Folder contents" });
-		const status = screen.getAllByRole("status").find((element) => element.textContent === "")!;
-		fireEvent.click(within(table).getByRole("button", { name: /^file\.updated/ }));
-		expect(status.textContent).toBe("Remove the filter to sort by file.updated");
-
-		// file.updated still cannot sort under the new filter, but the message was about the old one. Going
-		// back to the first filter does not bring it back either.
-		for (const filter of ["file.extension:is:md", "file.extension:is:html"]) {
-			view.rerender(
-				<FileNodeView searchParams={{ nodeId: node._id, filter }} onNavigateSearch={view.onNavigateSearch} />,
-			);
-			expect(status.isConnected).toBe(true);
-			expect(status.textContent).toBe("");
-		}
 	});
 
 	test("a change of the name prefix alone keeps the old rows and names the old prefix", async () => {

@@ -82,10 +82,11 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   `.FileNodeViewFolderExplorer` carries `data-sort-state`: `applying`, `ready` or `failed`. Read both
   the state and real status text before checking settled rows.
 - The sorted header carries `data-sort-direction` (`asc` / `desc`) and `aria-sort`, and its text ends
-  with an arrow (`file.name ↑`). A visible field's header button sorts by that field; a second click
-  flips the direction. While a filter is on, the other headers are `aria-disabled` and a click says
+  with an arrow (`file.name ↑`). The label is plain text: sort through the column header menu below.
+  While a filter is on, the menu's Sort items of the other columns are `aria-disabled` and say
   `Remove the filter to sort by <field>`.
-- Column header menu: each header has an icon button named `Column options for <label>`. Its menu has
+- Column header menu: each header has an icon button named `Column options for <label>`. Pass
+  `exact: true` to `getByRole`: `Column options for file.updated` also matches `...file.updated_by`. Its menu has
   a `Sort` group (`A to Z` / `Z to A`, or the field's own direction words; each replaces the sort),
   `Filter by <label>` (puts `file.<field>:` or the metadata key in the table bar), and `Hide column`
   (disabled for file.name). Columns that cannot sort, such as `file.updated_by`, show only `Hide column`.

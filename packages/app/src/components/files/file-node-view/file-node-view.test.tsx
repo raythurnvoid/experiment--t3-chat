@@ -1876,7 +1876,7 @@ describe("FileNodeView folder sort", () => {
 		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("applying");
 	});
 
-	test("a header click writes sort tokens to the URL and saves nothing", async () => {
+	test("a column menu sort writes sort tokens to the URL and saves nothing", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id }];
 		const { onNavigateSearch } = renderFileView({ nodeId: node._id });
@@ -1888,7 +1888,8 @@ describe("FileNodeView folder sort", () => {
 				.getAttribute("aria-sort"),
 		).toBe("ascending");
 
-		fireEvent.click(within(table).getByRole("button", { name: /^file\.updated/ }));
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.updated" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Newest first" }));
 		expect(
 			within(table)
 				.getByRole("columnheader", { name: /^file\.updated ↓/ })
@@ -1959,7 +1960,8 @@ describe("FileNodeView folder sort", () => {
 		renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
-		fireEvent.click(within(table).getByRole("button", { name: /^file\.name/ }));
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.name" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Z to A" }));
 		expect(
 			within(table)
 				.getByRole("columnheader", { name: /^file\.name/ })
@@ -1976,12 +1978,17 @@ describe("FileNodeView folder sort", () => {
 		renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
-		// file.updated_by cannot sort, so its header has no sort button, only the column options.
+		// Sortable or not, every column header has one button: the column options.
 		expect(
-			within(within(table).getByRole("columnheader", { name: /^file\.updated_by/ }))
-				.getAllByRole("button")
-				.map((button) => button.getAttribute("aria-label")),
-		).toEqual(["Column options for file.updated_by"]);
+			within(table)
+				.getAllByRole("columnheader")
+				.filter((cell) => cell.getAttribute("data-column-field") !== "actions")
+				.map((cell) => within(cell).getAllByRole("button").map((button) => button.getAttribute("aria-label"))),
+		).toEqual([
+			["Column options for file.name"],
+			["Column options for file.updated_by"],
+			["Column options for file.updated"],
+		]);
 		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.updated" }));
 		fireEvent.click(await screen.findByRole("menuitem", { name: "Newest first" }));
 		expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify([{ field: "updated", direction: "desc" }]));
@@ -2173,19 +2180,6 @@ describe("FileNodeView folder sort states", () => {
 		}));
 	});
 
-	test("a header click sorts by that column and flips the direction of the sorted column", async () => {
-		folderSort = { sort: [{ field: "updated", direction: "asc" }], canSave: false };
-		renderFileView({ nodeId: node._id });
-		const table = await screen.findByRole("table", { name: "Folder contents" });
-		fireEvent.click(within(table).getByRole("button", { name: /^file\.updated/ }));
-		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "updated", direction: "desc" }]);
-		fireEvent.click(within(table).getByRole("button", { name: /^file\.updated/ }));
-		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "updated", direction: "asc" }]);
-		fireEvent.click(within(table).getByRole("button", { name: /^file\.name/ }));
-		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "name", direction: "asc" }]);
-		expect(mutationMock).not.toHaveBeenCalled();
-	});
-
 	test("shows no aria-sort while the sorted column is hidden, and says rows without the key are hidden", async () => {
 		const sort: files_sort_Sort = [{ field: "metadata.status", direction: "desc" }];
 		folderSort = { sort, canSave: false };
@@ -2224,11 +2218,12 @@ describe("FileNodeView folder sort states", () => {
 		renderFileView({ nodeId: node._id });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		result = { rowsSort: oldSort, rows: [rows[0]!], isBusy: true, isDone: false };
-		for (const [field, arrow, ariaSort] of [
-			["file.updated", "↓", "descending"],
-			["file.name", "↑", "ascending"],
+		for (const [field, direction, arrow, ariaSort] of [
+			["file.updated", "Newest first", "↓", "descending"],
+			["file.name", "A to Z", "↑", "ascending"],
 		] as const) {
-			fireEvent.click(within(table).getByRole("button", { name: new RegExp(`^${field}`) }));
+			fireEvent.click(within(table).getByRole("button", { name: `Column options for ${field}` }));
+			fireEvent.click(await screen.findByRole("menuitem", { name: direction }));
 			expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify(oldSort));
 			expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("applying");
 			// A sort change alone shows no notice.

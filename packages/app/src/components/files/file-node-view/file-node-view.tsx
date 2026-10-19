@@ -4713,14 +4713,6 @@ function get_folder_sort_direction_label(sort: files_sort_Clause) {
 	return sort.direction === "asc" ? ascending : descending;
 }
 
-/**
- * The direction a newly chosen field starts with: newest first for dates, largest first for size, and
- * A to Z for the rest.
- */
-function get_folder_sort_first_direction(field: string): files_sort_Clause["direction"] {
-	return field === "updated" || field === "created" || field === "size" ? "desc" : "asc";
-}
-
 function get_folder_sort_label(sort: files_sort_Sort) {
 	return sort
 		.map((clause) => `${files_folder_table_query_field_text(clause.field)} ${clause.direction === "asc" ? "↑" : "↓"}`)
@@ -4940,7 +4932,6 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer-header-row"
 	| "FileNodeViewFolderExplorer-column-header"
 	| "FileNodeViewFolderExplorer-column-header-actions"
-	| "FileNodeViewFolderExplorer-sort-button"
 	| "FileNodeViewFolderExplorer-sort-indicator"
 	| "FileNodeViewFolderExplorer-skeleton-row"
 	| "FileNodeViewFolderExplorer-skeleton-icon"
@@ -5121,12 +5112,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	// A metadata sort hides the rows without its key.
 	const metadataKey = files_sort_field_is_built_in(sortField) ? null : sortField;
 	const sortNoteId = `FileNodeViewFolderExplorer-${useId()}-sort-note`;
-	const filterKey = JSON.stringify(filter);
-	// The last disabled header the user pressed, for the status message. `count` grows on each press,
-	// so the same message is new again and a screen reader reads it again.
-	const [sortBlocked, setSortBlocked] = useState<{ field: string; filterKey: string; count: number } | null>(null);
-	// A new filter makes the old message wrong, so it goes away.
-	if (sortBlocked !== null && sortBlocked.filterKey !== filterKey) setSortBlocked(null);
 	const [tableElement, setTableElement] = useState<HTMLDivElement | null>(null);
 	const [scrollRoot, setScrollRoot] = useState<HTMLElement | null>(null);
 	const rowElements = useRef(new Map<string, HTMLElement>());
@@ -5210,24 +5195,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const rowsText = JSON.stringify(visibleChildItems.map((row) => get_folder_target_key(row.target)));
 	useLayoutEffect(() => updateActiveTargets(), [rowsText, updateActiveTargets]);
 
-	const handleColumnSortClick = (field: string) => {
-		// A disabled header stays focusable, so a click or Enter can say why it does not sort.
-		if (filterOrderField !== null && field !== filterOrderField) {
-			setSortBlocked((current) => ({ field, filterKey, count: (current?.count ?? 0) + 1 }));
-			return;
-		}
-		onSortChange([
-			{
-				field,
-				direction:
-					sortField === field
-						? sort[0]!.direction === "asc"
-							? "desc"
-							: "asc"
-						: get_folder_sort_first_direction(field),
-			},
-		]);
-	};
 	const handleFilterField = useFn((field: string) => {
 		filterBarRef.current?.startFilter(field);
 	});
@@ -5322,22 +5289,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					</MyButton>
 				</div>
 			)}
-			{/* Always mounted: a screen reader may miss a live region that appears with its text. */}
-			<p
-				role="status"
-				className={
-					sortBlocked !== null
-						? ("FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames)
-						: undefined
-				}
-			>
-				{sortBlocked !== null && (
-					// A new key puts in a new text node, so the same message is read again.
-					<span key={sortBlocked.count}>
-						Remove the filter to sort by {files_folder_table_query_field_text(sortBlocked.field)}
-					</span>
-				)}
-			</p>
 			<div
 				className={cn(
 					"FileNodeViewFolderExplorer-table-scroll" satisfies FileNodeViewFolderExplorer_ClassNames,
@@ -5380,30 +5331,16 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 										}
 										aria-sort={direction === null ? undefined : direction === "asc" ? "ascending" : "descending"}
 									>
-										{files_sort_field_is_valid(field) ? (
-											<button
-												type="button"
+										{/* Plain text: only the options button is clickable, so every header works the same. */}
+										<span>{files_folder_table_query_field_text(field)}</span>
+										{direction !== null && (
+											<span
 												className={
-													"FileNodeViewFolderExplorer-sort-button" satisfies FileNodeViewFolderExplorer_ClassNames
+													"FileNodeViewFolderExplorer-sort-indicator" satisfies FileNodeViewFolderExplorer_ClassNames
 												}
-												aria-disabled={sortDisabledReason !== null || undefined}
-												// The visible note says why. No hidden text per header (AGENTS.md, "Automation first").
-												aria-describedby={sortDisabledReason !== null ? sortNoteId : undefined}
-												onClick={() => handleColumnSortClick(field)}
 											>
-												{files_folder_table_query_field_text(field)}
-												{direction !== null && (
-													<span
-														className={
-															"FileNodeViewFolderExplorer-sort-indicator" satisfies FileNodeViewFolderExplorer_ClassNames
-														}
-													>
-														{direction === "asc" ? "↑" : "↓"}
-													</span>
-												)}
-											</button>
-										) : (
-											<span>{files_folder_table_query_field_text(field)}</span>
+												{direction === "asc" ? "↑" : "↓"}
+											</span>
 										)}
 										<FileNodeViewFolderExplorerColumnMenu
 											field={field}

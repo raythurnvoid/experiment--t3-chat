@@ -363,8 +363,7 @@ and `find` also keep raw name order.
   sign is text (`-5` is not below `3`), and dates sort in time order only when they use the same
   format and time zone. Locale alphabets are not handled (Swedish `å` sorts with `a`, not after `z`).
 - `file.extension` uses its raw lowercase extension. Dates and file sizes use numeric values.
-- New fields start with `file.updated` and `file.created` newest first, `file.size` largest first, and everything
-  else A to Z. A header click applies one field; a second click flips its direction. A header click
+- The column options menu sorts: each of its two Sort items sets one field and one direction. It
   writes the sort into the URL as a `sort_by:` token (see "Table filter and sort bar").
 - While a filter is on, the filter fixes the order (see "Table filter and sort bar"). The table then
   sorts only in that order, in either direction.
@@ -388,7 +387,7 @@ and `find` also keep raw name order.
   It calls `set_folder_sort` with the URL sort and shows the toast "Sort saved for everyone." The
   tokens stay in the bar after the save. A failed save shows "The sort could not be saved. Try
   again." Other members' tables follow the saved sort live.
-- A reader (`canSave: false`) gets the same bar and header clicks, but no Save button. The sort lives
+- A reader (`canSave: false`) gets the same bar and column menus, but no Save button. The sort lives
   only in their URL. A different folder starts without it. Who may save is in the `access-control`
   skill.
 - The sidebar always lists children in file.name A to Z order (`list_tree_children`). Its order is
@@ -543,7 +542,7 @@ and `find` also keep raw name order.
   second label ("Date created", "Type" and "(metadata)" are gone). One shared helper,
   `files_folder_table_query_field_text`, gives that name.
   Allow at most eight data columns, including file.name. Actions is outside that count.
-  Sorting a hidden field does not show it. Built-in sortable headers keep their sort buttons.
+  Sorting a hidden field does not show it.
 - The toolbar holds the filter and sort bar (`FileNodeViewFolderFilterBar`), then "Save sort for
   everyone" (writers, only while the URL has a sort), then the Columns icon button.
 - The Columns popover uses visible labels and native checkboxes, grouped as Built-in and
@@ -609,13 +608,10 @@ and `find` also keep raw name order.
   `data-sort-direction`, the arrow, and `aria-sort` for the new sort before its rows arrive. A sort
   change alone shows no notice; the table only sets `aria-busy` and `data-sort-state="applying"`.
   `Showing: …` appears only while the held rows belong to another filter.
-  A header click sorts by that field: the field's first direction, then later clicks flip it.
 - While a filter is on, the effective order is the filter's order. Its direction comes from the
   URL sort token when it names the filter's field, else A to Z. `aria-sort` and the arrow follow
   this order. The static text "Sorted by <column> because of the filter" is tied to the grid with
-  `aria-describedby`. The header buttons of other columns have `aria-disabled="true"` and point to
-  that text, but stay focusable: a click or Enter does not sort and shows "Remove the filter to
-  sort by <column>" (`role="status"`).
+  `aria-describedby`. The column menus of other columns explain why they cannot sort (see below).
 - A metadata sort with no filter shows the static text "Rows without <key> are hidden." With
   `restrictedNote`, a custom-field sort also shows "Restricted items are listed last, by name, when
   you sort by a custom field.", and a member's custom-field filter shows "Locked items are not
@@ -626,10 +622,10 @@ and `find` also keep raw name order.
   route. It shows file.name, file.extension, file.size, file.created and file.updated, and "—" in
   every other column. It has no drag, no drop, no row menu and no write query, and `valueTargets`
   skip it, so its custom fields are never read. The table has active rows only, so it has no Restore.
-- A sortable header is one `<button>` stretched over the whole cell with a `::after` overlay, so a
-  click anywhere in the cell sorts and the focus ring wraps the cell. The column options button sits
-  on top at the right edge and opens its menu without sorting. Only sortable headers get the hover
-  background and pointer. A column that cannot sort (`file.updated_by`) has no sort button and no hover.
+- Every header works the same, sortable or not: the label and the sort arrow are plain text, and
+  the only control is the column options button at the right edge. Clicking the label does nothing,
+  and headers have no hover background. Decided 2026-10-19: a whole-cell sort button made sortable
+  and non-sortable columns (`file.updated_by`) behave differently.
 - Each header has a column menu. Sortable columns offer both directions (each sets the sort) and
   Filter by, which puts `file.<field>:` or the metadata key in the bar and opens its operations.
   Every column except file.name offers Hide column. While a filter is on, the Sort items of other
