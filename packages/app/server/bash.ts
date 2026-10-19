@@ -172,8 +172,9 @@ const BASH_JOB_POLL_MS = 5_000;
 // also starts a fresh count at 0.
 const BASH_JOB_LAUNCH_MAX_REFUSALS = 3;
 // A bare top-level `sleep` of at least this long pauses the job instead of holding a worker, and
-// waits at most as long as the sleep command itself would (its own cap is one hour).
-const BASH_JOB_SLEEP_PAUSE_MIN_MS = 5_000;
+// waits at most as long as the sleep command itself would (its own cap is one hour). Keep this
+// object so tests can lower the minimum, because a sleep that cannot pause runs on the real clock.
+export const bash_job_sleep_pause_limits = { minMs: 5_000 };
 const BASH_JOB_SLEEP_PAUSE_MAX_MS = 60 * 60 * 1000;
 // The job pauses before a statement when less than this remains before the worker's own abort.
 const BASH_JOB_PAUSE_HEADROOM_MS = 60_000;
@@ -2636,7 +2637,7 @@ export async function bash_run_job(
 			return "run";
 		}
 		const sleepMs =
-			boundary.sleepMs !== null && boundary.sleepMs >= BASH_JOB_SLEEP_PAUSE_MIN_MS ? boundary.sleepMs : null;
+			boundary.sleepMs !== null && boundary.sleepMs >= bash_job_sleep_pause_limits.minMs ? boundary.sleepMs : null;
 		const budgetUsed = Date.now() >= row.transferDeadlineAt - BASH_JOB_PAUSE_HEADROOM_MS;
 		if (sleepMs === null && !budgetUsed) return "run";
 		// The same cap as the launch: a state the row cannot hold means the job runs on as before.

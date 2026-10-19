@@ -4,7 +4,7 @@ import { api, internal } from "../convex/_generated/api.js";
 import { ai_chat_files_db_delete_job_batch } from "../convex/ai_chat_files.ts";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
 import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";
-import { bash_run_command, bash_run_job } from "./bash.ts";
+import { bash_job_sleep_pause_limits, bash_run_command, bash_run_job } from "./bash.ts";
 import { bash_COMMAND_EXIT_USAGE, bash_JOB_NUMBERS_MAX_COUNT } from "./bash-utils.ts";
 import { files_pending_review_facts_db_change_state } from "./files-pending-review-facts.ts";
 import {
@@ -449,7 +449,9 @@ describe("bash_run_command", () => {
 			// after that return: a reset before it would lift the block on a wait that ended nothing.
 			for (let n = 1; n <= 10; n++) expect((await runner.run({ command: "sleep 1 &" })).metadata.exitCode).toBe(0);
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
-			const blocked = await runner.run({ command: "sleep 1 & sleep 1 & sleep 1 & wait -t 1 1; sleep 1 & echo rc=$?" });
+			const blocked = await runner.run({
+				command: "sleep 1 & sleep 1 & sleep 1 & wait -t 0.1 1; sleep 1 & echo rc=$?",
+			});
 			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(3);
 			expect(blocked.stdout).toBe("rc=1\n");
 			expect(blocked.stderr).toContain("3 launches in a row were refused in this call");
@@ -709,24 +711,36 @@ describe("bash_run_command", () => {
 		test("a job whose state is too big to pause runs on and says so", async () => {
 			const runner = await create_bash_runner();
 			// 133000 characters in one variable put the snapshot over the 128 KiB cap, so the sleep
-			// cannot pause and runs for real.
-			const script = '{ x=$(printf "%133000s" ""); sleep 5; echo done; }';
+			// cannot pause and runs for real. Lower the 5-second pause minimum, so that real sleep is short.
+			const script = '{ x=$(printf "%133000s" ""); sleep 0.1; echo done; }';
 			expect((await runner.run({ command: `${script} &` })).metadata.exitCode).toBe(0);
-			const finished = await run_job(runner, 1);
-			expect(finished.status).toBe("finished");
-			expect(finished.result?.stdout).toBe("done\n");
-			expect(finished.result?.stderr).toContain(
-				"bash: the shell state is larger than 128 KiB, so the job cannot pause",
-			);
+			bash_job_sleep_pause_limits.minMs = 100;
+			try {
+				const finished = await run_job(runner, 1);
+				expect(finished.status).toBe("finished");
+				expect(finished.result?.stdout).toBe("done\n");
+				expect(finished.result?.stderr).toContain(
+					"bash: the shell state is larger than 128 KiB, so the job cannot pause",
+				);
+			} finally {
+				bash_job_sleep_pause_limits.minMs = 5_000;
+			}
 		});
 
 		test("a pause says nothing about an earlier statement that was too big to pause", async () => {
 			const runner = await create_bash_runner();
 			// The first sleep cannot pause, because the variable is over the cap. `unset` shrinks the
-			// state, so the second sleep pauses, and the warning would contradict that pause.
-			const script = '{ x=$(printf "%133000s" ""); sleep 5; unset x; sleep 5; echo done; }';
+			// state, so the second sleep pauses, and the warning would contradict that pause. Lower the
+			// 5-second pause minimum, so the first sleep, which runs for real, is short.
+			const script = '{ x=$(printf "%133000s" ""); sleep 0.1; unset x; sleep 5; echo done; }';
 			expect((await runner.run({ command: `${script} &` })).metadata.exitCode).toBe(0);
-			const paused = await run_job(runner, 1);
+			bash_job_sleep_pause_limits.minMs = 100;
+			let paused: Awaited<ReturnType<typeof run_job>>;
+			try {
+				paused = await run_job(runner, 1);
+			} finally {
+				bash_job_sleep_pause_limits.minMs = 5_000;
+			}
 			expect(paused.status).toBe("running");
 			// The first sleep really could not pause: the stored rest starts after the second sleep, so
 			// this run walked past the first one instead of stopping there.
@@ -774,7 +788,7 @@ describe("bash_run_command", () => {
 
 		test("a bare wait after a pause still waits for the jobs the earlier run started", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run({ command: "{ echo one & sleep 30; wait -t 1; } &" })).metadata.exitCode).toBe(0);
+			expect((await runner.run({ command: "{ echo one & sleep 30; wait -t 0.1; } &" })).metadata.exitCode).toBe(0);
 			await run_job(runner, 1);
 			// The pool is mocked, so job 2 is still queued. A bare `wait` that lost the numbers of
 			// the earlier run would wait for nothing and return 0 instead of 3.
@@ -785,7 +799,7 @@ describe("bash_run_command", () => {
 		test("a launch before a pause still answers wait $! in the next run", async () => {
 			const runner = await create_bash_runner();
 			expect(
-				(await runner.run({ command: "sleep 1 & { echo one & sleep 30; wait -t 1 $!; } &" })).metadata.exitCode,
+				(await runner.run({ command: "sleep 1 & { echo one & sleep 30; wait -t 0.1 $!; } &" })).metadata.exitCode,
 			).toBe(0);
 			// A job starts with `$!` at 0: job 1 belongs to the call that started it, not to job 2.
 			expect((await job_row(runner, 2)).job?.shellState?.lastBackgroundPid).toBeUndefined();
@@ -795,7 +809,7 @@ describe("bash_run_command", () => {
 
 			const paused = await run_job(runner, 2);
 			// `$!` is part of the shell state the pause stored. A state that dropped it would run
-			// `wait -t 1 0`, which names no job, instead of waiting for the still-queued job 3.
+			// `wait -t 0.1 0`, which names no job, instead of waiting for the still-queued job 3.
 			expect(paused.job?.shellState?.lastBackgroundPid).toBe(3);
 			const finished = await run_job(runner, 2);
 			expect(finished.result?.metadata.exitCode).toBe(3);
@@ -922,7 +936,7 @@ describe("bash_run_command", () => {
 			await run_job(launcher, 2);
 			expect((await job_row(launcher, 1)).job?.wakeAgent).toBeUndefined();
 			// A plain `wait` polls and reports nothing about waking.
-			const polled = await launcher.run({ command: "wait -t 1 1" });
+			const polled = await launcher.run({ command: "wait -t 0.1 1" });
 			expect(polled.metadata.exitCode).toBe(3);
 			expect(polled.metadata.waitingForJobs).toBeUndefined();
 
@@ -1236,12 +1250,12 @@ describe("bash_run_command", () => {
 			const missing = await runner.run({ command: "wait 9" });
 			expect(missing.stderr).toBe("bash: wait: 9: no such job\n");
 			expect(missing.metadata.exitCode).toBe(1);
-			expect((await runner.run({ command: "wait -t 1 1" })).metadata.exitCode).toBe(3);
+			expect((await runner.run({ command: "wait -t 0.1 1" })).metadata.exitCode).toBe(3);
 			await run_job(runner, 1);
 			await run_job(runner, 2);
 			expect((await runner.run({ command: "wait 2" })).metadata.exitCode).toBe(0);
 			expect((await runner.run({ command: "wait 1 2" })).metadata.exitCode).toBe(1);
-			const launched = await runner.run({ command: "true & wait -t 1" });
+			const launched = await runner.run({ command: "true & wait -t 0.1" });
 			expect(launched.metadata.exitCode).toBe(3);
 		});
 
