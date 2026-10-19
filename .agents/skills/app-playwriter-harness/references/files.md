@@ -325,6 +325,10 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   number), and `files_subtree_op_nodes` (the folder queue). All three are empty when no job runs. Read
   each step's result with `convex data _scheduled_functions --limit 60` and look for
   `files_subtree_ops.js:advance`. A failed step shows `state.kind: "failed"` with the error.
+- A Move can show its new placement before it repairs the stored `files_nodes` headers. Keep that
+  visible frame as the UI timing. Before checking raw headers, wait for that exact Move's cohort
+  to be `complete` with the `after` view and its Activity to be `succeeded`. Then check final paths,
+  metadata, access and released claims. A wrong final header still fails the check.
 - Check a Move path refusal as a member who cannot open a nested folder. Use the catalog's
   `c2-move-limit` fixture. The error may name the selected source and the 1,024-character limit,
   but must not name the hidden leaf or its new path length. Read back the original paths after refusal.
@@ -675,9 +679,8 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   copies. Clipboard readiness alone does not prove a successful paste.
 - For folder Cut permissions, use a [second member](second-user-fixtures.md). As owner, restrict a
   child folder inside an ordinary source folder. With no child grant, member Cut/Paste of the parent
-  must fail with `Permission denied` and zero moved. Owner readback must show every original path
-  and scope unchanged. Give the member `write` on the restricted child and repeat: the move must
-  succeed and keep that child's scope. Unit tests also cover read-only grants and archived children.
+  must succeed. The locked child moves with it and keeps its own scope and people. Check the new
+  paths and unchanged scope and grants as owner. The member must still be unable to open the child.
 - **Where `Upload file` actually is** (upload checked 2026-09-15; menu checked in source 2026-09-29):
   the sidebar toolbar's `More options` button. With no multi-selection, the menu offers
   `Upload file`, `Import folder`, then a separator group with `Show archived items` (or
