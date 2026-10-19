@@ -50,8 +50,10 @@ describe("files_transfer_media_db_map_refs", () => {
 					}),
 				}),
 			]);
-			expect(result._yay.mediaDependencies[0]!.assetId).not.toBe(f.media.assetId);
-			expect(result._yay.mediaDependencies[0]!.assetId).toBe(f.selectedMedia!.outputMediaAssetId);
+			const dependency = result._yay.mediaDependencies[0]!;
+			if ("keptLink" in dependency) throw new Error("Expected copied media");
+			expect(dependency.assetId).not.toBe(f.media.assetId);
+			expect(dependency.assetId).toBe(f.selectedMedia!.outputMediaAssetId);
 			expect(f.selectedMedia!.capture!.artifact).toBeNull();
 		},
 	);
@@ -79,6 +81,7 @@ describe("files_transfer_media_db_map_refs", () => {
 		const result = await map_refs(f);
 		if (!result._yay || !("mediaDependencies" in result._yay)) throw new Error("Expected mappings");
 		const dependency = result._yay.mediaDependencies[0]!;
+		if ("keptLink" in dependency) throw new Error("Expected copied media");
 		expect(dependency).toMatchObject({
 			target: f.savedOccupant,
 			src: files_media_build_file_src(f.savedOccupant!.id),
