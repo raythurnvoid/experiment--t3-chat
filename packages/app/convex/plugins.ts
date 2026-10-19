@@ -1165,6 +1165,7 @@ function review_facts(args: {
 	uiOutboundOrigins: string[];
 	mcpServers: Doc<"plugins_versions">["mcpServers"];
 	skillNames: string[];
+	pageAgentTools: Array<{ pageId: string; name: string; description: string }>;
 }) {
 	return (
 		`Declared capabilities: ${JSON.stringify(args.capabilities)}\n` +
@@ -1185,7 +1186,9 @@ function review_facts(args: {
 					: `MCP server ${JSON.stringify(server.id)}: sign-in happens at ${issuerHost}, not at ${serverHost}\n`;
 			})
 			.join("") +
-		`Declared skills: ${JSON.stringify(args.skillNames)}\n`
+		`Declared skills: ${JSON.stringify(args.skillNames)}\n` +
+		// The chat agent reads these descriptions as tool text, so review them like skill text.
+		`Declared page agent tools: ${JSON.stringify(args.pageAgentTools)}\n`
 	);
 }
 
@@ -1614,6 +1617,7 @@ export const run_version_review = internalAction({
 		uiOutboundOrigins: v.array(v.string()),
 		mcpServers: doc(app_convex_schema, "plugins_versions").fields.mcpServers,
 		skillNames: v.array(v.string()),
+		pageAgentTools: v.array(v.object({ pageId: v.string(), name: v.string(), description: v.string() })),
 		/**
 		 * Publishing repository claim. Its secrets are the names the reviewed code can read at runtime.
 		 */
@@ -1777,6 +1781,7 @@ export const run_version_review = internalAction({
 			uiOutboundOrigins: args.uiOutboundOrigins,
 			mcpServers: args.mcpServers,
 			skillNames: args.skillNames,
+			pageAgentTools: args.pageAgentTools,
 		});
 		const inventory = format_review_inventory(reviewFiles, args.unreviewableFiles);
 		const diffText = diff ? review_truncate_tool_result(diff.patch) : "";
@@ -2610,6 +2615,9 @@ async function publish_version_from_github(
 		uiOutboundOrigins: manifest._yay.uiOutboundOrigins,
 		mcpServers: manifest._yay.mcpServers,
 		skillNames: manifest._yay.skills.map((skill) => skill.name),
+		pageAgentTools: (manifest._yay.pages ?? []).flatMap((page) =>
+			(page.agent?.tools ?? []).map((tool) => ({ pageId: page.id, name: tool.name, description: tool.description })),
+		),
 		repositoryId: args.repositoryId,
 		requestedBy: source.userId,
 	})) as run_version_review_Result;
@@ -2698,6 +2706,17 @@ async function publish_version_from_github(
 			title: page.title,
 			entry: page.entry,
 			navItem: page.navItem ? { label: page.navItem.label, icon: page.navItem.icon ?? null } : null,
+			...(page.agent
+				? {
+						agent: {
+							tools: page.agent.tools.map((tool) => ({
+								name: tool.name,
+								description: tool.description,
+								inputSchemaJson: JSON.stringify(tool.inputSchema),
+							})),
+						},
+					}
+				: {}),
 		})),
 		fileViews: (manifest._yay.fileViews ?? []).map((fileView) => ({
 			id: fileView.id,
@@ -4883,14 +4902,7 @@ export const list_published_plugins = query({
 			capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 			outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 			uiOutboundOrigins: doc(app_convex_schema, "plugins_versions").fields.uiOutboundOrigins,
-			pages: v.array(
-				v.object({
-					id: v.string(),
-					title: v.string(),
-					entry: v.string(),
-					navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
-				}),
-			),
+			pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 			fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
 			mcpServers: doc(app_convex_schema, "plugins_versions").fields.mcpServers,
 			mcpServersFingerprint: doc(app_convex_schema, "plugins_versions").fields.mcpServersFingerprint,

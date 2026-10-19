@@ -62,4 +62,8 @@ export const plugins_CAPABILITIES = [
 	// Consent line: the chat agent may read and follow the instructions in the skills in `skills`.
 	// Nothing is written into the workspace. The agent reads the reviewed text from the plugin mount.
 	"agent.skills.contribute",
+	// Consent line: while a member has one of this plugin's pages open, the chat agent may call the
+	// tools that page declares. The page runs each call in the member's browser with the page's own
+	// access, and the result goes back to the agent.
+	"agent.page-tools",
 ] as const;

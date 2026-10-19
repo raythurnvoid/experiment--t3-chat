@@ -34,7 +34,12 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("convex/react", () => ({
-	useQuery: (...args: unknown[]) => useQueryMock(...args),
+	// A skipped query answers undefined, like the real hook. Only pages with agent tools run the
+	// pending calls query.
+	useQuery: (reference: unknown, args: unknown) => {
+		const result = useQueryMock(reference, args);
+		return args === "skip" ? undefined : result;
+	},
 }));
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
@@ -58,6 +63,9 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			mint_page_session: "plugins_ui.mint_page_session",
 			refresh_ui_session: "plugins_ui.refresh_ui_session",
 			revoke_ui_session: "plugins_ui.revoke_ui_session",
+		},
+		plugins_page_tools: {
+			list_pending: "plugins_page_tools.list_pending",
 		},
 	},
 	app_convex_deployment_url: "https://deployment.convex.test",

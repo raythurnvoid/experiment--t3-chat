@@ -146,6 +146,7 @@ describe("/api/chat browser availability", () => {
 			body: JSON.stringify({
 				membershipId: fixture.membershipId,
 				browserIntent,
+				pluginPage: null,
 				threadId: thread._yay!.threadId,
 				messages: [{ id: "browser-message", role: "user", parts: [{ type: "text", text: "Inspect the page." }] }],
 				parentId: null,

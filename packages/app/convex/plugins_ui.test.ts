@@ -684,6 +684,7 @@ describe("plugin ui sessions", () => {
 						title: "Gallery",
 						entry: "dist/frontend/index.html",
 						navItem: { label: "Gallery", icon: "images" },
+						hasAgent: false,
 					},
 				],
 			},

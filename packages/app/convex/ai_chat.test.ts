@@ -115,6 +115,7 @@ async function post_chat(
 			threadId: args.threadId,
 			membershipId: args.membershipId,
 			browserIntent: { policyRevision: 0 },
+			pluginPage: null,
 		}),
 	});
 	return { status: response.status, body: await response.text() };

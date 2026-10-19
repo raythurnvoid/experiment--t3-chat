@@ -261,6 +261,7 @@ describe("/api/chat tool call repair", () => {
 				threadId,
 				membershipId: membership.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const body = await response.text();
@@ -321,6 +322,7 @@ describe("/api/chat file quotes", () => {
 				threadId,
 				membershipId: membership.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const body = await response.text();
@@ -353,6 +355,7 @@ describe("/api/chat file quotes", () => {
 				threadId,
 				membershipId: membership.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		expect(response.status).toBe(400);
@@ -481,6 +484,7 @@ describe("/api/chat run access", () => {
 					threadId,
 					membershipId: membership._id,
 					browserIntent: { policyRevision: 0 },
+					pluginPage: null,
 				}),
 			});
 			let streamError: unknown;
@@ -573,6 +577,7 @@ describe("/api/chat run access", () => {
 					threadId,
 					membershipId: membership.membershipId,
 					browserIntent: { policyRevision: 0 },
+					pluginPage: null,
 				}),
 			});
 			const body = await response.text().catch((error: unknown) => {
@@ -728,6 +733,7 @@ describe("/api/chat private observations", () => {
 				threadId,
 				membershipId: membership.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const bodyPromise = response.text();
@@ -877,6 +883,7 @@ describe("/api/chat private observations", () => {
 				threadId,
 				membershipId: membership.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const body = await response.text();
@@ -1025,6 +1032,7 @@ describe("/api/chat workspace instructions", () => {
 				threadId,
 				membershipId: membership.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const body = await response.text();
@@ -1120,6 +1128,7 @@ describe("/api/chat workspace instructions", () => {
 				threadId,
 				membershipId: membership.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const body = await response.text();
@@ -1186,6 +1195,7 @@ describe("/api/chat workspace instructions", () => {
 				threadId,
 				membershipId: membership.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const body = await response.text();
@@ -1249,6 +1259,7 @@ describe("/api/chat workspace instructions", () => {
 				threadId,
 				membershipId: membership.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const body = await response.text();

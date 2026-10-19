@@ -691,6 +691,40 @@ describe("plugins_validate_manifest", () => {
 		});
 	});
 
+	test("keeps page agent tools and agent.page-tools together and checks each tool", () => {
+		const tool = {
+			name: "create_draft",
+			description: "Create a draft.",
+			inputSchema: { type: "object", properties: { subject: { type: "string" } } },
+		};
+		const with_page_tools = (tools: unknown[], capabilities: string[]) => ({
+			...manifest_json({ capabilities }),
+			pages: [{ id: "mail", title: "Mail", entry: "dist/ui/index.html", agent: { tools } }],
+		});
+
+		const accepted = plugins_validate_manifest(with_page_tools([tool], ["agent.page-tools"]));
+		if (accepted._nay) {
+			throw new Error(accepted._nay.message);
+		}
+		expect(accepted._yay.pages?.[0]?.agent?.tools).toEqual([tool]);
+
+		expect(plugins_validate_manifest(with_page_tools([tool], []))).toEqual({
+			_nay: { message: "Page agent tools require the agent.page-tools capability" },
+		});
+		expect(plugins_validate_manifest(manifest_json({ capabilities: ["agent.page-tools"] }))).toEqual({
+			_nay: { message: "The agent.page-tools capability requires at least one page agent tool" },
+		});
+		expect(plugins_validate_manifest(with_page_tools([tool, tool], ["agent.page-tools"]))).toEqual({
+			_nay: { message: 'Plugin page "mail" has duplicate agent tool "create_draft"' },
+		});
+		expect(
+			plugins_validate_manifest(with_page_tools([{ ...tool, inputSchema: { type: "string" } }], ["agent.page-tools"])),
+		).toEqual({ _nay: { message: 'Page agent tool input schemas must have type "object"' } });
+		expect(
+			plugins_validate_manifest(with_page_tools([{ ...tool, name: "Create-Draft" }], ["agent.page-tools"])),
+		).toEqual({ _nay: { message: "Page agent tool names must match ^[a-z][a-z0-9_]{0,47}$" } });
+	});
+
 	test("keeps schedules apart from file event content types and filters", () => {
 		expect(plugins_validate_manifest(manifest_json({ events: [{ type: "schedule.interval.elapsed" }] }))).toEqual({
 			_nay: { message: "Schedule events require a schedule declaration" },

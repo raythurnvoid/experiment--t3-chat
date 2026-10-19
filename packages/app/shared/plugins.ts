@@ -815,6 +815,9 @@ const MAX_MCP_SERVER_HEADERS = 8;
 const MAX_MCP_SERVER_SCOPES = 32;
 const MAX_MCP_TOOL_ALLOWLIST = 200;
 const MAX_SKILLS = 32;
+const MAX_PAGE_AGENT_TOOLS = 16;
+const MAX_PAGE_AGENT_TOOL_DESCRIPTION_LENGTH = 1000;
+const MAX_PAGE_AGENT_TOOL_SCHEMA_BYTES = 8 * 1024;
 const MAX_FILE_PATH_LENGTH = 512;
 const MAX_CONTENT_TYPE_LENGTH = 255;
 // Matches files_MAX_TEXT_CONTENT_BYTES: every artifact file must fit the app's text-content cap.
@@ -1001,12 +1004,40 @@ const PAGE_NAV_ICON_REGEX = /^[a-z0-9-]{1,64}$/u;
  * name, so new names can be added here without breaking already-published manifests. Plain
  * strings only: Convex code imports this module, so it must never depend on lucide-react.
  */
-export const plugins_PAGE_NAV_ICON_NAMES = ["images", "image", "film", "gallery-vertical-end"] as const;
+export const plugins_PAGE_NAV_ICON_NAMES = ["images", "image", "film", "gallery-vertical-end", "mail"] as const;
 
 const page_nav_item_schema = z
 	.object({
 		label: z.string().min(1).max(40),
 		icon: z.string().regex(PAGE_NAV_ICON_REGEX).optional(),
+	})
+	.strict();
+
+/**
+ * Tool names the chat agent sees as `page__<name>`. Lowercase with underscores, like app tool names,
+ * and short enough that the prefixed name stays under the 64-character tool name limit.
+ */
+export const plugins_PAGE_AGENT_TOOL_NAME_REGEX = /^[a-z][a-z0-9_]{0,47}$/u;
+
+const page_agent_tool_schema = z
+	.object({
+		name: z.string().regex(plugins_PAGE_AGENT_TOOL_NAME_REGEX, "Page agent tool names must match ^[a-z][a-z0-9_]{0,47}$"),
+		/**
+		 * Model-facing text. It reaches the system tools list, so the review reads it like a skill.
+		 */
+		description: z
+			.string()
+			.min(1)
+			.max(
+				MAX_PAGE_AGENT_TOOL_DESCRIPTION_LENGTH,
+				`Page agent tool descriptions must be at most ${MAX_PAGE_AGENT_TOOL_DESCRIPTION_LENGTH} characters`,
+			),
+		/**
+		 * JSON Schema of the tool input. The model provider reads it, so it must describe an object.
+		 */
+		inputSchema: z
+			.record(z.string(), z.unknown())
+			.refine((schema) => schema.type === "object", "Page agent tool input schemas must have type \"object\""),
 	})
 	.strict();
 
@@ -1018,6 +1049,19 @@ const page_schema = z
 		entry: plugins_module_path_schema,
 		/** Presence is the explicit opt-in for a main-sidebar nav item. */
 		navItem: page_nav_item_schema.optional(),
+		/**
+		 * Presence shows the chat agent beside the page, and the agent may call these tools while the
+		 * page is open. Requires `agent.page-tools`.
+		 */
+		agent: z
+			.object({
+				tools: z
+					.array(page_agent_tool_schema)
+					.min(1)
+					.max(MAX_PAGE_AGENT_TOOLS, `Plugin pages can declare at most ${MAX_PAGE_AGENT_TOOLS} agent tools`),
+			})
+			.strict()
+			.optional(),
 	})
 	.strict();
 
@@ -1352,11 +1396,34 @@ export function plugins_validate_manifest(input: unknown) {
 	}
 	const pageIds = new Set<string>();
 	let navItemCount = 0;
+	let hasPageAgent = false;
 	for (const page of parsed.data.pages ?? []) {
 		if (pageIds.has(page.id)) {
 			return Result({ _nay: { message: `Plugin manifest has duplicate page id "${page.id}"` } });
 		}
 		pageIds.add(page.id);
+		const toolNames = new Set<string>();
+		for (const tool of page.agent?.tools ?? []) {
+			hasPageAgent = true;
+			if (toolNames.has(tool.name)) {
+				return Result({ _nay: { message: `Plugin page "${page.id}" has duplicate agent tool "${tool.name}"` } });
+			}
+			toolNames.add(tool.name);
+			// The review prompt and the model read this text. Hidden characters could hide part of it
+			// from the reviewer. Line breaks are fine.
+			if (/[\p{Cc}\p{Cf}]/u.test(tool.description.replaceAll("\n", ""))) {
+				return Result({
+					_nay: {
+						message: `Plugin page "${page.id}" agent tool "${tool.name}" description must not contain control characters`,
+					},
+				});
+			}
+			if (files_get_utf8_byte_size(JSON.stringify(tool.inputSchema)) > MAX_PAGE_AGENT_TOOL_SCHEMA_BYTES) {
+				return Result({
+					_nay: { message: `Plugin page "${page.id}" agent tool "${tool.name}" input schema is larger than 8 KiB` },
+				});
+			}
+		}
 		if (page.navItem) {
 			navItemCount += 1;
 			if (navItemCount > MAX_NAV_ITEMS) {
@@ -1670,6 +1737,12 @@ export function plugins_validate_manifest(input: unknown) {
 	}
 	if (skillNames.size > 0 && !capabilities.has("agent.skills.contribute" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "Skills require the agent.skills.contribute capability" } });
+	}
+	if (capabilities.has("agent.page-tools" satisfies plugins_Capability) && !hasPageAgent) {
+		return Result({ _nay: { message: "The agent.page-tools capability requires at least one page agent tool" } });
+	}
+	if (hasPageAgent && !capabilities.has("agent.page-tools" satisfies plugins_Capability)) {
+		return Result({ _nay: { message: "Page agent tools require the agent.page-tools capability" } });
 	}
 	// Endpoints live inside the backend block, so this first rule catches the capability declared
 	// with no backend at all; the pair below then agrees in both directions like ui.outbound.fetch.

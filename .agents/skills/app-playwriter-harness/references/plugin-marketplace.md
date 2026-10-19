@@ -428,6 +428,43 @@ That is expected. After an uninstall and a reinstall in the same thread, the mod
 earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
 it calls the tool again.
 
+## Page agent tools fixture (Mail 0.1.0)
+
+Mail (`plugins/bonobo-plugin-mail`) is the fixture for page agent tools (`agent.page-tools`). Its page
+lists the Gmail plugin's `/emails` files and registers six tools: `get_view`, `open_email`,
+`list_drafts`, `create_draft`, `update_draft`, `delete_draft`. `create_draft` also opens the new draft
+on the page. Drafts are plugin documents in the
+`drafts` collection. Mail never writes to Gmail.
+
+Where it lives (verified 2026-10-19): `mail@0.1.0` is installed in `personal/home`, next to the Gmail
+plugin that writes `/emails/<account>/…`. Page:
+`/w/personal/home/plugins/mail/pages/mail`.
+
+- **Its service account needs "Can view" on `/emails`.** A plugin page reads Files through the
+  installation's service account, and install creates that account with no grants. Without a grant
+  the frame shows `Failed to list /emails: Permission denied: /emails`. Add the grant on the Service
+  accounts page: `Manage access` on the `Mail` row, Resource `File or folder`, path `/emails`, `Can
+  view`, `Save grant`. The dialog then lists `/emails` above the form.
+- **429s in the console are normal.** The list reads each email file to get its header, so it hits
+  the files read bucket. `retry.ts` waits and tries again. A row whose read still failed shows its
+  file name (`2026-10-01 security alert …`) instead of sender and subject.
+- **The composer is Tiptap, not a textarea.** `fill` on `textarea` finds nothing. Focus
+  `.AiChatComposer-editor-content` from page context, then `page.keyboard.insertText(text)`.
+
+Chat check (Agent mode, in the page's right panel): ask the agent to call the view tool, then create a
+draft to a fake address with a fixed subject. The chat shows `Page tool: Mail: get_view` and
+`Page tool: Mail: create_draft` cards. The frame opens the draft with the `Edited by the agent` badge,
+and its inputs hold the values the agent sent (read `input,textarea` values with `frame.evaluate`;
+`innerText` does not show them). Read the stored doc back:
+
+```powershell
+vp env exec pnpm --dir packages/app exec convex data plugins_data --limit 5 --order desc
+```
+
+The newest doc has `collection: "drafts"`, `mode: "owned"`, and a key `<userId>-d…:<userId>`.
+`plugins_page_tool_calls` is empty again about 2 minutes after the run: each call doc deletes itself
+120 seconds after it is created. That is expected, not a lost write.
+
 ## Triggering a plugin backend
 
 Plugin backends run on `files.upload.completed`, and **a text upload does not trigger one**. An upload

@@ -11,6 +11,7 @@ import {
 	Image,
 	Images,
 	KeyRound,
+	Mail,
 	MessageSquare,
 	MessagesSquare,
 	Monitor,
@@ -435,6 +436,7 @@ const PLUGIN_PAGE_NAV_ICONS: Record<string, LucideIcon> = {
 	image: Image,
 	film: Film,
 	"gallery-vertical-end": GalleryVerticalEnd,
+	mail: Mail,
 } satisfies Record<(typeof plugins_PAGE_NAV_ICON_NAMES)[number], LucideIcon>;
 
 // Plugin pages have their own nav items, so they must not make the Plugins item active.

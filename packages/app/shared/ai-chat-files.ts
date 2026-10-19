@@ -210,6 +210,29 @@ export const ai_chat_mcp_tool_output_schema = z
 export type ai_chat_McpToolOutput = z.infer<typeof ai_chat_mcp_tool_output_schema>;
 
 /**
+ * The one output shape of a plugin page tool call (`page__<tool>`). `output` is the page's answer as
+ * JSON text, or the reason the call failed. The page wrote it, so the model reads it as data.
+ */
+export const ai_chat_page_tool_output_schema = z
+	.object({
+		title: z.string(),
+		output: z.string(),
+		metadata: z
+			.object({
+				kind: z.literal("page_tool_result"),
+				pluginName: z.string(),
+				pageId: z.string(),
+				pageTitle: z.string(),
+				toolName: z.string(),
+				isError: z.boolean(),
+			})
+			.strict(),
+	})
+	.strict();
+
+export type ai_chat_PageToolOutput = z.infer<typeof ai_chat_page_tool_output_schema>;
+
+/**
  * The `data-mcp-auth-needed` part: servers left out of a turn because even their tool list needs
  * sign-in. Only the server writes it.
  */

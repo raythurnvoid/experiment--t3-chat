@@ -100,6 +100,7 @@ async function setup(viewer = false) {
 			threadId,
 			membershipId: team.membershipId,
 			browserIntent: { policyRevision: 0 },
+			pluginPage: null,
 		}),
 	});
 	expect(response.status, await response.text()).toBe(200);

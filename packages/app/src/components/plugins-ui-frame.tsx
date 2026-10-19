@@ -1,6 +1,6 @@
 import "./plugins-ui-frame.css";
 
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import {
@@ -222,8 +222,25 @@ type PluginsUiFrame_InitContext =
 			};
 	  };
 
+/**
+ * The answer of one agent tool call, as the plugin page sent it back. `output` is whatever the page's
+ * handler returned. It is still untrusted data from the plugin.
+ */
+export type PluginsUiFrame_AgentToolResult =
+	| { callId: string; ok: true; output: unknown }
+	| { callId: string; ok: false; error: string };
+
+export type PluginsUiFrame_Ref = {
+	/**
+	 * Send one agent tool call to the plugin page. Returns false while the page has not started, so
+	 * the caller can answer the call with an error instead of waiting.
+	 */
+	postAgentToolCall: (call: { callId: string; toolName: string; input: unknown }) => boolean;
+};
+
 // Exported so both mount points can type their `useFn` callbacks against this contract.
 export type PluginsUiFrame_Props = {
+	ref?: Ref<PluginsUiFrame_Ref>;
 	membershipId: Id<"organizations_workspaces_users">;
 	pluginName: string;
 	pluginVersionId: Id<"plugins_versions">;
@@ -274,6 +291,11 @@ export type PluginsUiFrame_Props = {
 	 * and does not need `useFn`.
 	 */
 	onStarted?: () => void;
+	/**
+	 * Called with each answer the page sends to a call from `postAgentToolCall`. Optional because only
+	 * a plugin page with agent tools sends calls. The frame reads it from a ref, like `onStarted`.
+	 */
+	onAgentToolResult?: (result: PluginsUiFrame_AgentToolResult) => void;
 	onError: (message: string) => void;
 };
 
@@ -352,6 +374,7 @@ function mint_error_message(args: {
  */
 export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame_Props) {
 	const {
+		ref,
 		membershipId,
 		pluginName,
 		pluginVersionId,
@@ -361,6 +384,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		mintSession,
 		getInitContext,
 		onStarted,
+		onAgentToolResult,
 		onError,
 	} = props;
 	// The frame only mounts for an authenticated member, and the SDK requires `userId` in the init
@@ -372,6 +396,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 	// theme change: that would tear the frame down and remount the plugin page. It installs a sender
 	// here instead, and the theme effect below calls whatever is installed.
 	const postThemeRef = useRef<((theme: PluginsUiFrame_Theme) => void) | null>(null);
+	// Installed by the bridge effect for the same reason as the theme sender.
+	const postAgentToolCallRef = useRef<PluginsUiFrame_Ref["postAgentToolCall"] | null>(null);
 	// `onStarted` is deliberately kept OUT of the bridge effect's dependency array, so the effect
 	// reads the latest one from here. Its identity belongs to the mount point, and a mount point that
 	// passes a plain arrow would hand the effect a new value on every render; the effect would then
@@ -381,6 +407,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 	// with the `key` that remounts the frame. A state setter and a `useCallback` on `frameKey` both
 	// do that. Nothing forces that on `onStarted`.
 	const onStartedRef = useRef(onStarted);
+	// Kept out of the bridge effect for the same reason as `onStarted`.
+	const onAgentToolResultRef = useRef(onAgentToolResult);
 
 	// Keep the ref pointing at the current callback. This is a plain effect, so on mount it runs
 	// AFTER the layout effect below installs the bridge. That is safe: the first bonobo:ready is a
@@ -389,6 +417,10 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 	useEffect(() => {
 		onStartedRef.current = onStarted;
 	}, [onStarted]);
+
+	useEffect(() => {
+		onAgentToolResultRef.current = onAgentToolResult;
+	}, [onAgentToolResult]);
 
 	// Attach the message and load listeners before assigning src so the first page event cannot be missed.
 	useLayoutEffect(() => {
@@ -471,6 +503,14 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			}
 			lastThemeSent = serialized;
 			post_to_iframe({ type: "bonobo:theme", nonce, theme });
+		};
+
+		postAgentToolCallRef.current = (call) => {
+			if (!frameReady || !initMessage) {
+				return false;
+			}
+			post_to_iframe({ type: "bonobo:agent-tool-call", nonce, ...call });
+			return true;
 		};
 
 		const token_error = (requestId: string, message: string): RefreshResponse => ({
@@ -791,6 +831,14 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			});
 		};
 
+		const handle_agent_tool_result = (callId: string, result: { ok?: unknown; output?: unknown; error?: unknown }) => {
+			onAgentToolResultRef.current?.(
+				result.ok === true
+					? { callId, ok: true, output: result.output }
+					: { callId, ok: false, error: typeof result.error === "string" ? result.error : "The page tool failed" },
+			);
+		};
+
 		const handle_message = (event: MessageEvent) => {
 			// Trust only this iframe's WindowProxy, the origin its src was built from, and the nonce
 			// placed in its fragment.
@@ -805,6 +853,10 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				type?: unknown;
 				nonce?: unknown;
 				requestId?: unknown;
+				callId?: unknown;
+				ok?: unknown;
+				output?: unknown;
+				error?: unknown;
 			};
 			if (message.nonce !== nonce) {
 				return;
@@ -813,6 +865,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				handle_ready();
 			} else if (message.type === "bonobo:token-refresh-request" && is_bridge_message_id(message.requestId)) {
 				handle_refresh(message.requestId);
+			} else if (message.type === "bonobo:agent-tool-result" && is_bridge_message_id(message.callId)) {
+				handle_agent_tool_result(message.callId, message);
 			}
 		};
 
@@ -867,6 +921,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			cancelled = true;
 			clearTimeout(startupDeadline);
 			postThemeRef.current = null;
+			postAgentToolCallRef.current = null;
 			window.removeEventListener("message", handle_message);
 			iframeNode.removeEventListener("load", handle_load);
 			revoke_session(sessionId);
@@ -883,6 +938,14 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		pluginVersionId,
 		userId,
 	]);
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			postAgentToolCall: (call) => postAgentToolCallRef.current?.(call) ?? false,
+		}),
+		[],
+	);
 
 	// Watch the root element rather than the theme context. The provider stamps the class in its own
 	// effect and it is an ancestor of this frame, so a descendant effect keyed on the resolved theme

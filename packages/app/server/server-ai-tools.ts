@@ -34,6 +34,7 @@ import {
 	ai_chat_file_result_schema,
 	ai_chat_file_result,
 	type ai_chat_McpToolOutput,
+	type ai_chat_PageToolOutput,
 } from "../shared/ai-chat-files.ts";
 import {
 	mcp_client_call_tool,
@@ -2242,6 +2243,101 @@ export async function ai_chat_tool_create_mcp_tools(args: {
 	return tools;
 }
 // #endregion mcp tools
+
+// #region page tools
+const PAGE_TOOL_WAIT_MS = 45_000;
+const PAGE_TOOL_POLL_MS = 400;
+
+/**
+ * The tools of the plugin page the member has open: `page__<tool>`, one per tool in the manifest.
+ *
+ * The page runs each call in the member's browser. A call writes a doc that the page reads, then
+ * waits here for the page to write its answer. See `convex/plugins_page_tools.ts`.
+ */
+export function ai_chat_tool_create_page_tools(
+	ctx: ActionCtx,
+	args: {
+		ctxData: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			userId: Id<"users">;
+			getThreadId: () => Id<"ai_chat_threads"> | null;
+			runDeadline: number;
+		};
+		page: NonNullable<FunctionReturnType<typeof internal.plugins_page_tools.get_turn_page>>;
+		pageId: string;
+		pageInstanceId: string;
+	},
+) {
+	const { ctxData, page, pageId, pageInstanceId } = args;
+	const tools: Record<string, Tool<unknown, unknown>> = {};
+
+	for (const pageTool of page.tools) {
+		const result = (output: string, isError: boolean): ai_chat_PageToolOutput => ({
+			title: pageTool.name,
+			output,
+			metadata: {
+				kind: "page_tool_result",
+				pluginName: page.pluginName,
+				pageId,
+				pageTitle: page.pageTitle,
+				toolName: pageTool.name,
+				isError,
+			},
+		});
+
+		tools[`page__${pageTool.name}`] = {
+			...dynamicTool({
+				description: pageTool.description,
+				inputSchema: jsonSchema(JSON.parse(pageTool.inputSchemaJson) as JSONSchema7),
+				execute: async (input, options): Promise<ai_chat_PageToolOutput> => {
+					const threadId = ctxData.getThreadId();
+					if (!threadId) throw new Error("Page tools need a chat thread.");
+
+					// Stop waiting before the run lease ends, so the answer still reaches the model. The call
+					// stores this deadline, and the page cannot take the call after it. So the page does not
+					// start a call this tool already gave up on.
+					const deadline = Math.min(Date.now() + PAGE_TOOL_WAIT_MS, ctxData.runDeadline - 5_000);
+					if (deadline <= Date.now()) throw new Error("The reply ran out of time before this page tool ran.");
+
+					const callId = await ctx.runMutation(internal.plugins_page_tools.create_call, {
+						organizationId: ctxData.organizationId,
+						workspaceId: ctxData.workspaceId,
+						userId: ctxData.userId,
+						threadId,
+						installationId: page.installationId,
+						pageId,
+						pageInstanceId,
+						toolCallId: options.toolCallId,
+						toolName: pageTool.name,
+						inputJson: JSON.stringify(input ?? {}),
+						expiresAt: deadline,
+					});
+
+					try {
+						while (Date.now() < deadline && !options.abortSignal?.aborted) {
+							await new Promise((resolve) => setTimeout(resolve, PAGE_TOOL_POLL_MS));
+							const answer = await ctx.runQuery(internal.plugins_page_tools.get_call, { callId });
+							if (answer) {
+								return answer.ok ? result(answer.outputJson, false) : result(answer.error, true);
+							}
+						}
+						return result(
+							`The ${page.pageTitle} page did not answer. The user may have closed it or opened another page. Ask the user to open it and try again.`,
+							true,
+						);
+					} finally {
+						await ctx.runMutation(internal.plugins_page_tools.delete_call, { callId });
+					}
+				},
+			}),
+			// A plugin's schema is rarely ready for strict mode, like an MCP server's.
+			strict: false,
+		};
+	}
+	return tools;
+}
+// #endregion page tools
 
 // #region image generation
 

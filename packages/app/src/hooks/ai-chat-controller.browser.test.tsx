@@ -226,7 +226,7 @@ function RuntimeSurface() {
 	const storageKey: AiChatControllerStorageKey = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
 
 	return (
-		<AiChatController key={storageKey} storageKey={storageKey}>
+		<AiChatController key={storageKey} storageKey={storageKey} pluginPage={null}>
 			<RuntimeStreamProbe />
 		</AiChatController>
 	);

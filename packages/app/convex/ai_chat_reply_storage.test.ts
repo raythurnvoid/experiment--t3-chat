@@ -89,6 +89,7 @@ async function send_text_reply(args: {
 			threadId,
 			membershipId: home.membershipId,
 			browserIntent: { policyRevision: 0 },
+			pluginPage: null,
 		}),
 	});
 	// A failed reply save rethrows inside the SDK's finish step, so reading the stream fails.

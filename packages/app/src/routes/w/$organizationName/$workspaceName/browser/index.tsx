@@ -23,7 +23,7 @@ const RouteWebBrowser = memo(function RouteWebBrowser() {
 				<MyPanelResizeHandle aria-label="Resize browser and agent panel" />
 				<MyPanel id="route-web-browser-agent" order={2} defaultSize={30} minSize={20}>
 					<section className={"RouteWebBrowser-agent" satisfies RouteWebBrowser_ClassNames} aria-label="Agent">
-						<FileEditorSidebarAgent isActive />
+						<FileEditorSidebarAgent isActive pluginPage={null} />
 					</section>
 				</MyPanel>
 			</MyPanelGroup>

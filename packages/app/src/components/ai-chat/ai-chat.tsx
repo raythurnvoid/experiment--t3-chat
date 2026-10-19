@@ -1065,7 +1065,12 @@ export const AiChat = memo(function AiChat(props: AiChat_Props) {
 	const storageKey: AiChatControllerStorageKey = `app_state::ai_chat_last_open::scope::${membershipId}`;
 
 	return (
-		<AiChatController key={storageKey} storageKey={storageKey} initialSelectedThreadId={urlQuery?.threadId}>
+		<AiChatController
+			key={storageKey}
+			storageKey={storageKey}
+			pluginPage={null}
+			initialSelectedThreadId={urlQuery?.threadId}
+		>
 			<AiChatContent {...props} />
 		</AiChatController>
 	);

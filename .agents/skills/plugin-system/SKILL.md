@@ -44,6 +44,8 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | MCP servers / headers per server / OAuth scopes          | 4/8/32       | `mcp_server_schema`                                 |
 | MCP server URL length / tool allowlist entries           | 2,048/200    | `plugins_validate_mcp_server_url`, `mcp_server_schema` |
 | Skills / skill `SKILL.md` bytes                          | 32/64 KiB    | `manifest_schema.skills`, publish                   |
+| Agent tools per page / tool description length           | 16/1,000     | `page_agent_tool_schema`, `page_schema.agent`       |
+| Agent tool input schema bytes                            | 8 KiB        | `plugins_validate_manifest` loop                    |
 | Normalized file path length                              | 512          | `module_path_schema`                                |
 | Content type length                                      | 255          | `manifest_file_schema.contentType`                  |
 | Secret name length                                       | 128          | `plugins_validate_secret_name`                      |
@@ -84,6 +86,7 @@ Capabilities are the consent set. `CAPABILITIES` in `packages/app/shared/plugins
 | `workspace.members.read`           | Pages and file views may list every member of the workspace (see below)            |
 | `agent.mcp.connect`                | The chat agent may call tools on the declared `mcpServers` (see below)             |
 | `agent.skills.contribute`          | The chat agent may follow the declared `skills` (see below)                        |
+| `agent.page-tools`                 | The chat agent may call a page's declared agent tools while a member has that page open (see "Page agent tools") |
 
 Several capabilities and manifest fields imply another one, and `plugins_validate_manifest` rejects the manifest at publish instead of letting it install and fail later:
 
@@ -97,6 +100,8 @@ Several capabilities and manifest fields imply another one, and `plugins_validat
 - `userWritableCollections` requires `plugin.data.user-write`: the list narrows the user-write door, so without that door it means nothing.
 
 `ui.outbound.fetch` and `uiOutboundOrigins` require each other in both directions. The capability with no origin would grant nothing, and origins with no capability would widen the frame's policy without the install dialog listing a capability for it.
+
+`agent.page-tools` and page `agent.tools` require each other in both directions: the capability needs at least one page with agent tools, and a page with agent tools needs the capability. A tool name matches `^[a-z][a-z0-9_]{0,47}$` and is unique within its page. A description may hold newlines but no other control characters. `inputSchema` must be a JSON object with `type: "object"`.
 
 `agent.mcp.connect` and `mcpServers` require each other in both directions, and so do `agent.skills.contribute` and `skills`. The manifest is public, so an MCP server URL must be a normalized `https:` URL on port 443 with a host name (no IP literal, no `localhost`), no credentials, no fragment, and no query name that looks like a key (`key`, `token`, `secret`, `auth`, and similar). Keys go in `headers`, whose values name declared `secrets`. Server ids `my` and `my-*` are reserved for members' own servers. An OAuth server (`auth.kind: "oauth"`) names its sign-in server in `issuer`, an optional `resource`, and extra `scopes`; `issuer` and `resource` must be `https:` URLs with no query or fragment, and such a server may not set an `Authorization` header. The issuer is a pin: Press never sends a member to another sign-in server until a new reviewed version names it. An OAuth `resource` must be the server URL or one of its parent paths. A skill path must be `dist/skills/<name>/SKILL.md`, a listed `text/markdown` file. Publish parses each skill's frontmatter with `ai_chat_skills_parse`, refuses a bad one before review and upload, and stores its `description`. Publish also stores `mcpServersFingerprint`, the SHA-256 of the parsed `mcpServers` JSON, so install can check an exact accept. The review sees the server ids, URLs, auth kinds, and skill names as facts, and reviews each skill file.
 
@@ -430,6 +435,27 @@ The batch secret mutations (`upsert_publisher_repository_secrets`, `upsert_insta
 - Canonical asset responses retain CSP, `nosniff`, immutable cache, and CORP. Their CSP uses `'self'` for scripts, styles, fonts, and same-origin module/style fetches. `connect-src` is `'self'`, the Convex cloud `https` and `wss` origins the page's own `ConvexClient` needs, and then the served version's `uiOutboundOrigins` — see "UI outbound origins" above. R2 failures return 502 with `Cache-Control: no-store` + `Retry-After: 3`. Never log raw R2 errors or keys.
 - The host startup deadline is 15 seconds and clears once `bonobo:init` posts. Failure replaces the iframe with a `role="alert"` and a Retry button. Both mount points then move focus onto that button, but only when `document.activeElement` is the body, is null, or is already inside the mount point's own region (`can_take_focus` in each host file): the error can arrive on a timer nobody is watching, so a member working elsewhere on the screen keeps their place. Retry creates a fresh frame, nonce, and session. The immutable asset path stays canonical, and the query stays empty. Only the fragment carries `parentOrigin` and `nonce`, so neither value is sent in the asset request, cache key, or referrer.
 - A page that already received its read-only token can self-navigate before the host observes the next load. The host disables the bridge and revokes on that load, while per-call liveness and TTL remain the backstop; do not claim already-authorized in-flight work can be recalled.
+
+## Page agent tools (`agent.page-tools`)
+
+A page may declare `agent: { tools: [{ name, description, inputSchema }] }`. Such a page opens with the app's chat agent in a right panel, like the Files view (`list_ui_pages` returns `hasAgent`). The page code runs the tools, so the agent can work with what the member sees: open an item, write a draft, change the view. Mail (`plugins/bonobo-plugin-mail`) is the first user.
+
+How one call travels:
+
+1. The chat request from the page sends `pluginPage: { pluginName, pageId, pageInstanceId }`. `pageInstanceId` is a random id the page tab makes once when it opens. Each request carries it in the send body, not in the chat setup, because the sidebar chat can be reused by another page. Only Agent mode reads it, and only when the member has `content.read`. `plugins_page_tools.get_turn_page` gives tools only when the installation is enabled, accepted `agent.page-tools`, and its version is ready, passed review, and declares agent tools on that page. Otherwise the turn gets no page tools and no error.
+2. Each tool is a dynamic tool named `page__<name>` (`ai_chat_tool_create_page_tools` in `server/server-ai-tools.ts`). Its execute inserts one `plugins_page_tool_calls` doc (`pending`) for the chat's member, installation, page, and tab, then polls the doc every 400 ms. It waits at most 45 seconds and never past the turn deadline minus 5 seconds. That end time is stored as `expiresAt`, so a page cannot claim a call the tool already gave up on. If the deadline has already passed, the tool answers with an error and writes no doc. It deletes the doc when it ends. A timeout answers the agent with an error result, not a thrown error.
+3. The page route subscribes `list_pending` for its own membership, installation, page, and tab id, only after the frame started and while its session works. So only the tab that sent the message gets the call. It calls `claim_call` first. Only a `pending` call before `expiresAt` can be claimed, so a call never runs twice. Then it posts `bonobo:agent-tool-call` `{ nonce, callId, toolName, input }` into the frame.
+4. The SDK (`client.agent.registerTool`) runs the handler. It answers `bonobo:agent-tool-result` `{ nonce, callId, ok, output | error }`. A thrown error and an unknown tool name both answer `ok: false`. The host gives the frame 25 seconds, then calls `complete_call` with the output as JSON. An output over 32 KiB becomes an error, and an error is cut to 2,000 characters.
+
+Rules:
+
+- Calls are owned by one member and one tab. `list_pending` reads the `by_user_installation_page_instance_status` range. It throws `Unauthenticated` without auth, and answers `[]` without membership or for an installation that is not enabled. `claim_call` and `complete_call` answer `Unauthorized` without membership and `Not found` for another member or workspace. Nobody else sees a call.
+- Tool output is plugin data. The system prompt tells the agent to treat `page__` results as untrusted data, like MCP results.
+- A stored assistant message may hold `page__` parts only in replies the server wrote, and their output must match `ai_chat_page_tool_output_schema` (see `has_valid_file_tool_parts` in `convex/ai_chat.ts`).
+- A call doc is useful until its `expiresAt`, at most 45 seconds. A scheduled `delete_call` removes it after 120 seconds in case the tool never deleted it. Thread deletion and the workspace purge delete the rest. Uninstall and member removal rely on that scheduled delete.
+- One consent label covers the install dialog and the Access screen: "Let the chat agent use its page tools while a member has that page open".
+- The tool only works while the tab that sent the message is open. The agent sees a timeout error when the member closed it.
+- There is no approval step. A page tool runs as soon as the agent calls it, so a plugin should only declare tools that are safe to run without asking, like writing a draft. When a call times out, the page may still finish it later, so a retried call can run twice.
 
 # Plugin file views
 
@@ -844,6 +870,21 @@ sponsor may already have lost permission. A channel that never started Files set
 Live QA must use the installed frame and read back stored chat and raw transcript text. Unit mocks cannot prove CSP, lease refresh, Markdown marker survival, or cross-backend permissions. Publish the exact reviewed commit, update the installation, and verify served version and bytes before committing the parent gitlink.
 
 # Releases
+
+SDK 0.22.0 was mirrored on 2026-10-19 at `49c323cf478b1a5cd66f5618cdd7b28e516bdbe4`. Its tree equals
+the folder in the host commit that adds page agent tools. It adds `client.agent.registerTool` and
+the `bonobo:agent-tool-call` / `bonobo:agent-tool-result` messages. It also carries the generated
+`convex-api.d.ts` and `http-api.d.ts` changes that were not mirrored before. Typecheck and 49 SDK
+tests pass.
+
+Mail 0.1.0 was published and installed in `personal/home` on 2026-10-19 (plugin commit
+`871de3159fabbd1ef6291f234922c427e8b0be07`, version doc `hn7jj6yrxqgbvekbkb22y1stps8gk1fb`,
+repo `raythurnvoid/bonobo-plugin-mail`). It is the first plugin on SDK 0.22.0 and the first with
+`agent.page-tools`. It reads the Gmail plugin's `/emails` files and keeps drafts in the plugin
+store; it never writes to Gmail. Its service account needs "Can view" on `/emails` (a manual step
+after install). The first publish review failed with "could not finish its assessment" and the retry
+passed with the same commit. Live check: the agent in the right panel called `get_view` and
+`create_draft`, the page opened the draft, and the `drafts` doc was read back.
 
 GitHub Sources 0.1.1 was published and installed in `personal/home` on 2026-09-28.
 Plugin commit: `ce962bc62ef968c5628b1fac0bacae5ff2d155bb`. Reviewed Press

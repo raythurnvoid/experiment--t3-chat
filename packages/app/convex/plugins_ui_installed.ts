@@ -38,6 +38,10 @@ export const list_ui_pages = query({
 					title: v.string(),
 					entry: v.string(),
 					navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
+					/**
+					 * True when the page shows the chat agent beside it. The tool texts stay on the server.
+					 */
+					hasAgent: v.boolean(),
 				}),
 			),
 		}),
@@ -94,7 +98,13 @@ export const list_ui_pages = query({
 					pluginName: installation.pluginName,
 					displayName: version.displayName,
 					pluginVersionId: version._id,
-					pages: version.pages,
+					pages: version.pages.map((page) => ({
+						id: page.id,
+						title: page.title,
+						entry: page.entry,
+						navItem: page.navItem,
+						hasAgent: page.agent !== undefined,
+					})),
 				};
 			}),
 		);

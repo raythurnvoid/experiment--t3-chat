@@ -36,6 +36,24 @@
 		font-size: 13px;
 		color: var(--color-fg-07);
 	}
+
+	/* The frame side of a page with the agent panel. It anchors the starting cover, so the cover
+	   stays inside the frame panel and does not hide the agent. */
+	.RoutePluginsPluginPage-panel {
+		position: relative;
+
+		display: flex;
+		flex-direction: column;
+
+		height: 100%;
+	}
+
+	.RoutePluginsPluginPage-agent {
+		display: flex;
+		flex-direction: column;
+
+		height: 100%;
+	}
 	/* #endregion root */
 
 	/* #region frame */

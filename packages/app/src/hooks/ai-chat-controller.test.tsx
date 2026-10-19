@@ -1063,7 +1063,7 @@ function RuntimeQueueProbe() {
 
 function ControllerSurface(props: { storageKey: AiChatControllerStorageKey; children: ReactNode }) {
 	return (
-		<AiChatController key={props.storageKey} storageKey={props.storageKey}>
+		<AiChatController key={props.storageKey} storageKey={props.storageKey} pluginPage={null}>
 			{props.children}
 		</AiChatController>
 	);
@@ -1073,7 +1073,7 @@ function SidebarSurface(props: { children: ReactNode }) {
 	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${hookMocks.tenant.membershipId}`;
 
 	return (
-		<AiChatController key={selectedTabStorageKey} storageKey={selectedTabStorageKey}>
+		<AiChatController key={selectedTabStorageKey} storageKey={selectedTabStorageKey} pluginPage={null}>
 			{props.children}
 		</AiChatController>
 	);
@@ -1083,7 +1083,12 @@ function FullPageSurface(props: { children: ReactNode; initialSelectedThreadId?:
 	const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
 
 	return (
-		<AiChatController key={storageKey} storageKey={storageKey} initialSelectedThreadId={props.initialSelectedThreadId}>
+		<AiChatController
+			key={storageKey}
+			storageKey={storageKey}
+			initialSelectedThreadId={props.initialSelectedThreadId}
+			pluginPage={null}
+		>
 			{props.children}
 		</AiChatController>
 	);
@@ -1277,7 +1282,9 @@ describe("AiChatController", () => {
 			throw new Error("Expected restored optimistic chat instance");
 		}
 		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
-		expect(chat.sendMessage.mock.calls[0]?.[1]).toEqual({ body: { browserIntent: hookMocks.preferences } });
+		expect(chat.sendMessage.mock.calls[0]?.[1]).toEqual({
+			body: { browserIntent: hookMocks.preferences, pluginPage: null },
+		});
 
 		const prepareSendMessagesRequest = chat.transport?.options.prepareSendMessagesRequest;
 		expect(prepareSendMessagesRequest).toBeTypeOf("function");

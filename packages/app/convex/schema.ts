@@ -6848,6 +6848,23 @@ const app_convex_schema = defineSchema({
 				title: v.string(),
 				entry: v.string(),
 				navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
+				/**
+				 * Absent means the page has no agent panel and no agent tools.
+				 */
+				agent: v.optional(
+					v.object({
+						tools: v.array(
+							v.object({
+								name: v.string(),
+								description: v.string(),
+								/**
+								 * The tool's JSON Schema as JSON text, so the schema does not need `v.any()`.
+								 */
+								inputSchemaJson: v.string(),
+							}),
+						),
+					}),
+				),
 			}),
 		),
 		/**
@@ -8431,6 +8448,58 @@ const app_convex_schema = defineSchema({
 		.index("by_startedAt", ["startedAt"])
 		.index("by_thread", ["threadId"]),
 	// #endregion plugins mcp
+
+	// #region plugins page tools
+	/**
+	 * One chat agent call of a plugin page tool, on its way to the member's open page and back.
+	 *
+	 * The chat runs on the server and cannot reach the browser. So the tool writes this doc, the
+	 * member's open page reads it, runs the tool in the plugin frame, and writes the result here. The
+	 * waiting tool then reads the result and deletes the doc. A scheduled delete removes a doc that
+	 * nobody deleted, so each doc lives at most a few minutes.
+	 */
+	plugins_page_tool_calls: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		installationId: v.id("plugins_workspace_installations"),
+		pageId: v.string(),
+		/**
+		 * The random id of the browser tab that sent the chat message. Only that tab runs the call,
+		 * so a second open tab or a broken one never takes it.
+		 */
+		pageInstanceId: v.string(),
+		toolCallId: v.string(),
+		/**
+		 * The tool name from the manifest, without the `page__` prefix.
+		 */
+		toolName: v.string(),
+		inputJson: v.string(),
+		/**
+		 * `pending` until one open page takes it, `claimed` while the frame runs it, `done` with a result.
+		 */
+		status: v.union(v.literal("pending"), v.literal("claimed"), v.literal("done")),
+		result: v.union(
+			v.object({ ok: v.literal(true), outputJson: v.string() }),
+			v.object({ ok: v.literal(false), error: v.string() }),
+			v.null(),
+		),
+		/**
+		 * When the chat tool stops waiting. The page cannot take the call after this time.
+		 */
+		expiresAt: v.number(),
+	})
+		.index("by_user_installation_page_instance_status", [
+			"userId",
+			"installationId",
+			"pageId",
+			"pageInstanceId",
+			"status",
+		])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_thread", ["threadId"]),
+	// #endregion plugins page tools
 
 	// #region activities
 	/**

@@ -1985,6 +1985,11 @@ function format_capability_label(value: string, payerName = "the workspace owner
 		return "Add its skills to the chat agent's skill list";
 	}
 
+	// The plain rule writes "Agent Page-tools". Say who calls the tools and where they run.
+	if (value === "agent.page-tools") {
+		return "Let the chat agent use its page tools while a member has that page open";
+	}
+
 	return format_access_label(value);
 }
 

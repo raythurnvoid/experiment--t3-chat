@@ -216,6 +216,7 @@ describe("plugins publish_version", () => {
 			uiOutboundOrigins: args.uiOutboundOrigins ?? [],
 			mcpServers: [],
 			skillNames: [],
+			pageAgentTools: [],
 			repositoryId: args.repositoryId,
 			requestedBy: args.requestedBy,
 		});

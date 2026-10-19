@@ -146,6 +146,7 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 					>
 						<FileEditorSidebarAgent
 							isActive={filesLastTab === FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}
+							pluginPage={null}
 							quoteRequest={quoteRequest}
 							onQuoteInserted={() => setQuoteRequest(null)}
 						/>

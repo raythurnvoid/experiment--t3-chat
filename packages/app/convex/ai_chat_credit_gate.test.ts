@@ -120,6 +120,7 @@ describe("/api/chat credit gate", () => {
 				clientGeneratedThreadId: "thread_chat_credit_gate_client",
 				membershipId: seeded.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const body = await response.json();
@@ -172,6 +173,7 @@ describe("/api/chat credit gate", () => {
 			clientGeneratedThreadId: "thread_chat_rate_limit_client",
 			membershipId: seeded.membershipId,
 			browserIntent: { policyRevision: 0 },
+			pluginPage: null,
 		};
 
 		for (let i = 0; i < 1; i++) {
@@ -415,6 +417,7 @@ describe("/api/chat credit gate", () => {
 				clientGeneratedThreadId: "thread_anon_credit_gate_client",
 				membershipId: seeded.membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		const body = await response.json();

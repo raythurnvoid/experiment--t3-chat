@@ -54,6 +54,7 @@ import {
 } from "@/components/my-tabs.tsx";
 import {
 	AiChatController,
+	type AiChatController_Props,
 	type AiChatControllerStorageKey,
 	type AiChatOptimisticThreadId,
 	type AiChatThreadListController,
@@ -888,16 +889,18 @@ export type FileEditorSidebarAgent_Props = {
 	 * True while this agent panel is visible. A new chat starts on its own only while it is active.
 	 */
 	isActive: boolean;
+	pluginPage: AiChatController_Props["pluginPage"];
 	quoteRequest?: AiChatThread_Props["quoteRequest"];
 	onQuoteInserted?: AiChatThread_Props["onQuoteInserted"];
 };
 
 export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props: FileEditorSidebarAgent_Props) {
+	const { pluginPage } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const selectedTabStorageKey: AiChatControllerStorageKey = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
 
 	return (
-		<AiChatController key={selectedTabStorageKey} storageKey={selectedTabStorageKey}>
+		<AiChatController key={selectedTabStorageKey} storageKey={selectedTabStorageKey} pluginPage={pluginPage}>
 			<FileEditorSidebarAgentContent {...props} />
 		</AiChatController>
 	);

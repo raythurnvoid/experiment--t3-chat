@@ -136,6 +136,7 @@ async function send(
 			threadId: fx.threadId,
 			membershipId: fx.membership.membershipId,
 			browserIntent: { policyRevision: 0 },
+			pluginPage: null,
 		}),
 	});
 	const body = await response.text();

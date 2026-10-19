@@ -6,18 +6,28 @@ import { Puzzle } from "lucide-react";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import type { RefObject } from "react";
 
+import { FileEditorSidebarAgent } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
-import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
+import {
+	PluginsUiFrame,
+	type PluginsUiFrame_AgentToolResult,
+	type PluginsUiFrame_Props,
+	type PluginsUiFrame_Ref,
+} from "@/components/plugins-ui-frame.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import type { Id } from "../../../../../../convex/_generated/dataModel.ts";
 
 // #region root
 type RoutePluginsPluginPage_ClassNames =
 	| "RoutePluginsPluginPage"
 	| "RoutePluginsPluginPage-loading"
-	| "RoutePluginsPluginPage-missing";
+	| "RoutePluginsPluginPage-missing"
+	| "RoutePluginsPluginPage-panel"
+	| "RoutePluginsPluginPage-agent";
 
 /**
  * May this page move focus right now?
@@ -44,6 +54,9 @@ function RoutePluginsPluginPage() {
 	const missingMessageId = `RoutePluginsPluginPage-${useId()}-description`;
 	// Incremented by Retry. It is part of the frame key below, so each attempt gets a fresh frame.
 	const [attempt, setAttempt] = useState(0);
+	// A random id for this tab. The chat sends it, and only the frame of this tab runs the agent's
+	// page tool calls. Retry keeps it, so the new frame takes the calls of the same chat.
+	const [pageInstanceId] = useState(() => crypto.randomUUID());
 
 	const plugin = uiPages?.find((item) => item.pluginName === pluginName) ?? null;
 	const page = plugin?.pages.find((item) => item.id === pageId) ?? null;
@@ -158,6 +171,21 @@ function RoutePluginsPluginPage() {
 		);
 	}
 
+	const frame = (
+		<RoutePluginsPluginPageFrame
+			key={frameKey}
+			regionRef={mainRef}
+			pluginName={pluginName}
+			pluginVersionId={plugin.pluginVersionId}
+			pageId={pageId}
+			pageTitle={page.title}
+			entry={page.entry}
+			hasAgent={page.hasAgent}
+			pageInstanceId={pageInstanceId}
+			onRetry={handleRetry}
+		/>
+	);
+
 	return (
 		// tabIndex -1 makes this region the target Retry hands focus to. It stays out of the tab order,
 		// so nothing changes for a member who never hit an error. The label is what names the region,
@@ -169,16 +197,28 @@ function RoutePluginsPluginPage() {
 			className={"RoutePluginsPluginPage" satisfies RoutePluginsPluginPage_ClassNames}
 		>
 			{breadcrumb}
-			<RoutePluginsPluginPageFrame
-				key={frameKey}
-				regionRef={mainRef}
-				pluginName={pluginName}
-				pluginVersionId={plugin.pluginVersionId}
-				pageId={pageId}
-				pageTitle={page.title}
-				entry={page.entry}
-				onRetry={handleRetry}
-			/>
+			{/* A page with agent tools shows the chat agent on the right, like the Browser route. The
+			    chat sends this page with each message, so the agent can call the page's tools. */}
+			{page.hasAgent ? (
+				<MyPanelGroup direction="horizontal">
+					<MyPanel id="route-plugins-plugin-page-frame" order={1} defaultSize={70} minSize={40}>
+						<div className={"RoutePluginsPluginPage-panel" satisfies RoutePluginsPluginPage_ClassNames}>
+							{frame}
+						</div>
+					</MyPanel>
+					<MyPanelResizeHandle aria-label="Resize plugin page and agent panel" />
+					<MyPanel id="route-plugins-plugin-page-agent" order={2} defaultSize={30} minSize={20}>
+						<section
+							className={"RoutePluginsPluginPage-agent" satisfies RoutePluginsPluginPage_ClassNames}
+							aria-label="Agent"
+						>
+							<FileEditorSidebarAgent isActive pluginPage={{ pluginName, pageId, pageInstanceId }} />
+						</section>
+					</MyPanel>
+				</MyPanelGroup>
+			) : (
+				frame
+			)}
 		</main>
 	);
 }
@@ -206,8 +246,67 @@ type RoutePluginsPluginPageFrame_Props = {
 	pageId: string;
 	pageTitle: string;
 	entry: string;
+	/**
+	 * True when the page declares agent tools. The frame then runs the calls the chat agent sends.
+	 */
+	hasAgent: boolean;
+	/**
+	 * This tab's random id. The frame takes only the calls the chat of this tab sent.
+	 */
+	pageInstanceId: string;
 	onRetry: () => void;
 };
+
+/**
+ * How long the plugin page has to answer one agent tool call. The chat tool on the server waits a
+ * little longer, so the page's error reaches the model instead of a server timeout.
+ */
+const AGENT_TOOL_FRAME_TIMEOUT_MS = 25_000;
+
+/**
+ * Take one agent tool call for this tab, run it in the plugin frame, and save the answer.
+ *
+ * A refused claim means the call already ended or was taken, so there is nothing to do.
+ */
+async function relay_agent_tool_call(args: {
+	membershipId: Id<"organizations_workspaces_users">;
+	call: { callId: Id<"plugins_page_tool_calls">; toolName: string; inputJson: string };
+	runInFrame: (call: { callId: string; toolName: string; input: unknown }) => Promise<PluginsUiFrame_AgentToolResult>;
+}) {
+	const { membershipId, call, runInFrame } = args;
+
+	const claimed = await app_convex.mutation(app_convex_api.plugins_page_tools.claim_call, {
+		membershipId,
+		callId: call.callId,
+	});
+	if (claimed._nay) {
+		return;
+	}
+
+	const answer = await runInFrame({ callId: call.callId, toolName: call.toolName, input: JSON.parse(call.inputJson) });
+	let result: { ok: true; outputJson: string } | { ok: false; error: string };
+	if (answer.ok) {
+		try {
+			result = { ok: true, outputJson: JSON.stringify(answer.output ?? null) };
+		} catch {
+			result = { ok: false, error: "The page answered with a value that is not JSON" };
+		}
+	} else {
+		result = { ok: false, error: answer.error };
+	}
+
+	const completed = await app_convex.mutation(app_convex_api.plugins_page_tools.complete_call, {
+		membershipId,
+		callId: call.callId,
+		result,
+	});
+	if (completed._nay) {
+		console.error("[RoutePluginsPluginPageFrame.relay_agent_tool_call] Failed to save the page answer", {
+			error: completed._nay,
+			callId: call.callId,
+		});
+	}
+}
 
 /**
  * One plugin frame and the two things the member sees around it: the alert when the frame fails,
@@ -219,9 +318,15 @@ type RoutePluginsPluginPageFrame_Props = {
 const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 	props: RoutePluginsPluginPageFrame_Props,
 ) {
-	const { regionRef, pluginName, pluginVersionId, pageId, pageTitle, entry, onRetry } = props;
+	const { regionRef, pluginName, pluginVersionId, pageId, pageTitle, entry, hasAgent, pageInstanceId, onRetry } = props;
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
+	const frameRef = useRef<PluginsUiFrame_Ref | null>(null);
+	// Calls this tab already tried to claim. The live query can list a call again before its claim
+	// lands, and a second claim from the same tab would only be refused.
+	const seenCallIdsRef = useRef(new Set<string>());
+	// The waiting call for each answer the frame sends back, by call id.
+	const agentToolWaitersRef = useRef(new Map<string, (result: PluginsUiFrame_AgentToolResult) => void>());
 	// Names the message inside the alert, so the Retry button can point at it and say what failed.
 	const errorMessageId = `RoutePluginsPluginPageFrame-${useId()}-error`;
 	const [sessionError, setSessionError] = useState<string | null>(null);
@@ -235,6 +340,13 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 			? "The plugin page is ready."
 			: "Starting the plugin page..."
 		: "";
+
+	// Only a running frame takes calls. Until the frame starts, the calls stay pending. A frame that
+	// failed takes none, so Retry's new frame can take them.
+	const pendingAgentToolCalls = useQuery(
+		app_convex_api.plugins_page_tools.list_pending,
+		hasAgent && isFrameStarted && sessionError === null ? { membershipId, pluginName, pageId, pageInstanceId } : "skip",
+	);
 
 	const mintSession = useFn(() =>
 		app_convex.action(app_convex_api.plugins_ui.mint_page_session, {
@@ -251,6 +363,47 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 		organizationId,
 		workspaceId,
 	}));
+
+	const handleAgentToolResult = useFn((result: PluginsUiFrame_AgentToolResult) => {
+		agentToolWaitersRef.current.get(result.callId)?.(result);
+	});
+
+	const runAgentToolCallInFrame = useFn(
+		(call: { callId: string; toolName: string; input: unknown }) =>
+			new Promise<PluginsUiFrame_AgentToolResult>((resolve) => {
+				const waiters = agentToolWaitersRef.current;
+				const timeout = setTimeout(() => {
+					finish({ callId: call.callId, ok: false, error: "The page did not answer in time" });
+				}, AGENT_TOOL_FRAME_TIMEOUT_MS);
+				const finish = (result: PluginsUiFrame_AgentToolResult) => {
+					clearTimeout(timeout);
+					waiters.delete(call.callId);
+					resolve(result);
+				};
+
+				waiters.set(call.callId, finish);
+				if (!frameRef.current?.postAgentToolCall(call)) {
+					finish({ callId: call.callId, ok: false, error: "The page is not running" });
+				}
+			}),
+	);
+
+	// The server writes a call doc for each agent tool call. Run each new one here.
+	useEffect(() => {
+		for (const call of pendingAgentToolCalls ?? []) {
+			if (seenCallIdsRef.current.has(call.callId)) {
+				continue;
+			}
+			seenCallIdsRef.current.add(call.callId);
+
+			relay_agent_tool_call({ membershipId, call, runInFrame: runAgentToolCallInFrame }).catch((error: unknown) => {
+				console.error("[RoutePluginsPluginPageFrame] Unexpected agent tool call error", {
+					error,
+					callId: call.callId,
+				});
+			});
+		}
+	}, [pendingAgentToolCalls, membershipId, runAgentToolCallInFrame]);
 
 	// The error replaces the iframe, and any focus that was inside it, so move focus to the one
 	// available action. The move is not unconditional. The error can appear on a timer nobody is
@@ -325,6 +478,7 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 				inert={!isFrameStarted}
 			>
 				<PluginsUiFrame
+					ref={frameRef}
 					membershipId={membershipId}
 					pluginName={pluginName}
 					pluginVersionId={pluginVersionId}
@@ -334,6 +488,7 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 					mintSession={mintSession}
 					getInitContext={getInitContext}
 					onStarted={() => setIsFrameStarted(true)}
+					onAgentToolResult={handleAgentToolResult}
 					// The state setter is the handler: the frame hands over the sentence and this
 					// component shows it. A setter identity never changes, and the frame's bridge effect
 					// lists `onError` in its dependencies, so a changing one would tear the frame down.

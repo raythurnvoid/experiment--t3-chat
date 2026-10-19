@@ -125,6 +125,7 @@ import type * as plugins_invoke from "../plugins_invoke.js";
 import type * as plugins_invoke_http_routes from "../plugins_invoke_http_routes.js";
 import type * as plugins_mcp from "../plugins_mcp.js";
 import type * as plugins_mcp_oauth from "../plugins_mcp_oauth.js";
+import type * as plugins_page_tools from "../plugins_page_tools.js";
 import type * as plugins_review from "../plugins_review.js";
 import type * as plugins_runtime from "../plugins_runtime.js";
 import type * as plugins_runtime_http_routes from "../plugins_runtime_http_routes.js";
@@ -289,6 +290,7 @@ declare const fullApi: ApiFromModules<{
   plugins_invoke_http_routes: typeof plugins_invoke_http_routes;
   plugins_mcp: typeof plugins_mcp;
   plugins_mcp_oauth: typeof plugins_mcp_oauth;
+  plugins_page_tools: typeof plugins_page_tools;
   plugins_review: typeof plugins_review;
   plugins_runtime: typeof plugins_runtime;
   plugins_runtime_http_routes: typeof plugins_runtime_http_routes;

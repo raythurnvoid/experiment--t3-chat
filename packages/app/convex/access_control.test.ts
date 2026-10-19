@@ -3409,6 +3409,7 @@ describe("enforcement", () => {
 				threadId,
 				membershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			}),
 		});
 		expect(replied.status).toBe(403);
@@ -3472,6 +3473,7 @@ describe("enforcement", () => {
 				clientGeneratedThreadId: `thread-${mode}`,
 				membershipId: fixture.memberMembershipId,
 				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
 			});
 		const headers = { "Content-Type": "application/json" };
 
@@ -3543,6 +3545,7 @@ describe("enforcement", () => {
 					clientGeneratedThreadId: threadId,
 					membershipId: fixture.memberMembershipId,
 					browserIntent: { policyRevision: 0 },
+					pluginPage: null,
 				}),
 			});
 
@@ -3622,6 +3625,7 @@ describe("enforcement", () => {
 						threadId,
 						membershipId,
 						browserIntent: { policyRevision: 0 },
+						pluginPage: null,
 					}),
 				});
 

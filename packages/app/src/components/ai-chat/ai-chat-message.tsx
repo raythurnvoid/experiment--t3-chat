@@ -73,6 +73,7 @@ import {
 	ai_chat_file_target_schema,
 	ai_chat_mcp_auth_needed_data_schema,
 	ai_chat_mcp_tool_output_schema,
+	ai_chat_page_tool_output_schema,
 	type ai_chat_McpSource,
 	type ai_chat_ToolOutputRef,
 } from "../../../shared/ai-chat-files.ts";
@@ -1062,6 +1063,51 @@ const AiChatMessagePartToolMcp = memo(function AiChatMessagePartToolMcp(props: A
 });
 // #endregion tool mcp
 
+// #region tool page
+type AiChatMessagePartToolPage_ClassNames = "AiChatMessagePartToolPage";
+
+type AiChatMessagePartToolPage_Props = {
+	part: DynamicToolUIPart;
+	isChatRunning: boolean;
+};
+
+/**
+ * A call of a plugin page tool (`page__<tool>`): the agent asked the open plugin page to do something.
+ */
+const AiChatMessagePartToolPage = memo(function AiChatMessagePartToolPage(props: AiChatMessagePartToolPage_Props) {
+	const { part, isChatRunning } = props;
+
+	// A stored part is saved data. Use the output only when it matches the page tool output schema.
+	const result = ai_chat_page_tool_output_schema.safeParse(part.output);
+	const metadata = result.success ? result.data.metadata : null;
+	const text = metadata ? `${metadata.pageTitle}: ${metadata.toolName}` : part.toolName.slice("page__".length);
+
+	return (
+		<AiChatMessagePartDisclosure className={"AiChatMessagePartToolPage" satisfies AiChatMessagePartToolPage_ClassNames}>
+			<AiChatMessagePartDisclosureButton
+				title="Page tool"
+				text={text}
+				state={metadata?.isError ? "output-error" : part.state}
+				isChatRunning={isChatRunning}
+			/>
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(part.input ?? {}, null, "\t")} />
+				{part.errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={part.errorText} state="error" />}
+				{/* The plugin wrote this text, so show it as plain text, never as Markdown. */}
+				{metadata && (
+					<AiChatMessagePartToolTextAreaSection
+						label={metadata.isError ? "Error" : "Result"}
+						code={result.data?.output ?? ""}
+						state={metadata.isError ? "error" : undefined}
+						maxHeight="16lh"
+					/>
+				)}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartDisclosure>
+	);
+});
+// #endregion tool page
+
 // #region mcp auth needed
 type AiChatMessageMcpAuthNeeded_ClassNames =
 	| "AiChatMessageMcpAuthNeeded"
@@ -1489,6 +1535,10 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 
 		if (part.type === "dynamic-tool" && toolName.startsWith("mcp__")) {
 			return <AiChatMessagePartToolMcp part={part} isChatRunning={isChatRunning} threadId={threadId} />;
+		}
+
+		if (part.type === "dynamic-tool" && toolName.startsWith("page__")) {
+			return <AiChatMessagePartToolPage part={part} isChatRunning={isChatRunning} />;
 		}
 
 		if (part.type === "dynamic-tool") {

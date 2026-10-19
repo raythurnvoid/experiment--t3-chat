@@ -42,6 +42,7 @@ Chat agent (see [MCP servers and skills](#mcp-servers-and-skills)):
 
 - `agent.mcp.connect` — the chat agent may call the tools of the manifest's remote `mcpServers`, with member data from the thread as input. A server never gets a Press credential, only its declared headers and sign-in. The capability and `mcpServers` require each other.
 - `agent.skills.contribute` — the chat skill catalog lists the manifest's `skills`, and the agent reads them from the plugin's read-only mount. Nothing is written into the workspace. The capability and `skills` require each other.
+- `agent.page-tools` — the chat agent may call the tools a page declares in `agent.tools` while a member has that page open in the app. The page code runs each call (see [Page agent tools](#page-agent-tools)). The capability and at least one page with `agent.tools` require each other.
 
 ### Grant lifecycle and service upload routes
 
@@ -193,6 +194,8 @@ type WriteOk = BonoboHttpApi["/api/v1/files/write"]["POST"]["response"][200]["bo
 // response against.
 type WriteAnswer = BonoboHttpResponse<"/api/v1/files/write">;
 ```
+
+0.22.0 adds page agent tools: the manifest page field `agent.tools`, the `agent.page-tools` capability, the `mail` nav icon, and `client.agent.registerTool` in the frontend client.
 
 0.21.2 documents the four-part route budget: a burst of 20, with the first refill about two seconds after a full drain. The runtime and types are unchanged.
 
@@ -410,7 +413,8 @@ A manifest may declare UI pages the host app embeds:
 - `id` — matches `/^[a-z0-9][a-z0-9-]{0,63}$/`, unique per manifest.
 - `title` — 1–80 characters.
 - `entry` — must be a manifest `files[]` entry with contentType `"text/html"`.
-- `navItem` (optional) — its presence contributes a main-sidebar nav item in the host app: `label` is 1–40 characters, `icon` an optional lucide kebab-case name matching `/^[a-z0-9-]{1,64}$/`. The host currently renders only `images`, `image`, `film`, and `gallery-vertical-end`; any other name publishes fine but falls back to a generic puzzle icon (the supported set can grow without a manifest change).
+- `navItem` (optional) — its presence contributes a main-sidebar nav item in the host app: `label` is 1–40 characters, `icon` an optional lucide kebab-case name matching `/^[a-z0-9-]{1,64}$/`. The host currently renders only `images`, `image`, `film`, `gallery-vertical-end`, and `mail`; any other name publishes fine but falls back to a generic puzzle icon (the supported set can grow without a manifest change).
+- `agent` (optional) — `{ tools: [...] }`. The page gets the chat agent in a right panel and gives it tools. See [Page agent tools](#page-agent-tools).
 
 ### File views
 
@@ -527,6 +531,50 @@ What the doors answer, and what the client does not do for you:
 - The client closes on `pagehide`. A subscription ends with it.
 
 The doors are the `user_*` writes, `user_manage_scope`, the `watch_*` reads, `resolve_member_display`, and `list_members`. Their argument and result types are the app's own, and the rules behind them (private scopes and their caps, owned documents, the roster capability, the 1..100 page sizes) are in each door's docblock in the app's `plugins_data` module. A user id is `GenericId<"users">` from `convex/values`. `context.userId` and every id a door returns already have that type, so they reach a door with no cast. An id you stored inside your own document value comes back as a plain string when you parse the value, so brand it there once, at the parse step, not at each call. A write's `_nay.message` union lists the exact refusal texts of the app version the SDK was generated from. In the app, `pnpm run generate:plugin-sdk-types` rewrites the file and the lint fails while it is stale. The check reads the working tree, so commit the regenerated file together with the door change; a release cut from a green lint then ships the types of the app at that commit.
+
+### Page agent tools
+
+A page can give the app's chat agent tools that run in the page. A page with `agent` opens with the chat agent in a right panel, next to the frame. Declare the tools on the page and add the `agent.page-tools` capability:
+
+```jsonc
+{
+	"id": "mail",
+	"title": "Mail",
+	"entry": "dist/frontend/index.html",
+	"agent": {
+		"tools": [
+			{
+				"name": "create_draft",
+				"description": "Write a draft and open it in the page.",
+				"inputSchema": {
+					"type": "object",
+					"properties": { "subject": { "type": "string" }, "body": { "type": "string" } },
+					"required": ["subject", "body"]
+				}
+			}
+		]
+	}
+}
+```
+
+- A page has 1–16 tools. `name` matches `/^[a-z][a-z0-9_]{0,47}$/` and is unique in the page. `description` is 1–1,000 characters with no control characters except newlines. `inputSchema` is a JSON Schema object with `type: "object"`, at most 8 KiB.
+- The agent sees each tool as `page__<name>`, only in Agent mode and only while the member chats from that page.
+
+Run the calls with `client.agent.registerTool`:
+
+```ts
+const unregister = client.agent.registerTool("create_draft", async (input) => {
+	// The model wrote `input`. Check it before use, even with the schema.
+	const draft = parse_draft_input(input);
+	await save_draft(draft);
+	return { saved: true };
+});
+```
+
+- The return value (or the resolved promise) goes back to the agent as JSON. Keep it under 32 KiB; a bigger answer becomes an error.
+- A thrown error goes back as an error with its message, cut to 2,000 characters. A call for a tool with no handler answers "This page has no tool named X".
+- The host waits 25 seconds for the page. A call only reaches the open tab that sent the chat message. Other tabs of the same page never see it.
+- The agent treats the answer as untrusted data. Do not put instructions for the agent in it.
 
 ### Theme
 
