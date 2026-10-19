@@ -3,7 +3,12 @@ import { R2 } from "@convex-dev/r2";
 import { api, components } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
-import { access_control_db_set_service_account_grant } from "./access_control.ts";
+import {
+	access_control_db_can_act_on_file_node,
+	access_control_db_set_service_account_grant,
+	type access_control_Subject,
+} from "./access_control.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
 import { files_media_build_private_src } from "../shared/files-media.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -884,5 +889,227 @@ describe("create_share_link_download_urls", () => {
 		expect(await sign(f, { token: link.token, revision: current, targets: [{ kind: "embed", index: 0 }] })).toEqual({
 			_nay: { message: "Not found" },
 		});
+	});
+});
+
+/**
+ * Keep uploaded objects in memory, so an API write can read back the saved state of an earlier write.
+ */
+function mock_object_store() {
+	const objects = new Map<string, ArrayBuffer>();
+	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key) => ({
+		key: key ?? "test-upload-key",
+		url: `https://r2.test/upload?key=${encodeURIComponent(key ?? "test-upload-key")}`,
+	}));
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+			if (url.pathname === "/upload") {
+				objects.set(url.searchParams.get("key")!, await new Response(init?.body).arrayBuffer());
+				return new Response(null, { status: 200 });
+			}
+			return new Response(objects.get(decodeURIComponent(url.pathname.slice(1))) ?? null, { status: 200 });
+		}),
+	);
+}
+
+/**
+ * A signed-in member with no role, so no workspace `content.read`: a guest.
+ */
+async function insert_guest(f: Fixture) {
+	return await f.t.run(async (ctx) => {
+		const userId = await ctx.db.insert("users", { clerkUserId: "clerk-guest" });
+		const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId,
+			active: true,
+			pendingOrganizationRemoval: false,
+			updatedAt: Date.now(),
+		});
+		// The membership is inserted directly, so its plan and API key quota are too. An API write costs a cent.
+		await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+		await quotas_db_ensure(ctx, {
+			quotaName: "active_api_credentials",
+			userId,
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			now: Date.now(),
+		});
+		return { userId, membershipId };
+	});
+}
+
+function can_act(
+	f: Fixture,
+	subject: access_control_Subject,
+	nodeId: Id<"files_nodes">,
+	permission: "content.read" | "content.write",
+) {
+	return f.t.run(async (ctx) =>
+		access_control_db_can_act_on_file_node(ctx, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			subject,
+			fileNode: (await ctx.db.get("files_nodes", nodeId))!,
+			permission,
+		}),
+	);
+}
+
+/**
+ * Write `content` to `path` through the public API with a new `files:write` key.
+ */
+async function api_write(
+	f: Fixture,
+	args: {
+		as: Fixture["asOwner"];
+		membershipId: Id<"organizations_workspaces_users">;
+		serviceAccountId: Id<"access_control_service_accounts"> | null;
+		path: string;
+		content: string;
+	},
+) {
+	const key = await args.as.mutation(api.public_api.api_credential_create, {
+		membershipId: args.membershipId,
+		serviceAccountId: args.serviceAccountId,
+		name: "Writer",
+		scopes: ["files:write"],
+	});
+	if (key._nay) {
+		throw new Error(key._nay.message);
+	}
+	return await f.t.fetch("/api/v1/files/write", {
+		method: "POST",
+		headers: { Authorization: `Bearer ${key._yay.credential}`, "Content-Type": "application/json" },
+		body: JSON.stringify({ path: args.path, content: args.content }),
+	});
+}
+
+/** The owner adds `userId` to `nodeId` with "Can edit". */
+async function add_editor(f: Fixture, nodeId: Id<"files_nodes">, userId: Id<"users">) {
+	await reset_rate_limits(f.t, [f.db.userId]);
+	expect(
+		await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: f.db.membershipId,
+			nodeId,
+			principal: { kind: "user", userId },
+			level: "write",
+		}),
+	).toEqual({ _yay: null });
+}
+
+describe("get_share_link_view, images added by a writer who cannot read them", () => {
+	test("hides an open image that a guest editor of the page cannot read", async () => {
+		const f = await fixture();
+		mock_object_store();
+		const pageId = await test_create_saved_text_file(f.t, {
+			membershipId: f.db.membershipId,
+			path: "/page.md",
+			textContent: "Start.\n",
+		});
+		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+		const guest = await insert_guest(f);
+		await add_editor(f, pageId, guest.userId);
+		const subject = { kind: "user", userId: guest.userId, plugin: null } as const;
+		expect(await can_act(f, subject, pageId, "content.write")).toBe(true);
+		expect(await can_act(f, subject, imageId, "content.read")).toBe(false);
+		const link = await link_on(f, pageId);
+
+		const written = await api_write(f, {
+			as: f.t.withIdentity({ issuer: "https://clerk.test", external_id: guest.userId }),
+			membershipId: guest.membershipId,
+			serviceAccountId: null,
+			path: "/page.md",
+			content: `![x](bonobo-file://${imageId})`,
+		});
+		expect(written.status).toBe(200);
+		expect(await read_links(f.t, pageId)).toEqual([link]);
+
+		expect((await view_of(f, link.token))?.media).toEqual([{ index: 0, available: false }]);
+	});
+
+	test("hides an image of the same restricted folder that a guest editor of the page cannot read", async () => {
+		const f = await fixture();
+		mock_object_store();
+		const folderId = await insert_restricted_folder(f, "r");
+		const pageId = await test_create_saved_text_file(f.t, {
+			membershipId: f.db.membershipId,
+			path: "/r/page.md",
+			textContent: "Start.\n",
+		});
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", pageId)))?.restrictedScopeNodeId).toBe(folderId);
+		const imageId = await insert_media_file(f, { parentId: folderId, path: "/r/photo.png", contentType: "image/png" });
+		await f.t.run((ctx) => ctx.db.patch("files_nodes", imageId, { restrictedScopeNodeId: folderId }));
+		const guest = await insert_guest(f);
+		await add_editor(f, pageId, guest.userId);
+		const subject = { kind: "user", userId: guest.userId, plugin: null } as const;
+		expect(await can_act(f, subject, pageId, "content.write")).toBe(true);
+		expect(await can_act(f, subject, imageId, "content.read")).toBe(false);
+		const link = await link_on(f, pageId);
+
+		const written = await api_write(f, {
+			as: f.t.withIdentity({ issuer: "https://clerk.test", external_id: guest.userId }),
+			membershipId: guest.membershipId,
+			serviceAccountId: null,
+			path: "/r/page.md",
+			content: `![x](bonobo-file://${imageId})`,
+		});
+		expect(written.status).toBe(200);
+		expect(await read_links(f.t, pageId)).toEqual([link]);
+
+		expect((await view_of(f, link.token))?.media).toEqual([{ index: 0, available: false }]);
+	});
+
+	test("hides an open image from an account that writes the page through a folder above it", async () => {
+		const f = await fixture();
+		mock_object_store();
+		const pageId = await test_create_saved_text_file(f.t, {
+			membershipId: f.db.membershipId,
+			path: "/z/page.md",
+			textContent: "Start.\n",
+		});
+		const folderId = (await f.t.run((ctx) => ctx.db.get("files_nodes", pageId)))!.parentId as Id<"files_nodes">;
+		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+		const serviceAccountId = await f.t.run((ctx) =>
+			ctx.db.insert("access_control_service_accounts", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				name: "Importer",
+				createdBy: f.db.userId,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+				revokedAt: null,
+			}),
+		);
+		await f.t.run(async (ctx) => {
+			const granted = await access_control_db_set_service_account_grant(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				serviceAccountId,
+				resource: { kind: "file", nodeId: folderId },
+				level: "write",
+			});
+			expect(granted._nay).toBeUndefined();
+		});
+		const subject = { kind: "service_account", serviceAccountId } as const;
+		expect(await can_act(f, subject, pageId, "content.write")).toBe(true);
+		expect(await can_act(f, subject, imageId, "content.read")).toBe(false);
+		const link = await link_on(f, pageId);
+
+		// Only a signed-in account may create an API key.
+		await f.t.run((ctx) => ctx.db.patch("users", f.db.userId, { clerkUserId: "clerk-share-owner" }));
+		const written = await api_write(f, {
+			as: f.asOwner,
+			membershipId: f.db.membershipId,
+			serviceAccountId,
+			path: "/z/page.md",
+			content: `![x](bonobo-file://${imageId})`,
+		});
+		expect(written.status).toBe(200);
+		expect(await read_links(f.t, pageId)).toEqual([link]);
+
+		expect((await view_of(f, link.token))?.media).toEqual([{ index: 0, available: false }]);
 	});
 });
