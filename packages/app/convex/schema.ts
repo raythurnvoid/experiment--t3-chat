@@ -2874,9 +2874,6 @@ const app_convex_schema = defineSchema({
 			"nodeCreationTime",
 			"nodeId",
 		])
-		.index("by_view_path_archive", ["cohortId", "view", "path", "archiveOperationId", "nodeCreationTime", "nodeId"])
-		.index("by_view_tree", ["cohortId", "view", "treePath", "nodeCreationTime", "nodeId"])
-		.index("by_view_archive_tree", ["cohortId", "view", "archiveOperationId", "treePath", "nodeCreationTime", "nodeId"])
 		// The Move views of the `files_nodes.by_org_ws_scope_archive_*` indexes.
 		.index("by_view_scope_archive_tree", [
 			"cohortId",
@@ -2985,10 +2982,6 @@ const app_convex_schema = defineSchema({
 				"ancestor11",
 				"ancestor12",
 			],
-		})
-		.searchIndex("search_path", {
-			searchField: "path",
-			filterFields: ["cohortId", "view", "archiveOperationId", "kind", "parentId"],
 		}),
 
 	// Null workspace covers organization-wide access changes without per-workspace writes.
@@ -3078,39 +3071,6 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_proposal_view", ["pendingUpdateId", "cohortId", "view"])
 		.index("by_cohort_view", ["cohortId", "view"])
-		.index("by_owner_view_sourceTree", [
-			"organizationId",
-			"workspaceId",
-			"userId",
-			"cohortId",
-			"view",
-			"sourceTreePath",
-		])
-		.index("by_owner_view_destinationTree", [
-			"organizationId",
-			"workspaceId",
-			"userId",
-			"cohortId",
-			"view",
-			"destinationTreePath",
-		])
-		.index("by_owner_view_structure_sourcePath", [
-			"organizationId",
-			"workspaceId",
-			"userId",
-			"cohortId",
-			"view",
-			"structuralKind",
-			"sourcePath",
-		])
-		.index("by_owner_view_destinationPath", [
-			"organizationId",
-			"workspaceId",
-			"userId",
-			"cohortId",
-			"view",
-			"destinationPath",
-		])
 		.index("by_org_ws", ["organizationId", "workspaceId"]),
 
 	files_pending_review_fact_state: defineTable({

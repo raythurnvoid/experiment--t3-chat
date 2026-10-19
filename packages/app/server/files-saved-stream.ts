@@ -57,14 +57,6 @@ function create_stream(
 					: args.day.op === "after" ? children.gte("_creationTime", args.day.end)
 						: children.gte("_creationTime", args.day.start).lt("_creationTime", args.day.end);
 			}),
-		by_parent_name_archive: (range: (q: SavedRange<["parentId", "name", "archiveOperationId"]>) => IndexRange) =>
-			fixedView
-				? db.query("files_saved_places").withIndex("by_view_parent_name_archive", (q) =>
-						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
-					)
-				: db.query("files_nodes").withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
-					),
 		by_parent_name: (range: (q: SavedRange<["parentId", "name"]>) => IndexRange) =>
 			fixedView
 				? db.query("files_saved_places").withIndex("by_view_parent_name", (q) =>
@@ -145,30 +137,6 @@ function create_stream(
 				: db.query("files_nodes").withIndex("by_organization_workspace_parent_archiveOperation_updatedAt", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
-		by_path_archive: (range: (q: SavedRange<["path", "archiveOperationId"]>) => IndexRange) =>
-			fixedView
-				? db.query("files_saved_places").withIndex("by_view_path_archive", (q) =>
-						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
-					)
-				: db.query("files_nodes").withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
-					),
-		by_archive: (range: (q: SavedRange<["archiveOperationId"]>) => IndexRange) =>
-			fixedView
-				? db.query("files_saved_places").withIndex("by_view_archive_tree", (q) =>
-						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
-					)
-				: db.query("files_nodes").withIndex("by_organization_workspace_archiveOperation", (q) =>
-						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
-					),
-		by_tree: (range: (q: SavedRange<["treePath"]>) => IndexRange) =>
-			fixedView
-				? db.query("files_saved_places").withIndex("by_view_tree", (q) =>
-						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
-					)
-				: db.query("files_nodes").withIndex("by_organization_workspace_treePath", (q) =>
-						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
-					),
 		by_parent_scope_archive_tree: (
 			range: (q: SavedRange<["parentScopeNodeId", "archiveOperationId", "treePath"]>) => IndexRange,
 		) =>
@@ -177,14 +145,6 @@ function create_stream(
 						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
 					)
 				: db.query("files_nodes").withIndex("by_org_ws_parentScope_archive_treePath", (q) =>
-						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
-					),
-		by_archive_tree: (range: (q: SavedRange<["archiveOperationId", "treePath"]>) => IndexRange) =>
-			fixedView
-				? db.query("files_saved_places").withIndex("by_view_archive_tree", (q) =>
-						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
-					)
-				: db.query("files_nodes").withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
 		// One restricted area of a recursive read (`server/files-tree-walk.ts`).
