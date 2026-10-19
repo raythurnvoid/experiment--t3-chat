@@ -65,7 +65,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Markdown, collaboration off | `personal/home:/qa/qa-noncollab/notes.md`, `chitchat-qa/xfer-qa-0914:/u23p/my-file.md` (and the rest of `/u23p`) |
 | Long Markdown (scrolling) | `chitchat-qa/home:/qa-long-scroll.md` (about 50 KB). Read-only 97 KB files: `chitchat-qa/home:/chitchat-ad04c6c85ea7daf62a10960d/qa-rollover-1012299.md` |
 | Markdown with frontmatter | `personal/home:/frontmatter-demo.md` |
-| Markdown over 128 KB | `personal/home:/emails/qa-mail-big-email-2026-10-19.md` (220,514 bytes uploaded, 2026-10-19). An email-shaped file for the Mail plugin reader; it ends with `END-OF-BIG-EMAIL-MARKER`. Reuse it for any whole-file read over 128 KB. |
+| Markdown over 128 KB | `personal/home:/emails/qa-mail-big-email-2026-10-19.md` (220,514 bytes uploaded, 2026-10-19). An email-shaped file for the Mail page reader (Gmail plugin); it ends with `END-OF-BIG-EMAIL-MARKER`. Reuse it for any whole-file read over 128 KB. |
 | Medium Markdown with sections | `personal/home:/activity-ui-fixture.md` (about 1 KB) |
 | Empty Markdown | `personal/home:/demo/mv-src.md`, `/demo/mv-target.md`, `/demo/cp-target.md` |
 | `.txt` opened as rich text | `chitchat-qa/xfer-qa-0914:/g4-x/movable.txt`, `/g4-many/f00.txt` … `f59.txt` |

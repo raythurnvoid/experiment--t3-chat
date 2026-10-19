@@ -877,6 +877,23 @@ the `bonobo:agent-tool-call` / `bonobo:agent-tool-result` messages. It also carr
 `convex-api.d.ts` and `http-api.d.ts` changes that were not mirrored before. Typecheck and 49 SDK
 tests pass.
 
+Gmail 0.3.0 was published and installed in `personal/home` on 2026-10-19 (plugin commit
+`017a944ff84f0dc5aa1f7d47287ddc1518fa71a0`, version doc `hn7r9m8bq0hj139dw1x5pqqx8n8gk83h`). It
+moves the Mail page into the Gmail plugin and adds real Gmail drafts. A second Google step, "Allow
+drafts and Send", adds the `gmail.compose` scope; only the member who connected the account, in that
+installation, can take it, write drafts, and send. The page tools write drafts but cannot send; only
+the member's Send click does, and Send sends the fields the editor shows. The update added
+`workspace.files.read` and `agent.page-tools`. Its backend `kindhearted-mallard-511` was deployed from
+the same commit; the one account row was migrated to `composeGranted: false` before the schema made
+the field required. Live check: Allow drafts and Send turned on with sync unchanged, an agent reply
+draft showed in the same Gmail conversation, Send sent the unsaved editor text, and the sent reply
+synced to `/emails`. The served files match the commit. The README and the GitHub Pages privacy page
+were updated in the next plugin commit (`87bb3fd`), which the gitlink does not include yet.
+
+The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
+after Gmail 0.3.0 took over its page. Its registry entry and the `raythurnvoid/bonobo-plugin-mail`
+repo stay. The Mail entries below are history.
+
 Mail 0.1.3 was published and installed in `personal/home` on 2026-10-19 (plugin commit
 `cd64dc16e5d3407da99e8e81173107899eff8c13`, version doc `hn7ws2fn09bqpc09z0cmndac918gjcb5`). It
 changes only docs and comments: `/api/v1/files/read` now returns any saved text file up to the

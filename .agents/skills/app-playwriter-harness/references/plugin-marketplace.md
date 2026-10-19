@@ -428,27 +428,40 @@ That is expected. After an uninstall and a reinstall in the same thread, the mod
 earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
 it calls the tool again.
 
-## Page agent tools fixture (Mail 0.1.3)
+## Page agent tools fixture (Gmail 0.3.0 Mail page)
 
-Mail (`plugins/bonobo-plugin-mail`) is the fixture for page agent tools (`agent.page-tools`). Its page
-lists the Gmail plugin's `/emails` files and registers six tools: `get_view`, `open_email`,
-`list_drafts`, `create_draft`, `update_draft`, `delete_draft`. `create_draft` also opens the new draft
-on the page. Drafts are plugin documents in the
-`drafts` collection. Mail never writes to Gmail.
+The Gmail plugin's Mail page is the fixture for page agent tools (`agent.page-tools`). It replaced the
+separate Mail plugin, which was uninstalled and removed from this repo on 2026-10-19 (its registry
+entry and GitHub repo stay). The page lists the `/emails` files the Gmail sync writes and registers six
+tools: `get_view`, `open_email`, `list_drafts`, `create_draft`, `update_draft`, `delete_draft`. Drafts
+are real Gmail drafts. No tool can send; only the member's **Send** click does.
 
-Where it lives (verified 2026-10-19): `mail@0.1.3` is installed in `personal/home`, next to the Gmail
-plugin that writes `/emails/<account>/…`. Page:
-`/w/personal/home/plugins/mail/pages/mail`.
+Where it lives (verified 2026-10-19): `gmail@0.3.0` is installed in `personal/home`. Pages:
+`/w/personal/home/plugins/gmail/pages/gmail` (connection) and
+`/w/personal/home/plugins/gmail/pages/mail` (Mail).
 
-- **Its service account needs "Can view" on `/emails`.** A plugin page reads Files through the
-  installation's service account, and install creates that account with no grants. Without a grant
-  the frame shows `Mail cannot read /emails` with these steps (0.1.0 said `Permission denied:
-  /emails`). Add the grant in the install or update dialog (`Folders this plugin can use`, `File or
-  folder`, `/emails`, `Can view`, `Add reviewed grant`), or later on the Service accounts page:
-  `Manage grants` on the `Mail` row, Resource `File or folder`, path `/emails`, `Can view`, `Save
-  grant`. That dialog then lists `/emails` above the form. An update keeps existing grants.
+- **Drafts need "Allow drafts and Send" first.** The Gmail page shows `Drafts and Send: on/off`
+  (`data-gmail-compose-status`). The button opens a Google link; finish it like Connect. On the
+  callback page the finish code is `textarea#finish` (64 hex characters). The two 32-character `code`
+  elements are the organization and workspace IDs. Copy the code into the Press frame in one script
+  and never print it. Google shows "Google hasn't verified this app" (Testing mode): use **Advanced**,
+  then **Go to … (unsafe)**. The consent line for the new scope reads "Manage drafts and send emails".
+- **Clicks in this frame can hang.** `locator.click()` and `mouse.click()` sometimes stall at
+  "performing click action". Click from page context instead:
+  `frame.evaluate(() => [...document.querySelectorAll("button")].find((b) => b.innerText.trim() === "Send").click())`.
+  `locator.fill()` on the editor inputs works.
+- **Send only to the member's own address** (`ray.thurne.void@gmail.com`). Ask the agent for a reply
+  to one of the self-sent `gmail … check` emails with exactly that `to`. Check Gmail in a new tab:
+  `https://mail.google.com/mail/u/?authuser=ray.thurne.void@gmail.com#drafts` (and `#sent`). A reply
+  draft shows in the same conversation.
+- **Read drafts back from the plugin backend**, not from Press: run
+  `vp env exec pnpm exec convex data gmail_drafts` from `plugins/bonobo-plugin-gmail`. A row holds the
+  subject and recipients only; the text lives in Gmail. A sent draft's row is deleted.
+- **The sent email syncs late.** The sync first skips the draft as `deleted_before_fetch`. The sent
+  reply can take about 10 minutes to reach `/emails/…` (one retry pause). Read `messages_ledger` in the
+  plugin backend to see it, without printing `gmail_accounts` token fields.
 - **429s in the console are normal.** The list reads each email file to get its header, so it hits
-  the files read bucket. `retry.ts` waits and tries again. A row whose read still failed shows its
+  the files read bucket. `mail-retry.ts` waits and tries again. A row whose read still failed shows its
   file name (`2026-10-01 security alert …`) instead of sender and subject.
 - **Big email fixture: `/emails/qa-mail-big-email-2026-10-19.md` (220,514 bytes).** Every real
   email in the mailbox is under 30 KB (94 emails on 2026-10-19), so this upload is the only email
@@ -465,19 +478,12 @@ plugin that writes `/emails/<account>/…`. Page:
 - **The composer is Tiptap, not a textarea.** `fill` on `textarea` finds nothing. Focus
   `.AiChatComposer-editor-content` from page context, then `page.keyboard.insertText(text)`.
 
-Chat check (Agent mode, in the page's right panel): ask the agent to call the view tool, then create a
-draft to a fake address with a fixed subject. The chat shows `Page tool: Mail: get_view` and
-`Page tool: Mail: create_draft` cards. The frame opens the draft with the `Edited by the agent` badge,
-and its inputs hold the values the agent sent (read `input,textarea` values with `frame.evaluate`;
-`innerText` does not show them). Read the stored doc back:
-
-```powershell
-vp env exec pnpm --dir packages/app exec convex data plugins_data --limit 5 --order desc
-```
-
-The newest doc has `collection: "drafts"`, `mode: "owned"`, and a key `<userId>-d…:<userId>`.
-`plugins_page_tool_calls` is empty again about 2 minutes after the run: each call doc deletes itself
-120 seconds after it is created. That is expected, not a lost write.
+Chat check (Agent mode, in the page's right panel): ask the agent to call `get_view`, then create a
+reply draft. The chat shows `Page tool: Mail: get_view` and `Page tool: Mail: create_draft` cards.
+Open **Drafts**: the row has an `Agent` mark, and the open draft shows `Edited by the agent`. Its
+inputs hold the values the agent sent (read `input,textarea` values with `frame.evaluate`;
+`innerText` does not show them). `plugins_page_tool_calls` in Press is empty again about 2 minutes
+after the run: each call doc deletes itself 120 seconds after it is created. That is expected.
 
 ## Triggering a plugin backend
 
