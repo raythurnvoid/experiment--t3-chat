@@ -1596,8 +1596,14 @@ async function db_authorize_record(
 	let sourceId = record.nodeId;
 	if (record.role === "descendant" && record.itemId) {
 		const item = (await ctx.db.get("files_move_cohort_items", record.itemId))!;
-		const root = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
-		sourceId = root.nodeId;
+		// A Move carries locked descendants, so it checks only the moved item. A delete archives every
+		// descendant, archived ones too, so each one must pass its own lock and access check. Every
+		// check runs before the group switch, so the delete proposal still exists here.
+		const proposal = item.pendingUpdateId ? await ctx.db.get("files_pending_updates", item.pendingUpdateId) : null;
+		if (!proposal?.pendingArchive) {
+			const root = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
+			sourceId = root.nodeId;
+		}
 	}
 	const node = await files_saved_placement_db_get_node(ctx.db, sourceId, { cohortId: cohort._id, view: "before" });
 	if (record.role === "allocated") {

@@ -397,10 +397,12 @@ of not counting locked items.
     `unarchive_nodes` answers "Permission denied"
     for an item the person cannot change, locked or not.
   - Reviewed agent delete (`pendingArchive`) uses the Save cohort worker. It checks all descendants
-    in pages, then switches the whole group and removes its proposals. Stop before the switch keeps
-    the saved tree and proposals. Stop after the switch lets required repair finish. Direct Archive
-    and Restore still use the archive job. Plugin archive and service uploads keep their existing
-    synchronous limits.
+    in pages, then switches the whole group and removes its proposals. Each descendant, archived ones
+    too, must pass its own lock and access check, so a locked item inside refuses the whole delete
+    ("This item is read-only."). A Move checks only the moved item and carries locked descendants.
+    Stop before the switch keeps the saved tree and proposals. Stop after the switch lets required
+    repair finish. Direct Archive and Restore still use the archive job. Plugin archive and service
+    uploads keep their existing synchronous limits.
 - Keep expected target IDs and ordered pending source IDs. These stop stale work from changing a
   different file; they are separate from policy history.
 - If an external write already happened before a final refusal, queue every exact key for durable

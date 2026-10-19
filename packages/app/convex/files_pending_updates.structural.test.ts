@@ -3940,6 +3940,77 @@ describe("pending delete accept", () => {
 			expect((await ctx.db.get("files_nodes", archivedTree.childId))?.archiveOperationId).toBe(archivedOperationId);
 		});
 	});
+
+	test("a true archived descendant still blocks a pending folder archive at accept time", async () => {
+		const t = test_convex();
+		const membership = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const tree = await t.run(async (ctx) => {
+			const rootId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-true-archived",
+				name: "pending-true-archived",
+			});
+			const childId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				parentId: rootId,
+				path: "/pending-true-archived/child",
+				name: "child",
+			});
+			return { rootId, childId };
+		});
+		const proposed = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			nodeId: tree.rootId,
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: membership.userId,
+			name: "Pending True Descendant User",
+		});
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: membership.membershipId,
+			nodeIds: [tree.childId],
+		});
+		if (archived._nay) {
+			throw new Error(archived._nay.message);
+		}
+		await set_pending_test_read_only({ asUser, membershipId: membership.membershipId, nodeId: tree.childId });
+
+		const refused = await test_apply_file_pending_move(asUser, {
+			membershipId: membership.membershipId,
+			target: { kind: "saved", id: tree.rootId },
+			...(await reviewed_pending_for_test(t, {
+				membershipId: membership.membershipId,
+				target: { kind: "saved", id: tree.rootId },
+			})),
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", tree.rootId)))?.archiveOperationId).toBeNull();
+		expect(
+			await t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: membership.userId,
+					nodeId: tree.rootId,
+				}),
+			),
+		).not.toBeNull();
+	});
+
 });
 
 describe("pending delete discard, save, expiry, and overlay reads", () => {
@@ -8868,6 +8939,81 @@ describe("pending update read-only checks", () => {
 				}),
 			),
 		).toBeNull();
+	});
+
+	test("a lock on the file or on an active descendant refuses the archive accept", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			const file = await seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-archive-accept.md",
+				name: "pending-read-only-archive-accept.md",
+				markdown: "# Base",
+				membership,
+			});
+			const folderId = await seed_folder_node({
+				ctx,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				path: "/pending-read-only-archive-accept-folder",
+				name: "pending-read-only-archive-accept-folder",
+			});
+			const child = await seed_file_with_markdown({
+				ctx,
+				path: "/pending-read-only-archive-accept-folder/child.md",
+				name: "child.md",
+				markdown: "# Child",
+				membership,
+			});
+			await ctx.db.patch("files_nodes", child.nodeId, { parentId: folderId });
+			return { ...membership, fileNodeId: file.nodeId, folderId, childNodeId: child.nodeId };
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only archive accept user",
+		});
+		for (const nodeId of [seeded.fileNodeId, seeded.folderId]) {
+			const proposed = await upsert_file_pending_archive_for_test({
+				t,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId,
+			});
+			if (proposed._nay) {
+				throw new Error(proposed._nay.message);
+			}
+		}
+
+		// Both proposals were made while everything was writable. Accept checks the current lock
+		// again: once on the node itself, and once on every active file the archive would sweep.
+		await set_pending_test_read_only({ asUser, membershipId: seeded.membershipId, nodeId: seeded.fileNodeId });
+		await set_pending_test_read_only({ asUser, membershipId: seeded.membershipId, nodeId: seeded.childNodeId });
+		const refusedFile = await test_apply_file_pending_move(asUser, {
+			membershipId: seeded.membershipId,
+			target: { kind: "saved", id: seeded.fileNodeId },
+			...(await reviewed_pending_for_test(t, {
+				membershipId: seeded.membershipId,
+				target: { kind: "saved", id: seeded.fileNodeId },
+			})),
+		});
+		expect(refusedFile._nay?.name).toBe("read_only");
+		const refusedFolder = await test_apply_file_pending_move(asUser, {
+			membershipId: seeded.membershipId,
+			target: { kind: "saved", id: seeded.folderId },
+			...(await reviewed_pending_for_test(t, {
+				membershipId: seeded.membershipId,
+				target: { kind: "saved", id: seeded.folderId },
+			})),
+		});
+		expect(refusedFolder._nay?.name).toBe("read_only");
+		await t.run(async (ctx) => {
+			expect((await ctx.db.get("files_nodes", seeded.fileNodeId))?.archiveOperationId).toBeNull();
+			expect((await ctx.db.get("files_nodes", seeded.folderId))?.archiveOperationId).toBeNull();
+		});
 	});
 });
 
