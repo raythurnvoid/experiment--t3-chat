@@ -187,6 +187,12 @@ export const big_md_file: BashSeedSpec = {
 	content: `${Array.from({ length: 1000 }, (_, index) => `line ${index + 1}${index === 749 ? "x".repeat(bash_READ_INLINE_MAX_BYTES) : ""}`).join("\n")}\n`,
 };
 
+// Seed Yjs snapshot bytes by root kind, path and text. Building one starts a headless rich
+// text editor, which is most of the seed time, and the same seed gives the same document. Each
+// test still writes the bytes into its own fresh database and bucket. The path is in the key,
+// so two seeds in one test never share a Yjs client id.
+const seed_yjs_snapshot_bytes = new Map<string, Uint8Array>();
+
 async function seed_organization_folder(args: {
 	ctx: MutationCtx;
 	scope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> };
@@ -320,14 +326,19 @@ export async function seed_organization_node(args: {
 
 	let yjsSnapshotAssetFields: { r2Key?: string; size: number } = { size: 0 };
 	if (spec.withRealYjsSnapshot !== false) {
-		const yjsDoc = files_yjs_doc_create_from_text({
-			text: content,
-			rootKind: seedRootKind,
-		});
-		if ("_nay" in yjsDoc) {
-			throw new Error(`Seed yjs snapshot failed for ${spec.path}: ${yjsDoc._nay.message}`);
+		const snapshotCacheKey = `${seedRootKind}\0${spec.path}\0${content}`;
+		let snapshotBytes = seed_yjs_snapshot_bytes.get(snapshotCacheKey);
+		if (!snapshotBytes) {
+			const yjsDoc = files_yjs_doc_create_from_text({
+				text: content,
+				rootKind: seedRootKind,
+			});
+			if ("_nay" in yjsDoc) {
+				throw new Error(`Seed yjs snapshot failed for ${spec.path}: ${yjsDoc._nay.message}`);
+			}
+			snapshotBytes = encodeStateAsUpdate(yjsDoc);
+			seed_yjs_snapshot_bytes.set(snapshotCacheKey, snapshotBytes);
 		}
-		const snapshotBytes = encodeStateAsUpdate(yjsDoc);
 		const yjsSnapshotR2Key = `bash-test-yjs${spec.path}`;
 		test_r2_objects.set(yjsSnapshotR2Key, snapshotBytes);
 		yjsSnapshotAssetFields = { r2Key: yjsSnapshotR2Key, size: snapshotBytes.byteLength };
