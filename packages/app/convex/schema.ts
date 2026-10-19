@@ -5131,6 +5131,16 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 		])
 		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "moveCohortId", "treePath"])
+		// Locked nodes (read-only or writer list) by path, active and archived together. Archive reads it
+		// to learn with one read whether a folder holds a lock. A null policy has no `mode`, so unlocked
+		// nodes are in no lock range.
+		.index("by_org_ws_writePolicyMode_treePath", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"writePolicy.mode",
+			"treePath",
+		])
 		// A recursive read finds the restricted folders directly inside one restricted area.
 		.index("by_org_ws_parentScope_archive_treePath", [
 			"organizationId",
