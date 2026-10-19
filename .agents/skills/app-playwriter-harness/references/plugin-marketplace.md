@@ -428,7 +428,7 @@ That is expected. After an uninstall and a reinstall in the same thread, the mod
 earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
 it calls the tool again.
 
-## Page agent tools fixture (Gmail 0.3.0 Mail page)
+## Page agent tools fixture (Gmail 0.3.1 Mail page)
 
 The Gmail plugin's Mail page is the fixture for page agent tools (`agent.page-tools`). It replaced the
 separate Mail plugin, which was uninstalled and removed from this repo on 2026-10-19 (its registry
@@ -436,7 +436,7 @@ entry and GitHub repo stay). The page lists the `/emails` files the Gmail sync w
 tools: `get_view`, `open_email`, `list_drafts`, `create_draft`, `update_draft`, `delete_draft`. Drafts
 are real Gmail drafts. No tool can send; only the member's **Send** click does.
 
-Where it lives (verified 2026-10-19): `gmail@0.3.0` is installed in `personal/home`. Pages:
+Where it lives (verified 2026-10-19): `gmail@0.3.1` is installed in `personal/home`. Pages:
 `/w/personal/home/plugins/gmail/pages/gmail` (connection) and
 `/w/personal/home/plugins/gmail/pages/mail` (Mail).
 
@@ -457,6 +457,10 @@ Where it lives (verified 2026-10-19): `gmail@0.3.0` is installed in `personal/ho
 - **Read drafts back from the plugin backend**, not from Press: run
   `vp env exec pnpm exec convex data gmail_drafts` from `plugins/bonobo-plugin-gmail`. A row holds the
   subject and recipients only; the text lives in Gmail. A sent draft's row is deleted.
+- **After Update, open the Gmail or Mail page.** An update makes Press refuse the sync's grant. The
+  next email write fails and sync waits with `press_reconnect_needed` (`next null`) until a page
+  loads and renews the grant. Both pages do that on load. To test it, send yourself an email, wait
+  for `blocked / press_reconnect_needed` in `gmail_accounts`, then reload the page.
 - **The sent email syncs late.** The sync first skips the draft as `deleted_before_fetch`. The sent
   reply can take about 10 minutes to reach `/emails/…` (one retry pause). Read `messages_ledger` in the
   plugin backend to see it, without printing `gmail_accounts` token fields.
