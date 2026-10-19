@@ -392,6 +392,30 @@ describe("copy_transfer_file media", () => {
 		expect(read?.content).toContain(`![Gone](${missingRef})`);
 	});
 
+	test("copies selected media and keeps a broken link in the same document", async () => {
+		const missingRef = "bonobo-file://not-an-id";
+		const f = await fixture({
+			documentText: (src) => `Before\n\n![Photo](${src})\n\n![Gone](${missingRef})\n\nAfter\n`,
+		});
+		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
+			itemId: f.document._id,
+			attempt: f.document.attempt,
+		});
+		expect(await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id))).toMatchObject({
+			state: "completed",
+		});
+		const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: f.destination.organizationId,
+			workspaceId: f.destination.workspaceId,
+			userId: f.destination.userId,
+			subject: { kind: "user", userId: f.destination.userId, plugin: null },
+			overlayUserId: f.destination.userId,
+			path: "/document.md",
+		});
+		expect(read?.content).toContain(`![Photo](${files_media_build_private_src(f.selectedMedia!.outputTarget!.id)})`);
+		expect(read?.content).toContain(`![Gone](${missingRef})`);
+	});
+
 	test("refuses a media revision changed while the document uploads", async () => {
 		const f = await fixture();
 		const fetch = vi.mocked(globalThis.fetch).getMockImplementation()!;
