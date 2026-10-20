@@ -31,7 +31,6 @@ import {
 } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
 	r2_create_asset_key,
@@ -1642,7 +1641,6 @@ export const delete_upload_target = internalMutation({
 				nodeIds: committedNodes.map((node) => node._id),
 				updatedBy: args.principal.actorUserId,
 				now,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
 		}
 
@@ -2057,7 +2055,6 @@ export const archive_destination = internalMutation({
 			nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],
 			updatedBy: args.principal.actorUserId,
 			now,
-			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		});
 
 		return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });

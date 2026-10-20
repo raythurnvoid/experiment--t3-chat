@@ -3803,6 +3803,32 @@ describe("service upload archive", () => {
 		);
 	});
 
+	test("ends the public link of a file inside the destination", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		// Seeded directly, because only the archive matters here.
+		await t.run((ctx) =>
+			ctx.db.insert("files_share_links", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				nodeId: target.nodeId,
+				token: "0".repeat(64),
+				restrictedScopeNodeId: null,
+				createdBy: fixture.userId,
+				createdAt: Date.now(),
+			}),
+		);
+
+		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} });
+		expect(response.status).toBe(200);
+		expect(await t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([]);
+	});
+
 	test("releases the locks it archived through so a member can restore the whole set", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);

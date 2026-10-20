@@ -51,12 +51,8 @@ import {
 	files_nodes_db_require_swept_nodes_writable,
 	files_nodes_db_restore_node,
 } from "./files_nodes.ts";
+import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
-import {
-	files_share_links_create_cleanup_state,
-	files_share_links_db_delete_for_roots,
-	type files_share_links_CleanupState,
-} from "./files_share_links_db.ts";
 import {
 	files_subtree_ops_db_delete,
 	files_subtree_ops_db_enqueue_nodes,
@@ -171,11 +167,6 @@ type StepArgs = {
 	 * The restricted scopes already checked in this step. The key "" stands for no scope.
 	 */
 	checkedScopes: Map<string, boolean>;
-	/**
-	 * Public link cleanup for this mutation. A pending Save passes its own, so its archive shares one
-	 * link load with the moves before it. A scheduled step makes a new one.
-	 */
-	shareLinkCleanup: files_share_links_CleanupState;
 	/**
 	 * Turns true when this step changes a node. Helpers get a copy of these args, so this stays an object
 	 * that every copy shares. A plain boolean set on a copy would never reach `db_step`.
@@ -1235,6 +1226,20 @@ async function db_land_node(
 
 	const { run, progress } = previousArgs;
 	const landingParentId = landing?._id ?? files_ROOT_ID;
+	// A plugin decides who reads the whole bound area, so a restricted item cannot come back into one.
+	if (
+		node.restrictedScopeNodeId === node._id &&
+		landing?.restrictedScopeNodeId &&
+		(await files_nodes_db_has_plugin_binding(ctx, landing.restrictedScopeNodeId))
+	) {
+		return {
+			kind: "failed",
+			nay: {
+				message:
+					"A plugin decides who can read the folder it comes back to, so a restricted item cannot be restored there.",
+			},
+		};
+	}
 
 	let name = node.name;
 	let replacedNode: Doc<"files_nodes"> | null = null;
@@ -1521,18 +1526,11 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 /**
  * Run once before the first stamp of an archive, after its check or right away for a fast archive.
  * The queue is empty then. Keep one queue number for each named item. The apply stamps the named items
- * first and queues their folders with these numbers. Then end the public links under the named items.
- * A queued, refused, or stopped check never gets here, so its links stay.
+ * first and queues their folders with these numbers. Each stamp ends that item's public link, so this
+ * needs no link work. A queued, refused, or stopped check never stamps, so its links stay.
  */
 async function db_begin_archive_apply(ctx: MutationCtx, args: StepArgs) {
 	await files_subtree_ops_db_reserve_sequences(ctx, { opId: args.opId, count: args.run.rootNodeIds.length });
-	await files_share_links_db_delete_for_roots({
-		ctx,
-		organizationId: args.run.organizationId,
-		workspaceId: args.run.workspaceId,
-		rootNodeIds: args.run.rootNodeIds,
-		state: args.shareLinkCleanup,
-	});
 }
 
 /**
@@ -1860,7 +1858,6 @@ export async function files_archive_runs_db_start(
 		 * at a time, so their steps do not write the same docs at the same moment.
 		 */
 		previousRunId: Id<"files_archive_runs"> | null;
-		shareLinkCleanup: files_share_links_CleanupState;
 	},
 ) {
 	if (args.kind === "restore") {
@@ -1971,7 +1968,6 @@ export async function files_archive_runs_db_start(
 		now,
 		budget: args.budget,
 		checkedScopes: new Map(),
-		shareLinkCleanup: args.shareLinkCleanup,
 		writeState: { isWritten: false },
 	};
 	// A Move in the workspace makes the first step wait too. The Move wakes the job when it ends. A fast
@@ -2075,7 +2071,6 @@ export async function files_archive_runs_db_advance(
 			hasPaginated: false,
 		},
 		checkedScopes: new Map(),
-		shareLinkCleanup: files_share_links_create_cleanup_state(),
 		writeState: { isWritten: false },
 	});
 
@@ -2120,8 +2115,8 @@ export async function files_archive_runs_db_promote(
 
 /**
  * Finish the job at once. Items already changed keep the job's operation id, so they can be restored
- * or archived again as one unit. People can stop only a restore that waits for a clash choice. Data
- * deletion stops any job.
+ * or archived again as one unit. People can stop only a restore that waits for a clash choice. Workspace
+ * deletion stops any job. User deletion lets an archive that stamps items finish first.
  *
  * A timeout does not stop a job that is not waiting for a choice. Archive has no Stop, so the deadline
  * only tells the recover cron to schedule the step again.

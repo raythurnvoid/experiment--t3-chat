@@ -79,7 +79,6 @@ import {
 } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_nodes_db_finalize_editable_text_node_creation } from "./files_nodes_create_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
@@ -3501,7 +3500,6 @@ export const publish_file_write = internalMutation({
 				nodeIds: [activeNode._id],
 				updatedBy: stage.userId,
 				now,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
 		}
 		// A file on the way blocks the create. The create helper would only answer `Not found` for it.
@@ -4660,8 +4658,6 @@ export const create_file_upload_targets = internalMutation({
 			uploadUrl: string;
 			headers: Record<string, string>;
 		}> = [];
-		// Share one link cleanup across the replaced files, so the workspace links load only once.
-		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		const folders = new Map<string, Doc<"files_nodes">>();
 		for (const item of validated) {
 			// Uploading over a name archives whatever holds it, like create_upload_node, so re-runs
@@ -4672,7 +4668,6 @@ export const create_file_upload_targets = internalMutation({
 					nodeIds: [item.collidingNodeId],
 					updatedBy: args.userId,
 					now,
-					shareLinkCleanup,
 				});
 			}
 

@@ -4386,7 +4386,6 @@ describe("process_workspace_deletion_request", () => {
 				nodeId,
 				token: "a".repeat(64),
 				restrictedScopeNodeId: null,
-				ancestorNodeIds: [],
 				createdBy: db.userId,
 				createdAt: Date.now(),
 			});

@@ -8,7 +8,6 @@ import { pending_chunks, pending_metadata } from "./files_move_pages.ts";
 import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { run_job } from "./files_pending_overlay.ts";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { accept_input, advance as advance_transfer } from "./files_transfer.ts";
 import {
 	test_convex,
@@ -515,7 +514,6 @@ test("an Archive that names a node twice makes one saved scope job", async () =>
 			nodeIds: [nodeId, nodeId],
 			updatedBy: db.userId,
 			now: Date.now(),
-			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		}),
 	);
 	const jobs = await t.run((ctx) =>

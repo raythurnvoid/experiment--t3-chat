@@ -231,3 +231,19 @@ export async function db_get_file_content_materialization_header(
 		yjsSnapshotAsset,
 	};
 }
+
+/**
+ * Whether a plugin decides who reads this node: a reader binding, or an attached external folder
+ * binding. A public link or a restricted folder inside its area would go around that list. Reads 2 docs.
+ */
+export async function files_nodes_db_has_plugin_binding(ctx: QueryCtx | MutationCtx, nodeId: Id<"files_nodes">) {
+	const binding = await ctx.db
+		.query("plugins_file_access_bindings")
+		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+		.first();
+	const externalBinding = await ctx.db
+		.query("plugins_external_file_bindings")
+		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+		.first();
+	return binding !== null || (externalBinding !== null && externalBinding.detachedAt === null);
+}

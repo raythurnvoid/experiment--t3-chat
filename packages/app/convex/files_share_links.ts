@@ -1,9 +1,10 @@
 // "Anyone with the link can view" for one file.
 //
 // A link is one `files_share_links` doc with a random token. The token is the only secret: a visitor
-// needs no account and no membership. So every read checks the live state of the file again. Stored
-// fields alone are not enough, because background jobs update the items inside a folder later, and a
-// file can still say "open" while a folder above it is already restricted or archived.
+// needs no account and no membership. So every read checks the file again, with a fixed number of exact
+// reads and no folder walk: the file's own stored state and its restricted scope node. While a job
+// changes a folder above, a file it has not reached yet keeps its old state, and its link works until
+// the job writes the file. A change of the scope node itself ends every link of its area at once.
 //
 // The helpers that delete links when a file's access changes live in `files_share_links_db.ts`, so the
 // file lifecycle modules can import them without importing this module.
@@ -16,9 +17,9 @@ import type { Doc, Id, TableNames } from "./_generated/dataModel.js";
 import { action, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { files_merge_contiguous_chunks } from "./files_nodes.ts";
+import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_nodes_db_get_tree_reader } from "./files_tree_db.ts";
 import { files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
-import { files_subtree_ops_db_find_blocked_paths } from "./files_subtree_ops.ts";
 import { r2 } from "./r2_client.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
@@ -36,7 +37,6 @@ import {
 	files_get_signed_download_serving,
 	files_is_inline_media_content_type,
 	files_parse_content_type,
-	files_ROOT_ID,
 } from "../shared/files.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";
 import {
@@ -50,17 +50,6 @@ import {
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
-
-/**
- * The deepest a linked file may sit. A link doc stores at most this many ancestor IDs.
- */
-const MAX_ANCESTOR_DEPTH = 64;
-
-/**
- * Most subtree ops one live check reads. Past this the check refuses, because a partial scan could
- * miss the op that blocks the file.
- */
-const MAX_WORKSPACE_SUBTREE_OPS = 500;
 
 /**
  * A link token is 32 random bytes as lowercase hex.
@@ -106,41 +95,6 @@ const MAX_VIEW_BYTES = 1_000_000;
 const MAX_GRANT_PRINCIPALS = 50;
 
 /**
- * Walk up from a node by `parentId` and find its live restricted scope: the nearest node at or above
- * it that is its own restricted root.
- *
- * The node's stored `restrictedScopeNodeId` can be old while a scope op still runs, so this reads
- * every folder above it. Returns the folders from the parent up to the workspace root. Returns null
- * when a folder is missing, belongs to another tenant, or the chain is deeper than 64 folders.
- */
-export async function files_share_links_db_resolve_live_scope(
-	ctx: QueryCtx | MutationCtx,
-	args: { node: Doc<"files_nodes"> },
-) {
-	const ancestors: Doc<"files_nodes">[] = [];
-	let restrictedScopeNodeId = args.node.restrictedScopeNodeId === args.node._id ? args.node._id : null;
-	let parentId = args.node.parentId;
-	while (parentId !== files_ROOT_ID) {
-		if (ancestors.length >= MAX_ANCESTOR_DEPTH) {
-			return null;
-		}
-
-		const parent = await files_saved_placement_db_get_node(ctx.db, parentId);
-		if (!parent || parent.organizationId !== args.node.organizationId || parent.workspaceId !== args.node.workspaceId) {
-			return null;
-		}
-
-		ancestors.push(parent);
-		if (restrictedScopeNodeId === null && parent.restrictedScopeNodeId === parent._id) {
-			restrictedScopeNodeId = parent._id;
-		}
-		parentId = parent.parentId;
-	}
-
-	return { restrictedScopeNodeId, ancestors };
-}
-
-/**
  * Whether the organization and workspace exist and no deletion has started. Reads 4 docs.
  */
 async function db_is_workspace_live(
@@ -175,18 +129,38 @@ async function db_is_workspace_live(
 }
 
 /**
- * Whether a plugin decides who reads this node. A public link would go around that list. Reads 2 docs.
+ * Whether a link may trust a stored restricted scope. A live link's scope is null, or a live
+ * restricted root with no plugin binding. `dead` means the scope node stopped being a root, which
+ * ended its links, so a new link waits for the scope op. `bound` means a plugin decides who reads the
+ * area. Reads at most 5 docs. Never cache the answer: a turn-on and a bind at the same moment must
+ * read the same binding docs, so one of them retries.
  */
-async function db_has_plugin_binding(ctx: QueryCtx | MutationCtx, nodeId: Id<"files_nodes">) {
-	const binding = await ctx.db
-		.query("plugins_file_access_bindings")
-		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-		.first();
-	const externalBinding = await ctx.db
-		.query("plugins_external_file_bindings")
-		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-		.first();
-	return binding !== null || (externalBinding !== null && externalBinding.detachedAt === null);
+async function db_check_scope(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		restrictedScopeNodeId: Id<"files_nodes"> | null;
+	},
+) {
+	if (args.restrictedScopeNodeId === null) {
+		return "ok" as const;
+	}
+
+	const scopeNode = await files_saved_placement_db_get_node(ctx.db, args.restrictedScopeNodeId);
+	if (
+		!scopeNode ||
+		scopeNode.organizationId !== args.organizationId ||
+		scopeNode.workspaceId !== args.workspaceId ||
+		scopeNode.restrictedScopeNodeId !== scopeNode._id
+	) {
+		return "dead" as const;
+	}
+	if (await files_nodes_db_has_plugin_binding(ctx, scopeNode._id)) {
+		return "bound" as const;
+	}
+
+	return "ok" as const;
 }
 
 /**
@@ -219,9 +193,8 @@ function has_shareable_text_shape(node: Doc<"files_nodes">) {
 /**
  * Check that a file may be shown through a public link right now.
  *
- * The caller has already loaded the node in this workspace and walked its live scope with
- * `files_share_links_db_resolve_live_scope`. The `_nay` messages explain a refused turn-on to a
- * manager. The public view must answer all of them with the same generic "unavailable".
+ * The caller has already loaded the node in this workspace. The `_nay` messages explain a refused
+ * turn-on to a manager. The public view must answer all of them with the same generic "unavailable".
  */
 export async function files_share_links_db_check_live_file(
 	ctx: QueryCtx | MutationCtx,
@@ -229,14 +202,13 @@ export async function files_share_links_db_check_live_file(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		node: Doc<"files_nodes">;
-		ancestors: Doc<"files_nodes">[];
 	},
 ) {
 	const { node } = args;
 	if (node.kind !== "file") {
 		return Result({ _nay: { message: "Only a file can have a public link" } });
 	}
-	if (node.archiveOperationId !== null || args.ancestors.some((ancestor) => ancestor.archiveOperationId !== null)) {
+	if (node.archiveOperationId !== null) {
 		return Result({ _nay: { message: "This file is archived" } });
 	}
 
@@ -244,10 +216,16 @@ export async function files_share_links_db_check_live_file(
 		return Result({ _nay: { message: "This workspace is being deleted" } });
 	}
 
-	for (const nodeId of [node._id, ...args.ancestors.map((ancestor) => ancestor._id)]) {
-		if (await db_has_plugin_binding(ctx, nodeId)) {
-			return Result({ _nay: { message: "A plugin decides who can read this file, so it cannot have a public link" } });
-		}
+	const scope = await db_check_scope(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		restrictedScopeNodeId: node.restrictedScopeNodeId,
+	});
+	if (scope === "dead") {
+		return Result({ _nay: { message: "Wait until the access change of a folder above finishes" } });
+	}
+	if (scope === "bound") {
+		return Result({ _nay: { message: "A plugin decides who can read this file, so it cannot have a public link" } });
 	}
 
 	const asset = await db_get_finished_asset(ctx, node);
@@ -257,16 +235,6 @@ export async function files_share_links_db_check_live_file(
 
 	if (!has_shareable_text_shape(node)) {
 		return Result({ _nay: { message: "This type of file cannot have a public link" } });
-	}
-
-	const blocked = await files_subtree_ops_db_find_blocked_paths(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		treePaths: [node.treePath],
-		maxOps: MAX_WORKSPACE_SUBTREE_OPS,
-	});
-	if (!blocked || blocked[0]) {
-		return Result({ _nay: { message: "Wait until the running file job finishes" } });
 	}
 
 	return Result({ _yay: { asset } });
@@ -279,7 +247,7 @@ export async function files_share_links_db_check_live_file(
 class ShareViewBudgetError extends Error {}
 
 /**
- * What one public view has read so far, and the folders it has already checked.
+ * What one public view has read so far.
  */
 type ViewReads = {
 	organizationId: Id<"organizations">;
@@ -287,17 +255,13 @@ type ViewReads = {
 	calls: number;
 	docs: number;
 	bytes: number;
-	/**
-	 * Each checked folder with the folders above it. Null when the folder or one above it cannot be shown.
-	 */
-	folderChains: Map<Id<"files_nodes">, { depth: number; restrictedScopeNodeId: Id<"files_nodes"> | null } | null>;
 };
 
 /**
  * Count planned reads before they run. Keep room for one more doc of the largest size per planned doc,
  * so the reads cannot pass the byte limit.
  */
-function reads_try_reserve(args: { reads: ViewReads; calls: number; docs: number }) {
+function reads_reserve(args: { reads: ViewReads; calls: number; docs: number }) {
 	const { reads, calls, docs } = args;
 
 	if (
@@ -305,20 +269,11 @@ function reads_try_reserve(args: { reads: ViewReads; calls: number; docs: number
 		reads.docs + docs > MAX_VIEW_READ_DOCS ||
 		reads.bytes + docs * MAX_DOC_BYTES > MAX_VIEW_READ_BYTES
 	) {
-		return false;
+		throw new ShareViewBudgetError("Public view read budget spent");
 	}
 
 	reads.calls += calls;
 	reads.docs += docs;
-	return true;
-}
-
-function reads_reserve(args: { reads: ViewReads; calls: number; docs: number }) {
-	const { reads, calls, docs } = args;
-
-	if (!reads_try_reserve({ reads, calls, docs })) {
-		throw new ShareViewBudgetError("Public view read budget spent");
-	}
 }
 
 /**
@@ -375,92 +330,6 @@ async function* reads_iterate<T extends Value>(reads: ViewReads, docs: AsyncIter
 		yield doc;
 		reads_reserve({ reads, calls: 0, docs: 1 });
 	}
-}
-
-/**
- * The live restricted scope from a node's parent up to the workspace root. Null when a folder is
- * missing, belongs to another tenant, is archived, is bound to a plugin, or the node would sit under
- * more than 64 folders.
- *
- * A shared document and its images often sit in the same folders, so each folder is read once.
- */
-async function db_read_folder_chain(args: {
-	ctx: QueryCtx;
-	reads: ViewReads;
-	parentId: Doc<"files_nodes">["parentId"];
-}) {
-	const { ctx, reads, parentId } = args;
-
-	const unchecked: Id<"files_nodes">[] = [];
-	const folders: Doc<"files_nodes">[] = [];
-	let above: { depth: number; restrictedScopeNodeId: Id<"files_nodes"> | null } | null = {
-		depth: 0,
-		restrictedScopeNodeId: null,
-	};
-	let folderId = parentId;
-	while (folderId !== files_ROOT_ID) {
-		const checked = reads.folderChains.get(folderId);
-		if (checked !== undefined) {
-			above = checked;
-			break;
-		}
-
-		unchecked.push(folderId);
-		// This node is too deep, but the walk did not reach the root. So the depth of the folders it read is
-		// still unknown, and a file higher up under them may pass. Do not cache them.
-		if (unchecked.length > MAX_ANCESTOR_DEPTH) {
-			return null;
-		}
-
-		const folder = await reads_get_node({ ctx, reads, id: folderId });
-		reads_reserve({ reads, calls: 2, docs: 2 });
-		if (
-			!folder ||
-			folder.kind !== "folder" ||
-			folder.organizationId !== reads.organizationId ||
-			folder.workspaceId !== reads.workspaceId ||
-			folder.archiveOperationId !== null ||
-			(await db_has_plugin_binding(ctx, folder._id))
-		) {
-			above = null;
-			break;
-		}
-
-		folders.push(folder);
-		folderId = folder.parentId;
-	}
-
-	// Fill the cache from the highest folder down. When a folder fails, every folder below it fails too.
-	for (let index = unchecked.length - 1; index >= 0; index--) {
-		const folder = folders.at(index);
-		above =
-			above === null || folder === undefined || above.depth >= MAX_ANCESTOR_DEPTH
-				? null
-				: {
-						depth: above.depth + 1,
-						restrictedScopeNodeId:
-							folder.restrictedScopeNodeId === folder._id ? folder._id : above.restrictedScopeNodeId,
-					};
-		reads.folderChains.set(unchecked[index], above);
-	}
-
-	return above;
-}
-
-/**
- * The live restricted scope of a file that the public view may show. Undefined when the file or a
- * folder above it cannot be shown.
- */
-async function db_read_live_file_scope(args: { ctx: QueryCtx; reads: ViewReads; node: Doc<"files_nodes"> }) {
-	const { ctx, reads, node } = args;
-
-	const chain = await db_read_folder_chain({ ctx, reads, parentId: node.parentId });
-	reads_reserve({ reads, calls: 2, docs: 2 });
-	if (!chain || (await db_has_plugin_binding(ctx, node._id))) {
-		return undefined;
-	}
-
-	return node.restrictedScopeNodeId === node._id ? node._id : chain.restrictedScopeNodeId;
 }
 
 /**
@@ -594,10 +463,10 @@ async function db_read_media_node(args: {
 /**
  * The finished asset of a media file that the shared file's visitors may see, or null.
  *
- * The media file must show to the same people as the shared file, so it needs the same live restricted
- * scope. In an open scope, a service account can hold write access to the shared file alone. It could
- * add an image it cannot read and publish it through the link. So every such account must be live and
- * able to read the media file.
+ * The media file must show to the same people as the shared file, so it needs the same stored restricted
+ * scope. The shared file's scope check then answers for the media file too. In an open scope, a service
+ * account can hold write access to the shared file alone. It could add an image it cannot read and
+ * publish it through the link. So every such account must be live and able to read the media file.
  */
 async function db_check_media_node(args: {
 	ctx: QueryCtx;
@@ -609,8 +478,7 @@ async function db_check_media_node(args: {
 }) {
 	const { ctx, reads } = args;
 
-	const mediaScopeNodeId = await db_read_live_file_scope({ ctx, reads, node: args.mediaNode });
-	if (mediaScopeNodeId === undefined || mediaScopeNodeId !== args.restrictedScopeNodeId) {
+	if (args.mediaNode.restrictedScopeNodeId !== args.restrictedScopeNodeId) {
 		return null;
 	}
 
@@ -670,7 +538,6 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 		...linkReads,
 		organizationId: link.organizationId,
 		workspaceId: link.workspaceId,
-		folderChains: new Map(),
 	};
 	reads_count(reads, link);
 
@@ -686,8 +553,9 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 		return null;
 	}
 
-	const restrictedScopeNodeId = await db_read_live_file_scope({ ctx, reads, node });
-	if (restrictedScopeNodeId === undefined || restrictedScopeNodeId !== link.restrictedScopeNodeId) {
+	const { restrictedScopeNodeId } = link;
+	reads_reserve({ reads, calls: 5, docs: 5 });
+	if (node.restrictedScopeNodeId !== restrictedScopeNodeId || (await db_check_scope(ctx, link)) !== "ok") {
 		return null;
 	}
 
@@ -750,33 +618,13 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 	}
 	await reads_sync(ctx, reads);
 
-	// Read the workspace's file jobs once, for the shared file and every media file. A job on the shared
-	// file hides the page. A job on a media file hides only that media.
-	const mediaTreePaths = mediaNodes.flatMap((mediaNode) => (mediaNode ? [mediaNode.treePath] : []));
-	const blocked = await files_subtree_ops_db_find_blocked_paths(ctx, {
-		organizationId: link.organizationId,
-		workspaceId: link.workspaceId,
-		treePaths: [node.treePath, ...mediaTreePaths],
-		maxOps: MAX_WORKSPACE_SUBTREE_OPS,
-		beforeNextRead: (lastOp) => {
-			reads_count(reads, lastOp);
-			return reads_try_reserve({ reads, calls: lastOp ? 0 : 1, docs: 1 });
-		},
-	});
-	if (!blocked || blocked[0]) {
-		return null;
-	}
-	await reads_sync(ctx, reads);
-
-	// Each media file must pass the same live checks as the shared file.
+	// Each media file needs the shared file's scope and a finished asset, and every narrow writer must read it.
 	let fileWriterAccountIds: Set<Id<"access_control_service_accounts">> | null | undefined;
 	const accountAccess = new Map<Id<"access_control_service_accounts">, { live: boolean; readsWorkspace: boolean }>();
 	const mediaAssets: Array<Awaited<ReturnType<typeof db_get_finished_asset>>> = [];
-	let blockedIndex = 1;
 	for (const mediaNode of mediaNodes) {
 		let mediaAsset: Awaited<ReturnType<typeof db_get_finished_asset>> = null;
-		const mediaBlocked = mediaNode ? blocked[blockedIndex++] : true;
-		if (mediaNode && !mediaBlocked && !mediaBudgetSpent) {
+		if (mediaNode && !mediaBudgetSpent) {
 			try {
 				mediaAsset = await db_check_media_node({
 					ctx,

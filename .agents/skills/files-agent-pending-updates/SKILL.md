@@ -549,10 +549,10 @@ Important behavior:
 - Public file links (`files_share_links`, "Anyone with the link can view") end when accepted work takes a file out of its place, and stay when it only changes the content:
   - A saved Move Accept into another folder ends the links on the moved items and everything below them. A rename in the same folder keeps them.
   - A replace-move Accept ends the links of the occupant it archives.
-  - Review Accept ends a delete's links at the group switch. The Files Archive action ends them when its job finishes checking and starts archiving.
+  - Review Accept ends a delete's links at the group switch. The Files Archive action ends each file's link in the apply step that stamps it, after its job finishes checking.
   - A content Save, with collaboration on or off, keeps the link. So does a copy accepted onto a saved file, because `db_install_file_content_replacement` keeps the node id. The link page then shows the new committed text.
   - Private drafts have no links. A private Save creates a new saved node, and that node has no link.
-  - Review Accept stages links that must end through the exact `by_organization_workspace_node` index. The group switch ends those links, and cleanup removes the old tagged docs in pages. The Files Archive action uses `files_share_links_create_cleanup_state`.
+  - Review Accept stages links that must end through the exact `by_organization_workspace_node` index. The group switch ends those links, and cleanup removes the old tagged docs in pages. The Files Archive action uses `files_share_links_db_delete_for_node` once per stamped node.
   - The saved-origin and publication contract does not change. `publishedFromPrivateNodeId` still resolves an old `bonobo-file://private/<id>` reference to its saved file, and the link page uses only that saved file, never the draft (see `../files-rich-text-embeds/SKILL.md`).
 - Keep each public endpoint's current auth, membership, and rate-limit order. Do not infer one shared order: content upsert validates membership before its rate limit, while structural accept/discard and save perform the rate-limit check earlier.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.

@@ -191,7 +191,6 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 				nodeId: node._id,
 				token: index.toString(16).padStart(64, "0"),
 				restrictedScopeNodeId: node.restrictedScopeNodeId,
-				ancestorNodeIds: node.parentId === files_ROOT_ID ? [] : [seeded.project._id],
 				createdBy: db.userId,
 				createdAt: Date.now(),
 			});

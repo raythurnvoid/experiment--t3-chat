@@ -10,6 +10,7 @@ import { files_metadata_maps_db_delete, files_metadata_maps_db_read, files_metad
 import app_convex_schema from "./schema.ts";
 import {
 	files_nodes_db_get_content_version,
+	files_nodes_db_has_plugin_binding,
 	files_nodes_db_resume_file_content_materialization,
 } from "./files_nodes_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
@@ -1370,6 +1371,21 @@ async function db_headers(
 		return tooLong;
 	}
 	const scope = physical.isRestrictedScopeRoot ? physical._id : (parent?.restrictedScopeNodeId ?? null);
+	// A plugin decides who reads the whole bound area, so a restricted item cannot come into one. This
+	// step visits every node, so a restricted folder inside a moved folder is checked too. A node that
+	// stays in its area, like a destination folder that does not move, passes.
+	if (
+		physical.isRestrictedScopeRoot &&
+		parent?.restrictedScopeNodeId &&
+		old?.parentScopeNodeId !== parent.restrictedScopeNodeId &&
+		(await files_nodes_db_has_plugin_binding(ctx, parent.restrictedScopeNodeId))
+	)
+		return Result({
+			_nay: {
+				name: "permission_denied",
+				message: "A plugin decides who can read the destination, so a restricted item cannot move there.",
+			},
+		});
 	if (selected) {
 		const run = cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;
 		if (!run?.rename || old?.parentId !== parentId) {

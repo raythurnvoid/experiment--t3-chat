@@ -971,9 +971,11 @@ const DEAD_SCOPE_MAX_HOPS = 8;
  * compare organization and workspace, so a pointer that somehow crossed into another workspace is
  * never answered with this workspace's grants.
  *
- * Every reader of `restrictedScopeNodeId` goes through here, so the rule for "is this pointer real"
- * exists once. A second copy of it would let the permission check and the list filter drift apart,
- * and then a file would be locked in a list but still open by id, or the other way round.
+ * Every permission check and list filter reads `restrictedScopeNodeId` through here, so the rule for
+ * "is this pointer real" exists once. A second copy of it would let the permission check and the list
+ * filter drift apart, and then a file would be locked in a list but still open by id, or the other way
+ * round. Public links are the one exception: `db_check_scope` in `files_share_links.ts` refuses a
+ * dead pointer instead of following it.
  */
 export async function access_control_db_resolve_live_restricted_scope(
 	ctx: QueryCtx | MutationCtx,

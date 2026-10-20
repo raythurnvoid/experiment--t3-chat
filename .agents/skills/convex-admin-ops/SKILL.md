@@ -67,6 +67,8 @@ For a one-shot push in this repo, run `convex dev --once` with `--typecheck disa
 - When a schema change adds a field that a return validator must accept or strip, the validator or strip fix must be live before any backfill writes that field. Otherwise every read that returns those docs fails with "Unexpected field".
 - Run a backfill of new fields only after the code that reads or strips them is live. A reader whose results depend on the backfilled data (for example a new index query) goes live only after the backfill has finished, or it shows empty results.
 
+Other agents push to the same deployment, and their push removes functions your push added. On 2026-10-20 a read-only check ran 20 of 94 pages, then failed with "Could not find function" because another agent pushed main 25 seconds later. For a read-only check of new code, prefer `run --inline-query` with the handler body (types stripped), generated from the committed source: it deploys nothing and cannot be removed mid-run. Prove it with a positive control (counts of what it checked) and one run with the rule broken on purpose.
+
 When proving deployed source bytes, follow the installed CLI's real push path. A function bundle omits the separate `schema.js` and `convex.config.js` inputs. Convex 1.46 builds those with `bundleSchema` and `componentGraph` / `bundleDefinitions`. `configFromProjectConfig` alone does not prove the whole main app's default runtime. Build expected bytes from the clean pushed source. Compare the exact path set, environments and raw source hashes. Refuse missing, extra or duplicate modules. Say separately whether Node, auth and child-component output are checked.
 
 # Fresh Read Timing

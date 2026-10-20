@@ -12,7 +12,6 @@ import { activities_is_active } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -492,7 +491,6 @@ describe("saved file media validation clocks", () => {
 				nodeIds: [nodeId],
 				updatedBy: f.db.userId,
 				now: Date.now(),
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			}),
 		);
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.archiveOperationId).toBeTruthy();

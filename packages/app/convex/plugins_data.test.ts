@@ -12903,6 +12903,20 @@ async function insert_binding_node(args: {
 	});
 }
 
+/**
+ * A plugin binds only a restricted folder, so tests restrict it first, like a Files manager would.
+ */
+async function restrict_binding_node(args: {
+	fixture: Awaited<ReturnType<typeof seed_binding_fixture>>;
+	nodeId: Id<"files_nodes">;
+}) {
+	const restricted = await args.fixture.asUser.mutation(api.files_sharing.restrict_node, {
+		membershipId: args.fixture.membershipId,
+		nodeId: args.nodeId,
+	});
+	expect(restricted._nay).toBeUndefined();
+}
+
 async function apply_binding(args: {
 	t: ReturnType<typeof test_convex>;
 	fixture: Awaited<ReturnType<typeof seed_binding_fixture>>;
@@ -12920,6 +12934,7 @@ async function apply_binding(args: {
 		const prepared = await plugins_data_db_prepare_file_access_binding(ctx, {
 			installation,
 			nodeId: node._id,
+			parentId: node.parentId,
 			readScopeId: args.readScopeId,
 		});
 		if (prepared._nay) {
@@ -12999,6 +13014,7 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 			parentPath: "/reports",
 		});
 
+		await restrict_binding_node({ fixture, nodeId: folderId });
 		const bound = await apply_binding({ t, fixture, nodeId: folderId, readScopeId: "p/room" });
 		expect(bound._nay).toBeUndefined();
 		const afterBind = await t.run(async (ctx) => ({
@@ -13214,7 +13230,7 @@ describe("files_sharing.remove_node_share_grant", () => {
 });
 
 describe("files_sharing.restrict_node", () => {
-	test("keeps a live binding on an already restricted node and when restricting a child", async () => {
+	test("keeps a live binding on an already restricted node and refuses to restrict a child", async () => {
 		const t = test_convex();
 		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-restrict-owner" });
 		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
@@ -13229,20 +13245,23 @@ describe("files_sharing.restrict_node", () => {
 			parentId: folderId,
 			parentPath: "/restricted",
 		});
+		await restrict_binding_node({ fixture, nodeId: folderId });
 		expect((await apply_binding({ t, fixture, nodeId: folderId, readScopeId: "p/restrict" }))._nay).toBeUndefined();
 		const bindings = await read_bindings(t, fixture);
 		const grants = await read_node_read_grants({ t, fixture, nodeId: folderId });
 
-		for (const nodeId of [folderId, childId]) {
-			const restricted = await fixture.asUser.mutation(api.files_sharing.restrict_node, {
-				membershipId: fixture.membershipId,
-				nodeId,
-			});
-			expect(restricted._nay).toBeUndefined();
-		}
+		const restrict = (nodeId: Id<"files_nodes">) =>
+			fixture.asUser.mutation(api.files_sharing.restrict_node, { membershipId: fixture.membershipId, nodeId });
+		expect((await restrict(folderId))._nay).toBeUndefined();
+		// The plugin decides who reads the whole bound folder, so nothing inside gets its own restriction.
+		expect((await restrict(childId))._nay?.message).toBe(
+			"A plugin decides who can read this item, so it cannot be restricted on its own",
+		);
 		expect(await read_bindings(t, fixture)).toEqual(bindings);
 		expect(await read_node_read_grants({ t, fixture, nodeId: folderId })).toEqual(grants);
-		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", childId))?.restrictedScopeNodeId)).toBe(childId);
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", childId))?.restrictedScopeNodeId)).toBe(
+			folderId,
+		);
 	});
 });
 
@@ -13278,6 +13297,7 @@ describe("files_sharing.unrestrict_node", () => {
 			parentId: innerId,
 			parentPath: "/outer/inner",
 		});
+		await restrict_binding_node({ fixture, nodeId: innerId });
 		expect((await apply_binding({ t, fixture, nodeId: innerId, readScopeId: "p/inner" }))._nay).toBeUndefined();
 
 		const unrestricted = await fixture.asUser.mutation(api.files_sharing.unrestrict_node, {

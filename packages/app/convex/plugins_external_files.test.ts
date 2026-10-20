@@ -1861,6 +1861,44 @@ describe("ensure_writer", () => {
 		},
 	);
 
+	test("refuses private setup inside a folder whose readers a plugin already decides", async () => {
+		const { t, token, root } = await setup();
+		const ensure = (path: string, resourceKey: string) =>
+			t.fetch("/api/v1/files/plugin-folders/ensure", {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${token}`,
+					"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					path,
+					access: { readers: [] },
+					writer: { resourceKey, rootNodeId: root.rootNodeId },
+				}),
+			});
+		const team = await ensure(`${ROOT}/private/team`, "team");
+		expect(team.status, await team.clone().text()).toBe(200);
+		const before = await t.run(async (ctx) => ({
+			nodes: await ctx.db.query("files_nodes").collect(),
+			writers: await ctx.db.query("plugins_external_file_writers").collect(),
+			bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
+		}));
+
+		const inner = await ensure(`${ROOT}/private/team/inner`, "inner");
+		expect(inner.status).toBe(400);
+		expect(await inner.json()).toEqual({
+			message: "A plugin already decides who can read the folder around this item",
+		});
+		expect(
+			await t.run(async (ctx) => ({
+				nodes: await ctx.db.query("files_nodes").collect(),
+				writers: await ctx.db.query("plugins_external_file_writers").collect(),
+				bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
+			})),
+		).toEqual(before);
+	});
+
 	test("recovers a lost private setup response without restoring a removed account grant", async () => {
 		const { t, fixture, owner, token, credentials, root } = await setup();
 		const request = {

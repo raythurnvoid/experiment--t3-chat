@@ -696,7 +696,6 @@ describe("search box doors", () => {
 					nodeId,
 					token: `token-${nodeId}`,
 					restrictedScopeNodeId: null,
-					ancestorNodeIds: [],
 					createdBy: seeded.db.userId,
 					createdAt: Date.now(),
 				});
@@ -864,7 +863,6 @@ describe("search box locked hits", () => {
 					nodeId,
 					token: `token-${nodeId}`,
 					restrictedScopeNodeId: null,
-					ancestorNodeIds: [],
 					createdBy: seeded.db.userId,
 					createdAt: Date.now(),
 				});

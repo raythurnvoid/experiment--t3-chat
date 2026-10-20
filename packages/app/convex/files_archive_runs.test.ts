@@ -1,7 +1,7 @@
 // The archive_nodes tests from a lock set after the check on, and the history cleanup tests, are in
 // files_archive_runs.archive_steps.test.ts, so the two files can run at the same time.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import {
 	fixture,
 	seed_tree,
@@ -14,6 +14,7 @@ import {
 	folder,
 	read_node,
 	lock_writer,
+	add_member,
 } from "./files_archive_runs.setup.test.ts";
 
 // A check step reads at most 100 nodes here instead of 500, so small trees cross it. The mock puts this
@@ -153,5 +154,42 @@ describe("archive_nodes", () => {
 			tree.fileIds[0],
 		]);
 		expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).toBe(olderOperationId);
+	}, 120_000);
+
+	test("deleting the user waits until the stamps end, so no active item stays inside the archived folder", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		// 152 items: more than the request and one step stamp (2 * 75), so the job still runs at the deletion.
+		const tree = await seed_tree(f, { name: "deleted", folderCount: 1, filesPerFolder: 150 });
+		const archived = await member.asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: member.membershipId,
+			nodeIds: [tree.topId],
+		});
+		const job = archived._yay!;
+
+		for (let pass = 0; pass < 20; pass++) {
+			await f.t.mutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: member.userId,
+				_test_batchSize: 1,
+			});
+		}
+		const waiting = await f.t.run(async (ctx) => ({
+			run: await ctx.db.get("files_archive_runs", job.runId),
+			membership: await ctx.db.get("organizations_workspaces_users", member.membershipId),
+		}));
+		expect(waiting.run).toMatchObject({ active: true, phase: "apply" });
+		expect(waiting.membership).not.toBeNull();
+
+		await run_to_end(f, job);
+		let done = false;
+		for (let pass = 0; pass < 100 && !done; pass++) {
+			done = await f.t.mutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: member.userId,
+				_test_batchSize: 1,
+			});
+		}
+		expect(done).toBe(true);
+		const after = await expect_consistent(f);
+		expect(after.nodes.every((node) => node.archiveOperationId !== null)).toBe(true);
 	}, 120_000);
 });

@@ -6,8 +6,8 @@
 //
 // `check_user` and `repair_user` walk one user's proposals and derived docs, so orphan docs are
 // found too. QA runs `check_user` after each phase, and `repair_user` fixes what it reports.
-// `check_share_rows` does the same check for one workspace's share rows, and `check_ancestors`
-// for the saved nodes' `ancestor1..12`.
+// `check_share_rows` does the same check for one workspace's share rows, `check_ancestors` for the
+// saved nodes' `ancestor1..12`, and `check_restricted_scopes` for their restricted scope.
 //
 // The metadata catalog's compactor (`compact_metadata_catalog`), its recover cron, its rebuild
 // (`rebuild_metadata_catalog`) and its check (`check_metadata_catalog`) live here too.
@@ -129,6 +129,12 @@ const SHARE_CHECK_PHASES = ["grants", "share_rows"] as const;
  * so a walk over every node of a deployment takes few calls.
  */
 const ANCESTOR_CHECK_PAGE_SIZE = 1000;
+
+/**
+ * Nodes per page of `check_restricted_scopes`. Checking one node reads its parent, and each
+ * workspace of the page costs three more reads.
+ */
+const RESTRICTED_SCOPE_CHECK_PAGE_SIZE = 1000;
 
 const job_kind_validator = v.union(
 	v.literal("saved_node"),
@@ -1507,6 +1513,86 @@ export const check_ancestors = internalQuery({
 				differences.push(`ancestors of ${node._id}: stored [${stored.join()}], expected [${expected.join()}]`);
 		}
 		return { differences, cursor: nodes.isDone ? null : nodes.continueCursor };
+	},
+});
+
+/**
+ * Compare one page of active saved nodes' restricted scope with their parent's, in every
+ * organization workspace, and return the nodes that differ. Public links will trust the stored
+ * `restrictedScopeNodeId`, `isRestrictedScopeRoot` and `parentScopeNodeId` with no folder walk, so a
+ * walk with no difference must come first.
+ *
+ * A node is right when it stores its parent's scope, or is a restricted root whose flag agrees and
+ * whose `parentScopeNodeId` is its parent's scope. Any other node has no `parentScopeNodeId`. An
+ * active node must not sit in an archived folder; an archive stopped partway leaves this too, so the
+ * report names the folder's archive op. A workspace with an unfinished subtree op, a Move or a purge
+ * is skipped and listed: its nodes may be mid-rewrite. Run the whole check again after it ends. Call
+ * again with the returned cursor until it is null.
+ */
+export const check_restricted_scopes = internalQuery({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: v.object({
+		differences: v.array(v.string()),
+		busyWorkspaceIds: v.array(v.id("organizations_workspaces")),
+		cursor: v.union(v.string(), v.null()),
+	}),
+	handler: async (ctx, args) => {
+		const nodes = await ctx.db
+			.query("files_nodes")
+			.paginate({ cursor: args.cursor, numItems: RESTRICTED_SCOPE_CHECK_PAGE_SIZE });
+		const differences: string[] = [];
+		const busyByWorkspace = new Map<Id<"organizations_workspaces">, boolean>();
+		for (const node of nodes.page) {
+			if (node.archiveOperationId !== null) continue;
+			// Global and plugin workspaces never hold public links.
+			const organizationId = ctx.db.normalizeId("organizations", node.organizationId);
+			const workspaceId = ctx.db.normalizeId("organizations_workspaces", node.workspaceId);
+			if (!organizationId || !workspaceId) continue;
+
+			let busy = busyByWorkspace.get(workspaceId);
+			if (busy === undefined) {
+				const op = await ctx.db
+					.query("files_subtree_ops")
+					.withIndex("by_organization_workspace_kind", (q) =>
+						q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+					)
+					.first();
+				const slot = await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
+					.unique();
+				// A purge deletes folders before their children.
+				const workspace = await ctx.db.get("organizations_workspaces", workspaceId);
+				busy = op !== null || Boolean(slot?.cohortId) || workspace?.pluginDataPurgeStartedAt !== undefined;
+				busyByWorkspace.set(workspaceId, busy);
+			}
+			if (busy) continue;
+
+			const isRoot = node.restrictedScopeNodeId === node._id;
+			if (node.isRestrictedScopeRoot !== isRoot)
+				differences.push(`root flag of ${node._id}: stored ${node.isRestrictedScopeRoot}, expected ${isRoot}`);
+
+			const parent = node.parentId === "root" ? null : await ctx.db.get("files_nodes", node.parentId);
+			if (node.parentId !== "root" && !parent) {
+				differences.push(`parent of ${node._id} is missing`);
+				continue;
+			}
+			if (parent?.archiveOperationId)
+				differences.push(
+					`active ${node._id} is in archived folder ${parent._id} (archive op ${parent.archiveOperationId})`,
+				);
+			const expected = parent?.restrictedScopeNodeId ?? null;
+			if (!isRoot && node.restrictedScopeNodeId !== expected)
+				differences.push(`scope of ${node._id}: stored ${node.restrictedScopeNodeId}, expected ${expected}`);
+			const expectedBoundary = isRoot ? expected : undefined;
+			if (node.parentScopeNodeId !== expectedBoundary)
+				differences.push(`boundary of ${node._id}: stored ${node.parentScopeNodeId}, expected ${expectedBoundary}`);
+		}
+		return {
+			differences,
+			busyWorkspaceIds: [...busyByWorkspace].filter(([, busy]) => busy).map(([workspaceId]) => workspaceId),
+			cursor: nodes.isDone ? null : nodes.continueCursor,
+		};
 	},
 });
 

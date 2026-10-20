@@ -4,7 +4,6 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { test_convex, test_rename_node, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -74,7 +73,6 @@ async function hide(f: Fixture, nodeId: Id<"files_nodes">) {
 			workspaceId: f.db.workspaceId,
 			nodeId,
 			restrictedScopeNodeId: nodeId,
-			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		}),
 	);
 }
@@ -84,9 +82,10 @@ async function hide(f: Fixture, nodeId: Id<"files_nodes">) {
  * then `hide()` for each name. A step reads only these nodes and their access.
  */
 async function hidden_folders(f: Fixture, box: Id<"files_nodes">, names: string[]) {
-	return await f.t.run(async (ctx) => {
-		const ids: Id<"files_nodes">[] = [];
-		for (const name of names) {
+	const ids: Id<"files_nodes">[] = [];
+	// One run per folder: each scope write reads several index ranges, and Convex allows 4,096 in one run.
+	for (const name of names) {
+		await f.t.run(async (ctx) => {
 			const nodeId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.db.organizationId,
@@ -107,12 +106,11 @@ async function hidden_folders(f: Fixture, box: Id<"files_nodes">, names: string[
 				workspaceId: f.db.workspaceId,
 				nodeId,
 				restrictedScopeNodeId: nodeId,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
 			ids.push(nodeId);
-		}
-		return ids;
-	});
+		});
+	}
+	return ids;
 }
 
 async function restrict(f: Fixture, nodeId: Id<"files_nodes">) {
