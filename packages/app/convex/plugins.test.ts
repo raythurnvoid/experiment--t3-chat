@@ -8830,6 +8830,55 @@ describe("plugins metadata file doors", () => {
 		]);
 	});
 
+	test("the archive door ends the public link of a file inside the folder", async () => {
+		const t = test_convex();
+		const fixture = await install_file_doors_plugin(t);
+		const run = await start_file_invoke_run({ t, fixture });
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/a/one.md", content: "# A\n" },
+				})
+			).status,
+		).toBe(200);
+		const fileNode = await find_active_node({ t, fixture, path: "/probe/a/one.md" });
+		// Seeded directly, because only the archive matters here.
+		await t.run((ctx) =>
+			ctx.db.insert("files_share_links", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				nodeId: fileNode!._id,
+				token: "0".repeat(64),
+				restrictedScopeNodeId: null,
+				createdBy: fixture.membership.userId,
+				createdAt: Date.now(),
+			}),
+		);
+		expect(await t.run((ctx) => ctx.db.query("files_share_links").collect())).toHaveLength(1);
+
+		const archived = await door_call({
+			t,
+			path: "/api/v1/files/plugin-archive",
+			apiToken: run.apiToken,
+			body: { path: "/probe/a" },
+		});
+		expect(archived.status).toBe(200);
+		expect(await t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([]);
+	});
+
 	test("the access door changes plugin locks and a member can unlock them", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);

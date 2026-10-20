@@ -1059,7 +1059,8 @@ export const set_node_share_grant = mutation({
 		const now = Date.now();
 		if (node.restrictedScopeNodeId !== node._id && node.parentExtendedScopeNodeId === undefined) {
 			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
-			// An op gives the items inside the new chain. Its first step runs here, so a small folder is done now.
+			// An op gives the items inside the new chain. Its first step runs here, so a small folder is done now,
+			// unless a Move holds the workspace.
 			await files_subtree_ops_db_start_rebuild(ctx, {
 				kind: "scope",
 				organizationId: membership.organizationId,
@@ -1326,7 +1327,8 @@ export const restrict_node = mutation({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 		});
-		// An op gives the descendants the new scope. Its first step runs here, so a small folder is done now.
+		// An op gives the descendants the new scope. Its first step runs here, so a small folder is done now,
+		// unless a Move holds the workspace.
 		await files_subtree_ops_db_start_rebuild(ctx, {
 			kind: "scope",
 			organizationId: membership.organizationId,

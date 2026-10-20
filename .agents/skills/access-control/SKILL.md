@@ -1051,13 +1051,16 @@ The model:
   (`plugins_data_db_apply_file_access_binding`, which takes the acting `userId`) and plugin external
   files (`plugins_external_files.ts`) do the same. The job walks children by `parentId` and writes
   each child's `restrictedScopeNodeId` from its live parent. A child that is its own restricted folder
-  keeps its own scope. The first step runs inside the request, so a small folder is done at once. A
+  keeps its own scope. The first step runs inside the request, so a small folder is done at once,
+  unless a Move holds the workspace: then every step, the first one too, waits for the Move. A
   bigger one leaves a hidden Activity ("Restrict files", `feedVisible: false`) only so the recover
   cron finds the op. A move job rewrites scope the same way.
 - Until a scope job writes a child, the child keeps its stored scope. Every permission check, for
   reads and writes, trusts that stored scope. So a child of a newly restricted folder keeps its old
-  access until the job rewrites it. This short window is accepted on purpose. Do not patch it by
-  reading the parent folders: that does not scale, and it breaks the simple rule that a node's access
+  access until the job rewrites it. This per-file timing is the chosen design: each file follows its
+  own saved state, and a folder change reaches a file when the job write for that file commits. The
+  window grows with the folder size and lasts longer while Moves hold the workspace. Do not patch it
+  by reading the parent folders: that does not scale, and it breaks the simple rule that a node's access
   comes from the scope stored on it. A Move publishes its nodes and inherited scopes together through
   the selected saved view.
 - A child of an unrestricted folder is different: it still points at that folder, which is not its
@@ -1323,9 +1326,12 @@ scope node changes.** So every read checks:
    1,000,000 bytes. Past a budget the view refuses, or the rest of the embeds show as unavailable.
 
 A folder above that is archived, restricted, or bound while its job runs does not hide the file at
-once. The file shows until the job writes it, and that write ends the link. These windows are an
-accepted product rule. The one exception is the scope node itself: a change to it ends every link
-of its area in the same transaction.
+once. This is the per-file timing rule (see the scope job above): the file shows until the job
+writes it, and that write ends the link. Until then a manager of the old area can still turn its
+link on, and the job ends that link too. The window grows with the folder size, and lasts longer
+while Moves hold the workspace, because scope and archive jobs wait at every step while a Move
+runs. An image URL signed before the end keeps working for its 15 minutes. The one exception is the
+scope node itself: a change to it ends every link of its area in the same transaction.
 
 The query is reactive. A change to the doc, the file, its scope node, or an embed runs it again, and
 an open page clears when the answer turns `null`.
@@ -1442,7 +1448,7 @@ lifecycle or access-control module, so every caller can import it without a cycl
 | Event | Where the delete runs |
 | --- | --- |
 | Turn the link off | `set_node_share_link` with `enabled: false` |
-| Restrict or unrestrict the file or a folder above it | `files_nodes_db_set_restricted_scope`, only when the scope really changes, before the patch: the node's own link and every link of its area (`delete_for_scope`). This covers `restrict_node` and `unrestrict_node`. A restrict then unrestrict before the scope job reaches the file does not bring the link back |
+| Restrict or unrestrict the file or a folder above it | `files_nodes_db_set_restricted_scope`, only when the scope really changes, before the patch: the node's own link and every link of its area (`delete_for_scope`). This covers `restrict_node` and `unrestrict_node`. The folder itself and links stored with its scope end at once. A file below that the job has not reached yet keeps its link: if the folder is unrestricted before the job gets there, that file never changed scope, so its link stays |
 | A scope job gives the file a new scope | `files_nodes_db_rebuild_node`, only when the scope changes. A new path alone (a folder above was renamed) keeps the link |
 | Move to another folder, including replacement and a new parent created by the same Move | The cohort worker stages link revocation for reparented roots and replaced occupants in pages. The group switch ends their links, including a link turned on before the Move reached the file. Rename in the same folder keeps links. Move ends a link even when the new folder has the same audience |
 | Archive | `files_nodes_db_archive_node`, once per stamped node. `files_nodes_db_archive_nodes` stamps only the nodes it is given, so a caller names a folder with all its active descendants, or uses the archive job. The archive job ends each file's link in the apply step that stamps it, and the apply has no stop: user deletion waits for it (`db_drain_user_archive_runs_batch`). A queued, refused, or stopped check keeps the links |

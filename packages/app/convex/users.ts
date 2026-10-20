@@ -1452,6 +1452,8 @@ export const hard_delete_user_now = internalAction({
 		purgeUserMod: v.optional(
 			v.union(v.literal("data"), v.literal("data_and_auth"), v.literal("data_auth_and_user_record")),
 		),
+		// How many rounds in a row waited for a file job. Left out at 0.
+		waitRound: v.optional(v.number()),
 		_test_batchSize: v.optional(v.number()),
 		_test_disableReschedule: v.optional(v.boolean()),
 	},
@@ -1490,6 +1492,21 @@ export const hard_delete_user_now = internalAction({
 		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: user._id });
 		const purgeUserRecord = purgeUserMod === "data_auth_and_user_record";
 
+		// A Paste run or a file job can keep every round from finishing. Wait 30 s for a Paste run. Wait
+		// longer each round for a file job, up to 30 min, so a stuck job does not keep this action busy.
+		// With neither, the next round starts at once and the wait starts over.
+		const schedule_next_round = async () => {
+			if (args._test_disableReschedule) return;
+			const waits = await ctx.runQuery(internal.data_deletion.user_deletion_waits, { userId: user._id });
+			const waitRound = args.waitRound ?? 0;
+			if (waits) console.warn("Hard delete waits", { userId: user._id, waits, waitRound });
+			await ctx.scheduler.runAfter(
+				waits === "ops" ? Math.min(30_000 * 2 ** waitRound, 30 * 60_000) : waits === "transfer" ? 30_000 : 0,
+				internal.users.hard_delete_user_now,
+				{ userId: user._id, purgeUserMod, ...(waits === "ops" ? { waitRound: waitRound + 1 } : {}) },
+			);
+		};
+
 		let prepared = false;
 		for (let step = 0; step < 25; step += 1) {
 			prepared = await ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
@@ -1501,13 +1518,7 @@ export const hard_delete_user_now = internalAction({
 			}
 		}
 		if (!prepared) {
-			if (!args._test_disableReschedule) {
-				await ctx.scheduler.runAfter(0, internal.users.hard_delete_user_now, {
-					userId: user._id,
-					purgeUserMod,
-				});
-			}
-
+			await schedule_next_round();
 			return null;
 		}
 
@@ -1578,14 +1589,8 @@ export const hard_delete_user_now = internalAction({
 		}
 
 		if (!finalized) {
-			if (!args._test_disableReschedule) {
-				// Provider deletes are idempotent. Retry them before the next bounded local finalization pass.
-				await ctx.scheduler.runAfter(0, internal.users.hard_delete_user_now, {
-					userId: user._id,
-					purgeUserMod,
-				});
-			}
-
+			// Provider deletes are idempotent. Retry them before the next bounded local finalization pass.
+			await schedule_next_round();
 			return null;
 		}
 
