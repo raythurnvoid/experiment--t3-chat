@@ -22,6 +22,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The app logo and other image files use Git LFS.
+          lfs: true
 
       # The app build needs the vendor gitlinks under packages/app/vendor/ and the first-party
       # packages/native-popovers submodule.

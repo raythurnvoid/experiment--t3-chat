@@ -8,6 +8,7 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 - Files route shape: `/w/:organizationName/:workspaceName/files`.
 - The `/files` route accepts `nodeId` and optional `view` search params.
 - Known page editor views: `rich_text_editor`, `plain_text_editor`, `diff_editor`.
+- Both deploy workflows must download Git LFS files. After a deploy, check that the visible `.Logo-mark` has `naturalWidth > 0`; HTTP 200 alone can be a pointer file instead of the SVG.
 
 ## Main Left Navigation
 

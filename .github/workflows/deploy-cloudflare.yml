@@ -20,6 +20,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The app logo and other image files use Git LFS.
+          lfs: true
 
       # Same submodules as deploy-pages.yml. Keep both lists equal.
       - name: Checkout app build submodules
