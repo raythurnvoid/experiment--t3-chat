@@ -569,7 +569,10 @@ bounded history pages and must never reach hidden Activities. See the [Activity 
 Clipboard Activity is private to the requester, even from other workspace owners. Current
 membership is required. A folder guest can view and stop their own run, and dismiss it after it
 finishes, without workspace-wide write permission. These activities contain no file names or paths.
-The conflict dialog separately checks current source access before showing either. See
+The detail dialog shows the source and output paths recorded by the job. These private results
+remain history after a move, rename, or loss of file access. Result reads require a live user and
+active membership. New actions still check current file access; Replace also checks the exact
+current destination and reviewed version. See
 [Files transfer runs](../files-explorer-tree/references/transfer.md#stop-activity-and-cleanup).
 
 **Comments answer to their file channel.** `channels_db_get_access` checks the channel's saved file:

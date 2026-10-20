@@ -968,6 +968,9 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 						</p>
 					) : null}
 					{run && !isSelecting && itemPage === undefined ? <p role="status">Loading items…</p> : null}
+					{itemPage && !isSelecting ? (
+						<p>Paths were recorded during this operation and may differ from current locations.</p>
+					) : null}
 					{itemPage === null ? <p>These items are no longer available.</p> : null}
 					{itemPage && !isSelecting ? (
 						<div className={"FilesTransferRunModal-items" satisfies FilesTransferRunModal_ClassNames}>

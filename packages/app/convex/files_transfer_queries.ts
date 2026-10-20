@@ -17,11 +17,7 @@ import app_convex_schema, {
 } from "./schema.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
-import {
-	server_convex_get_user_fallback_to_anonymous,
-	server_path_parent_of,
-	should_never_happen,
-} from "../server/server-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import type { files_PendingTarget, files_VisibleEntry } from "../shared/files.ts";
 import { files_type_query_db_get_readiness } from "../server/files-type-query.ts";
@@ -91,6 +87,8 @@ export async function files_transfer_queries_db_get_owned_run(
 		membershipId: args.membershipId,
 	});
 	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+	const authorized = await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: null });
+	if (authorized._nay) return authorized;
 
 	const run = await ctx.db.get("files_transfer_runs", args.runId);
 	if (
@@ -164,23 +162,6 @@ async function db_get_run_view(args: {
 		.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", "conflict"))
 		.take(files_transfer_queries_MAX_SELECTED_NODES);
 
-	const sourceScope = { ...run, ...run.sourceScope };
-	const reader = await files_visible_db_create_reader(ctx, sourceScope);
-	const visibleConflicts = [];
-	for (const item of conflicts) {
-		// Hide names once the source is no longer readable; run history can outlive source access.
-		const readable =
-			(await files_transfer_queries_db_get_entry({ ctx, run: sourceScope, target: item.source, reader }))?.path ===
-			item.sourcePath;
-		visibleConflicts.push({
-			itemId: item._id,
-			sourceName: readable ? item.sourceName : null,
-			sourcePath: readable ? item.sourcePath : null,
-			targetName: readable ? item.sourceName : null,
-			kind: item.conflictKind ?? ("source_changed" as const),
-		});
-	}
-
 	const movedItems =
 		run.kind === "move"
 			? await ctx.db
@@ -197,7 +178,13 @@ async function db_get_run_view(args: {
 		revision: run.revision,
 		activity,
 		controls: activities_get_controls(activity, membership.userId),
-		conflicts: visibleConflicts,
+		conflicts: conflicts.map((item) => ({
+			itemId: item._id,
+			sourceName: item.sourceName,
+			sourcePath: item.sourcePath,
+			targetName: item.sourceName,
+			kind: item.conflictKind ?? ("source_changed" as const),
+		})),
 		movedNodeIds: movedItems.flatMap((item) => (item.outputTarget?.kind === "saved" ? [item.outputTarget.id] : [])),
 	};
 }
@@ -414,6 +401,11 @@ export const list_current = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) return [];
+		const authorized = await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: null });
+		if (authorized._nay) {
+			if (authorized._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
+			return [];
+		}
 
 		const activity = await files_transfer_queries_db_get_current_activity(ctx, {
 			userId: userAuth.id,
@@ -454,7 +446,7 @@ const item_view_validator = v.object({
 		v.null(),
 	),
 	errorMessage: v.union(v.string(), v.null()),
-	// A skipped locked child's path. Saved receipts recheck whether its name is still visible.
+	// The recorded path of a child that Copy could list but could not open.
 	lockedPath: v.union(v.string(), v.null()),
 });
 
@@ -480,48 +472,14 @@ export const list_items = query({
 						.query("files_transfer_items")
 						.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", args.state!))
 		).paginate({ ...args.paginationOpts, numItems: Math.max(1, Math.min(50, args.paginationOpts.numItems)) });
-		const sourceScope = { ...run, ...run.sourceScope };
-		const sourceReader = await files_visible_db_create_reader(ctx, sourceScope);
-		const reader = await files_visible_db_create_reader(ctx, { ...run, ...run.destinationScope });
+		// Results are history. Only a pending conflict needs a current target for Replace.
+		const reader = items.page.some((item) => item.state === "conflict" && item.conflictTarget)
+			? await files_visible_db_create_reader(ctx, { ...run, ...run.destinationScope })
+			: null;
 		const page = [];
 		for (const item of items.page) {
-			const source = await files_transfer_queries_db_get_entry({
-				ctx,
-				run: sourceScope,
-				target: item.source,
-				reader: sourceReader,
-			});
-			const output = item.outputTarget ? await reader.resolveTarget(item.outputTarget) : null;
-			const conflict = item.conflictTarget ? await reader.resolveTarget(item.conflictTarget) : null;
-			let lockedPath = item.skipReason === "permission_denied" ? item.sourcePath : null;
-			// A saved Copy's old path is visible only while the same item is still listed there.
-			if (lockedPath !== null && run.sourceView === "saved" && source?.path !== item.sourcePath) {
-				lockedPath = null;
-				const node =
-					item.source.kind === "saved" ? await files_saved_placement_db_get_node(ctx.db, item.source.id) : null;
-				if (
-					node &&
-					node.organizationId === sourceScope.organizationId &&
-					node.workspaceId === sourceScope.workspaceId &&
-					node.archiveOperationId === null &&
-					node.path === item.sourcePath
-				) {
-					const parent =
-						node.parentId === "root" ? null : await files_saved_placement_db_get_node(ctx.db, node.parentId);
-					const parentPath = server_path_parent_of(item.sourcePath);
-					if (
-						(node.parentId === "root"
-							? parentPath === "/"
-							: parent?.kind === "folder" &&
-								parent.organizationId === sourceScope.organizationId &&
-								parent.workspaceId === sourceScope.workspaceId &&
-								parent.archiveOperationId === null &&
-								parent.path === parentPath) &&
-						(await sourceReader.canRead(parent))
-					)
-						lockedPath = item.sourcePath;
-				}
-			}
+			const conflict =
+				reader && item.state === "conflict" && item.conflictTarget ? await reader.resolveTarget(item.conflictTarget) : null;
 			page.push({
 				itemId: item._id,
 				state: item.state,
@@ -532,9 +490,13 @@ export const list_items = query({
 						? item.outputTarget.id
 						: null,
 				source:
-					source?.path === item.sourcePath ? { target: item.source, path: source.path, name: item.sourceName } : null,
+					item.skipReason === "permission_denied"
+						? null
+						: { target: item.source, path: item.sourcePath, name: item.sourceName },
 				output:
-					output && item.outputTarget ? { target: item.outputTarget, path: output.path, name: output.node.name } : null,
+					item.outputTarget && item.outputPath !== null && item.outputName !== null
+						? { target: item.outputTarget, path: item.outputPath, name: item.outputName }
+						: null,
 				conflictKind: item.conflictKind,
 				conflict:
 					conflict && item.conflictTarget
@@ -545,8 +507,8 @@ export const list_items = query({
 								path: conflict.path,
 							}
 						: null,
-				errorMessage: source ? item.errorMessage : item.errorMessage ? "This item is no longer available" : null,
-				lockedPath,
+				errorMessage: item.errorMessage,
+				lockedPath: item.skipReason === "permission_denied" ? item.sourcePath : null,
 			});
 		}
 		return { ...items, page };

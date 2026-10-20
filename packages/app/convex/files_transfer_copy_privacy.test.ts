@@ -265,6 +265,19 @@ describe("cross-workspace Copy privacy", () => {
 			["/folder/open", null],
 			[null, "/folder/secret-name"],
 		]);
+		expect(
+			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.owner.membershipId,
+				nodeId: created[0]!,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await f.asUser.query(api.files_transfer_queries.list_items, {
+				membershipId: f.current.membershipId,
+				runId,
+				paginationOpts: { numItems: 10, cursor: null },
+			}),
+		).toEqual(page);
 	});
 
 	test("account finalization removes transfer history and keeps the saved team copy", async () => {

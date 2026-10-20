@@ -1446,7 +1446,7 @@ describe("FilesTransferRunModal", () => {
 		expect(screen.queryByText("Page 2")).toBeNull();
 	});
 
-	test.each(["/folder/secret-name", null])("shows a skipped item with current path %s", async (lockedPath) => {
+	test.each(["/folder/secret-name", null])("shows a skipped item with recorded path %s", async (lockedPath) => {
 		queryState.run = make_run({ status: "partial" });
 		queryState.runs = [queryState.run];
 		queryState.itemPages.first = {
@@ -1466,6 +1466,8 @@ describe("FilesTransferRunModal", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
 		expect(await screen.findByText(lockedPath ?? "Unavailable item")).toBeTruthy();
 		expect(screen.getByText(lockedPath ? "Skipped: Permission denied" : "Skipped")).toBeTruthy();
+		expect(screen.getByText("Paths were recorded during this operation and may differ from current locations.")).toBeTruthy();
+		expect(screen.queryByRole("link", { name: lockedPath ?? "Unavailable item" })).toBeNull();
 		if (!lockedPath) expect(screen.queryByText("/folder/secret-name")).toBeNull();
 	});
 
@@ -1645,12 +1647,13 @@ describe("FilesTransferRunModal", () => {
 
 	test("offers only Skip for a changed source and hides without stopping", async () => {
 		queryState.run = make_run({ status: "awaiting_input", progress: { completed: 1 } });
-		queryState.itemPages.first!.page = [make_item({ source: null, conflict: null })];
+		queryState.itemPages.first!.page = [make_item({ conflictKind: "source_changed", conflict: null })];
 		queryState.runs = [queryState.run];
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
-		const conflict = await screen.findByRole("group", { name: "Unavailable item" });
+		const conflict = await screen.findByRole("group", { name: "/report.md" });
 		expect(within(conflict).queryByRole("radio", { name: "Keep both" })).toBeNull();
+		expect(within(conflict).queryByRole("radio", { name: "Replace" })).toBeNull();
 		expect(within(conflict).getByRole("radio", { name: "Skip" })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Stop and keep completed copies" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "Hide" }));
@@ -1849,7 +1852,7 @@ describe("FilesTransferRunModal", () => {
 		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" }).matches(":disabled")).toBe(false));
 	});
 
-	test("stops a selected Replace after source access disappears", () => {
+	test("stops a selected Replace after destination access disappears", () => {
 		const run = make_run({ status: "awaiting_input" });
 		queryState.run = run;
 		queryState.itemPages.first!.page = [make_item()];
@@ -1857,12 +1860,12 @@ describe("FilesTransferRunModal", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
 		fireEvent.click(within(screen.getByRole("group", { name: "/report.md" })).getByRole("radio", { name: "Replace" }));
 		expect(screen.getByRole("button", { name: "Continue" }).matches(":disabled")).toBe(false);
-		queryState.itemPages.first!.page = [make_item({ source: null, conflict: null })];
+		queryState.itemPages.first!.page = [make_item({ conflict: null })];
 		push_run(run);
 		expect(screen.queryByText("Destination: /copies/report.md")).toBeNull();
 		expect(screen.getByRole("button", { name: "Continue" }).matches(":disabled")).toBe(true);
 		expect(
-			within(screen.getByRole("group", { name: "Unavailable item" })).queryByRole("radio", { name: "Replace" }),
+			within(screen.getByRole("group", { name: "/report.md" })).queryByRole("radio", { name: "Replace" }),
 		).toBeNull();
 		expect(mutationMock).not.toHaveBeenCalled();
 	});

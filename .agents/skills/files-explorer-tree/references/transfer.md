@@ -165,11 +165,16 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Do not silently use a new path. Recheck membership, ACL, write policy, and workspace purge state.
 - Conflict answers include the current run revision and, for replacement, the exact target and
   version shown in that conflict. A new unresolved conflict pauses every later
-  publication. Already completed files stay. Do not expose names or paths after read access is lost.
-- A saved-view Copy receipt names a skipped locked child only while the same active item remains
-  at its recorded path and the caller can read it or its current direct parent. Use selected saved
-  placement during Move. A readable exact share still works below a locked parent. Losing that
-  name does not remove the receipt row, change its result, or hide readable copied output.
+  publication. Already completed files stay. Replace checks its current destination again.
+- Copy, Move, and Rename results are private job history. Check access when the job reads or writes
+  an item, then show its recorded source path, output path, and result. Later moves, renames, or lost
+  file access do not rewrite that history. A skipped locked child keeps the path visible when its
+  parent was listed; Copy never reads inside that child. The result door still requires a live user,
+  active membership, and the same run owner and workspace.
+- Result pages use the stored transfer items and existing cursors. Do not rebuild current source or
+  output paths for display. Show full paths as text and explain that locations may have changed.
+  New reads, Retry, Continue, and Replace still use current access checks. Historical text grants
+  no file access.
 
 ## Copied content
 

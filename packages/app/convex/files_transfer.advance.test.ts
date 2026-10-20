@@ -926,7 +926,7 @@ describe("advance", () => {
 		expect(view).toMatchObject({
 			step: "discover",
 			activity: { status: "awaiting_input", progress: { discovered: 56, total: null, completed: 0, blocked: 1 } },
-			conflicts: [{ kind: "source_changed", sourceName: null }],
+			conflicts: [{ kind: "source_changed", sourceName: "folder-00", sourcePath: "/source/folder-00" }],
 		});
 		expect(await get_node(fixture, "/target/source")).toBeNull();
 	});
@@ -980,10 +980,7 @@ describe("advance", () => {
 			}),
 		).toEqual({ _yay: null });
 		const after = await receipt();
-		expect(after?.page.find((item) => item.state === "skipped")?.lockedPath).toBeNull();
-		expect(after?.page.map(({ itemId, state, output }) => ({ itemId, state, output }))).toEqual(
-			before?.page.map(({ itemId, state, output }) => ({ itemId, state, output })),
-		);
+		expect(after).toEqual(before);
 		expect(await read()).toMatchObject({
 			activity: { status: "succeeded", progress: { completed: 2, skipped: 1 }, errorMessage: null },
 		});

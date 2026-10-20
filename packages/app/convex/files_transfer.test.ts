@@ -130,6 +130,13 @@ describe("start", () => {
 		const member = await add_member(fixture);
 		const runId = await start_copy(fixture, [fixture.folders.get("/source")!]);
 		expect(await member.asUser.query(api.files_transfer_queries.get, { membershipId: member.membershipId, runId })).toBeNull();
+		expect(
+			await member.asUser.query(api.files_transfer_queries.list_items, {
+				membershipId: member.membershipId,
+				runId,
+				paginationOpts: { numItems: 10, cursor: null },
+			}),
+		).toBeNull();
 		expect(await member.asUser.query(api.files_transfer_queries.list_current, { membershipId: member.membershipId })).toEqual(
 			[],
 		);
@@ -148,6 +155,30 @@ describe("start", () => {
 				.status,
 		).toBe("running");
 	});
+
+	test.each(["missing", "deleted"] as const)("rejects transfer reads for a %s user", async (userState) => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await t.run(async (ctx) => {
+			if (userState === "missing") await ctx.db.delete("users", db.userId);
+			else await ctx.db.patch("users", db.userId, { deletedAt: Date.now() });
+		});
+		await expect(asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).rejects.toThrow(
+			"Unauthenticated",
+		);
+		await expect(
+			asUser.query(api.files_transfer_queries.list_items, {
+				membershipId: db.membershipId,
+				runId,
+				paginationOpts: { numItems: 10, cursor: null },
+			}),
+		).rejects.toThrow("Unauthenticated");
+		await expect(
+			asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId }),
+		).rejects.toThrow("Unauthenticated");
+	});
+
 	// 200 fills the last intake page exactly. 201 roots are in files_transfer_selection.test.ts.
 	test("starts a copy of 200 selected roots across intake pages", async () => {
 		const count = 200;
@@ -3419,6 +3450,38 @@ describe("delete_run_batch", () => {
 });
 
 describe("changed folders", () => {
+	test("keeps recorded result paths after source and output renames", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		expect(await finish_folder_copy(fixture, runId)).toMatchObject({ activity: { status: "succeeded" } });
+		const receipt = () =>
+			asUser.query(api.files_transfer_queries.list_items, {
+				membershipId: db.membershipId,
+				runId,
+				paginationOpts: { numItems: 10, cursor: null },
+			});
+		const before = await receipt();
+		expect(before?.page[0]).toMatchObject({
+			source: { path: "/source", name: "source" },
+			output: { path: "/target/source", name: "source" },
+		});
+		const output = await get_node(fixture, "/target/source");
+		if (!output) throw new Error("Expected copied folder");
+		for (const nodeId of [folders.get("/source")!, output._id]) {
+			expect(
+				await test_rename_node(t, asUser, {
+					membershipId: db.membershipId,
+					nodeId,
+					path: "renamed",
+				}),
+			).toHaveProperty("_yay");
+		}
+		expect((await get_node(fixture, "/renamed"))?._id).toBe(folders.get("/source"));
+		expect((await get_node(fixture, "/target/renamed"))?._id).toBe(output._id);
+		expect(await receipt()).toEqual(before);
+	});
+
 	test("requires a new choice after the source moves and never follows its old path", async () => {
 		const fixture = await create_folder_fixture(["/source", "/source/child"]);
 		const { t, db, asUser, folders } = fixture;
@@ -3437,7 +3500,7 @@ describe("changed folders", () => {
 		const view = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
 		expect(view).toMatchObject({
 			activity: { status: "awaiting_input", progress: { completed: 0 } },
-			conflicts: [{ kind: "source_changed", sourceName: null }],
+			conflicts: [{ kind: "source_changed", sourceName: "source", sourcePath: "/source" }],
 		});
 		expect(await get_node(fixture, "/target/source")).toBeNull();
 		expect(
