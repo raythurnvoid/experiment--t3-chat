@@ -877,6 +877,11 @@ Live QA must use the installed frame and read back stored chat and raw transcrip
 
 # Releases
 
+SDK 0.23.0 was mirrored on 2026-10-20 at `ea875be3eaf4c51df85233a52fad095b8625c1b5`. Its tree equals
+the folder in host commit `5990f1f71fe4ae7189b7a2788432a6eff43957d3`, which adds `order: "asc" | "desc"`
+to `/api/v1/files/list` (direct children only). It also carries the README changes made since 0.22.0.
+SDK tests pass.
+
 SDK 0.22.0 was mirrored on 2026-10-19 at `49c323cf478b1a5cd66f5618cdd7b28e516bdbe4`. Its tree equals
 the folder in the host commit that adds page agent tools. It adds `client.agent.registerTool` and
 the `bonobo:agent-tool-call` / `bonobo:agent-tool-result` messages. It also carries the generated
@@ -931,6 +936,15 @@ read, and names the folders it skipped because the member cannot open them. Live
 `lemmino4555@gmail.com` was saved at 19:36:33 UTC and showed at the top of the open page at 19:37:51,
 with no reload. The locked messages were checked only in tests, because the owner can open every
 folder. 451 tests.
+
+Gmail 0.3.5 was published and installed in `personal/home` on 2026-10-20 (plugin commit
+`5111676bafbd9e9d7906d247e90ad11857eb3dc0`, version doc `hn7x88pdj1ww5t5y0csnsqwswn8gmpkc`, SDK 0.23.0).
+The Mail page reads each month folder with `order: "desc"` and `kind: "file"`, 100 names a page,
+and returns one whole day at a time sorted by Gmail id. It no longer reads a whole month to show 30
+rows. Live check: the first 30 rows took three list calls (account, year, one month page), and Show
+more read one page of each older month; all 60 rows were in time order. An email from
+`lemmino4555@gmail.com` sent at 20:27:38 UTC showed at the top of the open page at 20:30:37, with no
+reload. 452 tests.
 
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `raythurnvoid/bonobo-plugin-mail`

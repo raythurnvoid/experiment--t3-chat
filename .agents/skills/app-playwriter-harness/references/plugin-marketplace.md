@@ -428,7 +428,7 @@ That is expected. After an uninstall and a reinstall in the same thread, the mod
 earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
 it calls the tool again.
 
-## Page agent tools fixture (Gmail 0.3.4 Mail page)
+## Page agent tools fixture (Gmail 0.3.5 Mail page)
 
 The Gmail plugin's Mail page is the fixture for page agent tools (`agent.page-tools`). It replaced the
 separate Mail plugin, which was uninstalled and removed from this repo on 2026-10-19 (its registry
@@ -436,7 +436,7 @@ entry and GitHub repo stay). The page lists the `/emails` files the Gmail sync w
 tools: `get_view`, `open_email`, `list_drafts`, `create_draft`, `update_draft`, `delete_draft`. Drafts
 are real Gmail drafts. No tool can send; only the member's **Send** click does.
 
-Where it lives (verified 2026-10-20): `gmail@0.3.4` is installed in `personal/home`. Pages:
+Where it lives (verified 2026-10-20): `gmail@0.3.5` is installed in `personal/home`. Pages:
 `/w/personal/home/plugins/gmail/pages/gmail` (connection) and
 `/w/personal/home/plugins/gmail/pages/mail` (Mail).
 
@@ -463,6 +463,10 @@ Where it lives (verified 2026-10-20): `gmail@0.3.4` is installed in `personal/ho
   Since 0.3.4 it reads the newest folder again only when the status field `newestEmailAt` (the Gmail
   time of the newest saved email) grows, so backfill of older mail does not re-read the list. New rows
   go at the top. Inside one day, rows are in Gmail id order (newest first), not subject order.
+- **List calls (0.3.5+).** Count them with a `page.on("request")` listener on `/api/v1/files/list`
+  (read `postData()`), and remove it after. A fresh load makes three calls: the account and year
+  folders (`kind: "folder"`) and one page of the newest month (`kind: "file"`, `order: "desc"`).
+  Show more reads more pages of that month, or the next older month.
 - **Locked emails and folders (0.3.4+).** A locked email row has `data-locked` and a `Locked` badge,
   and opening it shows a "locked in Files" message without a read. Skipped folders are listed in the
   note with `data-mail-locked-folders`; when the account folder itself is locked, that note is a
