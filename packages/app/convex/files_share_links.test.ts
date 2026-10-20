@@ -728,6 +728,44 @@ describe("plugins_data_db_prepare_file_access_binding", () => {
 		expect((await prepare_new("root"))._nay).toBeUndefined();
 	});
 
+	test("refuses a file that a Move has staged into an area that a plugin already decides", async () => {
+		const f = await fixture();
+		const prepare = await prepare_for(f);
+		const team = await create_restricted_folder(f, "/team");
+		await restrict_and_bind(f, team.folderId);
+		// Enough items that the Move stages them over several steps.
+		const big = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		let stagedSteps = 0;
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const moved = await test_move_nodes(f.t, f.asOwner, {
+			membershipId: f.db.membershipId,
+			itemIds: [big.folderId],
+			targetParentId: team.folderId,
+			onStep: async () => {
+				// Staged: the old place still shows, and the new place is in the bound folder.
+				const staged = await f.t.run(async (ctx) => {
+					const view = await files_saved_placement_db_get_node_view(ctx.db, big.nodeId);
+					if (view?.view !== "before") return false;
+					const after = await files_saved_placement_db_get_node(ctx.db, big.nodeId, {
+						cohortId: view.cohortId,
+						view: "after",
+					});
+					return after?.restrictedScopeNodeId === team.folderId;
+				});
+				if (!staged) return;
+				stagedSteps++;
+				expect((await prepare(big.nodeId))._nay?.message).toBe(
+					"A plugin already decides who can read the folder around this item",
+				);
+			},
+		});
+		expect(moved).toEqual({ _yay: null });
+		expect(stagedSteps).toBeGreaterThan(0);
+		// Control: the file outside any Move binds in one step.
+		expect((await prepare(f.nodeId))._nay).toBeUndefined();
+	});
+
 	// A Move holds its folders only in the "before" and "after" views until it ends.
 	test("sees a restricted folder that a Move holds, on the way in and on the way out", async () => {
 		const f = await fixture();

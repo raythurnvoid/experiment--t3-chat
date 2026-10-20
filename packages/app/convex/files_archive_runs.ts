@@ -2115,8 +2115,8 @@ export async function files_archive_runs_db_promote(
 
 /**
  * Finish the job at once. Items already changed keep the job's operation id, so they can be restored
- * or archived again as one unit. People can stop only a restore that waits for a clash choice. Data
- * deletion stops any job.
+ * or archived again as one unit. People can stop only a restore that waits for a clash choice. Workspace
+ * deletion stops any job. User deletion lets an archive that stamps items finish first.
  *
  * A timeout does not stop a job that is not waiting for a choice. Archive has no Stop, so the deadline
  * only tells the recover cron to schedule the step again.

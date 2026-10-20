@@ -26,6 +26,7 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_node_view,
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -4060,8 +4061,19 @@ export async function plugins_data_db_prepare_file_access_binding(
 	if (!existingBinding) {
 		const parent =
 			args.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.parentId);
-		if (parent?.restrictedScopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, parent.restrictedScopeNodeId))) {
-			return Result({ _nay: { message: "A plugin already decides who can read the folder around this item" } });
+		// While a Move holds the node, the area it moves into counts too, like in `restrict_node`.
+		const moveView = nodeId ? await files_saved_placement_db_get_node_view(ctx.db, nodeId) : undefined;
+		const moved =
+			nodeId && moveView
+				? await files_saved_placement_db_get_node(ctx.db, nodeId, { cohortId: moveView.cohortId, view: "after" })
+				: null;
+		for (const scopeNodeId of [
+			parent?.restrictedScopeNodeId,
+			moved?.isRestrictedScopeRoot ? moved.parentScopeNodeId : moved?.restrictedScopeNodeId,
+		]) {
+			if (scopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, scopeNodeId))) {
+				return Result({ _nay: { message: "A plugin already decides who can read the folder around this item" } });
+			}
 		}
 	}
 	const node = nodeId && !existingBinding ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;

@@ -2245,20 +2245,25 @@ async function db_drain_user_write_policy_runs_batch(ctx: MutationCtx, args: { u
 /**
  * Stop and delete one archive or restore job. Items it already changed keep the job's archive
  * operation id, so they can still be restored or archived as one unit.
+ *
+ * An archive that already stamps items is left to finish. Public links end only when the job stamps
+ * each file, so a stop there would leave files inside an archived folder public. Its op makes
+ * `db_user_has_subtree_ops` wait.
  */
 async function db_drain_user_archive_runs_batch(ctx: MutationCtx, args: { userId: Id<"users"> }) {
 	const run = await ctx.db
 		.query("files_archive_runs")
 		.withIndex("by_user", (q) => q.eq("userId", args.userId))
 		.first();
-	if (!run) return 0;
+	if (!run || (run.active && run.kind === "archive" && run.phase === "apply")) return 0;
 	const purged = await files_archive_runs_db_delete_run_batch(ctx, { runId: run._id });
 	return purged.deletedCount;
 }
 
 /**
- * Wait for this user's move or scope ops to end. They have no Stop, and the stored paths and
- * scopes in a surviving workspace are right only after the job ends. Each step is small.
+ * Wait for this user's move or scope ops, and archives that stamp items, to end. They have no Stop,
+ * and the stored paths, scopes and archive stamps in a surviving workspace are right only after the
+ * job ends. Each step is small.
  */
 async function db_user_has_subtree_ops(ctx: MutationCtx, args: { userId: Id<"users"> }) {
 	const op = await ctx.db

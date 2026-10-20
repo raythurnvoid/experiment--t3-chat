@@ -1442,7 +1442,7 @@ lifecycle or access-control module, so every caller can import it without a cycl
 | Restrict or unrestrict the file or a folder above it | `files_nodes_db_set_restricted_scope`, only when the scope really changes, before the patch: the node's own link and every link of its area (`delete_for_scope`). This covers `restrict_node` and `unrestrict_node`. A restrict then unrestrict before the scope job reaches the file does not bring the link back |
 | A scope job gives the file a new scope | `files_nodes_db_rebuild_node`, only when the scope changes. A new path alone (a folder above was renamed) keeps the link |
 | Move to another folder, including replacement and a new parent created by the same Move | The cohort worker stages link revocation for reparented roots and replaced occupants in pages. The group switch ends their links. Rename in the same folder keeps links. Move ends a link even when the new folder has the same audience |
-| Archive | `files_nodes_db_archive_node`, once per stamped node. `files_nodes_db_archive_nodes` stamps only the nodes it is given, so a caller names a folder with all its active descendants, or uses the archive job. The archive job ends each file's link in the apply step that stamps it. A queued, refused, or stopped check keeps the links |
+| Archive | `files_nodes_db_archive_node`, once per stamped node. `files_nodes_db_archive_nodes` stamps only the nodes it is given, so a caller names a folder with all its active descendants, or uses the archive job. The archive job ends each file's link in the apply step that stamps it, and the apply has no stop: user deletion waits for it (`db_drain_user_archive_runs_batch`). A queued, refused, or stopped check keeps the links |
 | Restore from the archive | `files_nodes_db_restore_node`. A restored file comes back with no link |
 | Archive-and-create replacement | The archive helpers above. This covers a replacing upload (`create_upload_node`, `create_upload_nodes`, `/api/v1/files/upload-urls`, `data_import`), `/api/v1/files/write` over a stored file, and plugin and service paths that archive and recreate. The new file has no link |
 | Remove a failed file creation | `files_nodes_db_hard_delete_node` |
@@ -1488,7 +1488,8 @@ own reader list, and once it has no binding of its own it could get links again.
 - A restore that brings a restricted item back into a bound area (`db_land_node` in
   `files_archive_runs.ts`): "A plugin decides who can read the folder it comes back to, so a
   restricted item cannot be restored there."
-- A bind inside a bound area, for an existing node or a new one (`plugins_data_db_prepare_file_access_binding`
+- A bind inside a bound area, for an existing node, a new one, or one a Move has staged into a bound
+  area (`plugins_data_db_prepare_file_access_binding`
   and `plugins_external_files.ensure_writer`): "A plugin already decides who can read the folder
   around this item".
 - A bind of a folder that holds a restricted item, read on
