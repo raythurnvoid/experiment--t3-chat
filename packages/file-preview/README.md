@@ -1,8 +1,8 @@
 # HTML file preview
 
-This static site runs HTML file snapshots from Press. It uses native HTML, CSS, classic scripts, and module scripts. It has no auth, database, file API, or plugin bridge.
+This static site runs HTML file snapshots from Bonobo Senate. It uses native HTML, CSS, classic scripts, and module scripts. It has no auth, database, file API, or plugin bridge.
 
-Press embeds this site on a separate origin with `sandbox="allow-scripts allow-same-origin"`. This site puts the HTML inside a second frame with `sandbox="allow-scripts"`. The inner frame has an opaque origin. It cannot read Press or the runtime page, use origin storage, or share storage with another preview.
+Bonobo Senate embeds this site on a separate origin with `sandbox="allow-scripts allow-same-origin"`. This site puts the HTML inside a second frame with `sandbox="allow-scripts"`. The inner frame has an opaque origin. It cannot read Bonobo Senate or the runtime page, use origin storage, or share storage with another preview.
 
 `parse5` adds a status relay at the start of the document head. Complete, well-formed HTML keeps its native script order. Parsing can repair malformed markup before scripts run, so scripts that depend on parser repair may behave differently. Stored source is never changed. The relay is inside a function so its names do not clash with file scripts.
 
@@ -23,13 +23,13 @@ Use the built preview server for QA. It reads its headers from `dist/_headers`, 
 
 Import the shared contract from `bonobo-file-preview/protocol`.
 
-Every host/runtime message has `protocol: "bonobo-file-preview"`, `version: 1`, `type`, and a UUID `sessionId`. After the outer frame's native load, Press sends `hello`. The runtime replies `ready` to that exact parent origin. Press then sends `load_html` with a UUID `loadId` and `html`.
+Every host/runtime message has `protocol: "bonobo-file-preview"`, `version: 1`, `type`, and a UUID `sessionId`. After the outer frame's native load, Bonobo Senate sends `hello`. The runtime replies `ready` to that exact parent origin. Bonobo Senate then sends `load_html` with a UUID `loadId` and `html`.
 
 The runtime returns `loaded` or `error` for the current load. Errors contain only a message of at most 500 characters. Both sides must check the exact window, origin, schema, session, and load. The source limit is 900,000 UTF-8 bytes. The runtime accepts one session per outer frame. A new load creates a new inner frame.
 
 The inner frame uses the separate `bonobo-file-preview-document` status protocol. The runtime accepts it only from the current inner window, with origin `null` and the current load ID. It builds a new host status message rather than forwarding the child payload.
 
-Press owns the load timeout, Retry, source selection, and frame teardown. Each source change, Refresh, or Retry creates a fresh outer frame. Hiding Preview removes the frame. Error text stays outside the frame. An error is not cleared by a later native load event from that document.
+Bonobo Senate owns the load timeout, Retry, source selection, and frame teardown. Each source change, Refresh, or Retry creates a fresh outer frame. Hiding Preview removes the frame. Error text stays outside the frame. An error is not cleared by a later native load event from that document.
 
 Status is advisory. File scripts can report their own status. A loaded document may still have asynchronous work running. Status must never grant access, save files, or start automatic AI repair.
 
@@ -48,12 +48,12 @@ esm.sh is a trusted external service. It receives module requests, and downloade
 
 ## Production build and hosting
 
-Choose a dedicated HTTPS runtime host outside the app's cookie scope before deployment. The runtime must not share an origin with Press, Convex, R2 file delivery, or plugin assets. No production host is selected by this package.
+Choose a dedicated HTTPS runtime host outside the app's cookie scope before deployment. The runtime must not share an origin with Bonobo Senate, Convex, R2 file delivery, or plugin assets. No production host is selected by this package.
 
-Set `FILE_PREVIEW_PARENT_ORIGINS` to a comma-separated list of exact HTTPS Press origins, without paths, credentials, trailing slashes, or wildcards. The production build fails when this is missing or invalid. For example:
+Set `FILE_PREVIEW_PARENT_ORIGINS` to a comma-separated list of exact HTTPS Bonobo Senate origins, without paths, credentials, trailing slashes, or wildcards. The production build fails when this is missing or invalid. For example:
 
 ```powershell
-$env:FILE_PREVIEW_PARENT_ORIGINS = 'https://your-press-host.example'
+$env:FILE_PREVIEW_PARENT_ORIGINS = 'https://your-app-host.example'
 vp env exec pnpm --dir packages/file-preview run build
 ```
 

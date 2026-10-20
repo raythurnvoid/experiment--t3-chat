@@ -21,7 +21,7 @@ const MAX_HEADERS = 8;
 const MAX_SECRETS = 8;
 const MAX_HEADER_VALUE_BYTES = 4 * 1024;
 
-// Press sets these headers itself, or they change how the request is framed. Wider than the plugin
+// Bonobo Senate sets these headers itself, or they change how the request is framed. Wider than the plugin
 // manifest rule, because a paste can hold any header a host sends.
 const RESERVED_HEADER_NAMES = new Set([
 	"cookie",
@@ -47,32 +47,33 @@ const PLACEHOLDER_REGEX =
 const PLACEHOLDER_WORDS = new Set(["...", "xxx", "TOKEN_HERE", "REPLACE_ME", "changeme"]);
 
 const STREAMABLE_HTTP_TYPES = new Set(["http", "streamable-http", "streamableHttp", "streamable_http"]);
-// Keys Press reads on a remote entry. Every other key is ignored and listed on the card.
+// Keys Bonobo Senate reads on a remote entry. Every other key is ignored and listed on the card.
 const REMOTE_ENTRY_KEYS = new Set(["type", "url", "serverUrl", "headers", "requestOptions"]);
-// Keys of an `mcp-remote` wrapper entry. `env` only feeds the local program, so Press has no use for it.
+// Keys of an `mcp-remote` wrapper entry. `env` only feeds the local program, so Bonobo Senate has no use for it.
 const MCP_REMOTE_ENTRY_KEYS = new Set(["type", "command", "args", "env"]);
 const MCP_REMOTE_RUNNERS = new Set(["npx", "pnpx", "bunx"]);
 
 const REFUSAL_NOT_OBJECT = "This entry is not a JSON object.";
 const REFUSAL_NO_URL = "This entry has no server URL.";
 const REFUSAL_SSE =
-	"This entry uses the old SSE transport. Press supports only Streamable HTTP. Look for a URL that ends in /mcp.";
-const REFUSAL_WS = "This entry uses WebSocket. Press supports only Streamable HTTP.";
-const REFUSAL_UNKNOWN_TYPE = "This entry uses a transport Press does not support. Press supports only Streamable HTTP.";
+	"This entry uses the old SSE transport. Bonobo Senate supports only Streamable HTTP. Look for a URL that ends in /mcp.";
+const REFUSAL_WS = "This entry uses WebSocket. Bonobo Senate supports only Streamable HTTP.";
+const REFUSAL_UNKNOWN_TYPE =
+	"This entry uses a transport Bonobo Senate does not support. Bonobo Senate supports only Streamable HTTP.";
 const REFUSAL_COMMAND_AND_URL = "This entry has both a command and a URL. Keep only the URL.";
-const REFUSAL_FILE = "Press cannot read files from your computer. Remove the ${file:...} reference.";
-const REFUSAL_OAUTH_CLIENT = "Press signs in with its own OAuth client. Remove the OAuth client settings.";
-const REFUSAL_KEY_IN_URL = "This server puts a key in its address. Press can only keep keys in headers.";
+const REFUSAL_FILE = "Bonobo Senate cannot read files from your computer. Remove the ${file:...} reference.";
+const REFUSAL_OAUTH_CLIENT = "Bonobo Senate signs in with its own OAuth client. Remove the OAuth client settings.";
+const REFUSAL_KEY_IN_URL = "This server puts a key in its address. Bonobo Senate can only keep keys in headers.";
 const REFUSAL_HEADER_NOT_TEXT = "Header values must be text.";
 const REFUSAL_TOO_MANY_HEADERS = `A server can have at most ${MAX_HEADERS} headers.`;
 const REFUSAL_TOO_MANY_SECRETS = `A server can have at most ${MAX_SECRETS} secrets.`;
 const REFUSAL_MCP_REMOTE_SSE_ONLY =
-	"This entry forces the old SSE transport (--transport sse-only). Press supports only Streamable HTTP.";
+	"This entry forces the old SSE transport (--transport sse-only). Bonobo Senate supports only Streamable HTTP.";
 const REFUSAL_MCP_REMOTE_FLAGS = new Map([
-	["--allow-http", "This entry allows plain http (--allow-http). Press connects only over https."],
+	["--allow-http", "This entry allows plain http (--allow-http). Bonobo Senate connects only over https."],
 	["--static-oauth-client-info", REFUSAL_OAUTH_CLIENT],
 	["--static-oauth-client-metadata", REFUSAL_OAUTH_CLIENT],
-	["--header-file", "Press cannot read files from your computer. Remove --header-file."],
+	["--header-file", "Bonobo Senate cannot read files from your computer. Remove --header-file."],
 ]);
 
 export type mcp_custom_config_DraftPart =
@@ -286,7 +287,7 @@ function split_command(command: string) {
 }
 
 /**
- * Read an `npx mcp-remote <url>` wrapper. It only runs a local bridge to a remote server, so Press can call
+ * Read an `npx mcp-remote <url>` wrapper. It only runs a local bridge to a remote server, so Bonobo Senate can call
  * that server directly. `_yay` is null when the command is not an `mcp-remote` wrapper.
  */
 function parse_mcp_remote(tokens: string[]) {
@@ -391,7 +392,7 @@ function parse_entry(args: { key: string; value: unknown; inputHints: Map<string
 		if (mcpRemote._yay === null) {
 			return refuse(
 				`This server runs as a program on your computer (${[command, ...args].join(" ")}). ` +
-					"Press can only use remote servers. Look in the server's docs for a remote URL.",
+					"Bonobo Senate can only use remote servers. Look in the server's docs for a remote URL.",
 			);
 		}
 
@@ -430,7 +431,7 @@ function parse_entry(args: { key: string; value: unknown; inputHints: Map<string
 		}
 	}
 
-	// Check only values Press uses. Notes and the local wrapper's env are ignored.
+	// Check only values Bonobo Senate uses. Notes and the local wrapper's env are ignored.
 	if (url.includes("${file:") || rawHeaders.some((header) => header.value.includes("${file:"))) {
 		return refuse(REFUSAL_FILE);
 	}
@@ -447,7 +448,7 @@ function parse_entry(args: { key: string; value: unknown; inputHints: Map<string
 		}
 
 		if (RESERVED_HEADER_NAMES.has(lowerName) || lowerName.startsWith("mcp-")) {
-			return refuse(`Press sets the ${header.name} header itself. Remove it.`);
+			return refuse(`Bonobo Senate sets the ${header.name} header itself. Remove it.`);
 		}
 
 		if (seenHeaderNames.has(lowerName)) {
@@ -537,7 +538,7 @@ function parse_entry(args: { key: string; value: unknown; inputHints: Map<string
  * Parse pasted MCP host config text into one draft per server.
  *
  * Broken JSON, a paste that is too big, and too many servers are whole-paste `errors` with no drafts.
- * A server Press cannot use is a draft with state "refused" and a fixed reason.
+ * A server Bonobo Senate cannot use is a draft with state "refused" and a fixed reason.
  */
 export function mcp_custom_config_parse(text: string) {
 	const drafts: mcp_custom_config_Draft[] = [];
@@ -611,7 +612,7 @@ export function mcp_custom_config_parse(text: string) {
  */
 export function mcp_custom_config_build(draft: mcp_custom_config_Draft, fill: mcp_custom_config_Fill) {
 	if (draft.state === "refused") {
-		return Result({ _nay: { message: draft.refusal ?? "Press cannot use this server." } });
+		return Result({ _nay: { message: draft.refusal ?? "Bonobo Senate cannot use this server." } });
 	}
 
 	const name = fill.name.trim();

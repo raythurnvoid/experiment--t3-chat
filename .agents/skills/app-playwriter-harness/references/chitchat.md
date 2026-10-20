@@ -10,18 +10,18 @@ sometimes silently.
 
 Chitchat now uses its own Convex backend. Read the current
 `plugins/bonobo-plugin-chitchat/README.md` and verify the installed version before QA.
-The Press page route is still `/w/:organizationName/:workspaceName/plugins/chitchat/pages/chat`.
+The Bonobo Senate page route is still `/w/:organizationName/:workspaceName/plugins/chitchat/pages/chat`.
 An older installed bundle may still use the old backend even when the working tree has changed.
 
 - Use the installed frame and normal UI actions to create fresh test channels. Confirm messages in
-  Chitchat's own deployment, not `plugins_data_documents` on Press. The SDK client still targets Press;
+  Chitchat's own deployment, not `plugins_data_documents` on Bonobo Senate. The SDK client still targets Bonobo Senate;
   native chat subscriptions use the separate Chitchat Convex client.
 - Keep two workspace members in separate authorized QA sessions for live messages, private access,
   member removal/reinvite, and read-only behavior. Do not sign the user's QA profile in or out.
 - Check ordinary token renewal, a brief disconnect, and a lease that expires while the frame is idle.
   Drafts and uncertain request IDs must stay. New sends must stop without a live lease and socket.
   Permission changes may take up to the 30-second lease to close native access. Chitchat polls the
-  public access-change feed; Press does not call a Chitchat callback.
+  public access-change feed; Bonobo Senate does not call a Chitchat callback.
 - Use the new transcript status controls. Read the exact fresh `/chitchat-<generation>` root shown in
   Transcript details. Verify raw Markdown markers, edits, replies, reactions, and rollover bytes there.
   Leave all old `/chitchat` output untouched. Inspect separate channel-copy and README-index status.
@@ -40,9 +40,9 @@ claim that the new installed frame has passed these checks.
 ### Public API boundary checks
 
 - The native backend uses `/api/v1/plugins/identity/exchange`, `/api/v1/plugins/members/list`, and
-  `/api/v1/plugins/access/changes`. Its verified lease issuer is `<Press HTTP URL>/plugins-services`
+  `/api/v1/plugins/access/changes`. Its verified lease issuer is `<Bonobo Senate HTTP URL>/plugins-services`
   and its audience is `bonobo-plugin:chitchat`. Never use the removed private bridge for QA.
-- Service grants and conditional Files writes use the documented public SDK contracts. Press owns
+- Service grants and conditional Files writes use the documented public SDK contracts. Bonobo Senate owns
   folder access and writer proofs. Chitchat owns channel readers, Markdown, paths, and rollover.
 - Test a fresh private folder through Connect Files without manually adding service-account grants.
   Require the first real Markdown write to finish. A setup test that injects grants can hide a broken
@@ -71,7 +71,7 @@ claim that the new installed frame has passed these checks.
   textarea remains mounted, its draft stays, and Send becomes available after each renewal.
 - The route regression in `convex/http.test.ts` runs 50 test sessions through four renewals with
   signed test JWTs and mocked host replies. This proves request counts and refusal handling. It is
-  not a live browser load test or a measurement of the real Press rate limiter.
+  not a live browser load test or a measurement of the real Bonobo Senate rate limiter.
 
 ### Reader recovery across an update
 
@@ -101,9 +101,9 @@ claim that the new installed frame has passed these checks.
 Verified with the published 0.8.1 frame on 2026-09-08:
 
 - Use an owned frame's `/auth/lease` response to keep its current JWT in session memory. Renewals replace it about every 15 seconds. Never log the JWT, plugin bearer, request headers, or response body. A captured JWT expires after at most 30 seconds; it is not a durable QA credential.
-- For a fresh native read, create `ConvexHttpClient` from the app's `convex/browser` module in the owned page, point it at the configured Chitchat deployment, set that JWT, and query the public native function. The host's `app_convex` still targets Press. Reading its subscription cache does not prove a fresh native result.
-- Compare `sessions.current.hostUserId` with the Press membership's `userId`. After public Press removal/reinvite, require a new `membershipLifetime`, no old private channel in `channels.list_mine`, and null old message/file reads. A removed member's Press route may unmount the frame before the plugin can show its own denial.
-- Query `files_sharing.get_node_share_state` with the member's current Press membership. An explicit human grant on the new transcript folder can make the copy readable while native private chat remains denied. Confirm a later chat update reaches that manual copy. Use only owned QA content for this check.
+- For a fresh native read, create `ConvexHttpClient` from the app's `convex/browser` module in the owned page, point it at the configured Chitchat deployment, set that JWT, and query the public native function. The host's `app_convex` still targets Bonobo Senate. Reading its subscription cache does not prove a fresh native result.
+- Compare `sessions.current.hostUserId` with the Bonobo Senate membership's `userId`. After public Bonobo Senate removal/reinvite, require a new `membershipLifetime`, no old private channel in `channels.list_mine`, and null old message/file reads. A removed member's Bonobo Senate route may unmount the frame before the plugin can show its own denial.
+- Query `files_sharing.get_node_share_state` with the member's current Bonobo Senate membership. An explicit human grant on the new transcript folder can make the copy readable while native private chat remains denied. Confirm a later chat update reaches that manual copy. Use only owned QA content for this check.
 - Native channel buttons still gain unread text. Scope by the observed `data-channel-key`, then use the channel button's starting name; an exact whole-name match can stop matching after a new unread.
 - A Viewer may keep typing a local draft while Send and Attach are disabled. Restoring Member must keep the draft. Test new sends through the public native mutation too; disabled UI alone does not prove permission enforcement.
 - Delete only the exact owned anonymous fixture through `users.delete_current_user_account`, then close its owned tabs promptly. A successful deletion leaves a tombstoned user and inactive memberships until retention cleanup; it need not remove the user document at once.
@@ -111,17 +111,17 @@ Verified with the published 0.8.1 frame on 2026-09-08:
 ### Native rollover readback
 
 - Create a new public channel, send a baseline message, and connect Files through the installed UI first. Keep stress messages inside that channel and its new transcript root.
-- Keep the current native JWT from the owned frame's `/auth/lease` response in session memory. The corresponding Press bearer is in that request's JSON `pressToken` field, not its Authorization header. Never print or save either credential or the complete request/response.
+- Keep the current native JWT from the owned frame's `/auth/lease` response in session memory. The corresponding Bonobo Senate bearer is in that request's JSON `pressToken` field, not its Authorization header. Never print or save either credential or the complete request/response.
 - For repeated public `messages.send` calls, save each request ID and its exact input before sending. Keep that same request across a lease `refresh_required` result or a transient network/concurrency failure. Save only non-secret receipt IDs and test markers in the QA journal. `messages.latest_roots` gives the bounded live page and its latest sequence.
 - Wait until transcript status is `ready` and `appliedSequence === desiredSequence` before claiming the copy is complete. Check `indexStatus` separately. Do not force internal worker checkpoints to make a live check pass.
-- Read the exact root through the current Press `/api/v1/files/list` route, follow its cursor when needed, and filter to this test channel. Use `/api/v1/files/read` with `maxBytes: 100000` for each part. Compare the listed byte size with the UTF-8 byte count of the returned Markdown; require both to stay at or below 100,000.
+- Read the exact root through the current Bonobo Senate `/api/v1/files/list` route, follow its cursor when needed, and filter to this test channel. Use `/api/v1/files/read` with `maxBytes: 100000` for each part. Compare the listed byte size with the UTF-8 byte count of the returned Markdown; require both to stay at or below 100,000.
 - Check all numbered paths for gaps, every expected test marker exactly once, and every `chitchat:msg` marker exactly once. Numbered parts hold older messages; the unnumbered file is the current tail. Edit the baseline through the public chat mutation and prove the correct old part changes while other part hashes stay the same.
 - Keep raw test Markdown and compact hash manifests in the personal QA artifact folder. Leave the test files and all old transcript roots alone unless cleanup is explicitly requested.
 
 ### Manual transcript edits and rebuild
 
 - Use only the new owned QA transcript. Save its original Markdown and policy first. Keep other transcript writers idle while testing manual changes.
-- Read the node's collaboration mode. When it is off, `files_nodes_content.replace_file_content` is the public action used by Files Save. Call it through the existing authenticated Press client. Do not patch file docs directly or extract a service credential to bypass its policy.
+- Read the node's collaboration mode. When it is off, `files_nodes_content.replace_file_content` is the public action used by Files Save. Call it through the existing authenticated Bonobo Senate client. Do not patch file docs directly or extract a service credential to bypass its policy.
 - A selected service writer also blocks the owner. Coordinate any temporary parent-policy change with the other QA lanes, then restore the exact captured policy in `finally` after each manual save. Check the restored policy before triggering the next chat change.
 - Add a separate manual note, edit the owned chat message, and verify the note remains in the downloaded Markdown. Then duplicate that message's generated block and edit the source again. Chat must stay saved, Files sync must show the plain refusal, and the ambiguous file's bytes must stay unchanged.
 - Open **Rebuild copies** and check that it is disabled before the replace-edits checkbox is selected. Confirm it, then require one copy of the latest message, no duplicate markers, and removal of the manual note. Read the actual download through the normal signed-download action and compare it with the editor content. Never save signed URLs in the QA artifacts.
@@ -139,7 +139,7 @@ Verified with the published 0.8.1 frame on 2026-09-08:
 - Use `getCDPSession({ page })` for `Input.imeSetComposition`, and inspect the actual key event's `isComposing` field before claiming an IME check. Composition Enter must not send. `Input.insertText` ends composition; explicit Send can then save the committed text. This exercises browser IME events, not a full operating-system candidate window.
 - Run the frame-specific accessibility screen in wide, narrow, and active-modal states. Use a 512×384 CSS viewport as the layout equivalent of a 1024×768 display at 200% zoom, and label it that way. Verify actual `innerWidth`/`innerHeight` after screenshot failures: a timed-out capture can restore old metrics while Playwright's cached viewport reports the new size. Reapply a different explicit size before continuing.
 - Check reduced motion with `page.emulateMedia({ reducedMotion: "reduce" })`, then restore it. For theme checks, follow the palette recipe below: the host's root `light` class can still send dark surfaces. A local light-fallback preview must remove all host `--color-*` scales, then restore the saved frame style and class. Never call a partial two-colour override a light-theme screenshot.
-- Keep outage tests separate. Refusing only the owned frame's `/auth/lease` route checks Chitchat access renewal while Press stays online; it is not a whole-network outage. Check that drafts stay and new sends stop once the lease expires.
+- Keep outage tests separate. Refusing only the owned frame's `/auth/lease` route checks Chitchat access renewal while Bonobo Senate stays online; it is not a whole-network outage. Check that drafts stay and new sends stop once the lease expires.
 - Old channels in `chitchat-qa/home` can show `Transcript sync needs attention.` with `Unauthenticated`
   in Transcript details. That is an expired Files connection, not a new bug. **Reconnect Files**
   fixes it: the status turns to `Saved in Files` within a few seconds. A mouse `click()` on that
@@ -154,7 +154,7 @@ Verified with the published 0.8.1 frame on 2026-09-08:
 - **Transcript details** is a native `summary` disclosure. Use its exact text or a `summary` locator, not a button-role locator. Its Rebuild copies button is inside the disclosure.
 - A locked tail file also blocks the reader worker's prepare step. To check deletion after reader removal, restore the file policy, retry, wait for `deletionPhase: "copy"`, then lock the owned file while accepted copies are still pending. Require no archive and a restricted Files sync recovery entry. Restore the captured policy before finishing the test.
 - After recovery, read the exact archived node through `files_nodes_content.get_non_collaborative_file_content`, the normal Files editor query. The signed-download action refuses archived nodes. Require the queued final message and every expected message marker in the Markdown. Check the archive flag separately. The transcript file is archived; its container stays active.
-- At a 512×384 host viewport, minimize the Press sidebar through its normal control before judging the plugin's usable width. Record both the host viewport and the frame's actual size. This is a zoom-layout equivalent, not a claim that browser zoom changed.
+- At a 512×384 host viewport, minimize the Bonobo Senate sidebar through its normal control before judging the plugin's usable width. Record both the host viewport and the frame's actual size. This is a zoom-layout equivalent, not a claim that browser zoom changed.
 
 ## Historical recipes through 0.7.x
 

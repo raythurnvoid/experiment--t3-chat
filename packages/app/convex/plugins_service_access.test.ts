@@ -205,7 +205,7 @@ describe("create_lease_facts", () => {
 		expect((await events({ t, installationId: second.installationId }))._nay?.message).toBe("Unauthorized");
 	});
 
-	test("caps the absolute deadline and uses current Press identity without plugin-data scopes", async () => {
+	test("caps the absolute deadline and uses current Bonobo Senate identity without plugin-data scopes", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation({ t });
 		const requestedExpiresAt = Date.now() + 8_000;

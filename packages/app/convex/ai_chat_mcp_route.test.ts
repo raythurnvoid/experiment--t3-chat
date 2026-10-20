@@ -1281,12 +1281,12 @@ describe("/api/chat MCP server health", () => {
 });
 
 describe("/api/chat MCP logs", () => {
-	// One call fails in Press (the result is over the client cap), one in the tool (`isError`).
+	// One call fails in Bonobo Senate (the result is over the client cap), one in the tool (`isError`).
 	test.each([
 		{
 			url: "https://big.fixtures.test/huge-result",
 			text: "PRIVATE_ARGUMENT_1",
-			error: "The MCP server sent more data than Press accepts.",
+			error: "The MCP server sent more data than Bonobo Senate accepts.",
 		},
 		{ url: MODERN_BASIC_URL, text: "fail", error: null },
 	])("never logs a header value, an argument, or a result ($url)", async ({ url, text, error }) => {

@@ -443,7 +443,7 @@ Where it lives (verified 2026-10-20): `gmail@0.3.4` is installed in `personal/ho
 - **Drafts need "Allow drafts and Send" first.** The Gmail page shows `Drafts and Send: on/off`
   (`data-gmail-compose-status`). The button opens a Google link; finish it like Connect. On the
   callback page the finish code is `textarea#finish` (64 hex characters). The two 32-character `code`
-  elements are the organization and workspace IDs. Copy the code into the Press frame in one script
+  elements are the organization and workspace IDs. Copy the code into the Bonobo Senate frame in one script
   and never print it. Google shows "Google hasn't verified this app" (Testing mode): use **Advanced**,
   then **Go to … (unsafe)**. The consent line for the new scope reads "Manage drafts and send emails".
 - **Clicks in this frame can hang.** `locator.click()` and `mouse.click()` sometimes stall at
@@ -468,10 +468,10 @@ Where it lives (verified 2026-10-20): `gmail@0.3.4` is installed in `personal/ho
   note with `data-mail-locked-folders`; when the account folder itself is locked, that note is a
   `role="alert"`. Testing it live needs a second member and a restricted folder (see
   `second-user-fixtures.md`); the owner can open everything.
-- **Read drafts back from the plugin backend**, not from Press: run
+- **Read drafts back from the plugin backend**, not from Bonobo Senate: run
   `vp env exec pnpm exec convex data gmail_drafts` from `plugins/bonobo-plugin-gmail`. A row holds the
   subject and recipients only; the text lives in Gmail. A sent draft's row is deleted.
-- **After Update, keep the Gmail or Mail page open.** An update makes Press refuse the sync's grant,
+- **After Update, keep the Gmail or Mail page open.** An update makes Bonobo Senate refuse the sync's grant,
   but sync notices only at its next email write, which can be minutes later. It then waits with
   `press_reconnect_needed` (`next null`) until an open page renews the grant. Both pages check status
   while open (Gmail every 5 seconds, Mail every 15) and renew once per connection. To test the late
@@ -505,7 +505,7 @@ Chat check (Agent mode, in the page's right panel): ask the agent to call `get_v
 reply draft. The chat shows `Page tool: Mail: get_view` and `Page tool: Mail: create_draft` cards.
 Open **Drafts**: the row has an `Agent` mark, and the open draft shows `Edited by the agent`. Its
 inputs hold the values the agent sent (read `input,textarea` values with `frame.evaluate`;
-`innerText` does not show them). `plugins_page_tool_calls` in Press is empty again about 2 minutes
+`innerText` does not show them). `plugins_page_tool_calls` in Bonobo Senate is empty again about 2 minutes
 after the run: each call doc deletes itself 120 seconds after it is created. That is expected.
 
 ## Triggering a plugin backend

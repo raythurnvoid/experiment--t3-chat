@@ -77,7 +77,7 @@ subdomains, trailing dots, and IPv6 brackets. A blank main page stays allowed.
 Blank, srcdoc, and data child pages use their checked parent's host rule.
 These checks are best effort and do not change the native browser's network rules.
 The native profile keeps the user's existing logins. Production does not block
-Press hosts, so the agent can open Press as that user across their organizations.
+Bonobo Senate hosts, so the agent can open Bonobo Senate as that user across their organizations.
 The tab can also reach localhost, private-network, and intranet pages through the
 user's network. It has no cloud-provider network boundary. This is the accepted
 shared host policy, not a promise that only public pages can be reached.

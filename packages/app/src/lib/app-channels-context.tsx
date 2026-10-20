@@ -64,9 +64,9 @@ const AppChannelsProvider = Object.assign(
 			if (channelList.status === "CanLoadMore") channelList.loadMore(50);
 		}, [channelList.status, channelList.loadMore]);
 		useEffect(() => {
-			document.title = unreadMentions ? `(${unreadMentions}) Press` : "Press";
+			document.title = unreadMentions ? `(${unreadMentions}) Bonobo Senate` : "Bonobo Senate";
 			return () => {
-				document.title = "Press";
+				document.title = "Bonobo Senate";
 			};
 		}, [unreadMentions]);
 

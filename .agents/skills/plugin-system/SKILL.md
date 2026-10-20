@@ -7,9 +7,9 @@ description: Plugin publishing limits, artifact cleanup, plugin UI pages and fil
 
 Load `../convex/SKILL.md` before changing Convex code. Load `../data-deletion/SKILL.md` before changing plugin-related deletion behavior. Treat module docblocks as the closest implementation-local notes.
 
-Plugin product behavior belongs in its own repository and backend. Press exposes general identity,
+Plugin product behavior belongs in its own repository and backend. Bonobo Senate exposes general identity,
 membership, access, and Files contracts. Never add a named product's tables, callbacks, secrets,
-routes, or branches to Press. A missing capability needs a public contract, SDK types, permission
+routes, or branches to Bonobo Senate. A missing capability needs a public contract, SDK types, permission
 tests, and proof that an unrelated plugin can use it without another host change.
 
 # Manifest and publishing limits
@@ -103,7 +103,7 @@ Several capabilities and manifest fields imply another one, and `plugins_validat
 
 `agent.page-tools` and page `agent.tools` require each other in both directions: the capability needs at least one page with agent tools, and a page with agent tools needs the capability. A tool name matches `^[a-z][a-z0-9_]{0,47}$` and is unique within its page. A description may hold newlines but no other control characters. `inputSchema` must be a JSON object with `type: "object"`.
 
-`agent.mcp.connect` and `mcpServers` require each other in both directions, and so do `agent.skills.contribute` and `skills`. The manifest is public, so an MCP server URL must be a normalized `https:` URL on port 443 with a host name (no IP literal, no `localhost`), no credentials, no fragment, and no query name that looks like a key (`key`, `token`, `secret`, `auth`, and similar). Keys go in `headers`, whose values name declared `secrets`. Server ids `my` and `my-*` are reserved for members' own servers. An OAuth server (`auth.kind: "oauth"`) names its sign-in server in `issuer`, an optional `resource`, and extra `scopes`; `issuer` and `resource` must be `https:` URLs with no query or fragment, and such a server may not set an `Authorization` header. The issuer is a pin: Press never sends a member to another sign-in server until a new reviewed version names it. An OAuth `resource` must be the server URL or one of its parent paths. A skill path must be `dist/skills/<name>/SKILL.md`, a listed `text/markdown` file. Publish parses each skill's frontmatter with `ai_chat_skills_parse`, refuses a bad one before review and upload, and stores its `description`. Publish also stores `mcpServersFingerprint`, the SHA-256 of the parsed `mcpServers` JSON, so install can check an exact accept. The review sees the server ids, URLs, auth kinds, and skill names as facts, and reviews each skill file.
+`agent.mcp.connect` and `mcpServers` require each other in both directions, and so do `agent.skills.contribute` and `skills`. The manifest is public, so an MCP server URL must be a normalized `https:` URL on port 443 with a host name (no IP literal, no `localhost`), no credentials, no fragment, and no query name that looks like a key (`key`, `token`, `secret`, `auth`, and similar). Keys go in `headers`, whose values name declared `secrets`. Server ids `my` and `my-*` are reserved for members' own servers. An OAuth server (`auth.kind: "oauth"`) names its sign-in server in `issuer`, an optional `resource`, and extra `scopes`; `issuer` and `resource` must be `https:` URLs with no query or fragment, and such a server may not set an `Authorization` header. The issuer is a pin: Bonobo Senate never sends a member to another sign-in server until a new reviewed version names it. An OAuth `resource` must be the server URL or one of its parent paths. A skill path must be `dist/skills/<name>/SKILL.md`, a listed `text/markdown` file. Publish parses each skill's frontmatter with `ai_chat_skills_parse`, refuses a bad one before review and upload, and stores its `description`. Publish also stores `mcpServersFingerprint`, the SHA-256 of the parsed `mcpServers` JSON, so install can check an exact accept. The review sees the server ids, URLs, auth kinds, and skill names as facts, and reviews each skill file.
 
 ## MCP servers and skills at install
 
@@ -424,7 +424,7 @@ The batch secret mutations (`upsert_publisher_repository_secrets`, `upsert_insta
 
 - The shared frame permits downloads through `allow-downloads`, including content made by a plugin.
   This is a reviewed host capability for all pages and file views, not a Chitchat-only permission.
-  It grants no Press file access, host DOM access, popup, top navigation, or local-file execution.
+  It grants no Bonobo Senate file access, host DOM access, popup, top navigation, or local-file execution.
   File links may request `download: true` from `/api/v1/files/download-urls` to force an attachment
   disposition. Default previews, safe content types, and all current file and expiry checks stay unchanged.
 
@@ -653,7 +653,7 @@ lifetimes, and manual Files takeover. Ordinary service writes keep their existin
 Identity and roster access use `/api/v1/plugins/identity/exchange`, `members/list`, and `access/changes`.
 The installation owns the service connection. A valid page exchange binds its exact registration,
 version, and account. A service secret alone cannot create or refresh that authority. The general
-access ledger and membership lifetime facts belong to Press; product membership remains native.
+access ledger and membership lifetime facts belong to Bonobo Senate; product membership remains native.
 
 For reliable background work, send a persisted `requestId` on exchange, renew and seal-processing.
 Recover a lost response through `/api/v1/plugins/service-grants/recover` with the original
@@ -832,9 +832,9 @@ Git submodule with its own repo (`raythurnvoid/bonobo-plugin-gallery`). `dist/` 
 
 # Chitchat plugin (`plugins/bonobo-plugin-chitchat`)
 
-Chitchat is a separate Git repository and Convex project, embedded as one React 19 page in Press. Its own `convex/` schema and functions own channels, private membership, messages/replies, reactions, read states, request receipts, and transcript work. Press keeps identity, tenancy, installation, service accounts, and Files. See the plugin README for its data model, environment values, recovery, build, and release steps.
+Chitchat is a separate Git repository and Convex project, embedded as one React 19 page in Bonobo Senate. Its own `convex/` schema and functions own channels, private membership, messages/replies, reactions, read states, request receipts, and transcript work. Bonobo Senate keeps identity, tenancy, installation, service accounts, and Files. See the plugin README for its data model, environment values, recovery, build, and release steps.
 
-The frame uses its own authenticated Convex client. The SDK client stays pointed at Press. There is no second login. Chitchat uses the general public identity exchange and member/change pages. Its server polls access every 30 seconds. Before admitting a lease, it catches up to the fresh signed required revision. A ready installation already at that revision or later skips the immediate feed read; admission still checks current local access. Keep this shortcut in the lease route, since the scheduled poll must discover later changes. The signed lease expires within 30 seconds; native expiry jobs also invalidate idle subscriptions. Failed renewal closes access. Internet is required; keep drafts and exact uncertain request IDs, but do not queue new offline sends.
+The frame uses its own authenticated Convex client. The SDK client stays pointed at Bonobo Senate. There is no second login. Chitchat uses the general public identity exchange and member/change pages. Its server polls access every 30 seconds. Before admitting a lease, it catches up to the fresh signed required revision. A ready installation already at that revision or later skips the immediate feed read; admission still checks current local access. Keep this shortcut in the lease route, since the scheduled poll must discover later changes. The signed lease expires within 30 seconds; native expiry jobs also invalidate idle subscriptions. Failed renewal closes access. Internet is required; keep drafts and exact uncertain request IDs, but do not queue new offline sends.
 
 The manifest has no generic store or invoke capability and no backend runner artifact. It declares `plugin.service.connect`, `ui.outbound.fetch`, Files read/write/own-write/own-access, and workspace members read. Its exact HTTPS cloud, HTTPS action, and WSS cloud origins require install consent.
 
@@ -855,7 +855,7 @@ their request IDs; only confirmed success clears them.
 
 Attachment links request `download: true` from the existing Files URL route and use a normal
 download anchor without opening a popup. Expired links must offer refresh before navigation can
-replace the chat frame. File access and signed URL lifetime checks remain in Press.
+replace the chat frame. File access and signed URL lifetime checks remain in Bonobo Senate.
 
 A fresh dataset uses a new `/chitchat-<generation>` Files root. Old Files and store data are left alone. Keep the existing inner layout, Markdown markers, UTC times, author snapshots, reply indentation, and 100,000-byte rollover. Durable ordered transcript jobs publish through public Files writer APIs. Current account/actor access, labels, locks, pinned paths and IDs, content revision, writer generation, and operation receipts are checked at publication. Explicit rebuild replaces manual edits only after its UI confirmation.
 

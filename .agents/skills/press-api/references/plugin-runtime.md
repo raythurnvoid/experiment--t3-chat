@@ -4,7 +4,7 @@ These routes are for plugin callers listed in the [route index](references/route
 
 ## Sealed service grants
 
-Lifecycle routes use `X-Bonobo-Service-Authorization: Bearer <registered secret>` plus `Authorization: Bearer <frame or service token>`. Send both only to the intended Press API origin.
+Lifecycle routes use `X-Bonobo-Service-Authorization: Bearer <registered secret>` plus `Authorization: Bearer <frame or service token>`. Send both only to the intended Bonobo Senate API origin.
 
 | Suffix under `/api/v1/plugins/service-grants/` | Bearer | Body |
 | --- | --- | --- |

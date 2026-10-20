@@ -23,7 +23,7 @@ const CALL_TIMEOUT_MS = 10_000;
 const REDIRECT_URI = "https://app.press.test/oauth/mcp/callback";
 
 // `auth/basic-cimd` expects this exact client id, and counts any other value as a warning that fails
-// the run. Press never fetches it here: the check that the app serves its own document runs only in
+// the run. Bonobo Senate never fetches it here: the check that the app serves its own document runs only in
 // Convex.
 const CLIENT_ID_METADATA_URL = "https://conformance-test.local/client-metadata.json";
 
@@ -47,7 +47,7 @@ const signIn = {
  * Pin the issuer once, at the first discovery, like a plugin manifest or a saved server does. The
  * conformance AS runs on a random port, so the adapter takes the first issuer the PRM names. It also
  * trusts that issuer when it does not promise `iss`. Reading the PRM again later could
- * follow a new sign-in server, and Press never does that.
+ * follow a new sign-in server, and Bonobo Senate never does that.
  */
 async function pin_issuer(resourceMetadataUrl: string | null) {
 	const url = new URL(serverUrl);
@@ -222,13 +222,13 @@ const scenarios: Record<string, () => Promise<void>> = {
 		for (const toolCall of toolCalls) await call_tool({ listed, name: toolCall.name, arguments: toolCall.arguments });
 	},
 	"http-invalid-tool-headers": async () => {
-		// Call every tool Press kept. A tool with an invalid `x-mcp-header` must not be in the list.
+		// Call every tool Bonobo Senate kept. A tool with an invalid `x-mcp-header` must not be in the list.
 		const listed = await list_tools();
 		for (const tool of listed.tools) await call_tool({ listed, name: tool.name, arguments: { region: "us-west1" } });
 	},
 	"sep-2322-client-request-state": async () => {
-		// Press does not answer `input_required`, so the first three calls fail on purpose. The last
-		// two still check that Press sends no request state and never retries.
+		// Bonobo Senate does not answer `input_required`, so the first three calls fail on purpose. The last
+		// two still check that Bonobo Senate sends no request state and never retries.
 		const listed = await list_tools();
 		for (const name of [
 			"test_mrtr_echo_state",

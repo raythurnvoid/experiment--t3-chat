@@ -240,7 +240,7 @@ describe("mcp_oauth_discover", () => {
 		}
 	});
 
-	test("refuses an authorization endpoint on an IP, a local name, or a Press host", async () => {
+	test("refuses an authorization endpoint on an IP, a local name, or a Bonobo Senate host", async () => {
 		vi.stubEnv("MCP_DENIED_HOSTS", "app.press.test");
 		for (const endpoint of [
 			"https://10.0.0.1/authorize",
@@ -359,7 +359,7 @@ describe("mcp_oauth_start", () => {
 		expect((await start())._nay).toEqual(
 			expect.objectContaining({
 				name: "oauth_no_client",
-				message: "This server's sign-in server does not support Press yet.",
+				message: "This server's sign-in server does not support Bonobo Senate yet.",
 			}),
 		);
 	});
@@ -380,7 +380,7 @@ describe("mcp_oauth_start", () => {
 		expect((await start())._nay).toEqual(
 			expect.objectContaining({
 				name: "oauth_registration_failed",
-				message: "This server's sign-in server refused to register Press.",
+				message: "This server's sign-in server refused to register Bonobo Senate.",
 			}),
 		);
 		expect(fixtures.counts.register).toBe(1);

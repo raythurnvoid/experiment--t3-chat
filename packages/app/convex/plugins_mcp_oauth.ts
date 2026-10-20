@@ -576,7 +576,7 @@ export const start = action({
 		}
 		const urls = app_oauth_urls();
 		if (!urls) {
-			return Result({ _nay: { message: "Press is not set up for MCP sign-in." } });
+			return Result({ _nay: { message: "Bonobo Senate is not set up for MCP sign-in." } });
 		}
 
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_mcp_oauth_start", key: userAuth.id });
@@ -848,7 +848,7 @@ export const finish = action({
 
 		const urls = app_oauth_urls();
 		if (!urls) {
-			return Result({ _nay: { message: "Press is not set up for MCP sign-in." } });
+			return Result({ _nay: { message: "Bonobo Senate is not set up for MCP sign-in." } });
 		}
 
 		const claimed = (await ctx.runMutation(internal.plugins_mcp_oauth.claim_pending, {
@@ -1104,7 +1104,7 @@ type store_grant_Result =
 		: never;
 
 /**
- * The member's grant for a target, when Press may send its token there. The issuer and the
+ * The member's grant for a target, when Bonobo Senate may send its token there. The issuer and the
  * resource come from the stored version or server doc, never from a new discovery. `null` when there
  * is no grant or it does not match them.
  */
@@ -1363,7 +1363,7 @@ export async function plugins_mcp_oauth_get_access_token(
 				additionalData: grant.additionalData,
 				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
 			}).catch(() => null);
-			// A token Press cannot read (a changed key) is as good as gone.
+			// A token Bonobo Senate cannot read (a changed key) is as good as gone.
 			if (accessToken === null) {
 				await ctx.runMutation(internal.plugins_mcp_oauth.mark_refused, {
 					grantId: grant.grantId,

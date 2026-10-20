@@ -42,7 +42,7 @@ const DRAIN_BATCH_SIZE = 100;
 
 const SERVER_CHANGED_MESSAGE = "The server changed; try again.";
 // A missing or changed `MCP_SECRETS_ENCRYPTION_KEY`, or a damaged doc, makes a decrypt fail.
-const CANNOT_READ_SECRETS_MESSAGE = "Press could not read the saved secrets. Type them again.";
+const CANNOT_READ_SECRETS_MESSAGE = "Bonobo Senate could not read the saved secrets. Type them again.";
 export const mcp_custom_servers_SIGN_IN_CHANGED_MESSAGE =
 	"This server changed its sign-in settings. Delete it and add it again.";
 
@@ -430,7 +430,7 @@ type authorize_server_Result =
 		: never;
 
 /**
- * Add or edit one server from the pasted text. Press parses the text again here, probes the server
+ * Add or edit one server from the pasted text. Bonobo Senate parses the text again here, probes the server
  * once, and stores a clean record. It never stores the pasted text.
  */
 export const save = action({

@@ -1,11 +1,11 @@
 # Expected failures for `conformance client --requirements 2026-07-28`.
 # The runner fails when a listed entry starts to pass, so remove an entry as soon as its fix lands.
 client:
-  # Press does not answer `input_required` in v1 (D4). The other two sep-2322 checks must pass.
+  # Bonobo Senate does not answer `input_required` in v1 (D4). The other two sep-2322 checks must pass.
   - sep-2322-client-request-state:sep-2322-client-request-state-echoed
   - sep-2322-client-request-state:sep-2322-client-jsonrpc-id-different
   - sep-2322-client-request-state:sep-2322-client-no-state-omitted
-  # Pre-registered Press OAuth apps are a later phase (9.3).
+  # Pre-registered Bonobo Senate OAuth apps are a later phase (9.3).
   - auth/pre-registration
-  # The scenario expects the client to follow a new sign-in server. Press never does (D17, 9.9).
+  # The scenario expects the client to follow a new sign-in server. Bonobo Senate never does (D17, 9.9).
   - auth/authorization-server-migration

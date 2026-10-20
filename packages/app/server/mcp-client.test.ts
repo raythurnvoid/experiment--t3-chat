@@ -160,7 +160,7 @@ describe("mcp_client_list_tools", () => {
 		expect(result._nay).toMatchObject({
 			name: "unsupported_version",
 			message:
-				"This server uses an MCP version Press does not support. Press supports 2026-07-28, 2025-11-25, 2025-06-18, and 2025-03-26.",
+				"This server uses an MCP version Bonobo Senate does not support. Bonobo Senate supports 2026-07-28, 2025-11-25, 2025-06-18, and 2025-03-26.",
 		});
 	});
 
@@ -175,7 +175,7 @@ describe("mcp_client_list_tools", () => {
 
 		expect(result._nay).toMatchObject({
 			name: "not_modern_mcp",
-			message: "This URL is not an MCP server that Press can use.",
+			message: "This URL is not an MCP server that Bonobo Senate can use.",
 		});
 	});
 
@@ -255,7 +255,7 @@ describe("mcp_client_list_tools", () => {
 		expect(result._nay?.name).toBe("not_modern_mcp");
 	});
 
-	test("drops each tool Press cannot send to the model and keeps the rest", async () => {
+	test("drops each tool Bonobo Senate cannot send to the model and keeps the rest", async () => {
 		const result = await list({ fixture: "bad-tools" });
 
 		expect(result._yay?.tools.map((tool) => tool.name)).toEqual(["good", "local_ref", "bad_output", "lying"]);
@@ -575,7 +575,7 @@ describe("mcp_client_call_tool", () => {
 
 		expect(result._nay).toMatchObject({
 			name: "bad_response",
-			message: "The MCP server sent a response Press cannot read.",
+			message: "The MCP server sent a response Bonobo Senate cannot read.",
 		});
 	});
 
@@ -726,7 +726,7 @@ describe("mcp_client_call_tool", () => {
 
 		expect(result._nay).toMatchObject({
 			name: "input_required_unsupported",
-			message: "The MCP tool asked for more input. Press does not support that yet.",
+			message: "The MCP tool asked for more input. Bonobo Senate does not support that yet.",
 		});
 	});
 
@@ -787,7 +787,7 @@ describe("mcp_client_call_tool", () => {
 	test("refuses an unknown content type", async () => {
 		const result = await call({ fixture: "bad-output", variant: "unknown-type" });
 
-		// The SDK checks each content block against the spec, so Press never sees an unknown type.
+		// The SDK checks each content block against the spec, so Bonobo Senate never sees an unknown type.
 		expect(result._nay?.name).toBe("bad_response");
 	});
 

@@ -777,7 +777,7 @@ describe("FileHtmlPreview", () => {
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 	});
 
-	test("rejects a preview URL on the Press origin", async () => {
+	test("rejects a preview URL on the Bonobo Senate origin", async () => {
 		vi.stubEnv("VITE_FILE_PREVIEW_URL", `${window.location.origin}/v0`);
 		render(<Preview />);
 		expect(screen.getByText("Preview is not configured")).toBeDefined();

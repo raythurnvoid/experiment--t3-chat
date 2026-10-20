@@ -30,7 +30,7 @@ type McpConnect_Props = {
 };
 
 /**
- * Start an MCP sign-in. Before the browser leaves Press, show the sign-in server's host and wait for
+ * Start an MCP sign-in. Before the browser leaves Bonobo Senate, show the sign-in server's host and wait for
  * the member to continue, so they know where they are about to type a password.
  */
 export const McpConnect = memo(function McpConnect(props: McpConnect_Props) {
@@ -58,7 +58,7 @@ export const McpConnect = memo(function McpConnect(props: McpConnect_Props) {
 				}
 				// Only ever send the member to an https sign-in page.
 				if (new URL(result._yay.authorizationUrl).protocol !== "https:") {
-					toast.error("This sign-in server does not use https, so Press cannot open it.");
+					toast.error("This sign-in server does not use https, so Bonobo Senate cannot open it.");
 					return;
 				}
 				setSignIn(result._yay);

@@ -57,7 +57,7 @@ Membership says where you are. Access control says what you may do there.
 `access_control_changes.ts` owns the ordered access ledger and its head. Role changes, ownership
 transfer, service account changes, member changes, session revocation, installation changes, and
 tenant deletion append scoped facts in the same transaction as their source writes. Calls from one
-mutation must be sequential so they share one ordered counter. Press has no named plugin consumer
+mutation must be sequential so they share one ordered counter. Bonobo Senate has no named plugin consumer
 or remote wait in this path.
 
 The public member and access-change APIs use `plugins_service_connections`. A live connection needs
@@ -66,7 +66,7 @@ An old or removed connection gets control events only. Another plugin's secret n
 that connection. A valid page identity exchange is the only way to update its pins.
 
 Plugin backends apply these facts and enforce their own access lease, which lasts at most 30 seconds.
-They own their private groups and live queries. Press owns workspace membership, Files grants,
+They own their private groups and live queries. Bonobo Senate owns workspace membership, Files grants,
 and `organizations_membership_lifetimes`. See [external plugin identity](../auth-system/SKILL.md#identity-for-external-plugin-backends).
 
 ## Paged media validation
@@ -617,7 +617,7 @@ and sharing only ever writes grants on a restricted node, so that lookup misses 
 reads every private channel and every private direct message in the workspace, with no grant and no
 audit trail, and no revocation can take it away. That is deliberate — it mirrors the file rule rather
 than inventing a second one — but a plugin whose UI says "private" has to say this too, or the feature
-is a disclosure. This rule concerns Press plugin-store scopes. A plugin's separate database owns
+is a disclosure. This rule concerns Bonobo Senate plugin-store scopes. A plugin's separate database owns
 its own group rules and must document them in that plugin's repository.
 
 The consequence that matters most: **inside a restricted subtree a role's permissions grant
@@ -1629,7 +1629,7 @@ Be explicit about this when planning work; do not assume the subsystem is comple
 - **Plugin-owned private paths have the same name-probing risk.** Under a locked parent,
   `create_folder_node` can answer `"Permission denied"` for an unreadable existing child and
   `"This item is read-only."` for a free name. Plugin authors should avoid guessable private paths.
-  Their folder layout belongs in their repository; Press does not recognize their private groups.
+  Their folder layout belongs in their repository; Bonobo Senate does not recognize their private groups.
   If the different answers become a product concern, collapse them as `create_upload_nodes` does.
 - **The folder import widens that oracle's budget, on purpose.** `files_nodes.create_upload_nodes`
   reports per-item skips, and a skip is the same class of probe. The payload never says why: a

@@ -359,7 +359,7 @@ describe("save", () => {
 		).toMatchObject({ _yay: { customServerId } });
 	});
 
-	test("a saved secret Press cannot read works again once it is typed", async () => {
+	test("a saved secret Bonobo Senate cannot read works again once it is typed", async () => {
 		const { t, owner } = await setup();
 		const member = await add_member({ t, owner });
 		const headers = { "X-Api-Key": "${API_KEY}" };
@@ -375,7 +375,7 @@ describe("save", () => {
 			const other = secrets.find((secret) => secret.customServerId !== customServerId)!;
 			await ctx.db.patch("mcp_custom_server_secrets", own._id, { value: other.value });
 		});
-		const cannotRead = { _nay: { message: "Press could not read the saved secrets. Type them again." } };
+		const cannotRead = { _nay: { message: "Bonobo Senate could not read the saved secrets. Type them again." } };
 
 		expect(
 			await member.asUser.action(api.mcp_custom_servers.test_connection, {
@@ -507,7 +507,9 @@ describe("sign-in pin", () => {
 
 		const refused = await save(member, { url: OAUTH_URL });
 
-		expect(refused._nay?.message).toBe("This server names more than one sign-in server. Press cannot choose one.");
+		expect(refused._nay?.message).toBe(
+			"This server names more than one sign-in server. Bonobo Senate cannot choose one.",
+		);
 		expect(await t.run((ctx) => ctx.db.query("mcp_custom_servers").collect())).toEqual([]);
 	});
 

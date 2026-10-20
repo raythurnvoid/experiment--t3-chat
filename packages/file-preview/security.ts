@@ -2,7 +2,7 @@ export function file_preview_security_config(value: string | undefined, local: b
 	const origins =
 		value?.split(",").map((origin) => origin.trim()) ??
 		(local ? ["http://localhost:5173", "http://127.0.0.1:5173"] : []);
-	if (origins.length === 0) throw new Error("Set FILE_PREVIEW_PARENT_ORIGINS to the exact Press origins.");
+	if (origins.length === 0) throw new Error("Set FILE_PREVIEW_PARENT_ORIGINS to the exact Bonobo Senate origins.");
 	for (const origin of origins) {
 		const url = new URL(origin);
 		const localOrigin = local && (origin === "http://localhost:5173" || origin === "http://127.0.0.1:5173");

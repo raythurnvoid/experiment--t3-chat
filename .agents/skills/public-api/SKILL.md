@@ -117,9 +117,9 @@ The portable client guide is `../press-api/SKILL.md`, with skill-local resources
 
 `plugins_service_access_http_routes.ts` registers three server contracts. Identity exchange takes
 `{exchangeId,requestedExpiresAt}`, the current `plu_` bearer, and the registered service-secret
-header. It returns only a signed ES256 JWT. Its issuer is `<Press HTTP origin>/plugins-services`;
+header. It returns only a signed ES256 JWT. Its issuer is `<Bonobo Senate HTTP origin>/plugins-services`;
 audience is `bonobo-plugin:<registered plugin name>`. The installation, version, account, session,
-user, membership lifetime, required revision, and expiry all come from current Press authority.
+user, membership lifetime, required revision, and expiry all come from current Bonobo Senate authority.
 Expiry is capped by the requested deadline, page expiry, and validation time plus 30 seconds.
 
 `/api/v1/plugins/members/list` takes `{installationId,cursor,startRevision}` and returns at most 50
@@ -133,7 +133,7 @@ retired registration/version/account pins. Unrelated events return no private me
 These routes return `Cache-Control: no-store`. Bad credentials use the failed-auth rate bucket;
 authenticated member/change reads also use the principal bucket. Stale history returns 410 and
 requires a new snapshot. A removed installation returns terminal access information only. The
-owning backend must enforce lease expiry on live queries as well as new calls. Press never calls
+owning backend must enforce lease expiry on live queries as well as new calls. Bonobo Senate never calls
 product-specific access webhooks. See the [auth spec](../auth-system/SKILL.md#identity-for-external-plugin-backends).
 
 Service-grant exchange, renew, seal-processing, verify-live, and saved-response recovery use
@@ -289,7 +289,7 @@ The existing grant expiry cron drains grants and budgets within one indexed batc
 
 Registered external services use the same public Files contracts as other plugins, with optional writer conditions. `public_api_plugin_files.ts` and `public_api.ts` own the HTTP handlers; `plugins_external_files.ts` owns writer transactions. Writer requests need a live sealed service bearer, current service secret, and `workspace.files.own-write` alongside normal file consents. Reader changes also need own-access. The narrow undo door below uses the original reader-change proof instead. Ordinary requests without writer conditions keep their existing limits.
 
-`POST /api/v1/files/plugin-folders/ensure` accepts `{path,writer:{resourceKey,rootNodeId},access?}`. The resource key is an opaque string of 1–512 characters. Press never parses product IDs from it. A null root ID creates an unused sealed root; a supplied ID must identify the writer's exact labeled root. Repeating a key returns its saved writer and folder IDs without adopting another folder or restoring metadata, policy, or sharing. `access.readers` contains up to 50 unique `{userId,membershipLifetime}` pairs; it cannot be combined with a data-store read scope. Creation restricts the empty folder before any content.
+`POST /api/v1/files/plugin-folders/ensure` accepts `{path,writer:{resourceKey,rootNodeId},access?}`. The resource key is an opaque string of 1–512 characters. Bonobo Senate never parses product IDs from it. A null root ID creates an unused sealed root; a supplied ID must identify the writer's exact labeled root. Repeating a key returns its saved writer and folder IDs without adopting another folder or restoring metadata, policy, or sharing. `access.readers` contains up to 50 unique `{userId,membershipLifetime}` pairs; it cannot be combined with a data-store read scope. Creation restricts the empty folder before any content.
 
 First-time writer creation with `access.readers` also grants the exact bound account **Can manage** on that new private folder, in the same transaction. Otherwise restriction would remove the account's inherited access and block its first file. Before creating anything, the normal grant helper checks the actor's `workspace.service_accounts.manage` permission and full grant ceiling on the nearest existing parent or workspace root. The account must also pass the existing parent write and management checks. This adds no human write permission and does not grant access merely because a writer policy was selected. Existing-folder retries never restore an account grant, replace manual sharing, or change readers. A later removed grant must be restored through normal Files sharing before new writes can resume.
 
@@ -309,7 +309,7 @@ File archive accepts `expectedContentRevision`. A supplied revision must still m
 
 Archive resolves the exact requested node ID before checking access, including when it is already archived. It checks that node's tenant, path, and pinned parent; it never picks a replacement at the same path. A newly acknowledged archive of an already archived file saves only its receipt. The file's archive ID, dates, author, and content stay unchanged. Current credentials, labels, permissions, policies, writer generation, binding, and any supplied content revision still apply.
 
-`plugins_external_file_bindings` keeps private readers attached until a real human sharing change. Attached grants carry `externalPluginMembershipLifetime`; Press compares its own canonical tenancy lifetime before allowing access. Manual takeover preserves current grants and removes those tags. Account grant edits do not detach readers. Uninstall closes writes through current installation checks and leaves the binding marker and last grants with historical files. Tenant purge drains writer records in bounded batches.
+`plugins_external_file_bindings` keeps private readers attached until a real human sharing change. Attached grants carry `externalPluginMembershipLifetime`; Bonobo Senate compares its own canonical tenancy lifetime before allowing access. Manual takeover preserves current grants and removes those tags. Account grant edits do not detach readers. Uninstall closes writes through current installation checks and leaves the binding marker and last grants with historical files. Tenant purge drains writer records in bounded batches.
 
 `POST /api/v1/files/plugin-access/undo` undoes one recorded attached reader change when its native commit cannot finish. Body: `{writerId,operationId,writerGeneration}` plus exactly one of `receiptId` or `originalReaderOperationId`. The rollback and original operation IDs must differ. A private `plugins_external_file_reader_changes` journal stores the previous and next reader sets, original actor, and credential hash. The caller must present that original bearer, or the current bearer of the same grant, plus the current registered service secret. This proof may outlive bearer rotation, expiry, or actor access loss; it authorizes only this undo. Current installation/version/account, service registration, accepted capabilities, and the current target policy still apply. A new lock returns 409 `read_only` with no sharing change. The service retains the exact original bearer until its native change finishes.
 

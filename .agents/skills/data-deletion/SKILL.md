@@ -49,7 +49,7 @@ Load each companion skill that owns the affected boundary:
   revocation doc, but its `additionalData` holds the target and user ids as text. So a deleted user's id
   can stay there for up to about 2 days, until the cron deletes the doc.
 - `plugins_mcp_oauth_clients` is not deleted on any path. Each doc is a client that one sign-in
-  server registered for Press (DCR), keyed by issuer. It holds no member data, and every member
+  server registered for Bonobo Senate (DCR), keyed by issuer. It holds no member data, and every member
   reuses it.
 - `ai_model_call_receipts` are billing records. No user, organization, workspace, or thread deletion path touches them. Their only deletion path is the daily retention cron, which deletes a receipt 396 days after admission once its usage is final and no charge is `queued`. A deleted user's id stays in those docs until then.
 - `billing_usage_event_outbox` and its one `billing_usage_event_outbox_drainers` marker are billing records on their way to Polar, like the jobs in the usage pool. No user, organization, or workspace deletion path touches them: deleting them would drop charges for saves that already happened. The drainer sends each doc within seconds and then deletes it. The docs hold ids and amounts only, no names or paths.
@@ -129,7 +129,7 @@ Load each companion skill that owns the affected boundary:
 
 ## Phase 1
 
-Chitchat has a separate database. The local account tombstone also advances its membership lifetimes and saves removal events in the same Press mutation. Tenant deletion and the first workspace purge save terminal events; automatic ownership transfer saves a permission refresh. These operations do not wait for the remote backend. Its remaining access is bounded by a 30-second lease. Keep lifetime and connection markers so ordered removal, later recovery, and terminal event delivery remain possible. See [auth-system](../auth-system/SKILL.md#chitchat-in-its-own-backend).
+Chitchat has a separate database. The local account tombstone also advances its membership lifetimes and saves removal events in the same Bonobo Senate mutation. Tenant deletion and the first workspace purge save terminal events; automatic ownership transfer saves a permission refresh. These operations do not wait for the remote backend. Its remaining access is bounded by a 30-second lease. Keep lifetime and connection markers so ordered removal, later recovery, and terminal event delivery remain possible. See [auth-system](../auth-system/SKILL.md#chitchat-in-its-own-backend).
 
 `init_user_deletion`:
 

@@ -1,3 +1,7 @@
+# Product name
+
+The app's display and product name is **Bonobo Senate**. Use it in UI, docs, skill descriptions, and agent answers. Keep technical identifiers, external service names, historical quotes, and the verb `press` unchanged unless a task explicitly renames them.
+
 # Terminal and Tooling Constraints
 
 - Package manager: this repository uses `pnpm`; do not use `npm`.
@@ -99,9 +103,9 @@ For recoverable auth and permission failures, follow the Convex skill's handler-
 
 ## Plugin Boundaries
 
-- Plugin product code belongs in the plugin's repository and backend. Press owns identity, tenancy, permissions, installation, and Files.
-- Plugins use supported public APIs. Do not add product-specific tables, routes, environment variables, callbacks, or branches to Press. Moving a special route under `/api/v1` does not make it a public platform contract.
-- When a capability is missing, add a small general API. Define its caller, consent, permissions, limits, retry rules, and SDK types. Prove that an unrelated plugin can use it without another Press change.
+- Plugin product code belongs in the plugin's repository and backend. Bonobo Senate owns identity, tenancy, permissions, installation, and Files.
+- Plugins use supported public APIs. Do not add product-specific tables, routes, environment variables, callbacks, or branches to Bonobo Senate. Moving a special route under `/api/v1` does not make it a public platform contract.
+- When a capability is missing, add a small general API. Define its caller, consent, permissions, limits, retry rules, and SDK types. Prove that an unrelated plugin can use it without another Bonobo Senate change.
 - Boundary changes need independent boundary and security reviews. Preserve current data and pending operations through an audited migration. Remove temporary compatibility code after cutover.
 
 ## Key Technologies

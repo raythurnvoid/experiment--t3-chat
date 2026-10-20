@@ -77,8 +77,8 @@ function vite_plugin_css_layer_order(appCssPath: string): Plugin {
 }
 
 /**
- * Serve Press's OAuth client metadata document (CIMD) at `oauth/mcp/client.json`, next to the app.
- * An MCP sign-in server reads it to learn who Press is and where to send the member back.
+ * Serve Bonobo Senate's OAuth client metadata document (CIMD) at `oauth/mcp/client.json`, next to the app.
+ * An MCP sign-in server reads it to learn who Bonobo Senate is and where to send the member back.
  *
  * `VITE_APP_BASE_URL` is the app origin plus its base path, the same value as the Convex env
  * `APP_BASE_URL`. Convex builds the same client id and callback from it, and refuses to start a
@@ -102,7 +102,7 @@ function vite_plugin_mcp_client_document(): Plugin {
 			document = JSON.stringify(
 				{
 					client_id: `${base}/oauth/mcp/client.json`,
-					client_name: "Press",
+					client_name: "Bonobo Senate",
 					client_uri: base,
 					logo_uri: `${base}/press-logo.png`,
 					redirect_uris: [`${base}/oauth/mcp/callback`],

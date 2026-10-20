@@ -88,7 +88,7 @@ Opening a feed never marks its items read; visible channel and thread content ad
 existing read positions. Keep Load more after an empty readable page when a cursor remains.
 
 `AppChannelsProvider` owns the followed-channel states, inbox and threads for each membership.
-The main Messages dot and `(N) Press` title count followed channels with unread mentions, even
+The main Messages dot and `(N) Bonobo Senate` title count followed channels with unread mentions, even
 while Files is open. Channel row bold follows all/mentions/none. Activity, Threads and the bell
 show unread loaded-item counts, with `+` while older pages remain. These are not history totals.
 The bell reuses Activity and its inbox; Dismiss jobs and invites keeps the old archive writes.

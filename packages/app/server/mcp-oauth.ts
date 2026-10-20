@@ -22,30 +22,31 @@ import {
 } from "./mcp-guarded-fetch.ts";
 
 /**
- * A registered client secret must stay valid at least this long, or Press refuses the client.
+ * A registered client secret must stay valid at least this long, or Bonobo Senate refuses the client.
  */
 const CLIENT_SECRET_MIN_LIFETIME_MS = 60 * 60 * 1000;
 
 const ERROR_MESSAGES = {
-	url_blocked: "Press does not allow requests to this sign-in address.",
+	url_blocked: "Bonobo Senate does not allow requests to this sign-in address.",
 	timeout: "The sign-in server timed out.",
-	too_large: "The sign-in server sent more data than Press accepts.",
-	bad_response: "The sign-in server sent a response Press cannot read.",
-	network_error: "Press could not reach the sign-in server.",
+	too_large: "The sign-in server sent more data than Bonobo Senate accepts.",
+	bad_response: "The sign-in server sent a response Bonobo Senate cannot read.",
+	network_error: "Bonobo Senate could not reach the sign-in server.",
 	server_error: "The sign-in server had an error.",
-	oauth_no_metadata: "This server does not say where to sign in, so Press cannot connect to it.",
+	oauth_no_metadata: "This server does not say where to sign in, so Bonobo Senate cannot connect to it.",
 	oauth_resource_mismatch: "This server's sign-in settings do not match its address.",
-	oauth_issuer_changed: "This server no longer uses the sign-in server Press expects.",
-	oauth_many_issuers: "This server names more than one sign-in server. Press cannot choose one.",
+	oauth_issuer_changed: "This server no longer uses the sign-in server Bonobo Senate expects.",
+	oauth_many_issuers: "This server names more than one sign-in server. Bonobo Senate cannot choose one.",
 	oauth_issuer_untrusted:
-		"This sign-in server does not confirm which server answered the sign-in, so Press cannot use it safely.",
-	oauth_metadata_invalid: "The sign-in server's settings are not valid for Press.",
+		"This sign-in server does not confirm which server answered the sign-in, so Bonobo Senate cannot use it safely.",
+	oauth_metadata_invalid: "The sign-in server's settings are not valid for Bonobo Senate.",
 	// Plugin servers and members' own servers share these. Neither a publisher nor a member can fix
-	// them yet, because Press has no pre-registered OAuth apps.
-	oauth_no_client: "This server's sign-in server does not support Press yet.",
-	oauth_registration_failed: "This server's sign-in server refused to register Press.",
-	oauth_client_document_mismatch: "Press's sign-in settings are out of date. Ask an administrator to redeploy the app.",
-	oauth_token_invalid: "The sign-in server sent a token Press cannot use.",
+	// them yet, because Bonobo Senate has no pre-registered OAuth apps.
+	oauth_no_client: "This server's sign-in server does not support Bonobo Senate yet.",
+	oauth_registration_failed: "This server's sign-in server refused to register Bonobo Senate.",
+	oauth_client_document_mismatch:
+		"Bonobo Senate's sign-in settings are out of date. Ask an administrator to redeploy the app.",
+	oauth_token_invalid: "The sign-in server sent a token Bonobo Senate cannot use.",
 	oauth_invalid_grant: "The sign-in expired or was revoked. Connect again.",
 	oauth_token_refused: "The sign-in server refused the request.",
 } as const;
@@ -56,8 +57,8 @@ type ClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
 export type mcp_oauth_Client = {
 	/**
-	 * `cimd`: Press's client metadata document URL is the client id. `dcr`: a client this issuer
-	 * registered for Press.
+	 * `cimd`: Bonobo Senate's client metadata document URL is the client id. `dcr`: a client this issuer
+	 * registered for Bonobo Senate.
 	 */
 	kind: "cimd" | "dcr";
 	clientId: string;
@@ -80,7 +81,7 @@ type Tokens = {
 	accessToken: string;
 	refreshToken: string | null;
 	/**
-	 * When the access token expires, in ms. `null` when the server did not say, so Press refreshes
+	 * When the access token expires, in ms. `null` when the server did not say, so Bonobo Senate refreshes
 	 * only on a 401.
 	 */
 	expiresAt: number | null;
@@ -103,7 +104,7 @@ const prm_schema = z.object({
 	scopes_supported: z.array(z.string()).optional(),
 });
 
-// Press reads AS metadata with its own schema. The SDK's OIDC schema drops fields it does not name,
+// Bonobo Senate reads AS metadata with its own schema. The SDK's OIDC schema drops fields it does not name,
 // such as `revocation_endpoint`, so an OIDC server would never get a revoke.
 const as_metadata_schema = z.object({
 	issuer: z.string(),
@@ -166,7 +167,7 @@ function is_allowed_endpoint(value: string, options: TestOptions) {
 	if (!URL.canParse(value)) return false;
 	const url = new URL(value);
 	// The member's browser opens the authorization endpoint, and the guard never sees it. So check it
-	// with the guard's host rules here: no IP address, no local name, no Press host.
+	// with the guard's host rules here: no IP address, no local name, no Bonobo Senate host.
 	if (url.protocol === "https:") return mcp_guarded_fetch_is_allowed_url(value);
 	return (
 		options.testAllowLocalHttp === true &&
@@ -373,7 +374,7 @@ export async function mcp_oauth_start(
 		redirectUri: string;
 		clientIdMetadataUrl: string;
 		/**
-		 * A client this issuer registered for Press before, or `null`.
+		 * A client this issuer registered for Bonobo Senate before, or `null`.
 		 */
 		knownClient: mcp_oauth_Client | null;
 		state: string;
@@ -426,7 +427,7 @@ export async function mcp_oauth_start(
 			const registered = await registerClient(issuer, {
 				metadata,
 				clientMetadata: {
-					client_name: "Press",
+					client_name: "Bonobo Senate",
 					application_type: "web",
 					redirect_uris: [args.redirectUri],
 					grant_types: ["authorization_code", "refresh_token"],
@@ -693,7 +694,7 @@ export async function mcp_oauth_revoke(
 export async function mcp_oauth_check_client_document(args: { clientIdMetadataUrl: string; redirectUri: string }) {
 	const guard = mcp_guarded_fetch_create({
 		kind: "oauth",
-		// The app host is a Press host, so the guard refuses it by default. This one read needs it.
+		// The app host is a Bonobo Senate host, so the guard refuses it by default. This one read needs it.
 		allowedPressHost: new URL(args.clientIdMetadataUrl).hostname,
 	});
 	let response: Response;

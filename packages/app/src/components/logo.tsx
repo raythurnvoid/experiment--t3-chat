@@ -12,7 +12,7 @@ export const Logo = memo(function Logo({ className, ...rest }: Logo_Props) {
 		<div className={cn("Logo" satisfies Logo_ClassNames, className)} {...rest}>
 			{/* The mark is decorative. The heading text already names the app. */}
 			<img className={"Logo-mark" satisfies Logo_ClassNames} src="/press-logo.svg" alt="" />
-			<h1 className={"Logo-text" satisfies Logo_ClassNames}>Press</h1>
+			<h1 className={"Logo-text" satisfies Logo_ClassNames}>Bonobo Senate</h1>
 		</div>
 	);
 });

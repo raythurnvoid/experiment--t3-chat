@@ -928,7 +928,7 @@ export const list_turn_servers = internalQuery({
 					auth: v.union(v.literal("none"), v.literal("headers"), v.literal("oauth")),
 					source: v.object({ kind: v.literal("plugin"), pluginName: v.string(), serverTitle: v.string() }),
 					/**
-					 * Press text that names the server in the notes the model reads.
+					 * Bonobo Senate text that names the server in the notes the model reads.
 					 */
 					label: v.string(),
 					url: v.string(),
@@ -1195,7 +1195,7 @@ async function get_health_doc(ctx: MutationCtx, target: Infer<typeof plugins_mcp
 }
 
 /**
- * Check one MCP tool call again right before Press sends it. The tool set was frozen at turn setup,
+ * Check one MCP tool call again right before Bonobo Senate sends it. The tool set was frozen at turn setup,
  * and the member, the policy, or the installation may have changed since. It returns no secret.
  */
 export const recheck_call = internalQuery({

@@ -1841,7 +1841,7 @@ describe("plugins_validate_manifest", () => {
 		expect(plugins_validate_manifest(mcp_manifest_json({ server: { command: "npx" } }))._nay).toBeDefined();
 	});
 
-	test("holds MCP server headers to declared secrets and to names Press does not set", () => {
+	test("holds MCP server headers to declared secrets and to names Bonobo Senate does not set", () => {
 		expect(
 			plugins_validate_manifest(
 				mcp_manifest_json({ server: { headers: [{ name: "Authorization", secret: "OTHER_KEY" }] } }),
@@ -1867,7 +1867,7 @@ describe("plugins_validate_manifest", () => {
 		});
 	});
 
-	test("holds OAuth sign-in to https URLs, the server's own resource, and Press's Authorization header", () => {
+	test("holds OAuth sign-in to https URLs, the server's own resource, and Bonobo Senate's Authorization header", () => {
 		function oauth(auth: { issuer?: string; resource?: string | null }, headers: unknown[] = []) {
 			return plugins_validate_manifest(
 				mcp_manifest_json({

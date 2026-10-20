@@ -90,7 +90,7 @@ A thrown or timed out script still completes its receipt. The command takes its
 exit code from the script status: 0 succeeded, 1 errored, 124 timed out.
 
 The tab uses the user's real browser profile and network. In production the
-shared host policy does not block Press. The agent can open Press as the already
+shared host policy does not block Bonobo Senate. The agent can open Bonobo Senate as the already
 signed-in user and act in every organization that user can access, beyond the
 chat's workspace. It can also reach localhost, private-network, and intranet
 pages that the user's computer can reach. The cloud provider's private-network

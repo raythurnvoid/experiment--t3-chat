@@ -182,7 +182,7 @@ async function read_preview_source(args: {
 		}
 	};
 
-	// Local editor text still needs a current read-access check before leaving Press.
+	// Local editor text still needs a current read-access check before leaving Bonobo Senate.
 	assertCurrentNode(
 		await app_convex.query(app_convex_api.files_tree.get_file_node_for_membership, {
 			membershipId,

@@ -55,12 +55,14 @@ export const FilesShareFrame = memo(function FilesShareFrame(props: FilesShareFr
 					src={`${import.meta.env.BASE_URL}press-logo.svg`}
 					alt=""
 				/>
-				Press
+				Bonobo Senate
 			</header>
 			<main ref={mainRef} className={"FilesShareFrame-main" satisfies FilesShareFrame_ClassNames} tabIndex={-1}>
 				{children}
 			</main>
-			<footer className={"FilesShareFrame-footer" satisfies FilesShareFrame_ClassNames}>Shared with Press</footer>
+			<footer className={"FilesShareFrame-footer" satisfies FilesShareFrame_ClassNames}>
+				Shared with Bonobo Senate
+			</footer>
 		</div>
 	);
 });

@@ -1,5 +1,5 @@
 /**
- * The MCP client Press runs inside Convex actions: list one server's tools, and call one tool.
+ * The MCP client Bonobo Senate runs inside Convex actions: list one server's tools, and call one tool.
  *
  * Every request goes through the guarded fetch. Each function opens a new SDK client and closes it
  * before it returns, so no connection or session stays open between calls.
@@ -28,7 +28,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { crypto_sha256_hex } from "./crypto-utils.ts";
 import { mcp_guarded_fetch_create } from "./mcp-guarded-fetch.ts";
 
-// The 2025 versions Press accepts on the legacy era. The SDK also accepts 2024 versions.
+// The 2025 versions Bonobo Senate accepts on the legacy era. The SDK also accepts 2024 versions.
 const LEGACY_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
 // Byte caps on decoded bytes, sized for the 64 MiB Convex action.
@@ -58,18 +58,18 @@ const ERROR_MESSAGES = {
 	auth_required: "This MCP server needs sign-in.",
 	insufficient_scope: "This MCP server needs more access.",
 	forbidden: "This MCP server refused the request.",
-	not_modern_mcp: "This URL is not an MCP server that Press can use.",
+	not_modern_mcp: "This URL is not an MCP server that Bonobo Senate can use.",
 	unsupported_version:
-		"This server uses an MCP version Press does not support. Press supports 2026-07-28, 2025-11-25, 2025-06-18, and 2025-03-26.",
-	url_blocked: "Press does not allow requests to this MCP server address.",
+		"This server uses an MCP version Bonobo Senate does not support. Bonobo Senate supports 2026-07-28, 2025-11-25, 2025-06-18, and 2025-03-26.",
+	url_blocked: "Bonobo Senate does not allow requests to this MCP server address.",
 	timeout: "The MCP server timed out. It may still have done the work.",
-	too_large: "The MCP server sent more data than Press accepts.",
-	bad_response: "The MCP server sent a response Press cannot read.",
-	input_required_unsupported: "The MCP tool asked for more input. Press does not support that yet.",
-	capability_required: "The MCP server needs a client feature Press does not support.",
+	too_large: "The MCP server sent more data than Bonobo Senate accepts.",
+	bad_response: "The MCP server sent a response Bonobo Senate cannot read.",
+	input_required_unsupported: "The MCP tool asked for more input. Bonobo Senate does not support that yet.",
+	capability_required: "The MCP server needs a client feature Bonobo Senate does not support.",
 	rate_limited: "The MCP server is limiting requests. Try again later.",
 	server_error: "The MCP server had an error.",
-	network_error: "Press could not reach the MCP server.",
+	network_error: "Bonobo Senate could not reach the MCP server.",
 	result_unknown: "The connection to the MCP server was lost. The result is unknown. Check before you retry.",
 } as const;
 
@@ -183,7 +183,7 @@ function has_repeated_challenge_param(value: string) {
 }
 
 /**
- * Map an SDK error to a Press error. Read error types and codes only, never message text.
+ * Map an SDK error to a Bonobo Senate error. Read error types and codes only, never message text.
  */
 function error_to_nay(args: {
 	error: unknown;
@@ -303,7 +303,7 @@ function create_client(guard: ReturnType<typeof mcp_guarded_fetch_create>, serve
 		{ name: "press", version: "1.0.0" },
 		{
 			// Declare no elicitation, sampling, or roots, so the SDK never answers a server question.
-			// TODO(elicitation): answer server questions once Press can ask the member.
+			// TODO(elicitation): answer server questions once Bonobo Senate can ask the member.
 			capabilities: {},
 			versionNegotiation: { mode: "auto" },
 			listMaxPages: LIST_MAX_PAGES,
@@ -314,7 +314,7 @@ function create_client(guard: ReturnType<typeof mcp_guarded_fetch_create>, serve
 	);
 	const transport = new StreamableHTTPClientTransport(new URL(server.url), {
 		fetch: guard.fetch,
-		// No authProvider: Press never runs an OAuth flow during a tool call. No requestInit headers:
+		// No authProvider: Bonobo Senate never runs an OAuth flow during a tool call. No requestInit headers:
 		// the SDK copies them into authorization-server requests too. The guard adds the headers.
 		// Never reopen a dropped stream. The SDK needs all four fields.
 		reconnectionOptions: {
@@ -462,7 +462,7 @@ function schema_problem(schema: unknown): SchemaProblem | null {
 }
 
 /**
- * Keep the tools Press can send to the model, and say why each other tool was left out.
+ * Keep the tools Bonobo Senate can send to the model, and say why each other tool was left out.
  */
 function normalize_tools(rawTools: unknown[]) {
 	const kept: mcp_client_NormalizedTool[] = [];
@@ -795,7 +795,7 @@ export async function mcp_client_call_tool(args: {
 				(error: unknown) => {
 					// The server rejected the call itself. Give the model a short fixed text plus the
 					// server's message, so it can fix its arguments. Keep the codes that mean
-					// something to Press as errors.
+					// something to Bonobo Senate as errors.
 					if (error instanceof ProtocolError && ![-32020, -32021, -32022].includes(error.code)) {
 						return { value: null, protocolError: error };
 					}

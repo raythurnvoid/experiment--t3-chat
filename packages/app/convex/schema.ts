@@ -8356,7 +8356,7 @@ const app_convex_schema = defineSchema({
 		.index("by_user", ["userId"]),
 
 	/**
-	 * A client that one sign-in server registered for Press with DCR. Every workspace shares it, so it
+	 * A client that one sign-in server registered for Bonobo Senate with DCR. Every workspace shares it, so it
 	 * is deployment data, not tenant data. Additional data of the secret: `client:<issuer>:<clientId>`.
 	 */
 	plugins_mcp_oauth_clients: defineTable({

@@ -1,10 +1,10 @@
 /**
- * The one fetch guard for every MCP and OAuth request Press sends. No other code fetches an MCP
+ * The one fetch guard for every MCP and OAuth request Bonobo Senate sends. No other code fetches an MCP
  * server or an authorization server.
  *
  * Convex sends every `fetch` through its SSRF proxy, and the proxy checks where a name resolves.
  * This guard adds the rules the proxy cannot know. Allow hostnames only, never IP addresses. The
- * guard also refuses Press's own hosts, follows no redirect on the MCP endpoint, and caps response
+ * guard also refuses Bonobo Senate's own hosts, follows no redirect on the MCP endpoint, and caps response
  * bytes, because a Convex action has only 64 MiB of memory.
  */
 
@@ -20,8 +20,8 @@ const BLOCKED_HOSTS = ["localhost", "instance-data"];
 // `.internal` also covers `metadata.google.internal` and `instance-data.ec2.internal`.
 const BLOCKED_HOST_SUFFIXES = [".localhost", ".local", ".internal"];
 
-// An MCP URL that points at Press itself has no use and only adds risk. These env values already
-// exist on every deployment, so Press needs no new required env for this list.
+// An MCP URL that points at Bonobo Senate itself has no use and only adds risk. These env values already
+// exist on every deployment, so Bonobo Senate needs no new required env for this list.
 const PRESS_HOST_ENV_NAMES = [
 	"CONVEX_CLOUD_URL",
 	"CONVEX_SITE_URL",
@@ -59,7 +59,7 @@ function denied_host_entries() {
 }
 
 /**
- * Return the parsed URL when Press may send a request to it, or `null` when it must not.
+ * Return the parsed URL when Bonobo Senate may send a request to it, or `null` when it must not.
  */
 function allowed_url(args: { rawUrl: string; testAllowLocalHttp: boolean; allowedPressHost: string | null }) {
 	const { rawUrl, testAllowLocalHttp, allowedPressHost } = args;
@@ -94,7 +94,7 @@ function allowed_url(args: { rawUrl: string; testAllowLocalHttp: boolean; allowe
 }
 
 /**
- * Whether the guard would send a request to this URL. For a URL Press never fetches itself, such as
+ * Whether the guard would send a request to this URL. For a URL Bonobo Senate never fetches itself, such as
  * the authorization endpoint the member's browser opens.
  */
 export function mcp_guarded_fetch_is_allowed_url(rawUrl: string) {
@@ -137,8 +137,8 @@ export function mcp_guarded_fetch_create(
 		| {
 				kind: "oauth";
 				/**
-				 * One Press host this guard may still reach. Only the OAuth start action passes it, to read
-				 * Press's own client metadata document on the app host.
+				 * One Bonobo Senate host this guard may still reach. Only the OAuth start action passes it, to read
+				 * Bonobo Senate's own client metadata document on the app host.
 				 */
 				allowedPressHost?: string;
 		  }

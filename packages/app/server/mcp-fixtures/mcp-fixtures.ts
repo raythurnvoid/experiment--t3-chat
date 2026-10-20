@@ -228,7 +228,7 @@ export function mcp_fixtures_create() {
 							": keep-alive comment\n\n",
 							"retry: 1000\n\n",
 							"event: other\ndata: not json-rpc\n\n",
-							// A server request on the stream. Press declares no roots, so the SDK answers with an error.
+							// A server request on the stream. Bonobo Senate declares no roots, so the SDK answers with an error.
 							`id: 1\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: "server-1", method: "roots/list" })}\n\n`,
 							// A response with an id the client never sent.
 							`data: ${JSON.stringify({ jsonrpc: "2.0", id: 999, result: { resultType: "complete", content: [] } })}\n\n`,

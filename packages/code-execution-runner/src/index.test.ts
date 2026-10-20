@@ -348,7 +348,7 @@ describe("execution outcomes", () => {
 		expect(loaded?.compatibilityFlags).toEqual(["nodejs_compat"]);
 	});
 
-	it("loads the sandbox with the outbound gateway and the parsed Press deny list when network mode is requested", async () => {
+	it("loads the sandbox with the outbound gateway and the parsed app deny list when network mode is requested", async () => {
 		let loaded: Record<string, unknown> | undefined;
 		let gatewayProps: unknown;
 		const fetcher = { fetch: async () => new Response("ok") };
@@ -845,7 +845,7 @@ describe("outbound gateway", () => {
 		} finally { vi.unstubAllGlobals(); }
 	});
 
-	it("refuses Press hosts and their subdomains, except the files API on the app origin", () => {
+	it("refuses app hosts and their subdomains, except the files API on the app origin", () => {
 		const options = { deniedHosts: ["app.example.com", "press.example"], app: APP };
 
 		expect(validate_outbound_url("https://app.example.com/api/v1/me", options)).toEqual(
@@ -874,7 +874,7 @@ describe("outbound gateway", () => {
 		);
 	});
 
-	it("refuses a fetch to a Press host before sending it", async () => {
+	it("refuses a fetch to an app host before sending it", async () => {
 		const fetchMock = vi.fn(async () => new Response("ok"));
 		vi.stubGlobal("fetch", fetchMock);
 		try {
@@ -888,7 +888,7 @@ describe("outbound gateway", () => {
 		} finally { vi.unstubAllGlobals(); }
 	});
 
-	it("refuses a public redirect to a Press host", async () => {
+	it("refuses a public redirect to an app host", async () => {
 		const fetchMock = vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://press.example/v1/me" } }));
 		vi.stubGlobal("fetch", fetchMock);
 		try {

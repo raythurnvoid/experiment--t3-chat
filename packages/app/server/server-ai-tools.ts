@@ -1765,7 +1765,7 @@ export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_cha
 // #region mcp tools
 export const ai_chat_tool_MCP_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_CALL_TIMEOUT_MS = 60_000;
-const MCP_SIGN_IN_BUSY_MESSAGE = "Press is renewing the sign-in of this MCP server. Try again.";
+const MCP_SIGN_IN_BUSY_MESSAGE = "Bonobo Senate is renewing the sign-in of this MCP server. Try again.";
 const MCP_NO_TIME_MESSAGE = "This chat run has no time left for an MCP call.";
 const MCP_TEXT_ENCODER = new TextEncoder();
 
@@ -2189,7 +2189,7 @@ export async function ai_chat_tool_create_mcp_tools(args: {
 							}
 							if (called._nay) {
 								await recordCall({ outcome: called._nay.name, bytesIn: 0, result: null });
-								// Fixed Press text only. Text from the server never reaches `_nay.message`.
+								// Fixed Bonobo Senate text only. Text from the server never reaches `_nay.message`.
 								throw new Error(called._nay.message);
 							}
 

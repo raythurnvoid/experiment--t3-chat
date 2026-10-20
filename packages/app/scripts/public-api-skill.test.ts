@@ -8,7 +8,7 @@ import { ai_chat_skills_LIMITS, ai_chat_skills_parse } from "../server/ai-chat-s
 const skillRoot = fileURLToPath(new URL("../../../.agents/skills/press-api/", import.meta.url));
 const schemaPath = fileURLToPath(new URL("../shared/api-schemas.ts", import.meta.url));
 
-describe("Press API client skill", () => {
+describe("Bonobo Senate API client skill", () => {
 	test("loads valid metadata and readable resources without links outside its folder", () => {
 		const entry = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
 		expect(ai_chat_skills_parse(entry, "press-api")._yay?.name).toBe("press-api");

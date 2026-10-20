@@ -805,7 +805,7 @@ function has_valid_file_tool_parts(content: { parts?: unknown }, options: { allo
 				(toolPart.state !== "output-error" &&
 					(toolPart.toolName.length > ai_chat_tool_MCP_TOOL_NAME_MAX_LENGTH ||
 						!/^mcp__[a-z][a-z0-9-]{0,19}__[a-z0-9_-]+$/u.test(toolPart.toolName))) ||
-				// Press has no approval step for MCP calls, so it never writes these states.
+				// Bonobo Senate has no approval step for MCP calls, so it never writes these states.
 				toolPart.state === "approval-requested" ||
 				toolPart.state === "approval-responded" ||
 				(toolPart.state === "output-available" && !ai_chat_mcp_tool_output_schema.safeParse(toolPart.output).success)
@@ -827,7 +827,7 @@ function has_valid_file_tool_parts(content: { parts?: unknown }, options: { allo
 						toolPart.toolName.startsWith("page__") &&
 						plugins_PAGE_AGENT_TOOL_NAME_REGEX.test(toolPart.toolName.slice("page__".length))
 					)) ||
-				// Press has no approval step for page tool calls either.
+				// Bonobo Senate has no approval step for page tool calls either.
 				toolPart.state === "approval-requested" ||
 				toolPart.state === "approval-responded" ||
 				(toolPart.state === "output-available" && !ai_chat_page_tool_output_schema.safeParse(toolPart.output).success)
@@ -931,7 +931,7 @@ const MCP_HEALTH_FAILURE_CODES: ReadonlySet<mcp_client_ErrorCode> = new Set([
  * Load the MCP tools of one chat turn: list each server's tools once, then build the model tools.
  *
  * A server that fails, times out, or needs sign-in is left out of this turn with a note for the model.
- * The notes hold only Press text, never text from a server.
+ * The notes hold only Bonobo Senate text, never text from a server.
  */
 async function load_turn_mcp_tools(
 	ctx: ActionCtx,
@@ -969,7 +969,7 @@ async function load_turn_mcp_tools(
 				secrets: server.secrets,
 			}).catch(() => null);
 			if (values === null) {
-				notes.push(`${label}: left out, because Press could not read its secrets.`);
+				notes.push(`${label}: left out, because Bonobo Senate could not read its secrets.`);
 				return null;
 			}
 			headers.push(...plugins_mcp_custom_header_values(server.headerSpec, values));
@@ -1000,7 +1000,7 @@ async function load_turn_mcp_tools(
 					keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY",
 				}).catch(() => null);
 				if (value === null) {
-					notes.push(`${label}: left out, because Press could not read its secrets.`);
+					notes.push(`${label}: left out, because Bonobo Senate could not read its secrets.`);
 					return null;
 				}
 				headers.push({ name: header.name, value });
@@ -1113,7 +1113,7 @@ async function load_turn_mcp_tools(
 				: listResult._yay.tools.filter((tool) => allowlist.includes(tool.name));
 		if (listResult._yay.dropped.length > 0) {
 			notes.push(
-				`${label}: ${listResult._yay.dropped.length} tools left out, because Press cannot use their definitions.`,
+				`${label}: ${listResult._yay.dropped.length} tools left out, because Bonobo Senate cannot use their definitions.`,
 			);
 		}
 
@@ -3483,7 +3483,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 
 		// Load MCP tools only after the credit check and the message checks above, because each server
 		// costs an outside call. The schema check below needs the built agent, so it runs later.
-		// Ask mode never offers MCP tools, because it must not act outside Press. MCP tools are plugin
+		// Ask mode never offers MCP tools, because it must not act outside Bonobo Senate. MCP tools are plugin
 		// and connector tools, not files, so a guest without workspace read gets none.
 		const mcp =
 			body.mode !== "ask" &&

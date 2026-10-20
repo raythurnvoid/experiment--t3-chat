@@ -56,7 +56,7 @@ export const plugins_CAPABILITIES = [
 	// member who signed in anonymously.
 	"workspace.members.read",
 	// Consent line: the chat agent may call the tools of the remote MCP servers in `mcpServers`, with
-	// member data from the thread as input. Each server is an outside service. It never gets a Press
+	// member data from the thread as input. Each server is an outside service. It never gets a Bonobo Senate
 	// credential, only the headers and sign-in the manifest declares.
 	"agent.mcp.connect",
 	// Consent line: the chat agent may read and follow the instructions in the skills in `skills`.

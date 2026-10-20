@@ -653,8 +653,8 @@ const RouteMcpServersDraft = memo(function RouteMcpServersDraft(props: RouteMcpS
 
 			{draft.convertedFromMcpRemote ? (
 				<p className={"RouteMcpServersDraft-note" satisfies RouteMcpServersDraft_ClassNames}>
-					Use the remote server instead. This entry runs mcp-remote on your computer, so Press connects to the remote
-					server directly.
+					Use the remote server instead. This entry runs mcp-remote on your computer, so Bonobo Senate connects to the
+					remote server directly.
 				</p>
 			) : null}
 			{draft.ignoredKeys.length > 0 ? (
@@ -937,8 +937,8 @@ const RouteMcpServersAdd = memo(function RouteMcpServersAdd(props: RouteMcpServe
 					{editing ? `Edit ${editing.name}` : "Add a server"}
 				</h2>
 				<p className={"RouteMcpServersAdd-description" satisfies RouteMcpServersAdd_ClassNames}>
-					Paste the MCP config JSON from the server's docs. Press reads the Claude, Cursor, VS Code, Windsurf, and Cline
-					formats. Press saves the server address and your values, never the pasted text.
+					Paste the MCP config JSON from the server's docs. Bonobo Senate reads the Claude, Cursor, VS Code, Windsurf,
+					and Cline formats. Bonobo Senate saves the server address and your values, never the pasted text.
 				</p>
 			</header>
 
@@ -1018,7 +1018,7 @@ const RouteMcpServersDeleteModal = memo(function RouteMcpServersDeleteModal(prop
 				<MyModalHeader>
 					<MyModalHeading>{`Delete “${target?.name ?? "server"}”?`}</MyModalHeading>
 					<MyModalDescription>
-						Press deletes the server, its saved secrets, and your sign-in for it. This cannot be undone.
+						Bonobo Senate deletes the server, its saved secrets, and your sign-in for it. This cannot be undone.
 					</MyModalDescription>
 				</MyModalHeader>
 				<MyModalScrollableArea>

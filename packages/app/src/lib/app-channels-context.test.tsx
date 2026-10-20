@@ -127,11 +127,11 @@ describe("AppChannelsProvider", () => {
 			isDone: true,
 			continueCursor: "",
 		});
-		expect(document.title, "title must count channels with mentions, not every mention").toBe("(2) Press");
+		expect(document.title, "title must count channels with mentions, not every mention").toBe("(2) Bonobo Senate");
 		expect(screen.getByLabelText("Inbox count").textContent).toBe("1+");
 		expect(screen.getByLabelText("Thread count").textContent).toBe("1");
 		view.rerender(<Workspace membershipId="membership_2" />);
-		expect(document.title).toBe("Press");
+		expect(document.title).toBe("Bonobo Senate");
 		expect(screen.getByLabelText("Inbox count").textContent).toBe("0");
 		expect(screen.getByLabelText("Mention channels").textContent).toBe("0");
 	});

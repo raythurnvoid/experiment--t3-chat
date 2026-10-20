@@ -89,7 +89,7 @@ describe("AiChatMarkdown", () => {
 		expect(document.querySelector("[data-streamdown='link-safety-modal']")).toBeNull();
 	});
 
-	test("renders Press media images", () => {
+	test("renders Bonobo Senate media images", () => {
 		const src = `https://${import.meta.env.VITE_R2_FILES_DOWNLOAD_HOST}/organizations/o1/image.png?X-Amz-Signature=abc`;
 
 		const { container } = render(<AiChatMarkdown markdown={`![chart](${src})`} />);

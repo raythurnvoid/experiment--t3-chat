@@ -1,9 +1,9 @@
 ---
 name: press-api
-description: Call Press public APIs from an external client, or use the allowed Files reads inside app execute_code. Use for API requests, file transfer, plugin data, and reading saved AI conversations. This is a client guide, not a guide to changing the Press backend.
+description: Call Bonobo Senate public APIs from an external client, or use the allowed Files reads inside app execute_code. Use for API requests, file transfer, plugin data, and reading saved AI conversations. This is a client guide, not a guide to changing the Bonobo Senate backend.
 ---
 
-# Press API client
+# Bonobo Senate API client
 
 Read [auth](references/auth.md) first. Choose the caller you actually have. A skill does not give you credentials, tools, or permission to act. Read relative resource paths from this skill folder.
 

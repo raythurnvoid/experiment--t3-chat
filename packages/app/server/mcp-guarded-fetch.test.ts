@@ -83,7 +83,7 @@ describe("mcp_guarded_fetch_create", () => {
 		"CLOUDFLARE_MEDIA_TRANSFORMER_URL",
 		"MODAL_FILE_CONVERTER_URL",
 		"MODAL_MEDIA_AUDIO_URL",
-	])("refuses the Press host from %s", async (name) => {
+	])("refuses the Bonobo Senate host from %s", async (name) => {
 		vi.stubEnv(name, "https://Press-Host.example.com/some/path");
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => json_response("{}"));
 		const guard = mcp_guarded_fetch_create({ kind: "oauth" });

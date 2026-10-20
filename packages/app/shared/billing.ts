@@ -1,5 +1,6 @@
 /**
  * Keep human-readable billing copy in code and look up products by their exact Polar names.
+ * Keep meter names equal to Polar; only their display labels follow app branding.
  *
  * `recurringCreditsCents` is the canonical per-month credit grant for each plan.
  * The Convex monthly credits engine reads this value to ingest negative usage
@@ -19,7 +20,7 @@ export const billing_PRODUCTS = {
 		recurringCreditsCents: 6000,
 		meter: {
 			name: "Press app usage",
-			displayName: "Press app usage",
+			displayName: "Bonobo Senate app usage",
 		},
 	},
 	"Pay As You Go": {
@@ -28,7 +29,7 @@ export const billing_PRODUCTS = {
 		recurringCreditsCents: 1000,
 		meter: {
 			name: "Press app usage",
-			displayName: "Press app usage",
+			displayName: "Bonobo Senate app usage",
 		},
 	},
 } as const;

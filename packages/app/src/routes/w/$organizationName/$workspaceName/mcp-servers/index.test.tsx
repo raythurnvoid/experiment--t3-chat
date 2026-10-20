@@ -379,13 +379,13 @@ describe("RouteMcpServers", () => {
 				_yay: {
 					customServerId: "custom_2",
 					outcome: "network_error",
-					message: "Press could not reach the MCP server.",
+					message: "Bonobo Senate could not reach the MCP server.",
 					toolCount: null,
 				},
 			});
 		});
 		expect(
-			screen.getByText("Saved first, but the connection test failed: Press could not reach the MCP server."),
+			screen.getByText("Saved first, but the connection test failed: Bonobo Senate could not reach the MCP server."),
 		).not.toBeNull();
 		expect((screen.getByRole("button", { name: "Edit Linear" }) as HTMLButtonElement).disabled).toBe(false);
 	});

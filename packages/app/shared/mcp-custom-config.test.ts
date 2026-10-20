@@ -147,7 +147,7 @@ describe("mcp_custom_config_parse", () => {
 
 		expect(draft.state).toBe("refused");
 		expect(draft.refusal).toContain("npx -y @modelcontextprotocol/server-github");
-		expect(draft.refusal).toContain("Press can only use remote servers");
+		expect(draft.refusal).toContain("Bonobo Senate can only use remote servers");
 	});
 
 	test("turns mcp-remote in args into a remote draft with its --header", () => {
@@ -207,7 +207,7 @@ describe("mcp_custom_config_parse", () => {
 	test("refuses a key placeholder in the URL path", () => {
 		const draft = parse_one(remote_text({ name: "remote", url: "https://mcp.example.com/mcp/<YOUR_TOKEN>" }));
 
-		expect(draft.refusal).toBe("This server puts a key in its address. Press can only keep keys in headers.");
+		expect(draft.refusal).toBe("This server puts a key in its address. Bonobo Senate can only keep keys in headers.");
 	});
 
 	test("turns a URL placeholder that is not a key into a text field", () => {
@@ -355,7 +355,7 @@ describe("mcp_custom_config_parse", () => {
 			}),
 		);
 
-		expect(draft.refusal).toBe("Press signs in with its own OAuth client. Remove the OAuth client settings.");
+		expect(draft.refusal).toBe("Bonobo Senate signs in with its own OAuth client. Remove the OAuth client settings.");
 	});
 
 	test("parses JSONC comments and trailing commas", () => {
@@ -422,14 +422,14 @@ describe("mcp_custom_config_parse", () => {
 		const draft = parse_one(JSON.stringify({ mcpServers: { remote: entry } }));
 
 		expect(draft.state).toBe("refused");
-		expect(draft.refusal).toBe("Press cannot read files from your computer. Remove the ${file:...} reference.");
+		expect(draft.refusal).toBe("Bonobo Senate cannot read files from your computer. Remove the ${file:...} reference.");
 	});
 
 	test("refuses reserved, duplicate, and too many headers", () => {
 		const refusalOf = (headers: Record<string, string>) =>
 			parse_one(remote_text({ name: "remote", url: "https://mcp.example.com/mcp", headers })).refusal;
 
-		expect(refusalOf({ "Mcp-Session-Id": "abc" })).toContain("Press sets the Mcp-Session-Id header itself");
+		expect(refusalOf({ "Mcp-Session-Id": "abc" })).toContain("Bonobo Senate sets the Mcp-Session-Id header itself");
 		expect(refusalOf({ "X-Key": "a", "x-key": "b" })).toContain("appears twice");
 		expect(refusalOf({ "X-Key": "a", X_Key: "b" })).toBe(
 			"Two headers use the secret name REMOTE_X_KEY. Rename one of them.",

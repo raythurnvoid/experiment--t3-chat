@@ -456,7 +456,7 @@ export function plugins_validate_mcp_server_url(raw: string) {
 		return Result({ _nay: { message: "MCP server URL must not include a fragment" } });
 	}
 	// The URL parser already turns every IPv4 form (decimal, hex, short) into dotted numbers, and IPv6
-	// is always in brackets. Press calls hosts by name only.
+	// is always in brackets. Bonobo Senate calls hosts by name only.
 	if (/^[0-9.]+$/u.test(url.hostname) || url.hostname.startsWith("[")) {
 		return Result({ _nay: { message: "MCP server URL must use a host name, not an IP address" } });
 	}
@@ -1613,7 +1613,7 @@ export function plugins_validate_manifest(input: unknown) {
 				return Result({ _nay: { message: `MCP server "${server.id}" has duplicate header "${header.name}"` } });
 			}
 			headerNames.add(lowered);
-			// Press sets these itself: the protocol headers, the content headers, and the sign-in token.
+			// Bonobo Senate sets these itself: the protocol headers, the content headers, and the sign-in token.
 			if (
 				["cookie", "host", "content-type", "accept", "mcp-protocol-version"].includes(lowered) ||
 				lowered.startsWith("mcp-") ||
