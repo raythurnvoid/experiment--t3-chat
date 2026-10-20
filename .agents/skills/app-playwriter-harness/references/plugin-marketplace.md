@@ -428,7 +428,7 @@ That is expected. After an uninstall and a reinstall in the same thread, the mod
 earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
 it calls the tool again.
 
-## Page agent tools fixture (Gmail 0.3.1 Mail page)
+## Page agent tools fixture (Gmail 0.3.3 Mail page)
 
 The Gmail plugin's Mail page is the fixture for page agent tools (`agent.page-tools`). It replaced the
 separate Mail plugin, which was uninstalled and removed from this repo on 2026-10-19 (its registry
@@ -436,7 +436,7 @@ entry and GitHub repo stay). The page lists the `/emails` files the Gmail sync w
 tools: `get_view`, `open_email`, `list_drafts`, `create_draft`, `update_draft`, `delete_draft`. Drafts
 are real Gmail drafts. No tool can send; only the member's **Send** click does.
 
-Where it lives (verified 2026-10-19): `gmail@0.3.1` is installed in `personal/home`. Pages:
+Where it lives (verified 2026-10-20): `gmail@0.3.3` is installed in `personal/home`. Pages:
 `/w/personal/home/plugins/gmail/pages/gmail` (connection) and
 `/w/personal/home/plugins/gmail/pages/mail` (Mail).
 
@@ -450,17 +450,30 @@ Where it lives (verified 2026-10-19): `gmail@0.3.1` is installed in `personal/ho
   "performing click action". Click from page context instead:
   `frame.evaluate(() => [...document.querySelectorAll("button")].find((b) => b.innerText.trim() === "Send").click())`.
   `locator.fill()` on the editor inputs works.
-- **Send only to the member's own address** (`ray.thurne.void@gmail.com`). Ask the agent for a reply
-  to one of the self-sent `gmail … check` emails with exactly that `to`. Check Gmail in a new tab:
-  `https://mail.google.com/mail/u/?authuser=ray.thurne.void@gmail.com#drafts` (and `#sent`). A reply
-  draft shows in the same conversation.
+- **Send only to the user's own addresses**: `ray.thurne.void@gmail.com` (the synced account) and
+  `lemmino4555@gmail.com` (the user's second account, also signed in to Gmail in this Edge profile;
+  the user allowed it on 2026-10-20). Ask the agent for a reply with exactly that `to`. Check Gmail in
+  a new tab: `https://mail.google.com/mail/u/?authuser=ray.thurne.void@gmail.com#drafts` (and
+  `#sent`). A reply draft shows in the same conversation.
+- **Mail from another sender**: open
+  `https://mail.google.com/mail/?authuser=lemmino4555@gmail.com&view=cm&fs=1&to=ray.thurne.void@gmail.com&su=<subject>&body=<text>`
+  and click Send from page context. To leave that compose page, set `location.href` in the page;
+  `page.goto` to a `#search/...` URL stayed on the compose view.
+- **New mail shows without a reload (0.3.2+).** The Mail page reads the sync status every 15 seconds.
+  When `messagesSynced` grows, it reads the newest folder again and puts the new rows at the top.
+  Inside one day, rows are in Gmail id order (newest first), not subject order.
 - **Read drafts back from the plugin backend**, not from Press: run
   `vp env exec pnpm exec convex data gmail_drafts` from `plugins/bonobo-plugin-gmail`. A row holds the
   subject and recipients only; the text lives in Gmail. A sent draft's row is deleted.
-- **After Update, open the Gmail or Mail page.** An update makes Press refuse the sync's grant. The
-  next email write fails and sync waits with `press_reconnect_needed` (`next null`) until a page
-  loads and renews the grant. Both pages do that on load. To test it, send yourself an email, wait
-  for `blocked / press_reconnect_needed` in `gmail_accounts`, then reload the page.
+- **After Update, keep the Gmail or Mail page open.** An update makes Press refuse the sync's grant,
+  but sync notices only at its next email write, which can be minutes later. It then waits with
+  `press_reconnect_needed` (`next null`) until an open page renews the grant. Both pages check status
+  while open (Gmail every 5 seconds, Mail every 15) and renew once per connection. To test the late
+  case (0.3.3), open the page right after Update while sync is still `live`, then send an email from
+  lemmino4555: `gmail_accounts` goes `blocked` and back to `live` within about 20 seconds.
+- **Something closes `localhost:5173` QA tabs in this Edge profile** (seen twice on 2026-10-20, not
+  the Gmail tabs). A watch loop then reads a closed page and never finds its row. Check
+  `context.pages()` when a watch ends without a result, and open a new tab.
 - **The sent email syncs late.** The sync first skips the draft as `deleted_before_fetch`. The sent
   reply can take about 10 minutes to reach `/emails/…` (one retry pause). Read `messages_ledger` in the
   plugin backend to see it, without printing `gmail_accounts` token fields.

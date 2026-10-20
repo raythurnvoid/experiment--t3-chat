@@ -307,7 +307,7 @@ A page or file view calls `POST /api/v1/plugin-backend/invoke` with its `plu_` t
 
 `plugin.service.connect` is the only capability whose holder is not code the app runs. It lets a plugin frame exchange its `plu_` token for an installation-bound `psg_` service grant, so the publisher's own server keeps working while nobody has the plugin open. A file view drives that exchange exactly as a page does: `plugins_service.ts` accepts any `plu_` UI token, and a page and a file view both carry one. So the capability row above says "pages and file views", and both consent screens must say the same thing, under the same both-screens rule as the UI outbound warning. A dialog that names only the page understates this capability by half.
 
-The ceiling around it: the mint refuses outright unless the installation accepted `plugin.service.connect`, each scope is gated on its own capability, and the resolver rechecks both on every call. **An upgrade revokes every outstanding grant; it never narrows one.** An upgrade moves the installation's `pluginVersionId`, and `resolve_principal` refuses any grant whose stored `pluginVersionId` no longer matches, so the outside server stops now instead of when the grant expires. A capability cannot be taken away on its own either: `acceptedCapabilities` is only ever written as the new version's `capabilities`, in the same patch that moves `pluginVersionId`, and `install_version` refuses a partial acceptance. The resolver still narrows the stored scopes against the live capabilities on every call, but nothing in the app can currently produce an installation that reaches that branch. So a plugin with background work stops after every update until a member opens one of its pages, because only a page token can start a new grant. Let every page those members use renew the grant on load, not only a settings page: Gmail 0.3.1 renews from both its Gmail and Mail pages. See `../public-api/SKILL.md` for the `plugin_service` principal and `#service-grant-exchange` below for the routes that mint and renew one.
+The ceiling around it: the mint refuses outright unless the installation accepted `plugin.service.connect`, each scope is gated on its own capability, and the resolver rechecks both on every call. **An upgrade revokes every outstanding grant; it never narrows one.** An upgrade moves the installation's `pluginVersionId`, and `resolve_principal` refuses any grant whose stored `pluginVersionId` no longer matches, so the outside server stops now instead of when the grant expires. A capability cannot be taken away on its own either: `acceptedCapabilities` is only ever written as the new version's `capabilities`, in the same patch that moves `pluginVersionId`, and `install_version` refuses a partial acceptance. The resolver still narrows the stored scopes against the live capabilities on every call, but nothing in the app can currently produce an installation that reaches that branch. So a plugin with background work stops after every update until a member opens one of its pages, because only a page token can start a new grant. Let every page those members use renew the grant, not only a settings page, and not only on load: the background job notices the refused grant only at its next host call, which can come minutes after the page loaded. So check status while the page is open and renew once per connection. Gmail 0.3.3 does this from both its Gmail and Mail pages. See `../public-api/SKILL.md` for the `plugin_service` principal and `#service-grant-exchange` below for the routes that mint and renew one.
 
 ## Rebuilding and publishing a plugin is pre-authorized here
 
@@ -897,6 +897,23 @@ email write got a 401, and sync waited with `press_reconnect_needed` until the G
 Now the Mail page also renews the grant when it loads. The Google callback page says "Allow drafts
 and Send" for that step. Live check: after the 0.3.1 update, a self-sent email blocked sync the same
 way; opening only the Mail page made a new grant within 20 seconds and the email was saved. 446 tests.
+
+Gmail 0.3.2 was published and installed in `personal/home` on 2026-10-20 (plugin commit
+`a0cf24b6af0e24eaf36b9171b9df8ded4cbcdf4a`, version doc `hn7qbc1cznresenxste4adt5tx8gmpg1`). It
+changes only the Mail page. Email file names keep only the day, so one day's emails used to show in
+reverse subject order; now they sort by Gmail id, which grows with time in practice (0 out of order
+in the 99 synced emails). While open, the page reads the sync status every 15 seconds and adds new
+mail at the top when `messagesSynced` grows. Live check: sync blocked after the update, because the
+page was opened before the sync noticed the refused grant, and the page renewed it only on load.
+
+Gmail 0.3.3 was published and installed in `personal/home` on 2026-10-20 (plugin commit
+`754ba40b4f9d0bb992e82c6cd93b4a320ef5a42e`, version doc `hn7s2baq0fwkxc5n9246tew1258gnxf8`). The
+sync notices a refused grant only at its next Press write, which can be minutes after the update. So
+the Mail page now also renews the grant from its 15-second status check, once per account connection,
+like the Gmail page does every 5 seconds. Live check: with the Mail page opened right after the update
+and sync still `live`, an email from `lemmino4555@gmail.com` blocked sync at 00:33:43 UTC; the open
+page renewed the grant and sync was `live` again 8 seconds later. A second email showed at the top of
+the open page 83 seconds after it was sent, with no reload. 448 tests.
 
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `raythurnvoid/bonobo-plugin-mail`
