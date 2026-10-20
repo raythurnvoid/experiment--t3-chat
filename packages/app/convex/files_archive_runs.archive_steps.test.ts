@@ -1,12 +1,12 @@
-// The archive_nodes tests from a lock set after the check on, and the history cleanup tests, split from
-// files_archive_runs.test.ts so the two files can run at the same time.
+// The archive_nodes tests from a lock set after the check on, the tests of a step that keeps failing, and
+// the history cleanup tests, split from files_archive_runs.test.ts so the two files can run at the same time.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { activities_is_active } from "./activities_db.ts";
-import { test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_db_hold_move_slot, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_archive_runs_db_check_fast, files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
-import { files_subtree_ops_db_find_blocker } from "./files_subtree_ops_db.ts";
+import { files_subtree_ops_db_find_blocker, files_subtree_ops_STUCK_CODE } from "./files_subtree_ops_db.ts";
 import {
 	fixture,
 	add_member,
@@ -23,6 +23,7 @@ import {
 	lock_writer,
 	folder,
 	read_node,
+	type Fixture,
 	queue_empty_folders_first,
 	count_queue,
 } from "./files_archive_runs.setup.test.ts";
@@ -529,6 +530,79 @@ describe("archive_nodes", () => {
 		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
 		expect((await read_state(f)).nodes.filter((node) => node.archiveOperationId === null)).toEqual([]);
 	}, 120_000);
+});
+
+describe("a step that keeps failing", () => {
+	// One deadline check of the recover cron, with the Activity fields it may change. Steps never run on
+	// their own here, so each check finds the same step, as when the step throws every time.
+	const recover = async (f: Fixture, activityId: Id<"activities">) => {
+		const now = Date.now();
+		await f.t.run((ctx) => ctx.db.patch("activities", activityId, { deadlineAt: now - 1 }));
+		await f.t.mutation(internal.activities.recover_expired, { _test_now: now, _test_disableReschedule: true });
+		const { status, errorCode } = await read_activity(f, activityId);
+		return { status, errorCode };
+	};
+	const read_ops = (f: Fixture) => f.t.run((ctx) => ctx.db.query("files_subtree_ops").collect());
+
+	test("an archive check ends as failed after three checks find the same step, and changes nothing", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "stuck", folderCount: 3, filesPerFolder: 100 });
+		// The writer list makes the job check first.
+		await lock_writer({ f, nodeId: tree.fileIds[0]!, userId: f.db.userId });
+		const job = (await archive(f, [tree.topId]))._yay!;
+		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))?.phase).toBe("check");
+
+		// The first check only saves the step. The next three find it again.
+		for (let count = 0; count < 3; count++) {
+			expect(await recover(f, job.activityId)).toEqual({ status: "running", errorCode: undefined });
+		}
+		const ended = await recover(f, job.activityId);
+
+		expect(ended).toEqual({ status: "failed", errorCode: "failed" });
+		expect(await read_ops(f)).toEqual([]);
+		expect((await read_state(f)).nodes.filter((node) => node.archiveOperationId !== null)).toEqual([]);
+	});
+
+	test("an archive apply goes on with a notice, and a new step takes the notice away", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "stuck", folderCount: 3, filesPerFolder: 100 });
+		const job = (await archive(f, [tree.topId]))._yay!;
+		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))?.phase).toBe("apply");
+
+		for (let count = 0; count < 3; count++) await recover(f, job.activityId);
+		// Ending here would leave active items inside the archived folder, so the job keeps trying.
+		expect(await recover(f, job.activityId)).toEqual({ status: "running", errorCode: files_subtree_ops_STUCK_CODE });
+		expect(await read_ops(f)).toHaveLength(1);
+
+		await step(f, job.runId);
+		expect(await recover(f, job.activityId)).toEqual({ status: "running", errorCode: undefined });
+		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+	});
+
+	test("an archive check that waits for a Move is not counted", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "stuck", folderCount: 3, filesPerFolder: 100 });
+		await lock_writer({ f, nodeId: tree.fileIds[0]!, userId: f.db.userId });
+		await f.t.run((ctx) => test_db_hold_move_slot(ctx, f.db));
+
+		// The Move holds the workspace, so every check step waits for it and the step stays the same.
+		const job = (await archive(f, [tree.topId]))._yay!;
+		expect(await f.t.run((ctx) => ctx.db.query("files_move_waiters").collect())).toHaveLength(1);
+		for (let count = 0; count < 4; count++) {
+			expect(await recover(f, job.activityId)).toEqual({ status: "running", errorCode: undefined });
+		}
+
+		await f.t.run(async (ctx) => {
+			const slot = (await ctx.db.query("files_move_workspace_slots").unique())!;
+			await ctx.db.replace("files_move_workspace_slots", slot._id, {
+				organizationId: slot.organizationId,
+				workspaceId: slot.workspaceId,
+				cohortId: null,
+				generation: slot.generation,
+			});
+		});
+		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+	});
 });
 
 describe("files_archive_runs_db_check_fast", () => {

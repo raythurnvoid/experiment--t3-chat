@@ -20,7 +20,11 @@ import {
 	files_write_policy_runs_db_request_stop,
 } from "./files_write_policy_runs.ts";
 import { files_archive_runs_db_delete_run_batch, files_archive_runs_db_request_stop } from "./files_archive_runs.ts";
-import { files_subtree_ops_db_recover, files_subtree_ops_RECOVER_AFTER_MS } from "./files_subtree_ops_db.ts";
+import {
+	files_subtree_ops_db_count_recover,
+	files_subtree_ops_db_recover,
+	files_subtree_ops_RECOVER_AFTER_MS,
+} from "./files_subtree_ops_db.ts";
 import { files_move_cohorts_db_retry_repair_now } from "./files_move_cohorts.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { plugins_runtime_db_delete_run_history, plugins_runtime_db_timeout_run } from "./plugins_runtime.ts";
@@ -358,9 +362,11 @@ export const recover_expired = internalMutation({
 					await files_archive_runs_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
 					break;
 				}
-				// A move or scope op has no Stop. Its deadline only schedules the step again.
+				// A move or scope op has no Stop. Its deadline only schedules the step again. A step that keeps
+				// failing marks the Activity stuck, but the op goes on: items it did not reach keep their old access.
 				case "files_subtree_op": {
 					await ctx.db.patch("activities", activity._id, { deadlineAt: now + files_subtree_ops_RECOVER_AFTER_MS });
+					await files_subtree_ops_db_count_recover(ctx, { opId: activity.source.id, activity });
 					await files_subtree_ops_db_recover(ctx, { opId: activity.source.id });
 					break;
 				}
