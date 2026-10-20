@@ -18,7 +18,7 @@ import {
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import { channels_db_drain_member_batch, channels_db_purge_workspace_batch } from "./channels.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import { internalAction, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { internalAction, internalQuery, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -2265,7 +2265,7 @@ async function db_drain_user_archive_runs_batch(ctx: MutationCtx, args: { userId
  * and the stored paths, scopes and archive stamps in a surviving workspace are right only after the
  * job ends. Each step is small.
  */
-async function db_user_has_subtree_ops(ctx: MutationCtx, args: { userId: Id<"users"> }) {
+async function db_user_has_subtree_ops(ctx: QueryCtx | MutationCtx, args: { userId: Id<"users"> }) {
 	const op = await ctx.db
 		.query("files_subtree_ops")
 		.withIndex("by_user", (q) => q.eq("userId", args.userId))
@@ -3455,6 +3455,27 @@ export const has_deletion_requests_for_user = internalQuery({
 			.first();
 
 		return request !== null;
+	},
+});
+
+/**
+ * Says what a user deletion still waits for: a Paste run that drains, or a file job that runs. The
+ * admin hard delete uses it only to pick the wait before its next round.
+ */
+export const user_deletion_waits = internalQuery({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.union(v.literal("transfer"), v.literal("ops"), v.null()),
+	handler: async (ctx, args) => {
+		// Same order as the deletion. A Paste run also has its own op, and its drain still makes progress.
+		const run = await ctx.db
+			.query("files_transfer_runs")
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.first();
+		if (run) return "transfer";
+		if (await db_user_has_subtree_ops(ctx, args)) return "ops";
+		return null;
 	},
 });
 

@@ -199,6 +199,15 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   later. If the first step worked, the retry does nothing; if it failed, the retry runs the same step.
   A queued paste Copy recovers the same way instead of stopping. The last step deletes
   the op and finishes the Activity as `succeeded`.
+- A step that throws saves nothing, so the deadline checks count it. `files_subtree_ops_db_count_recover`
+  saves the step number on the walk (`recoverStep`, `recoverCount`). The first check only saves it. When
+  the next 3 checks in a row find the same step, and no Move holds the workspace slot, it logs
+  `Subtree op step keeps failing` and sets `errorCode: "subtree_op_stuck"` with a short message. A later
+  check that finds a new step clears it. A move or scope job and an archive or restore apply keep
+  trying, because ending halfway would leave old access inside. An archive check or a restore
+  discover or check changed nothing yet, so it ends as `failed`. A step that fails on every try is
+  then always logged, but an apply or scope step still needs a code fix to finish. A scope job's
+  Activity is hidden from the feed, so only the log shows its notice.
 - `files_transfer.recover_expired_attempts` only releases expired transfer attempts. Do not put
   a second job deadline or history scan back in that module.
 - `files_pending_update_runs.recover` checks interrupted selection uploads, planning leases, and

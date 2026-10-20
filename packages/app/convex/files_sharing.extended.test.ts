@@ -549,6 +549,26 @@ test("binding a folder with added people to a private space needs a restrict fir
 	expect(await get_node(f, folderId)).toMatchObject({ restrictedScopeNodeId: folderId, extendedScopeNodeId: null });
 });
 
+test("binding an open file with added people to a private space removes them and ends its chain", async () => {
+	const f = await fixture();
+	const fileId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/f.md" });
+	const serviceAccountId = await create_account(f);
+	expect((await share_with(f, fileId, "read"))._nay).toBeUndefined();
+	expect((await share_with_account(f, fileId, serviceAccountId, "write"))._nay).toBeUndefined();
+	expect(await get_node(f, fileId)).toMatchObject({ parentExtendedScopeNodeId: null, extendedScopeNodeId: fileId });
+	expect(await account_levels(f, fileId)).toEqual(["content.read", "content.write"]);
+	const installationId = await insert_installation(f);
+
+	// A file needs no restrict first, so the bind itself must drop the accounts added on it.
+	await apply_binding(f, { installationId, folderId: fileId, readScopeId: "team" });
+
+	expect(await account_levels(f, fileId)).toEqual([]);
+	expect(await can(f, member(f), fileId)).toBe(false);
+	const node = await get_node(f, fileId);
+	expect(node).toMatchObject({ restrictedScopeNodeId: fileId, extendedScopeNodeId: null });
+	expect(node.parentExtendedScopeNodeId).toBeUndefined();
+});
+
 test("manage is refused for an account on an Add-people item", async () => {
 	const f = await fixture();
 	const folderId = await seed_folder(f, "/a");

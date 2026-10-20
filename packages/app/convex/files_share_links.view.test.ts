@@ -411,6 +411,9 @@ describe("get_share_link_view", () => {
 		expect((await view_of(f, link.token))?.media).toEqual([{ index: 0, available: true, kind: "image" }]);
 	});
 
+	// No test spends the read budget through media: 50 media cost about 250 calls and at most ~2,750 docs,
+	// far below 1,500 calls and 16,000 docs. A test that seeds enough chunks to pass the doc budget would
+	// likely hit the byte limit first, and all limits throw into the same catch, so it could not tell them apart.
 	test("hides media past the first 50", async () => {
 		const f = await fixture();
 		const imageIds: Id<"files_nodes">[] = [];

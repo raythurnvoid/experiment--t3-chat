@@ -60,6 +60,7 @@ import {
 	files_subtree_ops_db_insert,
 	files_subtree_ops_db_insert_node,
 	files_subtree_ops_db_is_near_limits,
+	files_subtree_ops_db_count_recover,
 	files_subtree_ops_db_recover,
 	files_subtree_ops_db_run,
 	files_subtree_ops_db_schedule_step,
@@ -2131,10 +2132,24 @@ export async function files_archive_runs_db_request_stop(
 	if (args.reason === "timeout") {
 		const activity = await db_require_activity(ctx, run._id);
 		if (activity.status !== "awaiting_input") {
+			const opId = (await db_require_op(ctx, run._id))._id;
+			// Before the apply phase the job changed nothing, so a step that keeps failing ends it. An apply
+			// must go on: items it did not reach would stay active, with their links, inside the archived folder.
+			if ((await files_subtree_ops_db_count_recover(ctx, { opId, activity })) && run.phase !== "apply") {
+				await db_finish_run({
+					ctx,
+					runId: run._id,
+					status: "failed",
+					errorMessage: "A step of this job kept failing, so it stopped. Nothing was changed.",
+					errorCode: "failed",
+					now: args.now,
+				});
+				return;
+			}
 			await ctx.db.patch("activities", activity._id, {
 				deadlineAt: args.now + (activity.status === "queued" ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
 			});
-			await files_subtree_ops_db_recover(ctx, { opId: (await db_require_op(ctx, run._id))._id });
+			await files_subtree_ops_db_recover(ctx, { opId });
 			return;
 		}
 	}

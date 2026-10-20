@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_create_saved_text_file, test_mocks, test_mocks_fill_db_with, test_move_nodes } from "./setup.test.ts";
+import {
+	test_create_saved_text_file,
+	test_mocks,
+	test_mocks_fill_db_with,
+	test_move_nodes,
+	test_spy_handler,
+} from "./setup.test.ts";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_share_links_db_delete_for_scope, files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
 import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
+import { set_node_share_link } from "./files_sharing.ts";
 import { organizations_db_create_workspace } from "./organizations.ts";
 import { plugins_data_db_prepare_file_access_binding } from "./plugins_data.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -475,6 +482,145 @@ describe("set_node_share_link", () => {
 		// No check walks the folders above, so the depth does not matter.
 		const link = await link_on(f, f.nodeId);
 		expect(await view_of(f, link.token)).not.toBeNull();
+	});
+});
+
+describe("set_node_share_link during a Move", () => {
+	const set_link = async (f: Fixture, nodeId: Id<"files_nodes">, enabled: boolean) => {
+		await reset_rate_limits(f.t, [f.db.userId]);
+		return await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+			membershipId: f.db.membershipId,
+			nodeId,
+			enabled,
+		});
+	};
+	const mark_of = (f: Fixture, nodeId: Id<"files_nodes">) =>
+		// No mark and a cleared mark both read as `null`: a Convex function returns `undefined` as `null`.
+		f.t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.moveCohortId ?? null);
+	const open_folder = async (f: Fixture, path: string) => {
+		const keepId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: `${path}/keep.md` });
+		return (await f.t.run((ctx) => ctx.db.get("files_nodes", keepId)))!.parentId as Id<"files_nodes">;
+	};
+
+	test("turns a link on before the Move reaches the file, and the Move ends it", async () => {
+		const f = await fixture();
+		// Enough items that capture takes several steps, so `/big` is held before `zz.md`.
+		const big = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		const destId = await open_folder(f, "/dest");
+		let token: string | undefined;
+		// On must wait on both sides of the switch, so count each side.
+		const busySteps = { before: 0, after: 0 };
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const moved = await test_move_nodes(f.t, f.asOwner, {
+			membershipId: f.db.membershipId,
+			itemIds: [big.folderId],
+			targetParentId: destId,
+			onStep: async () => {
+				const cohortId = await mark_of(f, big.nodeId);
+				if (cohortId !== null) {
+					const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId));
+					busySteps[cohort!.visibleView]++;
+					expect((await set_link(f, big.nodeId, true))._nay?.name).toBe("move_busy");
+				} else if (token === undefined && (await mark_of(f, big.folderId)) !== null) {
+					expect(await set_link(f, big.nodeId, true)).toEqual({ _yay: null });
+					token = (await read_links(f.t, big.nodeId))[0]!.token;
+					expect(await view_of(f, token)).not.toBeNull();
+				}
+			},
+		});
+
+		expect(moved).toEqual({ _yay: null });
+		expect(token).toBeDefined();
+		expect(busySteps.before).toBeGreaterThan(0);
+		expect(busySteps.after).toBeGreaterThan(0);
+		// Link staging found the link, so the switch ended it.
+		expect(await view_of(f, token!)).toBeNull();
+	});
+
+	test("a stopped Move keeps an earlier link, and On waits while the file is held", async () => {
+		const f = await fixture();
+		const big = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		const otherId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/big/zy.md" });
+		const destId = await open_folder(f, "/dest");
+		expect(await set_link(f, big.nodeId, true)).toEqual({ _yay: null });
+		expect(await set_link(f, otherId, true)).toEqual({ _yay: null });
+		const token = (await read_links(f.t, big.nodeId))[0]!.token;
+		let stopped = false;
+		let abortingSteps = 0;
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const moved = await test_move_nodes(f.t, f.asOwner, {
+			membershipId: f.db.membershipId,
+			itemIds: [big.folderId],
+			targetParentId: destId,
+			onStep: async () => {
+				const cohortId = await mark_of(f, big.nodeId);
+				if (cohortId === null) return;
+				if (!stopped) {
+					const activityId = await f.t.run(
+						async (ctx) =>
+							(await ctx.db
+								.query("activities")
+								.filter((q) => q.eq(q.field("source.kind"), "files_transfer_run"))
+								.first())!._id,
+					);
+					expect(
+						await f.asOwner.mutation(api.activities.request_stop, { membershipId: f.db.membershipId, activityId }),
+					).toEqual({ _yay: null });
+					stopped = true;
+				}
+				if ((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))?.phase !== "aborting") return;
+				abortingSteps++;
+				expect((await set_link(f, big.nodeId, true))._nay?.name).toBe("move_busy");
+				// Off only removes access, so it works while the Move holds the file.
+				expect(await set_link(f, otherId, false)).toEqual({ _yay: null });
+			},
+		});
+
+		expect(moved._nay?.name).toBe("stopped");
+		expect(stopped).toBe(true);
+		expect(abortingSteps).toBeGreaterThan(0);
+		// The Move never switched, so the file stays where it was, with its link.
+		expect(await mark_of(f, big.nodeId)).toBeNull();
+		expect(await view_of(f, token)).not.toBeNull();
+	});
+
+	test("reads the same number of docs at any folder depth while a Move runs", async () => {
+		const f = await fixture();
+		const big = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		const destId = await open_folder(f, "/dest");
+		const shallowId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/s/a.md" });
+		const deepPath = `/${Array.from({ length: 40 }, (_, index) => `d${index}`).join("/")}/deep.md`;
+		const deepId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: deepPath });
+		const reads = new Map<string, number>();
+		test_spy_handler(set_node_share_link, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			const { nodeId, enabled } = args as { nodeId: string; enabled: boolean };
+			if (enabled) reads.set(nodeId, (await ctx.meta.getTransactionMetrics()).documentsRead.used);
+			return result;
+		});
+		let measured = false;
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const moved = await test_move_nodes(f.t, f.asOwner, {
+			membershipId: f.db.membershipId,
+			itemIds: [big.folderId],
+			targetParentId: destId,
+			onStep: async () => {
+				if (measured || (await mark_of(f, big.folderId)) === null) return;
+				measured = true;
+				// Each On sees the same link rows: the shallow link is off again before the deep one.
+				expect(await set_link(f, shallowId, true)).toEqual({ _yay: null });
+				expect(await set_link(f, shallowId, false)).toEqual({ _yay: null });
+				expect(await set_link(f, deepId, true)).toEqual({ _yay: null });
+			},
+		});
+
+		expect(moved).toEqual({ _yay: null });
+		expect(measured).toBe(true);
+		expect(reads.get(shallowId)).toBeGreaterThan(0);
+		expect(reads.get(deepId)).toBe(reads.get(shallowId));
 	});
 });
 

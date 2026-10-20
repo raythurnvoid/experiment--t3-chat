@@ -8,6 +8,7 @@ import {
 	files_subtree_ops_db_find_blocker,
 	files_subtree_ops_db_insert,
 	files_subtree_ops_db_schedule_step,
+	files_subtree_ops_STUCK_CODE,
 } from "./files_subtree_ops_db.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
@@ -428,6 +429,59 @@ describe("advance", () => {
 		const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
 		expect(nodes.filter((node) => node.restrictedScopeNodeId !== top._id).map((node) => node.name)).toEqual([]);
 	}, 120_000);
+});
+
+describe("files_subtree_ops_db_count_recover", () => {
+	test("a scope step that keeps failing marks its Activity stuck and goes on, and a new step takes the notice away", async () => {
+		const f = await fixture();
+		const folderNode = await f.t.run(async (ctx) => {
+			const top = await insert_node({
+				ctx,
+				f,
+				fields: { parent: null, name: "big", kind: "folder", archiveOperationId: null },
+			});
+			// More children than one step takes, so the op is still running after the request.
+			for (let index = 0; index < 200; index++) {
+				await insert_node({
+					ctx,
+					f,
+					fields: { parent: top, name: `f${index}.md`, kind: "file", archiveOperationId: null },
+				});
+			}
+			return top;
+		});
+		expect(
+			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: folderNode._id }))
+				._nay,
+		).toBeUndefined();
+		const activityId = (await f.t.run((ctx) => ctx.db.query("activities").collect())).find(
+			(activity) => activity.source.kind === "files_subtree_op",
+		)!._id;
+		// One deadline check of the recover cron. Steps never run on their own here, so each check finds
+		// the same step, as when the step throws every time.
+		const recover = async () => {
+			const now = Date.now();
+			await f.t.run((ctx) => ctx.db.patch("activities", activityId, { deadlineAt: now - 1 }));
+			await f.t.mutation(internal.activities.recover_expired, { _test_now: now, _test_disableReschedule: true });
+			return (await f.t.run((ctx) => ctx.db.get("activities", activityId)))!;
+		};
+
+		// The first check only saves the step. The next three find it again.
+		for (let count = 0; count < 3; count++) expect((await recover()).errorCode).toBeUndefined();
+		expect(await recover()).toMatchObject({ status: "running", errorCode: files_subtree_ops_STUCK_CODE });
+		const op = (await f.t.run((ctx) => ctx.db.query("files_subtree_ops").first()))!;
+		expect(op.status).toBe("running");
+
+		const walk = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_subtree_op_walks")
+				.withIndex("by_op", (q) => q.eq("opId", op._id))
+				.unique(),
+		);
+		await f.t.mutation(internal.files_subtree_ops.advance, { opId: op._id, step: walk!.step });
+		const cleared = await recover();
+		expect([cleared.status, cleared.errorCode]).toEqual(["running", undefined]);
+	});
 });
 
 describe("files_subtree_ops_db_delete", () => {

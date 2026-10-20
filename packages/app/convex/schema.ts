@@ -6627,6 +6627,12 @@ const app_convex_schema = defineSchema({
 		 * The next free `sequence` for the op's queue rows.
 		 */
 		sequence: v.number(),
+		/**
+		 * The step the last deadline check found, and how many checks in a row found it. A step that
+		 * throws saves nothing, so only these checks can see that it keeps failing.
+		 */
+		recoverStep: v.optional(v.number()),
+		recoverCount: v.optional(v.number()),
 		updatedAt: v.number(),
 	}).index("by_op", ["opId"]),
 

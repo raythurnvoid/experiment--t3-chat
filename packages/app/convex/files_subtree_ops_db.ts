@@ -4,6 +4,7 @@ import type { WithoutSystemFields } from "convex/server";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { files_move_reservations_db_find_blocker } from "../server/files-move-reservations.ts";
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
@@ -253,6 +254,57 @@ export async function files_subtree_ops_db_release_waiters(ctx: MutationCtx, arg
 export async function files_subtree_ops_db_run(ctx: MutationCtx, args: { opId: Id<"files_subtree_ops">; now: number }) {
 	await ctx.db.patch("files_subtree_ops", args.opId, { status: "running" });
 	await files_subtree_ops_db_schedule_step(ctx, args);
+}
+
+/**
+ * After this many deadline checks in a row find a running op at the same step, the step keeps failing.
+ */
+const STUCK_RECOVER_COUNT = 3;
+
+/**
+ * The Activity `errorCode` of a job whose step keeps failing. The server keeps trying.
+ */
+export const files_subtree_ops_STUCK_CODE = "subtree_op_stuck";
+
+/**
+ * Count one deadline check of a running op, and say whether its step keeps failing. Only the deadline
+ * checks call this: they come minutes apart, and a working step moves the step number on in seconds.
+ * An op that waits for a Move makes no step either, and that is not a failure. The Activity gets a
+ * notice while the op is stuck, and loses it when a later check finds a new step.
+ */
+export async function files_subtree_ops_db_count_recover(
+	ctx: MutationCtx,
+	args: { opId: Id<"files_subtree_ops">; activity: Doc<"activities"> },
+) {
+	const op = await ctx.db.get("files_subtree_ops", args.opId);
+	if (op?.status !== "running") return false;
+
+	const walk = await files_subtree_ops_db_require_walk(ctx, op._id);
+	// Ask the Move slot itself, not the waiter row: a step that throws cannot delete a stale row.
+	const moveCohortId = await files_move_reservations_db_find_blocker(ctx.db, {
+		wholeWorkspace: { organizationId: op.organizationId, workspaceId: op.workspaceId },
+	});
+	const recoverCount = walk.recoverStep === walk.step && !moveCohortId ? (walk.recoverCount ?? 0) + 1 : 0;
+	await ctx.db.patch("files_subtree_op_walks", walk._id, { recoverStep: walk.step, recoverCount });
+
+	const stuck = recoverCount >= STUCK_RECOVER_COUNT;
+	if (stuck) {
+		console.error("Subtree op step keeps failing", { opId: op._id, kind: op.kind, step: walk.step, recoverCount });
+	}
+	// Only set or clear this notice. Another code, like a Move wait, stays.
+	if (stuck ? args.activity.errorCode == null : args.activity.errorCode === files_subtree_ops_STUCK_CODE) {
+		await ctx.db.patch(
+			"activities",
+			args.activity._id,
+			stuck
+				? {
+						errorCode: files_subtree_ops_STUCK_CODE,
+						errorMessage: "A step of this job keeps failing. We try again on our own.",
+					}
+				: { errorCode: undefined, errorMessage: null },
+		);
+	}
+	return stuck;
 }
 
 /**
