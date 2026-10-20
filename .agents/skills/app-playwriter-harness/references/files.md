@@ -75,6 +75,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - The folder toolbar's `Create files and folders` group opens a New folder dialog. Use its
   `Name` textbox and `Create folder` button. The sidebar's New folder action uses inline Rename.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
+- The folder table row menu has Cut, Copy, Paste and Archive, but no Rename. Open the item, use its breadcrumb menu's `Reveal in sidebar`, then focus `[role="treeitem"][data-file-id="<id>"]` and press `F2`. The textbox is named `Rename <current name>`. Escape cancels; Enter saves.
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
 - Folder table dragging state: `.FileNodeViewFolderExplorer-row-dragging`.
 - Folder table sort state: `getByRole("table", { name: "Folder contents" })` carries
@@ -573,7 +574,7 @@ const created = await state.page.evaluate((prev) => {
 }, state.beforeIds);
 ```
 
-Wait for the new row's rename input, click it, fill it, and press `Enter`. If rename has already closed, click `[role="treeitem"][data-file-id="<id>"] .FilesSidebarTreeItemPrimaryAction`, press `F2`, and wait for the focused rename input before typing.
+Wait for the new row's rename input, click it, fill it, and press `Enter`. If rename has already closed, focus `[role="treeitem"][data-file-id="<id>"]`, press `F2`, and wait for the focused rename input before typing.
 
 Do not press `F2` while the new file's editor is still mounting. The create-then-rename race crashed `FileEditorInner` (`NotFoundError: removeChild`, caught by the route error boundary) twice in ~12 editor mount transitions on 2026-08-10 — a filed app follow-up, not a harness bug. Wait for the editor surface first (`.FileEditorRichText-editor-content` or `.monaco-editor`); if the boundary appears, `Try again` recovers.
 
