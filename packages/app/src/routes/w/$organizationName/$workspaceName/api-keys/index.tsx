@@ -64,6 +64,7 @@ type RouteApiKeys_Scope = app_convex_FunctionArgs<
 const API_KEY_SCOPE_LABELS = {
 	"files:list": "List files",
 	"files:read": "Read file content",
+	"ai_chat:read": "Read my AI conversations",
 	"files:download": "Download files",
 	"files:write": "Write files",
 	"files:permissions": "Manage file policies",
@@ -75,6 +76,10 @@ const API_KEY_SCOPE_LABELS = {
 const API_KEY_SCOPE_ROWS = [
 	{ scope: "files:list", description: "View file and folder names, paths, and metadata." },
 	{ scope: "files:read", description: "Read the committed content of editable text files by path." },
+	{
+		scope: "ai_chat:read",
+		description: "Read saved messages and tool outputs from AI conversations you created in this workspace.",
+	},
 	{ scope: "files:download", description: "Get temporary download links for files." },
 	{ scope: "files:write", description: "Create and update editable text files by path, and upload other files." },
 	{ scope: "files:permissions", description: "Change write policies on files and folders you can manage." },
@@ -85,11 +90,11 @@ const API_KEY_SCOPE_ROWS = [
 // Every scope that lets a key change stored data. They share one warning under the checkbox list.
 const API_KEY_WRITE_SCOPES: readonly RouteApiKeys_Scope[] = ["files:write", "files:permissions", "plugin_data:write"];
 
-// Read scopes start checked; download and write stay opt-in. Plugin data stays opt-in too: most keys
-// never touch it, and a plugin's stored documents can hold whatever that plugin collected.
+// File list and text reads start checked. Every other scope stays opt-in.
 const API_KEY_SCOPE_DEFAULTS = {
 	"files:list": true,
 	"files:read": true,
+	"ai_chat:read": false,
 	"files:download": false,
 	"files:write": false,
 	"files:permissions": false,
@@ -497,7 +502,7 @@ const RouteApiKeysList = memo(function RouteApiKeysList(props: RouteApiKeysList_
 						No active API keys for this workspace
 					</h3>
 					<p className={"RouteApiKeysList-emptyDescription" satisfies RouteApiKeysList_ClassNames}>
-						Create a key so a script can list, read, and optionally write files in this workspace.
+						Create a key for file access or reading your saved AI conversations in this workspace.
 					</p>
 					<MyButton onClick={onCreate}>
 						<Plus aria-hidden />
@@ -869,7 +874,7 @@ const RouteApiKeysHeader = memo(function RouteApiKeysHeader(props: { workspaceNa
 			<div>
 				<h1 className={"RouteApiKeysHeader-title" satisfies RouteApiKeysHeader_ClassNames}>API keys</h1>
 				<p className={"RouteApiKeysHeader-description" satisfies RouteApiKeysHeader_ClassNames}>
-					Create API keys for scripts and tools that access files in {workspaceName}.
+					Create API keys for scripts and tools that work with {workspaceName}.
 				</p>
 			</div>
 			<div className={"RouteApiKeysHeader-toolbar" satisfies RouteApiKeysHeader_ClassNames}>
@@ -890,7 +895,7 @@ const RouteApiKeysSecurity = memo(function RouteApiKeysSecurity() {
 			<ShieldCheck aria-hidden />
 			<div className={"RouteApiKeysSecurity-content" satisfies RouteApiKeysSecurity_ClassNames}>
 				<strong>API keys belong to you and work only in this workspace.</strong>
-				<span>They use your current file access and do not expire until revoked.</span>
+				<span>They follow their selected permissions and current access, and do not expire until revoked.</span>
 				<span>
 					A key with write access can create and replace files everywhere you can write, so treat it like a password.
 				</span>
@@ -1018,7 +1023,12 @@ function RouteApiKeysMembership(props: {
 		setCreateServiceAccountId(value);
 		setCreateError(undefined);
 		if (value !== null) {
-			setCreateScopes((scopes) => ({ ...scopes, "plugin_data:read": false, "plugin_data:write": false }));
+			setCreateScopes((scopes) => ({
+				...scopes,
+				"ai_chat:read": false,
+				"plugin_data:read": false,
+				"plugin_data:write": false,
+			}));
 		}
 	});
 

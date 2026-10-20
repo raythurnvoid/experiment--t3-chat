@@ -4,6 +4,7 @@ export type public_api_Scope =
 	| "files:write"
 	| "files:download"
 	| "files:permissions"
+	| "ai_chat:read"
 	| "volumes:write"
 	| "runs:follow_up"
 	| "secrets:read"

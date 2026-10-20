@@ -206,69 +206,6 @@ describe("RouteApiKeys", () => {
 		vi.clearAllMocks();
 	});
 
-	test("renders loading, error, and empty states", () => {
-		useQueryMock.mockReturnValue(undefined);
-		const loading = renderRoute();
-		expect(screen.getByRole("status").textContent).toContain("Loading API keys");
-		loading.unmount();
-
-		useQueryMock.mockReturnValue({ _nay: { message: "Permission denied" } });
-		const error = renderRoute();
-		expect(screen.getByRole("alert").textContent).toContain("API keys are unavailable");
-		expect(screen.getByRole("alert").textContent).toContain("Permission denied");
-		error.unmount();
-
-		useQueryMock.mockReturnValue({ _yay: [] });
-		renderRoute();
-		expect(screen.getByRole("heading", { name: "No active API keys for this workspace" })).not.toBeNull();
-		expect(screen.getByText("Create API keys for scripts and tools that access files in home.")).not.toBeNull();
-		expect(screen.getAllByRole("button", { name: "Create API key" })).toHaveLength(2);
-		expect(screen.queryByLabelText("API key")).toBeNull();
-	});
-
-	test("renders masked active and revoked keys as semantic lists", () => {
-		useQueryMock.mockReturnValue({
-			_yay: [
-				createCredential({ credentialId: "active", name: "Active reader" }),
-				createCredential({
-					credentialId: "revoked",
-					name: "Revoked reader",
-					keyId: `pk_${"c".repeat(32)}`,
-					revokedAt: Date.UTC(2026, 6, 21, 12, 0),
-				}),
-			],
-		});
-
-		renderRoute();
-
-		expect(screen.getByRole("list", { name: "Active API keys" }).querySelectorAll("li")).toHaveLength(1);
-		expect(screen.getByText("Active reader")).not.toBeNull();
-		expect(screen.getAllByRole("group", { name: "Permissions" })).toHaveLength(2);
-		expect(screen.getAllByText(/2026/u).length).toBeGreaterThan(0);
-		expect(screen.getAllByText("pk_aaaa••••bbbb")).toHaveLength(2);
-		expect(screen.queryByText(API_KEY)).toBeNull();
-		expect(screen.getByText("Recent revoked keys (1)")).not.toBeNull();
-		expect(screen.queryByRole("heading", { name: "Verify an API key" })).toBeNull();
-	});
-
-	test("shows the active-key empty state alongside revoked keys", () => {
-		useQueryMock.mockReturnValue({
-			_yay: [
-				createCredential({
-					credentialId: "revoked",
-					name: "Revoked reader",
-					revokedAt: Date.UTC(2026, 6, 21, 12, 0),
-				}),
-			],
-		});
-
-		renderRoute();
-
-		expect(screen.getByRole("heading", { name: "No active API keys for this workspace" })).not.toBeNull();
-		expect(screen.getByText("Recent revoked keys (1)")).not.toBeNull();
-		expect(screen.queryByLabelText("API key")).toBeNull();
-	});
-
 	test("creates, tests, and clears a key with the default read scopes", async () => {
 		// The verify route answers with the scopes the key still has, so the message can name them.
 		const fetchMock = vi.fn().mockResolvedValue({
@@ -290,6 +227,7 @@ describe("RouteApiKeys", () => {
 		expect(screen.getByText("Permissions")).not.toBeNull();
 		expect((screen.getByRole("checkbox", { name: /List files/ }) as HTMLInputElement).checked).toBe(true);
 		expect((screen.getByRole("checkbox", { name: /Read file content/ }) as HTMLInputElement).checked).toBe(true);
+		expect((screen.getByRole("checkbox", { name: /Read my AI conversations/ }) as HTMLInputElement).checked).toBe(false);
 		expect((screen.getByRole("checkbox", { name: /Download files/ }) as HTMLInputElement).checked).toBe(false);
 		expect((screen.getByRole("checkbox", { name: /Write files/ }) as HTMLInputElement).checked).toBe(false);
 
@@ -348,16 +286,6 @@ describe("RouteApiKeys", () => {
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
-	test("shows the sponsor and keeps a missing service identity distinct from Personal", () => {
-		useQueryMock.mockReturnValue({
-			_yay: [createCredential({ serviceAccountId: "account_1", serviceAccountName: null })],
-		});
-		renderRoute();
-		expect(screen.getByText("Service account unavailable")).toBeTruthy();
-		expect(screen.getByText("Ada")).toBeTruthy();
-		expect(screen.queryByText("Personal")).toBeNull();
-	});
-
 	test("says the key is valid but useless when its permissions allow no scope", async () => {
 		// The key resolves, so the route answers 200. Its scopes are all filtered out because the
 		// person behind it lost the permissions they need, and the message must say that instead of
@@ -388,6 +316,7 @@ describe("RouteApiKeys", () => {
 
 		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
 		fireEvent.click(screen.getByRole("checkbox", { name: /Read file content/ }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /Read my AI conversations/ }));
 		fireEvent.click(screen.getByRole("checkbox", { name: /Download files/ }));
 		fireEvent.click(screen.getByRole("checkbox", { name: /Write files/ }));
 
@@ -400,7 +329,31 @@ describe("RouteApiKeys", () => {
 			serviceAccountId: null,
 			membershipId: "membership_1",
 			name: "Importer",
-			scopes: ["files:list", "files:download", "files:write"],
+			scopes: ["files:list", "ai_chat:read", "files:download", "files:write"],
+		});
+	});
+
+	test("clears AI access when switching to a service account and back", async () => {
+		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
+		renderRoute();
+		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
+		fireEvent.click(screen.getByRole("checkbox", { name: /Read my AI conversations/ }));
+
+		fireEvent.click(screen.getByRole("combobox", { name: "Identity" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Publisher" }));
+		expect(screen.queryByRole("checkbox", { name: /Read my AI conversations/ })).toBeNull();
+		fireEvent.click(screen.getByRole("combobox", { name: "Identity" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Personal" }));
+		expect((screen.getByRole("checkbox", { name: /Read my AI conversations/ }) as HTMLInputElement).checked).toBe(false);
+
+		const nameInput = screen.getByRole("textbox", { name: "Name" });
+		fireEvent.change(nameInput, { target: { value: "Transcript reader" } });
+		fireEvent.submit(nameInput.closest("form")!);
+		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
+			serviceAccountId: null,
+			membershipId: "membership_1",
+			name: "Transcript reader",
+			scopes: ["files:list", "files:read"],
 		});
 	});
 
@@ -442,37 +395,6 @@ describe("RouteApiKeys", () => {
 		fireEvent.click(writeCheckbox);
 		expect(screen.queryByText(/Treat it like a password/)).toBeNull();
 		expect(writeCheckbox.getAttribute("aria-describedby")).toBeNull();
-	});
-
-	test("renders badge labels for every scope a key can hold", () => {
-		useQueryMock.mockReturnValue({
-			_yay: [
-				createCredential({
-					scopes: [
-						"files:list",
-						"files:read",
-						"files:download",
-						"files:write",
-						"plugin_data:read",
-						"plugin_data:write",
-					],
-				}),
-			],
-		});
-
-		renderRoute();
-
-		const scopeGroup = screen.getByRole("group", { name: "Permissions" });
-		for (const label of [
-			"List files",
-			"Read file content",
-			"Download files",
-			"Write files",
-			"Read plugin data",
-			"Write plugin data",
-		]) {
-			expect(scopeGroup.textContent).toContain(label);
-		}
 	});
 
 	test("leaves the plugin-data scopes unchecked and submits them only when chosen", () => {

@@ -2125,6 +2125,7 @@ const app_convex_schema = defineSchema({
 				v.literal("files:write"),
 				v.literal("files:permissions"),
 				v.literal("files:download"),
+				v.literal("ai_chat:read"),
 				v.literal("plugin_data:read"),
 				v.literal("plugin_data:write"),
 			),

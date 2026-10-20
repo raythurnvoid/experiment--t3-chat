@@ -32,6 +32,8 @@ const REQUIRED_APP_PERMISSION_BY_SCOPE = {
 	"files:download": null,
 	// Policy management is checked on the actual file, including restricted folders.
 	"files:permissions": null,
+	// AI conversations belong to their creator, including guests.
+	"ai_chat:read": null,
 	// Volume writes check the exact installation in their transaction.
 	"volumes:write": null,
 	"runs:follow_up": null,

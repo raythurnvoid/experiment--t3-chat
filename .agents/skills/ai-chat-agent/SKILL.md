@@ -265,6 +265,18 @@ sees a preview: the first 16 KiB and the last 2 KiB, with a line that names the 
   `ai_chat_outputs.read_page` ("Load more"). A refused read shows "Full output not available" and a
   "Try again" button. Only the chat creator can read, with current workspace access.
 
+**Public AI export.** External personal API keys with opt-in `ai_chat:read` can read the creator's
+saved AI branch through `/api/v1/ai-chat/threads/transcript` and its committed stored text through
+`/api/v1/ai-chat/threads/tool-output/read`. Active guests keep their own AI access. Both doors repeat
+key, membership lifetime, tenant, creator and delete/copy/purge checks; output reads repeat them
+after storage I/O. Header-first pages keep whole inline messages or reply steps, preserve empty
+replies and metadata, and pin the chosen end. Copied replies use their saved steps even with no run
+ID. A reply changing while paged returns 409 instead of mixed parts. Historical text remains; file
+references do not grant fresh file access. Unsaved stream data is unavailable. The full auth,
+paging, size, status and rate contract is in `../public-api/SKILL.md` under "AI conversation reads".
+Human Messages remains a separate API domain. App short Files grants and the code gateway cannot
+call these AI routes; do not ask for a personal key in chat or Files to work around that boundary.
+
 **Delete chat.** The row menu has Delete, with a confirm modal. `thread_delete` sets `deletingAt`,
 stops the live run, and schedules `data_deletion.drain_deleting_thread`. Every chat door treats a
 thread with `deletingAt` as not found, and the threads list hides it. The drain first waits for live runs,

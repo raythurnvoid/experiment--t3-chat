@@ -134,7 +134,7 @@ if (LIST_CURSOR_SECRET_PREVIOUS && LIST_CURSOR_SECRET_PREVIOUS.length < 32) {
 /**
  * Each cursor kind gets its own key, so a cursor of one kind never opens as another kind.
  */
-type CursorPurpose = "files_list";
+type CursorPurpose = "files_list" | "ai_chat_transcript";
 
 const cursor_crypto_keys = ((/* iife */) => {
 	async function derive(purpose: CursorPurpose, secret: string) {

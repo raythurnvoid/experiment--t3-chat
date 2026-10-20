@@ -92,6 +92,7 @@ import type { public_api_files_list_http_routes } from "../convex/public_api_fil
 import type { public_api_plugin_files_http_routes } from "../convex/public_api_plugin_files_http_routes.ts";
 import type { public_api_plugin_writers_http_routes } from "../convex/public_api_plugin_writers_http_routes.ts";
 import type { public_api_http_routes } from "../convex/public_api_http_routes.ts";
+import type { public_api_ai_chat_http_routes } from "../convex/public_api_ai_chat_http_routes.ts";
 import type { public_api_service_uploads_http_routes } from "../convex/public_api_service_uploads_http_routes.ts";
 import type { public_api_volumes_http_routes } from "../convex/public_api_volumes_http_routes.ts";
 import type { r2_http_routes } from "../convex/r2_http_routes.ts";
@@ -142,6 +143,14 @@ export interface api_schemas_Main {
 	"/api/chat": ReturnType<typeof ai_chat_http_routes>["/api/chat"];
 
 	"/api/v1/runs/stream": ReturnType<typeof ai_chat_http_routes>["/api/v1/runs/stream"];
+
+	"/api/v1/ai-chat/threads/transcript": ReturnType<
+		typeof public_api_ai_chat_http_routes
+	>["/api/v1/ai-chat/threads/transcript"];
+
+	"/api/v1/ai-chat/threads/tool-output/read": ReturnType<
+		typeof public_api_ai_chat_http_routes
+	>["/api/v1/ai-chat/threads/tool-output/read"];
 
 	"/api/v1/files/list": ReturnType<typeof public_api_files_list_http_routes>["/api/v1/files/list"];
 

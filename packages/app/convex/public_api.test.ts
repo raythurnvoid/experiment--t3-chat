@@ -1472,7 +1472,7 @@ describe("service-bound API credentials", () => {
 		);
 	});
 
-	test.each(["plugin_data:read", "plugin_data:write"] as const)(
+	test.each(["ai_chat:read", "plugin_data:read", "plugin_data:write"] as const)(
 		"refuses %s at creation, authentication, and rotation",
 		async (scope) => {
 			const t = test_convex();
@@ -1506,7 +1506,7 @@ describe("service-bound API credentials", () => {
 			expect(
 				(await t.query(internal.public_api.resolve_principal, { presented: personal._yay.credential }))._yay?.scopes,
 			).toContain(scope);
-			// Check the stored-data boundary too; account keys may never carry plugin-data scopes.
+			// An account key cannot use these scopes, even when already stored.
 			await t.run(
 				async (ctx) => await ctx.db.patch("api_credentials", personal._yay.credentialId, { serviceAccountId }),
 			);
@@ -3563,7 +3563,7 @@ describe("public files API", () => {
 			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Rotating key",
-			scopes: ["files:list"],
+			scopes: ["files:list", "ai_chat:read"],
 		});
 		expect(created._nay).toBeUndefined();
 
@@ -3581,6 +3581,10 @@ describe("public files API", () => {
 			]),
 		);
 		expect(storedCredentials.map((credential) => credential?.serviceAccountId)).toEqual([null, null]);
+		expect(storedCredentials.map((credential) => credential?.scopes)).toEqual([
+			["files:list", "ai_chat:read"],
+			["files:list", "ai_chat:read"],
+		]);
 		const quotaAfterRotate = await asUser.query(api.quotas.get, {
 			quotaName: "active_api_credentials",
 			membershipId: db.membershipId,
@@ -3642,7 +3646,7 @@ describe("public files API", () => {
 			serviceAccountId: null,
 			membershipId: member.membershipId,
 			name: "  Member key  ",
-			scopes: ["files:list"],
+			scopes: ["ai_chat:read"],
 		});
 		expect(created._nay).toBeUndefined();
 		expect(created._yay?.credential).toMatch(/^pk_[0-9a-f]{32}\.[0-9a-f]{64}$/u);
@@ -3650,7 +3654,13 @@ describe("public files API", () => {
 		const listed = await asMember.query(api.public_api.api_credentials_list, {
 			membershipId: member.membershipId,
 		});
-		expect(listed._yay).toEqual([expect.objectContaining({ name: "Member key" })]);
+		expect(listed._yay).toEqual([expect.objectContaining({ name: "Member key", scopes: ["ai_chat:read"] })]);
+		const verified = await t.fetch("/api/v1/auth/verify", {
+			method: "POST",
+			headers: auth_headers(created._yay!.credential),
+		});
+		expect(verified.status).toBe(200);
+		expect(await verified.json()).toMatchObject({ scopes: ["ai_chat:read"] });
 
 		const revoked = await asMember.mutation(api.public_api.api_credential_revoke, {
 			membershipId: member.membershipId,

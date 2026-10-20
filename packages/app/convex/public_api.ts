@@ -244,6 +244,7 @@ const user_credential_scopes_validator = v.array(
 		v.literal("files:write" satisfies public_api_Scope),
 		v.literal("files:download" satisfies public_api_Scope),
 		v.literal("files:permissions" satisfies public_api_Scope),
+		v.literal("ai_chat:read" satisfies public_api_Scope),
 		v.literal("plugin_data:read" satisfies public_api_Scope),
 		v.literal("plugin_data:write" satisfies public_api_Scope),
 	),

@@ -32,5 +32,13 @@
 			"convex/_generated/*": ["./convex/_generated/*"]
 		}
 	},
-	"include": ["src", "convex", "server", "shared", "server", "scripts/typecheck*.ts"]
+	"include": [
+		"src",
+		"convex",
+		"server",
+		"shared",
+		"server",
+		"scripts/typecheck*.ts",
+		"scripts/public-api-skill.test.ts"
+	]
 }

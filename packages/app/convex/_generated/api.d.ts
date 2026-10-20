@@ -144,6 +144,8 @@ import type * as plugins_ui_installed from "../plugins_ui_installed.js";
 import type * as plugins_volumes from "../plugins_volumes.js";
 import type * as presence from "../presence.js";
 import type * as public_api from "../public_api.js";
+import type * as public_api_ai_chat from "../public_api_ai_chat.js";
+import type * as public_api_ai_chat_http_routes from "../public_api_ai_chat_http_routes.js";
 import type * as public_api_credential_usage from "../public_api_credential_usage.js";
 import type * as public_api_files_list_http from "../public_api_files_list_http.js";
 import type * as public_api_http_auth from "../public_api_http_auth.js";
@@ -309,6 +311,8 @@ declare const fullApi: ApiFromModules<{
   plugins_volumes: typeof plugins_volumes;
   presence: typeof presence;
   public_api: typeof public_api;
+  public_api_ai_chat: typeof public_api_ai_chat;
+  public_api_ai_chat_http_routes: typeof public_api_ai_chat_http_routes;
   public_api_credential_usage: typeof public_api_credential_usage;
   public_api_files_list_http: typeof public_api_files_list_http;
   public_api_http_auth: typeof public_api_http_auth;

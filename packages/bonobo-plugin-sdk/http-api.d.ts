@@ -1758,7 +1758,7 @@ export type BonoboHttpApi = {
 						retryAfterMs?: undefined;
 					};
 				};
-				402: {
+				404: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
@@ -1768,7 +1768,7 @@ export type BonoboHttpApi = {
 						errorCode: string;
 					};
 				};
-				404: {
+				402: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
@@ -1881,7 +1881,7 @@ export type BonoboHttpApi = {
 						retryAfterMs?: undefined;
 					};
 				};
-				402: {
+				404: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
@@ -1891,7 +1891,7 @@ export type BonoboHttpApi = {
 						errorCode: string;
 					};
 				};
-				404: {
+				402: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
@@ -2013,7 +2013,7 @@ export type BonoboHttpApi = {
 						retryAfterMs?: undefined;
 					};
 				};
-				402: {
+				404: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
@@ -2023,7 +2023,7 @@ export type BonoboHttpApi = {
 						errorCode: string;
 					};
 				};
-				404: {
+				402: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
@@ -2137,7 +2137,7 @@ export type BonoboHttpApi = {
 						retryAfterMs?: undefined;
 					};
 				};
-				402: {
+				404: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
@@ -2147,7 +2147,7 @@ export type BonoboHttpApi = {
 						errorCode: string;
 					};
 				};
-				404: {
+				402: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
@@ -2258,7 +2258,7 @@ export type BonoboHttpApi = {
 						retryAfterMs?: undefined;
 					};
 				};
-				402: {
+				404: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
@@ -2268,7 +2268,7 @@ export type BonoboHttpApi = {
 						errorCode: string;
 					};
 				};
-				404: {
+				402: {
 					headers: {
 						"Cache-Control": "no-store";
 					};
